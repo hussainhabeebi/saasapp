@@ -8253,3 +8253,33 @@ riding existing fields/infra.
   Nothing is persisted server-side; a closed tab just stops heartbeating, and every other client
   ages the avatar out on its own after `CHAT_PRESENCE_TTL_MS` (45s) of silence
   (`renderSeenBy`/`onLiveViewingEvent`, dashboard.html/chats.js).
+
+## Healthcare appointment Queues and Workflows
+
+Healthcare appointment writes now publish ID-only jobs to `leadvyne-healthcare-jobs`. The Queue
+consumer synchronizes Google Calendar and sends confirmations/cancellations, retrying transient
+failures five times with exponential per-message delays. Exhausted jobs move to
+`leadvyne-healthcare-jobs-dlq`; its consumer records a client-scoped, non-PHI failure summary in
+`healthcare_queue_failures` so the Healthcare dashboard can report failures without placing
+patient details in Queue payloads or operational logs.
+
+Each active appointment version also starts a `leadvyne-healthcare-appointment` Workflow. The
+Workflow queues an immediate confirmation, sleeps durably until the enabled 24-hour and 2-hour
+reminder points, and then publishes the reminder jobs. Rescheduling or cancelling terminates the
+old instance, and every job re-checks the appointment version in D1 before delivery so a stale
+Workflow cannot message a patient.
+
+One-time production setup from `cloudflare-worker/`:
+
+```bash
+npx wrangler queues create leadvyne-healthcare-jobs
+npx wrangler queues create leadvyne-healthcare-jobs-dlq
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+npx wrangler deploy
+```
+
+In **Healthcare → Safety & Handover → Appointment Automation**, configure approved Meta WhatsApp
+template names and language. The templates must accept six body variables in this order: patient,
+service, doctor, date, time, and message type. Templates are required for reliable reminders
+outside WhatsApp's customer-service conversation window; when no template is set, delivery only
+falls back to an existing Chatwoot conversation and failures are retried before going to the DLQ.

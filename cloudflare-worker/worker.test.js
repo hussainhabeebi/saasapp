@@ -26,6 +26,9 @@ import {
   hcVerifiedServiceText,
   hcEmergencyMatch,
   hcEnsureOperationsSchema,
+  hcAppointmentUtcMs,
+  hcHandleQueueBatch,
+  HealthcareAppointmentWorkflow,
 } from './worker.js';
 
 describe('Healthcare verified-data routing', () => {
@@ -66,10 +69,45 @@ describe('Healthcare verified-data routing', () => {
     const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
     await hcEnsureOperationsSchema({DB});
     await hcEnsureOperationsSchema({DB});
-    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent']){
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
     }
     assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
+  });
+
+  test('converts a clinic wall-clock appointment to the correct UTC instant', () => {
+    assert.equal(new Date(hcAppointmentUtcMs('2026-08-17','12:30','Asia/Dubai')).toISOString(),'2026-08-17T08:30:00.000Z');
+  });
+
+  test('appointment Workflow queues confirmation, 24-hour and 2-hour reminders', async () => {
+    const jobs=[], sleeps=[], dbUpdates=[];
+    const DB={prepare(sql){return {bind(...values){dbUpdates.push({sql,values});return this;},async run(){return {success:true};}};}};
+    const workflow=new HealthcareAppointmentWorkflow({}, {DB,HEALTHCARE_JOBS:{async send(job){jobs.push(job);}}});
+    const started=Date.parse('2026-08-17T00:00:00.000Z'), appointment=started+26*3600000;
+    const step={
+      async do(name,...args){return args.at(-1)();},
+      async sleepUntil(name,when){sleeps.push({name,when:when.toISOString()});}
+    };
+    const result=await workflow.run({payload:{client_id:7,appointment_id:9,appointment_version:'v1',appointment_at_ms:appointment,workflow_started_at_ms:started,reminder_24h_enabled:true,reminder_2h_enabled:true}},step);
+    assert.deepEqual(jobs.map(x=>x.kind),['confirmation','reminder_24h','reminder_2h']);
+    assert.equal(dbUpdates.length,1);
+    assert.match(dbUpdates[0].sql,/workflow_status='complete'/);
+    assert.deepEqual(sleeps.map(x=>x.when),['2026-08-17T02:00:00.000Z','2026-08-18T00:00:00.000Z']);
+    assert.deepEqual(result,{appointment_id:9,status:'reminders_queued'});
+  });
+
+  test('Queue failures retry exponentially and DLQ messages are durably recorded', async () => {
+    const statements=[];
+    const DB={prepare(sql){statements.push(sql);return {bind(){return this;},async run(){return {success:true};},async first(){return null;}};}};
+    const failed={body:{type:'invalid_test_job',client_id:7,appointment_id:9,appointment_version:'v1'},attempts:2,acked:false,retried:null,ack(){this.acked=true;},retry(options){this.retried=options;}};
+    await hcHandleQueueBatch({queue:'leadvyne-healthcare-jobs',messages:[failed]},{DB});
+    assert.equal(failed.acked,false);
+    assert.deepEqual(failed.retried,{delaySeconds:120});
+
+    const dead={body:{type:'appointment_message',client_id:7,appointment_id:9,appointment_version:'v1'},attempts:6,acked:false,ack(){this.acked=true;},retry(){throw new Error('DLQ record should not retry after a successful insert');}};
+    await hcHandleQueueBatch({queue:'leadvyne-healthcare-jobs-dlq',messages:[dead]},{DB});
+    assert.equal(dead.acked,true);
+    assert.ok(statements.some(sql=>sql.includes('INSERT INTO healthcare_queue_failures')));
   });
 });
 

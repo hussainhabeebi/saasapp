@@ -19,6 +19,14 @@
 // exposure as before, just not yet migrated. dashboard.html and ecom.html
 // (via the /ecom/* routes) are fully migrated.
 
+// Cloudflare exposes WorkflowEntrypoint through the special cloudflare:workers module. Node's
+// built-in test runner cannot resolve that runtime-only URL, so tests use the tiny compatible base
+// below while deployed Workers load the real class. The Workflow implementation itself is tested
+// through the same run(event, step) contract used in production.
+const WorkflowEntrypointBase=typeof process==='undefined'
+  ? (await import('cloudflare:workers')).WorkflowEntrypoint
+  : class { constructor(ctx,env){ this.ctx=ctx; this.env=env; } };
+
 // 30 days, not 24h — a rep on WhatsApp-heavy mobile use dips in and out of the dashboard all day;
 // combined with moving the frontend's own storage of this token from sessionStorage to
 // localStorage (see dashboard.html — sessionStorage is wiped the moment a tab/browser closes,
@@ -7670,6 +7678,35 @@ const HC_OPERATIONS_SCHEMA=[
     sent_date TEXT NOT NULL, sent_at TEXT NOT NULL,
     PRIMARY KEY (client_id, lead_id, service_id, sent_date)
   )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_automation_settings (
+    client_id INTEGER PRIMARY KEY,
+    confirmation_template_name TEXT NOT NULL DEFAULT '',
+    reminder_template_name TEXT NOT NULL DEFAULT '',
+    template_language TEXT NOT NULL DEFAULT 'en',
+    reminder_24h_enabled INTEGER NOT NULL DEFAULT 1,
+    reminder_2h_enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_automation (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', calendar_status TEXT NOT NULL DEFAULT 'pending',
+    reminder_status TEXT NOT NULL DEFAULT 'pending', last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL, PRIMARY KEY (client_id, appointment_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_notifications (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, appointment_id, appointment_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    appointment_id INTEGER NOT NULL DEFAULT 0, job_type TEXT NOT NULL DEFAULT '',
+    failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
@@ -7681,7 +7718,11 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_healthcare_appointments_active_slot
     ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)
     WHERE status NOT IN ('cancelled','completed','no_show')`,
-  `CREATE INDEX IF NOT EXISTS idx_healthcare_insurance_client ON healthcare_insurance(client_id)`
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_insurance_client ON healthcare_insurance(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_automation_status
+    ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
+    ON healthcare_queue_failures(client_id, created_at)`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -19888,8 +19929,12 @@ async function handleHcSettingsGet(request, env){
   const auth=await hcRequireSessionClient(request, env);
   if(!auth) return json({error:'Invalid or expired session'}, 401);
   await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
-  const row=await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first();
-  return json(row||{});
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  const [row,automation]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first(),
+    env.DB.prepare(`SELECT * FROM healthcare_automation_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first()
+  ]);
+  return json({...row,...automation});
 }
 async function handleHcSettingsUpdate(request, env){
   const auth=await hcRequireSessionClient(request, env);
@@ -19900,6 +19945,13 @@ async function handleHcSettingsUpdate(request, env){
     .bind(b.strict_zero_hallucination===false||b.strict_zero_hallucination===0?0:1,
       String(b.emergency_keywords||'').slice(0,3000), String(b.emergency_message||'').slice(0,2000),
       String(b.handover_message||'').slice(0,2000), String(b.emergency_contact||'').slice(0,200),
+      new Date().toISOString(), Number(auth.payload.cid)).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  await env.DB.prepare(`UPDATE healthcare_automation_settings SET confirmation_template_name=?, reminder_template_name=?, template_language=?, reminder_24h_enabled=?, reminder_2h_enabled=?, updated_at=? WHERE client_id=?`)
+    .bind(String(b.confirmation_template_name||'').trim().slice(0,200),
+      String(b.reminder_template_name||'').trim().slice(0,200), String(b.template_language||'en').trim().slice(0,20)||'en',
+      b.reminder_24h_enabled===false||b.reminder_24h_enabled===0?0:1,
+      b.reminder_2h_enabled===false||b.reminder_2h_enabled===0?0:1,
       new Date().toISOString(), Number(auth.payload.cid)).run();
   return json({ok:true});
 }
@@ -19965,16 +20017,258 @@ async function handleHcAvailability(request, env){
 async function hcAppointmentRow(env, clientId, id){
   return env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE a.id=? AND a.client_id=?`).bind(Number(id),Number(clientId)).first();
 }
+async function hcDeleteGoogleEventStrict(env,c,eventId){
+  if(!eventId||!c?.gcal_refresh_token||!c?.gcal_calendar_id) return;
+  const token=await gcalGetAccessToken(env,c);
+  if(!token) throw new Error('Google Calendar token refresh failed');
+  const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.gcal_calendar_id)}/events/${encodeURIComponent(eventId)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token}`}});
+  if(!r.ok&&r.status!==404&&r.status!==410) throw new Error(`Google Calendar delete failed: HTTP ${r.status}`);
+}
 async function hcSyncAppointmentToGoogle(env,c,row,action){
   if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return row.gcal_event_id||'';
   if(action==='delete'||['cancelled','completed','no_show'].includes(row.status)){
-    if(row.gcal_event_id) await gcalDeleteEvent(env,c,row.gcal_event_id);
+    if(row.gcal_event_id) await hcDeleteGoogleEventStrict(env,c,row.gcal_event_id);
     return '';
   }
   const title=`Appointment — ${row.patient_name}${row.doctor_name?' · '+row.doctor_name:''}`;
   const notes=[row.service_name&&`Service: ${row.service_name}`,row.patient_phone&&`Patient phone: ${row.patient_phone}`,row.notes].filter(Boolean).join('\n');
   const duration=Math.max(5,(hcTimeToMinutes(row.end_time)||0)-(hcTimeToMinutes(row.start_time)||0))||30;
-  return await gcalUpsertEvent(env,c,{gcalEventId:row.gcal_event_id||null,title,notes,date:row.appointment_date,time:row.start_time,allDay:false,durationMinutes:duration})||'';
+  const eventId=await gcalUpsertEvent(env,c,{gcalEventId:row.gcal_event_id||null,title,notes,date:row.appointment_date,time:row.start_time,allDay:false,durationMinutes:duration});
+  if(!eventId) throw new Error('Google Calendar create/update failed');
+  return eventId;
+}
+
+function hcClientTimezone(c){
+  try{ const cfg=JSON.parse(c?.bot_config||'{}'); return cfg.timezone||'Asia/Dubai'; }
+  catch(e){ return 'Asia/Dubai'; }
+}
+// Convert the wall-clock time saved by the clinic into a stable UTC instant for Workflow sleeps.
+// The second pass handles offset changes around daylight-saving boundaries without a timezone
+// library. Invalid/missing zones deliberately fall back to the Healthcare default, Asia/Dubai.
+export function hcAppointmentUtcMs(date,time,timezone='Asia/Dubai'){
+  const dm=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  const tm=/^(\d{1,2}):(\d{2})$/.exec(String(time||''));
+  if(!dm||!tm) return NaN;
+  const wanted=Date.UTC(Number(dm[1]),Number(dm[2])-1,Number(dm[3]),Number(tm[1]),Number(tm[2]));
+  let guess=wanted;
+  for(let pass=0;pass<2;pass++){
+    let parts;
+    try{ parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess)); }
+    catch(e){ timezone='Asia/Dubai'; parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess)); }
+    const value=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+    const rendered=Date.UTC(Number(value.year),Number(value.month)-1,Number(value.day),Number(value.hour),Number(value.minute));
+    guess+=wanted-rendered;
+  }
+  return guess;
+}
+function hcWorkflowInstanceId(row){
+  const version=Number.isFinite(Date.parse(row.updated_at))?Date.parse(row.updated_at):Date.now();
+  return `hc-${Number(row.client_id)}-${Number(row.id)}-${version}`.slice(0,100);
+}
+async function hcAutomationSettings(env,clientId){
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
+  return await env.DB.prepare(`SELECT * FROM healthcare_automation_settings WHERE client_id=?`).bind(Number(clientId)).first()||{};
+}
+async function hcAutomationState(env,clientId,appointmentId){
+  return env.DB.prepare(`SELECT * FROM healthcare_appointment_automation WHERE client_id=? AND appointment_id=?`).bind(Number(clientId),Number(appointmentId)).first();
+}
+async function hcUpsertAutomationState(env,row,fields={}){
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO healthcare_appointment_automation
+    (client_id,appointment_id,appointment_version,workflow_instance_id,workflow_status,calendar_status,reminder_status,last_error,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(client_id,appointment_id) DO UPDATE SET
+      appointment_version=excluded.appointment_version,
+      workflow_instance_id=CASE WHEN excluded.workflow_instance_id!='' THEN excluded.workflow_instance_id ELSE workflow_instance_id END,
+      workflow_status=CASE WHEN excluded.workflow_status!='' THEN excluded.workflow_status ELSE workflow_status END,
+      calendar_status=CASE WHEN excluded.calendar_status!='' THEN excluded.calendar_status ELSE calendar_status END,
+      reminder_status=CASE WHEN excluded.reminder_status!='' THEN excluded.reminder_status ELSE reminder_status END,
+      last_error=excluded.last_error, updated_at=excluded.updated_at`)
+    .bind(Number(row.client_id),Number(row.id),String(row.updated_at||''),String(fields.workflow_instance_id||''),
+      String(fields.workflow_status||''),String(fields.calendar_status||''),String(fields.reminder_status||''),
+      String(fields.last_error||'').slice(0,1000),now).run();
+}
+async function hcRecordAutomationError(env,job,error){
+  const row={client_id:Number(job.client_id)||0,id:Number(job.appointment_id)||0,updated_at:String(job.appointment_version||'')};
+  const field=job.type==='calendar_sync'?{calendar_status:'failed'}:job.type==='appointment_message'?{reminder_status:'failed'}:{workflow_status:'failed'};
+  await hcUpsertAutomationState(env,row,{...field,last_error:String(error?.message||error).slice(0,1000)}).catch(()=>{});
+}
+async function hcDispatchJobs(env,jobs){
+  if(!jobs.length) return;
+  if(env.HEALTHCARE_JOBS){
+    if(jobs.length===1) await env.HEALTHCARE_JOBS.send(jobs[0]);
+    else await env.HEALTHCARE_JOBS.sendBatch(jobs.map(body=>({body})));
+    return;
+  }
+  // Local/backward-compatible fallback. Production gets the Queue binding from wrangler.toml;
+  // this path keeps appointment CRUD usable during local tests or a staggered deployment.
+  for(const job of jobs) await hcProcessQueueJob(env,job);
+}
+async function hcSendMetaAppointmentTemplate(c,row,templateName,language,kind){
+  if(!c?.wa_phone_id||!c?.wa_token) throw new Error('WhatsApp Business API is not connected');
+  const phone=String(row.patient_phone||'').replace(/\D/g,'');
+  if(!phone) throw new Error('Appointment has no valid patient phone');
+  const label=kind==='cancellation'?'Cancelled':kind==='confirmation'?'Confirmed':kind==='reminder_24h'?'Reminder — tomorrow':'Reminder — in 2 hours';
+  const values=[row.patient_name||'Patient',row.service_name||'Appointment',row.doctor_name||'Clinic team',row.appointment_date,row.start_time,label];
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+    method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'template',template:{name:templateName,language:{code:language||'en'},components:[{type:'body',parameters:values.map(text=>({type:'text',text:String(text)}))}]}})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data?.error?.message||`WhatsApp template HTTP ${r.status}`);
+}
+function hcAppointmentMessage(row,kind){
+  const when=`${row.appointment_date} at ${row.start_time}`;
+  const detail=[row.service_name,row.doctor_name&&`with ${row.doctor_name}`].filter(Boolean).join(' ');
+  if(kind==='cancellation') return `Your appointment${detail?' for '+detail:''} on ${when} has been cancelled. Contact the clinic if you would like another slot.`;
+  if(kind==='reminder_24h') return `Reminder: your appointment${detail?' for '+detail:''} is tomorrow, ${when}. Reply CONFIRM, RESCHEDULE or CANCEL.`;
+  if(kind==='reminder_2h') return `Reminder: your appointment${detail?' for '+detail:''} is in about 2 hours, at ${row.start_time}. Reply RESCHEDULE or CANCEL if you cannot attend.`;
+  return `Your appointment${detail?' for '+detail:''} is ${row.status==='confirmed'?'confirmed':'received'} for ${when}. Reply RESCHEDULE or CANCEL if needed.`;
+}
+async function hcSendAppointmentNotification(env,job){
+  const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+  if(!row) return;
+  if(String(row.updated_at)!==String(job.appointment_version)) return; // stale workflow/job
+  if(job.kind!=='cancellation'&&['cancelled','completed','no_show'].includes(row.status)) return;
+  const now=new Date().toISOString();
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_appointment_notifications
+    (client_id,appointment_id,appointment_version,kind,status,sent_at,created_at) VALUES (?,?,?,?,?,'',?)`)
+    .bind(Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind),'processing',now).run();
+  if(!claim?.meta?.changes) return;
+  try{
+    const c=await getClientById(env,job.client_id); if(!c) throw new Error('Healthcare client not found');
+    const settings=await hcAutomationSettings(env,job.client_id);
+    const templateName=job.kind==='confirmation'||job.kind==='cancellation'?settings.confirmation_template_name:settings.reminder_template_name;
+    if(templateName) await hcSendMetaAppointmentTemplate(c,row,templateName,settings.template_language,job.kind);
+    else{
+      const convId=await saasFindLeadConversationByPhone(env,job.client_id,row.patient_phone);
+      if(!convId) throw new Error('No Chatwoot conversation and no approved WhatsApp template configured');
+      if(!await engineSendChatwootReply(env,c,job.client_id,convId,hcAppointmentMessage(row,job.kind))) throw new Error('Chatwoot did not accept the appointment message');
+    }
+    await env.DB.prepare(`UPDATE healthcare_appointment_notifications SET status='sent',sent_at=? WHERE client_id=? AND appointment_id=? AND appointment_version=? AND kind=?`)
+      .bind(new Date().toISOString(),Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind)).run();
+    await hcUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
+  }catch(error){
+    await env.DB.prepare(`DELETE FROM healthcare_appointment_notifications WHERE client_id=? AND appointment_id=? AND appointment_version=? AND kind=?`)
+      .bind(Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind)).run();
+    throw error;
+  }
+}
+async function hcStartAppointmentWorkflow(env,job){
+  const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+  if(!row||String(row.updated_at)!==String(job.appointment_version)||['cancelled','completed','no_show'].includes(row.status)) return;
+  if(!env.HEALTHCARE_APPOINTMENT_WORKFLOW) throw new Error('Healthcare Appointment Workflow binding is not configured');
+  const previous=await hcAutomationState(env,job.client_id,job.appointment_id);
+  const instanceId=hcWorkflowInstanceId(row);
+  if(previous?.workflow_instance_id&&previous.workflow_instance_id!==instanceId){
+    try{ const old=await env.HEALTHCARE_APPOINTMENT_WORKFLOW.get(previous.workflow_instance_id); await old.terminate(); }catch(e){}
+  }
+  const settings=await hcAutomationSettings(env,job.client_id), c=await getClientById(env,job.client_id);
+  const appointmentAt=hcAppointmentUtcMs(row.appointment_date,row.start_time,hcClientTimezone(c));
+  if(!Number.isFinite(appointmentAt)) throw new Error('Appointment date/time is invalid');
+  try{
+    await env.HEALTHCARE_APPOINTMENT_WORKFLOW.create({id:instanceId,params:{
+      client_id:Number(row.client_id),appointment_id:Number(row.id),appointment_version:String(row.updated_at),
+      appointment_at_ms:appointmentAt,workflow_started_at_ms:Date.now(),
+      reminder_24h_enabled:settings.reminder_24h_enabled!==0,reminder_2h_enabled:settings.reminder_2h_enabled!==0
+    }});
+  }catch(error){
+    if(!/already|exist|used/i.test(String(error?.message||error))) throw error;
+  }
+  await hcUpsertAutomationState(env,row,{workflow_instance_id:instanceId,workflow_status:'running',reminder_status:'scheduled',last_error:''});
+}
+async function hcTerminateAppointmentWorkflow(env,job){
+  const state=await hcAutomationState(env,job.client_id,job.appointment_id);
+  if(state?.workflow_instance_id&&env.HEALTHCARE_APPOINTMENT_WORKFLOW){
+    try{ const instance=await env.HEALTHCARE_APPOINTMENT_WORKFLOW.get(state.workflow_instance_id); await instance.terminate(); }catch(e){}
+  }
+  await hcUpsertAutomationState(env,{client_id:job.client_id,id:job.appointment_id,updated_at:job.appointment_version},{workflow_status:'terminated',reminder_status:'cancelled',last_error:''});
+}
+export async function hcProcessQueueJob(env,job){
+  if(!job||!job.type) throw new Error('Healthcare queue job type is required');
+  if(job.type==='workflow_start') return hcStartAppointmentWorkflow(env,job);
+  if(job.type==='workflow_terminate') return hcTerminateAppointmentWorkflow(env,job);
+  if(job.type==='appointment_message') return hcSendAppointmentNotification(env,job);
+  if(job.type==='calendar_sync'){
+    const c=await getClientById(env,job.client_id); if(!c) throw new Error('Healthcare client not found');
+    if(job.action==='delete'){
+      if(job.gcal_event_id&&c.gcal_refresh_token&&c.gcal_calendar_id) await hcDeleteGoogleEventStrict(env,c,job.gcal_event_id);
+      return;
+    }
+    const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+    if(!row||String(row.updated_at)!==String(job.appointment_version)) return;
+    const eventId=await hcSyncAppointmentToGoogle(env,c,row,['cancelled','completed','no_show'].includes(row.status)?'delete':'upsert');
+    if(eventId!==row.gcal_event_id) await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=? AND client_id=?`).bind(eventId,row.id,row.client_id).run();
+    await hcUpsertAutomationState(env,row,{calendar_status:c.gcal_refresh_token&&c.gcal_calendar_id?'synced':'not_connected',last_error:''});
+    return;
+  }
+  throw new Error(`Unknown Healthcare queue job: ${job.type}`);
+}
+async function hcRecordDeadLetter(env,message){
+  const job=message.body||{}, state=await hcAutomationState(env,job.client_id,job.appointment_id).catch(()=>null);
+  await env.DB.prepare(`INSERT INTO healthcare_queue_failures (client_id,appointment_id,job_type,failure_reason,attempts,created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(job.client_id)||0,Number(job.appointment_id)||0,String(job.type||'unknown').slice(0,80),String(state?.last_error||'Retries exhausted').slice(0,1000),Number(message.attempts)||0,new Date().toISOString()).run();
+}
+export async function hcHandleQueueBatch(batch,env){
+  await hcEnsureOperationsSchema(env);
+  const isDeadLetter=String(batch.queue||'').endsWith('-dlq');
+  for(const message of batch.messages){
+    try{
+      if(isDeadLetter) await hcRecordDeadLetter(env,message); else await hcProcessQueueJob(env,message.body);
+      message.ack();
+    }catch(error){
+      await hcRecordAutomationError(env,message.body||{},error);
+      message.retry({delaySeconds:Math.min(900,60*(2**Math.max(0,(Number(message.attempts)||1)-1)))});
+    }
+  }
+}
+export class HealthcareAppointmentWorkflow extends WorkflowEntrypointBase{
+  async run(event,step){
+    const p=event.payload||{}, retry={retries:{limit:5,delay:'30 seconds',backoff:'exponential'}};
+    await step.do('queue appointment confirmation',retry,async()=>{
+      await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:'confirmation',client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
+    });
+    const reminders=[
+      {kind:'reminder_24h',enabled:p.reminder_24h_enabled,offset:24*3600000},
+      {kind:'reminder_2h',enabled:p.reminder_2h_enabled,offset:2*3600000}
+    ];
+    for(const reminder of reminders){
+      if(!reminder.enabled) continue;
+      const wakeAt=Number(p.appointment_at_ms)-reminder.offset;
+      if(wakeAt<=Number(p.workflow_started_at_ms)) continue;
+      await step.sleepUntil(`wait for ${reminder.kind}`,new Date(wakeAt));
+      await step.do(`queue ${reminder.kind}`,retry,async()=>{
+        await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:reminder.kind,client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
+      });
+    }
+    await step.do('mark appointment workflow complete',retry,async()=>{
+      await this.env.DB.prepare(`UPDATE healthcare_appointment_automation SET workflow_status='complete',updated_at=?
+        WHERE client_id=? AND appointment_id=? AND appointment_version=?`)
+        .bind(new Date().toISOString(),Number(p.client_id),Number(p.appointment_id),String(p.appointment_version)).run();
+    });
+    return {appointment_id:p.appointment_id,status:'reminders_queued'};
+  }
+}
+
+async function hcQueueAppointmentAutomation(env,row,previous,action='upsert'){
+  const base={client_id:Number(row.client_id),appointment_id:Number(row.id),appointment_version:String(row.updated_at)};
+  let jobs=[];
+  if(action==='delete') jobs=[
+    {...base,type:'workflow_terminate'},
+    {...base,type:'calendar_sync',action:'delete',gcal_event_id:row.gcal_event_id||''}
+  ];
+  else if(['cancelled','completed','no_show'].includes(row.status)){
+    jobs=[{...base,type:'workflow_terminate'},{...base,type:'calendar_sync',action:'upsert'}];
+    if(row.status==='cancelled') jobs.push({...base,type:'appointment_message',kind:'cancellation'});
+  }else{
+    // Every saved active appointment receives a fresh versioned Workflow. This intentionally also
+    // covers notes-only edits: updated_at changes on every save, so keeping the old Workflow would
+    // make its versioned reminder jobs stale and silently suppress the reminders.
+    jobs=[{...base,type:'calendar_sync',action:'upsert'},{...base,type:'workflow_start'}];
+  }
+  await hcUpsertAutomationState(env,row,{workflow_status:jobs.some(x=>x.type==='workflow_start')?'queued':'',calendar_status:'queued',reminder_status:jobs.some(x=>x.type==='workflow_start')?'queued':'',last_error:''});
+  try{ await hcDispatchJobs(env,jobs); return {queued:true}; }
+  catch(error){ await hcRecordAutomationError(env,jobs[0]||base,error); await reportOpsError(env,'hcQueueAppointmentAutomation',error,{clientId:row.client_id,appointmentId:row.id}); return {queued:false,error:String(error?.message||error)}; }
 }
 async function handleHcAppointmentsList(request,env){
   const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
@@ -20003,9 +20297,8 @@ async function handleHcAppointmentCreate(request,env){
     throw e;
   }
   let row=await hcAppointmentRow(env,auth.payload.cid,r.meta.last_row_id);
-  const gcal=await hcSyncAppointmentToGoogle(env,auth.c,row,'upsert');
-  if(gcal){await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=?`).bind(gcal,row.id).run();row.gcal_event_id=gcal;}
-  return json(row);
+  const automation=await hcQueueAppointmentAutomation(env,row,null,'upsert');
+  return json({...row,automation});
 }
 async function handleHcAppointmentUpdate(request,env){
   const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
@@ -20024,30 +20317,34 @@ async function handleHcAppointmentUpdate(request,env){
   try{ await env.DB.prepare(`UPDATE healthcare_appointments SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run(); }
   catch(e){ if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409); throw e; }
   let row=await hcAppointmentRow(env,auth.payload.cid,b.id);
-  const gcal=await hcSyncAppointmentToGoogle(env,auth.c,row,'upsert');
-  if(gcal!==row.gcal_event_id){await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=?`).bind(gcal,row.id).run();row.gcal_event_id=gcal;}
-  return json(row);
+  const automation=await hcQueueAppointmentAutomation(env,row,existing,'upsert');
+  return json({...row,automation});
 }
 async function handleHcAppointmentDelete(request,env){
   const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
   const b=await request.json().catch(()=>({})), row=await hcAppointmentRow(env,auth.payload.cid,b.id);
   if(!row) return json({error:'Not found'},404);
-  await hcSyncAppointmentToGoogle(env,auth.c,row,'delete');
+  await hcQueueAppointmentAutomation(env,row,row,'delete');
   await env.DB.prepare(`DELETE FROM healthcare_appointments WHERE id=? AND client_id=?`).bind(Number(b.id),Number(auth.payload.cid)).run();
   return json({ok:true});
 }
 async function handleHcAnalytics(request,env){
   const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
   const cid=Number(auth.payload.cid), today=new Date().toISOString().slice(0,10);
-  const [services,doctors,todayCount,pending,confirmed,insurance]=await Promise.all([
+  const [services,doctors,todayCount,pending,confirmed,insurance,automationActive,automationFailed]=await Promise.all([
     env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_services WHERE client_id=? AND status='active'`).bind(cid).first(),
     env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_doctors WHERE client_id=? AND status='active'`).bind(cid).first(),
     env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND appointment_date=?`).bind(cid,today).first(),
     env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='requested'`).bind(cid).first(),
     env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='confirmed'`).bind(cid).first(),
-    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_insurance WHERE client_id=? AND status='active'`).bind(cid).first()
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_insurance WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointment_automation WHERE client_id=? AND workflow_status IN ('queued','running')`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_queue_failures WHERE client_id=?`).bind(cid).first()
   ]);
-  return json({services:services?.n||0,doctors:doctors?.n||0,today:todayCount?.n||0,pending:pending?.n||0,confirmed:confirmed?.n||0,insurance:insurance?.n||0,gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
+  return json({services:services?.n||0,doctors:doctors?.n||0,today:todayCount?.n||0,pending:pending?.n||0,confirmed:confirmed?.n||0,insurance:insurance?.n||0,
+    automation_active:automationActive?.n||0,automation_failed:automationFailed?.n||0,
+    queue_configured:!!env.HEALTHCARE_JOBS,workflow_configured:!!env.HEALTHCARE_APPOINTMENT_WORKFLOW,
+    gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
@@ -20908,6 +21205,13 @@ export default {
     const headers=new Headers(res.headers);
     Object.entries(cors).forEach(([k,v])=>headers.set(k,v));
     return new Response(res.body, {status:res.status, headers});
+  },
+
+  // The primary Healthcare queue retries each message independently. Its configured dead-letter
+  // queue is consumed by this same handler and persisted to healthcare_queue_failures, giving the
+  // clinic a durable failure record instead of letting exhausted jobs disappear after retention.
+  async queue(batch,env,ctx){
+    ctx.waitUntil(hcHandleQueueBatch(batch,env));
   },
 
   // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Four schedules share this one entry
