@@ -33,7 +33,59 @@ import {
   pmTaskDueUtcMs,
   pmHandleQueueBatch,
   ProjectTaskWorkflow,
+  engineParseInstagramEvents,
+  engineSendInstagramReply,
+  subscribeInstagramWebhooks,
+  verifyWebhookSignature,
 } from './worker.js';
+
+describe('Instagram messaging reliability', () => {
+  test('parses every actionable event in a webhook batch and ignores echoes', () => {
+    const events=engineParseInstagramEvents({id:'business-1',messaging:[
+      {sender:{id:'customer-1'},recipient:{id:'business-1'},message:{mid:'m1',text:'Hello'}},
+      {sender:{id:'business-1'},recipient:{id:'customer-1'},message:{mid:'m2',text:'echo',is_echo:true}},
+      {sender:{id:'customer-1'},recipient:{id:'business-1'},postback:{mid:'m3',title:'Book now',payload:'BOOK'}},
+    ]});
+    assert.deepEqual(events.map(e=>[e.mid,e.text,e.recipientId]),[['m1','Hello','business-1'],['m3','Book now','business-1']]);
+  });
+
+  test('preserves image, voice and story-reply content for the Chats timeline', () => {
+    const events=engineParseInstagramEvents({id:'business-1',messaging:[
+      {sender:{id:'c1'},message:{mid:'i1',attachments:[{type:'image',payload:{url:'https://cdn.example/image.jpg'}}]}},
+      {sender:{id:'c1'},message:{mid:'a1',attachments:[{type:'audio',payload:{url:'https://cdn.example/audio.mp4'}}]}},
+      {sender:{id:'c1'},message:{mid:'s1',text:'How much?',reply_to:{story:{url:'https://cdn.example/story.jpg'}}}},
+    ]});
+    assert.equal(events[0].userMedia.url,'https://cdn.example/image.jpg');
+    assert.equal(events[1].userAttachment.kind,'voice');
+    assert.equal(events[2].text,'How much?');
+    assert.equal(events[2].mediaUrl,'https://cdn.example/story.jpg');
+  });
+
+  test('validates Meta webhook signatures with the Instagram app secret', async () => {
+    const secret='instagram-secret', body='{"object":"instagram"}';
+    const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+    const bytes=new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(body)));
+    const signature='sha256='+[...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+    assert.equal(await verifyWebhookSignature(secret,body,signature),true);
+    const wrong=signature.slice(0,7)+(signature[7]==='0'?'1':'0')+signature.slice(8);
+    assert.equal(await verifyWebhookSignature(secret,body,wrong),false);
+  });
+
+  test('subscribes connected accounts to the required messaging webhook fields', async t => {
+    let captured;
+    t.mock.method(global,'fetch',async (url,opts)=>{ captured={url,opts}; return new Response('{"success":true}',{status:200}); });
+    await subscribeInstagramWebhooks('1789','token');
+    assert.match(captured.url,/\/v24\.0\/1789\/subscribed_apps$/);
+    const body=new URLSearchParams(captured.opts.body);
+    assert.ok(body.get('subscribed_fields').split(',').includes('messages'));
+    assert.equal(captured.opts.headers.Authorization,'Bearer token');
+  });
+
+  test('reports Graph API rejection as non-delivery', async t => {
+    t.mock.method(global,'fetch',async ()=>new Response('{"error":{"message":"expired token"}}',{status:400,headers:{'Content-Type':'application/json'}}));
+    assert.equal(await engineSendInstagramReply({}, {ig_id:'business-1',ig_access_token:'bad'}, 'customer-1', 'Hi'),false);
+  });
+});
 
 describe('Healthcare verified-data routing', () => {
   test('normalizes natural patient wording without losing Unicode text', () => {

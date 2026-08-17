@@ -4939,10 +4939,9 @@ webhook itself, sends replies straight through the Graph API, and conversations 
 same Leads table). Reuses the engine's classify/route/reply pipeline
 (`engineClassifyIntent`/`engineRouteFlow`/`engineCallLlm`) unchanged — confirmed channel-agnostic
 — but is deliberately leaner than `handleEngineWebhook`: only the qualify/FAQ/objection/human/drop
-routes are implemented. The ecommerce order-link automation, hospitality/category media sends and
-booking-signal auto-send that WhatsApp also gets are **not** replicated here — this is a
-text-only, core-conversation channel for now, not full parity with every WhatsApp
-business-vertical feature.
+routes are implemented. Incoming text, image, voice, video/file attachments, story replies and
+postbacks are preserved in Chats. The ecommerce order-link automation, hospitality/category media
+sends and booking-signal auto-send that WhatsApp also gets are **not** replicated here.
 
 **Uses "Instagram API with Instagram Login"**, not the Facebook-Login-for-Business/Page-linked
 variant — a deliberately separate app credential pair from `META_APP_ID`/`META_APP_SECRET`
@@ -4968,8 +4967,10 @@ as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` p
 5. Copy that use case's **Instagram app ID** / **Instagram app secret** (shown at the top of its
    setup page — distinct from the main app's own ID/secret) → Worker secrets `META_IG_APP_ID` /
    `META_IG_APP_SECRET`.
-6. Nothing else to create by hand — connecting (below) auto-provisions every NocoDB column it
-   needs.
+6. Nothing else to create by hand — connecting auto-provisions every NocoDB column it needs and
+   calls `/{ig_user_id}/subscribed_apps` for `messages`, `messaging_postbacks`,
+   `message_reactions`, and `messaging_seen`. Settings → Integrations shows live token/subscription
+   health and its **Repair & recheck** action re-subscribes an already-connected account.
 
 **Before submitting for App Review** (only needed once you want *other clients'* Instagram
 accounts to connect — any account you've added as a tester works right now without review):
@@ -4995,6 +4996,14 @@ NocoDB's Meta API the moment you connect (`ensureClientColumns()` in `worker.js`
 token is refreshed daily by `runInstagramTokenRefreshForAllClients` (piggybacked on the existing
 2am cron tick) — Meta's tokens expire 60 days after issue if never refreshed, so this has to run
 on an ongoing basis, not just at connect time.
+
+Inbound webhook POSTs require Meta's `X-Hub-Signature-256` signed with `META_IG_APP_SECRET` and
+are acknowledged immediately with `ctx.waitUntil`; processing failures therefore do not cause
+Meta retry storms. All events in every batch are processed. A valid inbound DM is always saved to
+Chats even when the global engine, this client's engine, Bot Auto-Reply, or the AI provider is
+disabled; those settings suppress only the automated outbound reply. `ig_webhook_debug` stores
+only `received:<timestamp>` for the matched client and never stores message content or another
+client's payload.
 
 **Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
 (one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an

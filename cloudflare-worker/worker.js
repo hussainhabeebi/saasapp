@@ -1001,7 +1001,8 @@ async function handleInstagramSend(request, env){
   const lead=await leadR.json().catch(()=>({}));
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
   if(!lead.IgId) return json({error:'This lead has no linked Instagram conversation.'}, 400);
-  await engineSendInstagramReply(env, c, lead.IgId, text);
+  const sent=await engineSendInstagramReply(env, c, lead.IgId, text);
+  if(!sent) return json({error:'Instagram rejected the message. Check the connection health and try again.'}, 502);
   return json({ok:true});
 }
 
@@ -3771,6 +3772,51 @@ async function handleChannelsWhatsappConnect(request, env){
 // missing it on their existing token; auto-posting for them fails with Instagram's own
 // "permission denied" until they disconnect and reconnect once from Settings → Integrations.
 const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_content_publish';
+const META_IG_GRAPH_VERSION='v24.0';
+const META_IG_WEBHOOK_FIELDS=['messages','messaging_postbacks','message_reactions','messaging_seen'];
+
+function instagramGraphError(data, fallback){
+  return data?.error?.message||data?.error_message||fallback;
+}
+
+export async function subscribeInstagramWebhooks(igId, accessToken){
+  const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(igId)}/subscribed_apps`, {
+    method:'POST', headers:{Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({subscribed_fields:META_IG_WEBHOOK_FIELDS.join(',')})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.success===false) throw new Error(instagramGraphError(data, `Instagram webhook subscription failed (HTTP ${r.status})`));
+  return data;
+}
+
+async function getInstagramHealth(c){
+  const base={connected:!!(c?.ig_id&&c?.ig_access_token), token_valid:false, messages_subscribed:false, subscribed_fields:[], username:c?.ig_username||'', last_webhook_at:''};
+  if(!base.connected) return base;
+  const [profileR, subscriptionR]=await Promise.all([
+    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}?fields=id,username`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}}),
+    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}})
+  ]);
+  const profile=await profileR.json().catch(()=>({}));
+  const subscriptions=await subscriptionR.json().catch(()=>({}));
+  const rows=Array.isArray(subscriptions?.data)?subscriptions.data:[];
+  const fields=[...new Set(rows.flatMap(row=>Array.isArray(row.subscribed_fields)?row.subscribed_fields:[]))];
+  const marker=String(c.ig_webhook_debug||'');
+  return {...base, token_valid:profileR.ok&&!!profile.id, messages_subscribed:subscriptionR.ok&&fields.includes('messages'), subscribed_fields:fields,
+    username:profile.username||base.username, last_webhook_at:marker.startsWith('received:')?marker.slice(9):'',
+    error:profileR.ok?(subscriptionR.ok?'':instagramGraphError(subscriptions, `Subscription check failed (HTTP ${subscriptionR.status})`)):instagramGraphError(profile, `Token check failed (HTTP ${profileR.status})`)};
+}
+
+async function handleInstagramHealth(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(request.method==='POST'&&c.ig_id&&c.ig_access_token){
+    try{ await subscribeInstagramWebhooks(c.ig_id, c.ig_access_token); }
+    catch(e){ return json({...await getInstagramHealth(c), error:e.message}, 502); }
+  }
+  return json(await getInstagramHealth(c));
+}
 
 async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
@@ -3828,10 +3874,13 @@ async function handleInstagramOauthCallback(request, env){
   if(!longTokenR.ok||!longTokenData.access_token) return fail('Failed to obtain a long-lived Instagram token: '+(longTokenData?.error?.message||('HTTP '+longTokenR.status)));
   const ig_access_token=longTokenData.access_token;
 
-  const profileR=await fetch(`https://graph.instagram.com/v21.0/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
+  const profileR=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
   const profileData=await profileR.json().catch(()=>({}));
+  if(!profileR.ok) return fail('Instagram profile verification failed: '+instagramGraphError(profileData, `HTTP ${profileR.status}`));
+  try{ await subscribeInstagramWebhooks(ig_id, ig_access_token); }
+  catch(e){ return fail(e.message+' — please check the Instagram webhook product configuration and try again.'); }
 
-  await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at']);
+  await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at','ig_webhook_debug']);
   // Verified, not the plain patchClientFields — this writes to columns ensureClientColumns may
   // have JUST created a moment ago in this same request, which is exactly the NocoDB
   // schema-cache-lag race ncPatchVerified exists for (see its own comment): a client's very first
@@ -3845,7 +3894,11 @@ async function handleInstagramOauthCallback(request, env){
 async function handleInstagramDisconnect(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
+  const c=await getClientById(env,payload.cid);
+  if(c?.ig_id&&c?.ig_access_token){
+    await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`,{method:'DELETE',headers:{Authorization:`Bearer ${c.ig_access_token}`}}).catch(()=>{});
+  }
+  await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:'', ig_webhook_debug:''});
   return json({ok:true});
 }
 
@@ -8953,16 +9006,28 @@ function engineChatwootPayloadSkipReason(body){
 // same {convId, phone, name, text, mediaType, mediaUrl} shape engineParseChatwootPayload does —
 // convId is always null (no Chatwoot conversation) and phone is always '' (Instagram has no phone
 // number, only an IGSID) so the rest of the pipeline doesn't need to know which channel this came
-// from. Text-only for v1 (confirmed scope) — no attachment branch, unlike the WhatsApp parser
-// above; an image/voice DM is simply ignored rather than mis-handled as a WhatsApp-shaped media
-// reply this channel doesn't support (yet).
-function engineParseInstagramPayload(entry){
-  const messaging=(entry?.messaging||[])[0];
-  if(!messaging || messaging.message?.is_echo) return null; // is_echo: our own sent message looped back
-  const igId=messaging.sender?.id;
-  const text=(messaging.message?.text||'').trim();
-  if(!igId || !text) return null;
-  return {convId:null, igId, phone:'', name:'', text, mediaType:'text', mediaUrl:''};
+// from. Every actionable event is normalized independently so batched DMs, postbacks, images,
+// voice notes, videos/files and story replies reach the unified Chats history.
+export function engineParseInstagramEvents(entry){
+  return (entry?.messaging||[]).map(messaging=>{
+    if(!messaging||messaging.message?.is_echo) return null;
+    const igId=messaging.sender?.id;
+    if(!igId) return null;
+    const message=messaging.message||{};
+    const attachment=(message.attachments||[])[0];
+    const attachmentType=String(attachment?.type||'').toLowerCase();
+    const mediaUrl=attachment?.payload?.url||message.reply_to?.story?.url||'';
+    const postbackText=messaging.postback?.title||messaging.postback?.payload||'';
+    const typedText=String(message.text||postbackText).trim();
+    const label=attachmentType==='image'?'[Instagram image]':attachmentType==='audio'?'[Instagram voice message]':attachmentType==='video'?'[Instagram video]':attachment?'[Instagram attachment]':message.reply_to?.story?'[Instagram story reply]':'';
+    const text=typedText||label;
+    if(!text) return null; // seen/reaction events are subscribed for health but do not create chat turns
+    const mediaType=attachmentType==='audio'?'voice':attachmentType||'text';
+    return {convId:null, igId:String(igId), recipientId:String(messaging.recipient?.id||entry.id||''), phone:'', name:'', text,
+      mediaType, mediaUrl, mid:message.mid||messaging.postback?.mid||'',
+      userMedia:(attachmentType==='image'||(!attachment&&message.reply_to?.story))&&mediaUrl?{type:'image',url:mediaUrl}:null,
+      userAttachment:attachmentType&&attachmentType!=='image'&&mediaUrl?{kind:attachmentType==='audio'?'voice':attachmentType,url:mediaUrl,name:label.replace(/[\[\]]/g,'')}:null};
+  }).filter(Boolean);
 }
 
 // Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
@@ -8985,7 +9050,7 @@ export function engineTextSimilarity(a, b){
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
 // clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
 // a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
-// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramPayload/
+// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramEvents/
 // handleInstagramWebhook) key this same lookup off a different column (IgId) instead of Phone —
 // every existing call site passes 3 args, so this stays exactly 'Phone' (the default) for them.
 async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
@@ -10581,12 +10646,16 @@ function engineBytesToB64(bytes){ let s=''; const CH=0x8000; for(let i=0;i<bytes
 // Verifies X-Hub-Signature-256 the same way Meta signs every Graph API webhook (hex HMAC-SHA256
 // over the raw body, prefixed 'sha256=') — this endpoint is called directly by Meta, not through
 // requireSession, so this signature is the ONLY auth on it.
-async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
-  if(!sigHeader || !env.META_APP_SECRET) return false;
-  const expected='sha256='+await hmacSha256Hex(env.META_APP_SECRET, rawBody);
+export async function verifyWebhookSignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const expected='sha256='+await hmacSha256Hex(secret, rawBody);
   if(expected.length!==sigHeader.length) return false;
   let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
   return diff===0;
+}
+
+async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
+  return verifyWebhookSignature(env.META_APP_SECRET, rawBody, sigHeader);
 }
 
 // One-time setup, called from Settings when a client turns Native Forms on (or hits "Sync"):
@@ -10849,8 +10918,8 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   }
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
-  // Instagram DM (channel==='instagram') never goes through Chatwoot at all — no voice/image
-  // branches (confirmed text-only v1 scope), straight to the Graph API.
+  // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
+  // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
   // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). This is the
@@ -10870,14 +10939,20 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
 // Graph API using the account's own long-lived token (see handleInstagramOauthCallback), not a
 // WhatsApp send at all. Used both by engineDeliverReply (bot replies) and /instagram/send (a
 // human agent's manual reply from the Chats page).
-async function engineSendInstagramReply(env, c, igRecipientId, text){
-  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return;
+export async function engineSendInstagramReply(env, c, igRecipientId, text){
+  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return false;
   // graph.instagram.com, not graph.facebook.com — "Instagram API with Instagram Login" sends
   // through its own API host, matching the account-scoped token from handleInstagramOauthCallback.
-  await fetch(`https://graph.instagram.com/v21.0/${c.ig_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
-  }).catch(()=>{});
+  try{
+    const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${c.ig_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
+    });
+    if(r.ok) return true;
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'engineSendInstagramReply', new Error(instagramGraphError(data, `Instagram Graph HTTP ${r.status}`)));
+  }catch(e){ await reportOpsError(env, 'engineSendInstagramReply', e); }
+  return false;
 }
 
 async function engineSendHandoverLabel(c, convId){
@@ -11075,7 +11150,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   const isHuman=routing.route==='human';
 
   const history=(state.history||[]).slice();
-  if(userText) history.push({role:'user', content:userText});
+  if(userText) history.push({role:'user', content:routing.historyUserText||userText,
+    ...(routing.userMedia?{media:routing.userMedia}:{}),
+    ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
   // options — only present on turns that actually offered the customer tappable choices via
   // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
   // category/product picker — both gated on quick_reply_buttons_enabled above). media — only
@@ -11102,7 +11179,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // rep has no reason to keep checking.
   if(userText) body.ConvResolved='No';
   // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
-  // see engineParseInstagramPayload/handleInstagramWebhook.
+  // see engineParseInstagramEvents/handleInstagramWebhook.
   if(state.igId) body.IgId=state.igId;
   if(messageId) body.LastProcessedMessageId=messageId;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
@@ -12240,152 +12317,116 @@ async function handleInstagramWebhookVerify(request, env){
   return json({error:'Verification failed'}, 403);
 }
 
-async function handleInstagramWebhook(request, env){
-  // Diagnostic detail (results array below) returned directly in the HTTP response rather than
-  // relying on console.log — wrangler tail in at least one real deployment wasn't surfacing
-  // console.log output at all (logs:[] on every event, including pre-existing routes known to be
-  // working), so this makes the endpoint self-diagnosing over curl/the Test button regardless of
-  // whether log capture is working. Meta itself ignores the response body, so this is free to be
-  // as detailed as useful.
-  const results=[];
-  if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
-  const body=await request.json().catch(()=>({}));
-  if(body.object!=='instagram') return json({ok:true, skipped:'not-instagram'});
-
-  // TEMPORARY debug aid — neither wrangler tail nor a direct curl test has been reachable while
-  // diagnosing why real DMs weren't showing up in Chats, so this writes the exact raw payload Meta
-  // sends into NocoDB (ig_webhook_debug on CLIENTS), readable directly with no log tooling
-  // involved at all. Best-effort, every ig-connected client (there's only one right now) — remove
-  // once the underlying issue is found; not meant to ship long-term.
-  try{
-    await ensureClientColumns(env, ['ig_webhook_debug']);
-    let page=1;
-    while(true){
-      const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
-      const data=await r.json().catch(()=>({}));
-      const rows=data?.list||[];
-      if(!rows.length) break;
-      for(const row of rows){
-        if(row.ig_access_token) await patchClientFields(env, row.Id, {ig_webhook_debug: new Date().toISOString()+' :: '+JSON.stringify(body).slice(0,2000)}).catch(()=>{});
-      }
-      if(rows.length<200) break;
-      page++;
-    }
-  }catch(e){}
-
-  for(const entry of (body.entry||[])){
-    try{
-      const parsed=engineParseInstagramPayload(entry);
-      if(!parsed){ results.push({skipped:'not-actionable (echo, missing text, or missing sender)', entry}); continue; }
-      const recipientId=entry.messaging?.[0]?.recipient?.id||entry.id;
-      const c=await findClientByField(env, 'ig_id', recipientId);
-      if(!c){ results.push({skipped:'no client found for ig_id', recipientId}); continue; }
-      if(c.active==='No'){ results.push({skipped:'client inactive', clientId:c.Id}); continue; }
-      if(c.engine_disabled==='Yes'){ results.push({skipped:'engine_disabled for client', clientId:c.Id}); continue; }
-      if(!env.GEMINI_API_KEY && !c.openrouter_key){ results.push({skipped:'no AI provider configured', clientId:c.Id}); continue; }
-      const clientId=String(c.Id);
-
-      // Same fast D1 dedup gate handleEngineWebhook uses for WhatsApp redeliveries, reusing the
-      // same table — a webhook redelivery here is exactly as possible as it is for Chatwoot's.
-      const mid=entry.messaging?.[0]?.message?.mid||'';
-      if(mid){
-        try{
-          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
-            .bind(Number(clientId), mid, new Date().toISOString()).run();
-          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery', clientId, mid}); continue; }
-        }catch(e){}
-      }
-
-      await ensureLeadsColumns(env, ['IgId','Channel']);
-      const state=await engineGetLeadState(env, clientId, parsed.igId, 'IgId');
-      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
-      if(state.leadOptOut==='Yes'){ results.push({skipped:'opted-out', clientId}); continue; }
-
-      const userText=parsed.text;
-      const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
-      const routing=engineRouteFlow(c, state, userText, cls);
-      // Same proactive visibility as handleEngineWebhook's own call site — see its comment.
-      if(routing.loopDetected){
-        await reportOpsError(env, 'Anti-loop escalation — bot got stuck repeating itself, handed off to a human (Instagram)', new Error(`client ${clientId} (${c.client_name||'unnamed'}), stage ${state.stage||'new'}`));
-      }
-      const replyLang=routing.customerLanguage||c.language||'en';
-      const deliverOpts={channel:'instagram', igRecipientId:parsed.igId, langCode:replyLang};
-      const isNewLead=!state.leadId;
-      let sentText=null;
-
-      if(routing.route==='human'){
-        sentText=await engineLocalizeReply(env, c, routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.', replyLang);
-        routing.reply=sentText;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='drop'){
-        // no reply
-      }else if(routing.route==='qualify'){
-        const qualQuestions=engineParseJsonField(c.qual_questions, []);
-        const firstQ=engineQualQuestionText(qualQuestions[0]);
-        routing.next='qual_0';
-        sentText=isNewLead
-          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
-          : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
-        routing.reply=sentText;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='qualify_next'){
-        sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
-        routing.reply=sentText;
-        if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
-        const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-        // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
-        // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
-        // it never shows up as a literal line in the DM, even though it's never turned into buttons.
-        reply=engineExtractReplyOptions(reply).text;
-        routing.reply=reply; sentText=reply;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='objection'){
-        const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-        const reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-        routing.reply=reply; sentText=reply;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }
-
-      const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
-      const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
-      if(newSummary) leadBody.ConvSummary=newSummary;
-      const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
-      if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
-        await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
-      }
-      if(resolvedLeadId){
-        await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'instagram', at:new Date().toISOString()});
-      }
-      // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
-      // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
-      // ensureLeadsColumns moments ago in this same request. Only relevant for the very first
-      // Instagram lead ever created on a given NocoDB base (every later message reuses columns
-      // that already exist), so this is scoped to isNewLead rather than paid on every message.
-      if(isNewLead && resolvedLeadId){
-        for(let attempt=1; attempt<=3; attempt++){
-          const checkR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
-          const checkD=await checkR.json().catch(()=>({}));
-          if(String(checkD?.IgId||'')===String(leadBody.IgId||'') && String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
-          if(attempt<3){
-            await new Promise(res=>setTimeout(res, 900*attempt));
-            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:resolvedLeadId, IgId:leadBody.IgId, Channel:leadBody.Channel}});
-          }
-        }
-      }
-      await engineLogAnalytics(env, {
-        ClientId:clientId, ClientName:c.client_name||'', Phone:'', Intent:routing.intent||'', Route:routing.route||'',
-        Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:0, IsError:false, ErrorMsg:'',
-        Timestamp:new Date().toISOString()
-      });
-      results.push({ok:true, clientId, leadId:resolvedLeadId, route:routing.route, sent:!!sentText});
-    }catch(e){
-      await reportOpsError(env, 'handleInstagramWebhook', e);
-      results.push({error:e.message});
+async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
+  const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+  if(newSummary) leadBody.ConvSummary=newSummary;
+  const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
+  // Verify those identity fields before considering the first inbound turn durable.
+  if(isNewLead&&resolvedLeadId){
+    for(let attempt=1;attempt<=3;attempt++){
+      const checkR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
+      const checkD=await checkR.json().catch(()=>({}));
+      if(String(checkD?.IgId||'')===String(leadBody.IgId||'')&&String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
+      if(attempt===3){ await reportOpsError(env,'persistInstagramTurn',new Error('Instagram lead identity fields were not saved after schema repair')); break; }
+      await new Promise(resolve=>setTimeout(resolve,900*attempt));
+      await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:resolvedLeadId,IgId:leadBody.IgId,Channel:leadBody.Channel}});
     }
   }
-  return json({ok:true, results});
+  if(resolvedLeadId&&leadBody.Stage&&leadBody.Stage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+  if(resolvedLeadId) await engineBroadcastUpdate(env, clientId, {type:'message',lead_id:resolvedLeadId,channel:'instagram',at:new Date().toISOString()});
+  return {resolvedLeadId,leadBody};
+}
+
+export async function processInstagramWebhookBody(env, body){
+  const results=[];
+  if(body.object!=='instagram') return [{skipped:'not-instagram'}];
+  for(const entry of (body.entry||[])) for(const parsed of engineParseInstagramEvents(entry)){
+    let recovery=null;
+    try{
+      const c=await findClientByField(env, 'ig_id', parsed.recipientId||entry.id);
+      if(!c){ results.push({skipped:'no client found for ig_id',recipientId:parsed.recipientId||entry.id}); continue; }
+      if(c.active==='No'){ results.push({skipped:'client inactive',clientId:c.Id}); continue; }
+      const clientId=String(c.Id), mid=parsed.mid;
+      if(mid&&env.DB){
+        try{
+          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`).bind(Number(clientId),mid,new Date().toISOString()).run();
+          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery',clientId,mid}); continue; }
+        }catch(e){}
+      }
+      await ensureClientColumns(env,['ig_webhook_debug']);
+      await patchClientFields(env,c.Id,{ig_webhook_debug:'received:'+new Date().toISOString()}).catch(()=>{});
+      await ensureLeadsColumns(env,['IgId','Channel']);
+      const state=await engineGetLeadState(env,clientId,parsed.igId,'IgId');
+      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
+      const isNewLead=!state.leadId;
+      recovery={c,clientId,state,isNewLead};
+      const inboxReason=env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
+      if(inboxReason){
+        const routing={route:'inbox_only',next:state.stage||'new',customerLanguage:c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+        const saved=await persistInstagramTurn(env,c,clientId,state,routing,parsed.text,mid,isNewLead);
+        results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:'inbox_only',reason:inboxReason,sent:false});
+        continue;
+      }
+      let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
+      if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
+      const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
+      const routing=engineRouteFlow(c,state,userText,cls);
+      Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
+      if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
+      const replyLang=routing.customerLanguage||c.language||'en';
+      const deliverOpts={channel:'instagram',igRecipientId:parsed.igId,langCode:replyLang};
+      let sentText=null, deliveryFailed=false;
+      const deliver=async text=>{
+        if(!text) return true;
+        const ok=await engineDeliverReply(env,c,clientId,null,text,deliverOpts);
+        if(!ok){ deliveryFailed=true; routing.reply=null; sentText=null; }
+        return ok;
+      };
+      if(routing.route==='human'){
+        sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify'){
+        const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify_next'){
+        sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
+      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1])).text;
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='objection'){
+        sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
+      }
+      const saved=await persistInstagramTurn(env,c,clientId,state,routing,userText,mid,isNewLead);
+      recovery=null; // the inbound turn is durable; later analytics errors must not append it twice
+      await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:'',Intent:routing.intent||'',Route:routing.route||'',Stage:state.stage||'',NextStage:saved.leadBody.Stage||'',ResponseMs:0,IsError:deliveryFailed,ErrorMsg:deliveryFailed?'Instagram delivery failed':'',Timestamp:new Date().toISOString()});
+      results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:routing.route,sent:!!sentText,deliveryFailed});
+    }catch(e){
+      await reportOpsError(env,'processInstagramWebhookBody',e);
+      let recovered=false;
+      if(recovery){
+        try{
+          const routing={route:'inbox_only',next:recovery.state.stage||'new',customerLanguage:recovery.c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+          await persistInstagramTurn(env,recovery.c,recovery.clientId,recovery.state,routing,parsed.text,parsed.mid,recovery.isNewLead);
+          recovered=true;
+        }catch(saveError){ await reportOpsError(env,'processInstagramWebhookBody inbound recovery',saveError); }
+      }
+      results.push({error:e.message,inboundSaved:recovered});
+    }
+  }
+  return results;
+}
+
+async function handleInstagramWebhook(request, env, ctx){
+  const rawBody=await request.text();
+  if(!await verifyWebhookSignature(env.META_IG_APP_SECRET,rawBody,request.headers.get('X-Hub-Signature-256'))) return new Response('Invalid signature',{status:432});
+  let body; try{ body=JSON.parse(rawBody); }catch(e){ return json({error:'Invalid JSON'},400); }
+  if(body.object!=='instagram') return json({ok:true,skipped:'not-instagram'});
+  const work=processInstagramWebhookBody(env,body);
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true,accepted:true}); }
+  return json({ok:true,results:await work});
 }
 
 // 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
@@ -20935,7 +20976,7 @@ async function engineBroadcastUpdate(env, clientId, eventObj){
 }
 
 export default {
-  async fetch(request, env){
+  async fetch(request, env, ctx){
     const url=new URL(request.url);
     const origin=request.headers.get('Origin');
     const cors=corsHeaders(origin, env);
@@ -21115,9 +21156,10 @@ export default {
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
+      else if(url.pathname==='/ig/health' && (request.method==='GET'||request.method==='POST')){ res=await handleInstagramHealth(request, env); }
       else if(url.pathname==='/ig/deauthorize' && request.method==='POST'){ res=await handleInstagramDeauthorize(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='GET'){ res=await handleInstagramWebhookVerify(request, env); }
-      else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env); }
+      else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env, ctx); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSend(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
