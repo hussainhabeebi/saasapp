@@ -391,7 +391,7 @@ function safeClient(rec){
    lets the /nocodb passthrough enforce per-user restrictions (e.g. travel
    lead-category access) server-side instead of only in the browser. ── */
 async function signSession(env, clientId, email=''){
-  const payload={cid:String(clientId), email:String(email||'').toLowerCase(), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
+  const payload={cid:String(clientId), email:String(email||'').trim().toLowerCase(), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
   const body=btoa(JSON.stringify(payload));
   const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SIGNING_KEY), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
   const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
@@ -640,6 +640,12 @@ async function handleAutoProvision(request, env){
 async function handleSessionMe(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  // Sessions issued before per-user access control was added contain only {cid,exp}. Renewing
+  // one of those forever leaves the browser believing it is the owner (from its local email
+  // cache) while protected writes correctly see no signed identity and return 403. There is no
+  // safe way to infer which teammate held an old shared-client token, so fail closed once and let
+  // the existing Authentik login/silent-login flow mint a new email-bound token.
+  if(!String(payload.email||'').trim()) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
   const rec=await getClientById(env, payload.cid);
   if(!rec||!rec.Id) return json({error:'Client not found'}, 404);
   // Sliding-window refresh — this route is called on every app load/resume (dashboard.html's
@@ -648,8 +654,9 @@ async function handleSessionMe(request, env){
   // per-user email forward from the token being refreshed (verifySession already validated it),
   // so a sliding refresh never silently drops a teammate back to "unknown user" and loses their
   // per-user restrictions.
-  const session_token=await signSession(env, rec.Id, payload.email||'');
-  return json({client_id:String(rec.Id), client:safeClient(rec), session_token});
+  const email=String(payload.email).trim().toLowerCase();
+  const session_token=await signSession(env, rec.Id, email);
+  return json({client_id:String(rec.Id), client:safeClient(rec), session_token, email});
 }
 
 /* ── Team user creation (User Management) — provisions a real Authentik account (username +
@@ -922,16 +929,20 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
   if(touchesProtectedField || (isLeadsList && payload.email)){
     const c=await getClientById(env, payload.cid);
-    const ownerEmail=(c?.authentik_email||'').toLowerCase();
-    const isOwner=!!payload.email && payload.email===ownerEmail;
+    const ownerEmail=String(c?.authentik_email||'').trim().toLowerCase();
+    const requesterEmail=String(payload.email||'').trim().toLowerCase();
+    const isOwner=!!requesterEmail && requesterEmail===ownerEmail;
 
+    if(touchesProtectedField && !requesterEmail){
+      return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
+    }
     if(touchesProtectedField && !isOwner){
       return json({error:'Only the account owner can change user permissions.'}, 403);
     }
 
     if(isLeadsList && !isOwner && c?.industry==='travel'){
       let perms={}; try{ perms=JSON.parse(c.team_permissions||'{}'); }catch(e){}
-      const mine=perms[payload.email];
+      const mine=perms[requesterEmail];
       // Array (even empty) means restricted; anything else (missing/null) means unrestricted —
       // matching dashboard.html's saveUserProfilePermissions. An empty array is a deliberate
       // "sees no leads at all" (every box unchecked in the profile modal), not "no restriction",
@@ -7639,6 +7650,54 @@ async function ecomListCategories(env, clientId){
   return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
+async function ecomListActiveProducts(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list||[];
+}
+
+// Build one WhatsApp menu containing both database categories and database products. WhatsApp
+// permits at most 10 rows, so keep up to three product recommendations visible and use the other
+// rows for category navigation. "Recommended" here means the first active rows in the merchant's
+// Products-table order; there is no AI ranking or inferred substitute.
+export function ecomAvailableCatalogueItems(categories, products, limit=10){
+  const cap=Math.max(1,Math.min(10,Number(limit)||10));
+  const categoryValues=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const productItems=ecomProductChoiceItems(products);
+  if(!categoryValues.length) return productItems.slice(0,cap);
+  if(!productItems.length) return categoryValues.slice(0,cap).map(category=>({title:category,value:category}));
+  const productSlots=Math.min(3,productItems.length,Math.max(1,cap-1));
+  const categorySlots=cap-productSlots;
+  const items=categoryValues.slice(0,categorySlots).map(category=>({title:category,value:category}));
+  const usedValues=new Set(items.map(item=>ecomNormalizeCatalogueText(item.value)));
+  for(const item of productItems){
+    if(items.length>=cap) break;
+    const key=ecomNormalizeCatalogueText(item.value);
+    if(usedValues.has(key)) continue;
+    usedValues.add(key);
+    items.push(item);
+  }
+  return items;
+}
+
+// Zero-hallucination catalogue fallback. The labels and returned values are copied verbatim from
+// active Ecom Product rows. Categories and recommended active products share the same message.
+async function ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang){
+  const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+  const items=ecomAvailableCatalogueItems(categories,products);
+  if(items.length){
+    const sourceText=categories.length
+      ? 'Please choose an available category or one of these recommended products:'
+      : 'Please choose from these recommended available products:';
+    const text=await engineLocalizeReply(env, c, sourceText, replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, text, items);
+    return {sent:true,text,quickReplies};
+  }
+  return {sent:false,text:'',quickReplies:null};
+}
+
 // Broad but deterministic Ecom catalogue lookup. It searches only values physically stored on
 // this client's Product records; it never asks an LLM to invent a candidate. This catches natural
 // wording such as "sofa", "3 seater sofa", a brand, variant, material/concern from Description,
@@ -7656,6 +7715,28 @@ function ecomNormalizeCatalogueText(value){
 function ecomCatalogueQueryTokens(value){
   const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','price','cost','buy','order','available','availability','product','item']);
   return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
+}
+
+// Resolve a short customer reply against the exact category values stored in Ecom → Products.
+// This is deliberately deterministic: tapping a category button such as "Mattress" must browse
+// that category, not be sent to the product/SKU resolver and rejected as an unknown product. A
+// single meaningful word may also match one longer category ("mattress" -> "Premium Mattress"),
+// but only when that match is unique; ambiguous words never select a category by guesswork.
+export function ecomMatchProductCategory(message, categories){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const cleaned=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const exact=cleaned.find(category=>ecomNormalizeCatalogueText(category)===query);
+  if(exact) return exact;
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(tokens.length!==1) return null;
+  const token=tokens[0];
+  const matches=cleaned.filter(category=>ecomNormalizeCatalogueText(category).split(' ').includes(token));
+  return matches.length===1?matches[0]:null;
+}
+
+async function ecomFindMatchedProductCategory(env, clientId, message){
+  return ecomMatchProductCategory(message, await ecomListCategories(env, clientId));
 }
 
 // Healthcare's verified equivalent of the Ecom Products matcher. It only searches active rows
@@ -11722,6 +11803,19 @@ async function handleEngineWebhook(request, env, secret){
     if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && (env.GEMINI_API_KEY || c.openrouter_key) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+      // Category buttons are populated from this same Products data, so recognize their returned
+      // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
+      // can be treated as a product name, fail exact product resolution, and incorrectly trigger
+      // the zero-hallucination SKU fallback instead of showing the category's verified choices.
+      const matchedCategory=await ecomFindMatchedProductCategory(env, clientId, userText);
+      if(matchedCategory){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=matchedCategory;
+        detection.sku=undefined;
+        detection.productName=undefined;
+        detection.brand=undefined;
+      }
       let broadMatches=null;
       // Deterministic safety net for broad catalogue language the intent model may classify as a
       // generic FAQ ("sofa") or may return as a non-exact product name ("3 seater sofa").
@@ -11736,6 +11830,16 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, ecomProductChoiceItems(broadMatches));
           orderHandledInline=true;
+        }else{
+          // No verified match: never let the general FAQ model guess a product or suggest a
+          // made-up "closest" alternative. Show only active database categories/products.
+          const available=await ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang);
+          if(available.sent){
+            sentText=available.text;
+            routing.reply=available.text;
+            routing.quickReplies=available.quickReplies;
+            orderHandledInline=true;
+          }
         }
       }
       if(detection.signal && !orderHandledInline){
@@ -11955,10 +12059,18 @@ async function handleEngineWebhook(request, env, secret){
         // Products-table row must never fall through to the general FAQ model, which has no
         // verified product record and could improvise availability or specifications.
         if(!orderHandledInline && detection.mode==='enquiry' && !product){
-          sentText=await engineLocalizeReply(env, c, "I couldn't verify that exact product in our current catalogue. Please share the exact product name or SKU, and I'll check the verified product details.", replyLang);
-          routing.reply=sentText;
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
-          orderHandledInline=true;
+          const available=await ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang);
+          if(available.sent){
+            sentText=available.text;
+            routing.reply=available.text;
+            routing.quickReplies=available.quickReplies;
+            orderHandledInline=true;
+          }else{
+            sentText=await engineLocalizeReply(env, c, 'There are no active products available in our catalogue right now.', replyLang);
+            routing.reply=sentText;
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+            orderHandledInline=true;
+          }
         }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only

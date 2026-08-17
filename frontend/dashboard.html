@@ -4507,10 +4507,11 @@ async function resumeSession(id){
     // Sliding-window refresh — handleSessionMe reissues a fresh, full-length token on every
     // successful call, so an account opened at least once a month never hits the TTL ceiling.
     if(data.session_token){ sessionToken=data.session_token; localStorage.setItem('lv_session',sessionToken); }
+    if(data.email){ myEmail=String(data.email).trim().toLowerCase(); localStorage.setItem('lv_me_email',myEmail); }
     if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
     showApp();
   }catch(e){
-    localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); sessionToken='';
+    localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email'); sessionToken=''; myEmail='';
     hideResumingGate();
   }
 }
@@ -8003,8 +8004,8 @@ function renderTeamMembers(){
    part that actually matters security-wise — which leads a travel teammate's queries can return —
    server-side in the Worker's /nocodb passthrough). */
 function isAccountOwner(email){
-  const e=(email===undefined?myEmail:email)||'';
-  return !!e && e.toLowerCase()===String(clientRecord?.authentik_email||'').toLowerCase();
+  const e=String((email===undefined?myEmail:email)||'').trim().toLowerCase();
+  return !!e && e===String(clientRecord?.authentik_email||'').trim().toLowerCase();
 }
 function getTeamPermissions(){
   try{ return JSON.parse(clientRecord.team_permissions||'{}'); }catch(e){ return {}; }
@@ -9516,7 +9517,16 @@ async function freshConvHistory(lead){
 }
 async function ncPatch(url,body){
   const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
-  if(!r.ok)throw new Error('HTTP '+r.status);
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    if(data.code==='SESSION_IDENTITY_REQUIRED'){
+      localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email');
+      sessionToken=''; myEmail='';
+      setTimeout(()=>window.location.reload(),900);
+      throw new Error('Your secure session needs a one-time refresh. Reopening login…');
+    }
+    throw new Error(data.error||'HTTP '+r.status);
+  }
   return r.json();
 }
 async function ncPost(url,body){
