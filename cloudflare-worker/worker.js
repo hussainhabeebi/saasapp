@@ -6596,6 +6596,7 @@ async function handleEcomCreate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok && data?.Id) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
+  if(kind==='products' && r.ok && data?.Id) await engineMemoryIndexProduct(env, clientId, data);
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6615,6 +6616,10 @@ async function handleEcomUpdate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
+  // Merged with `existing` (fetched above, before the PATCH) rather than just `data` — NocoDB's
+  // PATCH response isn't reliably the full row, and re-embedding needs every field regardless of
+  // which ones this particular save actually touched.
+  if(kind==='products' && r.ok) await engineMemoryIndexProduct(env, clientId, {...existing, ...fields, Id:id});
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6744,6 +6749,7 @@ async function handleEcomCategoryCreate(request, env){
   if(!clientId||!name) return json({error:'client_id and name required'},400);
   const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`)
     .bind(Number(clientId), name, new Date().toISOString()).run();
+  await engineMemoryIndexCategory(env, clientId, {id:r.meta.last_row_id, name});
   return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
 }
 async function findEcomCategory(env, id){
@@ -6770,6 +6776,9 @@ async function handleEcomCategoryUpdate(request, env){
   if(!sets.length) return json({ok:true});
   vals.push(id);
   await env.DB.prepare(`UPDATE ecom_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  // Only re-embeds when the name itself changed — a photo-only save has no effect on the embedded
+  // text, so re-indexing then would just burn an embedding call for no reason.
+  if(body.name!==undefined) await engineMemoryIndexCategory(env, clientId, {id, name:String(body.name).trim().slice(0,80)});
   return json({ok:true});
 }
 async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
@@ -8652,59 +8661,11 @@ function ecomStyleAttributeLines(product){
   return lines;
 }
 
-function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink, state={}){
-  const lang=replyLang||c.language||'en';
-  const lines=[`Name: ${product.name}`];
-  if(product.sku) lines.push(`SKU: ${product.sku}`);
-  if(product.description) lines.push(`Description (exact Product record text): ${product.description}`);
-  if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
-  if(product.color) lines.push(`Color: ${product.color}`);
-  if(product.size) lines.push(`Size options: ${product.size}`);
-  if(product.category) lines.push(`Category: ${product.category}`);
-  if(product.brand) lines.push(`Brand: ${product.brand}`);
-  if(product.variant) lines.push(`Variant: ${product.variant}`);
-  if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
-  lines.push(...ecomStyleAttributeLines(product));
-  const stockNum=Number(product.stock);
-  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
-  // main_prompt goes first, same as engineBuildFaqSystemPrompt/engineBuildObjectionSystemPrompt/
-  // engineBuildFirstTouchIntro — this was the one reply-generating prompt in the engine that left
-  // it out entirely, so a client's own persona/tone/closing-style instructions had zero effect on
-  // product-enquiry replies specifically, no matter what they wrote in Main Prompt. Every hardcoded
-  // instruction below is phrased the same "Default X — follow this unless the persona/instructions
-  // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
-  let sys=c.main_prompt||'';
-  sys+=`\n\nYou are replying to a customer asking about one specific product. The verified Ecom Product record below is the ONLY source of truth for every product fact:\n${lines.join('\n')}`;
-  sys+='\n\nZERO-HALLUCINATION PRODUCT LOCK: Use only values explicitly present in the verified Product record above. Never use general knowledge, assumptions, likely specifications, the product name, the client persona, or previous conversation to invent or infer a product fact, benefit, compatibility, availability, variant, price, stock, warranty, ingredient, result, or URL. The client main prompt controls tone only; it is not product data. If the customer asks for a detail that is missing, say that detail is not available and offer human confirmation. Never claim that an unavailable field exists.';
-  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
-  // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
-  // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
-  // same reply from scratch every single turn with zero memory of anything already said — real
-  // observed failure: the bot described a product in full, asked "would you like to know about the
-  // pack options and pricing?", the customer said "yes", and got the identical opening description
-  // sent right back instead of an answer to what it had just itself asked.
-  const enquiryHistory=state.activeHistory||[];
-  sys+=engineSummaryBlock(state);
-  if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nDo not repeat something you already said in Recent Conversation above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
-  sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
-  // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
-  // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
-  // until real order intent (see the routing comment at this prompt's call site), but a client can
-  // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
-  // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
-  // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
-  if(checkoutLink){
-    sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
-  }else{
-    // No link was configured for this product — explicit guardrail against the model inventing
-    // one anyway (e.g. a plausible-looking store/product URL guessed from the product name), which
-    // is exactly the kind of hallucinated link a customer could click and land nowhere real.
-    sys+='\n\nNo order/checkout link is available for this product right now — never invent, guess, or make up a URL of any kind (not a store link, not a product link, nothing built from the product name). If the customer asks for a link, tell them you\'ll have the team follow up, or ask what they\'d like to order so it can be arranged — do not output anything that looks like a URL.';
-  }
-  sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
-  return sys;
-}
+// engineBuildProductEnquirySystemPrompt (LLM-generated product-enquiry replies) was removed here —
+// its one call site (the `detection.mode==='enquiry' && product` branch in handleEngineWebhook) now
+// renders directly from the verified Ecom Product record instead (see that branch's own comment):
+// a stronger anti-hallucination guarantee than any prompt instruction, since there's no LLM call in
+// that path left to hallucinate in the first place.
 
 // `product` is optional (a general FAQ/objection reply has no specific product in view) — when
 // given, its own shopify_product_url/product_link win over the client-wide external_store_link,
@@ -9688,6 +9649,7 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
   const activeHistory=history.length>20?history.slice(-20):history;
   let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  let customerFacts=[]; try{ customerFacts=JSON.parse(lead?.['Customer Facts']||'[]'); }catch(e){}
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
@@ -9702,7 +9664,10 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
     // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
     // before that cap. Empty for the vast majority of leads (most conversations never cross 40
     // turns at all), so this stays a no-op read for them.
-    summary:lead?.ConvSummary||''
+    summary:lead?.ConvSummary||'',
+    // See engineMaybeExtractCustomerFacts — durable preferences/constraints, kept up to date every
+    // few turns from early in the conversation, not gated behind the 40-turn ConvSummary threshold.
+    customerFacts
   };
 }
 
@@ -10325,7 +10290,10 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   // to resolve against (see the instruction below), and a returning customer's earlier stated
   // preferences should still be visible several turns later, not just the last couple of messages.
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
+  sys+=engineMemoryBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
   // package catalog), the model didn't just say it would connect the customer with support — it
@@ -10381,6 +10349,11 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     // actually support. Only the whole product's `stock` count is real; there is no per-size
     // number to check.
     sys+=' A product\'s size field lists every size it is made in — never claim a size listed there is out of stock or unavailable; only the product\'s overall stock count (available vs. not) is real data you have. If stock is 0 or the product genuinely is not in the catalog, say that honestly instead of guessing.';
+    // General companion to the size/stock and link guardrails above — those close two specific
+    // observed failures, this closes the broader pattern: any product attribute not literally in
+    // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
+    // certification) is not real data, even if it sounds plausible for the category.
+    sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
@@ -10452,6 +10425,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
@@ -10516,25 +10490,55 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   return 'One moment 🙏';
 }
 
-// Deterministic backstop against a reply-generating LLM call regenerating essentially the same
-// message it just sent — engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7
-// threshold) can only ever catch this AFTER it's already happened twice (it looks backward at
-// history at the START of a turn, so it has no way to stop THIS turn's fresh reply from becoming
-// the second half of that very pair) — and the "don't repeat yourself" instructions already
-// baked into engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt are a request, not
-// a guarantee (real recurring observed failure, Wellness Virtue: a "yes"/"ok" to "would you like
-// to know more?" kept getting essentially the same pitch/question back despite that instruction
-// already being in the prompt). This checks the actual generated text before it goes out and
-// forces exactly one retry, with an explicit instruction quoting the rejected duplicate, only
-// when the model has demonstrably disregarded the softer version already in systemPrompt — fully
-// fail-open: any retry failure just falls back to the original (possibly-repetitive) reply rather
-// than blocking the customer's message.
-async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg){
+// Finds a URL in `replyText` that isn't one of the real links the model was actually handed this
+// turn — `allowedLinks` (e.g. the enquiry/checkout link, a product's own configured links, the
+// client's catalog order link). Real observed failure (Wellness Virtue): asked to share a
+// product's checkout link when none was actually configured on that product, the model invented a
+// plausible-looking Shopify collection URL out of thin air ("https://thevirtues.in/collections/
+// glutathione-collection") instead of saying it didn't have one — despite engineBuildFaqSystemPrompt
+// already carrying an explicit "never invent a link" instruction, the same class of "instruction
+// isn't a guarantee" gap engineCallLlmAvoidingRepeat exists to close for repeats. A returned URL
+// counts as allowed if it exactly matches, or is a prefix/suffix match of, one of allowedLinks —
+// tolerates trailing slashes/punctuation without requiring byte-exact equality.
+export function engineFindHallucinatedLink(replyText, allowedLinks){
+  const urls=(replyText.match(/https?:\/\/[^\s)\]]+/g))||[];
+  for(const raw of urls){
+    const url=raw.replace(/[.,;:!?]+$/,'');
+    if(!allowedLinks.some(a=>a && (url===a || url.startsWith(a) || a.startsWith(url)))) return url;
+  }
+  return null;
+}
+
+// Deterministic backstop against a reply-generating LLM call (a) regenerating essentially the same
+// message it just sent, and (b) inventing a link that was never actually given to it — both are
+// cases where a "don't do this" instruction already baked into
+// engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt is a request, not a guarantee.
+// engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7 threshold) can only ever catch
+// case (a) AFTER it's already happened twice (it looks backward at history at the START of a
+// turn, so it has no way to stop THIS turn's fresh reply from becoming the second half of that
+// very pair) — nothing existed to catch (b) at all. This checks the actual generated text before
+// it goes out and forces at most one retry, with an explicit instruction addressing whichever
+// problem(s) were found, quoting the specific rejected text. `allowedLinks` is optional — omit it
+// (or pass undefined) to skip the link check entirely, same behavior as before this existed;
+// pass `[]` explicitly to mean "no link is legitimate at all this turn." Fully fail-open: if the
+// retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
+// knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks){
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
-  if(!lastBotMsg || !reply || engineTextSimilarity(reply, lastBotMsg)<0.7) return reply;
-  const retryPrompt=systemPrompt+`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
-  const retryReply=await engineCallLlm(env, c, retryPrompt, userText, maxTokens);
-  return retryReply || reply;
+  if(!reply) return reply;
+  const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
+  const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
+  if(!isRepeat && !badLink) return reply;
+  let correction='';
+  if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
+  if(badLink){
+    const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
+    correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
+  }
+  const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
+  if(!retryReply) return reply;
+  const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
+  return retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
 }
 
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
@@ -10544,6 +10548,173 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
 // reads in actual chronological order: summary of what came before, then the recent turns.
 function engineSummaryBlock(state){
   return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
+}
+
+// See engineMaybeExtractCustomerFacts — same "shared by every reply-generating prompt" pairing as
+// engineSummaryBlock above, placed right alongside it everywhere it's used.
+function engineCustomerFactsBlock(state){
+  return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+}
+
+// ── Semantic memory (Tier 2 — SETUP.md "Semantic memory") ──────────────────────────────────────
+// Distinct from Customer Facts above (a short curated list a human would just remember) — this is
+// for pulling back SPECIFIC old context (a particular past exchange, a particular product) by
+// actual relevance to what's being asked right now, via embeddings + Cloudflare Vectorize
+// (MEMORY_INDEX binding, wrangler.toml — requires a one-time `wrangler vectorize create` plus two
+// `create-metadata-index` calls before this does anything useful; see wrangler.toml's own comment
+// and SETUP.md). Every function below checks env.MEMORY_INDEX exists and fails open (returns
+// null/[]/no-op, never throws) so a deployment that hasn't run that setup, or any live API hiccup,
+// degrades straight back to Tier 1 behavior instead of breaking a reply. This is the first use of
+// Vectorize/embeddings anywhere in this file — treat the exact request/response shapes below as
+// worth re-verifying against Cloudflare's current docs before trusting in production, same caveat
+// already flagged for the WhatsApp Business Profile Resumable Upload API elsewhere in this file.
+//
+// Embeddings via the Gemini Generative Language API's text-embedding-004 model (768 dimensions) —
+// reuses the same shared GEMINI_API_KEY already configured for the intent classifier/voice
+// transcription, no separate credential to provision.
+async function engineEmbedText(env, text){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
+    });
+    const data=await r.json().catch(()=>({}));
+    return Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+  }catch(e){ return null; }
+}
+
+// Embeds `text` and stores it — D1 (migrations/0056_memory_chunks.sql) for the full text, Vectorize
+// for the vector — under a fresh UUID shared between both. Every indexing function below
+// (product/category/conversation) funnels through this one write path.
+async function engineMemoryUpsert(env, {clientId, leadId, kind, refId, text}){
+  if(!env.MEMORY_INDEX || !env.DB || !text) return;
+  try{
+    const values=await engineEmbedText(env, text);
+    if(!values) return;
+    const id=crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO memory_chunks (id, client_id, lead_id, kind, ref_id, text, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(id, Number(clientId), leadId?Number(leadId):null, kind, refId?String(refId):null, String(text).slice(0,2000), new Date().toISOString()).run();
+    await env.MEMORY_INDEX.upsert([{id, values, metadata:{client_id:Number(clientId), kind}}]);
+  }catch(e){ console.error('[engineMemoryUpsert] failed', kind, e.message); }
+}
+
+// Called from handleEcomCreate/handleEcomUpdate (kind==='products') right after a successful save
+// — see those call sites.
+async function engineMemoryIndexProduct(env, clientId, product){
+  if(!product?.name) return;
+  const parts=[product.name];
+  if(product.category) parts.push('Category: '+product.category);
+  if(product.description) parts.push(product.description);
+  parts.push(...ecomStyleAttributeLines(product));
+  await engineMemoryUpsert(env, {clientId, kind:'product', refId:product.Id||product.id, text:parts.filter(Boolean).join('. ')});
+}
+
+// Called from handleEcomCategoryCreate/handleEcomCategoryUpdate right after a successful save.
+async function engineMemoryIndexCategory(env, clientId, category){
+  if(!category?.name) return;
+  await engineMemoryUpsert(env, {clientId, kind:'category', refId:category.id||category.Id, text:'Category: '+category.name});
+}
+
+// Called alongside engineMaybeSummarizeHistory/engineMaybeExtractCustomerFacts at the lead-upsert
+// step (both WhatsApp and Instagram handlers) — unlike those two, this runs every turn rather than
+// on a cadence, since fine-grained per-exchange recall is the entire point of this tier (a periodic
+// rollup would defeat it).
+async function engineMemoryIndexConversationTurn(env, clientId, leadId, userText, botText){
+  if(!userText && !botText) return;
+  const text=`Customer: ${userText||''}\nBot: ${botText||''}`.trim();
+  await engineMemoryUpsert(env, {clientId, leadId, kind:'conversation', text});
+}
+
+// Retrieves the topK most relevant chunks to `queryText` for this client — 'conversation' results
+// are further filtered to this specific lead (a client-wide product/category chunk is fair game for
+// every customer, but one customer's past messages are not relevant context for a different one).
+// Requires the `client_id` and `kind` metadata indexes to exist (wrangler.toml one-time setup) —
+// without them Vectorize's own `.query()` call throws, caught here and treated as "no results".
+async function engineMemoryRetrieve(env, clientId, leadId, queryText, {kinds=['conversation','product','category'], topK=5}={}){
+  if(!env.MEMORY_INDEX || !env.DB || !queryText) return [];
+  try{
+    const values=await engineEmbedText(env, queryText);
+    if(!values) return [];
+    const scored=[];
+    for(const kind of kinds){
+      const matches=await env.MEMORY_INDEX.query(values, {topK:topK*2, filter:{client_id:Number(clientId), kind}});
+      for(const m of (matches?.matches||[])) scored.push({id:m.id, score:m.score, kind});
+    }
+    if(!scored.length) return [];
+    scored.sort((a,b)=>b.score-a.score);
+    const ids=scored.map(s=>s.id).slice(0, topK*3);
+    if(!ids.length) return [];
+    const placeholders=ids.map(()=>'?').join(',');
+    const {results:rows}=await env.DB.prepare(`SELECT id, lead_id, kind, text FROM memory_chunks WHERE id IN (${placeholders})`).bind(...ids).all();
+    const byId=new Map((rows||[]).map(r=>[r.id, r]));
+    const chunks=[];
+    for(const s of scored){
+      const row=byId.get(s.id);
+      if(!row) continue;
+      if(row.kind==='conversation' && String(row.lead_id)!==String(leadId)) continue;
+      chunks.push({kind:row.kind, text:row.text, score:s.score});
+      if(chunks.length>=topK) break;
+    }
+    return chunks;
+  }catch(e){ console.error('[engineMemoryRetrieve] failed', e.message); return []; }
+}
+
+// Shared by every reply-generating prompt that opts into semantic memory (see state.memoryChunks,
+// set by the caller right before building the system prompt — same pattern as
+// state.customerFacts/state.summary).
+function engineMemoryBlock(state){
+  const chunks=state.memoryChunks;
+  if(!chunks?.length) return '';
+  const byKind={conversation:[], product:[], category:[]};
+  chunks.forEach(c=>{ if(byKind[c.kind]) byKind[c.kind].push(c.text); });
+  const lines=[];
+  if(byKind.conversation.length) lines.push('### Relevant past exchanges with this customer\n'+byKind.conversation.map(t=>'- '+t.replace(/\n/g,' ')).join('\n'));
+  if(byKind.product.length) lines.push('### Possibly relevant products\n'+byKind.product.map(t=>'- '+t).join('\n'));
+  if(byKind.category.length) lines.push('### Possibly relevant categories\n'+byKind.category.map(t=>'- '+t).join('\n'));
+  return lines.length?`\n\n## Semantic Memory (may or may not be relevant — use only what actually applies, ignore the rest)\n${lines.join('\n\n')}`:'';
+}
+
+// Backfills existing catalog items into semantic memory for a client who had products/categories
+// before this feature shipped — indexing otherwise only happens going forward, on create/update.
+// Deliberately NOT run inline during a live customer reply (this Worker's fetch handler has no
+// ctx.waitUntil — see engineMaybeSummarizeHistory's neighboring functions for the same constraint
+// — so anything run inline is fully awaited and would add real latency to whichever customer's
+// message happened to trigger it first); instead piggybacked on the existing daily 2am cron sweep
+// (see the scheduled() handler) alongside runDailyHealthCheckForAllClients and friends. Capped at
+// 60 products / 30 categories per client per run so a huge catalog can't make one cron tick run
+// long; a client above that cap just backfills the rest on the next day's tick (the COUNT(*) check
+// only skips a client once memory_chunks already has ANY product/category rows for them, so this
+// naturally continues rather than silently topping out at the cap forever — see the loop in
+// runMemoryBackfillForAllClients below).
+async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
+  if(!env.MEMORY_INDEX || !env.DB) return;
+  try{
+    const existing=await env.DB.prepare(`SELECT COUNT(*) as n FROM memory_chunks WHERE client_id=? AND kind IN ('product','category')`).bind(Number(clientId)).first();
+    if(existing?.n>0) return;
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=60`);
+      const pd=await pr.json().catch(()=>({}));
+      for(const p of (pd?.list||[])) await engineMemoryIndexProduct(env, clientId, p);
+    }
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? LIMIT 30`).bind(Number(clientId)).all();
+    for(const cat of (categories||[])) await engineMemoryIndexCategory(env, clientId, cat);
+  }catch(e){ console.error('[engineMemoryBackfillCatalogIfNeeded] failed', clientId, e.message); }
+}
+
+// Daily cron entry point (scheduled() handler, "0 2 * * *" tick) — every ecommerce client with an
+// OpenRouter key (a reasonable proxy for "actively using the engine") gets one backfill check.
+async function runMemoryBackfillForAllClients(env){
+  if(!env.MEMORY_INDEX) return;
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const d=await r.json().catch(()=>({}));
+    for(const c of (d?.list||[])){
+      if(!c.openrouter_key) continue;
+      await engineMemoryBackfillCatalogIfNeeded(env, c.Id);
+    }
+  }catch(e){ console.error('[runMemoryBackfillForAllClients] failed', e.message); }
 }
 
 // Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
@@ -10570,6 +10741,36 @@ async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
   // already makes internally.
   await ensureLeadsColumns(env, ['ConvSummary']);
   return summary;
+}
+
+// Durable "what we know about this customer" — distinct from ConvSummary above, which only exists
+// to cover for the 40-turn ConvHistory cap and so never runs on the vast majority of real
+// conversations (most never reach 40 messages). Facts a human rep would just remember — stated
+// preferences (size/color/style/budget), constraints (allergies, must-haves, deal-breakers),
+// preferred language/communication style — are usually said once, early, and are worth recalling
+// from message 5 onward, not just once a conversation has gotten unusually long. Runs every
+// ENGINE_FACTS_EVERY_N_TURNS turns starting almost immediately (see the length<4 floor below, not
+// gated behind the 40-turn ConvSummary threshold), each time re-reading the last 20 messages and
+// merging with whatever was already extracted — so a stated fact survives even after the raw
+// message that stated it ages out of the "Recent Conversation" window, and a later contradiction
+// ("actually I don't want that color anymore") can update/drop it instead of both facts coexisting
+// forever. Persists on the same lead row as ConvSummary/ConvHistory, so it survives a Resolve/
+// Reopen cycle or an opt-out/resub (neither clears ConvHistory or this) — the closest thing this
+// data model has to "the relationship continues even across separate conversation sessions."
+const ENGINE_FACTS_EVERY_N_TURNS=6;
+async function engineMaybeExtractCustomerFacts(env, c, fullHistory, priorFactsJson){
+  if(fullHistory.length<4 || fullHistory.length%ENGINE_FACTS_EVERY_N_TURNS!==0) return null;
+  let priorFacts=[]; try{ priorFacts=JSON.parse(priorFactsJson||'[]'); }catch(e){}
+  const recentSlice=fullHistory.slice(-20);
+  const transcript=recentSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Extract durable facts about this customer from the WhatsApp conversation below — things worth remembering for future replies, not one-off details that only matter for the current message. Examples of what counts: stated preferences (color/size/style/budget), constraints (allergies, must-haves, deal-breakers), preferred language or communication style, anything they explicitly told you to remember. Examples of what does NOT count: "asked about pricing just now", "said hello" — routine turns, not standing facts.${priorFacts.length?` You already know this about them: ${JSON.stringify(priorFacts)} — update or drop any of these the conversation below contradicts, keep the rest, add anything new. Return the full updated list, not just what's new.`:''} Respond with ONLY a JSON array of short fact strings (max 10), e.g. ["Prefers Malayalam","Budget around ₹2000","Has sensitive skin"]. Empty array if nothing durable was said.`;
+  const raw=await engineCallLlm(env, c, system, transcript, 200);
+  let facts=null; try{ facts=JSON.parse(raw); }catch(e){}
+  if(!Array.isArray(facts)) return null;
+  const merged=facts.filter(f=>typeof f==='string' && f.trim()).slice(0,10);
+  if(!merged.length && !priorFacts.length) return null;
+  await ensureLeadsColumns(env, ['Customer Facts']);
+  return JSON.stringify(merged);
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -12638,7 +12839,11 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
-          // product name/description/link stay verbatim and absent facts remain absent.
+          // product name/description/link stay verbatim and absent facts remain absent — a
+          // stronger anti-hallucination guarantee than any prompt instruction or post-hoc check
+          // can give, since there's no LLM call in this branch to hallucinate in the first place
+          // (see engineFindHallucinatedLink/engineCallLlmAvoidingRepeat for the deterministic
+          // backstop still used everywhere else an LLM does generate the reply, e.g. ecom_faq).
           const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
           const productLines=[`*${product.name}*`];
           if(product.description) productLines.push(String(product.description));
@@ -12925,9 +13130,19 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
+      // Product/category recall only makes sense for ecom_faq — other industries have no such
+      // catalog concept indexed into memory_chunks at all, so a query there would just return
+      // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
+      state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
-      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
+      // own catalogOrderLink exactly (same pure function, same args), the one real link this
+      // route's prompt was actually handed via "## Order Link" this turn. undefined (not []) for
+      // every other industry, so the check is skipped there rather than treating a link the model
+      // may legitimately reference from Knowledge Base text as a hallucination.
+      const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -13042,7 +13257,10 @@ async function handleEngineWebhook(request, env, secret){
     leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
+    const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+    if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
@@ -13184,7 +13402,10 @@ async function persistInstagramTurn(env, c, clientId, state, routing, userText, 
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
+  const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+  if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
   // Verify those identity fields before considering the first inbound turn durable.
   if(isNewLead&&resolvedLeadId){
@@ -13256,8 +13477,10 @@ export async function processInstagramWebhookBody(env, body){
       }else if(routing.route==='qualify_next'){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
         const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
-        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1])).text;
+        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='objection'){
         sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
@@ -22553,6 +22776,10 @@ export default {
       // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
       // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
       ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
+      // Semantic memory — one-time-per-client catalog backfill (SETUP.md "Semantic memory"),
+      // piggybacked here rather than the live customer-reply path since this Worker has no
+      // ctx.waitUntil available there — see engineMemoryBackfillCatalogIfNeeded's own comment.
+      ctx.waitUntil(runMemoryBackfillForAllClients(env));
       // Rate limiting (SETUP.md "DDoS protection") — sweep expired per-IP counters so the table
       // doesn't grow unbounded; daily is plenty since rows expire on their own within minutes.
       ctx.waitUntil(cleanupRateLimitCounters(env));
