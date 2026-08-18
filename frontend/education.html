@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Education</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#7C3AED">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F4F1FF;--card:#FFFFFF;--ink:#0C0A1E;--muted:#5B5280;
+  --accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;
+  --line:#E4E0F5;--ls:#C8C0E8;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 1px 0 var(--line)}
+@media(max-width:480px){header{flex-wrap:wrap;height:auto;min-height:56px;padding:8px 14px}}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:16px 18px}
+.stat-val{font-family:var(--disp);font-size:26px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
+.badge.active{background:#D1FAE5;color:#065F46}
+.badge.inactive{background:#FEE2E2;color:#991B1B}
+.badge.pending{background:#FEF3C7;color:#92400E}
+.badge.enrolled{background:#D1FAE5;color:#065F46}
+.badge.completed{background:#DBEAFE;color:#1E3A8A}
+.badge.cancelled{background:#FEE2E2;color:#991B1B}
+select.badge{border:none;cursor:pointer;font-family:inherit;appearance:auto}
+select.badge:focus{outline:2px solid var(--accent);outline-offset:1px}
+.thumb{width:36px;height:36px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+.thumb-empty{background:var(--accent-soft)}
+.seats-input{width:64px;border:1.5px solid var(--line);border-radius:6px;padding:4px 6px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.seats-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-sec{margin-bottom:24px}
+.s-lbl{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);margin-bottom:8px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg);transition:border-color .2s;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+.s-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.save-btn{background:linear-gradient(135deg,#7C3AED,#9F5CF5);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.colmap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:12px}
+.colmap-field label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.03em}
+.colmap-field select,.colmap-field input{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg)}
+.colmap-field select:focus,.colmap-field input:focus{outline:none;border-color:var(--accent);background:#fff}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+tbody tr:hover{background:var(--bg)}
+.row-actions{display:flex;gap:6px}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-grid .s-sec{margin-bottom:0}
+textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
+.cat-media-inline{display:flex;gap:5px}
+.cat-media-slot{width:36px;height:36px;border:1.5px dashed var(--ls);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden;background:var(--bg);font-size:16px;color:var(--muted);flex-shrink:0}
+.cat-media-slot img{width:100%;height:100%;object-fit:cover}
+.cat-media-remove{position:absolute;top:-1px;right:-1px;background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;cursor:pointer;line-height:1;padding:0}
+.cat-name-input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);min-width:160px}
+.cat-name-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Leadvyne<span>.</span></span>
+  <span class="chip">🎓 Education</span>
+  <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+</header>
+
+<div id="tabs">
+  <button class="tab active" data-tab="courses" onclick="showTab('courses')">📚 Courses</button>
+  <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
+  <button class="tab" data-tab="promotions" onclick="showTab('promotions')">🎁 Scholarships</button>
+  <button class="tab" data-tab="stories" onclick="showTab('stories')">🌟 Success Stories</button>
+  <button class="tab" data-tab="enrollments" onclick="showTab('enrollments')">📋 Enrollments</button>
+  <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+</div>
+
+<main>
+<div class="inner">
+
+<!-- COURSES TAB -->
+<div id="tabCourses" class="page active">
+  <div class="stats" id="courseStats">
+    <div class="stat"><div class="stat-val" id="statTotalCourses">—</div><div class="stat-lbl">Total Courses</div></div>
+    <div class="stat"><div class="stat-val" id="statActiveCourses">—</div><div class="stat-lbl">Active</div></div>
+    <div class="stat"><div class="stat-val" id="statCourseCategories">—</div><div class="stat-lbl">Categories</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Courses</div>
+      <div class="card-actions">
+        <input class="search-input" id="courseSearch" type="text" placeholder="🔍 Search courses…" oninput="renderCoursesTable()">
+        <button class="save-btn" onclick="openAddCourseModal()">+ Add Course</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Image</th><th>Name</th><th>Category</th><th>Level</th><th>Duration</th><th>Price</th><th>Seats</th><th>Status</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="coursesTbody">
+          <tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- CATEGORIES TAB -->
+<div id="tabCategories" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Categories</div>
+      <div class="card-actions">
+        <button class="save-btn" onclick="addCategoryRow()">+ Add Category</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">Give a category its own photos — the bot sends them once a student's message names that category (e.g. "tell me about your programming courses"), separate from the brochure/image sent when a specific course is identified. Click a name to edit it; click a photo slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Photos</th><th>Actions</th></tr></thead>
+        <tbody id="categoriesTbody">
+          <tr class="loading-row"><td colspan="3"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SCHOLARSHIPS TAB -->
+<div id="tabPromotions" class="page">
+  <div class="stats" id="promoStats">
+    <div class="stat"><div class="stat-val" id="statTotalPromos">—</div><div class="stat-lbl">Total Scholarships</div></div>
+    <div class="stat"><div class="stat-val" id="statActivePromos">—</div><div class="stat-lbl">Active</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Scholarships &amp; Offers</div>
+      <div class="card-actions">
+        <input class="search-input" id="promoSearch" type="text" placeholder="🔍 Search…" oninput="renderPromotionsTable()">
+        <button class="save-btn" onclick="openAddPromotionModal()">+ Add Scholarship</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">When a student mentions one of these codes — or asks about scholarships/discounts/offers in general — the bot automatically replies with the offer text plus any image, audio note, or video attached to it.</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Code</th><th>Description</th><th>Applicable Courses</th><th>Media</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="promotionsTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SUCCESS STORIES TAB -->
+<div id="tabStories" class="page">
+  <div class="stats" id="storyStats">
+    <div class="stat"><div class="stat-val" id="statTotalStories">—</div><div class="stat-lbl">Total Stories</div></div>
+    <div class="stat"><div class="stat-val" id="statActiveStories">—</div><div class="stat-lbl">Active</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Success Stories</div>
+      <div class="card-actions">
+        <input class="search-input" id="storySearch" type="text" placeholder="🔍 Search…" oninput="renderStoriesTable()">
+        <button class="save-btn" onclick="openAddStoryModal()">+ Add Story</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">The first time a student's chat resolves to one of a success story's applicable courses, the bot shares the student's story plus photo/video right after its normal reply — once per student per course.</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Student</th><th>Story</th><th>Applicable Courses</th><th>Media</th><th>Status</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="storiesTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ENROLLMENTS TAB -->
+<div id="tabEnrollments" class="page">
+  <div class="stats" id="enrollmentStats">
+    <div class="stat"><div class="stat-val" id="statTotalEnrollments">—</div><div class="stat-lbl">Total Enrollments</div></div>
+    <div class="stat"><div class="stat-val" id="statPendingEnrollments">—</div><div class="stat-lbl">Pending</div></div>
+    <div class="stat"><div class="stat-val" id="statEnrolledCount">—</div><div class="stat-lbl">Enrolled</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Enrollments</div>
+      <div class="card-actions">
+        <input class="search-input" id="enrollmentSearch" type="text" placeholder="🔍 Search…" oninput="renderEnrollmentsTable()">
+        <button class="save-btn" onclick="openAddEnrollmentModal()">+ Add Enrollment</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Enrollment #</th><th>Student</th><th>Date</th><th>Course</th><th>Status</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="enrollmentsTbody">
+          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS TAB -->
+<div id="tabSettings" class="page">
+  <div class="card">
+    <div class="card-title">Enrollment Link</div>
+    <div class="s-sec">
+      <span class="s-lbl">Default Enrollment / Application Link</span>
+      <input class="s-input" id="cfgEnrollmentLink" type="url" placeholder="https://yourschool.com/apply or a form link">
+      <div class="s-hint">Sent when a student says they want to enroll. Leave blank if you prefer to collect enrollments in-chat (the bot will gather name, email, and course choice directly in WhatsApp). Per-course enrollment links can be set in the Courses tab and override this default.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveEnrollmentLink()">Save</button>
+      <span class="save-msg" id="enrollmentLinkMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Education Table IDs (NocoDB)</div>
+    <div class="s-sec">
+      <span class="s-lbl">Courses Table ID</span>
+      <input class="s-input" id="cfgCoursesTable" type="text" placeholder="e.g. abc123xyz">
+      <div class="s-hint">NocoDB table ID for your courses catalogue</div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Enrollments Table ID</span>
+      <input class="s-input" id="cfgEnrollmentsTable" type="text" placeholder="e.g. def456uvw">
+      <div class="s-hint">NocoDB table ID for enrollment records</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveTableIds()">Save Table IDs</button>
+      <span class="save-msg" id="tableIdsMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Enrollments Sheet Sync</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Sheet URL (Enrollments)</span>
+      <input class="s-input" id="cfgEnrollmentsSheet" type="url" placeholder="https://docs.google.com/spreadsheets/d/…">
+      <div class="s-hint">Any column headers work — map them to fields below.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn sec" onclick="detectColumns()">🔍 Detect Sheet Columns</button>
+      <span class="save-msg" id="detectMsg"></span>
+    </div>
+    <div class="colmap-grid" id="columnMap"></div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveEnrollmentsSheet()">Save</button>
+      <span class="save-msg" id="sheetMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ADD/EDIT COURSE MODAL -->
+<div class="modal-overlay" id="courseModalOverlay" onclick="if(event.target===this) closeCourseModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="courseModalTitle">Add Course</div>
+    <input type="hidden" id="cmId">
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Name *</span><input class="s-input" id="cmName" type="text"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Short Label (optional)</span>
+        <input class="s-input" id="cmShortLabel" type="text" maxlength="24" placeholder="e.g. Python Basics">
+        <div class="s-hint">Shown on WhatsApp buttons instead of the full name when the bot offers this course as a tappable choice. Leave blank to use the full name.</div>
+      </div>
+      <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="cmCategory"></select></div>
+      <div class="s-sec">
+        <span class="s-lbl">Level</span>
+        <select class="s-input" id="cmLevel">
+          <option value="">— Select —</option>
+          <option value="Beginner">Beginner</option>
+          <option value="Intermediate">Intermediate</option>
+          <option value="Advanced">Advanced</option>
+          <option value="All Levels">All Levels</option>
+        </select>
+      </div>
+      <div class="s-sec"><span class="s-lbl">Duration</span><input class="s-input" id="cmDuration" type="text" placeholder="e.g. 6 weeks, 3 months"></div>
+      <div class="s-sec"><span class="s-lbl">Start Date</span><input class="s-input" id="cmStartDate" type="date"></div>
+      <div class="s-sec"><span class="s-lbl">Price</span><input class="s-input" id="cmPrice" type="number" step="0.01"></div>
+      <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="cmCurrency" type="text" placeholder="INR"></div>
+      <div class="s-sec"><span class="s-lbl">Seats Available</span><input class="s-input" id="cmSeats" type="number" placeholder="Leave blank for unlimited"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="cmStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="s-sec"><span class="s-lbl">Course Image Link</span><input class="s-input" id="cmImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Image Link 2 (optional)</span><input class="s-input" id="cmImage2" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Image Link 3 (optional)</span><input class="s-input" id="cmImage3" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Audio Overview Link</span><input class="s-input" id="cmAudioUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Promo Video Link</span><input class="s-input" id="cmVideoUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Brochure / Syllabus PDF Link</span><input class="s-input" id="cmPdfUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Enrollment Link (optional)</span><input class="s-input" id="cmEnrollmentLink" type="url" placeholder="Overrides the default enrollment link for this course"></div>
+    </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). The course image is sent with the bot's reply; Image 2–3, Audio, Video, and the Brochure PDF are sent right after — all together, once per student per day when they ask about this specific course.</div>
+    <div class="s-sec">
+      <span class="s-lbl">Description</span>
+      <textarea class="s-input" id="cmDescription" rows="3"></textarea>
+    </div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeCourseModal()">Cancel</button>
+      <button class="save-btn" id="courseModalSaveBtn" onclick="submitCourseForm()">Save Course</button>
+      <span class="save-msg" id="courseModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- SCHOLARSHIP MODAL -->
+<div class="modal-overlay" id="promotionModalOverlay" onclick="if(event.target===this) closePromotionModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="promotionModalTitle">Add Scholarship</div>
+    <input type="hidden" id="pmoId">
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Code *</span><input class="s-input" id="pmoCode" type="text" placeholder="e.g. SCHOLAR50" style="text-transform:uppercase"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="pmoStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Description</span>
+      <textarea class="s-input" id="pmoDescription" rows="2" placeholder="e.g. 50% scholarship for early applicants"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Reply Text</span>
+      <textarea class="s-input" id="pmoReplyText" rows="3" placeholder="What the bot says when a student mentions this code or asks about scholarships — e.g. &quot;🎓 Use code SCHOLAR50 to get 50% off! Valid until March 31.&quot;"></textarea>
+      <div class="s-hint">Sent as-is when this scholarship matches. Leave blank to fall back to the description above.</div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Applicable Courses</span>
+      <input class="s-input" id="pmoCourseSearch" type="text" placeholder="🔍 Filter courses…" oninput="renderPmoCourseList()">
+      <div id="pmoCourseList" style="max-height:160px;overflow-y:auto;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:6px;background:var(--bg)"></div>
+      <div class="s-hint">Leave nothing checked to apply this scholarship to all courses.</div>
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="pmoImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Audio Note Link</span><input class="s-input" id="pmoAudioUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="pmoVideoUrl" type="url" placeholder="Google Drive share link"></div>
+    </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Google Drive share links — the bot sends whichever are set right after the reply text.</div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closePromotionModal()">Cancel</button>
+      <button class="save-btn" id="promotionModalSaveBtn" onclick="submitPromotionForm()">Save Scholarship</button>
+      <span class="save-msg" id="promotionModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- SUCCESS STORY MODAL -->
+<div class="modal-overlay" id="storyModalOverlay" onclick="if(event.target===this) closeStoryModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="storyModalTitle">Add Success Story</div>
+    <input type="hidden" id="ssId">
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Student Name</span><input class="s-input" id="ssStudentName" type="text" placeholder="e.g. Rahul M."></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="ssStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Story Text</span>
+      <textarea class="s-input" id="ssText" rows="3" placeholder="e.g. &quot;This course completely changed my career — I landed a job at a top company within 3 months!&quot;"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Applicable Courses</span>
+      <input class="s-input" id="ssCourseSearch" type="text" placeholder="🔍 Filter courses…" oninput="renderSsCourseList()">
+      <div id="ssCourseList" style="max-height:160px;overflow-y:auto;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:6px;background:var(--bg)"></div>
+      <div class="s-hint">Leave nothing checked so this story can be shared for any course.</div>
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Image Link</span><input class="s-input" id="ssImage" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Video Link</span><input class="s-input" id="ssVideoUrl" type="url" placeholder="Google Drive share link"></div>
+    </div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Google Drive share links — the bot sends whichever are set right after the story text, the first time a chat resolves to one of the applicable courses above.</div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeStoryModal()">Cancel</button>
+      <button class="save-btn" id="storyModalSaveBtn" onclick="submitStoryForm()">Save Story</button>
+      <span class="save-msg" id="storyModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ADD ENROLLMENT MODAL -->
+<div class="modal-overlay" id="enrollmentModalOverlay" onclick="if(event.target===this) closeEnrollmentModal()">
+  <div class="modal-card">
+    <div class="modal-title">Add Enrollment</div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Enrollment ID</span><input class="s-input" id="emEnrollmentId" type="text" placeholder="Auto-generated if left blank"></div>
+      <div class="s-sec"><span class="s-lbl">Enrollment Date</span><input class="s-input" id="emEnrollmentDate" type="date"></div>
+      <div class="s-sec"><span class="s-lbl">Student Name</span><input class="s-input" id="emStudentName" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Student Phone *</span><input class="s-input" id="emStudentPhone" type="text"></div>
+      <div class="s-sec"><span class="s-lbl">Student Email</span><input class="s-input" id="emStudentEmail" type="email"></div>
+      <div class="s-sec"><span class="s-lbl">Course</span><input class="s-input" id="emCourse" type="text" placeholder="Course name"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="emStatus">
+          <option value="pending">Pending</option>
+          <option value="enrolled">Enrolled</option>
+          <option value="completed">Completed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div class="s-sec"><span class="s-lbl">Notes</span><textarea class="s-input" id="emNotes" rows="2"></textarea></div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeEnrollmentModal()">Cancel</button>
+      <button class="save-btn" onclick="submitAddEnrollment()">Save Enrollment</button>
+      <span class="save-msg" id="enrollmentModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<!-- CATEGORY PHOTO PROMPT MODAL -->
+<div class="modal-overlay" id="catMediaModalOverlay" onclick="if(event.target===this)closeCatMediaModal()">
+  <div class="modal-card" style="max-width:400px">
+    <div class="modal-title">Set Category Photo</div>
+    <div class="s-sec">
+      <span class="s-lbl">Google Drive Link</span>
+      <input class="s-input" id="catMediaInput" type="url" placeholder="https://drive.google.com/file/d/…">
+      <div class="s-hint">Share the file as "Anyone with the link can view" first.</div>
+    </div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeCatMediaModal()">Cancel</button>
+      <button class="save-btn" onclick="saveCatMedia()">Set Photo</button>
+      <span class="save-msg" id="catMediaMsg"></span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /inner -->
+</main>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params = new URLSearchParams(location.search);
+let clientId = params.get('client') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+let eduTableIds = {};
+let allCourses = [];
+let allCategories = [];
+let allPromotions = [];
+let allStories = [];
+let allEnrollments = [];
+let pmoSelectedCourseIds = new Set();
+let ssSelectedCourseIds = new Set();
+let sheetHeaders = [];
+let columnMap = {};
+// For category photo editing
+let _catMediaRowId = null;
+let _catMediaSlot = null;
+
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+// ── INIT ──────────────────────────────────────────
+async function init() {
+  if (isEmbedded) {
+    const hdr = document.querySelector('header');
+    if (hdr) hdr.style.display = 'none';
+    document.body.style.height = '100%';
+  }
+  if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
+  if (!clientId) return;
+
+  const res = await fetch(`${WORKER_BASE}/edu/client?client_id=${encodeURIComponent(clientId)}`);
+  clientRecord = await res.json();
+  if (clientRecord.error) { alert(clientRecord.error); return; }
+  try { eduTableIds = JSON.parse(clientRecord.edu_table_ids || '{}'); } catch(e) { eduTableIds = {}; }
+
+  if (document.getElementById('cfgCoursesTable'))    document.getElementById('cfgCoursesTable').value    = eduTableIds.courses    || '';
+  if (document.getElementById('cfgEnrollmentsTable')) document.getElementById('cfgEnrollmentsTable').value = eduTableIds.enrollments || '';
+  if (document.getElementById('cfgEnrollmentLink'))  document.getElementById('cfgEnrollmentLink').value  = clientRecord.edu_enrollment_link || '';
+  if (document.getElementById('cfgEnrollmentsSheet')) document.getElementById('cfgEnrollmentsSheet').value = clientRecord.edu_enrollments_sheet || '';
+  try {
+    const cm = JSON.parse(clientRecord.edu_enrollments_column_map || '{}');
+    columnMap = cm.map || {};
+    sheetHeaders = cm.headers || [];
+  } catch(e) {}
+  if (sheetHeaders.length) renderColumnMap(sheetHeaders);
+
+  await Promise.all([loadCourses(), loadCategories(), loadPromotions(), loadStories(), loadEnrollments()]);
+}
+
+// ── TABS ──────────────────────────────────────────
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pg = document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1));
+  if (pg) pg.classList.add('active');
+}
+
+// ── COURSES ──────────────────────────────────────
+async function loadCourses() {
+  if (!eduTableIds.courses) { renderCoursesTable(); return; }
+  const res = await fetch(`${WORKER_BASE}/edu/courses?client_id=${encodeURIComponent(clientId)}&include_inactive=true`);
+  const data = await res.json().catch(() => ({}));
+  allCourses = data.list || [];
+  renderCoursesTable();
+  renderCourseStats();
+  populateCategorySelects();
+}
+
+function renderCourseStats() {
+  const active = allCourses.filter(c => c.status !== 'inactive').length;
+  const cats = new Set(allCourses.map(c => c.category).filter(Boolean)).size;
+  document.getElementById('statTotalCourses').textContent = allCourses.length;
+  document.getElementById('statActiveCourses').textContent = active;
+  document.getElementById('statCourseCategories').textContent = cats;
+}
+
+function renderCoursesTable() {
+  const q = (document.getElementById('courseSearch').value || '').toLowerCase();
+  const rows = allCourses.filter(c => !q || (c.name||'').toLowerCase().includes(q) || (c.category||'').toLowerCase().includes(q));
+  const tbody = document.getElementById('coursesTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">📚</div>No courses yet. Add your first course to get started.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(c => {
+    const imgEl = c.image_url
+      ? `<img class="thumb" src="${esc(resolveThumb(c.image_url))}" onerror="this.className='thumb thumb-empty'">`
+      : `<div class="thumb thumb-empty"></div>`;
+    const mediaIcons = [c.image_url_2||c.image_url_3?'📷':'', c.pdf_url?'📄':'', c.video_url?'🎬':'', c.audio_url?'🎵':''].filter(Boolean).join(' ');
+    const statusClass = c.status === 'inactive' ? 'inactive' : 'active';
+    return `<tr>
+      <td>${imgEl}</td>
+      <td><strong>${esc(c.name)}</strong>${c.short_label?`<br><span style="font-size:11px;color:var(--muted)">${esc(c.short_label)}</span>`:''}</td>
+      <td>${esc(c.category||'—')}</td>
+      <td>${esc(c.level||'—')}</td>
+      <td>${esc(c.duration||'—')}</td>
+      <td>${c.price?`${esc(c.currency||'')} ${c.price}`:'—'}</td>
+      <td><input class="seats-input" type="number" value="${esc(c.seats_available??'')}" placeholder="∞" onchange="updateCourseSeats(${c.Id},this.value)"></td>
+      <td><span class="badge ${statusClass}">${esc(c.status||'active')}</span></td>
+      <td><div class="row-actions">
+        ${mediaIcons?`<span title="Has media: ${mediaIcons}" style="font-size:13px">${mediaIcons}</span>`:''}
+        <button class="icon-btn" onclick="openEditCourseModal(${c.Id})" title="Edit">✏️</button>
+        <button class="icon-btn danger" onclick="deleteCourse(${c.Id})" title="Delete">🗑</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function resolveThumb(url) {
+  if (!url) return '';
+  const m = url.match(/\/d\/([^\/\?]+)/);
+  return m ? `https://drive.google.com/thumbnail?id=${m[1]}&sz=w80` : url;
+}
+
+async function updateCourseSeats(id, val) {
+  const body = { client_id: clientId, Id: id, seats_available: val === '' ? null : Number(val) };
+  await fetch(`${WORKER_BASE}/edu/courses`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+function openAddCourseModal() {
+  document.getElementById('courseModalTitle').textContent = 'Add Course';
+  document.getElementById('cmId').value = '';
+  ['cmName','cmShortLabel','cmDuration','cmImage','cmImage2','cmImage3','cmAudioUrl','cmVideoUrl','cmPdfUrl','cmEnrollmentLink','cmDescription'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  document.getElementById('cmLevel').value = '';
+  document.getElementById('cmStatus').value = 'active';
+  document.getElementById('cmStartDate').value = '';
+  document.getElementById('cmPrice').value = '';
+  document.getElementById('cmCurrency').value = 'INR';
+  document.getElementById('cmSeats').value = '';
+  populateCategorySelect('cmCategory');
+  document.getElementById('courseModalOverlay').classList.add('active');
+}
+
+function openEditCourseModal(id) {
+  const c = allCourses.find(x => x.Id === id); if (!c) return;
+  document.getElementById('courseModalTitle').textContent = 'Edit Course';
+  document.getElementById('cmId').value = c.Id;
+  document.getElementById('cmName').value = c.name || '';
+  document.getElementById('cmShortLabel').value = c.short_label || '';
+  document.getElementById('cmDuration').value = c.duration || '';
+  document.getElementById('cmStartDate').value = c.start_date || '';
+  document.getElementById('cmPrice').value = c.price || '';
+  document.getElementById('cmCurrency').value = c.currency || 'INR';
+  document.getElementById('cmSeats').value = c.seats_available ?? '';
+  document.getElementById('cmLevel').value = c.level || '';
+  document.getElementById('cmStatus').value = c.status || 'active';
+  document.getElementById('cmImage').value = c.image_url || '';
+  document.getElementById('cmImage2').value = c.image_url_2 || '';
+  document.getElementById('cmImage3').value = c.image_url_3 || '';
+  document.getElementById('cmAudioUrl').value = c.audio_url || '';
+  document.getElementById('cmVideoUrl').value = c.video_url || '';
+  document.getElementById('cmPdfUrl').value = c.pdf_url || '';
+  document.getElementById('cmEnrollmentLink').value = c.enrollment_link || '';
+  document.getElementById('cmDescription').value = c.description || '';
+  populateCategorySelect('cmCategory', c.category);
+  document.getElementById('courseModalOverlay').classList.add('active');
+}
+
+function closeCourseModal() {
+  document.getElementById('courseModalOverlay').classList.remove('active');
+}
+
+async function submitCourseForm() {
+  const btn = document.getElementById('courseModalSaveBtn');
+  const msg = document.getElementById('courseModalMsg');
+  const name = document.getElementById('cmName').value.trim();
+  if (!name) { msg.textContent = 'Name is required'; return; }
+  btn.disabled = true; msg.textContent = '';
+  const id = document.getElementById('cmId').value;
+  const body = {
+    client_id: clientId,
+    name,
+    short_label: document.getElementById('cmShortLabel').value.trim(),
+    category: document.getElementById('cmCategory').value,
+    level: document.getElementById('cmLevel').value,
+    duration: document.getElementById('cmDuration').value.trim(),
+    start_date: document.getElementById('cmStartDate').value,
+    price: document.getElementById('cmPrice').value ? Number(document.getElementById('cmPrice').value) : null,
+    currency: document.getElementById('cmCurrency').value.trim() || 'INR',
+    seats_available: document.getElementById('cmSeats').value !== '' ? Number(document.getElementById('cmSeats').value) : null,
+    status: document.getElementById('cmStatus').value,
+    image_url: document.getElementById('cmImage').value.trim(),
+    image_url_2: document.getElementById('cmImage2').value.trim(),
+    image_url_3: document.getElementById('cmImage3').value.trim(),
+    audio_url: document.getElementById('cmAudioUrl').value.trim(),
+    video_url: document.getElementById('cmVideoUrl').value.trim(),
+    pdf_url: document.getElementById('cmPdfUrl').value.trim(),
+    enrollment_link: document.getElementById('cmEnrollmentLink').value.trim(),
+    description: document.getElementById('cmDescription').value.trim(),
+  };
+  if (id) body.Id = Number(id);
+  try {
+    const res = await fetch(`${WORKER_BASE}/edu/courses`, {
+      method: id ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    msg.textContent = '✓ Saved';
+    closeCourseModal();
+    await loadCourses();
+  } catch(e) { msg.textContent = 'Error: ' + e.message; }
+  finally { btn.disabled = false; setTimeout(() => msg.textContent = '', 3000); }
+}
+
+async function deleteCourse(id) {
+  if (!confirm('Delete this course?')) return;
+  await fetch(`${WORKER_BASE}/edu/courses`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, Id: id }) });
+  await loadCourses();
+}
+
+function populateCategorySelect(selectId, selected) {
+  const sel = document.getElementById(selectId); if (!sel) return;
+  const cats = [...new Set(allCourses.map(c => c.category).filter(Boolean))];
+  const catCats = allCategories.map(c => c.name);
+  const all = [...new Set([...catCats, ...cats])].sort();
+  sel.innerHTML = `<option value="">— Select category —</option>` + all.map(c => `<option value="${esc(c)}"${selected===c?' selected':''}>${esc(c)}</option>`).join('') + `<option value="__new__">+ Add new category…</option>`;
+  sel.onchange = function() {
+    if (this.value === '__new__') {
+      const n = prompt('New category name:'); if (n) this.value = n; else this.value = '';
+    }
+  };
+}
+
+function populateCategorySelects() {
+  populateCategorySelect('cmCategory', document.getElementById('cmCategory')?.value);
+}
+
+// ── CATEGORIES ────────────────────────────────────
+async function loadCategories() {
+  const res = await fetch(`${WORKER_BASE}/edu/categories?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json().catch(() => ({}));
+  allCategories = data.categories || [];
+  renderCategoriesTable();
+}
+
+function renderCategoriesTable() {
+  const tbody = document.getElementById('categoriesTbody');
+  if (!allCategories.length) {
+    tbody.innerHTML = `<tr><td colspan="3"><div class="empty-state"><div class="empty-icon">🏷️</div>No categories yet.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = allCategories.map(cat => {
+    const slots = [1,2,3].map(i => {
+      const url = cat[`image_url_${i}`];
+      return url
+        ? `<div class="cat-media-slot" onclick="openCatMediaModal(${cat.id},${i})"><img src="${esc(resolveThumb(url))}" onerror="this.src=''" alt=""><button class="cat-media-remove" onclick="event.stopPropagation();removeCatMedia(${cat.id},${i})">×</button></div>`
+        : `<div class="cat-media-slot" onclick="openCatMediaModal(${cat.id},${i})">+</div>`;
+    }).join('');
+    return `<tr>
+      <td><input class="cat-name-input" value="${esc(cat.name)}" onblur="saveCategoryName(${cat.id},this.value)"></td>
+      <td><div class="cat-media-inline">${slots}</div></td>
+      <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteCategory(${cat.id})">🗑</button></div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function addCategoryRow() {
+  const name = prompt('Category name:'); if (!name) return;
+  await fetch(`${WORKER_BASE}/edu/categories`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, name }) });
+  await loadCategories();
+}
+
+async function saveCategoryName(id, name) {
+  if (!name.trim()) return;
+  await fetch(`${WORKER_BASE}/edu/categories`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, id, name: name.trim() }) });
+}
+
+async function deleteCategory(id) {
+  if (!confirm('Delete this category?')) return;
+  await fetch(`${WORKER_BASE}/edu/categories`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, id }) });
+  await loadCategories();
+}
+
+function openCatMediaModal(rowId, slot) { _catMediaRowId = rowId; _catMediaSlot = slot; document.getElementById('catMediaInput').value = ''; document.getElementById('catMediaMsg').textContent = ''; document.getElementById('catMediaModalOverlay').classList.add('active'); }
+function closeCatMediaModal() { document.getElementById('catMediaModalOverlay').classList.remove('active'); }
+async function saveCatMedia() {
+  const url = document.getElementById('catMediaInput').value.trim(); if (!url) return;
+  const msg = document.getElementById('catMediaMsg'); msg.textContent = '';
+  const body = { client_id: clientId, id: _catMediaRowId, slot: _catMediaSlot, url };
+  const res = await fetch(`${WORKER_BASE}/edu/categories/media`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (res.ok) { closeCatMediaModal(); await loadCategories(); }
+  else { msg.textContent = 'Error saving photo'; }
+}
+async function removeCatMedia(rowId, slot) {
+  await fetch(`${WORKER_BASE}/edu/categories/media`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, id: rowId, slot }) });
+  await loadCategories();
+}
+
+// ── PROMOTIONS (SCHOLARSHIPS) ─────────────────────
+async function loadPromotions() {
+  const res = await fetch(`${WORKER_BASE}/edu/promotions?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json().catch(() => ({}));
+  allPromotions = data.promotions || [];
+  renderPromotionsTable();
+  renderPromoStats();
+}
+
+function renderPromoStats() {
+  document.getElementById('statTotalPromos').textContent = allPromotions.length;
+  document.getElementById('statActivePromos').textContent = allPromotions.filter(p => p.status === 'active').length;
+}
+
+function renderPromotionsTable() {
+  const q = (document.getElementById('promoSearch').value || '').toLowerCase();
+  const rows = allPromotions.filter(p => !q || (p.code||'').toLowerCase().includes(q) || (p.description||'').toLowerCase().includes(q));
+  const tbody = document.getElementById('promotionsTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🎁</div>No scholarships yet.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(p => {
+    let courseIds = []; try { courseIds = JSON.parse(p.course_ids || '[]'); } catch(e) {}
+    const courseLabel = courseIds.length ? `${courseIds.length} course(s)` : 'All courses';
+    const mediaIcons = [p.image_url?'🖼':'', p.audio_url?'🎵':'', p.video_url?'🎬':''].filter(Boolean).join(' ');
+    return `<tr>
+      <td><strong>${esc(p.code)}</strong></td>
+      <td>${esc(p.description||'—')}</td>
+      <td>${esc(courseLabel)}</td>
+      <td>${mediaIcons||'—'}</td>
+      <td><span class="badge ${p.status==='active'?'active':'inactive'}">${esc(p.status)}</span></td>
+      <td><div class="row-actions">
+        <button class="icon-btn" onclick="openEditPromotionModal(${p.id})">✏️</button>
+        <button class="icon-btn danger" onclick="deletePromotion(${p.id})">🗑</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function openAddPromotionModal() {
+  document.getElementById('promotionModalTitle').textContent = 'Add Scholarship';
+  document.getElementById('pmoId').value = '';
+  ['pmoCode','pmoDescription','pmoReplyText','pmoImage','pmoAudioUrl','pmoVideoUrl'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('pmoStatus').value = 'active';
+  pmoSelectedCourseIds = new Set();
+  renderPmoCourseList();
+  document.getElementById('promotionModalOverlay').classList.add('active');
+}
+
+function openEditPromotionModal(id) {
+  const p = allPromotions.find(x => x.id === id); if (!p) return;
+  document.getElementById('promotionModalTitle').textContent = 'Edit Scholarship';
+  document.getElementById('pmoId').value = p.id;
+  document.getElementById('pmoCode').value = p.code || '';
+  document.getElementById('pmoDescription').value = p.description || '';
+  document.getElementById('pmoReplyText').value = p.reply_text || '';
+  document.getElementById('pmoImage').value = p.image_url || '';
+  document.getElementById('pmoAudioUrl').value = p.audio_url || '';
+  document.getElementById('pmoVideoUrl').value = p.video_url || '';
+  document.getElementById('pmoStatus').value = p.status || 'active';
+  let ids = []; try { ids = JSON.parse(p.course_ids || '[]'); } catch(e) {}
+  pmoSelectedCourseIds = new Set(ids.map(String));
+  renderPmoCourseList();
+  document.getElementById('promotionModalOverlay').classList.add('active');
+}
+
+function renderPmoCourseList() {
+  const q = (document.getElementById('pmoCourseSearch').value || '').toLowerCase();
+  const visible = allCourses.filter(c => !q || (c.name||'').toLowerCase().includes(q));
+  document.getElementById('pmoCourseList').innerHTML = visible.map(c =>
+    `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer"><input type="checkbox" value="${c.Id}" ${pmoSelectedCourseIds.has(String(c.Id))?'checked':''} onchange="pmoSelectedCourseIds.has(String(this.value))?pmoSelectedCourseIds.delete(String(this.value)):pmoSelectedCourseIds.add(String(this.value))"> ${esc(c.name)}</label>`
+  ).join('') || '<div style="color:var(--muted);font-size:13px">No courses found</div>';
+}
+
+function closePromotionModal() { document.getElementById('promotionModalOverlay').classList.remove('active'); }
+
+async function submitPromotionForm() {
+  const btn = document.getElementById('promotionModalSaveBtn');
+  const msg = document.getElementById('promotionModalMsg');
+  const code = document.getElementById('pmoCode').value.trim().toUpperCase();
+  if (!code) { msg.textContent = 'Code is required'; return; }
+  btn.disabled = true; msg.textContent = '';
+  const id = document.getElementById('pmoId').value;
+  const body = { client_id: clientId, code, description: document.getElementById('pmoDescription').value.trim(), reply_text: document.getElementById('pmoReplyText').value.trim(), course_ids: JSON.stringify([...pmoSelectedCourseIds].map(Number)), image_url: document.getElementById('pmoImage').value.trim(), audio_url: document.getElementById('pmoAudioUrl').value.trim(), video_url: document.getElementById('pmoVideoUrl').value.trim(), status: document.getElementById('pmoStatus').value };
+  if (id) body.id = Number(id);
+  try {
+    const res = await fetch(`${WORKER_BASE}/edu/promotions`, { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    closePromotionModal(); await loadPromotions();
+  } catch(e) { msg.textContent = 'Error: ' + e.message; }
+  finally { btn.disabled = false; setTimeout(() => msg.textContent = '', 3000); }
+}
+
+async function deletePromotion(id) {
+  if (!confirm('Delete this scholarship?')) return;
+  await fetch(`${WORKER_BASE}/edu/promotions`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, id }) });
+  await loadPromotions();
+}
+
+// ── SUCCESS STORIES ───────────────────────────────
+async function loadStories() {
+  const res = await fetch(`${WORKER_BASE}/edu/stories?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json().catch(() => ({}));
+  allStories = data.stories || [];
+  renderStoriesTable();
+  renderStoryStats();
+}
+
+function renderStoryStats() {
+  document.getElementById('statTotalStories').textContent = allStories.length;
+  document.getElementById('statActiveStories').textContent = allStories.filter(s => s.status === 'active').length;
+}
+
+function renderStoriesTable() {
+  const q = (document.getElementById('storySearch').value || '').toLowerCase();
+  const rows = allStories.filter(s => !q || (s.student_name||'').toLowerCase().includes(q) || (s.text||'').toLowerCase().includes(q));
+  const tbody = document.getElementById('storiesTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🌟</div>No success stories yet.</div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(s => {
+    let courseIds = []; try { courseIds = JSON.parse(s.course_ids || '[]'); } catch(e) {}
+    const courseLabel = courseIds.length ? `${courseIds.length} course(s)` : 'All courses';
+    const mediaIcons = [s.image_url?'🖼':'', s.video_url?'🎬':''].filter(Boolean).join(' ');
+    return `<tr>
+      <td>${esc(s.student_name||'—')}</td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.text||'—')}</td>
+      <td>${esc(courseLabel)}</td>
+      <td>${mediaIcons||'—'}</td>
+      <td><span class="badge ${s.status==='active'?'active':'inactive'}">${esc(s.status)}</span></td>
+      <td><div class="row-actions">
+        <button class="icon-btn" onclick="openEditStoryModal(${s.id})">✏️</button>
+        <button class="icon-btn danger" onclick="deleteStory(${s.id})">🗑</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+}
+
+function openAddStoryModal() {
+  document.getElementById('storyModalTitle').textContent = 'Add Success Story';
+  document.getElementById('ssId').value = '';
+  ['ssStudentName','ssText','ssImage','ssVideoUrl'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('ssStatus').value = 'active';
+  ssSelectedCourseIds = new Set();
+  renderSsCourseList();
+  document.getElementById('storyModalOverlay').classList.add('active');
+}
+
+function openEditStoryModal(id) {
+  const s = allStories.find(x => x.id === id); if (!s) return;
+  document.getElementById('storyModalTitle').textContent = 'Edit Success Story';
+  document.getElementById('ssId').value = s.id;
+  document.getElementById('ssStudentName').value = s.student_name || '';
+  document.getElementById('ssText').value = s.text || '';
+  document.getElementById('ssImage').value = s.image_url || '';
+  document.getElementById('ssVideoUrl').value = s.video_url || '';
+  document.getElementById('ssStatus').value = s.status || 'active';
+  let ids = []; try { ids = JSON.parse(s.course_ids || '[]'); } catch(e) {}
+  ssSelectedCourseIds = new Set(ids.map(String));
+  renderSsCourseList();
+  document.getElementById('storyModalOverlay').classList.add('active');
+}
+
+function renderSsCourseList() {
+  const q = (document.getElementById('ssCourseSearch').value || '').toLowerCase();
+  const visible = allCourses.filter(c => !q || (c.name||'').toLowerCase().includes(q));
+  document.getElementById('ssCourseList').innerHTML = visible.map(c =>
+    `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer"><input type="checkbox" value="${c.Id}" ${ssSelectedCourseIds.has(String(c.Id))?'checked':''} onchange="ssSelectedCourseIds.has(String(this.value))?ssSelectedCourseIds.delete(String(this.value)):ssSelectedCourseIds.add(String(this.value))"> ${esc(c.name)}</label>`
+  ).join('') || '<div style="color:var(--muted);font-size:13px">No courses found</div>';
+}
+
+function closeStoryModal() { document.getElementById('storyModalOverlay').classList.remove('active'); }
+
+async function submitStoryForm() {
+  const btn = document.getElementById('storyModalSaveBtn');
+  const msg = document.getElementById('storyModalMsg');
+  btn.disabled = true; msg.textContent = '';
+  const id = document.getElementById('ssId').value;
+  const body = { client_id: clientId, student_name: document.getElementById('ssStudentName').value.trim(), text: document.getElementById('ssText').value.trim(), course_ids: JSON.stringify([...ssSelectedCourseIds].map(Number)), image_url: document.getElementById('ssImage').value.trim(), video_url: document.getElementById('ssVideoUrl').value.trim(), status: document.getElementById('ssStatus').value };
+  if (id) body.id = Number(id);
+  try {
+    const res = await fetch(`${WORKER_BASE}/edu/stories`, { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    closeStoryModal(); await loadStories();
+  } catch(e) { msg.textContent = 'Error: ' + e.message; }
+  finally { btn.disabled = false; setTimeout(() => msg.textContent = '', 3000); }
+}
+
+async function deleteStory(id) {
+  if (!confirm('Delete this success story?')) return;
+  await fetch(`${WORKER_BASE}/edu/stories`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, id }) });
+  await loadStories();
+}
+
+// ── ENROLLMENTS ───────────────────────────────────
+async function loadEnrollments() {
+  if (!eduTableIds.enrollments) { renderEnrollmentsTable(); return; }
+  const res = await fetch(`${WORKER_BASE}/edu/enrollments?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json().catch(() => ({}));
+  allEnrollments = data.list || [];
+  renderEnrollmentsTable();
+  renderEnrollmentStats();
+}
+
+function renderEnrollmentStats() {
+  document.getElementById('statTotalEnrollments').textContent = allEnrollments.length;
+  document.getElementById('statPendingEnrollments').textContent = allEnrollments.filter(e => e.status === 'pending').length;
+  document.getElementById('statEnrolledCount').textContent = allEnrollments.filter(e => e.status === 'enrolled').length;
+}
+
+function renderEnrollmentsTable() {
+  const q = (document.getElementById('enrollmentSearch').value || '').toLowerCase();
+  const rows = allEnrollments.filter(e => !q || (e.student_name||'').toLowerCase().includes(q) || (e.course||'').toLowerCase().includes(q) || (e.enrollment_id||'').toLowerCase().includes(q));
+  const tbody = document.getElementById('enrollmentsTbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📋</div>No enrollments yet.</div></td></tr>`;
+    return;
+  }
+  const statusClass = s => ({ pending:'pending', enrolled:'enrolled', completed:'completed', cancelled:'cancelled' }[s] || '');
+  tbody.innerHTML = rows.map(e => `<tr>
+    <td>${esc(e.enrollment_id||e.Id||'—')}</td>
+    <td>${esc(e.student_name||'—')}<br><span style="font-size:11px;color:var(--muted)">${esc(e.student_phone||e.student_email||'')}</span></td>
+    <td>${esc(e.enrollment_date||'—')}</td>
+    <td>${esc(e.course||'—')}</td>
+    <td><select class="badge ${statusClass(e.status)}" onchange="updateEnrollmentStatus(${e.Id},this.value)">
+      ${['pending','enrolled','completed','cancelled'].map(s=>`<option value="${s}"${e.status===s?' selected':''}>${s}</option>`).join('')}
+    </select></td>
+    <td><div class="row-actions">
+      <button class="icon-btn danger" onclick="deleteEnrollment(${e.Id})">🗑</button>
+    </div></td>
+  </tr>`).join('');
+}
+
+async function updateEnrollmentStatus(id, status) {
+  await fetch(`${WORKER_BASE}/edu/enrollments`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, Id: id, status }) });
+}
+
+function openAddEnrollmentModal() {
+  ['emEnrollmentId','emStudentName','emStudentPhone','emStudentEmail','emCourse','emNotes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('emEnrollmentDate').value = new Date().toISOString().slice(0,10);
+  document.getElementById('emStatus').value = 'pending';
+  document.getElementById('enrollmentModalOverlay').classList.add('active');
+}
+
+function closeEnrollmentModal() { document.getElementById('enrollmentModalOverlay').classList.remove('active'); }
+
+async function submitAddEnrollment() {
+  const phone = document.getElementById('emStudentPhone').value.trim();
+  if (!phone) { document.getElementById('enrollmentModalMsg').textContent = 'Student phone is required'; return; }
+  const body = { client_id: clientId, enrollment_id: document.getElementById('emEnrollmentId').value.trim() || `ENR-${Date.now()}`, enrollment_date: document.getElementById('emEnrollmentDate').value, student_name: document.getElementById('emStudentName').value.trim(), student_phone: phone, student_email: document.getElementById('emStudentEmail').value.trim(), course: document.getElementById('emCourse').value.trim(), status: document.getElementById('emStatus').value, notes: document.getElementById('emNotes').value.trim() };
+  const res = await fetch(`${WORKER_BASE}/edu/enrollments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (res.ok) { closeEnrollmentModal(); await loadEnrollments(); }
+  else { document.getElementById('enrollmentModalMsg').textContent = 'Error: ' + (data.error || 'Save failed'); }
+}
+
+async function deleteEnrollment(id) {
+  if (!confirm('Delete this enrollment?')) return;
+  await fetch(`${WORKER_BASE}/edu/enrollments`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, Id: id }) });
+  await loadEnrollments();
+}
+
+// ── SETTINGS ──────────────────────────────────────
+async function saveEnrollmentLink() {
+  const link = document.getElementById('cfgEnrollmentLink').value.trim();
+  const msg = document.getElementById('enrollmentLinkMsg');
+  const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_enrollment_link: link }) });
+  msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
+  setTimeout(() => msg.textContent = '', 3000);
+}
+
+async function saveTableIds() {
+  const courses    = document.getElementById('cfgCoursesTable').value.trim();
+  const enrollments = document.getElementById('cfgEnrollmentsTable').value.trim();
+  const msg = document.getElementById('tableIdsMsg');
+  const ids = {}; if (courses) ids.courses = courses; if (enrollments) ids.enrollments = enrollments;
+  const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_table_ids: JSON.stringify(ids) }) });
+  if (res.ok) { eduTableIds = ids; await loadCourses(); await loadEnrollments(); }
+  msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
+  setTimeout(() => msg.textContent = '', 3000);
+}
+
+async function detectColumns() {
+  const url = document.getElementById('cfgEnrollmentsSheet').value.trim();
+  const msg = document.getElementById('detectMsg');
+  if (!url) { msg.textContent = 'Enter a sheet URL first'; return; }
+  msg.textContent = 'Detecting…';
+  try {
+    const res = await fetch(`${WORKER_BASE}/sheets/detect-columns?url=${encodeURIComponent(url)}&client_id=${encodeURIComponent(clientId)}`);
+    const data = await res.json();
+    sheetHeaders = data.headers || [];
+    msg.textContent = sheetHeaders.length ? `✓ Found ${sheetHeaders.length} columns` : 'No columns found';
+    renderColumnMap(sheetHeaders);
+  } catch(e) { msg.textContent = 'Error detecting columns'; }
+  setTimeout(() => msg.textContent = '', 4000);
+}
+
+const ENROLLMENT_FIELDS = [
+  { key:'enrollment_id', label:'Enrollment ID' }, { key:'enrollment_date', label:'Date' },
+  { key:'student_name', label:'Student Name' }, { key:'student_phone', label:'Phone' },
+  { key:'student_email', label:'Email' }, { key:'course', label:'Course' },
+  { key:'status', label:'Status' }, { key:'notes', label:'Notes' }
+];
+
+function renderColumnMap(headers) {
+  const grid = document.getElementById('columnMap'); if (!grid) return;
+  grid.innerHTML = ENROLLMENT_FIELDS.map(f =>
+    `<div class="colmap-field"><label>${esc(f.label)}</label><select onchange="columnMap['${f.key}']=this.value"><option value="">— skip —</option>${headers.map(h=>`<option value="${esc(h)}"${columnMap[f.key]===h?' selected':''}>${esc(h)}</option>`).join('')}</select></div>`
+  ).join('');
+}
+
+async function saveEnrollmentsSheet() {
+  const url = document.getElementById('cfgEnrollmentsSheet').value.trim();
+  const msg = document.getElementById('sheetMsg');
+  const body = { client_id: clientId, edu_enrollments_sheet: url, edu_enrollments_column_map: JSON.stringify({ map: columnMap, headers: sheetHeaders }) };
+  const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
+  setTimeout(() => msg.textContent = '', 3000);
+}
+
+init();
+</script>
+</body>
+</html>

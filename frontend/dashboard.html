@@ -271,7 +271,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 #pageChats{overflow:hidden;display:none;flex-direction:column}
 #pageChats:not(.hidden){display:flex}
-#pageEcommerce{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
@@ -1119,6 +1119,7 @@ const ROLES = {
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
+    <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -1667,6 +1668,13 @@ const ROLES = {
       <iframe id="healthcareFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
+    <!-- EDUCATION MODULE (same iframe-embed pattern as Ecommerce above — education.html is its own
+         self-contained page, industry-gated for education. Passed only the client_id (no session
+         token) — its /edu/* Worker routes are client_id-based, same trust model as /ecom/*. -->
+    <div class="page hidden" id="pageEducation">
+      <iframe id="educationFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
          is its own self-contained page, industry-gated for travel. Passed the session token for the
          same reason as B2B/Real Estate: it reads/writes Leads plus its own ta_* NocoDB tables through
@@ -1953,6 +1961,25 @@ const ROLES = {
               </div>
               <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
               <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px" id="eduCommunicationStyleCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🎓 Education Communication Style</div>
+            <div class="s-note">Choose how the assistant speaks with prospective students. This changes wording and discovery order only; course facts, prices and media still come strictly from the configured course catalogue.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Institution communication style</label>
+                <select class="form-input" id="cfgEduCommunicationStyle">
+                  <option value="">Current style (no change)</option>
+                  <option value="higher_education">Higher Education / University</option>
+                  <option value="courses_online">Courses / Online Learning</option>
+                </select>
+              </div>
+              <button class="save-btn" id="saveEduCommunicationStyle">Save Style</button>
+              <span class="save-msg" id="saveEduCommunicationStyleMsg"></span>
             </div>
           </div>
         </div>
@@ -3271,6 +3298,7 @@ const ROLES = {
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
+      <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
       <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
            hides these icon buttons there) — same functions, just reachable from here instead. -->
@@ -4592,7 +4620,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','us
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -4630,6 +4658,7 @@ function navigate(page){
   if(page==='hospitality') renderHospitality();
   if(page==='realestate') renderRealEstate();
   if(page==='healthcare') renderHealthcare();
+  if(page==='education') renderEducation();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -5228,6 +5257,12 @@ async function kbDrop(e,stage){
 function renderEcommerce(){
   const frame=$id('ecommerceFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+}
+
+// Same pattern as renderEcommerce — education.html is client_id-only, no session token needed.
+function renderEducation(){
+  const frame=$id('educationFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`education.html?client=${clientId}&embed=1`;
 }
 
 // SaaS Ops needs the session token — its /saas/* routes are requireSession-gated (billing config,
@@ -8390,6 +8425,8 @@ function populateSettings(){
   try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   $id('ecomCommunicationStyleCard').style.display=clientRecord.industry==='ecommerce'?'block':'none';
   $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
+  $id('eduCommunicationStyleCard').style.display=clientRecord.industry==='education'?'block':'none';
+  $id('cfgEduCommunicationStyle').value=ecomBotConfig.edu_communication_style||'';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -8582,6 +8619,7 @@ async function applyIndustryChange(ind, extraPatch){
   await patchClient(patch);
   clientRecord.industry=ind;
   if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
+  if($id('eduCommunicationStyleCard')) $id('eduCommunicationStyleCard').style.display=ind==='education'?'block':'none';
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
@@ -9349,6 +9387,14 @@ $id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
   if(selected) botConfig.ecom_communication_style=selected;
   else delete botConfig.ecom_communication_style;
   await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveEduCommunicationStyle').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const selected=$id('cfgEduCommunicationStyle').value;
+  if(selected) botConfig.edu_communication_style=selected;
+  else delete botConfig.edu_communication_style;
+  await saveField('saveEduCommunicationStyle','saveEduCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));

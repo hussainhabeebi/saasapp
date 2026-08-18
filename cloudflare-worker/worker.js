@@ -7007,6 +7007,381 @@ async function handleEcomCategoryMediaServe(env, key){
   return new Response(obj.body, {headers});
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+   EDUCATION MODULE (migrations/0060-0064)
+   Mirrors the Ecom module structure: NocoDB-backed courses/enrollments + D1-backed categories,
+   promotions (scholarships), and success stories. Client-id-based auth (no session token) —
+   same trust model as /ecom/*. education.html embeds as an iframe in dashboard.html.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
+const EDU_CLIENT_WRITE_FIELDS=['edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
+
+async function eduResolveTable(env, clientId, kind){
+  const r=await env.DB.prepare(`SELECT edu_table_ids FROM clients WHERE Id=?`).bind(Number(clientId)).first();
+  const ids=engineParseJsonField(r?.edu_table_ids,{});
+  return ids[kind]||null;
+}
+
+async function handleEduClientGet(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await env.DB.prepare(`SELECT ${EDU_CLIENT_READ_FIELDS.join(',')} FROM clients WHERE Id=?`).bind(Number(clientId)).first();
+  if(!c) return json({error:'Not found'},404);
+  const out={};
+  EDU_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
+  return json(out);
+}
+
+async function handleEduClientUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const fields={};
+  EDU_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if(!Object.keys(fields).length) return json({error:'No fields to update'},400);
+  const sets=Object.keys(fields).map(k=>`${k}=?`);
+  const vals=[...Object.values(fields), Number(clientId)];
+  await env.DB.prepare(`UPDATE clients SET ${sets.join(',')} WHERE Id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+// NocoDB-backed CRUD for courses and enrollments — exact same pattern as handleEcomList/Create/Update/Delete.
+async function handleEduList(request, env, kind){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const tableId=await eduResolveTable(env, clientId, kind);
+  if(!tableId) return json({list:[]});
+  const includeInactive=url.searchParams.get('include_inactive')==='true';
+  const where=includeInactive?`(client_id,eq,${clientId})`:`(client_id,eq,${clientId})~and(status,neq,inactive)`;
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${where}&limit=200&sort=-created_at`);
+  const d=await r.json().catch(()=>({list:[]}));
+  return json({list:d.list||[]});
+}
+
+async function handleEduCreate(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const tableId=await eduResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:'Table not configured — add table ID in Education → Settings'},400);
+  const {client_id:_,...rest}=body;
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:[{...rest, client_id:Number(clientId)}]});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'NocoDB error', detail:d},502);
+  const created=(Array.isArray(d)?d[0]:d)||{};
+  if(kind==='courses' && created?.Id){
+    const m=created;
+    await env.DB.prepare(`INSERT OR REPLACE INTO edu_courses_mirror (client_id, nocodb_id, name, short_label, category, level, duration, price, currency, seats_available, start_date, status, enrollment_link, image_url, image_url_2, image_url_3, audio_url, video_url, pdf_url, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId), m.Id, m.name||null, m.short_label||null, m.category||null, m.level||null, m.duration||null, m.price||null, m.currency||null, m.seats_available??null, m.start_date||null, m.status||null, m.enrollment_link||null, m.image_url||null, m.image_url_2||null, m.image_url_3||null, m.audio_url||null, m.video_url||null, m.pdf_url||null, m.description||null, new Date().toISOString(), new Date().toISOString()).run().catch(()=>{});
+  }
+  return json(created);
+}
+
+async function handleEduUpdate(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const tableId=await eduResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:'Table not configured'},400);
+  const ownCheck=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,eq,${id})&fields=Id&limit=1`);
+  const ownData=await ownCheck.json().catch(()=>({list:[]}));
+  if(!(ownData.list||[]).length) return json({error:'Not found'},404);
+  const {client_id:_,...rest}=body;
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:[{...rest, Id:id}]});
+  if(!r.ok) return json({error:'NocoDB error'},502);
+  if(kind==='courses'){
+    const mirrorFields=['name','short_label','category','level','duration','price','currency','seats_available','start_date','status','enrollment_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url','description'];
+    const sets=[], vals=[];
+    mirrorFields.forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
+    sets.push('updated_at=?'); vals.push(new Date().toISOString());
+    vals.push(Number(clientId)); vals.push(id);
+    if(sets.length>1) await env.DB.prepare(`UPDATE edu_courses_mirror SET ${sets.join(',')} WHERE client_id=? AND nocodb_id=?`).bind(...vals).run().catch(()=>{});
+  }
+  return json({ok:true});
+}
+
+async function handleEduDelete(request, env, kind){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const ids=Array.isArray(body.Ids)?body.Ids.map(Number).filter(n=>n>0):(body.Id?[Number(body.Id)]:[]);
+  if(!clientId||!ids.length) return json({error:'client_id and Id required'},400);
+  const tableId=await eduResolveTable(env, clientId, kind);
+  if(!tableId) return json({error:'Table not configured'},400);
+  const ownedR=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,in,${ids.join(',')})&fields=Id&limit=200`);
+  const owned=await ownedR.json().catch(()=>({list:[]}));
+  const ownedIds=(owned.list||[]).map(row=>row.Id);
+  if(!ownedIds.length) return json({deleted:0, requested:ids.length});
+  const CHUNK=40;
+  let deleted=0;
+  for(let i=0;i<ownedIds.length;i+=CHUNK){
+    const chunk=ownedIds.slice(i,i+CHUNK);
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
+    if(r.ok) deleted+=chunk.length;
+  }
+  if(kind==='courses' && ownedIds.length) await env.DB.prepare(`DELETE FROM edu_courses_mirror WHERE client_id=? AND nocodb_id IN (${ownedIds.join(',')})`).bind(Number(clientId)).run().catch(()=>{});
+  return json({deleted, requested:ids.length});
+}
+
+/* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
+async function handleEduCategoriesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleEduCategoryCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,80);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(`INSERT INTO edu_categories (client_id, name, created_at) VALUES (?,?,?)`)
+    .bind(Number(clientId), name, new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+async function findEduCategory(env, id){
+  return await env.DB.prepare(`SELECT * FROM edu_categories WHERE id=?`).bind(Number(id)).first();
+}
+async function handleEduCategoryUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){
+    const name=String(body.name).trim().slice(0,80);
+    if(!name) return json({error:'name cannot be blank'},400);
+    sets.push('name=?'); vals.push(name);
+  }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE edu_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleEduCategoryDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_category_media_sent WHERE category_id=?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM edu_categories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+async function handleEduCategoryMediaUpload(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  const slot=String(body.slot||'');
+  const url=String(body.url||'').trim().slice(0,500);
+  if(!clientId||!id||!slot) return json({error:'client_id, id and slot required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const col={'1':'image_url_1','2':'image_url_2','3':'image_url_3'}[slot];
+  if(!col) return json({error:'invalid slot'},400);
+  await env.DB.prepare(`UPDATE edu_categories SET ${col}=? WHERE id=?`).bind(url||null, id).run();
+  return json({ok:true});
+}
+async function handleEduCategoryMediaDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  const slot=String(body.slot||'');
+  if(!clientId||!id||!slot) return json({error:'client_id, id and slot required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const col={'1':'image_url_1','2':'image_url_2','3':'image_url_3'}[slot];
+  if(!col) return json({error:'invalid slot'},400);
+  await env.DB.prepare(`UPDATE edu_categories SET ${col}=NULL WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Education Scholarships/Promotions (D1-backed, same shape as ecom_promotions) ── */
+async function handleEduPromotionsList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
+}
+async function handleEduPromotionCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const code=String(body.code||'').trim().toUpperCase().slice(0,40);
+  if(!clientId||!code) return json({error:'client_id and code required'},400);
+  const courseIds=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+  try{
+    const r=await env.DB.prepare(`INSERT INTO edu_promotions (client_id, code, description, reply_text, course_ids, image_url, audio_url, video_url, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId), code, String(body.description||'').trim().slice(0,500), String(body.reply_text||'').trim().slice(0,1000), JSON.stringify(courseIds), body.image_url?String(body.image_url).trim().slice(0,500):null, body.audio_url?String(body.audio_url).trim().slice(0,500):null, body.video_url?String(body.video_url).trim().slice(0,500):null, body.status==='inactive'?'inactive':'active', new Date().toISOString()).run();
+    return json({Id:r.meta.last_row_id, client_id:Number(clientId), code});
+  }catch(e){
+    if(String(e.message||'').includes('UNIQUE')) return json({error:`A scholarship with code "${code}" already exists.`},409);
+    throw e;
+  }
+}
+async function findEduPromotion(env, id){ return await env.DB.prepare(`SELECT * FROM edu_promotions WHERE id=?`).bind(Number(id)).first(); }
+async function handleEduPromotionUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduPromotion(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.code!==undefined){ const code=String(body.code).trim().toUpperCase().slice(0,40); if(!code) return json({error:'code cannot be blank'},400); sets.push('code=?'); vals.push(code); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,500)); }
+  if(body.reply_text!==undefined){ sets.push('reply_text=?'); vals.push(String(body.reply_text).trim().slice(0,1000)); }
+  if(body.course_ids!==undefined){ const ids=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[]; sets.push('course_ids=?'); vals.push(JSON.stringify(ids)); }
+  if(body.image_url!==undefined){ sets.push('image_url=?'); vals.push(body.image_url?String(body.image_url).trim().slice(0,500):null); }
+  if(body.audio_url!==undefined){ sets.push('audio_url=?'); vals.push(body.audio_url?String(body.audio_url).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  try{
+    await env.DB.prepare(`UPDATE edu_promotions SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+    return json({ok:true});
+  }catch(e){
+    if(String(e.message||'').includes('UNIQUE')) return json({error:'A scholarship with that code already exists.'},409);
+    throw e;
+  }
+}
+async function handleEduPromotionDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduPromotion(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_promotions WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Education Success Stories (D1-backed, same shape as ecom_testimonials) ── */
+async function handleEduStoriesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_stories WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({stories:(results||[]).map(r=>({...r, course_ids:engineParseJsonField(r.course_ids,[])}))});
+}
+async function handleEduStoryCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const courseIds=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+  const r=await env.DB.prepare(`INSERT INTO edu_stories (client_id, student_name, text, course_ids, image_url, video_url, status, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(clientId), String(body.student_name||'').trim().slice(0,120), String(body.text||'').trim().slice(0,1000), JSON.stringify(courseIds), body.image_url?String(body.image_url).trim().slice(0,500):null, body.video_url?String(body.video_url).trim().slice(0,500):null, body.status==='inactive'?'inactive':'active', new Date().toISOString()).run();
+  return json({id:r.meta.last_row_id, client_id:Number(clientId)});
+}
+async function findEduStory(env, id){ return await env.DB.prepare(`SELECT * FROM edu_stories WHERE id=?`).bind(Number(id)).first(); }
+async function handleEduStoryUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const existing=await findEduStory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.student_name!==undefined){ sets.push('student_name=?'); vals.push(String(body.student_name).trim().slice(0,120)); }
+  if(body.text!==undefined){ sets.push('text=?'); vals.push(String(body.text).trim().slice(0,1000)); }
+  if(body.course_ids!==undefined){ const ids=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[]; sets.push('course_ids=?'); vals.push(JSON.stringify(ids)); }
+  if(body.image_url!==undefined){ sets.push('image_url=?'); vals.push(body.image_url?String(body.image_url).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE edu_stories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleEduStoryDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const existing=await findEduStory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_stories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Course brochure/media dedup — per (lead, course, day), same as engineClaimProductImageForToday ── */
+async function eduClaimCourseBrochureForToday(env, clientId, leadId, courseId){
+  if(!leadId || !courseId) return true;
+  try{
+    const today=new Date().toISOString().slice(0,10);
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO edu_course_brochure_sent (client_id, lead_id, course_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId), leadId, String(courseId), today, new Date().toISOString()).run();
+    return !!ins?.meta?.changes;
+  }catch(e){ await reportOpsError(env, 'eduClaimCourseBrochureForToday', e, {clientId, leadId, courseId}); return true; }
+}
+
+async function eduMaybeSendCourseMedia(env, c, clientId, convId, course){
+  if(!course || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
+    if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
+    if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
+    if(course.video_url) await sendDriveMediaToChatwoot(c, convId, course.video_url, '');
+    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '');
+  }catch(e){ await reportOpsError(env, 'eduMaybeSendCourseMedia', e, {clientId, convId}); }
+}
+
+/* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
+async function engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText){
+  if(c.industry!=='education' || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=?`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
+    if(!category) return;
+    const already=await env.DB.prepare(`SELECT id FROM edu_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
+    if(already) return;
+    for(const url of [category.image_url_1, category.image_url_2, category.image_url_3].filter(Boolean)){
+      await sendDriveMediaToChatwoot(c, convId, url, '');
+    }
+    await env.DB.prepare(`INSERT OR IGNORE INTO edu_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEduCategoryMedia', e, {clientId, convId}); }
+}
+
+/* ── Education scholarship offer — keyword/code match, same pattern as engineMaybeSendPromoOffer ── */
+const EDU_SCHOLARSHIP_KEYWORD_RE=/\b(scholarship|discount|offer|promo|coupon|bursary|financial aid|fee waiver|fee reduction)\b/i;
+async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText){
+  if(c.industry!=='education' || !userText) return;
+  try{
+    const {results:promos}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
+    if(!promos||!promos.length) return;
+    const lower=userText.toLowerCase();
+    let match=(promos||[]).find(p=>p.code && new RegExp(`\\b${escapeRegexLiteral(p.code.toLowerCase())}\\b`).test(lower));
+    if(!match && EDU_SCHOLARSHIP_KEYWORD_RE.test(userText)){
+      if(promos.length===1){ match=promos[0]; }
+      else{
+        const lines=promos.map(p=>`*${p.code}* — ${p.description||'ask us for details!'}`).join('\n');
+        await engineSendChatwootReply(env, c, clientId, convId, `🎁 Current scholarships & offers:\n\n${lines}\n\nAsk about a specific code for more details!`);
+        return;
+      }
+    }
+    if(!match) return;
+    const replyText=(match.reply_text||'').trim() || `🎁 *${match.code}* — ${match.description||'Ask us for details!'}`;
+    await engineSendChatwootReply(env, c, clientId, convId, replyText);
+    if(match.image_url) await sendDriveMediaToChatwoot(c, convId, match.image_url, '');
+    if(match.audio_url) await sendDriveMediaToChatwoot(c, convId, match.audio_url, '');
+    if(match.video_url) await sendDriveMediaToChatwoot(c, convId, match.video_url, '');
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEduScholarshipOffer', e, {clientId, convId}); }
+}
+
 // Auto-sends a category's photos into the chat the first time a lead's message names it —
 // simple case-insensitive substring match on the category name, same "cheap and predictable,
 // documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
@@ -9930,6 +10305,15 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
+  if(industry==='education'){
+    sys+='\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general answers. Use VERIFIED COURSE DATA only for course facts. Never invent or infer a course name, category, level, price, duration, start date, seats, media, PDF or enrollment link. If a requested fact is absent, say it is not verified and offer staff handover.';
+    const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
+    const eduStyleInstructions={
+      higher_education:'HIGHER EDUCATION COMMUNICATION STYLE: Sound professional, supportive and outcomes-focused. Guide discovery in this order when applicable: programme area, entry requirements or level, then verified matching courses. Emphasise academic credibility, career pathways and verified course facts. Never invent qualifications, accreditations, entry criteria or scholarship amounts.',
+      courses_online:'COURSES / ONLINE LEARNING COMMUNICATION STYLE: Sound encouraging, practical and results-oriented. Guide discovery in this order when applicable: topic or skill area, level, then verified matching courses. Emphasise flexibility, self-paced learning and verified course outcomes. Never invent module counts, platform features, completion guarantees or pricing.'
+    };
+    if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
+  }
   // First-ever message from this lead — give a short, natural intro to what the business offers
   // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
   // straight into an answer with no context on who they're talking to. Short and blended into the
@@ -12714,6 +13098,10 @@ async function handleEngineWebhook(request, env, secret){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
+    // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
+    // layering as ecom category media / promo offer above.
+    await engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    await engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText);
     // Full product description — sent inline, right before the photo/media bundle, at each
     // order-detection branch above (not here) so it goes out in "description, then media" order
     // rather than trailing the whole turn after testimonials/promos.
@@ -21714,6 +22102,30 @@ export default {
       else if(url.pathname==='/ecom/testimonials' && request.method==='DELETE'){ res=await handleEcomTestimonialDelete(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
+      else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
+      else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduList(request, env, 'courses'); }
+      else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCreate(request, env, 'courses'); }
+      else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'courses'); }
+      else if(url.pathname==='/edu/courses' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'courses'); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='GET'){ res=await handleEduList(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='POST'){ res=await handleEduCreate(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/categories' && request.method==='GET'){ res=await handleEduCategoriesList(request, env); }
+      else if(url.pathname==='/edu/categories' && request.method==='POST'){ res=await handleEduCategoryCreate(request, env); }
+      else if(url.pathname==='/edu/categories' && request.method==='PATCH'){ res=await handleEduCategoryUpdate(request, env); }
+      else if(url.pathname==='/edu/categories' && request.method==='DELETE'){ res=await handleEduCategoryDelete(request, env); }
+      else if(url.pathname==='/edu/categories/media' && request.method==='POST'){ res=await handleEduCategoryMediaUpload(request, env); }
+      else if(url.pathname==='/edu/categories/media' && request.method==='DELETE'){ res=await handleEduCategoryMediaDelete(request, env); }
+      else if(url.pathname==='/edu/promotions' && request.method==='GET'){ res=await handleEduPromotionsList(request, env); }
+      else if(url.pathname==='/edu/promotions' && request.method==='POST'){ res=await handleEduPromotionCreate(request, env); }
+      else if(url.pathname==='/edu/promotions' && request.method==='PATCH'){ res=await handleEduPromotionUpdate(request, env); }
+      else if(url.pathname==='/edu/promotions' && request.method==='DELETE'){ res=await handleEduPromotionDelete(request, env); }
+      else if(url.pathname==='/edu/stories' && request.method==='GET'){ res=await handleEduStoriesList(request, env); }
+      else if(url.pathname==='/edu/stories' && request.method==='POST'){ res=await handleEduStoryCreate(request, env); }
+      else if(url.pathname==='/edu/stories' && request.method==='PATCH'){ res=await handleEduStoryUpdate(request, env); }
+      else if(url.pathname==='/edu/stories' && request.method==='DELETE'){ res=await handleEduStoryDelete(request, env); }
       else if(url.pathname==='/pipeline/followups/on-stage-change' && request.method==='POST'){ res=await handlePipelineStageChange(request, env); }
       else if(url.pathname==='/pipeline/followups/video-send' && request.method==='POST'){ res=await handlePipelineVideoSend(request, env); }
       else if(url.pathname==='/ecom/order-link' && request.method==='POST'){ res=await handleEcomOrderLink(request, env); }
