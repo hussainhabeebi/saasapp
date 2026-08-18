@@ -144,6 +144,7 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
+  {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -544,6 +545,11 @@ async function handleSessionExchange(request, env){
     if(created.error) return json({error:created.error}, created.status||502);
     rec=created.rec;
     isNewSignup=true;
+  } else if(rec.signup_status==='pending'){
+    // Row was pre-created by POST /signup (the simplified home-page signup flow). First real
+    // login completes the onboarding: mark active and fire the onboarding webhook below.
+    isNewSignup=true;
+    await patchClientFields(env, rec.Id, {signup_status:'active'}).catch(()=>{});
   }
   const session_token=await signSession(env, rec.Id, email);
   // Cross-Sell module (dashboard.html Settings → "🔄 Cross-Sell & Upsell", the lead panel's
@@ -635,6 +641,67 @@ async function handleAutoProvision(request, env){
   if(isNewSignup) await notifyOnboardWebhook(env, rec, email);
 
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email, isNewSignup});
+}
+
+async function handleSignup(request, env){
+  const {email}=await request.json().catch(()=>({}));
+  if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim()))
+    return json({error:'Please enter a valid email address.'}, 400);
+  const emailNorm=String(email).trim().toLowerCase();
+
+  // Email collision — existing CLIENTS row
+  const existingClient=await getClientByAuthentikEmail(env, emailNorm);
+  if(existingClient) return json({exists:true, message:'An account with that email already exists.'}, 409);
+
+  // Email collision — Authentik user without a CLIENTS row yet
+  const existingAuth=await authentikFindUserByEmail(env, emailNorm);
+  if(existingAuth) return json({exists:true, message:'An account with that email already exists.'}, 409);
+
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Signup is temporarily unavailable.'}, 503);
+
+  // Create Authentik user (is_active:true so the recovery link flow can fire)
+  const username=emailNorm.split('@')[0].replace(/[^a-zA-Z0-9_.-]/g,'_').slice(0,150)||'user';
+  const createR=await authentikApiFetch(env, '/core/users/', {
+    method:'POST',
+    body:JSON.stringify({username, email:emailNorm, name:deriveBusinessNameServer(emailNorm), is_active:true})
+  });
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok){
+    const detail=createData?.email?.[0]||createData?.username?.[0]||createData?.detail||('HTTP '+createR.status);
+    return json({error:'Could not create account: '+detail}, 502);
+  }
+  const userId=createData.pk;
+
+  // Authentik requires a password before issuing a recovery link
+  const tmpPw=generateRandomPassword();
+  const pwR=await authentikApiFetch(env, `/core/users/${userId}/set_password/`, {method:'POST', body:JSON.stringify({password:tmpPw})});
+  if(!pwR.ok){
+    await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    return json({error:'Could not finish setting up account — please try again.'}, 502);
+  }
+
+  // Pre-provision CLIENTS row (signup_status:'pending' triggers full onboard on first real login)
+  await ensureClientColumns(env, ['signup_status']);
+  const createClientR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
+    client_name:deriveBusinessNameServer(emailNorm), authentik_email:emailNorm,
+    language:'en', industry:'general', signup_status:'pending'
+  }});
+  if(!createClientR.ok){
+    await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    return json({error:'Could not create your account — please try again.'}, 502);
+  }
+
+  // Recovery/invite link — lets the user set their own password
+  let inviteLink=null;
+  try{
+    const recR=await authentikApiFetch(env, `/core/users/${userId}/recovery/`, {method:'POST'});
+    if(recR.ok){ const d=await recR.json().catch(()=>({})); inviteLink=d?.link||null; }
+  }catch(e){}
+
+  // Send invite email (reuses existing Resend helper)
+  if(inviteLink) await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+
+  return json({ok:true, message:'Check your email to set up your account.'});
 }
 
 async function handleSessionMe(request, env){
@@ -21538,6 +21605,7 @@ export default {
       if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
       if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
+      else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
