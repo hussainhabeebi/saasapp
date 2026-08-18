@@ -18101,6 +18101,8 @@ async function handleHospitalityMediaServe(env, key){
 // LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
+const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury)\b/i;
+const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|backwaters?|canal|river|cabins?|rooms?|available|availability|stays?|nights?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
 // Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
 // "share" link (drive.google.com/file/d/<id>/view?usp=sharing) or an "open"/"uc" link
@@ -18262,7 +18264,8 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
       return;
     }
-    if(!HOSPITALITY_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const enquiryRe=c.hospitality_style==='resort'?HOSPITALITY_RESORT_ENQUIRY_RE:c.hospitality_style==='houseboat'?HOSPITALITY_HOUSEBOAT_ENQUIRY_RE:HOSPITALITY_GENERAL_ENQUIRY_RE;
+    if(!enquiryRe.test(lower)) return;
     const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
     if(alreadyAny) return;
     for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);

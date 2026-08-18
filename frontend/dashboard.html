@@ -2961,11 +2961,22 @@ const ROLES = {
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, and other stay-based tourism businesses.</div></div>
+              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, resorts, and other stay-based tourism businesses.</div></div>
               <select class="form-input" id="cfgHospitalityEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveHospitalityEnabled">Save</button>
               <span class="save-msg" id="saveHospitalityEnabledMsg"></span>
               <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ Sub-style</b><div class="s-note" style="margin:2px 0 0">Adjusts terminology and WhatsApp keyword matching for your hospitality type.</div></div>
+              <select class="form-input" id="cfgHospitalityStyle" style="max-width:160px">
+                <option value="hotel">Hotel / General</option>
+                <option value="resort">Resort</option>
+                <option value="houseboat">Houseboat</option>
+              </select>
+              <button class="save-btn" id="saveHospitalityStyle">Save</button>
+              <span class="save-msg" id="saveHospitalityStyleMsg"></span>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -8696,6 +8707,14 @@ async function ensureHospitalityEnabledColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+async function ensureHospitalityStyleColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -15600,6 +15619,7 @@ $id('saveMarketingStudioEnabled').addEventListener('click',async()=>{
 function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
+  const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
   updateHospitalityTabVisibility();
 }
 
@@ -15612,6 +15632,19 @@ $id('saveHospitalityEnabled').addEventListener('click',async()=>{
     await patchClient({hospitality_enabled:val});
     updateHospitalityTabVisibility();
     _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+$id('saveHospitalityStyle').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityStyle'),msg=$id('saveHospitalityStyleMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityStyle').value;
+  try{
+    await ensureHospitalityStyleColumn();
+    await patchClient({hospitality_style:val});
+    clientRecord.hospitality_style=val;
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -16161,6 +16194,12 @@ async function renderHospDashboard(){
 // Every field — including description and media — is edited in place; there is no Add/Edit
 // popup for units at all. Autosaves per-field on blur/change via the existing PATCH endpoint
 // (which already supports partial single-field updates).
+function hospStyleLabel(){
+  const s=clientRecord.hospitality_style||'hotel';
+  if(s==='resort') return {icon:'🌴',heading:'Units & Villa Types',addLabel:'+ Add Unit',typeLabel:'Villa/Unit Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first villa or unit type.'};
+  if(s==='houseboat') return {icon:'🛶',heading:'Boats & Houseboat Types',addLabel:'+ Add Boat',typeLabel:'Houseboat Type',emptyMsg:'No boats yet. Click "+ Add Boat" to create your first houseboat type.'};
+  return {icon:'🏠',heading:'Units & Room Types',addLabel:'+ Add Unit',typeLabel:'Room Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first room/unit type.'};
+}
 const HOSP_UNIT_FIELDS=[
   {field:'name', label:'Name', type:'text', width:150, placeholder:'Unit name'},
   {field:'unit_type', label:'Type', type:'text', width:100, placeholder:'Deluxe'},
@@ -16186,10 +16225,11 @@ function hospUnitRow(u){
 }
 function renderHospUnits(){
   const el=$id('hospContent');
+  const lbl=hospStyleLabel();
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏠 Units &amp; Room Types <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">+ Add Unit</button>
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">${lbl.icon} ${esc(lbl.heading)} <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">${esc(lbl.addLabel)}</button>
     </div>
     ${hospUnits.length?`
     <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
@@ -16199,7 +16239,7 @@ function renderHospUnits(){
       <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
     </table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>`
-    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
+    :`<div class="empty-state"><div class="ei">${lbl.icon}</div>${esc(lbl.emptyMsg)}</div>`}`;
 }
 async function hospAddUnitRow(){
   const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
