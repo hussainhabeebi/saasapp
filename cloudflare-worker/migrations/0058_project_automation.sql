@@ -1,8 +1,8 @@
 -- Durable Project task automation. Queue and Workflow payloads contain identifiers and versions
 -- only; task titles, descriptions and recipient addresses are always re-read from client-scoped D1.
 
-ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pm_projects ADD COLUMN IF NOT EXISTS task_reminders_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pm_projects ADD COLUMN IF NOT EXISTS overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS pm_task_automation (
   client_id INTEGER NOT NULL,
