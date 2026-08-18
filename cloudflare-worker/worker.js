@@ -11790,48 +11790,40 @@ async function handleEngineWebhook(request, env, secret){
     // ask still wins, so neither is checked again here.
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
-      const sendChoice=async(text,choices)=>{
-        if(choices.length) return engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,text,choices.map(value=>({title:value,value})));
-        await engineDeliverReply(env,c,clientId,convId,text,{mediaType,langCode:replyLang});
-        return null;
-      };
       if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
         orderHandledInline=true;
-      }else if(state.stage==='fashion_order_size'){
-        const choices=ecomFashionFieldChoices(seed.sizeOptions);
-        const selected=choices.length?choices.find(value=>ecomNormalizeCatalogueText(value)===ecomNormalizeCatalogueText(userText)):String(userText||'').trim();
-        if(!selected){
-          sentText=await engineLocalizeReply(env,c,'Please choose an available size:',replyLang);
-          routing.reply=sentText; routing.quickReplies=await sendChoice(sentText,choices); orderHandledInline=true;
-        }else{
-          seed.size=selected;
-          const colors=ecomFashionFieldChoices(seed.colorOptions);
-          sentText=await engineLocalizeReply(env,c,colors.length?'Please choose an available colour:':'Please enter the required colour:',replyLang);
-          routing.reply=sentText; routing.next='fashion_order_color'; routing.orderCollectSeed=seed;
-          routing.quickReplies=await sendChoice(sentText,colors); orderHandledInline=true;
-        }
-      }else if(state.stage==='fashion_order_color'){
-        const choices=ecomFashionFieldChoices(seed.colorOptions);
-        const selected=choices.length?choices.find(value=>ecomNormalizeCatalogueText(value)===ecomNormalizeCatalogueText(userText)):String(userText||'').trim();
-        if(!selected){
-          sentText=await engineLocalizeReply(env,c,'Please choose an available colour:',replyLang);
-          routing.reply=sentText; routing.quickReplies=await sendChoice(sentText,choices); orderHandledInline=true;
-        }else{
-          seed.color=selected;
-          sentText=await engineLocalizeReply(env,c,'Please enter the complete delivery address:',replyLang);
-          routing.reply=sentText; routing.next='fashion_order_address'; routing.orderCollectSeed=seed;
+      }else if(state.stage==='fashion_order_details'){
+        // Parse a single reply that contains Colour, Size, and Delivery Address.
+        // Accepts "Label: value" lines in any order (case-insensitive) or falls back to
+        // reading the first three non-empty lines as colour, size, address respectively.
+        const lines=String(userText||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+        const extract=(keys)=>{
+          for(const line of lines){
+            for(const key of keys){
+              const m=line.match(new RegExp(`^${key}\\s*[:\\-]\\s*(.+)$`,'i'));
+              if(m&&m[1].trim()) return m[1].trim();
+            }
+          }
+          return null;
+        };
+        const parsedColour=extract(['colou?r','color']);
+        const parsedSize=extract(['size']);
+        const parsedAddress=extract(['(?:delivery\\s*)?address','addr','location','city']);
+        // Positional fallback: lines[0]=colour, lines[1]=size, lines[2]=address
+        const colour=parsedColour||(lines[0]||'');
+        const size=parsedSize||(lines[1]||'');
+        const address=parsedAddress||(lines[2]||'');
+        if(!colour||!size||address.length<3){
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          sentText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
-        }
-      }else if(state.stage==='fashion_order_address'){
-        seed.address=String(userText||'').trim().slice(0,500);
-        if(seed.address.length<5){
-          sentText=await engineLocalizeReply(env,c,'Please enter the complete delivery address:',replyLang);
-          routing.reply=sentText; await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
         }else{
-          sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nSize: ${seed.size}\nColour: ${seed.color}\nDelivery address: ${seed.address}`,replyLang);
+          seed.color=colour; seed.size=size; seed.address=address.slice(0,500);
+          sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nColour: ${seed.color}\nSize: ${seed.size}\nDelivery address: ${seed.address}`,replyLang);
           routing.reply=sentText; routing.next='fashion_order_confirm'; routing.orderCollectSeed=seed;
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
           orderHandledInline=true;
@@ -12012,9 +12004,13 @@ async function handleEngineWebhook(request, env, secret){
         const categories=await ecomListCategories(env,clientId);
         if(categories.length){
           const intro=await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang);
-          const categoryImage=await ecomFindCategoryImage(env,clientId,categories[0]);
-          if(categoryImage) await engineSendChatwootImageReply(env,c,clientId,convId,categoryImage,intro);
-          sentText=categoryImage?await engineLocalizeReply(env,c,'Please choose a category:',replyLang):intro;
+          // Send each category's image in sequence before presenting the category buttons
+          let anySent=false;
+          for(const category of categories){
+            const catImg=await ecomFindCategoryImage(env,clientId,category);
+            if(catImg){ await engineSendChatwootImageReply(env,c,clientId,convId,catImg,anySent?'':intro); anySent=true; }
+          }
+          sentText=anySent?await engineLocalizeReply(env,c,'Please choose a category:',replyLang):intro;
           routing.reply=sentText;
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(category=>({title:category,value:category})));
           orderHandledInline=true;
@@ -12166,12 +12162,10 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
           const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
-          const sizes=ecomFashionFieldChoices(product.size);
-          const choiceText=await engineLocalizeReply(env,c,sizes.length?'Please choose an available size:':'Please enter the required size:',replyLang);
-          routing.reply=choiceText; routing.next='fashion_order_size'; routing.orderCollectSeed=seed;
-          routing.quickReplies=sizes.length
-            ? await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,choiceText,sizes.map(value=>({title:value,value})))
-            : (await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang}),null);
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
@@ -12214,16 +12208,26 @@ async function handleEngineWebhook(request, env, secret){
           if(categoryProducts.length){
             // One deterministic step only: category -> exact products. Never insert AI-created
             // brand, material, size, spring type, colour or variant questions between them.
-            const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
-            const remaining=categoryProducts.slice(recommended.length,10);
-            const body=[`Recommended in ${detection.category}:`,...recommended.map(p=>`- ${p.name}`),remaining.length?'More products:':'',...remaining.map(p=>`- ${p.name}`)].filter(Boolean).join('\n');
-            sentText=await engineLocalizeReply(env, c, isFashionEcom?body:`Please choose a product from ${detection.category}:`, replyLang);
-            routing.reply=sentText;
             if(isFashionEcom){
+              // Fashion: cap at 6 products, send category image then each product's image+video
+              const fashionProducts=categoryProducts.slice(0,6);
               const categoryImage=await ecomFindCategoryImage(env,clientId,detection.category);
               if(categoryImage) await engineSendChatwootImageReply(env,c,clientId,convId,categoryImage,'');
+              for(const p of fashionProducts){
+                if(p.image_url) await sendDriveMediaToChatwoot(c,convId,p.image_url,'');
+                if(p.video_url) await sendDriveMediaToChatwoot(c,convId,p.video_url,'');
+              }
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(fashionProducts));
+            }else{
+              const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
+              const remaining=categoryProducts.slice(recommended.length,10);
+              const body=[`Recommended in ${detection.category}:`,...recommended.map(p=>`- ${p.name}`),remaining.length?'More products:':'',...remaining.map(p=>`- ${p.name}`)].filter(Boolean).join('\n');
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(categoryProducts));
             }
-            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, ecomProductChoiceItems(categoryProducts));
             orderHandledInline=true;
           }
           if(!orderHandledInline){
