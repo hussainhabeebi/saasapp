@@ -12067,10 +12067,13 @@ async function handleEngineWebhook(request, env, secret){
       // Fashion greeting is prompt-led, but navigation is database-led. A configured category
       // image is sent as the visual header; every button is an exact category from active Ecom
       // Products. Other Ecom styles keep the existing greeting path.
-      if(isFashionEcom&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+      if(isFashionEcom&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
         const categories=await ecomListCategories(env,clientId);
         if(categories.length){
-          const intro=await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang);
+          // New leads get the personalised first-touch intro; returning customers get a simpler prompt
+          const intro=isNewLead
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
           // Send each category's image in sequence before presenting the category buttons
           let anySent=false;
           for(const category of categories){
@@ -12106,21 +12109,36 @@ async function handleEngineWebhook(request, env, secret){
         // active products. The same exact rows are included in the message body and interactive
         // picker, so a provider-side button failure can never leave only a dead-end instruction.
         const categories=await ecomListCategories(env, clientId);
-        const productChoices=broadMatches.length?broadMatches:activeProducts;
-        const items=ecomAvailableCatalogueItems(categories,productChoices);
-        if(items.length){
-          const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
-          const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
-          const categoryLines=[],productLines=[];
-          for(const item of items){
-            const line=`- ${item.title}`;
-            if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
-            else productLines.push(line);
+        if(isFashionEcom){
+          // Fashion: broad match routes to the category picker with images — keeps the
+          // deterministic Categories → Products → Order flow intact instead of a mixed text list.
+          if(categories.length){
+            for(const category of categories){
+              const catImg=await ecomFindCategoryImage(env,clientId,category);
+              if(catImg) await engineSendChatwootImageReply(env,c,clientId,convId,catImg,'');
+            }
+            sentText=await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(cat=>({title:cat,value:cat})));
+            orderHandledInline=true;
           }
-          sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
-          routing.reply=sentText;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
-          orderHandledInline=true;
+        }else{
+          const productChoices=broadMatches.length?broadMatches:activeProducts;
+          const items=ecomAvailableCatalogueItems(categories,productChoices);
+          if(items.length){
+            const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
+            const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
+            const categoryLines=[],productLines=[];
+            for(const item of items){
+              const line=`- ${item.title}`;
+              if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
+              else productLines.push(line);
+            }
+            sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
+            orderHandledInline=true;
+          }
         }
       }
       if(detection.signal && !orderHandledInline){
