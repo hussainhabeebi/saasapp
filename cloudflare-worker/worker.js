@@ -13011,6 +13011,16 @@ async function handleEngineWebhook(request, env, secret){
       if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
+    // Resort first-inquiry gate — if this lead has never received resort media before, suppress
+    // the LLM reply entirely this turn; the description + images + videos are sent later by
+    // engineMaybeSendHospitalityMedia. Follow-up turns (lead already received media) skip this
+    // gate and continue to the LLM block normally. Hotel/houseboat paths are untouched.
+    if(!orderHandledInline && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+      try{
+        if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
+      }catch(e){}
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -17957,11 +17967,12 @@ async function handleHospitalityUnitCreate(request, env){
     currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(),
     description:String(body.description||'').trim().slice(0,1000),
     active:body.active===false?0:1, created_at:new Date().toISOString(),
+    property_id:body.property_id?Number(body.property_id):null,
   };
   const r=await env.DB.prepare(`INSERT INTO hospitality_units
-    (client_id, name, unit_type, capacity_adults, capacity_children, amenities, base_rate, weekend_rate, currency, description, active, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.name, fields.unit_type, fields.capacity_adults, fields.capacity_children, fields.amenities, fields.base_rate, fields.weekend_rate, fields.currency, fields.description, fields.active, fields.created_at)
+    (client_id, name, unit_type, capacity_adults, capacity_children, amenities, base_rate, weekend_rate, currency, description, active, created_at, property_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.name, fields.unit_type, fields.capacity_adults, fields.capacity_children, fields.amenities, fields.base_rate, fields.weekend_rate, fields.currency, fields.description, fields.active, fields.created_at, fields.property_id)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -17997,7 +18008,11 @@ async function handleHospitalityUnitUpdate(request, env){
   if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
   if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
   if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(body.image_url_4!==undefined){ sets.push('image_url_4=?'); vals.push(body.image_url_4?String(body.image_url_4).trim().slice(0,500):null); }
+  if(body.image_url_5!==undefined){ sets.push('image_url_5=?'); vals.push(body.image_url_5?String(body.image_url_5).trim().slice(0,500):null); }
   if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.video_url_2!==undefined){ sets.push('video_url_2=?'); vals.push(body.video_url_2?String(body.video_url_2).trim().slice(0,500):null); }
+  if(body.property_id!==undefined){ sets.push('property_id=?'); vals.push(body.property_id?Number(body.property_id):null); }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
   await env.DB.prepare(`UPDATE hospitality_units SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
@@ -18029,7 +18044,7 @@ async function handleHospitalityUnitDelete(request, env){
 // one via the same remove button. R2 key extension isn't tracked separately in D1, so delete/replace
 // try every extension that upload validation could ever have accepted — an R2 delete on a
 // nonexistent key is a harmless no-op.
-const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', video:'video_url'};
+const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', image4:'image_url_4', image5:'image_url_5', video:'video_url', video2:'video_url_2'};
 const HOSPITALITY_MEDIA_MAX_BYTES=9*1024*1024;
 const HOSPITALITY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
 const HOSPITALITY_VIDEO_EXTS=['mp4','mov','webm','mkv','avi'];
@@ -18101,6 +18116,8 @@ async function handleHospitalityMediaServe(env, key){
 // LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
+const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury)\b/i;
+const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|backwaters?|canal|river|cabins?|rooms?|available|availability|stays?|nights?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
 // Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
 // "share" link (drive.google.com/file/d/<id>/view?usp=sharing) or an "open"/"uc" link
@@ -18197,14 +18214,60 @@ async function handleEcomDriveFileSize(request, env){
 // unit gets sent, not just the first one that resolves. Shared by both
 // engineMaybeSendHospitalityMedia branches below (a specific unit named, or the whole active
 // catalog on a general enquiry).
+// Sends a plain-text message into a Chatwoot conversation — used by resort media sends to deliver
+// description/amenities text ahead of the photo/video burst so the lead reads context before media.
+async function hospitalityChatwootText(c, convId, text){
+  if(!text || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+    body:JSON.stringify({content:String(text), message_type:'outgoing', private:false})
+  }).catch(()=>{});
+}
+
+// Returns true when a resort client's lead should receive media+description instead of an LLM reply
+// this turn. True when:
+//   - Message matches a resort enquiry signal (keyword regex, or property/unit name mention)
+//   - Lead has never previously received any resort media (first-ever enquiry)
+// leadId is null for brand-new leads — that counts as never having received media.
+async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
+  if(!userText) return false;
+  const lower=userText.toLowerCase();
+  // Fast path — check keyword / name signal first before touching DB
+  let hasSignal=HOSPITALITY_RESORT_ENQUIRY_RE.test(lower);
+  if(!hasSignal){
+    const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    if(units && units.some(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()))) hasSignal=true;
+  }
+  if(!hasSignal){
+    const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    if(props && props.some(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()))) hasSignal=true;
+  }
+  if(!hasSignal) return false;
+  // Brand-new lead → definitely first inquiry
+  if(!leadId) return true;
+  // Returning lead — check if they've ever received any resort media
+  const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  if(sentUnit) return false;
+  const sentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  return !sentProp;
+}
+
 async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   const items=[
     {url:unit.image_url_1, name:'photo1.jpg'},
     {url:unit.image_url_2, name:'photo2.jpg'},
     {url:unit.image_url_3, name:'photo3.jpg'},
+    {url:unit.image_url_4, name:'photo4.jpg'},
+    {url:unit.image_url_5, name:'photo5.jpg'},
     {url:unit.video_url, name:'video.mp4'},
+    {url:unit.video_url_2, name:'video2.mp4'},
   ].filter(m=>m.url);
   if(!items.length) return false;
+  // For resort units, send description text first so the lead reads context before the media burst.
+  if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
+    await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
+  }
   let sentAny=false;
   for(let i=0;i<items.length;i++){
     let blob=null;
@@ -18236,6 +18299,104 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   return sentAny;
 }
 
+// ── Resort properties CRUD (migrations/0066_resort_properties.sql) ──
+async function handleHospitalityPropertiesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleHospitalityPropertyCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO hospitality_properties (client_id, name, description, amenities, active, created_at) VALUES (?,?,?,?,1,?)`)
+    .bind(Number(payload.cid), String(body.name).trim().slice(0,140), String(body.description||'').trim().slice(0,1000), String(body.amenities||'').trim().slice(0,500), now)
+    .run();
+  return json({Id:r.meta.last_row_id, client_id:Number(payload.cid), name:body.name, description:body.description||'', amenities:body.amenities||'', active:1, created_at:now});
+}
+async function findHospitalityProperty(env, id){
+  return await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=?`).bind(Number(id)).first();
+}
+async function handleHospitalityPropertyUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityProperty(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,1000)); }
+  if(body.amenities!==undefined){ sets.push('amenities=?'); vals.push(String(body.amenities).trim().slice(0,500)); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(body.image_url_4!==undefined){ sets.push('image_url_4=?'); vals.push(body.image_url_4?String(body.image_url_4).trim().slice(0,500):null); }
+  if(body.image_url_5!==undefined){ sets.push('image_url_5=?'); vals.push(body.image_url_5?String(body.image_url_5).trim().slice(0,500):null); }
+  if(body.video_url_1!==undefined){ sets.push('video_url_1=?'); vals.push(body.video_url_1?String(body.video_url_1).trim().slice(0,500):null); }
+  if(body.video_url_2!==undefined){ sets.push('video_url_2=?'); vals.push(body.video_url_2?String(body.video_url_2).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE hospitality_properties SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleHospitalityPropertyDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityProperty(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE hospitality_units SET property_id=NULL WHERE property_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_property_media_sent WHERE property_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_properties WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Sends property-level media (up to 5 images + 2 videos) then sends each of the property's rooms.
+// Used by the resort 2-tier engine — a property match triggers this so the lead sees the full
+// resort overview in one burst rather than needing to name an individual villa/room.
+async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
+  // Send property description + amenities as text before the media burst so the lead reads context first.
+  const descParts=[];
+  if(property.description && String(property.description).trim()) descParts.push(String(property.description).trim());
+  if(property.amenities && String(property.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(property.amenities).trim()}`);
+  if(descParts.length) await hospitalityChatwootText(c, convId, `*${property.name}*\n\n${descParts.join('\n\n')}`);
+  const items=[
+    {url:property.image_url_1, name:'property-photo1.jpg'},
+    {url:property.image_url_2, name:'property-photo2.jpg'},
+    {url:property.image_url_3, name:'property-photo3.jpg'},
+    {url:property.image_url_4, name:'property-photo4.jpg'},
+    {url:property.image_url_5, name:'property-photo5.jpg'},
+    {url:property.video_url_1, name:'property-video1.mp4'},
+    {url:property.video_url_2, name:'property-video2.mp4'},
+  ].filter(m=>m.url);
+  let sentAny=false;
+  for(let i=0;i<items.length;i++){
+    const fileId=driveFileId(items[i].url);
+    if(!fileId) continue;
+    const fetched=await driveFetchFile(fileId);
+    if(!fetched) continue;
+    const fd=new FormData();
+    fd.append('content', i===0?`Welcome to ${property.name}! 🏨`:'');
+    fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', fetched.blob, items[i].name);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(r.ok) sentAny=true;
+  }
+  const rooms=(allUnits||[]).filter(u=>u.property_id===property.id);
+  for(const room of rooms) await hospitalitySendUnitMedia(env, c, clientId, convId, leadId, room);
+  if(sentAny || rooms.length){
+    await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_property_media_sent (client_id, lead_id, property_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, property.id, new Date().toISOString()).run();
+  }
+  return sentAny;
+}
+
 // Auto-sends unit photos/video into the chat, in two modes:
 //  - Specific enquiry: a lead's message names one active unit — send only that unit's media,
 //    simple case-insensitive substring match on the unit's name (see SETUP.md for why this isn't
@@ -18255,6 +18416,41 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
     if(!units || !units.length) return;
     const lower=userText.toLowerCase();
+
+    if(c.hospitality_style==='resort'){
+      // Resort 2-tier matching (migrations/0066_resort_properties.sql):
+      // 1. Specific room name → send that room's media (5 images + 2 videos)
+      const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+      if(specificUnit){
+        const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
+        if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        return;
+      }
+      // 2. Property name → send property media + all its rooms
+      const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+      if(properties && properties.length){
+        const specificProp=properties.find(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()));
+        if(specificProp){
+          const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
+          if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          return;
+        }
+        // 3. General enquiry → send all properties (overview)
+        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
+        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+        if(alreadyAny) return;
+        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
+      } else {
+        // No properties configured — fall back to sending all rooms directly
+        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
+        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+        if(alreadyAny) return;
+        for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
+      }
+      return;
+    }
+
+    // Existing hotel / houseboat logic — unchanged
     const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
     if(specificUnit){
       const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
@@ -18262,7 +18458,8 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
       return;
     }
-    if(!HOSPITALITY_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const enquiryRe=c.hospitality_style==='houseboat'?HOSPITALITY_HOUSEBOAT_ENQUIRY_RE:HOSPITALITY_GENERAL_ENQUIRY_RE;
+    if(!enquiryRe.test(lower)) return;
     const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
     if(alreadyAny) return;
     for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
@@ -22667,6 +22864,10 @@ export default {
       else if(url.pathname==='/erpnext/companies' && request.method==='GET'){ res=await handleErpnextCompaniesList(request, env); }
       else if(url.pathname==='/erpnext/currencies' && request.method==='GET'){ res=await handleErpnextCurrenciesList(request, env); }
       else if(url.pathname==='/erpnext/accounts' && request.method==='GET'){ res=await handleErpnextAccountsList(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='GET'){ res=await handleHospitalityPropertiesList(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='POST'){ res=await handleHospitalityPropertyCreate(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='PATCH'){ res=await handleHospitalityPropertyUpdate(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='DELETE'){ res=await handleHospitalityPropertyDelete(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='POST'){ res=await handleHospitalityUnitMediaUpload(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
