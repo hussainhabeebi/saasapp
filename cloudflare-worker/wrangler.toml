@@ -157,7 +157,7 @@ class_name = "ProjectTaskWorkflow"
 [vars]
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
-ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com,https://www.leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"
