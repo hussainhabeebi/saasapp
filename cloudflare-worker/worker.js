@@ -7027,8 +7027,8 @@ const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_table_ids','edu_enrollment
 const EDU_CLIENT_WRITE_FIELDS=['edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
 
 async function eduResolveTable(env, clientId, kind){
-  const r=await env.DB.prepare(`SELECT edu_table_ids FROM clients WHERE Id=?`).bind(Number(clientId)).first();
-  const ids=engineParseJsonField(r?.edu_table_ids,{});
+  const c=await getClientById(env, clientId);
+  const ids=engineParseJsonField(c?.edu_table_ids,{});
   return ids[kind]||null;
 }
 
@@ -7036,8 +7036,8 @@ async function handleEduClientGet(request, env){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
-  const c=await env.DB.prepare(`SELECT ${EDU_CLIENT_READ_FIELDS.join(',')} FROM clients WHERE Id=?`).bind(Number(clientId)).first();
-  if(!c) return json({error:'Not found'},404);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
   const out={};
   EDU_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
   return json(out);
@@ -7049,11 +7049,9 @@ async function handleEduClientUpdate(request, env){
   if(!clientId) return json({error:'client_id required'},400);
   const fields={};
   EDU_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
-  if(!Object.keys(fields).length) return json({error:'No fields to update'},400);
-  const sets=Object.keys(fields).map(k=>`${k}=?`);
-  const vals=[...Object.values(fields), Number(clientId)];
-  await env.DB.prepare(`UPDATE clients SET ${sets.join(',')} WHERE Id=?`).bind(...vals).run();
-  return json({ok:true});
+  if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
+  const result=await ncPatchVerified(env, clientId, fields);
+  return json(result.data, result.status);
 }
 
 // NocoDB-backed CRUD for courses and enrollments — exact same pattern as handleEcomList/Create/Update/Delete.
