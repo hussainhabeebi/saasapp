@@ -13011,6 +13011,16 @@ async function handleEngineWebhook(request, env, secret){
       if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
+    // Resort first-inquiry gate — if this lead has never received resort media before, suppress
+    // the LLM reply entirely this turn; the description + images + videos are sent later by
+    // engineMaybeSendHospitalityMedia. Follow-up turns (lead already received media) skip this
+    // gate and continue to the LLM block normally. Hotel/houseboat paths are untouched.
+    if(!orderHandledInline && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+      try{
+        if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
+      }catch(e){}
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -18204,6 +18214,45 @@ async function handleEcomDriveFileSize(request, env){
 // unit gets sent, not just the first one that resolves. Shared by both
 // engineMaybeSendHospitalityMedia branches below (a specific unit named, or the whole active
 // catalog on a general enquiry).
+// Sends a plain-text message into a Chatwoot conversation — used by resort media sends to deliver
+// description/amenities text ahead of the photo/video burst so the lead reads context before media.
+async function hospitalityChatwootText(c, convId, text){
+  if(!text || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+    body:JSON.stringify({content:String(text), message_type:'outgoing', private:false})
+  }).catch(()=>{});
+}
+
+// Returns true when a resort client's lead should receive media+description instead of an LLM reply
+// this turn. True when:
+//   - Message matches a resort enquiry signal (keyword regex, or property/unit name mention)
+//   - Lead has never previously received any resort media (first-ever enquiry)
+// leadId is null for brand-new leads — that counts as never having received media.
+async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
+  if(!userText) return false;
+  const lower=userText.toLowerCase();
+  // Fast path — check keyword / name signal first before touching DB
+  let hasSignal=HOSPITALITY_RESORT_ENQUIRY_RE.test(lower);
+  if(!hasSignal){
+    const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    if(units && units.some(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()))) hasSignal=true;
+  }
+  if(!hasSignal){
+    const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+    if(props && props.some(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()))) hasSignal=true;
+  }
+  if(!hasSignal) return false;
+  // Brand-new lead → definitely first inquiry
+  if(!leadId) return true;
+  // Returning lead — check if they've ever received any resort media
+  const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  if(sentUnit) return false;
+  const sentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  return !sentProp;
+}
+
 async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   const items=[
     {url:unit.image_url_1, name:'photo1.jpg'},
@@ -18215,6 +18264,10 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
     {url:unit.video_url_2, name:'video2.mp4'},
   ].filter(m=>m.url);
   if(!items.length) return false;
+  // For resort units, send description text first so the lead reads context before the media burst.
+  if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
+    await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
+  }
   let sentAny=false;
   for(let i=0;i<items.length;i++){
     let blob=null;
@@ -18308,6 +18361,11 @@ async function handleHospitalityPropertyDelete(request, env){
 // Used by the resort 2-tier engine — a property match triggers this so the lead sees the full
 // resort overview in one burst rather than needing to name an individual villa/room.
 async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
+  // Send property description + amenities as text before the media burst so the lead reads context first.
+  const descParts=[];
+  if(property.description && String(property.description).trim()) descParts.push(String(property.description).trim());
+  if(property.amenities && String(property.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(property.amenities).trim()}`);
+  if(descParts.length) await hospitalityChatwootText(c, convId, `*${property.name}*\n\n${descParts.join('\n\n')}`);
   const items=[
     {url:property.image_url_1, name:'property-photo1.jpg'},
     {url:property.image_url_2, name:'property-photo2.jpg'},
