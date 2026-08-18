@@ -153,7 +153,11 @@ marker," which real testing showed is unreliable.
 routes fall back to fix #10's extraction on the actual text about to be sent whenever no
 `options` are configured.
 **Don't revert:** Removing the `value` cap reopens a silent-rejection risk; removing the
-localization or extraction fallback reopens their respective original failures.
+extraction fallback reopens its original failure. **Superseded in part by fix #19:**
+`engineLocalizeOptions` (point 2 above) was later removed entirely — translating button/list
+*titles* into the customer's language turned out to cause a worse problem (a non-English tap reply
+can get silently rejected by Chatwoot's own inbound webhook). The question *text* is still
+localized as this fix intended; only the tappable option labels are no longer translated.
 
 ### 12 — [backend] Fix Malayalam (and other complex-script) button taps never resolving
 **Area:** Tap-resolution comparison in `handleEngineWebhook`, collision check in
@@ -220,7 +224,118 @@ still in place.
 `worker.test.js`; `engineCallLlmAvoidingRepeat` itself calls the network (Gemini/OpenRouter) and is
 intentionally left out of the pure-logic suite, consistent with this file's existing scope.
 
-### 16 — [backend] Durable customer facts, not just raw transcript + a summary
+### 16 — [backend] Diagnostic logging for an unresolved quick-reply tap
+**Area:** Tap-resolution block in `handleEngineWebhook`, right where fix #12's comparison runs
+(`cloudflare-worker/worker.js`)
+**Broke (a gap, not a bug):** "The button tap didn't do anything" was reported multiple times
+(fixes #6, #9, #12 all came from this same class of report), and each time there was no way to
+tell, from a screenshot alone, whether the tap (a) reached this webhook but didn't match any
+offered option, or (b) never reached Chatwoot/this webhook at all — those two failure modes need
+completely different fixes (one is a bug in this repo, the other is a Chatwoot/Meta delivery
+issue outside it), and guessing which one happened wastes a round of speculative fixes.
+**Fix:** Whenever a picker was just shown and the reply doesn't match any of its options (even
+after fix #12's normalization), log it (`engine_event_log`, reason `quick-reply-not-matched`,
+Settings → Logs) — diagnostic only, never blocks or alters the turn. If a report comes in and
+**nothing** appears in Settings → Logs for that phone/time (not even this entry), the problem is
+upstream of this codebase — check Chatwoot's own conversation view and Meta's delivery logs next,
+not another code fix here.
+**Don't revert:** Removing this reopens the exact "which layer failed?" guessing game.
+
+### 17 — [backend] "✓ Replied" in Settings → Logs didn't mean the message was actually delivered
+**Area:** `engineSendChatwootReply`, `engineSendChatwootImageReply`, `engineSendChatwootAudioReply`,
+`engineSendChatwootQuickReply`, `engineDeliverReply` (`cloudflare-worker/worker.js`)
+**Broke:** Following up on fix #16's diagnostic: a real case where a customer's tap genuinely
+reached the engine (a `✓ Replied / ecom_faq` row was logged, matching timestamp, 8.4s round trip)
+but nothing arrived on WhatsApp. Root cause: `engineLogAnalytics` (the source of every "Replied"
+row) is called **unconditionally** at the end of a turn, regardless of whether the actual Chatwoot
+send succeeded — every one of the 4 send functions already caught its own failures and reported
+them to `reportOpsError` (operator-only Slack/email), but that's invisible in the client-facing
+Settings → Logs a business owner actually checks. Same gap for `bot_reply_disabled='Yes'`
+(Settings → Bot Auto-Reply off): `engineDeliverReply` intentionally suppresses the send for that
+client, but the turn still finishes and still logs "Replied."
+**Fix:** All 4 send functions now return `true`/`false` reflecting whether something actually went
+out (not just "didn't throw"), and log a specific reason to `engine_event_log`
+(`send-failed`/`send-skipped-no-setup`/`bot-reply-disabled`) whenever they don't deliver — visible
+in Settings → Logs right alongside (not instead of) the still-present "Replied" analytics row, so a
+business owner can now see *why* nothing arrived instead of just seeing an unexplained "Replied."
+`engineSendChatwootQuickReply` distinguishes `false` (nothing delivered at all) from `null` (fell
+back to plain text successfully — not a failure, just not buttons) so its existing
+`routing.quickReplies` contract (fix #9) is unaffected.
+**Don't revert:** Making these functions return `undefined` again (or dropping the `logEngineSkip`
+calls) silently brings back "Replied" as an untrustworthy signal — this was a real, confirmed cause
+of at least one "button didn't do anything" report, not a hypothetical.
+**Not yet done:** `engineLogAnalytics`'s own `IsError` field still doesn't reflect delivery failure
+— it's a separate, larger change (threading a success signal through ~15 different reply-dispatch
+branches in `handleEngineWebhook`) that was deliberately scoped out here to ship the diagnostic
+value now at low risk. The new `logEngineSkip` rows are the actual fix; "Replied" itself is still
+just "didn't crash," so keep reading both columns together.
+**Tested:** `worker.test.js` → `engineSendChatwootReply` return value (mocked `fetch`).
+
+### 18 — [backend] The rate limiter measured time since the bot's own reply, not since the customer's message
+**Area:** Rate-limit check in `handleEngineWebhook`, `engineGetLeadState`, `engineBuildLeadUpsertBody`
+call site (`cloudflare-worker/worker.js`)
+**Broke:** With Bot Auto-Reply confirmed on and no `quick-reply-not-matched` or `send-failed` row in
+Settings → Logs for the tap (ruling out fixes #16 and #17), some button taps still got zero
+response. Root cause: the rate limiter compared `Date.now()` against `LEADS.LastMsgAt`, but
+`LastMsgAt` is stamped with "now" unconditionally at the end of **every** turn — including the
+bot's own reply, which real logs show taking 8+ seconds (LLM + NocoDB round trips). So the clock
+this check measured was "time since the last activity of either party," not "time since the
+customer last wrote in." A customer tapping a quick-reply button they're already looking at (no
+typing needed, often well under the 4s default `rate_limit_ms`) could land inside the cooldown
+window the bot's *own* prior reply had just reset, and get silently skipped
+(`rate-limited` in `engine_event_log`) with nothing sent — this matches "Bot replay on but some
+replays from button not reaching to Bot or Chatwoot" exactly.
+**Fix:** Added `LEADS.LastCustomerMsgAt`, a separate column stamped only from the customer's own
+message arrival time (`startMs`, captured at the very top of `handleEngineWebhook`, before any
+LLM/NocoDB work) — never from the bot's reply. `engineGetLeadState` now returns
+`lastCustomerMsgAt`, and the rate-limit check reads that instead of `lastMsgAt`. `LastMsgAt` itself
+is untouched and still reflects the most recent activity for any other code that relies on it.
+**Don't revert:** Switching the rate-limit check back to `state.lastMsgAt` reopens the exact race:
+the bot's own reply resets the clock the customer's immediate next tap gets measured against.
+**Not yet done:** No direct unit test — the check lives inline in `handleEngineWebhook`, which
+isn't a pure/exported function. If it's ever extracted, add a test asserting the rate limit is
+measured against the customer's last message time, not the bot's.
+
+### 19 — [backend] Button/list titles were translated into the customer's language — WhatsApp echoes them back on tap
+**Area:** `engineBuildFaqSystemPrompt`'s OPTIONS: instruction, `engineExtractPlainOptionsFromReply`,
+the `qualify`/`qualify_next` routes in `handleEngineWebhook`, `engineLocalizeOptions` (removed)
+(`cloudflare-worker/worker.js`)
+**Broke:** A Chatwoot server log showed a genuinely different failure mode than fixes #16-#18: a
+plain-typed Malayalam text message from a customer was rejected outright by Chatwoot's own inbound
+WhatsApp webhook with `Filter chain halted as :verify_meta_signature!` → `401 Unauthorized` — never
+even reaching this engine, let alone the bot or CRM. The exact same phone number's ASCII `"Hi"`
+moments earlier passed the same check fine, and the same failure reproduced for an unrelated
+client/account too, pointing at something in front of the whole Chatwoot deployment (proxy/WAF/CDN)
+mishandling non-ASCII UTF-8 request bodies specifically — outside this repo, not fixable here.
+What IS controllable from this side: WhatsApp echoes a button/list item's exact `title` back as the
+message body when a customer taps it. Every Malayalam-language quick-reply button this engine had
+ever sent (qual_questions options translated via `engineLocalizeOptions`, and FAQ-route OPTIONS:
+menus the LLM wrote directly in the customer's language) turned a tap into exactly the kind of
+non-ASCII inbound webhook body that trips this bug — a very plausible explanation for every "button
+tap didn't do anything" report involving Malayalam specifically.
+**Fix:** Button/list titles are now pinned to English everywhere they're built, regardless of the
+customer's detected language — only the surrounding message *text* (the question itself) stays
+localized: (1) `engineLocalizeOptions` (translated configured qual_questions options into replyLang)
+removed entirely — `firstQOptions`/`qualNextOptions` are sent as configured, untranslated; (2) both
+qual-question extraction-fallback call sites (`engineExtractPlainOptionsFromReply`) now read the
+pre-localization English source text (`firstQ` / the next question's pre-localization text) instead
+of the already-localized `sentText`; (3) `engineExtractPlainOptionsFromReply`'s own LLM prompt now
+explicitly requires English output regardless of the input reply's language, fixing the FAQ route's
+extraction fallback too; (4) `engineBuildFaqSystemPrompt`'s OPTIONS: instruction now tells the model
+to write option labels in English even while writing the rest of the reply in the customer's
+language.
+**Don't revert:** Re-adding a translation step for button/list titles (or reverting the FAQ
+system prompt's OPTIONS: instruction back to "in the customer's language") reopens this exact class
+of silently-dropped tap. If a genuinely localized button label is wanted again, it needs a real fix
+on the Chatwoot/infra side (why non-ASCII inbound webhook bodies get 401'd) first — this fix is a
+mitigation for the button/tap subset of the problem, not a cure; free-typed non-English text
+messages (not button taps) are unaffected by anything in this repo and will keep failing until the
+infra issue is fixed.
+**Tested:** `worker.test.js` → asserts `engineBuildFaqSystemPrompt`'s OPTIONS: instruction requires
+English labels (and that the old "customer's language" wording is gone), and that
+`engineExtractPlainOptionsFromReply`'s own LLM prompt does the same (mocked `fetch`).
+
+### 20 — [backend] Durable customer facts, not just raw transcript + a summary
 **Area:** `engineMaybeExtractCustomerFacts`, `engineCustomerFactsBlock` (new), `engineGetLeadState`'s
 `customerFacts`, both lead-upsert call sites in `handleEngineWebhook`/`handleInstagramWebhook`
 (`cloudflare-worker/worker.js`)
@@ -252,7 +367,7 @@ now lean on it to know what's already been established.
 formatter without its own documented failure case, consistent with this file's per-bug (not
 per-helper) test scope.
 
-### 17 — [backend] Reject a hallucinated link before it's ever sent
+### 21 — [backend] Reject a hallucinated link before it's ever sent
 **Area:** `engineFindHallucinatedLink` (new), `engineCallLlmAvoidingRepeat`'s extended signature
 (now also takes `allowedLinks`), its 3 ecom call sites (product-enquiry route, ecom_faq route —
 WhatsApp and Instagram), plus a new general "only state a fact literally in the catalog" instruction
