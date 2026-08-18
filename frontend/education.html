@@ -278,24 +278,6 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 
   <div class="card">
-    <div class="card-title">Education Table IDs (NocoDB)</div>
-    <div class="s-sec">
-      <span class="s-lbl">Courses Table ID</span>
-      <input class="s-input" id="cfgCoursesTable" type="text" placeholder="e.g. abc123xyz">
-      <div class="s-hint">NocoDB table ID for your courses catalogue</div>
-    </div>
-    <div class="s-sec">
-      <span class="s-lbl">Enrollments Table ID</span>
-      <input class="s-input" id="cfgEnrollmentsTable" type="text" placeholder="e.g. def456uvw">
-      <div class="s-hint">NocoDB table ID for enrollment records</div>
-    </div>
-    <div class="s-row">
-      <button class="save-btn" onclick="saveTableIds()">Save Table IDs</button>
-      <span class="save-msg" id="tableIdsMsg"></span>
-    </div>
-  </div>
-
-  <div class="card">
     <div class="card-title">Enrollments Sheet Sync</div>
     <div class="s-sec">
       <span class="s-lbl">Google Sheet URL (Enrollments)</span>
@@ -499,7 +481,6 @@ const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
 const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
-let eduTableIds = {};
 let allCourses = [];
 let allCategories = [];
 let allPromotions = [];
@@ -528,10 +509,7 @@ async function init() {
   const res = await fetch(`${WORKER_BASE}/edu/client?client_id=${encodeURIComponent(clientId)}`);
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
-  try { eduTableIds = JSON.parse(clientRecord.edu_table_ids || '{}'); } catch(e) { eduTableIds = {}; }
 
-  if (document.getElementById('cfgCoursesTable'))    document.getElementById('cfgCoursesTable').value    = eduTableIds.courses    || '';
-  if (document.getElementById('cfgEnrollmentsTable')) document.getElementById('cfgEnrollmentsTable').value = eduTableIds.enrollments || '';
   if (document.getElementById('cfgEnrollmentLink'))  document.getElementById('cfgEnrollmentLink').value  = clientRecord.edu_enrollment_link || '';
   if (document.getElementById('cfgEnrollmentsSheet')) document.getElementById('cfgEnrollmentsSheet').value = clientRecord.edu_enrollments_sheet || '';
   try {
@@ -554,7 +532,6 @@ function showTab(tab) {
 
 // ── COURSES ──────────────────────────────────────
 async function loadCourses() {
-  if (!eduTableIds.courses) { renderCoursesTable(); return; }
   const res = await fetch(`${WORKER_BASE}/edu/courses?client_id=${encodeURIComponent(clientId)}&include_inactive=true`);
   const data = await res.json().catch(() => ({}));
   allCourses = data.list || [];
@@ -985,7 +962,6 @@ async function deleteStory(id) {
 
 // ── ENROLLMENTS ───────────────────────────────────
 async function loadEnrollments() {
-  if (!eduTableIds.enrollments) { renderEnrollmentsTable(); return; }
   const res = await fetch(`${WORKER_BASE}/edu/enrollments?client_id=${encodeURIComponent(clientId)}`);
   const data = await res.json().catch(() => ({}));
   allEnrollments = data.list || [];
@@ -1056,17 +1032,6 @@ async function saveEnrollmentLink() {
   const link = document.getElementById('cfgEnrollmentLink').value.trim();
   const msg = document.getElementById('enrollmentLinkMsg');
   const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_enrollment_link: link }) });
-  msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
-  setTimeout(() => msg.textContent = '', 3000);
-}
-
-async function saveTableIds() {
-  const courses    = document.getElementById('cfgCoursesTable').value.trim();
-  const enrollments = document.getElementById('cfgEnrollmentsTable').value.trim();
-  const msg = document.getElementById('tableIdsMsg');
-  const ids = {}; if (courses) ids.courses = courses; if (enrollments) ids.enrollments = enrollments;
-  const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_table_ids: JSON.stringify(ids) }) });
-  if (res.ok) { eduTableIds = ids; await loadCourses(); await loadEnrollments(); }
   msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
   setTimeout(() => msg.textContent = '', 3000);
 }

@@ -7017,20 +7017,14 @@ async function handleEcomCategoryMediaServe(env, key){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
-   EDUCATION MODULE (migrations/0060-0064)
-   Mirrors the Ecom module structure: NocoDB-backed courses/enrollments + D1-backed categories,
-   promotions (scholarships), and success stories. Client-id-based auth (no session token) —
-   same trust model as /ecom/*. education.html embeds as an iframe in dashboard.html.
+   EDUCATION MODULE (migrations/0060-0065)
+   All education data lives in D1 — courses, enrollments, categories, promotions, stories.
+   Client-id-based auth (no session token) — same trust model as /ecom/*.
+   education.html embeds as an iframe in dashboard.html.
    ════════════════════════════════════════════════════════════════════════════════════════════════ */
 
-const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
-const EDU_CLIENT_WRITE_FIELDS=['edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
-
-async function eduResolveTable(env, clientId, kind){
-  const c=await getClientById(env, clientId);
-  const ids=engineParseJsonField(c?.edu_table_ids,{});
-  return ids[kind]||null;
-}
+const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
+const EDU_CLIENT_WRITE_FIELDS=['edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
 
 async function handleEduClientGet(request, env){
   const url=new URL(request.url);
@@ -7054,83 +7048,98 @@ async function handleEduClientUpdate(request, env){
   return json(result.data, result.status);
 }
 
-// NocoDB-backed CRUD for courses and enrollments — exact same pattern as handleEcomList/Create/Update/Delete.
-async function handleEduList(request, env, kind){
+/* ── Education Courses (D1-backed, migration 0065) ── */
+const EDU_COURSE_FIELDS=['name','short_label','category','level','duration','start_date','price','currency','seats_available','status','enrollment_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url','description'];
+
+async function handleEduCoursesList(request, env){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({list:[]});
   const includeInactive=url.searchParams.get('include_inactive')==='true';
-  const where=includeInactive?`(client_id,eq,${clientId})`:`(client_id,eq,${clientId})~and(status,neq,inactive)`;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${where}&limit=200&sort=-created_at`);
-  const d=await r.json().catch(()=>({list:[]}));
-  return json({list:d.list||[]});
+  const q=includeInactive
+    ?`SELECT * FROM edu_courses WHERE client_id=? ORDER BY created_at DESC`
+    :`SELECT * FROM edu_courses WHERE client_id=? AND status!='inactive' ORDER BY created_at DESC`;
+  const {results}=await env.DB.prepare(q).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 
-async function handleEduCreate(request, env, kind){
+async function handleEduCourseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured — add table ID in Education → Settings'},400);
-  const {client_id:_,...rest}=body;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:[{...rest, client_id:Number(clientId)}]});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:'NocoDB error', detail:d},502);
-  const created=(Array.isArray(d)?d[0]:d)||{};
-  if(kind==='courses' && created?.Id){
-    const m=created;
-    await env.DB.prepare(`INSERT OR REPLACE INTO edu_courses_mirror (client_id, nocodb_id, name, short_label, category, level, duration, price, currency, seats_available, start_date, status, enrollment_link, image_url, image_url_2, image_url_3, audio_url, video_url, pdf_url, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(Number(clientId), m.Id, m.name||null, m.short_label||null, m.category||null, m.level||null, m.duration||null, m.price||null, m.currency||null, m.seats_available??null, m.start_date||null, m.status||null, m.enrollment_link||null, m.image_url||null, m.image_url_2||null, m.image_url_3||null, m.audio_url||null, m.video_url||null, m.pdf_url||null, m.description||null, new Date().toISOString(), new Date().toISOString()).run().catch(()=>{});
-  }
-  return json(created);
+  const name=String(body.name||'').trim();
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO edu_courses (client_id,name,short_label,category,level,duration,start_date,price,currency,seats_available,status,enrollment_link,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(Number(clientId),name,String(body.short_label||''),String(body.category||''),String(body.level||''),String(body.duration||''),String(body.start_date||''),body.price??null,String(body.currency||'INR'),body.seats_available??null,body.status==='inactive'?'inactive':'active',String(body.enrollment_link||''),String(body.image_url||''),String(body.image_url_2||''),String(body.image_url_3||''),String(body.audio_url||''),String(body.video_url||''),String(body.pdf_url||''),String(body.description||''),now,now).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
 }
 
-async function handleEduUpdate(request, env, kind){
+async function handleEduCourseUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.Id||body.id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured'},400);
-  const ownCheck=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,eq,${id})&fields=Id&limit=1`);
-  const ownData=await ownCheck.json().catch(()=>({list:[]}));
-  if(!(ownData.list||[]).length) return json({error:'Not found'},404);
-  const {client_id:_,...rest}=body;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:[{...rest, Id:id}]});
-  if(!r.ok) return json({error:'NocoDB error'},502);
-  if(kind==='courses'){
-    const mirrorFields=['name','short_label','category','level','duration','price','currency','seats_available','start_date','status','enrollment_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url','description'];
-    const sets=[], vals=[];
-    mirrorFields.forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
-    sets.push('updated_at=?'); vals.push(new Date().toISOString());
-    vals.push(Number(clientId)); vals.push(id);
-    if(sets.length>1) await env.DB.prepare(`UPDATE edu_courses_mirror SET ${sets.join(',')} WHERE client_id=? AND nocodb_id=?`).bind(...vals).run().catch(()=>{});
-  }
+  const existing=await env.DB.prepare(`SELECT id FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).first();
+  if(!existing) return json({error:'Not found'},404);
+  const sets=[],vals=[];
+  EDU_COURSE_FIELDS.forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id); vals.push(Number(clientId));
+  await env.DB.prepare(`UPDATE edu_courses SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
-async function handleEduDelete(request, env, kind){
+async function handleEduCourseDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const ids=Array.isArray(body.Ids)?body.Ids.map(Number).filter(n=>n>0):(body.Id?[Number(body.Id)]:[]);
-  if(!clientId||!ids.length) return json({error:'client_id and Id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured'},400);
-  const ownedR=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,in,${ids.join(',')})&fields=Id&limit=200`);
-  const owned=await ownedR.json().catch(()=>({list:[]}));
-  const ownedIds=(owned.list||[]).map(row=>row.Id);
-  if(!ownedIds.length) return json({deleted:0, requested:ids.length});
-  const CHUNK=40;
-  let deleted=0;
-  for(let i=0;i<ownedIds.length;i+=CHUNK){
-    const chunk=ownedIds.slice(i,i+CHUNK);
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
-    if(r.ok) deleted+=chunk.length;
-  }
-  if(kind==='courses' && ownedIds.length) await env.DB.prepare(`DELETE FROM edu_courses_mirror WHERE client_id=? AND nocodb_id IN (${ownedIds.join(',')})`).bind(Number(clientId)).run().catch(()=>{});
-  return json({deleted, requested:ids.length});
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  await env.DB.prepare(`DELETE FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).run();
+  return json({ok:true});
+}
+
+/* ── Education Enrollments (D1-backed, migration 0065) ── */
+async function handleEduEnrollmentsList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_enrollments WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleEduEnrollmentCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(Number(clientId),String(body.enrollment_id||''),String(body.enrollment_date||''),String(body.student_name||''),String(body.student_phone||''),String(body.student_email||''),String(body.course||''),body.status||'pending',String(body.notes||''),now,now).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId)});
+}
+
+async function handleEduEnrollmentUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const sets=[],vals=[];
+  ['enrollment_id','enrollment_date','student_name','student_phone','student_email','course','status','notes'].forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id); vals.push(Number(clientId));
+  await env.DB.prepare(`UPDATE edu_enrollments SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleEduEnrollmentDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  await env.DB.prepare(`DELETE FROM edu_enrollments WHERE id=? AND client_id=?`).bind(id,Number(clientId)).run();
+  return json({ok:true});
 }
 
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
@@ -22325,14 +22334,14 @@ export default {
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
-      else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduList(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCreate(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'courses'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='GET'){ res=await handleEduList(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='POST'){ res=await handleEduCreate(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='DELETE'){ res=await handleEduCourseDelete(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='GET'){ res=await handleEduEnrollmentsList(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='POST'){ res=await handleEduEnrollmentCreate(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='PATCH'){ res=await handleEduEnrollmentUpdate(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='DELETE'){ res=await handleEduEnrollmentDelete(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='GET'){ res=await handleEduCategoriesList(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='POST'){ res=await handleEduCategoryCreate(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='PATCH'){ res=await handleEduCategoryUpdate(request, env); }
