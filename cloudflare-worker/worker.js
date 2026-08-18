@@ -7139,7 +7139,7 @@ async function handleEduCategoriesList(request, env){
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
   const {results}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
-  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+  return json({categories:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 async function handleEduCategoryCreate(request, env){
   const body=await request.json().catch(()=>({}));
@@ -7156,7 +7156,7 @@ async function findEduCategory(env, id){
 async function handleEduCategoryUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7177,7 +7177,7 @@ async function handleEduCategoryUpdate(request, env){
 async function handleEduCategoryDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7219,7 +7219,7 @@ async function handleEduPromotionsList(request, env){
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
   const {results}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
-  return json({list:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
+  return json({promotions:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
 }
 async function handleEduPromotionCreate(request, env){
   const body=await request.json().catch(()=>({}));
@@ -7240,7 +7240,7 @@ async function findEduPromotion(env, id){ return await env.DB.prepare(`SELECT * 
 async function handleEduPromotionUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduPromotion(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7266,7 +7266,7 @@ async function handleEduPromotionUpdate(request, env){
 async function handleEduPromotionDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduPromotion(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
