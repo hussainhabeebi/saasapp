@@ -16653,6 +16653,51 @@ function showUpdateBanner(){
     startAuthentikLogin();
     return;
   }
+  // Marketing site email form — email collected on leadvyne.com, redirected here with
+  // ?autoSignup=1&email=xxx so the Worker call happens from app.leadvyne.com (already in
+  // ALLOWED_ORIGINS), sidestepping any cross-origin restriction on the landing page.
+  const _autoSignupParams=new URLSearchParams(location.search);
+  if(_autoSignupParams.get('autoSignup')==='1'){
+    const _autoEmail=_autoSignupParams.get('email')||'';
+    history.replaceState({},'',location.pathname);
+    if(_autoEmail){
+      (async()=>{
+        try{
+          const r=await fetch('https://api.leadvyne.com/signup',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({email:_autoEmail})
+          });
+          const data=await r.json().catch(()=>({}));
+          if(r.status===409){
+            // Account exists — proceed to normal login
+            startAuthentikLogin(); return;
+          }
+          if(r.ok && !data.error){
+            // Account created — show confirmation, stay on page
+            document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+              +'<svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="28" fill="#0d9c93"/><path d="M16 28l8 8 16-16" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+              +'<h2 style="margin:0;font-size:22px;color:#1a202c">Check your email</h2>'
+              +'<p style="margin:0;color:#4a5568;max-width:340px">We sent a setup link to <strong>'+_autoEmail+'</strong>. Click it to finish creating your account.</p>'
+              +'<a href="https://leadvyne.com" style="margin-top:8px;font-size:14px;color:#0d9c93">← Back to Leadvyne</a>'
+              +'</div>';
+            return;
+          }
+          // Error — show message with option to go back
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">'+(data.error||'Something went wrong. Please try again.')+'</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }catch(e){
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">Could not connect. Please check your connection and try again.</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }
+      })();
+      return;
+    }
+    // No email — fall through to normal flow
+  }
   // No local session and no explicit signup intent — before leaving the interactive "Secure
   // Login" button up, check whether Authentik itself still has this browser signed in (see
   // trySilentAuthentikLogin above). Unlike the popup flow, this is a same-tab iframe, so it isn't
