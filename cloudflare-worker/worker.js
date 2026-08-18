@@ -19,6 +19,14 @@
 // exposure as before, just not yet migrated. dashboard.html and ecom.html
 // (via the /ecom/* routes) are fully migrated.
 
+// Cloudflare exposes WorkflowEntrypoint through the special cloudflare:workers module. Node's
+// built-in test runner cannot resolve that runtime-only URL, so tests use the tiny compatible base
+// below while deployed Workers load the real class. The Workflow implementation itself is tested
+// through the same run(event, step) contract used in production.
+const WorkflowEntrypointBase=typeof process==='undefined'
+  ? (await import('cloudflare:workers')).WorkflowEntrypoint
+  : class { constructor(ctx,env){ this.ctx=ctx; this.env=env; } };
+
 // 30 days, not 24h — a rep on WhatsApp-heavy mobile use dips in and out of the dashboard all day;
 // combined with moving the frontend's own storage of this token from sessionStorage to
 // localStorage (see dashboard.html — sessionStorage is wiped the moment a tab/browser closes,
@@ -136,6 +144,7 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
+  {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -383,7 +392,7 @@ function safeClient(rec){
    lets the /nocodb passthrough enforce per-user restrictions (e.g. travel
    lead-category access) server-side instead of only in the browser. ── */
 async function signSession(env, clientId, email=''){
-  const payload={cid:String(clientId), email:String(email||'').toLowerCase(), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
+  const payload={cid:String(clientId), email:String(email||'').trim().toLowerCase(), exp:Math.floor(Date.now()/1000)+SESSION_TTL_SECONDS};
   const body=btoa(JSON.stringify(payload));
   const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(env.SESSION_SIGNING_KEY), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
   const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
@@ -536,6 +545,11 @@ async function handleSessionExchange(request, env){
     if(created.error) return json({error:created.error}, created.status||502);
     rec=created.rec;
     isNewSignup=true;
+  } else if(rec.signup_status==='pending'){
+    // Row was pre-created by POST /signup (the simplified home-page signup flow). First real
+    // login completes the onboarding: mark active and fire the onboarding webhook below.
+    isNewSignup=true;
+    await patchClientFields(env, rec.Id, {signup_status:'active'}).catch(()=>{});
   }
   const session_token=await signSession(env, rec.Id, email);
   // Cross-Sell module (dashboard.html Settings → "🔄 Cross-Sell & Upsell", the lead panel's
@@ -629,9 +643,76 @@ async function handleAutoProvision(request, env){
   return json({session_token, client_id:String(rec.Id), client:safeClient(rec), email, isNewSignup});
 }
 
+async function handleSignup(request, env){
+  const {email}=await request.json().catch(()=>({}));
+  if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim()))
+    return json({error:'Please enter a valid email address.'}, 400);
+  const emailNorm=String(email).trim().toLowerCase();
+
+  // Email collision — existing CLIENTS row
+  const existingClient=await getClientByAuthentikEmail(env, emailNorm);
+  if(existingClient) return json({exists:true, message:'An account with that email already exists.'}, 409);
+
+  // Email collision — Authentik user without a CLIENTS row yet
+  const existingAuth=await authentikFindUserByEmail(env, emailNorm);
+  if(existingAuth) return json({exists:true, message:'An account with that email already exists.'}, 409);
+
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Signup is temporarily unavailable.'}, 503);
+
+  // Create Authentik user (is_active:true so the recovery link flow can fire)
+  const username=emailNorm.split('@')[0].replace(/[^a-zA-Z0-9_.-]/g,'_').slice(0,150)||'user';
+  const createR=await authentikApiFetch(env, '/core/users/', {
+    method:'POST',
+    body:JSON.stringify({username, email:emailNorm, name:deriveBusinessNameServer(emailNorm), is_active:true})
+  });
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok){
+    const detail=createData?.email?.[0]||createData?.username?.[0]||createData?.detail||('HTTP '+createR.status);
+    return json({error:'Could not create account: '+detail}, 502);
+  }
+  const userId=createData.pk;
+
+  // Authentik requires a password before issuing a recovery link
+  const tmpPw=generateRandomPassword();
+  const pwR=await authentikApiFetch(env, `/core/users/${userId}/set_password/`, {method:'POST', body:JSON.stringify({password:tmpPw})});
+  if(!pwR.ok){
+    await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    return json({error:'Could not finish setting up account — please try again.'}, 502);
+  }
+
+  // Pre-provision CLIENTS row (signup_status:'pending' triggers full onboard on first real login)
+  await ensureClientColumns(env, ['signup_status']);
+  const createClientR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
+    client_name:deriveBusinessNameServer(emailNorm), authentik_email:emailNorm,
+    language:'en', industry:'general', signup_status:'pending'
+  }});
+  if(!createClientR.ok){
+    await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
+    return json({error:'Could not create your account — please try again.'}, 502);
+  }
+
+  // Recovery/invite link — lets the user set their own password
+  let inviteLink=null;
+  try{
+    const recR=await authentikApiFetch(env, `/core/users/${userId}/recovery/`, {method:'POST'});
+    if(recR.ok){ const d=await recR.json().catch(()=>({})); inviteLink=d?.link||null; }
+  }catch(e){}
+
+  // Send invite email (reuses existing Resend helper)
+  if(inviteLink) await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+
+  return json({ok:true, message:'Check your email to set up your account.'});
+}
+
 async function handleSessionMe(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  // Sessions issued before per-user access control was added contain only {cid,exp}. Renewing
+  // one of those forever leaves the browser believing it is the owner (from its local email
+  // cache) while protected writes correctly see no signed identity and return 403. There is no
+  // safe way to infer which teammate held an old shared-client token, so fail closed once and let
+  // the existing Authentik login/silent-login flow mint a new email-bound token.
+  if(!String(payload.email||'').trim()) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
   const rec=await getClientById(env, payload.cid);
   if(!rec||!rec.Id) return json({error:'Client not found'}, 404);
   // Sliding-window refresh — this route is called on every app load/resume (dashboard.html's
@@ -640,8 +721,9 @@ async function handleSessionMe(request, env){
   // per-user email forward from the token being refreshed (verifySession already validated it),
   // so a sliding refresh never silently drops a teammate back to "unknown user" and loses their
   // per-user restrictions.
-  const session_token=await signSession(env, rec.Id, payload.email||'');
-  return json({client_id:String(rec.Id), client:safeClient(rec), session_token});
+  const email=String(payload.email).trim().toLowerCase();
+  const session_token=await signSession(env, rec.Id, email);
+  return json({client_id:String(rec.Id), client:safeClient(rec), session_token, email});
 }
 
 /* ── Team user creation (User Management) — provisions a real Authentik account (username +
@@ -914,16 +996,20 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
   if(touchesProtectedField || (isLeadsList && payload.email)){
     const c=await getClientById(env, payload.cid);
-    const ownerEmail=(c?.authentik_email||'').toLowerCase();
-    const isOwner=!!payload.email && payload.email===ownerEmail;
+    const ownerEmail=String(c?.authentik_email||'').trim().toLowerCase();
+    const requesterEmail=String(payload.email||'').trim().toLowerCase();
+    const isOwner=!!requesterEmail && requesterEmail===ownerEmail;
 
+    if(touchesProtectedField && !requesterEmail){
+      return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
+    }
     if(touchesProtectedField && !isOwner){
       return json({error:'Only the account owner can change user permissions.'}, 403);
     }
 
     if(isLeadsList && !isOwner && c?.industry==='travel'){
       let perms={}; try{ perms=JSON.parse(c.team_permissions||'{}'); }catch(e){}
-      const mine=perms[payload.email];
+      const mine=perms[requesterEmail];
       // Array (even empty) means restricted; anything else (missing/null) means unrestricted —
       // matching dashboard.html's saveUserProfilePermissions. An empty array is a deliberate
       // "sees no leads at all" (every box unchecked in the profile modal), not "no restriction",
@@ -993,7 +1079,8 @@ async function handleInstagramSend(request, env){
   const lead=await leadR.json().catch(()=>({}));
   if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
   if(!lead.IgId) return json({error:'This lead has no linked Instagram conversation.'}, 400);
-  await engineSendInstagramReply(env, c, lead.IgId, text);
+  const sent=await engineSendInstagramReply(env, c, lead.IgId, text);
+  if(!sent) return json({error:'Instagram rejected the message. Check the connection health and try again.'}, 502);
   return json({ok:true});
 }
 
@@ -2169,15 +2256,20 @@ async function handleAiComplete(request, env){
   const {model, temperature, max_tokens, messages}=await request.json().catch(()=>({}));
   if(!Array.isArray(messages)||!messages.length) return json({error:'messages required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({model:model||c.model||'google/gemini-2.5-flash', temperature, max_tokens, messages})
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({error:'No AI provider is configured on the server.'}, 503);
+
+  // Shared Gemini is primary for every client. Preserve the OpenAI-compatible response shape
+  // because dashboard callers already read choices[0].message.content.
+  const systemText=messages.filter(m=>m?.role==='system').map(m=>String(m.content||'')).join('\n\n');
+  const userText=messages.filter(m=>m?.role!=='system').map(m=>`${m.role||'user'}: ${String(m.content||'')}`).join('\n');
+  const text=await engineGeminiGenerateWithFallback(env, c, systemText, userText, {
+    model:model&&String(model).startsWith('gemini-')?model:undefined,
+    temperature:temperature??0.3,
+    maxOutputTokens:max_tokens||300
   });
-  const data=await r.json();
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  return json(data);
+  if(!text) return json({error:'All configured AI providers failed.'}, 502);
+  return json({choices:[{message:{role:'assistant',content:text}}]});
 }
 
 // Automation entry point for objection/trust-signal handling — meant to be called by the
@@ -2197,7 +2289,7 @@ async function handleAiObjectionReply(request, env){
   if(!clientId||!message) return json({error:'client_id and message required'}, 400);
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
-  if(!c.openrouter_key) return json({error:'No OpenRouter API key set for this account.'}, 400);
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({error:'No AI provider is configured on the server.'}, 503);
 
   let pol={}; try{ pol=JSON.parse(c.business_policies||'{}'); }catch(e){}
   const policyLines=[];
@@ -2211,17 +2303,9 @@ async function handleAiObjectionReply(request, env){
 ${policyLines.length?policyLines.join('\n'):'No policies configured yet — if the message is an objection you can\'t ground in a real policy, respond {"handled":false} rather than inventing one.'}
 ${reviewLink?`Review link: ${reviewLink}`:''}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.3, max_tokens:250,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"handled":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.3, maxOutputTokens:250, json:true
+  }))||'{"handled":false}';
   let parsed={handled:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   return json({handled:!!parsed.handled, reply:parsed.handled?String(parsed.reply||'').trim():undefined});
@@ -2258,16 +2342,18 @@ async function fetchRecentChatwootContext(c, conversationId, limit){
 // When the model can confidently match to one product, `sku` comes back too. Never sends anything
 // — purely a screen.
 async function detectOrderSignal(env, c, clientId, message, contextText){
-  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   let productList='';
   let categoryList=[];
   if(productsTable){
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100&fields=name,sku,color,size,category,brand`);
+    // Full rows keep this compatible with older Products tables where some optional style fields
+    // do not exist yet; only fields actually present on each row are added to the classifier text.
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100`);
     const pd=await pr.json().catch(()=>({}));
     const products=pd?.list||[];
-    productList=products.map(p=>`- ${p.name}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}`).join('\n');
+    productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
     categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
 
@@ -2276,10 +2362,11 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
 - "enquiry": genuine interest in a specific product without yet committing to buy — a size/color/stock/price question about one item, "tell me more", "give me the details", "do you have it in red".
 - neither (not a signal at all) — general browsing, greetings, or unrelated questions.
 If "order" or "enquiry", try to match it to exactly one product from the catalog below.
+- Search broadly across every catalog value shown: exact name, short label, SKU, category, brand, variant, style, color, size, shade, skin/hair type, concern, volume, ingredient and description. A customer's everyday phrase can match any of those stored Product fields.
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
 - A message with NO distinguishing detail of its own — "order it", "M size" alone, "that one", "yes please" — should be resolved using the recent conversation below, if given: it very likely refers to whichever product was just discussed.
 - A message that names its own distinguishing detail (a color, size, or product name) should be matched against the catalog by that detail. If it's consistent with the product just discussed (e.g. "size M" right after that same shirt was shown), match to that one. If it conflicts with the product just discussed (e.g. "red shirt" right after a green shirt was shown), treat it as asking about a NEW product and match fresh by the new detail — don't keep reusing the old product's sku just because it was recently discussed. Only omit sku (or classify as neither, if it's clearly asking for something not carried at all) when the named detail truly doesn't correspond to anything in the catalog.
-- Always also include product_name (the catalog product's plain name) whenever you include sku, or whenever you're confident which product is meant even if you're not 100% sure you copied the sku exactly right — copying a product's name correctly is much more reliable than copying an alphanumeric code, and product_name lets a name-based lookup succeed even if the sku string doesn't match exactly.
+- Always also include product_name using the catalog product's EXACT plain name whenever you include sku. Never shorten, expand, paraphrase, autocomplete, or invent a product name. If no single catalog record is a confident exact match, omit sku and product_name; the application will ask the customer to clarify instead of guessing.
 - If you cannot confidently match one specific product, but the message clearly asks about a product category rather than any one item (e.g. "shirts", "do you have pants") AND that category (or something close to it) is in the Known categories list below, include "category" instead — the exact string from Known categories that best matches. Never include both sku and category; category only applies when no single product is a confident match.
 - Separately (and only when a category is also included, or already clear from recent conversation), if the message itself names a specific brand from the catalog above (e.g. "REPOSE", "do you have Cloudnine Hybrid") rather than a specific model, also include "brand" — the exact brand string from the catalog that best matches. A bare brand name with no other detail ("REPOSE" on its own, right after being asked which brand) still counts — resolve the category from recent conversation the same way a bare size/color reply already does.
 Respond with ONLY valid JSON: {"signal":true,"mode":"order","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","sku":"...","product_name":"..."} or {"signal":true,"mode":"enquiry","category":"...","brand":"..."} (sku/product_name omitted if no confident single-product match; category/brand omitted unless relevant — brand only ever accompanies category, never sku) or {"signal":false}.
@@ -2288,17 +2375,9 @@ Known categories: ${categoryList.join(', ')||'(none)'}
 Product catalog:
 ${productList||'(no products listed)'}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.2, maxOutputTokens:150, json:true
+  }))||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   const mode=parsed.mode==='order'?'order':'enquiry'; // defaults to the more conservative 'enquiry' (no link sent) if the model omits mode or returns something unrecognized
@@ -2326,7 +2405,7 @@ async function handleAiOrderSignal(request, env){
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
   const result=await detectOrderSignal(env, c, clientId, message, String(body.context||''));
-  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  if(result.error) return json({error:result.error}, result.error.startsWith('No AI provider')?400:502);
   return json({signal:result.signal, sku:result.sku});
 }
 
@@ -2347,14 +2426,19 @@ async function handleAiOrderSignal(request, env){
 // "the 30 min one" back to whichever service was actually just discussed. Returns
 // {signal, service_id?} — never sends anything, purely a screen.
 async function detectBookingSignal(env, c, clientId, message, contextText){
-  if(!c.openrouter_key) return {signal:false, error:'No OpenRouter API key set for this account.'};
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
-  const servicesTable=apptResolveTable(c, 'services');
   let serviceList='';
-  if(servicesTable){
+  if(c.industry==='healthcare'){
+    const services=await hcListActiveServices(env,clientId);
+    serviceList=services.map(s=>`- ${s.name} [service_id:${s.id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${Number(s.price)>0?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+  }else{
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
     const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=Id,name,duration_minutes,price,currency`);
     const sd=await sr.json().catch(()=>({}));
     serviceList=(sd?.list||[]).map(s=>`- ${s.name} [service_id:${s.Id}]${s.duration_minutes?' ('+s.duration_minutes+' min)':''}${s.price?' '+((s.currency||'')+' '+s.price):''}`).join('\n');
+    }
   }
 
   const system=`You are screening one incoming WhatsApp message for a services business (healthcare, consultancy, salon, etc), to decide if it's a booking-readiness signal — either an explicit request to book/schedule an appointment, OR a specific question about availability, duration, or price of one particular service that shows they're close to booking. General browsing questions, greetings, or unrelated questions are NOT signals.
@@ -2363,17 +2447,9 @@ ${contextText?`\nRecent conversation (oldest first — use this to resolve refer
 Services offered:
 ${serviceList||'(no services listed)'}`;
 
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:'POST',
-    headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({
-      model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:150,
-      messages:[{role:'system',content:system},{role:'user',content:message}]
-    })
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return {signal:false, error:data?.error?.message||'HTTP '+r.status};
-  const raw=data?.choices?.[0]?.message?.content?.trim()||'{"signal":false}';
+  const raw=(await engineGeminiGenerateWithFallback(env, c, system, message, {
+    temperature:0.2, maxOutputTokens:150, json:true
+  }))||'{"signal":false}';
   let parsed={signal:false};
   try{ parsed=JSON.parse(raw); }catch(e){}
   return {signal:!!parsed.signal, service_id:parsed.signal?(parsed.service_id||undefined):undefined};
@@ -2389,7 +2465,7 @@ async function handleAiBookingSignal(request, env){
   const c=await getClientById(env, clientId);
   if(!c) return json({error:'Client not found'}, 404);
   const result=await detectBookingSignal(env, c, clientId, message, String(body.context||''));
-  if(result.error) return json({error:result.error}, result.error.startsWith('No OpenRouter')?400:502);
+  if(result.error) return json({error:result.error}, result.error.startsWith('No AI provider')?400:502);
   return json({signal:result.signal, service_id:result.service_id});
 }
 
@@ -3774,6 +3850,51 @@ async function handleChannelsWhatsappConnect(request, env){
 // missing it on their existing token; auto-posting for them fails with Instagram's own
 // "permission denied" until they disconnect and reconnect once from Settings → Integrations.
 const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_content_publish';
+const META_IG_GRAPH_VERSION='v24.0';
+const META_IG_WEBHOOK_FIELDS=['messages','messaging_postbacks','message_reactions','messaging_seen'];
+
+function instagramGraphError(data, fallback){
+  return data?.error?.message||data?.error_message||fallback;
+}
+
+export async function subscribeInstagramWebhooks(igId, accessToken){
+  const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(igId)}/subscribed_apps`, {
+    method:'POST', headers:{Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({subscribed_fields:META_IG_WEBHOOK_FIELDS.join(',')})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||data.success===false) throw new Error(instagramGraphError(data, `Instagram webhook subscription failed (HTTP ${r.status})`));
+  return data;
+}
+
+async function getInstagramHealth(c){
+  const base={connected:!!(c?.ig_id&&c?.ig_access_token), token_valid:false, messages_subscribed:false, subscribed_fields:[], username:c?.ig_username||'', last_webhook_at:''};
+  if(!base.connected) return base;
+  const [profileR, subscriptionR]=await Promise.all([
+    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}?fields=id,username`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}}),
+    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}})
+  ]);
+  const profile=await profileR.json().catch(()=>({}));
+  const subscriptions=await subscriptionR.json().catch(()=>({}));
+  const rows=Array.isArray(subscriptions?.data)?subscriptions.data:[];
+  const fields=[...new Set(rows.flatMap(row=>Array.isArray(row.subscribed_fields)?row.subscribed_fields:[]))];
+  const marker=String(c.ig_webhook_debug||'');
+  return {...base, token_valid:profileR.ok&&!!profile.id, messages_subscribed:subscriptionR.ok&&fields.includes('messages'), subscribed_fields:fields,
+    username:profile.username||base.username, last_webhook_at:marker.startsWith('received:')?marker.slice(9):'',
+    error:profileR.ok?(subscriptionR.ok?'':instagramGraphError(subscriptions, `Subscription check failed (HTTP ${subscriptionR.status})`)):instagramGraphError(profile, `Token check failed (HTTP ${profileR.status})`)};
+}
+
+async function handleInstagramHealth(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(request.method==='POST'&&c.ig_id&&c.ig_access_token){
+    try{ await subscribeInstagramWebhooks(c.ig_id, c.ig_access_token); }
+    catch(e){ return json({...await getInstagramHealth(c), error:e.message}, 502); }
+  }
+  return json(await getInstagramHealth(c));
+}
 
 async function handleInstagramOauthStart(request, env){
   const payload=await requireSession(request, env);
@@ -3831,10 +3952,13 @@ async function handleInstagramOauthCallback(request, env){
   if(!longTokenR.ok||!longTokenData.access_token) return fail('Failed to obtain a long-lived Instagram token: '+(longTokenData?.error?.message||('HTTP '+longTokenR.status)));
   const ig_access_token=longTokenData.access_token;
 
-  const profileR=await fetch(`https://graph.instagram.com/v21.0/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
+  const profileR=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
   const profileData=await profileR.json().catch(()=>({}));
+  if(!profileR.ok) return fail('Instagram profile verification failed: '+instagramGraphError(profileData, `HTTP ${profileR.status}`));
+  try{ await subscribeInstagramWebhooks(ig_id, ig_access_token); }
+  catch(e){ return fail(e.message+' — please check the Instagram webhook product configuration and try again.'); }
 
-  await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at']);
+  await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at','ig_webhook_debug']);
   // Verified, not the plain patchClientFields — this writes to columns ensureClientColumns may
   // have JUST created a moment ago in this same request, which is exactly the NocoDB
   // schema-cache-lag race ncPatchVerified exists for (see its own comment): a client's very first
@@ -3848,7 +3972,11 @@ async function handleInstagramOauthCallback(request, env){
 async function handleInstagramDisconnect(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
+  const c=await getClientById(env,payload.cid);
+  if(c?.ig_id&&c?.ig_access_token){
+    await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`,{method:'DELETE',headers:{Authorization:`Bearer ${c.ig_access_token}`}}).catch(()=>{});
+  }
+  await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:'', ig_webhook_debug:''});
   return json({ok:true});
 }
 
@@ -4430,7 +4558,8 @@ async function handleGcalOauthCallback(request, env){
   // access_denied) still honors whichever page actually started this connection.
   const statePayload=await verifyOauthState(env, url.searchParams.get('state'));
   const appBase=statePayload?.rt ? `https://app.leadvyne.com/${statePayload.rt}` : (env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html');
-  const fail=(msg)=>Response.redirect(`${appBase}?gcal=error&msg=${encodeURIComponent(msg)}`, 302);
+  const redirectSep=appBase.includes('?')?'&':'?';
+  const fail=(msg)=>Response.redirect(`${appBase}${redirectSep}gcal=error&msg=${encodeURIComponent(msg)}`, 302);
   if(!env.GOOGLE_CLIENT_ID||!env.GOOGLE_CLIENT_SECRET) return fail('Google credentials are not configured on the server.');
   const err=url.searchParams.get('error');
   if(err) return fail(err==='access_denied'?'Access was denied':err);
@@ -4453,7 +4582,7 @@ async function handleGcalOauthCallback(request, env){
   if(!calId) return fail('Connected to Google, but could not create the "Leadvyne Tasks & Events" calendar — try again.');
 
   await patchClientFields(env, statePayload.cid, {gcal_refresh_token:tokenData.refresh_token, gcal_calendar_id:calId, gcal_connected_at:new Date().toISOString()});
-  return Response.redirect(`${appBase}?client=${statePayload.cid}&gcal=connected`, 302);
+  return Response.redirect(`${appBase}${redirectSep}client=${statePayload.cid}&gcal=connected`, 302);
 }
 
 async function gcalCreateCalendar(accessToken){
@@ -4499,14 +4628,14 @@ async function handleGcalDisconnect(request, env){
 // native RRULE recurrence for display — purely cosmetic on the Google side; Leadvyne's own
 // Calendar Events cadence/dedupe logic (see calendarOccurrenceDate above) is entirely unaffected
 // by however this renders in Google Calendar.
-async function gcalUpsertEvent(env, c, {gcalEventId, title, notes, date, time, allDay, recurrenceYearly}){
+async function gcalUpsertEvent(env, c, {gcalEventId, title, notes, date, time, allDay, recurrenceYearly, durationMinutes}){
   const token=await gcalGetAccessToken(env, c);
   if(!token||!c.gcal_calendar_id) return null;
   const body={
     summary:title||'(untitled)', description:notes||'',
     ...(allDay
       ? {start:{date}, end:{date}}
-      : {start:{dateTime:`${date}T${time||'09:00'}:00`}, end:{dateTime:gcalAddMinutes(date, time||'09:00', 30)}}),
+      : {start:{dateTime:`${date}T${time||'09:00'}:00`}, end:{dateTime:gcalAddMinutes(date, time||'09:00', Math.max(5, Number(durationMinutes)||30))}}),
     ...(recurrenceYearly?{recurrence:['RRULE:FREQ=YEARLY']}:{}),
   };
   const method=gcalEventId?'PATCH':'POST';
@@ -6225,7 +6354,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label'];
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6519,7 +6648,7 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
 // repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
 // stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
 // here is logged and swallowed rather than ever failing the product save itself.
-const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description'];
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options'];
 async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
   if(!env.DB || !clientId || !nocodbId) return;
   try{
@@ -7059,7 +7188,7 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
    photo), capped to once per (lead, product, calendar day) by the caller passing the same
    engineClaimProductImageForToday claim (sendProductImage) the photo/media bundle already uses.
    Called right before engineMaybeSendProductMedia at each order-detection branch in
-   handleEngineWebhook, so the customer sees description → extra images → audio → video → PDF,
+   handleEngineWebhook, so the customer sees description → extra images → audio → video,
    in that order, as one bundle. */
 async function engineMaybeSendProductDescription(env, c, clientId, convId, product){
   if(c.industry!=='ecommerce' || !convId || !product?.description) return;
@@ -7339,22 +7468,12 @@ async function handlePipelineVideoSend(request, env){
 // link that was actually configured for that product/client, never a generic catalog page standing
 // in for one that wasn't set up. Returns '' when none of the three is set; callers must handle that.
 function buildOrderLink(c, clientId, sku, product){
-  // A per-product Shopify product-page URL (set in ecom.html, shown only when Shopify is
-  // connected) wins over everything else — it's the most specific link available, pointing
-  // straight at the real product page rather than a generic storefront/catalog link.
+  // Ecommerce product lock: customer order links may come only from the matched Ecom Product
+  // record. Never fall back to a client-wide store/catalog URL for a specific product.
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
-  // product_link — a generic per-product override (ecom.html's "Product Link" field, always
-  // visible, unlike shopify_product_url which only appears once Shopify is connected). For a
-  // client who sells through something other than Shopify (Instagram, Amazon, their own landing
-  // page, a marketplace listing) this is the one way to point a specific product at that URL.
-  // Checked after the Shopify-specific field (still the most specific option when both happen to
-  // be set) but before the client-wide external_store_link, since a per-product link is always
-  // more specific than a client-wide one.
   const productLink=(product?.product_link||'').trim();
   if(productLink) return productLink;
-  const ext=(c.external_store_link||'').trim();
-  if(ext) return ext;
   return '';
 }
 
@@ -7443,7 +7562,9 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     items:(seed?.items||'').trim().slice(0,500)||'Collected via chat',
     total:seed?.price||0, currency:seed?.currency||'',
     delivery_address:(address||'').trim().slice(0,500), status:'pending',
-    notes:'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+    notes:seed?.fashionFlow
+      ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
+      : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
   };
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
@@ -7452,6 +7573,20 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     return {ok:false};
   }
   return {ok:true, order_id};
+}
+
+// Fashion-only order choices. Product size/color fields may be stored as JSON arrays by an
+// integration or as comma/slash/newline-separated text by the Ecom editor. Every outgoing choice
+// is copied from that field; nothing is generated by AI.
+export function ecomFashionFieldChoices(raw){
+  const parsed=engineParseJsonField(raw, null);
+  const values=Array.isArray(parsed)?parsed:String(raw||'').split(/[,|/\n]+/);
+  return [...new Set(values.map(value=>String(value||'').trim()).filter(Boolean))].slice(0,10);
+}
+
+export function ecomFashionOrderItems(seed={}){
+  return [String(seed.productName||'').trim(),seed.size?`Size: ${seed.size}`:'',seed.color?`Color: ${seed.color}`:'']
+    .filter(Boolean).join(' | ');
 }
 
 async function ecomFindProductBySku(env, clientId, sku){
@@ -7473,19 +7608,35 @@ async function ecomFindProductBySku(env, clientId, sku){
 // (catalog name contains the guess, or the guess contains the catalog name) against the same
 // client's products, capped the same as detectOrderSignal's own catalog scan.
 async function ecomResolveProduct(env, clientId, sku, productName){
+  // Zero-hallucination product resolution: an SKU must exist in this client's Products table,
+  // otherwise the model-returned product name must match one stored product name exactly after
+  // harmless punctuation/spacing normalization. Never use substring matching here: a guessed
+  // "Cream" must not silently resolve to an arbitrary "Night Cream" product.
   const bySku=await ecomFindProductBySku(env, clientId, sku);
   if(bySku) return bySku;
-  const guess=(productName||'').trim().toLowerCase();
+  const normalizeName=v=>String(v||'').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+  const guess=normalizeName(productName);
   if(!guess) return null;
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(!productsTable) return null;
   const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
   const pd=await pr.json().catch(()=>({}));
   const products=pd?.list||[];
-  return products.find(p=>{
-    const name=(p.name||'').trim().toLowerCase();
-    return name && (name.includes(guess) || guess.includes(name));
-  })||null;
+  return products.find(p=>normalizeName(p.name)===guess)||null;
+}
+
+// Click-to-WhatsApp/Instagram ads commonly prefill a deliberately generic opener such as
+// "Hello! Can I get more info on this?". That is a request to introduce the BUSINESS shown by
+// the ad, not evidence that the customer named a catalog product. Treating "this" as a product
+// made detectOrderSignal invent a product signal and trigger the strict SKU fallback before the
+// main prompt ever got a chance to answer. Keep this matcher intentionally narrow: any explicit
+// product/item/SKU/model/price/stock/size/colour/order wording remains on the verified Products
+// path and retains the zero-hallucination lock.
+export function ecomIsGeneralBusinessInfoQuery(text){
+  const normalized=String(text||'').trim().toLowerCase().replace(/[’']/g,"'").replace(/\s+/g,' ');
+  if(!normalized) return false;
+  if(/\b(product|item|sku|model|price|cost|stock|available|availability|size|colou?r|variant|order|buy|purchase)\b/i.test(normalized)) return false;
+  return /^(?:(?:hi|hello|hey)[,! .-]*)?(?:(?:can|could|may) i (?:get|have) (?:some )?more (?:info|information)(?: (?:on|about))? (?:this|your business|your company|your store)?|tell me (?:more )?about (?:your business|your company|your store|what you do)|what (?:does your (?:business|company) do|do you do)|(?:business|company|store) (?:info|information|details))[?!. ]*$/i.test(normalized);
 }
 
 // The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
@@ -7565,9 +7716,8 @@ async function engineClaimProductImageForToday(env, clientId, leadId, productId)
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
-    // image_url itself is sent separately, inline as the reply's own photo+caption
-    // (engineDeliverReply's imageUrl param at each call site) — these four are extra angles/views
-    // (ecom.html "Image Link 2"–"Image Link 5"), sent as follow-up attachments same as audio/video/pdf below.
+    // image_url is sent separately as the primary product photo. Send only the additional
+    // Product-level media explicitly configured in Ecom → Products: images 2–5, audio and video.
     if(product.image_url_2) await sendDriveMediaToChatwoot(c, convId, product.image_url_2, '');
     if(product.image_url_3) await sendDriveMediaToChatwoot(c, convId, product.image_url_3, '');
     if(product.image_url_4) await sendDriveMediaToChatwoot(c, convId, product.image_url_4, '');
@@ -7593,6 +7743,463 @@ async function ecomListCategories(env, clientId){
   return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
+async function ecomListActiveProducts(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list||[];
+}
+
+// Build one WhatsApp menu containing both database categories and database products. WhatsApp
+// permits at most 10 rows, so keep up to three product recommendations visible and use the other
+// rows for category navigation. "Recommended" here means the first active rows in the merchant's
+// Products-table order; there is no AI ranking or inferred substitute.
+export function ecomAvailableCatalogueItems(categories, products, limit=10){
+  const cap=Math.max(1,Math.min(10,Number(limit)||10));
+  const categoryValues=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const productItems=ecomProductChoiceItems(products);
+  if(!categoryValues.length) return productItems.slice(0,cap);
+  if(!productItems.length) return categoryValues.slice(0,cap).map(category=>({title:category,value:category}));
+  const productSlots=Math.min(3,productItems.length,Math.max(1,cap-1));
+  const categorySlots=cap-productSlots;
+  const items=categoryValues.slice(0,categorySlots).map(category=>({title:category,value:category}));
+  const usedValues=new Set(items.map(item=>ecomNormalizeCatalogueText(item.value)));
+  for(const item of productItems){
+    if(items.length>=cap) break;
+    const key=ecomNormalizeCatalogueText(item.value);
+    if(usedValues.has(key)) continue;
+    usedValues.add(key);
+    items.push(item);
+  }
+  return items;
+}
+
+export function ecomExactProductSelection(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const matches=(products||[]).filter(product=>[product?.name,product?.short_label,product?.sku]
+    .some(value=>value&&ecomNormalizeCatalogueText(value)===query));
+  return matches.length===1?matches[0]:null;
+}
+
+// Zero-hallucination catalogue fallback. The labels and returned values are copied verbatim from
+// active Ecom Product rows. Categories and recommended active products share the same message.
+async function ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang){
+  const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+  const items=ecomAvailableCatalogueItems(categories,products);
+  if(items.length){
+    const sourceText=categories.length
+      ? 'Please choose an available category or one of these recommended products:'
+      : 'Please choose from these recommended available products:';
+    const text=await engineLocalizeReply(env, c, sourceText, replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, text, items);
+    return {sent:true,text,quickReplies};
+  }
+  return {sent:false,text:'',quickReplies:null};
+}
+
+// Broad but deterministic Ecom catalogue lookup. It searches only values physically stored on
+// this client's Product records; it never asks an LLM to invent a candidate. This catches natural
+// wording such as "sofa", "3 seater sofa", a brand, variant, material/concern from Description,
+// color, size, style, SKU, etc. Multiple real matches are intentionally returned so the caller can
+// show exact Product-record choices as WhatsApp buttons/list rows instead of guessing one.
+function ecomNormalizeCatalogueText(value){
+  return String(value||'')
+    .toLowerCase()
+    .replace(/\b(one|single)\b/g,'1').replace(/\btwo\b/g,'2').replace(/\bthree\b/g,'3')
+    .replace(/\bfour\b/g,'4').replace(/\bfive\b/g,'5').replace(/\bsix\b/g,'6')
+    .replace(/[^\p{L}\p{N}]+/gu,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function ecomCatalogueQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','price','cost','buy','order','available','availability','product','item']);
+  return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
+}
+
+// Generic catalogue requests have no product-specific token to match ("show products", "what do
+// you sell", "catalogue"), but they are still unambiguously asking to browse Ecom. Keep this
+// deterministic and deliberately narrow so working-hours, location, delivery-policy and other
+// business questions continue to the client's configured prompt instead of opening the catalogue.
+export function ecomIsGenericProductCatalogueQuery(text){
+  const normalized=ecomNormalizeCatalogueText(text);
+  if(!normalized) return false;
+  return /\b(?:products?|items?|catalog(?:ue)?|collection|range)\b/u.test(normalized)
+    || /\bwhat (?:do|are) (?:you|u) sell\b/u.test(normalized);
+}
+
+function ecomCatalogueTokenRoot(token){
+  const value=String(token||'');
+  if(value.length>4 && value.endsWith('ies')) return value.slice(0,-3)+'y';
+  if(value.length>4 && value.endsWith('sses')) return value.slice(0,-2);
+  if(value.length>4 && value.endsWith('es') && !value.endsWith('ses')) return value.slice(0,-2);
+  if(value.length>3 && value.endsWith('s') && !value.endsWith('ss')) return value.slice(0,-1);
+  return value;
+}
+
+// Pure form of the broad matcher, exported for regression tests. Every returned value is one of
+// the supplied Product rows; scoring can rank or filter verified records but can never manufacture
+// a product. The async database wrapper below only loads active rows and delegates here.
+export function ecomBroadProductMatches(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!query || !tokens.length) return [];
+  const weightedFields=[
+    ['sku',30],['short_label',24],['name',22],['variant',14],['category',12],['brand',11],
+    ['style',10],['color',9],['size',9],['shade',8],['skin_type',8],['hair_type',8],
+    ['concern',8],['volume_ml',7],['ingredient',6],['description',4]
+  ];
+  const scored=[];
+  for(const product of products||[]){
+    const normalizedFields=weightedFields.map(([field,weight])=>({field,weight,text:ecomNormalizeCatalogueText(product[field])})).filter(x=>x.text);
+    const combinedWords=normalizedFields.flatMap(x=>x.text.split(' '));
+    const matched=tokens.filter(token=>{
+      const root=ecomCatalogueTokenRoot(token);
+      return combinedWords.some(word=>ecomCatalogueTokenRoot(word)===root);
+    });
+    const required=tokens.length<=2?1:Math.ceil(tokens.length*0.6);
+    if(matched.length<required) continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of normalizedFields){
+      if(f.text===query) score+=f.weight*3;
+      else if(f.text.includes(query)) score+=f.weight*2;
+      const fieldWords=f.text.split(' ');
+      for(const token of matched){
+        const root=ecomCatalogueTokenRoot(token);
+        if(fieldWords.some(word=>ecomCatalogueTokenRoot(word)===root)) score+=f.weight;
+      }
+    }
+    scored.push({product,score});
+  }
+  if(!scored.length) return [];
+  scored.sort((a,b)=>b.score-a.score || String(a.product.name||'').localeCompare(String(b.product.name||'')));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(100,best*0.55)).slice(0,10).map(x=>x.product);
+}
+
+// Resolve a short customer reply against the exact category values stored in Ecom → Products.
+// This is deliberately deterministic: tapping a category button such as "Mattress" must browse
+// that category, not be sent to the product/SKU resolver and rejected as an unknown product. A
+// single meaningful word may also match one longer category ("mattress" -> "Premium Mattress"),
+// but only when that match is unique; ambiguous words never select a category by guesswork.
+export function ecomMatchProductCategory(message, categories){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const cleaned=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const exact=cleaned.find(category=>ecomNormalizeCatalogueText(category)===query);
+  if(exact) return exact;
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!tokens.length) return null;
+  const roots=tokens.map(ecomCatalogueTokenRoot);
+  const matches=cleaned.filter(category=>{
+    const categoryRoots=ecomNormalizeCatalogueText(category).split(' ').map(ecomCatalogueTokenRoot);
+    return roots.length===1 ? categoryRoots.includes(roots[0]) : categoryRoots.every(token=>roots.includes(token));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+async function ecomFindMatchedProductCategory(env, clientId, message){
+  return ecomMatchProductCategory(message, await ecomListCategories(env, clientId));
+}
+
+// Healthcare's verified equivalent of the Ecom Products matcher. It only searches active rows
+// saved in Healthcare → Services and returns real records for exact WhatsApp choice labels.
+export function hcNormalizeText(value){
+  return String(value||'').normalize('NFC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+export function hcQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','clinic','hospital','doctor','appointment','book','available','availability','treatment','service']);
+  return [...new Set(hcNormalizeText(value).split(' ').filter(t=>t&&!stop.has(t)&&t.length>1))];
+}
+
+// D1 migrations are a separate deployment step from `wrangler deploy`. Keep the checked-in
+// migration as the canonical schema, but also repair a Worker whose code reached production
+// before migration 0056 was applied. Every statement is additive/idempotent, so this never drops,
+// replaces or clears existing Healthcare data. Cache the promise per D1 binding so the check runs
+// only once per Worker isolate instead of on every Healthcare request/message.
+const hcOperationsSchemaReady=new WeakMap();
+const HC_OPERATIONS_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS healthcare_departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    image_url_1 TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL, name TEXT NOT NULL,
+    qualification TEXT NOT NULL DEFAULT '', specialization TEXT NOT NULL DEFAULT '',
+    experience_years INTEGER NOT NULL DEFAULT 0, consultation_fee REAL NOT NULL DEFAULT 0,
+    phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', image_url TEXT NOT NULL DEFAULT '',
+    image_url_2 TEXT NOT NULL DEFAULT '', image_url_3 TEXT NOT NULL DEFAULT '',
+    image_url_4 TEXT NOT NULL DEFAULT '', image_url_5 TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL,
+    short_label TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT '', duration_minutes INTEGER NOT NULL DEFAULT 30,
+    preparation TEXT NOT NULL DEFAULT '', booking_url TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', image_url_4 TEXT NOT NULL DEFAULT '',
+    image_url_5 TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, weekday INTEGER NOT NULL, start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL, break_start TEXT NOT NULL DEFAULT '',
+    break_end TEXT NOT NULL DEFAULT '', slot_minutes INTEGER NOT NULL DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    patient_name TEXT NOT NULL, patient_phone TEXT NOT NULL,
+    lead_id INTEGER NOT NULL DEFAULT 0, service_id INTEGER NOT NULL DEFAULT 0,
+    doctor_id INTEGER NOT NULL DEFAULT 0, appointment_date TEXT NOT NULL,
+    start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested', source TEXT NOT NULL DEFAULT 'dashboard',
+    notes TEXT NOT NULL DEFAULT '', gcal_event_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_insurance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    provider_name TEXT NOT NULL, network_name TEXT NOT NULL DEFAULT '',
+    plan_name TEXT NOT NULL DEFAULT '', covered_services TEXT NOT NULL DEFAULT '',
+    preapproval_required INTEGER NOT NULL DEFAULT 0,
+    verification_note TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', last_verified_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_settings (
+    client_id INTEGER PRIMARY KEY, strict_zero_hallucination INTEGER NOT NULL DEFAULT 1,
+    emergency_keywords TEXT NOT NULL DEFAULT 'chest pain,cannot breathe,can''t breathe,unconscious,severe bleeding,stroke,suicidal,overdose',
+    emergency_message TEXT NOT NULL DEFAULT 'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.',
+    handover_message TEXT NOT NULL DEFAULT 'I am connecting you to the clinic team now. Please stay available for their response.',
+    emergency_contact TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_media_sent (
+    client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    sent_date TEXT NOT NULL, sent_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, lead_id, service_id, sent_date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_automation_settings (
+    client_id INTEGER PRIMARY KEY,
+    confirmation_template_name TEXT NOT NULL DEFAULT '',
+    reminder_template_name TEXT NOT NULL DEFAULT '',
+    template_language TEXT NOT NULL DEFAULT 'en',
+    reminder_24h_enabled INTEGER NOT NULL DEFAULT 1,
+    reminder_2h_enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_automation (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', calendar_status TEXT NOT NULL DEFAULT 'pending',
+    reminder_status TEXT NOT NULL DEFAULT 'pending', last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL, PRIMARY KEY (client_id, appointment_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_notifications (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, appointment_id, appointment_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    appointment_id INTEGER NOT NULL DEFAULT 0, job_type TEXT NOT NULL DEFAULT '',
+    failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_booking_sessions (
+    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
+    conversation_id INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '',
+    service_id INTEGER NOT NULL DEFAULT 0, doctor_id INTEGER NOT NULL DEFAULT 0,
+    appointment_date TEXT NOT NULL DEFAULT '', start_time TEXT NOT NULL DEFAULT '',
+    end_time TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, patient_phone)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_client ON healthcare_services(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_department ON healthcare_services(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_schedules_doctor ON healthcare_doctor_schedules(client_id, doctor_id, weekday)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_client_date ON healthcare_appointments(client_id, appointment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_doctor_slot ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_healthcare_appointments_active_slot
+    ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)
+    WHERE status NOT IN ('cancelled','completed','no_show')`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_insurance_client ON healthcare_insurance(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_automation_status
+    ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
+    ON healthcare_queue_failures(client_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
+    ON healthcare_booking_sessions(expires_at)`
+];
+export async function hcEnsureOperationsSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=hcOperationsSchemaReady.get(env.DB);
+  if(cached) return cached;
+  const pending=(async()=>{
+    for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
+  })();
+  hcOperationsSchemaReady.set(env.DB,pending);
+  try{ await pending; }
+  catch(error){ hcOperationsSchemaReady.delete(env.DB); throw error; }
+}
+async function hcListActiveServices(env, clientId){
+  await hcEnsureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return results||[];
+}
+export function hcServiceChoiceItems(services){
+  const seen=new Set(), items=[];
+  for(const s of services||[]){
+    const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
+    if(!name||seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase()); items.push({title:label,value:name});
+  }
+  return items.slice(0,10);
+}
+async function hcFindBroadServiceMatches(env,clientId,message){
+  const query=hcNormalizeText(message), tokens=hcQueryTokens(message); if(!query||!tokens.length)return [];
+  const services=await hcListActiveServices(env,clientId), scored=[];
+  for(const service of services){
+    const fields=[['name',25],['short_label',22],['aliases',18],['description',5],['preparation',3]]
+      .map(([key,weight])=>({text:hcNormalizeText(service[key]),weight})).filter(x=>x.text);
+    const combined=fields.map(x=>x.text).join(' '), matched=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(combined));
+    if(!matched.length)continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of fields){if(f.text===query)score+=f.weight*3;else if(f.text.includes(query))score+=f.weight*2;for(const t of matched)if(new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(f.text))score+=f.weight;}
+    scored.push({service,score});
+  }
+  if(!scored.length)return [];
+  scored.sort((a,b)=>b.score-a.score||String(a.service.name).localeCompare(String(b.service.name)));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(80,best*.55)).slice(0,10).map(x=>x.service);
+}
+async function hcFindDoctorMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message).filter(t=>t!=='dr'); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).map(doctor=>{
+    const text=hcNormalizeText([doctor.name,doctor.specialization,doctor.qualification,doctor.description].join(' '));
+    const hits=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text));
+    return {doctor,score:hits.length/tokens.length};
+  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor);
+}
+async function hcFindDepartmentMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).filter(dep=>{
+    const text=hcNormalizeText([dep.name,dep.description].join(' '));
+    return tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text)).length>=Math.max(1,Math.ceil(tokens.length*.5));
+  }).slice(0,10);
+}
+function hcVerifiedDoctorText(doctor,question){
+  const lines=[`*${doctor.name}*`];
+  if(doctor.specialization)lines.push(doctor.specialization);
+  if(doctor.qualification)lines.push(`Qualification: ${doctor.qualification}`);
+  if(Number(doctor.experience_years)>0)lines.push(`Experience: ${doctor.experience_years} years`);
+  if(/price|cost|fee|how much|consultation/i.test(question||'')&&Number(doctor.consultation_fee)>0)lines.push(`Consultation fee: ${doctor.consultation_fee}`);
+  if(doctor.description)lines.push(doctor.description);
+  return lines.join('\n\n');
+}
+async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
+  try{for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','video_url','pdf_url'])if(doctor[key])await sendDriveMediaToChatwoot(c,convId,doctor[key],'');}
+  catch(e){await reportOpsError(env,'hcSendDoctorMedia',e,{clientId,convId,doctorId:doctor.id});}
+}
+export function hcVerifiedServiceText(service,question){
+  const lines=[`*${service.name}*`];
+  if(service.description)lines.push(service.description);
+  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${service.currency||''} ${service.price}`.trim());
+  if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
+  if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
+  // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
+  // into a service answer; the deterministic Book Appointment button owns this transition.
+  return lines.join('\n\n');
+}
+async function hcClaimServiceMediaForToday(env,clientId,leadId,serviceId){
+  if(!leadId||!serviceId)return true;
+  try{
+    const now=new Date(), date=now.toISOString().slice(0,10);
+    const r=await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_media_sent (client_id,lead_id,service_id,sent_date,sent_at) VALUES (?,?,?,?,?)`).bind(Number(clientId),Number(leadId),Number(serviceId),date,now.toISOString()).run();
+    return !!r?.meta?.changes;
+  }catch(e){return true;}
+}
+async function hcSendServiceMedia(env,c,clientId,convId,service){
+  if(!service||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return;
+  try{
+    for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'])if(service[key])await sendDriveMediaToChatwoot(c,convId,service[key],'');
+  }catch(e){await reportOpsError(env,'hcSendServiceMedia',e,{clientId,convId,serviceId:service.id});}
+}
+async function hcSettingsForClient(env,clientId){
+  try{
+    await hcEnsureOperationsSchema(env);
+    await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
+    return await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(clientId)).first();
+  }catch(e){return null;}
+}
+export function hcEmergencyMatch(settings,message){
+  const text=hcNormalizeText(message), keywords=String(settings?.emergency_keywords||'').split(',').map(hcNormalizeText).filter(Boolean);
+  return keywords.find(k=>{
+    const at=text.indexOf(k); if(at<0)return false;
+    const before=text.slice(Math.max(0,at-18),at);
+    return !/(?:no|not|without|don t|dont)\s*$/.test(before);
+  })||null;
+}
+async function engineBuildHealthcareContext(env,clientId){
+  const [services,deps,docs,insurance,hcSettings]=await Promise.all([
+    hcListActiveServices(env,clientId),
+    env.DB.prepare(`SELECT id,name,description FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 50`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT id,department_id,name,qualification,specialization,experience_years,consultation_fee,description FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT provider_name,network_name,plan_name,covered_services,preapproval_required,verification_note,last_verified_at FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    hcSettingsForClient(env,clientId)
+  ]);
+  const strict=hcSettings?.strict_zero_hallucination!==0;
+  const lines=[`\n\n## VERIFIED HEALTHCARE DATA${strict?' — ONLY SOURCE OF TRUTH':''}`,`STRICT_ZERO_HALLUCINATION=${strict?'ON':'OFF'}`];
+  lines.push(`Never diagnose, prescribe, guarantee insurance coverage, invent availability, price, doctor, treatment, or policy.${strict?' If the requested fact is absent below, say it is not verified and offer clinic-team handover.':''}`);
+  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | '+(s.currency||'')+' '+s.price:''}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
+  if(deps.length){lines.push('### Departments');deps.forEach(d=>lines.push(`- ${d.name}${d.description?' | '+d.description:''}`));}
+  if(docs.length){lines.push('### Doctors');docs.forEach(d=>lines.push(`- ${d.name}${d.specialization?' | '+d.specialization:''}${d.qualification?' | '+d.qualification:''}${d.experience_years?' | '+d.experience_years+' years':''}${d.consultation_fee?' | consultation fee '+d.consultation_fee:''}${d.description?' | '+d.description:''}`));}
+  if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
+  return lines.join('\n');
+}
+function ecomProductChoiceItems(products){
+  const seen=new Set();
+  const items=[];
+  for(const p of products||[]){
+    const value=String(p?.name||'').trim();
+    if(!value) continue;
+    const key=String(p?.Id||p?.sku||value).toLowerCase();
+    if(seen.has(key)) continue;
+    seen.add(key);
+    // Both visible label and returned value come directly from Ecom → Products. short_label is
+    // preferred only when the merchant explicitly configured it; otherwise the exact name is used.
+    items.push({title:String(p.short_label||p.name).trim(), value});
+  }
+  return items.slice(0,10);
+}
+async function ecomFindBroadProductMatches(env, clientId, message){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  // Fetch full rows instead of requesting an explicit optional-field list: older client tables may
+  // not yet have every style/media column, and one missing NocoDB column must not break matching.
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  return ecomBroadProductMatches(pd?.list||[],message);
+}
+
 // Category-level browsing: the customer named a category ("shirts") rather than one specific
 // product, so detectOrderSignal returned `category` instead of a sku. Used to send a representative
 // photo (the first matching product that actually has one) alongside a clarifying question listing
@@ -7600,14 +8207,13 @@ async function ecomListCategories(env, clientId){
 // this data model, so `color` (the field that reliably varies within a category) stands in for it.
 // `like` (not `eq`) absorbs minor case/wording drift between the LLM's category guess and the
 // catalog string, same tolerance handleEcomList already gives shop-owner category filters.
-async function ecomFindProductsByCategory(env, clientId, category){
+export function ecomProductsForCategory(products, category){
   if(!category) return [];
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return [];
-  const qs=new URLSearchParams({where:`(client_id,eq,${clientId})~and(category,like,${ecomSanitizeFilterValue(category)})~and(status,neq,inactive)`, limit:'50'});
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?${qs.toString()}`);
-  const pd=await pr.json().catch(()=>({}));
-  return pd?.list||[];
+  const wanted=ecomNormalizeCatalogueText(category);
+  return (products||[]).filter(product=>ecomNormalizeCatalogueText(product.category)===wanted).slice(0,50);
+}
+async function ecomFindProductsByCategory(env, clientId, category){
+  return ecomProductsForCategory(await ecomListActiveProducts(env, clientId),category);
 }
 
 // The shop-owner-managed category photo (ecom_categories.image_url_1/2/3, set up in the CRM's
@@ -7680,56 +8286,11 @@ function ecomStyleAttributeLines(product){
   return lines;
 }
 
-function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink, state={}){
-  const lang=replyLang||c.language||'en';
-  const lines=[`Name: ${product.name}`];
-  if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
-  if(product.color) lines.push(`Color: ${product.color}`);
-  if(product.size) lines.push(`Size options: ${product.size}`);
-  if(product.category) lines.push(`Category: ${product.category}`);
-  lines.push(...ecomStyleAttributeLines(product));
-  const stockNum=Number(product.stock);
-  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
-  // main_prompt goes first, same as engineBuildFaqSystemPrompt/engineBuildObjectionSystemPrompt/
-  // engineBuildFirstTouchIntro — this was the one reply-generating prompt in the engine that left
-  // it out entirely, so a client's own persona/tone/closing-style instructions had zero effect on
-  // product-enquiry replies specifically, no matter what they wrote in Main Prompt. Every hardcoded
-  // instruction below is phrased the same "Default X — follow this unless the persona/instructions
-  // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
-  let sys=c.main_prompt||'';
-  sys+=`\n\nYou are replying to a customer asking about one specific product. Everything you know about it:\n${lines.join('\n')}`;
-  sys+='\n\nThe list above is everything real you know about this product — never invent or guess an additional detail that isn\'t in it (a specific supply duration, an ingredient/material, a certification, a use-case claim, a different name/category than given). If the customer asks about something not covered above, say honestly that you don\'t have that specific detail and will find out, instead of making up a plausible-sounding answer.';
-  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
-  // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
-  // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
-  // same reply from scratch every single turn with zero memory of anything already said — real
-  // observed failure: the bot described a product in full, asked "would you like to know about the
-  // pack options and pricing?", the customer said "yes", and got the identical opening description
-  // sent right back instead of an answer to what it had just itself asked.
-  const enquiryHistory=state.activeHistory||[];
-  sys+=engineSummaryBlock(state);
-  sys+=engineCustomerFactsBlock(state);
-  sys+=engineMemoryBlock(state);
-  if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nDo not repeat something you already said in Recent Conversation above, and do not ask for something already listed in What We Know About This Customer above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
-  sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
-  // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
-  // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
-  // until real order intent (see the routing comment at this prompt's call site), but a client can
-  // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
-  // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
-  // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
-  if(checkoutLink){
-    sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
-  }else{
-    // No link was configured for this product — explicit guardrail against the model inventing
-    // one anyway (e.g. a plausible-looking store/product URL guessed from the product name), which
-    // is exactly the kind of hallucinated link a customer could click and land nowhere real.
-    sys+='\n\nNo order/checkout link is available for this product right now — never invent, guess, or make up a URL of any kind (not a store link, not a product link, nothing built from the product name). If the customer asks for a link, tell them you\'ll have the team follow up, or ask what they\'d like to order so it can be arranged — do not output anything that looks like a URL.';
-  }
-  sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
-  return sys;
-}
+// engineBuildProductEnquirySystemPrompt (LLM-generated product-enquiry replies) was removed here —
+// its one call site (the `detection.mode==='enquiry' && product` branch in handleEngineWebhook) now
+// renders directly from the verified Ecom Product record instead (see that branch's own comment):
+// a stronger anti-hallucination guarantee than any prompt instruction, since there's no LLM call in
+// that path left to hallucinate in the first place.
 
 // `product` is optional (a general FAQ/objection reply has no specific product in view) — when
 // given, its own shopify_product_url/product_link win over the client-wide external_store_link,
@@ -7740,12 +8301,11 @@ function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLi
 // the three is set; callers must handle that (e.g. by collecting the order conversationally
 // instead, same as the ecom_order_link_enabled==='No' path).
 function buildCheckoutLink(c, clientId, sku, product){
+  // Same product-level-only rule as buildOrderLink: no generic or guessed checkout URL.
   const shopifyProductUrl=(product?.shopify_product_url||'').trim();
   if(shopifyProductUrl) return shopifyProductUrl;
   const productLink=(product?.product_link||'').trim();
   if(productLink) return productLink;
-  const ext=(c.external_store_link||'').trim();
-  if(ext) return ext;
   return '';
 }
 
@@ -7886,7 +8446,7 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service,
   if(bookingsTable){
     const insert=async()=>ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
       client_id:clientId, customer_name:name||'', customer_phone:phone,
-      service_id:service?String(service.Id):'', service_name:service?.name||'',
+      service_id:service?String(service.Id||service.id):'', service_name:service?.name||'',
       appt_date:explicitWhen?.date||'', appt_time:explicitWhen?.time||'',
       status:'requested', source:explicitWhen?'public':'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
       notes:explicitWhen?'Booked via the public booking page — awaiting confirmation.':'Booking link sent — awaiting confirmed date/time.',
@@ -7914,13 +8474,18 @@ async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service,
 async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link){
   let service=null;
   if(serviceId){
-    const servicesTable=apptResolveTable(c, 'services');
-    if(servicesTable){
+    if(c.industry==='healthcare'){
+      service=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    }else{
+      const servicesTable=apptResolveTable(c, 'services');
+      if(servicesTable){
       const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(serviceId)})&limit=1`);
       const sd=await sr.json().catch(()=>({}));
       service=sd?.list?.[0]||null;
+      }
     }
   }
+  if(service?.booking_url) link=service.booking_url;
   const displayName=name||'there';
   const text=service
     ? `Hi ${displayName}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
@@ -7934,8 +8499,12 @@ async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link
 // optional and only resolved if the Appointment module is set up; without it the message is just
 // the plain booking-link text.
 async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
-  const link=(c.external_store_link||'').trim();
-  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
   if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
 
   const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
@@ -7959,8 +8528,12 @@ async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
 // during WhatsApp connect — see handleChannelsWhatsappConnect) does the actual Meta relay, so this
 // path never has to hand-build a Graph API text payload at all.
 async function sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, serviceId){
-  const link=(c.external_store_link||'').trim();
-  if(!link) return {error:'No booking link configured — set one in Settings → Order Link.'};
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
 
   const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
@@ -8156,12 +8729,13 @@ const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvy
 // the message as a signal, and only once per lead (dedupe below) so it can't fire repeatedly in
 // one conversation.
 async function handleChatwootIncomingBookingSignal(env, c, clientId, content, body){
+  if(c.industry==='healthcare') return json({ok:true, skipped:'healthcare-native-whatsapp-booking'});
   const link=(c.external_store_link||'').trim();
   if(!link) return json({ok:true, skipped:'no-booking-link'});
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   if(ordersTable) return json({ok:true, skipped:'ecom-client'});
   if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
-  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
 
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
@@ -8209,7 +8783,7 @@ async function handleChatwootIncomingBookingSignal(env, c, clientId, content, bo
 // just discussed, instead of depending on whatever matching logic n8n's own flow has.
 async function handleChatwootIncomingOrderSignal(env, c, clientId, content, body, ordersTable){
   if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
-  if(!c.openrouter_key) return json({ok:true, skipped:'no-openrouter-key'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
 
   const phone=String(
     body.conversation?.meta?.sender?.phone_number ||
@@ -8624,16 +9198,28 @@ function engineChatwootPayloadSkipReason(body){
 // same {convId, phone, name, text, mediaType, mediaUrl} shape engineParseChatwootPayload does —
 // convId is always null (no Chatwoot conversation) and phone is always '' (Instagram has no phone
 // number, only an IGSID) so the rest of the pipeline doesn't need to know which channel this came
-// from. Text-only for v1 (confirmed scope) — no attachment branch, unlike the WhatsApp parser
-// above; an image/voice DM is simply ignored rather than mis-handled as a WhatsApp-shaped media
-// reply this channel doesn't support (yet).
-function engineParseInstagramPayload(entry){
-  const messaging=(entry?.messaging||[])[0];
-  if(!messaging || messaging.message?.is_echo) return null; // is_echo: our own sent message looped back
-  const igId=messaging.sender?.id;
-  const text=(messaging.message?.text||'').trim();
-  if(!igId || !text) return null;
-  return {convId:null, igId, phone:'', name:'', text, mediaType:'text', mediaUrl:''};
+// from. Every actionable event is normalized independently so batched DMs, postbacks, images,
+// voice notes, videos/files and story replies reach the unified Chats history.
+export function engineParseInstagramEvents(entry){
+  return (entry?.messaging||[]).map(messaging=>{
+    if(!messaging||messaging.message?.is_echo) return null;
+    const igId=messaging.sender?.id;
+    if(!igId) return null;
+    const message=messaging.message||{};
+    const attachment=(message.attachments||[])[0];
+    const attachmentType=String(attachment?.type||'').toLowerCase();
+    const mediaUrl=attachment?.payload?.url||message.reply_to?.story?.url||'';
+    const postbackText=messaging.postback?.title||messaging.postback?.payload||'';
+    const typedText=String(message.text||postbackText).trim();
+    const label=attachmentType==='image'?'[Instagram image]':attachmentType==='audio'?'[Instagram voice message]':attachmentType==='video'?'[Instagram video]':attachment?'[Instagram attachment]':message.reply_to?.story?'[Instagram story reply]':'';
+    const text=typedText||label;
+    if(!text) return null; // seen/reaction events are subscribed for health but do not create chat turns
+    const mediaType=attachmentType==='audio'?'voice':attachmentType||'text';
+    return {convId:null, igId:String(igId), recipientId:String(messaging.recipient?.id||entry.id||''), phone:'', name:'', text,
+      mediaType, mediaUrl, mid:message.mid||messaging.postback?.mid||'',
+      userMedia:(attachmentType==='image'||(!attachment&&message.reply_to?.story))&&mediaUrl?{type:'image',url:mediaUrl}:null,
+      userAttachment:attachmentType&&attachmentType!=='image'&&mediaUrl?{kind:attachmentType==='audio'?'voice':attachmentType,url:mediaUrl,name:label.replace(/[\[\]]/g,'')}:null};
+  }).filter(Boolean);
 }
 
 // Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
@@ -8656,7 +9242,7 @@ export function engineTextSimilarity(a, b){
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
 // clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
 // a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
-// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramPayload/
+// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramEvents/
 // handleInstagramWebhook) key this same lookup off a different column (IgId) instead of Phone —
 // every existing call site passes 3 args, so this stays exactly 'Phone' (the default) for them.
 async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
@@ -9294,6 +9880,21 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
+  if(industry==='healthcare'){
+    sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
+    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover.';
+  }
+  if(industry==='ecommerce'){
+    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
+    const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
+    const ecomStyleInstructions={
+      fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      shopify:'SHOPIFY / GENERAL STORE COMMUNICATION STYLE: Sound clear, friendly and conversion-focused. Guide discovery in this order when applicable: category, customer requirement, then verified matching products. Keep replies compact and make the next action obvious. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
+    };
+    // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
+    if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
+  }
   // First-ever message from this lead — give a short, natural intro to what the business offers
   // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
   // straight into an answer with no context on who they're talking to. Short and blended into the
@@ -9485,6 +10086,11 @@ function engineStripHallucinatedToolCode(text){
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL}));
   if(geminiReply) return geminiReply;
+  // OpenRouter is optional legacy fallback only; never request it with an absent key.
+  if(!c?.openrouter_key){
+    await reportOpsError(env, 'engineCallLlm — shared Gemini returned no usable reply and no OpenRouter fallback exists', new Error('no usable AI reply'), {clientId:c?.Id});
+    return 'One moment 🙏';
+  }
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -9899,7 +10505,7 @@ export function engineExtractReplyOptions(replyText){
 // miss.
 export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   const text=(typeof replyText==='string'?replyText:'').trim();
-  if(!text || !c.openrouter_key) return null;
+  if(!text || (!env.GEMINI_API_KEY && !c.openrouter_key)) return null;
   // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
   // choice question at all): a real clarifying question ends in '?' (or Arabic '؟', for an AED/UAE
   // client's Arabic-language reply) somewhere near the end — checked within the last 20 characters,
@@ -9913,13 +10519,9 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:150, messages:[{role:'system',content:system},{role:'user',content:text}]})
-    });
-    if(!r.ok) return null;
-    const data=await r.json().catch(()=>({}));
-    const raw=data?.choices?.[0]?.message?.content?.trim()||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {
+      temperature:0.1, maxOutputTokens:150, json:true
+    }))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
@@ -10034,6 +10636,36 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     return sent?null:false;
   }
   return trimmedItems.map(it=>({title:it.title, value:it.value}));
+}
+
+// Ecom catalogue navigation must arrive as a real WhatsApp interactive message. Chatwoot can
+// accept input_select while its downstream provider still emits only the body text, so Ecom uses
+// the connected Cloud API directly first and keeps Chatwoot as a compatibility fallback.
+async function engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text, items){
+  const raw=(items||[]).filter(item=>item&&(item.title||item.value)).slice(0,10);
+  if(!raw.length) return null;
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  const prepared=raw.map(item=>{
+    const full=String(item.title||item.value).trim();
+    return {title:engineTruncateButtonTitle(full,titleCap),value:String(item.value||item.title).slice(0,200),full};
+  });
+  const destination=String(phone||'').replace(/\D/g,'');
+  if(c.wa_phone_id&&c.wa_token&&destination){
+    const action=isList
+      ? {button:'Choose an item',sections:[{title:'Available options',rows:prepared.map(item=>({id:item.value,title:item.title,...(item.title!==item.full?{description:engineTruncateButtonTitle(item.full,72)}:{})}))}]}
+      : {buttons:prepared.map(item=>({type:'reply',reply:{id:item.value,title:item.title}}))};
+    const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:isList?'list':'button',body:{text:String(text||'').trim()},action}};
+    try{
+      const response=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(response.ok) return prepared.map(item=>({title:item.title,value:item.value}));
+      const errorBody=await response.text().catch(()=>'');
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta rejected interactive',new Error(`HTTP ${response.status} — ${errorBody.slice(0,500)}`),{clientId,convId});
+    }catch(error){
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta send threw',error,{clientId,convId});
+    }
+  }
+  return engineSendChatwootQuickReply(env,c,clientId,convId,text,raw);
 }
 
 // Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
@@ -10487,12 +11119,16 @@ function engineBytesToB64(bytes){ let s=''; const CH=0x8000; for(let i=0;i<bytes
 // Verifies X-Hub-Signature-256 the same way Meta signs every Graph API webhook (hex HMAC-SHA256
 // over the raw body, prefixed 'sha256=') — this endpoint is called directly by Meta, not through
 // requireSession, so this signature is the ONLY auth on it.
-async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
-  if(!sigHeader || !env.META_APP_SECRET) return false;
-  const expected='sha256='+await hmacSha256Hex(env.META_APP_SECRET, rawBody);
+export async function verifyWebhookSignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const expected='sha256='+await hmacSha256Hex(secret, rawBody);
   if(expected.length!==sigHeader.length) return false;
   let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
   return diff===0;
+}
+
+async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
+  return verifyWebhookSignature(env.META_APP_SECRET, rawBody, sigHeader);
 }
 
 // One-time setup, called from Settings when a client turns Native Forms on (or hits "Sync"):
@@ -10755,8 +11391,8 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   }
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
   if(!trimmed) return;
-  // Instagram DM (channel==='instagram') never goes through Chatwoot at all — no voice/image
-  // branches (confirmed text-only v1 scope), straight to the Graph API.
+  // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
+  // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
   // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). This is the
@@ -10776,14 +11412,20 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
 // Graph API using the account's own long-lived token (see handleInstagramOauthCallback), not a
 // WhatsApp send at all. Used both by engineDeliverReply (bot replies) and /instagram/send (a
 // human agent's manual reply from the Chats page).
-async function engineSendInstagramReply(env, c, igRecipientId, text){
-  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return;
+export async function engineSendInstagramReply(env, c, igRecipientId, text){
+  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return false;
   // graph.instagram.com, not graph.facebook.com — "Instagram API with Instagram Login" sends
   // through its own API host, matching the account-scoped token from handleInstagramOauthCallback.
-  await fetch(`https://graph.instagram.com/v21.0/${c.ig_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
-  }).catch(()=>{});
+  try{
+    const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${c.ig_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
+    });
+    if(r.ok) return true;
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'engineSendInstagramReply', new Error(instagramGraphError(data, `Instagram Graph HTTP ${r.status}`)));
+  }catch(e){ await reportOpsError(env, 'engineSendInstagramReply', e); }
+  return false;
 }
 
 async function engineSendHandoverLabel(c, convId){
@@ -10981,7 +11623,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   const isHuman=routing.route==='human';
 
   const history=(state.history||[]).slice();
-  if(userText) history.push({role:'user', content:userText});
+  if(userText) history.push({role:'user', content:routing.historyUserText||userText,
+    ...(routing.userMedia?{media:routing.userMedia}:{}),
+    ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
   // options — only present on turns that actually offered the customer tappable choices via
   // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
   // category/product picker — both gated on quick_reply_buttons_enabled above). media — only
@@ -11008,7 +11652,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // rep has no reason to keep checking.
   if(userText) body.ConvResolved='No';
   // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
-  // see engineParseInstagramPayload/handleInstagramWebhook.
+  // see engineParseInstagramEvents/handleInstagramWebhook.
   if(state.igId) body.IgId=state.igId;
   if(messageId) body.LastProcessedMessageId=messageId;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
@@ -11253,7 +11897,7 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
-    if(!c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-openrouter-key'); return json({ok:true, skipped:'no-openrouter-key'}); }
+    if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId;
@@ -11362,6 +12006,22 @@ async function handleEngineWebhook(request, env, secret){
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
+    // A generic ad CTA/business-information request must be answered from the client's prompt,
+    // even if the probabilistic intent model guesses that the pronoun "this" means a product.
+    // Explicit human/opt-out routes still win; explicit product language never matches the helper.
+    if(c.industry==='ecommerce' && ecomIsGeneralBusinessInfoQuery(userText) && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.businessInfoOnly=true;
+      routing.reply=null;
+    }
+    // Ecom customer enquiries always receive their conversational answer through the configured
+    // business prompt plus verified Products/categories context. The product/order resolver below
+    // may still handle a confidently identified product or explicit order first; otherwise this
+    // prevents generic flow/qualification copy from replacing the merchant's actual prompt.
+    if(c.industry==='ecommerce' && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.reply=null;
+    }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
     // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
@@ -11377,6 +12037,7 @@ async function handleEngineWebhook(request, env, secret){
     // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
+    const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
 
     let sentText=null;
     let orderHandledInline=false;
@@ -11395,6 +12056,64 @@ async function handleEngineWebhook(request, env, secret){
     // touching that cascade at all. isOptOut/isResub are still honored (engineRouteFlow itself
     // already short-circuits those unconditionally, above its own cascade) and an explicit human
     // ask still wins, so neither is checked again here.
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
+        sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
+        routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        orderHandledInline=true;
+      }else if(state.stage==='fashion_order_details'){
+        // Parse a single reply that contains Colour, Size, and Delivery Address.
+        // Accepts "Label: value" lines in any order (case-insensitive) or falls back to
+        // reading the first three non-empty lines as colour, size, address respectively.
+        const lines=String(userText||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+        const extract=(keys)=>{
+          for(const line of lines){
+            for(const key of keys){
+              const m=line.match(new RegExp(`^${key}\\s*[:\\-]\\s*(.+)$`,'i'));
+              if(m&&m[1].trim()) return m[1].trim();
+            }
+          }
+          return null;
+        };
+        const parsedColour=extract(['colou?r','color']);
+        const parsedSize=extract(['size']);
+        const parsedAddress=extract(['(?:delivery\\s*)?address','addr','location','city']);
+        // Positional fallback: lines[0]=colour, lines[1]=size, lines[2]=address
+        const colour=parsedColour||(lines[0]||'');
+        const size=parsedSize||(lines[1]||'');
+        const address=parsedAddress||(lines[2]||'');
+        if(!colour||!size||address.length<3){
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          sentText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+        }else{
+          seed.color=colour; seed.size=size; seed.address=address.slice(0,500);
+          sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nColour: ${seed.color}\nSize: ${seed.size}\nDelivery address: ${seed.address}`,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_confirm'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
+          orderHandledInline=true;
+        }
+      }else if(state.stage==='fashion_order_confirm'){
+        if(/^FASHION_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
+          seed.items=ecomFashionOrderItems(seed);
+          const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
+          sentText=await engineLocalizeReply(env,c,order.ok
+            ? `Order confirmed ✅\nReference: ${order.order_id}`
+            : 'I could not save the order. I will connect you with our team.',replyLang);
+          routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
+          if(!order.ok){routing.route='human';routing.humanReason='fashion_order_save_failed';await engineSendHandoverLabel(c,convId);}
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+        }else{
+          sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
+          orderHandledInline=true;
+        }
+      }
+    }
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(state.stage==='order_collect_items'){
@@ -11418,6 +12137,93 @@ async function handleEngineWebhook(request, env, secret){
         routing.clearOrderCollect=true;
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
         orderHandledInline=true;
+      }
+    }
+    // Healthcare is grounded before the general FAQ LLM. Emergency phrases deterministically
+    // hand over; service lookup searches only Healthcare → Services; every picker label is copied
+    // from a real active service/doctor row. A single match gets its stored facts and media only.
+    if(!orderHandledInline && c.industry==='healthcare' && routing.route!=='drop' && !routing.isOptOut && !routing.isResub){
+      const hcSettings=await hcSettingsForClient(env,clientId);
+      const emergency=hcEmergencyMatch(hcSettings,userText);
+      if(emergency){
+        const contact=String(hcSettings?.emergency_contact||'').trim();
+        sentText=String(hcSettings?.emergency_message||'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.').trim();
+        if(contact) sentText+=`\n\nEmergency contact: ${contact}`;
+        if(hcSettings?.handover_message) sentText+=`\n\n${hcSettings.handover_message}`;
+        sentText=await engineLocalizeReply(env,c,sentText,replyLang);
+        routing.reply=sentText; routing.route='human'; routing.humanReason='healthcare_emergency';
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineSendHandoverLabel(c,convId);
+        orderHandledInline=true;
+      }else{
+        const bookingFlow=await hcHandleWhatsappBooking(env,c,clientId,convId,phone,state.leadId,userText,replyLang);
+        if(bookingFlow.handled){
+          sentText=bookingFlow.text; routing.reply=sentText; routing.quickReplies=bookingFlow.quickReplies||null;
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
+        let matches=await hcFindBroadServiceMatches(env,clientId,userText);
+        if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
+        if(matches.length>1){
+          sentText=await engineLocalizeReply(env,c,isNewLead?`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`:'Please choose the exact service you need:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
+          orderHandledInline=true;
+        }else if(matches.length===1){
+          const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
+          routing.reply=sentText;
+          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
+          const {results:serviceDoctors}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 9`).bind(Number(clientId),Number(service.department_id||0)).all();
+          const doctorChoices=(serviceDoctors||[]).map(d=>({title:d.name,value:d.name}));
+          const bookingChoices=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${service.id}`},...doctorChoices];
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
+          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
+          // If the primary image path was used, send the exact doctor choices as a separate picker
+          // because engineDeliverReply deliberately prioritizes an image over quick replies.
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Book or choose a doctor:',bookingChoices);
+          else routing.quickReplies=bookingChoices.length?delivered:null;
+          orderHandledInline=true;
+        }else{
+          const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+          if(doctorMatches.length>1){
+            sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
+            orderHandledInline=true;
+          }else if(doctorMatches.length===1){
+            const doctor=doctorMatches[0];
+            sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:doctor.image_url||null});
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book an appointment?',[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`}]);
+            orderHandledInline=true;
+          }else{
+            const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+            if(departmentMatches.length){
+              const ids=departmentMatches.map(d=>Number(d.id));
+              const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+              if(departmentServices.length){
+                sentText=await engineLocalizeReply(env,c,'Please choose the exact service you need:',replyLang);
+                routing.reply=sentText;
+                routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+                orderHandledInline=true;
+              }
+            }
+          }
+        }
+        if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
+          const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
+          if(providers?.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose your insurance provider. Coverage still needs confirmation by the clinic:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,providers.map(p=>({title:p.provider_name,value:p.provider_name})));
+            orderHandledInline=true;
+          }
+        }
+        }
       }
     }
     // Order-readiness overrides the flow_json state machine's own routing entirely, not just
@@ -11448,10 +12254,95 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && c.industry==='ecommerce' && c.openrouter_key && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
-      if(detection.signal){
+      const activeProducts=await ecomListActiveProducts(env, clientId);
+      const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
+      const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
+      // Category buttons are populated from this same Products data, so recognize their returned
+      // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
+      // can be treated as a product name, fail exact product resolution, and incorrectly trigger
+      // the zero-hallucination SKU fallback instead of showing the category's verified choices.
+      const matchedCategory=await ecomFindMatchedProductCategory(env, clientId, userText);
+      // Fashion greeting is prompt-led, but navigation is database-led. A configured category
+      // image is sent as the visual header; every button is an exact category from active Ecom
+      // Products. Other Ecom styles keep the existing greeting path.
+      if(isFashionEcom&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+        const categories=await ecomListCategories(env,clientId);
+        if(categories.length){
+          // New leads get the personalised first-touch intro; returning customers get a simpler prompt
+          const intro=isNewLead
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+          // Send each category's image in sequence before presenting the category buttons
+          let anySent=false;
+          for(const category of categories){
+            const catImg=await ecomFindCategoryImage(env,clientId,category);
+            if(catImg){ await engineSendChatwootImageReply(env,c,clientId,convId,catImg,anySent?'':intro); anySent=true; }
+          }
+          sentText=anySent?await engineLocalizeReply(env,c,'Please choose a category:',replyLang):intro;
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(category=>({title:category,value:category})));
+          orderHandledInline=true;
+        }
+      }
+      if(exactSelectedProduct){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=undefined;
+        detection.sku=exactSelectedProduct.sku||undefined;
+        detection.productName=exactSelectedProduct.name;
+      }else if(matchedCategory){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=matchedCategory;
+        detection.sku=undefined;
+        detection.productName=undefined;
+        detection.brand=undefined;
+      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !broadMatches.length && !ecomIsGenericProductCatalogueQuery(userText) && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
+        // Follow-up question about the already selected product: answer from the configured prompt
+        // plus verified catalogue context below. Do not restart navigation or invent a new option.
+        detection.signal=false;
+        routing.route='ecom_faq';
+      }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
+        // One self-contained verified catalogue response: active categories plus broad-matched
+        // active products. The same exact rows are included in the message body and interactive
+        // picker, so a provider-side button failure can never leave only a dead-end instruction.
+        const categories=await ecomListCategories(env, clientId);
+        if(isFashionEcom){
+          // Fashion: broad match routes to the category picker with images — keeps the
+          // deterministic Categories → Products → Order flow intact instead of a mixed text list.
+          if(categories.length){
+            for(const category of categories){
+              const catImg=await ecomFindCategoryImage(env,clientId,category);
+              if(catImg) await engineSendChatwootImageReply(env,c,clientId,convId,catImg,'');
+            }
+            sentText=await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(cat=>({title:cat,value:cat})));
+            orderHandledInline=true;
+          }
+        }else{
+          const productChoices=broadMatches.length?broadMatches:activeProducts;
+          const items=ecomAvailableCatalogueItems(categories,productChoices);
+          if(items.length){
+            const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
+            const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
+            const categoryLines=[],productLines=[];
+            for(const item of items){
+              const line=`- ${item.title}`;
+              if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
+              else productLines.push(line);
+            }
+            sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
+            orderHandledInline=true;
+          }
+        }
+      }
+      if(detection.signal && !orderHandledInline){
         let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
         // Fallback for a message with no product detail of its own ("proceed with order", a bare
         // "yes") where detectOrderSignal's own context-inference (see its system prompt) still came
@@ -11482,9 +12373,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           orderHandledInline=true;
@@ -11505,9 +12395,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.humanReason='order_handoff';
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+          // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           await engineSendHandoverLabel(c, convId);
@@ -11520,9 +12409,8 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+            // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
@@ -11537,30 +12425,47 @@ async function handleEngineWebhook(request, env, secret){
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
             if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
             await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
+            // Description first, then the extra product images/audio/video bundle — same
+          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
-        } else if(detection.mode==='order' && !product){
+        } else if(detection.mode==='order' && !product && !orderHandledInline){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
           orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product && isFashionEcom && exactSelectedProduct){
+          // Selecting an exact Fashion product starts an in-WhatsApp order. Product description
+          // and configured media are shown first, then verified size/colour choices are collected.
+          await ensureOrderCollectField(env);
+          const productLines=[`*${product.name}*`];
+          if(product.description) productLines.push(String(product.description));
+          sentText=productLines.join('\n\n');
+          routing.reply=sentText;
+          if(sendProductImage&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang});
+          orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
-          // Opt-in (ecom_link_on_enquiry) — see engineBuildProductEnquirySystemPrompt's own
-          // comment on this parameter for why it's off by default. Deliberately restricted to a
-          // link actually set on the product itself (shopify_product_url/product_link) — unlike
-          // buildCheckoutLink's broader chain, an enquiry never falls through to the client-wide
-          // external_store_link, per explicit product direction: on enquiry, only ever share the
-          // link given at the product level, nothing client-wide or generic.
-          const enquiryLink=c.ecom_link_on_enquiry==='Yes' ? ((product.shopify_product_url||product.product_link||'').trim()||null) : null;
-          state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:['conversation','product','category']});
-          const sysPrompt=engineBuildProductEnquirySystemPrompt(c, product, replyLang, enquiryLink, state);
-          sentText=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 200, state.botMsgs?.[state.botMsgs.length-1], enquiryLink?[enquiryLink]:[]);
-          sentText=engineSubstituteOrderLinkPlaceholder(sentText, c, clientId, product.sku, product);
+          // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
+          // product name/description/link stay verbatim and absent facts remain absent — a
+          // stronger anti-hallucination guarantee than any prompt instruction or post-hoc check
+          // can give, since there's no LLM call in this branch to hallucinate in the first place
+          // (see engineFindHallucinatedLink/engineCallLlmAvoidingRepeat for the deterministic
+          // backstop still used everywhere else an LLM does generate the reply, e.g. ecom_faq).
+          const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
+          const productLines=[`*${product.name}*`];
+          if(product.description) productLines.push(String(product.description));
+          if(enquiryLink) productLines.push(`Order / product link: ${enquiryLink}`);
+          else productLines.push('An online product link is not available. I’ll connect you with our team.');
+          sentText=productLines.join('\n\n');
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
@@ -11571,14 +12476,14 @@ async function handleEngineWebhook(request, env, secret){
           // comes up again the same day.
           if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra-angle photos/audio/video/PDF bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio,
-          // video, PDF) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
+          // Primary image is attached above; additional images, audio, video and PDF follow.
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          // Only logged as a pending order when the link was actually made available this turn —
-          // an enquiry reply with the toggle off shares no link, so there's nothing to log yet.
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
+          else{
+            routing.route='human';
+            routing.humanReason='product_link_missing';
+            await engineSendHandoverLabel(c, convId);
+          }
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && !product && detection.category){
           // Named a category ("shirts"), not one specific product — detectOrderSignal only returns
@@ -11590,6 +12495,40 @@ async function handleEngineWebhook(request, env, secret){
           // as if it were the answer; fall back to the first matching product's photo only when the
           // category itself has no photo configured.
           let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          if(categoryProducts.length){
+            // One deterministic step only: category -> exact products. Never insert AI-created
+            // brand, material, size, spring type, colour or variant questions between them.
+            if(isFashionEcom){
+              // Fashion: cap at 6 products, send category image then each product's image+video
+              const fashionProducts=categoryProducts.slice(0,6);
+              const categoryImage=await ecomFindCategoryImage(env,clientId,detection.category);
+              if(categoryImage) await engineSendChatwootImageReply(env,c,clientId,convId,categoryImage,'');
+              for(const p of fashionProducts){
+                if(p.image_url) await sendDriveMediaToChatwoot(c,convId,p.image_url,'');
+                if(p.video_url) await sendDriveMediaToChatwoot(c,convId,p.video_url,'');
+              }
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(fashionProducts));
+            }else{
+              const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
+              const remaining=categoryProducts.slice(recommended.length,10);
+              const body=[`Recommended in ${detection.category}:`,...recommended.map(p=>`- ${p.name}`),remaining.length?'More products:':'',...remaining.map(p=>`- ${p.name}`)].filter(Boolean).join('\n');
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(categoryProducts));
+            }
+            orderHandledInline=true;
+          }
+          if(!orderHandledInline){
+          let categoryPromptReply=null;
+          if(categoryProducts.length){
+            const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
+            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead)
+              +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
+            const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+            categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
+          }
           // Brand-level narrowing — same "never leave a multi-way choice as free text" reasoning
           // as the variant/product picker below, one level up. Real observed failure: a customer
           // asking about a category with several carried brands got a free-form LLM paragraph
@@ -11615,24 +12554,14 @@ async function handleEngineWebhook(request, env, secret){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const photoUrl=categoryImage||withImage.image_url;
-            const intro=`Which brand of ${detection.category} are you interested in?`;
+            const intro=categoryPromptReply||`Which brand of ${detection.category} are you interested in?`;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
-            if(botConfig.quick_reply_buttons_enabled!==false){
-              sentText=await engineLocalizeReply(env, c, intro, replyLang);
-              routing.reply=sentText;
-              const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
-              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
-              // routing.quickReplies is set from what this actually sent (title truncated/deduped
-              // as needed), not the pre-truncation `items` — see engineSendChatwootQuickReply's own
-              // comment for the exact bug this avoids (a stored option that doesn't match what
-              // WhatsApp echoes back on tap).
-              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
-            } else {
-              const listText=brandsInCategory.map(b=>`- ${b}`).join('\n');
-              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-              routing.reply=sentText;
-              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
-            }
+            // Ecom catalogue choices are always interactive and come verbatim from Product data.
+            sentText=await engineLocalizeReply(env, c, intro, replyLang);
+            routing.reply=sentText;
+            const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
+            if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
             orderHandledInline=true;
           } else if(categoryProducts.length){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
@@ -11648,7 +12577,7 @@ async function handleEngineWebhook(request, env, secret){
               nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
             }
             const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
-            const intro=variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`;
+            const intro=categoryPromptReply||(variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`);
             const photoUrl=categoryImage||withImage.image_url;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
@@ -11656,26 +12585,29 @@ async function handleEngineWebhook(request, env, secret){
             // choice sends its exact name back as a normal incoming message (Chatwoot's own
             // behavior for a button/list reply), which the next turn's product/category resolution
             // already handles the same as if the customer had typed it themselves.
-            if(botConfig.quick_reply_buttons_enabled!==false && choices.length){
+            if(choices.length){
+              // Always buttons/list rows; every title/value is an exact Ecom Product field.
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
               routing.reply=sentText;
               const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
               routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
-            } else {
-              const listText=choices.map(ch=>`- ${ch.label}`).join('\n');
-              sentText=await engineLocalizeReply(env, c, `${intro}\n${listText}`, replyLang);
-              routing.reply=sentText;
-              await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:photoUrl});
             }
             orderHandledInline=true;
+          }
           }
           // No products at all in that category (or that brand within it) — falls through to FAQ
           // below ("we don't carry that").
         }
-        // enquiry with no confident product or category match falls through to the normal FAQ/flow
-        // handling below (no canned reply, no link) — the context-aware FAQ LLM can respond
-        // naturally, e.g. "we don't carry that, but here's what we do have."
+        // Zero-hallucination fallback: a product/category signal that did not resolve to a real
+        // Products-table row must never fall through to the general FAQ model, which has no
+        // verified product record and could improvise availability or specifications.
+        if(!orderHandledInline && detection.mode==='enquiry' && !product){
+          // Unresolved enquiry is not a dead end. Continue into ecom_faq below, whose LLM receives
+          // the merchant prompt and verified catalogue context; its buttons are added separately
+          // from active Products data only.
+          routing.route='ecom_faq';
+        }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
       // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
@@ -11685,7 +12617,7 @@ async function handleEngineWebhook(request, env, secret){
       // humanReason==='order_handoff' — that's the "Talk to sales team" order-link-sending branch
       // above deliberately routing to human just now, not a stale pre-existing classification to
       // undo.
-      if(orderHandledInline && routing.route==='human' && routing.humanReason!=='order_handoff') routing.route='ecom_faq';
+      if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
     // A brand-new ecom lead's very first message, when this client has product categories
@@ -11696,8 +12628,7 @@ async function handleEngineWebhook(request, env, secret){
     // clarifying question and didn't name one single product, so neither existing button path
     // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
     // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
-    const newLeadCategories=(!orderHandledInline && routing.route==='ecom_faq' && isNewLead && botConfig.quick_reply_buttons_enabled!==false)
-      ? await ecomListCategories(env, clientId) : [];
+    const newLeadCategories=[];
 
     if(orderHandledInline){
       // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
@@ -11814,11 +12745,13 @@ async function handleEngineWebhook(request, env, secret){
       if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
+      else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-      const sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this
       // route's prompt was actually handed via "## Order Link" this turn. undefined (not []) for
@@ -11831,13 +12764,15 @@ async function handleEngineWebhook(request, env, secret){
       reply=cleanReply;
       routing.reply=reply; sentText=reply;
       let faqQuickReplies=null;
-      if(botConfig.quick_reply_buttons_enabled!==false){
-        if(replyOptions && replyOptions.length){
+      // The LLM never creates Ecom navigation. Exact categories/products are handled before this
+      // branch; general/additional Ecom questions receive prompt text only.
+      if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
+        if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
           // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
           faqQuickReplies=replyOptions.map(o=>({title:o, value:o}));
-        } else if(routing.route==='ecom_faq'){
+        } else if(routing.route==='ecom_faq' && !routing.businessInfoOnly){
           // No clarifying question this turn, but the answer named exactly one catalog product with
           // enough confidence to act on — offer the same one-tap next steps the deterministic
           // category picker gets. Values are phrased to land on existing keyword/classifier matches
@@ -11875,6 +12810,14 @@ async function handleEngineWebhook(request, env, secret){
         if(!faqQuickReplies){
           const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
           if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
+        }
+        // Every Ecom enquiry keeps the prompt-generated answer above, then adds one verified menu
+        // in the SAME message when the answer did not already provide a choice. No label or value
+        // here comes from the LLM: categories and recommended products are copied from active
+        // Ecom Product rows only.
+        if(!faqQuickReplies && routing.route==='ecom_faq'){
+          const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+          faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
         }
       }
       // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
@@ -12010,7 +12953,7 @@ async function handleEngineWebhook(request, env, secret){
     // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
     // violate the "never send a link before order intent" rule for the one case the order-check
     // above deliberately leaves unhandled (an enquiry with no confident product match).
-    if(c.bot_reply_disabled!=='Yes' && c.industry!=='ecommerce' && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+    if(!orderHandledInline && c.bot_reply_disabled!=='Yes' && !['ecommerce','healthcare'].includes(c.industry) && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
       // Only runs once a booking link is actually configured, and skips a lead already at a
       // booking-terminal stage or one with a `requested` appointment already pending.
       const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
@@ -12067,157 +13010,121 @@ async function handleInstagramWebhookVerify(request, env){
   return json({error:'Verification failed'}, 403);
 }
 
-async function handleInstagramWebhook(request, env){
-  // Diagnostic detail (results array below) returned directly in the HTTP response rather than
-  // relying on console.log — wrangler tail in at least one real deployment wasn't surfacing
-  // console.log output at all (logs:[] on every event, including pre-existing routes known to be
-  // working), so this makes the endpoint self-diagnosing over curl/the Test button regardless of
-  // whether log capture is working. Meta itself ignores the response body, so this is free to be
-  // as detailed as useful.
-  const results=[];
-  if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
-  const body=await request.json().catch(()=>({}));
-  if(body.object!=='instagram') return json({ok:true, skipped:'not-instagram'});
-
-  // TEMPORARY debug aid — neither wrangler tail nor a direct curl test has been reachable while
-  // diagnosing why real DMs weren't showing up in Chats, so this writes the exact raw payload Meta
-  // sends into NocoDB (ig_webhook_debug on CLIENTS), readable directly with no log tooling
-  // involved at all. Best-effort, every ig-connected client (there's only one right now) — remove
-  // once the underlying issue is found; not meant to ship long-term.
-  try{
-    await ensureClientColumns(env, ['ig_webhook_debug']);
-    let page=1;
-    while(true){
-      const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
-      const data=await r.json().catch(()=>({}));
-      const rows=data?.list||[];
-      if(!rows.length) break;
-      for(const row of rows){
-        if(row.ig_access_token) await patchClientFields(env, row.Id, {ig_webhook_debug: new Date().toISOString()+' :: '+JSON.stringify(body).slice(0,2000)}).catch(()=>{});
-      }
-      if(rows.length<200) break;
-      page++;
-    }
-  }catch(e){}
-
-  for(const entry of (body.entry||[])){
-    try{
-      const parsed=engineParseInstagramPayload(entry);
-      if(!parsed){ results.push({skipped:'not-actionable (echo, missing text, or missing sender)', entry}); continue; }
-      const recipientId=entry.messaging?.[0]?.recipient?.id||entry.id;
-      const c=await findClientByField(env, 'ig_id', recipientId);
-      if(!c){ results.push({skipped:'no client found for ig_id', recipientId}); continue; }
-      if(c.active==='No'){ results.push({skipped:'client inactive', clientId:c.Id}); continue; }
-      if(c.engine_disabled==='Yes'){ results.push({skipped:'engine_disabled for client', clientId:c.Id}); continue; }
-      if(!c.openrouter_key){ results.push({skipped:'no openrouter_key set for client', clientId:c.Id}); continue; }
-      const clientId=String(c.Id);
-
-      // Same fast D1 dedup gate handleEngineWebhook uses for WhatsApp redeliveries, reusing the
-      // same table — a webhook redelivery here is exactly as possible as it is for Chatwoot's.
-      const mid=entry.messaging?.[0]?.message?.mid||'';
-      if(mid){
-        try{
-          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
-            .bind(Number(clientId), mid, new Date().toISOString()).run();
-          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery', clientId, mid}); continue; }
-        }catch(e){}
-      }
-
-      await ensureLeadsColumns(env, ['IgId','Channel']);
-      const state=await engineGetLeadState(env, clientId, parsed.igId, 'IgId');
-      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
-      if(state.leadOptOut==='Yes'){ results.push({skipped:'opted-out', clientId}); continue; }
-
-      const userText=parsed.text;
-      const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
-      const routing=engineRouteFlow(c, state, userText, cls);
-      // Same proactive visibility as handleEngineWebhook's own call site — see its comment.
-      if(routing.loopDetected){
-        await reportOpsError(env, 'Anti-loop escalation — bot got stuck repeating itself, handed off to a human (Instagram)', new Error(`client ${clientId} (${c.client_name||'unnamed'}), stage ${state.stage||'new'}`));
-      }
-      const replyLang=routing.customerLanguage||c.language||'en';
-      const deliverOpts={channel:'instagram', igRecipientId:parsed.igId, langCode:replyLang};
-      const isNewLead=!state.leadId;
-      let sentText=null;
-
-      if(routing.route==='human'){
-        sentText=await engineLocalizeReply(env, c, routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.', replyLang);
-        routing.reply=sentText;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='drop'){
-        // no reply
-      }else if(routing.route==='qualify'){
-        const qualQuestions=engineParseJsonField(c.qual_questions, []);
-        const firstQ=engineQualQuestionText(qualQuestions[0]);
-        routing.next='qual_0';
-        sentText=isNewLead
-          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
-          : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
-        routing.reply=sentText;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='qualify_next'){
-        sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
-        routing.reply=sentText;
-        if(sentText) await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
-        state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-        const sysPrompt=engineBuildFaqSystemPrompt(c, state, null, c.industry||'general', replyLang, isNewLead);
-        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
-        let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
-        // Instagram is text-only (engineDeliverReply short-circuits to engineSendInstagramReply
-        // before any button/list code) — the OPTIONS: marker itself must still be stripped here so
-        // it never shows up as a literal line in the DM, even though it's never turned into buttons.
-        reply=engineExtractReplyOptions(reply).text;
-        routing.reply=reply; sentText=reply;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }else if(routing.route==='objection'){
-        const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
-        const reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-        routing.reply=reply; sentText=reply;
-        await engineDeliverReply(env, c, clientId, null, sentText, deliverOpts);
-      }
-
-      const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
-      const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
-      if(newSummary) leadBody.ConvSummary=newSummary;
-      const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
-      if(newFacts) leadBody['Customer Facts']=newFacts;
-      const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
-      if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
-      if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
-        await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
-      }
-      if(resolvedLeadId){
-        await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'instagram', at:new Date().toISOString()});
-      }
-      // Same NocoDB schema-cache-lag race ncPatchVerified guards against on the CLIENTS table
-      // (see handleInstagramOauthCallback) — IgId/Channel may have been auto-created by
-      // ensureLeadsColumns moments ago in this same request. Only relevant for the very first
-      // Instagram lead ever created on a given NocoDB base (every later message reuses columns
-      // that already exist), so this is scoped to isNewLead rather than paid on every message.
-      if(isNewLead && resolvedLeadId){
-        for(let attempt=1; attempt<=3; attempt++){
-          const checkR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
-          const checkD=await checkR.json().catch(()=>({}));
-          if(String(checkD?.IgId||'')===String(leadBody.IgId||'') && String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
-          if(attempt<3){
-            await new Promise(res=>setTimeout(res, 900*attempt));
-            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:resolvedLeadId, IgId:leadBody.IgId, Channel:leadBody.Channel}});
-          }
-        }
-      }
-      await engineLogAnalytics(env, {
-        ClientId:clientId, ClientName:c.client_name||'', Phone:'', Intent:routing.intent||'', Route:routing.route||'',
-        Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:0, IsError:false, ErrorMsg:'',
-        Timestamp:new Date().toISOString()
-      });
-      results.push({ok:true, clientId, leadId:resolvedLeadId, route:routing.route, sent:!!sentText});
-    }catch(e){
-      await reportOpsError(env, 'handleInstagramWebhook', e);
-      results.push({error:e.message});
+async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
+  const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+  if(newSummary) leadBody.ConvSummary=newSummary;
+  const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+  if(newFacts) leadBody['Customer Facts']=newFacts;
+  const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
+  // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
+  // Verify those identity fields before considering the first inbound turn durable.
+  if(isNewLead&&resolvedLeadId){
+    for(let attempt=1;attempt<=3;attempt++){
+      const checkR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
+      const checkD=await checkR.json().catch(()=>({}));
+      if(String(checkD?.IgId||'')===String(leadBody.IgId||'')&&String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
+      if(attempt===3){ await reportOpsError(env,'persistInstagramTurn',new Error('Instagram lead identity fields were not saved after schema repair')); break; }
+      await new Promise(resolve=>setTimeout(resolve,900*attempt));
+      await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:resolvedLeadId,IgId:leadBody.IgId,Channel:leadBody.Channel}});
     }
   }
-  return json({ok:true, results});
+  if(resolvedLeadId&&leadBody.Stage&&leadBody.Stage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+  if(resolvedLeadId) await engineBroadcastUpdate(env, clientId, {type:'message',lead_id:resolvedLeadId,channel:'instagram',at:new Date().toISOString()});
+  return {resolvedLeadId,leadBody};
+}
+
+export async function processInstagramWebhookBody(env, body){
+  const results=[];
+  if(body.object!=='instagram') return [{skipped:'not-instagram'}];
+  for(const entry of (body.entry||[])) for(const parsed of engineParseInstagramEvents(entry)){
+    let recovery=null;
+    try{
+      const c=await findClientByField(env, 'ig_id', parsed.recipientId||entry.id);
+      if(!c){ results.push({skipped:'no client found for ig_id',recipientId:parsed.recipientId||entry.id}); continue; }
+      if(c.active==='No'){ results.push({skipped:'client inactive',clientId:c.Id}); continue; }
+      const clientId=String(c.Id), mid=parsed.mid;
+      if(mid&&env.DB){
+        try{
+          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`).bind(Number(clientId),mid,new Date().toISOString()).run();
+          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery',clientId,mid}); continue; }
+        }catch(e){}
+      }
+      await ensureClientColumns(env,['ig_webhook_debug']);
+      await patchClientFields(env,c.Id,{ig_webhook_debug:'received:'+new Date().toISOString()}).catch(()=>{});
+      await ensureLeadsColumns(env,['IgId','Channel']);
+      const state=await engineGetLeadState(env,clientId,parsed.igId,'IgId');
+      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
+      const isNewLead=!state.leadId;
+      recovery={c,clientId,state,isNewLead};
+      const inboxReason=env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
+      if(inboxReason){
+        const routing={route:'inbox_only',next:state.stage||'new',customerLanguage:c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+        const saved=await persistInstagramTurn(env,c,clientId,state,routing,parsed.text,mid,isNewLead);
+        results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:'inbox_only',reason:inboxReason,sent:false});
+        continue;
+      }
+      let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
+      if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
+      const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
+      const routing=engineRouteFlow(c,state,userText,cls);
+      Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
+      if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
+      const replyLang=routing.customerLanguage||c.language||'en';
+      const deliverOpts={channel:'instagram',igRecipientId:parsed.igId,langCode:replyLang};
+      let sentText=null, deliveryFailed=false;
+      const deliver=async text=>{
+        if(!text) return true;
+        const ok=await engineDeliverReply(env,c,clientId,null,text,deliverOpts);
+        if(!ok){ deliveryFailed=true; routing.reply=null; sentText=null; }
+        return ok;
+      };
+      if(routing.route==='human'){
+        sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify'){
+        const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify_next'){
+        sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
+      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
+        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
+        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='objection'){
+        sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
+      }
+      const saved=await persistInstagramTurn(env,c,clientId,state,routing,userText,mid,isNewLead);
+      recovery=null; // the inbound turn is durable; later analytics errors must not append it twice
+      await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:'',Intent:routing.intent||'',Route:routing.route||'',Stage:state.stage||'',NextStage:saved.leadBody.Stage||'',ResponseMs:0,IsError:deliveryFailed,ErrorMsg:deliveryFailed?'Instagram delivery failed':'',Timestamp:new Date().toISOString()});
+      results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:routing.route,sent:!!sentText,deliveryFailed});
+    }catch(e){
+      await reportOpsError(env,'processInstagramWebhookBody',e);
+      let recovered=false;
+      if(recovery){
+        try{
+          const routing={route:'inbox_only',next:recovery.state.stage||'new',customerLanguage:recovery.c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+          await persistInstagramTurn(env,recovery.c,recovery.clientId,recovery.state,routing,parsed.text,parsed.mid,recovery.isNewLead);
+          recovered=true;
+        }catch(saveError){ await reportOpsError(env,'processInstagramWebhookBody inbound recovery',saveError); }
+      }
+      results.push({error:e.message,inboundSaved:recovered});
+    }
+  }
+  return results;
+}
+
+async function handleInstagramWebhook(request, env, ctx){
+  const rawBody=await request.text();
+  if(!await verifyWebhookSignature(env.META_IG_APP_SECRET,rawBody,request.headers.get('X-Hub-Signature-256'))) return new Response('Invalid signature',{status:432});
+  let body; try{ body=JSON.parse(rawBody); }catch(e){ return json({error:'Invalid JSON'},400); }
+  if(body.object!=='instagram') return json({ok:true,skipped:'not-instagram'});
+  const work=processInstagramWebhookBody(env,body);
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true,accepted:true}); }
+  return json({ok:true,results:await work});
 }
 
 // 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
@@ -13573,6 +14480,7 @@ const PM_TABLES={
       color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
       budget_amount:{type:'num'}, budget_currency:{type:'str', max:10, def:'USD'}, default_hourly_rate:{type:'num'},
       client_email:{type:'str', max:200}, ai_auto_stage_enabled:{type:'int', def:0},
+      task_reminders_enabled:{type:'int', def:0}, overdue_escalation_enabled:{type:'int', def:0},
     }
   },
   tasks:{
@@ -13618,6 +14526,43 @@ const PM_TABLES={
 // everything project-scoped except `projects` itself and `time` (time entries derive project_id
 // from their task instead, see handlePmCreate).
 const PM_PROJECT_SCOPED=['tasks','sprints','automations'];
+const pmAutomationSchemaReady=new WeakMap();
+const PM_AUTOMATION_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS pm_task_automation (
+    client_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
+    task_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', reminder_status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_task_notifications (
+    client_id INTEGER NOT NULL, task_id INTEGER NOT NULL, task_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id, task_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    project_id INTEGER NOT NULL DEFAULT 0, task_id INTEGER NOT NULL DEFAULT 0,
+    job_type TEXT NOT NULL DEFAULT '', failure_reason TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_task_automation_status
+    ON pm_task_automation(client_id, project_id, workflow_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_queue_failures_client ON pm_queue_failures(client_id, created_at)`
+];
+export async function pmEnsureAutomationSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
+  const pending=(async()=>{
+    const info=await env.DB.prepare(`PRAGMA table_info(pm_projects)`).all();
+    const columns=new Set((info?.results||[]).map(x=>x.name));
+    if(!columns.has('task_reminders_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    if(!columns.has('overdue_escalation_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
+  })();
+  pmAutomationSchemaReady.set(env.DB,pending);
+  try{ await pending; }catch(error){ pmAutomationSchemaReady.delete(env.DB); throw error; }
+}
 function pmCoerce(spec, raw){
   if(raw===undefined||raw===null||raw===''){
     return spec.def!==undefined?spec.def:null;
@@ -13673,7 +14618,8 @@ async function handlePmCreate(request, env, kind){
   const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
   if(kind==='tasks'){
     if(row.status==='done') await env.DB.prepare(`UPDATE pm_tasks SET done_at=? WHERE id=?`).bind(now, row.id).run();
-    await runTaskAutomations(env, payload.cid, row.project_id, row, 'created', null);
+    const fresh=await pmTaskRow(env,payload.cid,row.id);
+    row.automation=await pmQueueTaskLifecycle(env,fresh,{event:'created'});
   }
   return json(row);
 }
@@ -13708,9 +14654,13 @@ async function handlePmUpdate(request, env, kind){
   if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(now); }
   vals.push(id);
   await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  if(kind==='tasks' && statusChanged){
-    const fresh=await env.DB.prepare(`SELECT *, id AS Id FROM pm_tasks WHERE id=?`).bind(id).first();
-    await runTaskAutomations(env, payload.cid, existing.project_id, fresh, 'status_changed', existing.status);
+  if(kind==='tasks'){
+    const fresh=await pmTaskRow(env,payload.cid,id);
+    return json({ok:true,automation:await pmQueueTaskLifecycle(env,fresh,{event:statusChanged?'status_changed':'',prevStatus:existing.status})});
+  }
+  if(kind==='projects'&&(body.task_reminders_enabled!==undefined||body.overdue_escalation_enabled!==undefined)){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_refresh',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectRefresh',error,{clientId:payload.cid,projectId:id}); }
   }
   return json({ok:true});
 }
@@ -13721,9 +14671,11 @@ async function handlePmDelete(request, env, kind){
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
   if(!id) return json({error:'Id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  const existing=await env.DB.prepare(`SELECT * FROM ${cfg.table} WHERE id=?`).bind(id).first();
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   if(kind==='projects'){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_terminate',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectTerminate',error,{clientId:payload.cid,projectId:id}); }
     await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
     await env.DB.prepare(`DELETE FROM pm_sprints WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
     await env.DB.prepare(`DELETE FROM pm_time_entries WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
@@ -13731,6 +14683,8 @@ async function handlePmDelete(request, env, kind){
     await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
   }
   if(kind==='tasks'){
+    try{ await pmDispatchJobs(env,[{type:'pm_workflow_terminate',client_id:Number(payload.cid),project_id:Number(existing.project_id),task_id:id,task_version:String(existing.updated_at||'')}]); }
+    catch(error){ await reportOpsError(env,'pmTaskTerminate',error,{clientId:payload.cid,taskId:id}); }
     await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE client_id=? AND (predecessor_id=? OR successor_id=?)`).bind(Number(payload.cid), id, id).run();
     await env.DB.prepare(`DELETE FROM pm_time_entries WHERE client_id=? AND task_id=?`).bind(Number(payload.cid), id).run();
   }
@@ -13959,47 +14913,240 @@ async function handlePmMigrateLegacyTasks(request, env){
   return json({ok:true, clients_migrated:results.length, results});
 }
 
-/* ── PM automation engine ──
-   A curated catalog of trigger/action types, evaluated synchronously inside the same request that
-   changed a task — this Worker has no durable queue/cron-per-tenant infra, so "fire on save" is
-   the only shape that fits without new infrastructure. Deliberately a fixed catalog, not a
-   generic condition-expression language: `status_changed_to`/`task_created` triggers,
-   `set_status`/`set_assignee`/`notify_email` actions. Actions write straight to D1 (not through
-   handlePmUpdate), so an automation's own writes can never recursively re-trigger this function —
-   no ping-pong risk between two rules that could otherwise fight over the same task. Best-effort:
-   one failing rule (e.g. Resend not configured) never fails the task edit that triggered it. ── */
-async function runTaskAutomations(env, clientId, projectId, task, event, prevStatus){
-  let rules;
-  try{
-    const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(clientId), Number(projectId)).all();
-    rules=results||[];
-  }catch(e){ return; }
-  for(const rule of rules){
-    let tcfg={}; try{ tcfg=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
-    let matches=false;
-    if(rule.trigger_type==='status_changed_to' && event==='status_changed'){
-      matches = !!tcfg.status && tcfg.status===task.status && task.status!==prevStatus;
-    }else if(rule.trigger_type==='task_created' && event==='created'){
-      matches = true;
-    }
-    if(!matches) continue;
-    let acfg={}; try{ acfg=JSON.parse(rule.action_config||'{}'); }catch(e){}
-    try{
-      if(rule.action_type==='set_status' && acfg.status && acfg.status!==task.status){
-        await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=?, done_at=? WHERE id=?`)
-          .bind(acfg.status, new Date().toISOString(), acfg.status==='done'?new Date().toISOString():null, task.Id||task.id).run();
-      }else if(rule.action_type==='set_assignee'){
-        await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=? WHERE id=?`).bind(acfg.assignee_email||'', task.Id||task.id).run();
-      }else if(rule.action_type==='notify_email' && acfg.to_email && env.RESEND_API_KEY){
-        const subject=(acfg.subject||'Task update: {{title}}').replace('{{title}}', task.title||'');
-        const bodyText=(acfg.body||'Task "{{title}}" changed.').replace('{{title}}', task.title||'');
-        await fetch('https://api.resend.com/emails', {
-          method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
-          body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>', to:[acfg.to_email], subject, html:`<p>${esc(bodyText)}</p>`})
-        });
-      }
-    }catch(e){ /* best-effort — see comment above */ }
+/* ── Durable Project automations ──
+   Task writes publish ID-only jobs. Consumers re-read client-scoped D1 rows before every action,
+   and Workflow notification jobs carry the task's updated_at version so an edit makes every old
+   sleep/job harmless. This keeps request latency low while Queue retries and the DLQ make delivery
+   failures visible instead of silently losing them. ── */
+async function pmTaskRow(env,clientId,taskId){
+  return env.DB.prepare(`SELECT t.*,p.name project_name,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+function pmWorkflowInstanceId(row){
+  const version=Number.isFinite(Date.parse(row.updated_at))?Date.parse(row.updated_at):Date.now();
+  return `pm-${Number(row.client_id)}-${Number(row.id)}-${version}`.slice(0,100);
+}
+export function pmTaskDueUtcMs(date,timezone='Asia/Dubai',dayOffset=0){
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  if(!match) return NaN;
+  const shifted=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])+Number(dayOffset||0)));
+  return hcAppointmentUtcMs(shifted.toISOString().slice(0,10),'09:00',timezone);
+}
+async function pmAutomationState(env,clientId,taskId){
+  return env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND task_id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+async function pmUpsertAutomationState(env,row,fields={}){
+  await env.DB.prepare(`INSERT INTO pm_task_automation
+    (client_id,project_id,task_id,task_version,workflow_instance_id,workflow_status,reminder_status,last_error,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(client_id,task_id) DO UPDATE SET
+      project_id=CASE WHEN excluded.project_id!=0 THEN excluded.project_id ELSE project_id END,
+      task_version=CASE WHEN excluded.task_version!='' THEN excluded.task_version ELSE task_version END,
+      workflow_instance_id=CASE WHEN excluded.workflow_instance_id!='' THEN excluded.workflow_instance_id ELSE workflow_instance_id END,
+      workflow_status=CASE WHEN excluded.workflow_status!='' THEN excluded.workflow_status ELSE workflow_status END,
+      reminder_status=CASE WHEN excluded.reminder_status!='' THEN excluded.reminder_status ELSE reminder_status END,
+      last_error=excluded.last_error,updated_at=excluded.updated_at`)
+    .bind(Number(row.client_id),Number(row.project_id)||0,Number(row.id||row.task_id),String(row.updated_at||row.task_version||''),
+      String(fields.workflow_instance_id||''),String(fields.workflow_status||''),String(fields.reminder_status||''),
+      String(fields.last_error||'').slice(0,1000),new Date().toISOString()).run();
+}
+async function pmRecordAutomationError(env,job,error){
+  if(!Number(job?.client_id)||!Number(job?.task_id)) return;
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'failed',last_error:String(error?.message||error)}).catch(()=>{});
+}
+async function pmDispatchJobs(env,jobs){
+  if(!jobs.length) return;
+  if(env.PROJECT_JOBS){
+    if(jobs.length===1) await env.PROJECT_JOBS.send(jobs[0]);
+    else await env.PROJECT_JOBS.sendBatch(jobs.map(body=>({body})));
+    return;
   }
+  for(const job of jobs) await pmProcessQueueJob(env,job);
+}
+async function pmQueueTaskLifecycle(env,row,{event='',prevStatus='',runAutomations=true}={}){
+  const base={client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at)};
+  const active=row.status!=='done'&&!!row.due_date&&(Number(row.task_reminders_enabled)===1||Number(row.overdue_escalation_enabled)===1);
+  const jobs=[];
+  if(runAutomations&&event) jobs.push({...base,type:'pm_automation_event',event,prev_status:String(prevStatus||'')});
+  jobs.push({...base,type:active?'pm_workflow_start':'pm_workflow_terminate'});
+  await pmUpsertAutomationState(env,row,{workflow_status:active?'queued':'terminating',reminder_status:active?'queued':'cancelled',last_error:''});
+  try{ await pmDispatchJobs(env,jobs); return {queued:true}; }
+  catch(error){ await pmRecordAutomationError(env,jobs[0]||base,error); await reportOpsError(env,'pmQueueTaskLifecycle',error,{clientId:row.client_id,taskId:row.id}); return {queued:false,error:String(error?.message||error)}; }
+}
+async function pmSendEmail(env,to,subject,bodyText){
+  if(!env.RESEND_API_KEY) throw new Error('Resend API key is not configured');
+  const recipients=[...new Set((Array.isArray(to)?to:[to]).map(x=>String(x||'').trim().toLowerCase()).filter(Boolean))];
+  if(!recipients.length) throw new Error('Project notification has no recipient');
+  const response=await fetch('https://api.resend.com/emails',{
+    method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>',to:recipients,subject,html:`<p>${esc(bodyText).replace(/\n/g,'<br>')}</p>`})
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data?.message||`Resend HTTP ${response.status}`);
+}
+async function pmClaimNotification(env,job){
+  const now=new Date().toISOString();
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO pm_task_notifications
+    (client_id,task_id,task_version,kind,status,sent_at,created_at) VALUES (?,?,?,?,?,'',?)`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind),'processing',now).run();
+  return !!claim?.meta?.changes;
+}
+async function pmReleaseNotification(env,job){
+  await env.DB.prepare(`DELETE FROM pm_task_notifications WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+}
+async function pmSendTaskNotification(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done') return;
+  if((job.kind==='reminder_48h'||job.kind==='due_today')&&Number(row.task_reminders_enabled)!==1) return;
+  if(job.kind==='overdue'&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!await pmClaimNotification(env,job)) return;
+  try{
+    const client=await getClientById(env,job.client_id); if(!client) throw new Error('Project client not found');
+    const owner=String(client.authentik_email||'').trim();
+    const assignee=String(row.assignee_email||'').trim();
+    const recipients=job.kind==='overdue'?[assignee,owner]:[assignee||owner];
+    const prefix=job.kind==='reminder_48h'?'Due in 2 days':job.kind==='due_today'?'Due today':'Overdue';
+    await pmSendEmail(env,recipients,`${prefix}: ${row.title}`,`${row.title}\nProject: ${row.project_name}\nDue date: ${row.due_date}\nStatus: ${row.status}`);
+    await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+      .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+    await pmUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
+  }catch(error){ await pmReleaseNotification(env,job); throw error; }
+}
+async function pmRunAutomationEvent(env,job){
+  const task=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!task||String(task.updated_at)!==String(job.task_version)) return;
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(job.client_id),Number(job.project_id)).all();
+  const matching=[];
+  for(const rule of results||[]){
+    let trigger={}; try{ trigger=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
+    const matches=(rule.trigger_type==='task_created'&&job.event==='created')||
+      (rule.trigger_type==='status_changed_to'&&job.event==='status_changed'&&trigger.status===task.status&&task.status!==job.prev_status);
+    if(!matches) continue;
+    let action={}; try{ action=JSON.parse(rule.action_config||'{}'); }catch(e){}
+    matching.push({rule,action});
+  }
+  // Deliver retryable notifications before idempotent D1 mutations. If an email fails, a retry
+  // still sees the original task version instead of treating the whole event as stale.
+  matching.sort((a,b)=>Number(b.rule.action_type==='notify_email')-Number(a.rule.action_type==='notify_email'));
+  let mutated=false;
+  for(const {rule,action} of matching){
+    if(rule.action_type==='set_status'&&action.status&&action.status!==task.status){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?,updated_at=?,done_at=? WHERE id=? AND client_id=?`)
+        .bind(action.status,now,action.status==='done'?now:null,task.id,Number(job.client_id)).run();
+      task.status=action.status; mutated=true;
+    }else if(rule.action_type==='set_assignee'&&String(action.assignee_email||'')!==String(task.assignee_email||'')){
+      await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=?,updated_at=? WHERE id=? AND client_id=?`)
+        .bind(action.assignee_email||'',new Date().toISOString(),task.id,Number(job.client_id)).run();
+      task.assignee_email=action.assignee_email||''; mutated=true;
+    }else if(rule.action_type==='notify_email'&&action.to_email){
+      const emailJob={...job,kind:`automation_${rule.id}_${job.event}`};
+      if(!await pmClaimNotification(env,emailJob)) continue;
+      try{
+        const subject=String(action.subject||'Task update: {{title}}').replaceAll('{{title}}',task.title||'');
+        const body=String(action.body||'Task "{{title}}" changed.').replaceAll('{{title}}',task.title||'');
+        await pmSendEmail(env,action.to_email,subject,body);
+        await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+          .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),emailJob.kind).run();
+      }catch(error){ await pmReleaseNotification(env,emailJob); throw error; }
+    }
+  }
+  if(mutated){ const fresh=await pmTaskRow(env,job.client_id,job.task_id); if(fresh) await pmQueueTaskLifecycle(env,fresh,{runAutomations:false}); }
+}
+async function pmStartTaskWorkflow(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done'||!row.due_date) return;
+  if(Number(row.task_reminders_enabled)!==1&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!env.PROJECT_TASK_WORKFLOW) throw new Error('Project Task Workflow binding is not configured');
+  const previous=await pmAutomationState(env,job.client_id,job.task_id), instanceId=pmWorkflowInstanceId(row);
+  if(previous?.workflow_instance_id&&previous.workflow_instance_id!==instanceId){
+    try{ const old=await env.PROJECT_TASK_WORKFLOW.get(previous.workflow_instance_id); await old.terminate(); }catch(e){}
+  }
+  const client=await getClientById(env,job.client_id), timezone=hcClientTimezone(client);
+  const dueAt=pmTaskDueUtcMs(row.due_date,timezone), overdueAt=pmTaskDueUtcMs(row.due_date,timezone,1);
+  if(!Number.isFinite(dueAt)||!Number.isFinite(overdueAt)) throw new Error('Task due date is invalid');
+  try{
+    await env.PROJECT_TASK_WORKFLOW.create({id:instanceId,params:{
+      client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at),
+      due_at_ms:dueAt,overdue_at_ms:overdueAt,workflow_started_at_ms:Date.now(),
+      reminders_enabled:Number(row.task_reminders_enabled)===1,overdue_enabled:Number(row.overdue_escalation_enabled)===1
+    }});
+  }catch(error){ if(!/already|exist|used/i.test(String(error?.message||error))) throw error; }
+  await pmUpsertAutomationState(env,row,{workflow_instance_id:instanceId,workflow_status:'running',reminder_status:'scheduled',last_error:''});
+}
+async function pmTerminateTaskWorkflow(env,job){
+  const state=await pmAutomationState(env,job.client_id,job.task_id);
+  if(state?.workflow_instance_id&&env.PROJECT_TASK_WORKFLOW){
+    try{ const instance=await env.PROJECT_TASK_WORKFLOW.get(state.workflow_instance_id); await instance.terminate(); }catch(e){}
+  }
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'terminated',reminder_status:'cancelled',last_error:''});
+}
+async function pmRefreshProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT t.*,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const row of results||[]) await pmQueueTaskLifecycle(env,row,{runAutomations:false});
+}
+async function pmTerminateProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const state of results||[]) await pmTerminateTaskWorkflow(env,{client_id:state.client_id,project_id:state.project_id,task_id:state.task_id,task_version:state.task_version});
+}
+export async function pmProcessQueueJob(env,job){
+  if(!job?.type) throw new Error('Project queue job type is required');
+  if(job.type==='pm_workflow_start') return pmStartTaskWorkflow(env,job);
+  if(job.type==='pm_workflow_terminate') return pmTerminateTaskWorkflow(env,job);
+  if(job.type==='pm_project_refresh') return pmRefreshProjectWorkflows(env,job);
+  if(job.type==='pm_project_terminate') return pmTerminateProjectWorkflows(env,job);
+  if(job.type==='pm_automation_event') return pmRunAutomationEvent(env,job);
+  if(job.type==='pm_notification') return pmSendTaskNotification(env,job);
+  throw new Error(`Unknown Project queue job: ${job.type}`);
+}
+async function pmRecordDeadLetter(env,message){
+  const job=message.body||{},state=await pmAutomationState(env,job.client_id,job.task_id).catch(()=>null);
+  await env.DB.prepare(`INSERT INTO pm_queue_failures (client_id,project_id,task_id,job_type,failure_reason,attempts,created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(Number(job.client_id)||0,Number(job.project_id)||0,Number(job.task_id)||0,String(job.type||'unknown').slice(0,80),
+      String(state?.last_error||'Retries exhausted').slice(0,1000),Number(message.attempts)||0,new Date().toISOString()).run();
+}
+export async function pmHandleQueueBatch(batch,env){
+  await pmEnsureAutomationSchema(env);
+  const deadLetter=String(batch.queue||'').endsWith('-dlq');
+  for(const message of batch.messages){
+    try{ if(deadLetter) await pmRecordDeadLetter(env,message); else await pmProcessQueueJob(env,message.body); message.ack(); }
+    catch(error){ await pmRecordAutomationError(env,message.body||{},error); message.retry({delaySeconds:Math.min(900,60*(2**Math.max(0,(Number(message.attempts)||1)-1)))}); }
+  }
+}
+export class ProjectTaskWorkflow extends WorkflowEntrypointBase{
+  async run(event,step){
+    const p=event.payload||{},retry={retries:{limit:5,delay:'30 seconds',backoff:'exponential'}};
+    const reminders=[
+      {kind:'reminder_48h',enabled:p.reminders_enabled,wakeAt:Number(p.due_at_ms)-48*3600000},
+      {kind:'due_today',enabled:p.reminders_enabled,wakeAt:Number(p.due_at_ms)},
+      {kind:'overdue',enabled:p.overdue_enabled,wakeAt:Number(p.overdue_at_ms)}
+    ];
+    for(const reminder of reminders){
+      if(!reminder.enabled||reminder.wakeAt<=Number(p.workflow_started_at_ms)) continue;
+      await step.sleepUntil(`wait for ${reminder.kind}`,new Date(reminder.wakeAt));
+      await step.do(`queue ${reminder.kind}`,retry,async()=>{
+        await this.env.PROJECT_JOBS.send({type:'pm_notification',kind:reminder.kind,client_id:p.client_id,project_id:p.project_id,task_id:p.task_id,task_version:p.task_version});
+      });
+    }
+    await step.do('mark task workflow complete',retry,async()=>{
+      await this.env.DB.prepare(`UPDATE pm_task_automation SET workflow_status='complete',updated_at=?
+        WHERE client_id=? AND task_id=? AND task_version=?`)
+        .bind(new Date().toISOString(),Number(p.client_id),Number(p.task_id),String(p.task_version)).run();
+    });
+    return {task_id:p.task_id,status:'reminders_queued'};
+  }
+}
+async function handlePmAutomationHealth(request,env){
+  const payload=await requireSession(request,env); if(!payload) return json({error:'Invalid or expired session'},401);
+  const active=await env.DB.prepare(`SELECT COUNT(*) count FROM pm_task_automation WHERE client_id=? AND workflow_status IN ('queued','running')`).bind(Number(payload.cid)).first();
+  const failed=await env.DB.prepare(`SELECT COUNT(*) count FROM pm_queue_failures WHERE client_id=?`).bind(Number(payload.cid)).first();
+  return json({active_workflows:Number(active?.count)||0,failed_jobs:Number(failed?.count)||0,queue_configured:!!env.PROJECT_JOBS,workflow_configured:!!env.PROJECT_TASK_WORKFLOW});
 }
 
 // ── ERPNext Customers / Items — live lookups for the accounting.html Customers tab and the
@@ -19705,10 +20852,10 @@ const reDocumentsCrud=reCrud('re_documents', [
   {key:'is_rera', type:'bool'}
 ]);
 
-/* ── Healthcare module (frontend/healthcare.html) — Departments/Doctors, structured like Ecom's
-   Categories/Products (migrations/0054_healthcare.sql) but session-gated + pure D1 like Real
-   Estate, reusing the same generic reCrud factory — no bespoke handlers needed since neither
-   entity has Real Estate units' hold-expiry/price-audit side effects. ── */
+/* ── Healthcare module (frontend/healthcare.html) ─────────────────────────────────────────────
+   Departments/Doctors remain the directory. Services are the verified patient-facing source of
+   truth; schedules and appointments provide real availability; Insurance and Settings provide
+   verified coverage/emergency language. Everything is session-gated and client-scoped. */
 const hcDepartmentsCrud=reCrud('healthcare_departments', [
   {key:'name', type:'text', required:true, maxLen:200}, {key:'description', type:'text', maxLen:2000},
   {key:'image_url_1', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
@@ -19725,6 +20872,603 @@ const hcDoctorsCrud=reCrud('healthcare_doctors', [
   {key:'image_url_5', type:'text', maxLen:1000}, {key:'video_url', type:'text', maxLen:1000},
   {key:'pdf_url', type:'text', maxLen:1000}, {key:'status', type:'text', maxLen:30}
 ]);
+const hcServicesCrud=reCrud('healthcare_services', [
+  {key:'department_id', type:'number'}, {key:'name', type:'text', required:true, maxLen:200},
+  {key:'short_label', type:'text', maxLen:80}, {key:'aliases', type:'text', maxLen:1000},
+  {key:'description', type:'text', required:true, maxLen:4000}, {key:'price', type:'number'},
+  {key:'currency', type:'text', maxLen:20}, {key:'duration_minutes', type:'number'},
+  {key:'preparation', type:'text', maxLen:2000}, {key:'booking_url', type:'text', maxLen:1000},
+  {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
+  {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
+  {key:'image_url_5', type:'text', maxLen:1000}, {key:'audio_url', type:'text', maxLen:1000},
+  {key:'video_url', type:'text', maxLen:1000}, {key:'pdf_url', type:'text', maxLen:1000},
+  {key:'status', type:'text', maxLen:30}, {key:'updated_at', type:'text', maxLen:40}
+]);
+const hcSchedulesCrud=reCrud('healthcare_doctor_schedules', [
+  {key:'doctor_id', type:'number', required:true}, {key:'weekday', type:'number'},
+  {key:'start_time', type:'text', required:true, maxLen:8}, {key:'end_time', type:'text', required:true, maxLen:8},
+  {key:'break_start', type:'text', maxLen:8}, {key:'break_end', type:'text', maxLen:8},
+  {key:'slot_minutes', type:'number'}, {key:'status', type:'text', maxLen:30}
+]);
+const hcInsuranceCrud=reCrud('healthcare_insurance', [
+  {key:'provider_name', type:'text', required:true, maxLen:200}, {key:'network_name', type:'text', maxLen:200},
+  {key:'plan_name', type:'text', maxLen:200}, {key:'covered_services', type:'text', maxLen:2000},
+  {key:'preapproval_required', type:'bool'}, {key:'verification_note', type:'text', maxLen:2000},
+  {key:'contact', type:'text', maxLen:200}, {key:'status', type:'text', maxLen:30},
+  {key:'last_verified_at', type:'text', maxLen:40}
+]);
+
+async function hcRequireSessionClient(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return null;
+  const c=await getClientById(env, payload.cid);
+  return c?{payload,c}:null;
+}
+async function handleHcSettingsGet(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  const [row,automation]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first(),
+    env.DB.prepare(`SELECT * FROM healthcare_automation_settings WHERE client_id=?`).bind(Number(auth.payload.cid)).first()
+  ]);
+  return json({...row,...automation});
+}
+async function handleHcSettingsUpdate(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  const b=await request.json().catch(()=>({}));
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  await env.DB.prepare(`UPDATE healthcare_settings SET strict_zero_hallucination=?, emergency_keywords=?, emergency_message=?, handover_message=?, emergency_contact=?, updated_at=? WHERE client_id=?`)
+    .bind(b.strict_zero_hallucination===false||b.strict_zero_hallucination===0?0:1,
+      String(b.emergency_keywords||'').slice(0,3000), String(b.emergency_message||'').slice(0,2000),
+      String(b.handover_message||'').slice(0,2000), String(b.emergency_contact||'').slice(0,200),
+      new Date().toISOString(), Number(auth.payload.cid)).run();
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(auth.payload.cid)).run();
+  await env.DB.prepare(`UPDATE healthcare_automation_settings SET confirmation_template_name=?, reminder_template_name=?, template_language=?, reminder_24h_enabled=?, reminder_2h_enabled=?, updated_at=? WHERE client_id=?`)
+    .bind(String(b.confirmation_template_name||'').trim().slice(0,200),
+      String(b.reminder_template_name||'').trim().slice(0,200), String(b.template_language||'en').trim().slice(0,20)||'en',
+      b.reminder_24h_enabled===false||b.reminder_24h_enabled===0?0:1,
+      b.reminder_2h_enabled===false||b.reminder_2h_enabled===0?0:1,
+      new Date().toISOString(), Number(auth.payload.cid)).run();
+  return json({ok:true});
+}
+
+function hcTimeToMinutes(value){
+  const m=/^(\d{1,2}):(\d{2})$/.exec(String(value||''));
+  return m?Number(m[1])*60+Number(m[2]):null;
+}
+function hcMinutesToTime(value){
+  const n=Math.max(0, Math.min(1439, Number(value)||0));
+  return `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;
+}
+function hcRangesOverlap(aStart,aEnd,bStart,bEnd){ return aStart<bEnd && bStart<aEnd; }
+async function hcGoogleBusyRanges(env, c, date, excludeEventId){
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return [];
+  try{
+    const token=await gcalGetAccessToken(env,c); if(!token) return [];
+    const timeMin=encodeURIComponent(`${date}T00:00:00Z`), timeMax=encodeURIComponent(`${date}T23:59:59Z`);
+    const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.gcal_calendar_id)}/events?singleEvents=true&orderBy=startTime&timeMin=${timeMin}&timeMax=${timeMax}`, {headers:{Authorization:`Bearer ${token}`}});
+    const d=await r.json().catch(()=>({})); if(!r.ok) return [];
+    return (d.items||[]).filter(x=>x.id!==excludeEventId&&x.status!=='cancelled'&&x.start?.dateTime&&x.end?.dateTime).map(x=>({
+      start:hcTimeToMinutes(String(x.start.dateTime).slice(11,16)), end:hcTimeToMinutes(String(x.end.dateTime).slice(11,16)), id:x.id
+    })).filter(x=>x.start!==null&&x.end!==null);
+  }catch(e){ return []; }
+}
+async function hcAvailableSlots(env, clientId, c, doctorId, date, serviceId, excludeAppointmentId){
+  const weekday=new Date(`${date}T12:00:00Z`).getUTCDay();
+  const {results:scheduleRows}=await env.DB.prepare(`SELECT * FROM healthcare_doctor_schedules WHERE client_id=? AND doctor_id=? AND weekday=? AND status='active' ORDER BY start_time`)
+    .bind(Number(clientId), Number(doctorId), weekday).all();
+  if(!scheduleRows?.length) return [];
+  const service=serviceId?await env.DB.prepare(`SELECT duration_minutes FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(serviceId),Number(clientId)).first():null;
+  const {results:appointmentRows}=await env.DB.prepare(`SELECT id,start_time,end_time FROM healthcare_appointments WHERE client_id=? AND doctor_id=? AND appointment_date=? AND status NOT IN ('cancelled','completed','no_show')`)
+    .bind(Number(clientId),Number(doctorId),date).all();
+  const internal=(appointmentRows||[]).filter(x=>!excludeAppointmentId||Number(x.id)!==Number(excludeAppointmentId)).map(x=>({start:hcTimeToMinutes(x.start_time),end:hcTimeToMinutes(x.end_time)}));
+  const excluded=excludeAppointmentId?await env.DB.prepare(`SELECT gcal_event_id FROM healthcare_appointments WHERE id=? AND client_id=?`).bind(Number(excludeAppointmentId),Number(clientId)).first():null;
+  const google=await hcGoogleBusyRanges(env,c,date,excluded?.gcal_event_id||'');
+  const busy=[...internal,...google].filter(x=>x.start!==null&&x.end!==null);
+  const slots=[], seen=new Set();
+  for(const schedule of scheduleRows){
+    const duration=Math.max(5, Number(service?.duration_minutes||schedule.slot_minutes)||30);
+    const start=hcTimeToMinutes(schedule.start_time), end=hcTimeToMinutes(schedule.end_time);
+    if(start===null||end===null||end<=start) continue;
+    const breakStart=hcTimeToMinutes(schedule.break_start), breakEnd=hcTimeToMinutes(schedule.break_end);
+    for(let at=start;at+duration<=end;at+=Math.max(5,Number(schedule.slot_minutes)||duration)){
+      if(breakStart!==null&&breakEnd!==null&&hcRangesOverlap(at,at+duration,breakStart,breakEnd)) continue;
+      if(busy.some(x=>hcRangesOverlap(at,at+duration,x.start,x.end))) continue;
+      const key=`${at}:${at+duration}`; if(seen.has(key)) continue; seen.add(key);
+      slots.push({start_time:hcMinutesToTime(at),end_time:hcMinutesToTime(at+duration)});
+    }
+  }
+  return slots.sort((a,b)=>a.start_time.localeCompare(b.start_time));
+}
+async function handleHcAvailability(request, env){
+  const auth=await hcRequireSessionClient(request, env);
+  if(!auth) return json({error:'Invalid or expired session'}, 401);
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')), serviceId=Number(u.searchParams.get('service_id')||0), appointmentId=Number(u.searchParams.get('appointment_id')||0), date=String(u.searchParams.get('date')||'');
+  if(!doctorId||!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'doctor_id and date are required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,Number(auth.payload.cid)).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  return json({list:await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,appointmentId), gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
+}
+
+function hcBookingExpiry(){ return new Date(Date.now()+30*60*1000).toISOString(); }
+async function hcBookingSession(env,clientId,phone){
+  const row=await env.DB.prepare(`SELECT * FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first();
+  if(row&&Date.parse(row.expires_at)<=Date.now()){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    return null;
+  }
+  return row||null;
+}
+async function hcSaveBookingSession(env,clientId,phone,values={}){
+  const old=await hcBookingSession(env,clientId,phone)||{};
+  const row={...old,...values,client_id:Number(clientId),patient_phone:String(phone),expires_at:hcBookingExpiry(),updated_at:new Date().toISOString()};
+  await env.DB.prepare(`INSERT INTO healthcare_booking_sessions
+    (client_id,patient_phone,conversation_id,stage,service_id,doctor_id,appointment_date,start_time,end_time,patient_name,expires_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET
+    conversation_id=excluded.conversation_id,stage=excluded.stage,service_id=excluded.service_id,
+    doctor_id=excluded.doctor_id,appointment_date=excluded.appointment_date,start_time=excluded.start_time,
+    end_time=excluded.end_time,patient_name=excluded.patient_name,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(row.client_id,row.patient_phone,Number(row.conversation_id)||0,String(row.stage||''),Number(row.service_id)||0,
+      Number(row.doctor_id)||0,String(row.appointment_date||''),String(row.start_time||''),String(row.end_time||''),
+      String(row.patient_name||'').slice(0,200),row.expires_at,row.updated_at).run();
+  return row;
+}
+function hcClinicDateAfter(c,days){
+  const timezone=hcClientTimezone(c), shifted=new Date(Date.now()+Number(days||0)*86400000);
+  try{
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(shifted);
+    const v=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+    return `${v.year}-${v.month}-${v.day}`;
+  }catch(e){ return shifted.toISOString().slice(0,10); }
+}
+function hcBookingDateTitle(date){
+  try{return new Intl.DateTimeFormat('en',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}).format(new Date(`${date}T12:00:00Z`));}
+  catch(e){return date;}
+}
+function hcBookableSlots(c,date,slots){
+  const today=hcClinicDateAfter(c,0);
+  if(date!==today) return slots;
+  let current='00:00';
+  try{current=new Intl.DateTimeFormat('en-GB',{timeZone:hcClientTimezone(c),hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());}catch(e){}
+  return (slots||[]).filter(slot=>slot.start_time>current);
+}
+async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang){
+  const items=[];
+  for(let day=0;day<14&&items.length<7;day++){
+    const date=hcClinicDateAfter(c,day);
+    const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+    if(slots.length) items.push({title:hcBookingDateTitle(date),value:`HC_BOOK_DATE:${date}`});
+  }
+  if(!items.length){
+    const text=await engineLocalizeReply(env,c,'No available appointment dates are configured. I will connect you to the clinic team.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
+    return {handled:true,text,quickReplies:null};
+  }
+  await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
+  const text=await engineLocalizeReply(env,c,'Please choose an available appointment date:',replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
+  return {handled:true,text,quickReplies};
+}
+async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
+  const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
+  const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
+  if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
+  const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
+  if(doctor) return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
+  const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
+  const doctors=results||[];
+  if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
+  if(!doctors.length){
+    const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
+    return {handled:true,text,quickReplies:null};
+  }
+  await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
+  const text=await engineLocalizeReply(env,c,'Please choose a doctor:',replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:`HC_BOOK_DOCTOR:${d.id}`})));
+  return {handled:true,text,quickReplies};
+}
+async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
+  await hcEnsureOperationsSchema(env);
+  const action=String(userText||'').trim();
+  let match=action.match(/^HC_BOOK_SERVICE:(\d+)$/); if(match) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(match[1])});
+  match=action.match(/^HC_BOOK_DOCTOR:(\d+)$/);
+  if(match){
+    const session=await hcBookingSession(env,clientId,phone);
+    if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
+    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
+  }
+  const session=await hcBookingSession(env,clientId,phone);
+  if(!session) return {handled:false};
+  if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+  if(action==='HC_BOOK_DATES') return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+  match=action.match(/^HC_BOOK_DATE:(\d{4}-\d{2}-\d{2})$/);
+  if(match&&session.doctor_id){
+    const date=match[1], slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+    if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:date,start_time:'',end_time:''});
+    const text=await engineLocalizeReply(env,c,'Please choose an available time:',replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:`HC_BOOK_SLOT:${s.start_time}`})));
+    return {handled:true,text,quickReplies};
+  }
+  match=action.match(/^HC_BOOK_SLOT:(\d{2}:\d{2})$/);
+  if(match&&session.appointment_date&&session.doctor_id){
+    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===match[1]);
+    if(!chosen) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
+    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+  if(session.stage==='patient_name'&&!action.startsWith('HC_BOOK_')){
+    const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
+    if(patientName.length<2){const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return {handled:true,text,quickReplies:null};}
+    const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
+    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
+    const summary=`Please confirm your appointment:\n\nPatient: ${patientName}\n${service?.name?`Service: ${service.name}\n`:''}Doctor: ${doctor?.name||''}\nDate: ${session.appointment_date}\nTime: ${session.start_time}`;
+    const text=await engineLocalizeReply(env,c,summary,replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'Confirm Booking',value:'HC_BOOK_CONFIRM'},{title:'Change Date',value:'HC_BOOK_DATES'},{title:'Cancel',value:'HC_BOOK_CANCEL'}]);
+    return {handled:true,text,quickReplies};
+  }
+  if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
+    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
+    if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
+    const now=new Date().toISOString(); let result;
+    try{
+      result=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'confirmed','whatsapp','','',?,?)`)
+        .bind(Number(clientId),session.patient_name,String(phone),Number(leadId)||0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
+    }catch(error){
+      if(/unique|constraint/i.test(String(error?.message||error))) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+      throw error;
+    }
+    const row=await hcAppointmentRow(env,clientId,result.meta.last_row_id); await hcQueueAppointmentAutomation(env,row,null,'upsert');
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text); return {handled:true,text,quickReplies:null,appointmentId:row.id};
+  }
+  return {handled:false};
+}
+
+async function hcAppointmentRow(env, clientId, id){
+  return env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE a.id=? AND a.client_id=?`).bind(Number(id),Number(clientId)).first();
+}
+async function hcDeleteGoogleEventStrict(env,c,eventId){
+  if(!eventId||!c?.gcal_refresh_token||!c?.gcal_calendar_id) return;
+  const token=await gcalGetAccessToken(env,c);
+  if(!token) throw new Error('Google Calendar token refresh failed');
+  const r=await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(c.gcal_calendar_id)}/events/${encodeURIComponent(eventId)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token}`}});
+  if(!r.ok&&r.status!==404&&r.status!==410) throw new Error(`Google Calendar delete failed: HTTP ${r.status}`);
+}
+async function hcSyncAppointmentToGoogle(env,c,row,action){
+  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return row.gcal_event_id||'';
+  if(action==='delete'||['cancelled','completed','no_show'].includes(row.status)){
+    if(row.gcal_event_id) await hcDeleteGoogleEventStrict(env,c,row.gcal_event_id);
+    return '';
+  }
+  const title=`Appointment — ${row.patient_name}${row.doctor_name?' · '+row.doctor_name:''}`;
+  const notes=[row.service_name&&`Service: ${row.service_name}`,row.patient_phone&&`Patient phone: ${row.patient_phone}`,row.notes].filter(Boolean).join('\n');
+  const duration=Math.max(5,(hcTimeToMinutes(row.end_time)||0)-(hcTimeToMinutes(row.start_time)||0))||30;
+  const eventId=await gcalUpsertEvent(env,c,{gcalEventId:row.gcal_event_id||null,title,notes,date:row.appointment_date,time:row.start_time,allDay:false,durationMinutes:duration});
+  if(!eventId) throw new Error('Google Calendar create/update failed');
+  return eventId;
+}
+
+function hcClientTimezone(c){
+  try{ const cfg=JSON.parse(c?.bot_config||'{}'); return cfg.timezone||'Asia/Dubai'; }
+  catch(e){ return 'Asia/Dubai'; }
+}
+// Convert the wall-clock time saved by the clinic into a stable UTC instant for Workflow sleeps.
+// The second pass handles offset changes around daylight-saving boundaries without a timezone
+// library. Invalid/missing zones deliberately fall back to the Healthcare default, Asia/Dubai.
+export function hcAppointmentUtcMs(date,time,timezone='Asia/Dubai'){
+  const dm=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  const tm=/^(\d{1,2}):(\d{2})$/.exec(String(time||''));
+  if(!dm||!tm) return NaN;
+  const wanted=Date.UTC(Number(dm[1]),Number(dm[2])-1,Number(dm[3]),Number(tm[1]),Number(tm[2]));
+  let guess=wanted;
+  for(let pass=0;pass<2;pass++){
+    let parts;
+    try{ parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess)); }
+    catch(e){ timezone='Asia/Dubai'; parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess)); }
+    const value=Object.fromEntries(parts.map(p=>[p.type,p.value]));
+    const rendered=Date.UTC(Number(value.year),Number(value.month)-1,Number(value.day),Number(value.hour),Number(value.minute));
+    guess+=wanted-rendered;
+  }
+  return guess;
+}
+function hcWorkflowInstanceId(row){
+  const version=Number.isFinite(Date.parse(row.updated_at))?Date.parse(row.updated_at):Date.now();
+  return `hc-${Number(row.client_id)}-${Number(row.id)}-${version}`.slice(0,100);
+}
+async function hcAutomationSettings(env,clientId){
+  await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_automation_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
+  return await env.DB.prepare(`SELECT * FROM healthcare_automation_settings WHERE client_id=?`).bind(Number(clientId)).first()||{};
+}
+async function hcAutomationState(env,clientId,appointmentId){
+  return env.DB.prepare(`SELECT * FROM healthcare_appointment_automation WHERE client_id=? AND appointment_id=?`).bind(Number(clientId),Number(appointmentId)).first();
+}
+async function hcUpsertAutomationState(env,row,fields={}){
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO healthcare_appointment_automation
+    (client_id,appointment_id,appointment_version,workflow_instance_id,workflow_status,calendar_status,reminder_status,last_error,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(client_id,appointment_id) DO UPDATE SET
+      appointment_version=excluded.appointment_version,
+      workflow_instance_id=CASE WHEN excluded.workflow_instance_id!='' THEN excluded.workflow_instance_id ELSE workflow_instance_id END,
+      workflow_status=CASE WHEN excluded.workflow_status!='' THEN excluded.workflow_status ELSE workflow_status END,
+      calendar_status=CASE WHEN excluded.calendar_status!='' THEN excluded.calendar_status ELSE calendar_status END,
+      reminder_status=CASE WHEN excluded.reminder_status!='' THEN excluded.reminder_status ELSE reminder_status END,
+      last_error=excluded.last_error, updated_at=excluded.updated_at`)
+    .bind(Number(row.client_id),Number(row.id),String(row.updated_at||''),String(fields.workflow_instance_id||''),
+      String(fields.workflow_status||''),String(fields.calendar_status||''),String(fields.reminder_status||''),
+      String(fields.last_error||'').slice(0,1000),now).run();
+}
+async function hcRecordAutomationError(env,job,error){
+  const row={client_id:Number(job.client_id)||0,id:Number(job.appointment_id)||0,updated_at:String(job.appointment_version||'')};
+  const field=job.type==='calendar_sync'?{calendar_status:'failed'}:job.type==='appointment_message'?{reminder_status:'failed'}:{workflow_status:'failed'};
+  await hcUpsertAutomationState(env,row,{...field,last_error:String(error?.message||error).slice(0,1000)}).catch(()=>{});
+}
+async function hcDispatchJobs(env,jobs){
+  if(!jobs.length) return;
+  if(env.HEALTHCARE_JOBS){
+    if(jobs.length===1) await env.HEALTHCARE_JOBS.send(jobs[0]);
+    else await env.HEALTHCARE_JOBS.sendBatch(jobs.map(body=>({body})));
+    return;
+  }
+  // Local/backward-compatible fallback. Production gets the Queue binding from wrangler.toml;
+  // this path keeps appointment CRUD usable during local tests or a staggered deployment.
+  for(const job of jobs) await hcProcessQueueJob(env,job);
+}
+async function hcSendMetaAppointmentTemplate(c,row,templateName,language,kind){
+  if(!c?.wa_phone_id||!c?.wa_token) throw new Error('WhatsApp Business API is not connected');
+  const phone=String(row.patient_phone||'').replace(/\D/g,'');
+  if(!phone) throw new Error('Appointment has no valid patient phone');
+  const label=kind==='cancellation'?'Cancelled':kind==='confirmation'?'Confirmed':kind==='reminder_24h'?'Reminder — tomorrow':'Reminder — in 2 hours';
+  const values=[row.patient_name||'Patient',row.service_name||'Appointment',row.doctor_name||'Clinic team',row.appointment_date,row.start_time,label];
+  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+    method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'template',template:{name:templateName,language:{code:language||'en'},components:[{type:'body',parameters:values.map(text=>({type:'text',text:String(text)}))}]}})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data?.error?.message||`WhatsApp template HTTP ${r.status}`);
+}
+function hcAppointmentMessage(row,kind){
+  const when=`${row.appointment_date} at ${row.start_time}`;
+  const detail=[row.service_name,row.doctor_name&&`with ${row.doctor_name}`].filter(Boolean).join(' ');
+  if(kind==='cancellation') return `Your appointment${detail?' for '+detail:''} on ${when} has been cancelled. Contact the clinic if you would like another slot.`;
+  if(kind==='reminder_24h') return `Reminder: your appointment${detail?' for '+detail:''} is tomorrow, ${when}. Reply CONFIRM, RESCHEDULE or CANCEL.`;
+  if(kind==='reminder_2h') return `Reminder: your appointment${detail?' for '+detail:''} is in about 2 hours, at ${row.start_time}. Reply RESCHEDULE or CANCEL if you cannot attend.`;
+  return `Your appointment${detail?' for '+detail:''} is ${row.status==='confirmed'?'confirmed':'received'} for ${when}. Reply RESCHEDULE or CANCEL if needed.`;
+}
+async function hcSendAppointmentNotification(env,job){
+  const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+  if(!row) return;
+  if(String(row.updated_at)!==String(job.appointment_version)) return; // stale workflow/job
+  if(job.kind!=='cancellation'&&['cancelled','completed','no_show'].includes(row.status)) return;
+  const now=new Date().toISOString();
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_appointment_notifications
+    (client_id,appointment_id,appointment_version,kind,status,sent_at,created_at) VALUES (?,?,?,?,?,'',?)`)
+    .bind(Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind),'processing',now).run();
+  if(!claim?.meta?.changes) return;
+  try{
+    const c=await getClientById(env,job.client_id); if(!c) throw new Error('Healthcare client not found');
+    const settings=await hcAutomationSettings(env,job.client_id);
+    const templateName=job.kind==='confirmation'||job.kind==='cancellation'?settings.confirmation_template_name:settings.reminder_template_name;
+    if(templateName) await hcSendMetaAppointmentTemplate(c,row,templateName,settings.template_language,job.kind);
+    else{
+      const convId=await saasFindLeadConversationByPhone(env,job.client_id,row.patient_phone);
+      if(!convId) throw new Error('No Chatwoot conversation and no approved WhatsApp template configured');
+      if(!await engineSendChatwootReply(env,c,job.client_id,convId,hcAppointmentMessage(row,job.kind))) throw new Error('Chatwoot did not accept the appointment message');
+    }
+    await env.DB.prepare(`UPDATE healthcare_appointment_notifications SET status='sent',sent_at=? WHERE client_id=? AND appointment_id=? AND appointment_version=? AND kind=?`)
+      .bind(new Date().toISOString(),Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind)).run();
+    await hcUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
+  }catch(error){
+    await env.DB.prepare(`DELETE FROM healthcare_appointment_notifications WHERE client_id=? AND appointment_id=? AND appointment_version=? AND kind=?`)
+      .bind(Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind)).run();
+    throw error;
+  }
+}
+async function hcStartAppointmentWorkflow(env,job){
+  const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+  if(!row||String(row.updated_at)!==String(job.appointment_version)||['cancelled','completed','no_show'].includes(row.status)) return;
+  if(!env.HEALTHCARE_APPOINTMENT_WORKFLOW) throw new Error('Healthcare Appointment Workflow binding is not configured');
+  const previous=await hcAutomationState(env,job.client_id,job.appointment_id);
+  const instanceId=hcWorkflowInstanceId(row);
+  if(previous?.workflow_instance_id&&previous.workflow_instance_id!==instanceId){
+    try{ const old=await env.HEALTHCARE_APPOINTMENT_WORKFLOW.get(previous.workflow_instance_id); await old.terminate(); }catch(e){}
+  }
+  const settings=await hcAutomationSettings(env,job.client_id), c=await getClientById(env,job.client_id);
+  const appointmentAt=hcAppointmentUtcMs(row.appointment_date,row.start_time,hcClientTimezone(c));
+  if(!Number.isFinite(appointmentAt)) throw new Error('Appointment date/time is invalid');
+  try{
+    await env.HEALTHCARE_APPOINTMENT_WORKFLOW.create({id:instanceId,params:{
+      client_id:Number(row.client_id),appointment_id:Number(row.id),appointment_version:String(row.updated_at),
+      appointment_at_ms:appointmentAt,workflow_started_at_ms:Date.now(),
+      skip_confirmation:row.source==='whatsapp',
+      reminder_24h_enabled:settings.reminder_24h_enabled!==0,reminder_2h_enabled:settings.reminder_2h_enabled!==0
+    }});
+  }catch(error){
+    if(!/already|exist|used/i.test(String(error?.message||error))) throw error;
+  }
+  await hcUpsertAutomationState(env,row,{workflow_instance_id:instanceId,workflow_status:'running',reminder_status:'scheduled',last_error:''});
+}
+async function hcTerminateAppointmentWorkflow(env,job){
+  const state=await hcAutomationState(env,job.client_id,job.appointment_id);
+  if(state?.workflow_instance_id&&env.HEALTHCARE_APPOINTMENT_WORKFLOW){
+    try{ const instance=await env.HEALTHCARE_APPOINTMENT_WORKFLOW.get(state.workflow_instance_id); await instance.terminate(); }catch(e){}
+  }
+  await hcUpsertAutomationState(env,{client_id:job.client_id,id:job.appointment_id,updated_at:job.appointment_version},{workflow_status:'terminated',reminder_status:'cancelled',last_error:''});
+}
+export async function hcProcessQueueJob(env,job){
+  if(!job||!job.type) throw new Error('Healthcare queue job type is required');
+  if(job.type==='workflow_start') return hcStartAppointmentWorkflow(env,job);
+  if(job.type==='workflow_terminate') return hcTerminateAppointmentWorkflow(env,job);
+  if(job.type==='appointment_message') return hcSendAppointmentNotification(env,job);
+  if(job.type==='calendar_sync'){
+    const c=await getClientById(env,job.client_id); if(!c) throw new Error('Healthcare client not found');
+    if(job.action==='delete'){
+      if(job.gcal_event_id&&c.gcal_refresh_token&&c.gcal_calendar_id) await hcDeleteGoogleEventStrict(env,c,job.gcal_event_id);
+      return;
+    }
+    const row=await hcAppointmentRow(env,job.client_id,job.appointment_id);
+    if(!row||String(row.updated_at)!==String(job.appointment_version)) return;
+    const eventId=await hcSyncAppointmentToGoogle(env,c,row,['cancelled','completed','no_show'].includes(row.status)?'delete':'upsert');
+    if(eventId!==row.gcal_event_id) await env.DB.prepare(`UPDATE healthcare_appointments SET gcal_event_id=? WHERE id=? AND client_id=?`).bind(eventId,row.id,row.client_id).run();
+    await hcUpsertAutomationState(env,row,{calendar_status:c.gcal_refresh_token&&c.gcal_calendar_id?'synced':'not_connected',last_error:''});
+    return;
+  }
+  throw new Error(`Unknown Healthcare queue job: ${job.type}`);
+}
+async function hcRecordDeadLetter(env,message){
+  const job=message.body||{}, state=await hcAutomationState(env,job.client_id,job.appointment_id).catch(()=>null);
+  await env.DB.prepare(`INSERT INTO healthcare_queue_failures (client_id,appointment_id,job_type,failure_reason,attempts,created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(job.client_id)||0,Number(job.appointment_id)||0,String(job.type||'unknown').slice(0,80),String(state?.last_error||'Retries exhausted').slice(0,1000),Number(message.attempts)||0,new Date().toISOString()).run();
+}
+export async function hcHandleQueueBatch(batch,env){
+  await hcEnsureOperationsSchema(env);
+  const isDeadLetter=String(batch.queue||'').endsWith('-dlq');
+  for(const message of batch.messages){
+    try{
+      if(isDeadLetter) await hcRecordDeadLetter(env,message); else await hcProcessQueueJob(env,message.body);
+      message.ack();
+    }catch(error){
+      await hcRecordAutomationError(env,message.body||{},error);
+      message.retry({delaySeconds:Math.min(900,60*(2**Math.max(0,(Number(message.attempts)||1)-1)))});
+    }
+  }
+}
+export class HealthcareAppointmentWorkflow extends WorkflowEntrypointBase{
+  async run(event,step){
+    const p=event.payload||{}, retry={retries:{limit:5,delay:'30 seconds',backoff:'exponential'}};
+    if(!p.skip_confirmation) await step.do('queue appointment confirmation',retry,async()=>{
+        await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:'confirmation',client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
+      });
+    const reminders=[
+      {kind:'reminder_24h',enabled:p.reminder_24h_enabled,offset:24*3600000},
+      {kind:'reminder_2h',enabled:p.reminder_2h_enabled,offset:2*3600000}
+    ];
+    for(const reminder of reminders){
+      if(!reminder.enabled) continue;
+      const wakeAt=Number(p.appointment_at_ms)-reminder.offset;
+      if(wakeAt<=Number(p.workflow_started_at_ms)) continue;
+      await step.sleepUntil(`wait for ${reminder.kind}`,new Date(wakeAt));
+      await step.do(`queue ${reminder.kind}`,retry,async()=>{
+        await this.env.HEALTHCARE_JOBS.send({type:'appointment_message',kind:reminder.kind,client_id:p.client_id,appointment_id:p.appointment_id,appointment_version:p.appointment_version});
+      });
+    }
+    await step.do('mark appointment workflow complete',retry,async()=>{
+      await this.env.DB.prepare(`UPDATE healthcare_appointment_automation SET workflow_status='complete',updated_at=?
+        WHERE client_id=? AND appointment_id=? AND appointment_version=?`)
+        .bind(new Date().toISOString(),Number(p.client_id),Number(p.appointment_id),String(p.appointment_version)).run();
+    });
+    return {appointment_id:p.appointment_id,status:'reminders_queued'};
+  }
+}
+
+async function hcQueueAppointmentAutomation(env,row,previous,action='upsert'){
+  const base={client_id:Number(row.client_id),appointment_id:Number(row.id),appointment_version:String(row.updated_at)};
+  let jobs=[];
+  if(action==='delete') jobs=[
+    {...base,type:'workflow_terminate'},
+    {...base,type:'calendar_sync',action:'delete',gcal_event_id:row.gcal_event_id||''}
+  ];
+  else if(['cancelled','completed','no_show'].includes(row.status)){
+    jobs=[{...base,type:'workflow_terminate'},{...base,type:'calendar_sync',action:'upsert'}];
+    if(row.status==='cancelled') jobs.push({...base,type:'appointment_message',kind:'cancellation'});
+  }else{
+    // Every saved active appointment receives a fresh versioned Workflow. This intentionally also
+    // covers notes-only edits: updated_at changes on every save, so keeping the old Workflow would
+    // make its versioned reminder jobs stale and silently suppress the reminders.
+    jobs=[{...base,type:'calendar_sync',action:'upsert'},{...base,type:'workflow_start'}];
+  }
+  await hcUpsertAutomationState(env,row,{workflow_status:jobs.some(x=>x.type==='workflow_start')?'queued':'',calendar_status:'queued',reminder_status:jobs.some(x=>x.type==='workflow_start')?'queued':'',last_error:''});
+  try{ await hcDispatchJobs(env,jobs); return {queued:true}; }
+  catch(error){ await hcRecordAutomationError(env,jobs[0]||base,error); await reportOpsError(env,'hcQueueAppointmentAutomation',error,{clientId:row.client_id,appointmentId:row.id}); return {queued:false,error:String(error?.message||error)}; }
+}
+async function handleHcAppointmentsList(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const u=new URL(request.url), binds=[Number(auth.payload.cid)]; let where='a.client_id=?';
+  if(u.searchParams.get('date')){where+=' AND a.appointment_date=?';binds.push(u.searchParams.get('date'));}
+  if(u.searchParams.get('status')){where+=' AND a.status=?';binds.push(u.searchParams.get('status'));}
+  const {results}=await env.DB.prepare(`SELECT a.*,s.name service_name,d.name doctor_name FROM healthcare_appointments a LEFT JOIN healthcare_services s ON s.id=a.service_id LEFT JOIN healthcare_doctors d ON d.id=a.doctor_id WHERE ${where} ORDER BY a.appointment_date DESC,a.start_time DESC LIMIT 1000`).bind(...binds).all();
+  return json({list:results||[]});
+}
+async function handleHcAppointmentCreate(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({}));
+  if(!b.patient_name||!b.patient_phone||!b.doctor_id||!b.appointment_date||!b.start_time) return json({error:'Patient, phone, doctor, date and time are required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(b.doctor_id),Number(auth.payload.cid)).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const slots=await hcAvailableSlots(env,auth.payload.cid,auth.c,Number(b.doctor_id),String(b.appointment_date),Number(b.service_id||0),0);
+  const chosen=slots.find(s=>s.start_time===b.start_time);
+  if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+  const now=new Date().toISOString();
+  let r;
+  try{
+    r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(auth.payload.cid),String(b.patient_name).slice(0,200),String(b.patient_phone).slice(0,40),Number(b.lead_id)||0,Number(b.service_id)||0,Number(b.doctor_id),String(b.appointment_date),String(b.start_time),chosen.end_time,String(b.status||'requested').slice(0,30),String(b.source||'dashboard').slice(0,40),String(b.notes||'').slice(0,2000),'',now,now).run();
+  }catch(e){
+    if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409);
+    throw e;
+  }
+  let row=await hcAppointmentRow(env,auth.payload.cid,r.meta.last_row_id);
+  const automation=await hcQueueAppointmentAutomation(env,row,null,'upsert');
+  return json({...row,automation});
+}
+async function handleHcAppointmentUpdate(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({})); if(!b.id) return json({error:'id required'},400);
+  const existing=await hcAppointmentRow(env,auth.payload.cid,b.id); if(!existing) return json({error:'Not found'},404);
+  const doctorId=Number(b.doctor_id===undefined?existing.doctor_id:b.doctor_id), serviceId=Number(b.service_id===undefined?existing.service_id:b.service_id), date=String(b.appointment_date===undefined?existing.appointment_date:b.appointment_date), startTime=String(b.start_time===undefined?existing.start_time:b.start_time);
+  if(!['cancelled','completed','no_show'].includes(String(b.status||existing.status))){
+    const slots=await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,existing.id);
+    const chosen=slots.find(s=>s.start_time===startTime);
+    if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+    b.end_time=chosen.end_time;
+  }
+  const allowed=['patient_name','patient_phone','lead_id','service_id','doctor_id','appointment_date','start_time','end_time','status','source','notes'];
+  const sets=[],vals=[]; for(const key of allowed){if(b[key]===undefined)continue;sets.push(`${key}=?`);vals.push(['lead_id','service_id','doctor_id'].includes(key)?Number(b[key])||0:String(b[key]).slice(0,key==='notes'?2000:200));}
+  sets.push('updated_at=?');vals.push(new Date().toISOString(),Number(b.id),Number(auth.payload.cid));
+  try{ await env.DB.prepare(`UPDATE healthcare_appointments SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run(); }
+  catch(e){ if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409); throw e; }
+  let row=await hcAppointmentRow(env,auth.payload.cid,b.id);
+  const automation=await hcQueueAppointmentAutomation(env,row,existing,'upsert');
+  return json({...row,automation});
+}
+async function handleHcAppointmentDelete(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const b=await request.json().catch(()=>({})), row=await hcAppointmentRow(env,auth.payload.cid,b.id);
+  if(!row) return json({error:'Not found'},404);
+  await hcQueueAppointmentAutomation(env,row,row,'delete');
+  await env.DB.prepare(`DELETE FROM healthcare_appointments WHERE id=? AND client_id=?`).bind(Number(b.id),Number(auth.payload.cid)).run();
+  return json({ok:true});
+}
+async function handleHcAnalytics(request,env){
+  const auth=await hcRequireSessionClient(request,env); if(!auth) return json({error:'Invalid or expired session'},401);
+  const cid=Number(auth.payload.cid), today=new Date().toISOString().slice(0,10);
+  const [services,doctors,todayCount,pending,confirmed,insurance,automationActive,automationFailed]=await Promise.all([
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_services WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_doctors WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND appointment_date=?`).bind(cid,today).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='requested'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointments WHERE client_id=? AND status='confirmed'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_insurance WHERE client_id=? AND status='active'`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_appointment_automation WHERE client_id=? AND workflow_status IN ('queued','running')`).bind(cid).first(),
+    env.DB.prepare(`SELECT COUNT(*) n FROM healthcare_queue_failures WHERE client_id=?`).bind(cid).first()
+  ]);
+  return json({services:services?.n||0,doctors:doctors?.n||0,today:todayCount?.n||0,pending:pending?.n||0,confirmed:confirmed?.n||0,insurance:insurance?.n||0,
+    automation_active:automationActive?.n||0,automation_failed:automationFailed?.n||0,
+    queue_configured:!!env.HEALTHCARE_JOBS,workflow_configured:!!env.HEALTHCARE_APPOINTMENT_WORKFLOW,
+    gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
+}
 
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
    can't express: sweeping expired holds back to "available" on every list, and writing a
@@ -20074,7 +21818,7 @@ async function engineBroadcastUpdate(env, clientId, eventObj){
 }
 
 export default {
-  async fetch(request, env){
+  async fetch(request, env, ctx){
     const url=new URL(request.url);
     const origin=request.headers.get('Origin');
     const cors=corsHeaders(origin, env);
@@ -20099,7 +21843,10 @@ export default {
 
     let res;
     try{
+      if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
+      if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
+      else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
@@ -20252,9 +21999,10 @@ export default {
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
+      else if(url.pathname==='/ig/health' && (request.method==='GET'||request.method==='POST')){ res=await handleInstagramHealth(request, env); }
       else if(url.pathname==='/ig/deauthorize' && request.method==='POST'){ res=await handleInstagramDeauthorize(request, env); }
       else if(url.pathname==='/ig/webhook' && request.method==='GET'){ res=await handleInstagramWebhookVerify(request, env); }
-      else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env); }
+      else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env, ctx); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSend(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
@@ -20433,6 +22181,26 @@ export default {
       else if(url.pathname==='/healthcare/doctors' && request.method==='POST'){ res=await hcDoctorsCrud.create(request, env); }
       else if(url.pathname==='/healthcare/doctors' && request.method==='PATCH'){ res=await hcDoctorsCrud.update(request, env); }
       else if(url.pathname==='/healthcare/doctors' && request.method==='DELETE'){ res=await hcDoctorsCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='GET'){ res=await hcServicesCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='POST'){ res=await hcServicesCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='PATCH'){ res=await hcServicesCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/services' && request.method==='DELETE'){ res=await hcServicesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='GET'){ res=await hcSchedulesCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='POST'){ res=await hcSchedulesCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='PATCH'){ res=await hcSchedulesCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/schedules' && request.method==='DELETE'){ res=await hcSchedulesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/availability' && request.method==='GET'){ res=await handleHcAvailability(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='GET'){ res=await handleHcAppointmentsList(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='POST'){ res=await handleHcAppointmentCreate(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='PATCH'){ res=await handleHcAppointmentUpdate(request, env); }
+      else if(url.pathname==='/healthcare/appointments' && request.method==='DELETE'){ res=await handleHcAppointmentDelete(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='GET'){ res=await hcInsuranceCrud.list(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='POST'){ res=await hcInsuranceCrud.create(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='PATCH'){ res=await hcInsuranceCrud.update(request, env); }
+      else if(url.pathname==='/healthcare/insurance' && request.method==='DELETE'){ res=await hcInsuranceCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/settings' && request.method==='GET'){ res=await handleHcSettingsGet(request, env); }
+      else if(url.pathname==='/healthcare/settings' && request.method==='PATCH'){ res=await handleHcSettingsUpdate(request, env); }
+      else if(url.pathname==='/healthcare/analytics' && request.method==='GET'){ res=await handleHcAnalytics(request, env); }
       else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }
@@ -20470,6 +22238,7 @@ export default {
       else if(url.pathname==='/pm/dependencies' && request.method==='DELETE'){ res=await handlePmDependencyDelete(request, env); }
       else if(url.pathname==='/pm/lead-search' && request.method==='GET'){ res=await handlePmLeadSearch(request, env); }
       else if(url.pathname==='/pm/lead' && request.method==='GET'){ res=await handlePmLeadGet(request, env); }
+      else if(url.pathname==='/pm/automation-health' && request.method==='GET'){ res=await handlePmAutomationHealth(request, env); }
       else if(url.pathname==='/admin/pm/migrate-legacy-tasks' && request.method==='POST'){ res=await handlePmMigrateLegacyTasks(request, env); }
       else if(url.pathname==='/erpnext/suppliers' && request.method==='GET'){ res=await handleErpnextSuppliersList(request, env); }
       else if(url.pathname==='/erpnext/customers' && request.method==='GET'){ res=await handleErpnextCustomersList(request, env); }
@@ -20563,6 +22332,13 @@ export default {
     const headers=new Headers(res.headers);
     Object.entries(cors).forEach(([k,v])=>headers.set(k,v));
     return new Response(res.body, {status:res.status, headers});
+  },
+
+  // Healthcare and Projects use separate queues and DLQs, but share the Worker's Queue entrypoint.
+  // Each handler retries messages independently and persists exhausted jobs for dashboard health.
+  async queue(batch,env,ctx){
+    const isProjectQueue=String(batch.queue||'').startsWith('leadvyne-project-');
+    ctx.waitUntil(isProjectQueue?pmHandleQueueBatch(batch,env):hcHandleQueueBatch(batch,env));
   },
 
   // Cloudflare Cron Triggers — see wrangler.toml [triggers]. Four schedules share this one entry

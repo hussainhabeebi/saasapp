@@ -273,6 +273,15 @@ footer p{font-size:13px;color:var(--muted)}
 .btn-primary,.btn-ghost{transition:background .15s,transform .12s,box-shadow .15s}
 .btn-primary:hover{box-shadow:0 4px 16px rgba(13,156,147,.3)}
 .btn-ghost:hover{box-shadow:0 2px 8px rgba(0,0,0,.05)}
+
+/* ── SIGNUP FORM ── */
+.signup-form{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;width:100%;max-width:500px}
+.signup-input{flex:1;min-width:210px;padding:15px 18px;border:1.5px solid var(--line);border-radius:11px;font-size:15px;font-family:var(--body);color:var(--ink);background:#fff;outline:none;transition:border-color .15s,box-shadow .15s}
+.signup-input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(13,156,147,.1)}
+.signup-input::placeholder{color:var(--muted)}
+.signup-msg{margin-top:10px;font-size:14px;font-weight:600;min-height:20px;text-align:center;transition:opacity .2s}
+.signup-msg.ok{color:var(--green)}.signup-msg.err{color:#e53e3e}
+.signup-form-cta{max-width:440px;margin:0 auto}
 nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
@@ -302,9 +311,13 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
     <div class="hero-badge"><span class="dot"></span>Join 1,000+ businesses converting more leads with AI</div>
     <h1>Turn Every <span class="rotate-text-wrap"><span class="rotate-text" id="rotateWord">WhatsApp Chat</span></span><br>Into a Paying <span class="accent">Customer</span>.</h1>
     <p class="hero-sub">Leadvyne captures, qualifies, and follows up on every lead — WhatsApp, website, email, and more — automatically, then hands off to your team at exactly the right moment. Built to convert, not just chat.</p>
-    <div class="hero-actions">
-      <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="btn-primary">Sign Up Free →</a>
-      <a href="#features" class="btn-ghost">See Features</a>
+    <div class="hero-actions" style="flex-direction:column;align-items:center;gap:12px">
+      <form class="signup-form" id="heroSignupForm" onsubmit="handleSignupSubmit(event,'hero')">
+        <input type="email" class="signup-input" placeholder="Enter your work email" required autocomplete="email">
+        <button type="submit" class="btn-primary" id="heroSignupBtn" style="padding:15px 28px">Start Free Trial →</button>
+      </form>
+      <div class="signup-msg" id="heroSignupMsg"></div>
+      <a href="#features" style="font-size:14px;color:var(--muted);text-decoration:none;font-weight:600">See how it works ↓</a>
     </div>
     <div class="hero-trust">
       <span>🆓 Free to start</span>
@@ -778,9 +791,13 @@ nav{box-shadow:0 1px 0 var(--line),0 2px 16px rgba(0,0,0,.04)}
   <div class="cta-final-inner">
     <div class="section-tag" style="text-align:center">Get Started</div>
     <h2>Start converting more leads today</h2>
-    <p>One button, straight into a secure sign-in — no forms, no passcodes, no waiting for our team.</p>
-    <a href="https://app.leadvyne.com/dashboard.html?signup=1" class="btn-primary">Sign Up Free →</a>
-    <p class="cta-note">You'll be taken straight to a secure sign-in — your dashboard is ready the moment you're verified.</p>
+    <p>Enter your email — your account is set up in seconds, no forms to fill.</p>
+    <form class="signup-form signup-form-cta" id="ctaSignupForm" onsubmit="handleSignupSubmit(event,'cta')">
+      <input type="email" class="signup-input" placeholder="Enter your work email" required autocomplete="email">
+      <button type="submit" class="btn-primary" id="ctaSignupBtn" style="padding:15px 28px">Start Free Trial →</button>
+    </form>
+    <div class="signup-msg" id="ctaSignupMsg"></div>
+    <p class="cta-note">No credit card needed · Set up in 60 seconds · Cancel anytime</p>
   </div>
 </div>
 
@@ -853,6 +870,55 @@ if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches && 'Intersecti
       });
     },{threshold:.3});
     flowIo.observe(flowTrack);
+  }
+}
+</script>
+<script>
+// Home-page signup form — submits email to POST /signup on the Worker, which creates an
+// Authentik account and sends a setup link. The existing PKCE login flow is untouched.
+async function handleSignupSubmit(e, formId){
+  e.preventDefault();
+  const form=e.target;
+  const input=form.querySelector('input[type=email]');
+  const btn=form.querySelector('button[type=submit]');
+  const msgEl=document.getElementById(formId==='hero'?'heroSignupMsg':'ctaSignupMsg');
+  const email=input.value.trim();
+
+  btn.disabled=true;
+  const origLabel=btn.textContent;
+  btn.textContent='Sending…';
+  msgEl.className='signup-msg';
+  msgEl.textContent='';
+
+  const reset=()=>{ btn.disabled=false; btn.textContent=origLabel; };
+
+  try{
+    const r=await fetch('https://api.leadvyne.com/signup',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email})
+    });
+    const data=await r.json().catch(()=>({}));
+
+    if(r.status===409){
+      // Account exists — send them straight to sign in
+      msgEl.className='signup-msg ok';
+      msgEl.textContent='Account found! Redirecting to sign in…';
+      setTimeout(()=>window.location.href='https://app.leadvyne.com/dashboard.html', 1400);
+      return;
+    }
+    if(!r.ok||data.error){
+      msgEl.className='signup-msg err';
+      msgEl.textContent=data.error||'Something went wrong. Please try again.';
+      reset(); return;
+    }
+    // Success
+    form.style.display='none';
+    msgEl.className='signup-msg ok';
+    msgEl.textContent='✓ Check your email to set up your account!';
+  }catch(err){
+    msgEl.className='signup-msg err';
+    msgEl.textContent='Network error — please try again.';
+    reset();
   }
 }
 </script>

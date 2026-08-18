@@ -4939,10 +4939,9 @@ webhook itself, sends replies straight through the Graph API, and conversations 
 same Leads table). Reuses the engine's classify/route/reply pipeline
 (`engineClassifyIntent`/`engineRouteFlow`/`engineCallLlm`) unchanged — confirmed channel-agnostic
 — but is deliberately leaner than `handleEngineWebhook`: only the qualify/FAQ/objection/human/drop
-routes are implemented. The ecommerce order-link automation, hospitality/category media sends and
-booking-signal auto-send that WhatsApp also gets are **not** replicated here — this is a
-text-only, core-conversation channel for now, not full parity with every WhatsApp
-business-vertical feature.
+routes are implemented. Incoming text, image, voice, video/file attachments, story replies and
+postbacks are preserved in Chats. The ecommerce order-link automation, hospitality/category media
+sends and booking-signal auto-send that WhatsApp also gets are **not** replicated here.
 
 **Uses "Instagram API with Instagram Login"**, not the Facebook-Login-for-Business/Page-linked
 variant — a deliberately separate app credential pair from `META_APP_ID`/`META_APP_SECRET`
@@ -4968,8 +4967,10 @@ as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` p
 5. Copy that use case's **Instagram app ID** / **Instagram app secret** (shown at the top of its
    setup page — distinct from the main app's own ID/secret) → Worker secrets `META_IG_APP_ID` /
    `META_IG_APP_SECRET`.
-6. Nothing else to create by hand — connecting (below) auto-provisions every NocoDB column it
-   needs.
+6. Nothing else to create by hand — connecting auto-provisions every NocoDB column it needs and
+   calls `/{ig_user_id}/subscribed_apps` for `messages`, `messaging_postbacks`,
+   `message_reactions`, and `messaging_seen`. Settings → Integrations shows live token/subscription
+   health and its **Repair & recheck** action re-subscribes an already-connected account.
 
 **Before submitting for App Review** (only needed once you want *other clients'* Instagram
 accounts to connect — any account you've added as a tester works right now without review):
@@ -4995,6 +4996,14 @@ NocoDB's Meta API the moment you connect (`ensureClientColumns()` in `worker.js`
 token is refreshed daily by `runInstagramTokenRefreshForAllClients` (piggybacked on the existing
 2am cron tick) — Meta's tokens expire 60 days after issue if never refreshed, so this has to run
 on an ongoing basis, not just at connect time.
+
+Inbound webhook POSTs require Meta's `X-Hub-Signature-256` signed with `META_IG_APP_SECRET` and
+are acknowledged immediately with `ctx.waitUntil`; processing failures therefore do not cause
+Meta retry storms. All events in every batch are processed. A valid inbound DM is always saved to
+Chats even when the global engine, this client's engine, Bot Auto-Reply, or the AI provider is
+disabled; those settings suppress only the automated outbound reply. `ig_webhook_debug` stores
+only `received:<timestamp>` for the matched client and never stores message content or another
+client's payload.
 
 **Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
 (one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an
@@ -8327,3 +8336,57 @@ riding existing fields/infra.
   Nothing is persisted server-side; a closed tab just stops heartbeating, and every other client
   ages the avatar out on its own after `CHAT_PRESENCE_TTL_MS` (45s) of silence
   (`renderSeenBy`/`onLiveViewingEvent`, dashboard.html/chats.js).
+
+## Healthcare appointment Queues and Workflows
+
+Healthcare appointment writes now publish ID-only jobs to `leadvyne-healthcare-jobs`. The Queue
+consumer synchronizes Google Calendar and sends confirmations/cancellations, retrying transient
+failures five times with exponential per-message delays. Exhausted jobs move to
+`leadvyne-healthcare-jobs-dlq`; its consumer records a client-scoped, non-PHI failure summary in
+`healthcare_queue_failures` so the Healthcare dashboard can report failures without placing
+patient details in Queue payloads or operational logs.
+
+Each active appointment version also starts a `leadvyne-healthcare-appointment` Workflow. The
+Workflow queues an immediate confirmation, sleeps durably until the enabled 24-hour and 2-hour
+reminder points, and then publishes the reminder jobs. Rescheduling or cancelling terminates the
+old instance, and every job re-checks the appointment version in D1 before delivery so a stale
+Workflow cannot message a patient.
+
+One-time production setup from `cloudflare-worker/`:
+
+```bash
+npx wrangler queues create leadvyne-healthcare-jobs
+npx wrangler queues create leadvyne-healthcare-jobs-dlq
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+npx wrangler deploy
+```
+
+In **Healthcare → Safety & Handover → Appointment Automation**, configure approved Meta WhatsApp
+template names and language. The templates must accept six body variables in this order: patient,
+service, doctor, date, time, and message type. Templates are required for reliable reminders
+outside WhatsApp's customer-service conversation window; when no template is set, delivery only
+falls back to an existing Chatwoot conversation and failures are retried before going to the DLQ.
+
+## Project task Queues and Workflows
+
+Project task writes publish identifiers and the task version to `leadvyne-project-jobs`; titles,
+descriptions and email addresses never enter Queue or Workflow payloads. The consumer runs saved
+Project automation rules, retries transient email/automation failures five times, and records
+exhausted jobs from `leadvyne-project-jobs-dlq` in `pm_queue_failures` for the Projects dashboard.
+
+Projects can independently enable 48-hour/due-day assignee reminders and next-day overdue
+escalation. Each eligible task starts a versioned `leadvyne-project-task-lifecycle` Workflow that
+sleeps durably until 9:00 AM in the account timezone. Task edits, completion and deletion terminate
+the previous instance, and every notification re-reads D1 and verifies the saved task version.
+
+Create both Queue resources before the first deploy (Wrangler does not create a referenced DLQ):
+
+```bash
+npx wrangler queues create leadvyne-project-jobs
+npx wrangler queues create leadvyne-project-jobs-dlq
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+npx wrangler deploy
+```
+
+The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
+`RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.

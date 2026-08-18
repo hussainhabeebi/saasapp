@@ -111,12 +111,70 @@ tag = "v1"
 # still needs SOME storage backend attached to the namespace, so this is required regardless.
 new_sqlite_classes = ["ClientUpdatesHub"]
 
+# Healthcare appointment reliability. API requests publish small ID-only jobs to the primary
+# queue; the consumer retries transient Calendar/WhatsApp failures with exponential delay. After
+# five failed deliveries Cloudflare moves the job to the DLQ, which this Worker consumes and
+# records in healthcare_queue_failures for dashboard visibility.
+[[queues.producers]]
+binding = "HEALTHCARE_JOBS"
+queue = "leadvyne-healthcare-jobs"
+
+[[queues.consumers]]
+queue = "leadvyne-healthcare-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 60
+dead_letter_queue = "leadvyne-healthcare-jobs-dlq"
+
+[[queues.consumers]]
+queue = "leadvyne-healthcare-jobs-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# One durable instance per saved appointment version. It queues the confirmation immediately,
+# then sleeps until the configured 24-hour and 2-hour reminder points. Rescheduling terminates the
+# previous instance and creates a fresh version so stale reminders cannot reach a patient.
+[[workflows]]
+name = "leadvyne-healthcare-appointment"
+binding = "HEALTHCARE_APPOINTMENT_WORKFLOW"
+class_name = "HealthcareAppointmentWorkflow"
+
+# Project task reliability. Task CRUD publishes ID-only events; transient automation/email errors
+# retry on the primary queue and exhausted messages are recorded from the DLQ in pm_queue_failures.
+[[queues.producers]]
+binding = "PROJECT_JOBS"
+queue = "leadvyne-project-jobs"
+
+[[queues.consumers]]
+queue = "leadvyne-project-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+retry_delay = 60
+dead_letter_queue = "leadvyne-project-jobs-dlq"
+
+[[queues.consumers]]
+queue = "leadvyne-project-jobs-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# One durable, versioned instance per active task with a due date. It sleeps until the 48-hour,
+# due-day and next-day escalation points. Editing/completing/deleting a task terminates the old
+# instance; every delivery also verifies the saved task version before sending.
+[[workflows]]
+name = "leadvyne-project-task-lifecycle"
+binding = "PROJECT_TASK_WORKFLOW"
+class_name = "ProjectTaskWorkflow"
+
 # Non-secret config (safe to commit) — override per-environment with `wrangler.toml` vars
 # if you ever run a staging Worker alongside production.
 [vars]
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
-ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com,https://www.leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"

@@ -1937,6 +1937,26 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="ecomCommunicationStyleCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🛍️ Ecom Communication Style</div>
+            <div class="s-note">Choose how the assistant speaks and guides product discovery. This changes wording and question order only; categories, products, prices, specifications and media still come strictly from Ecom. Existing customers remain on their current behaviour until a style is selected and saved.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Store communication style</label>
+                <select class="form-input" id="cfgEcomCommunicationStyle">
+                  <option value="">Current style (no change)</option>
+                  <option value="fashion">Fashion ecommerce</option>
+                  <option value="shopify">Shopify / general store</option>
+                  <option value="furniture_appliances">Furniture &amp; home appliances</option>
+                </select>
+              </div>
+              <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
+              <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- User Management moved to its own "👥 User Management" settings sub-page — see
              pageUsermanagement below — same reasoning as Modules: who can sign in, what they can
              see, and their Chatwoot login are a big enough decision to deserve their own page. -->
@@ -2452,6 +2472,7 @@ const ROLES = {
               <span class="save-msg" id="intInstagramMsg"></span>
             </div>
             <div id="intInstagramConnectedActions" style="display:none;margin-top:8px">
+              <button class="save-btn" id="intInstagramRepairBtn" onclick="refreshInstagramHealth(true)">Repair &amp; recheck</button>
               <button class="save-btn" style="background:var(--muted)" onclick="disconnectInstagram()">Disconnect</button>
               <span class="save-msg" id="intInstagramDisconnectMsg"></span>
             </div>
@@ -4506,10 +4527,11 @@ async function resumeSession(id){
     // Sliding-window refresh — handleSessionMe reissues a fresh, full-length token on every
     // successful call, so an account opened at least once a month never hits the TTL ceiling.
     if(data.session_token){ sessionToken=data.session_token; localStorage.setItem('lv_session',sessionToken); }
+    if(data.email){ myEmail=String(data.email).trim().toLowerCase(); localStorage.setItem('lv_me_email',myEmail); }
     if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
     showApp();
   }catch(e){
-    localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); sessionToken='';
+    localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email'); sessionToken=''; myEmail='';
     hideResumingGate();
   }
 }
@@ -8002,8 +8024,8 @@ function renderTeamMembers(){
    part that actually matters security-wise — which leads a travel teammate's queries can return —
    server-side in the Worker's /nocodb passthrough). */
 function isAccountOwner(email){
-  const e=(email===undefined?myEmail:email)||'';
-  return !!e && e.toLowerCase()===String(clientRecord?.authentik_email||'').toLowerCase();
+  const e=String((email===undefined?myEmail:email)||'').trim().toLowerCase();
+  return !!e && e===String(clientRecord?.authentik_email||'').trim().toLowerCase();
 }
 function getTeamPermissions(){
   try{ return JSON.parse(clientRecord.team_permissions||'{}'); }catch(e){ return {}; }
@@ -8364,6 +8386,10 @@ function populateSettings(){
   // treated as off when explicitly === false), so an unset key shows as "Yes" here too.
   try{ $id('cfgQuickReplyButtons').value=(JSON.parse(clientRecord.bot_config||'{}').quick_reply_buttons_enabled===false)?'No':'Yes'; }
   catch(e){ $id('cfgQuickReplyButtons').value='Yes'; }
+  let ecomBotConfig={};
+  try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  $id('ecomCommunicationStyleCard').style.display=clientRecord.industry==='ecommerce'?'block':'none';
+  $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -8555,6 +8581,7 @@ async function applyIndustryChange(ind, extraPatch){
   await ensureHealthcareEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
+  if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
@@ -9315,6 +9342,14 @@ $id('saveQuickReplyButtons').addEventListener('click',async()=>{
   botConfig.quick_reply_buttons_enabled=$id('cfgQuickReplyButtons').value!=='No';
   await saveField('saveQuickReplyButtons','saveQuickReplyButtonsMsg',{bot_config:JSON.stringify(botConfig)});
 });
+$id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const selected=$id('cfgEcomCommunicationStyle').value;
+  if(selected) botConfig.ecom_communication_style=selected;
+  else delete botConfig.ecom_communication_style;
+  await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
+});
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
 
@@ -9515,7 +9550,16 @@ async function freshConvHistory(lead){
 }
 async function ncPatch(url,body){
   const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
-  if(!r.ok)throw new Error('HTTP '+r.status);
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    if(data.code==='SESSION_IDENTITY_REQUIRED'){
+      localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email');
+      sessionToken=''; myEmail='';
+      setTimeout(()=>window.location.reload(),900);
+      throw new Error('Your secure session needs a one-time refresh. Reopening login…');
+    }
+    throw new Error(data.error||'HTTP '+r.status);
+  }
   return r.json();
 }
 async function ncPost(url,body){
@@ -10388,13 +10432,33 @@ async function saveManualWaCreds(){
 // against instagram.com directly, not through the Meta JS SDK's FB.login popup (that's a
 // Facebook-Login-for-Business thing, a different product) — so this is a plain full-page OAuth
 // redirect, same shape as connectShopifyOAuth above, not connectWhatsApp's Embedded-Signup flow.
+let instagramHealthChecked=false;
 function renderInstagramStatus(){
   const connected=!!clientRecord?.ig_id;
   $id('intInstagramConnectForm').style.display=connected?'none':'block';
   $id('intInstagramConnectedActions').style.display=connected?'block':'none';
   $id('intInstagramStatus').innerHTML=connected
-    ? `✅ Connected — <b>@${esc(clientRecord.ig_username||clientRecord.ig_id)}</b>`
+    ? `⏳ Checking token and message delivery — <b>@${esc(clientRecord.ig_username||clientRecord.ig_id)}</b>`
     : 'Not connected.';
+  if(connected&&!instagramHealthChecked){ instagramHealthChecked=true; refreshInstagramHealth(true); }
+}
+
+async function refreshInstagramHealth(repair=false){
+  const status=$id('intInstagramStatus'), btn=$id('intInstagramRepairBtn');
+  if(!clientRecord?.ig_id) return renderInstagramStatus();
+  status.innerHTML=`⏳ ${repair?'Repairing webhook subscription…':'Checking Instagram…'}`;
+  if(btn) btn.disabled=true;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ig/health`,{method:repair?'POST':'GET',headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    if(data.token_valid&&data.messages_subscribed){
+      status.innerHTML=`✅ Ready — <b>@${esc(data.username||clientRecord.ig_username||clientRecord.ig_id)}</b><br><span style="color:var(--muted)">Token valid · Messages subscribed${data.last_webhook_at?' · Last DM received '+esc(new Date(data.last_webhook_at).toLocaleString()):''}</span>`;
+    }else{
+      const problem=data.error||(!data.token_valid?'Access token is invalid or expired.':'Message webhook is not subscribed.');
+      status.innerHTML=`⚠️ Connected, but not ready — ${esc(problem)}<br><span style="color:var(--muted)">Use Repair &amp; recheck. If the token expired, disconnect and reconnect.</span>`;
+    }
+  }catch(e){ status.innerHTML=`⚠️ Health check failed — ${esc(e.message)}`; }
+  finally{ if(btn) btn.disabled=false; }
 }
 
 async function connectInstagram(){
@@ -10418,6 +10482,7 @@ async function disconnectInstagram(){
     const data=await r.json();
     if(!r.ok){ msg.textContent=data.error||'Failed to disconnect'; return; }
     Object.assign(clientRecord,{ig_id:'', ig_access_token:'', ig_username:''});
+    instagramHealthChecked=false;
     renderInstagramStatus();
     showToast('Instagram disconnected');
   }catch(e){ msg.textContent='Error: '+e.message; }

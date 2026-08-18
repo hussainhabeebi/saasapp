@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Leadvyne · Projects</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -146,7 +146,8 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 .link-badge{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--accent-ink);text-decoration:none}
 .link-badge:hover{text-decoration:underline}
 .filterbar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-.filterbar select{border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--card);font-size:12.5px}
+.filterbar select,.filterbar input{border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--card);font-size:12.5px}
+.filterbar input{min-width:210px}
 
 /* ── Budget / Automations panels (in modals) ── */
 .budget-bar-track{background:var(--bg);border-radius:20px;height:14px;overflow:hidden;margin:8px 0}
@@ -220,6 +221,8 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 .field-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
 .field-check input{width:auto}
 .modal-card.wide{max-width:600px}
+.sheet-title{display:flex;align-items:center;justify-content:space-between}
+.sheet-close{width:36px;height:36px;border:0;border-radius:10px;background:var(--bg);color:var(--muted);font-size:22px;line-height:1}
 .subhead{font-family:var(--disp);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:18px 0 8px}
 .subhead:first-child{margin-top:0}
 
@@ -228,25 +231,108 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 #sidebarBackdrop{display:none;position:fixed;inset:0;background:rgba(10,20,30,.4);z-index:99}
 #sidebarBackdrop.show{display:block}
 
+/* Mobile app shell — hidden on desktop. */
+.mobile-page-title,.mobile-quick-add,.mobile-bottom-nav,.mobile-fab,.mobile-status-tabs,.mobile-card-actions,.mobile-agenda,.mobile-more-action,.mobile-project-picker-head,.mobile-project-search,.mobile-project-picker-footer{display:none}
+
 @media (max-width:760px){
-  header{padding:0 10px;gap:8px}
-  .brand{font-size:14px}
+  html,body{overscroll-behavior:none}
+  header{height:58px;padding:0 10px;gap:9px;box-shadow:0 1px 8px rgba(11,35,32,.08);z-index:80}
+  .brand,.viewtabs,.desktop-task-btn,.desktop-project-btn,.hback{display:none}
   .sidebar-toggle-btn{display:flex}
-  #sidebar{position:fixed;left:-240px;top:56px;bottom:0;z-index:100;transition:left .2s;box-shadow:2px 0 12px rgba(0,0,0,.1)}
+  .mobile-page-title{display:flex;flex:1;min-width:0;flex-direction:column;line-height:1.1}
+  .mobile-page-title small{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--accent)}
+  .mobile-page-title strong{font-family:var(--disp);font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #sidebar{position:fixed;width:100%;left:-100%;top:0;bottom:0;z-index:300;padding:0;background:var(--bg);border:0;border-radius:0;transition:left .2s ease;box-shadow:none;overflow:hidden;display:flex;flex-direction:column}
   #sidebar.open{left:0}
+  #sidebarBackdrop{display:none!important}
+  #sidebar .sidehead{display:none}
+  .mobile-project-picker-head{display:flex;align-items:center;gap:12px;padding:calc(14px + env(safe-area-inset-top)) 16px 12px;background:var(--card);border-bottom:1px solid var(--line)}
+  .mobile-project-picker-title{flex:1;min-width:0}
+  .mobile-project-picker-title strong{display:block;font-family:var(--disp);font-size:20px;line-height:1.15}
+  .mobile-project-picker-title small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+  .mobile-project-close{width:40px;height:40px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);font-size:24px;line-height:1}
+  .mobile-project-search{display:block;margin:12px 14px 8px;position:relative}
+  .mobile-project-search input{width:100%;height:44px;border:1px solid var(--line);border-radius:13px;background:var(--card);padding:0 14px 0 40px;font-size:16px;color:var(--ink)}
+  .mobile-project-search::before{content:'⌕';position:absolute;left:14px;top:8px;font-size:22px;color:var(--muted);z-index:1}
+  #projList{flex:1;overflow-y:auto;padding:4px 14px 16px;-webkit-overflow-scrolling:touch}
+  .projitem{min-height:50px;padding:8px 11px;border-radius:13px;font-size:14px;gap:10px;margin-bottom:3px;background:var(--card);border:1px solid transparent}
+  .projitem.active{border-color:#BCE4DF;background:var(--accent-soft)}
+  .projdot{width:10px;height:10px}
+  .projname{font-weight:600}
+  .projcount{min-width:28px;text-align:center;background:var(--bg);border-radius:20px;padding:4px 7px;font-size:10px}
+  .projcount.zero{display:none}
+  .projedit{display:none}
+  .mobile-project-picker-footer{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:10px 14px calc(10px + env(safe-area-inset-bottom));background:var(--card);border-top:1px solid var(--line)}
+  .mobile-project-picker-footer .btn{min-height:46px;justify-content:center;border-radius:13px}
+  .mobile-project-picker-footer .btn:disabled{opacity:.45}
+  #main{padding:12px 12px calc(94px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
   .field-row{grid-template-columns:1fr}
-  /* View tabs (Board/Table/Timeline/Sprints) scroll instead of squeezing; "more" actions
-     (Budget/Automations) collapse behind ⋯ so + Task / + Project / Back stay reachable. */
-  .viewtabs{overflow-x:auto;scrollbar-width:none;max-width:38vw}
-  .viewtabs::-webkit-scrollbar{display:none}
-  .viewtab{padding:7px 10px;white-space:nowrap}
-  .hd-more-btn{display:flex}
-  .hd-more{display:none;position:absolute;top:calc(100% + 6px);right:0;flex-direction:column;gap:6px;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.15);padding:8px;z-index:200;min-width:150px}
+  .stats{display:flex;overflow-x:auto;gap:8px;margin:0 -12px 12px;padding:0 12px;scroll-snap-type:x proximity;scrollbar-width:none}
+  .stats::-webkit-scrollbar{display:none}
+  .stat{min-width:108px;padding:10px 12px;scroll-snap-align:start;border-radius:12px}
+  .stat-val{font-size:19px}.stat-lbl{font-size:10.5px}
+  .filterbar{margin-bottom:10px}
+  .filterbar{display:grid;grid-template-columns:1fr auto;gap:8px}
+  .filterbar input,.filterbar select{min-width:0;min-height:42px;border-radius:12px}
+  .hd-more-btn{display:none}
+  .hd-more{display:none;position:fixed;top:auto;right:12px;bottom:calc(76px + env(safe-area-inset-bottom));flex-direction:column;gap:7px;background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 14px 35px rgba(11,35,32,.2);padding:10px;z-index:250;min-width:210px}
   .hd-more.open{display:flex}
-  .hd-more .btn{width:100%}
+  .hd-more .btn{width:100%;min-height:44px;justify-content:flex-start;border:none;background:var(--bg);border-radius:11px}
+  .mobile-more-action{display:flex!important}
   .hright{gap:6px}
-  .hright .btn{padding:7px 10px;font-size:12px}
-  .hback-label{display:none}
+  .hright>.btn{display:none}
+
+  .mobile-status-tabs{display:flex;gap:7px;overflow-x:auto;margin:0 -12px 10px;padding:0 12px 3px;scrollbar-width:none}
+  .mobile-status-tabs::-webkit-scrollbar{display:none}
+  .mobile-status-tab{border:1px solid var(--line);background:var(--card);border-radius:20px;padding:8px 12px;font-size:12px;font-weight:700;color:var(--muted);white-space:nowrap}
+  .mobile-status-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  #boardWrap,#sprintBoardWrap{display:block!important;overflow:visible!important;padding:0!important}
+  .col{display:none;width:100%;max-height:none;background:transparent;border-radius:0}
+  .col.mobile-active{display:flex}
+  .col-hd{display:none}
+  .col-body{padding:0;overflow:visible;gap:10px}
+  #sprintBoardWrap .col{display:flex;margin-bottom:16px}
+  #sprintBoardWrap .col-hd{display:flex;padding:8px 2px}
+  .tcard{border-radius:15px;padding:13px 14px;cursor:pointer;box-shadow:0 2px 10px rgba(11,35,32,.07);touch-action:manipulation}
+  .tcard-title{font-size:14.5px;margin-bottom:9px}
+  .mobile-card-actions{display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:10px;border-top:1px solid var(--line)}
+  .mobile-card-actions select{flex:1;min-height:38px;border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:0 9px;font-size:12px;font-weight:700;color:var(--ink)}
+  .mobile-card-actions button{min-height:38px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:0 13px;font-weight:700;color:var(--accent-ink)}
+
+  .tbl-wrap{border:0;background:transparent;overflow:visible}
+  table,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  tbody{display:flex;flex-direction:column;gap:10px}
+  tbody tr{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:12px 14px;box-shadow:0 2px 10px rgba(11,35,32,.06)}
+  tbody td{display:flex;justify-content:space-between;gap:14px;padding:6px 0;border:0;text-align:right}
+  tbody td:first-child{display:block;text-align:left;font-size:14.5px;font-weight:700;padding-bottom:9px;border-bottom:1px solid var(--line)}
+  tbody td:not(:first-child)::before{content:attr(data-label);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;text-align:left}
+  #tlWrap{overflow-x:auto;-webkit-overflow-scrolling:touch}#tlWrap>*{min-width:700px}
+
+  .calgrid{display:none}
+  .mobile-agenda{display:flex;flex-direction:column;gap:10px}
+  .agenda-day{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:5px}
+  .calbar{display:grid;grid-template-columns:auto auto auto;gap:7px;margin-bottom:12px}
+  .calbar h3{grid-column:1/-1;grid-row:1;text-align:center;min-width:0;font-size:17px}
+  .calbar .btn{grid-row:2;justify-content:center;min-height:40px}
+  .gcal-banner{align-items:flex-start;line-height:1.45;border-radius:13px}
+
+  .mobile-bottom-nav{position:fixed;left:0;right:0;bottom:0;height:calc(68px + env(safe-area-inset-bottom));padding:6px 8px env(safe-area-inset-bottom);display:grid;grid-template-columns:repeat(5,1fr);background:rgba(255,255,255,.96);border-top:1px solid var(--line);box-shadow:0 -8px 24px rgba(11,35,32,.08);z-index:90;backdrop-filter:blur(12px)}
+  .mobile-nav-btn{border:0;background:none;border-radius:11px;color:var(--muted);font-size:10px;font-weight:700;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-width:0}
+  .mobile-nav-btn span{font-size:20px;line-height:1}
+  .mobile-nav-btn.active{color:var(--accent-ink);background:var(--accent-soft)}
+  .mobile-fab{position:fixed;right:17px;bottom:calc(82px + env(safe-area-inset-bottom));z-index:85;width:54px;height:54px;border:0;border-radius:17px;background:var(--accent);color:#fff;font-size:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(13,156,147,.32)}
+
+  .modal-overlay{align-items:flex-end;padding:0;background:rgba(11,35,32,.5);backdrop-filter:blur(2px)}
+  .modal-card,.modal-card.wide{max-width:none;width:100%;max-height:94dvh;border-radius:22px 22px 0 0;display:flex;flex-direction:column;overflow:hidden}
+  .modal-hd{padding:17px 18px 11px;flex:none;border-bottom:1px solid var(--line);font-size:17px}
+  .modal-body{padding:14px 16px 24px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  .modal-footer{padding:10px 14px calc(10px + env(safe-area-inset-bottom));flex:none;background:var(--card);border-top:1px solid var(--line);position:relative;z-index:2}
+  .modal-footer .btn{min-height:44px;justify-content:center}
+  .modal-footer .btn.primary{flex:1}
+  .field input,.field select,.field textarea{min-height:44px;border-radius:11px;background:#F8FCFB;font-size:16px}
+  .field textarea{min-height:82px}
+  .subhead{margin-top:22px}
 }
 </style>
 </head>
@@ -255,6 +341,7 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 <header>
   <button class="hicon-btn sidebar-toggle-btn" id="sidebarToggleBtn" onclick="toggleProjSidebar()" title="Projects list">☰</button>
   <div class="brand">Leadvyne<span>·</span>Projects</div>
+  <div class="mobile-page-title"><small>Projects</small><strong id="mobileProjectTitle">All Projects</strong></div>
   <div class="viewtabs" id="viewTabs">
     <button class="viewtab active" data-view="board" onclick="setView('board')">Board</button>
     <button class="viewtab" data-view="table" onclick="setView('table')">Table</button>
@@ -266,12 +353,15 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
     <div class="hd-more-wrap">
       <button class="hicon-btn hd-more-btn" id="projMoreBtn" onclick="toggleProjMore(event)" title="More">⋯</button>
       <div class="hd-more" id="projMore">
-        <button class="btn sm" onclick="openBudgetModal()">💰 Budget</button>
-        <button class="btn sm" onclick="openAutomationsModal()">⚡ Automations</button>
+        <button class="btn sm" onclick="closeProjMore();openBudgetModal()">💰 Budget</button>
+        <button class="btn sm" onclick="closeProjMore();openAutomationsModal()">⚡ Automations</button>
+        <button class="btn sm mobile-more-action" onclick="setView('timeline')">↝ Timeline</button>
+        <button class="btn sm mobile-more-action" onclick="closeProjMore();openProjectModal()">＋ New Project</button>
+        <button class="btn sm mobile-more-action" onclick="goBackToDashboard()">← Dashboard</button>
       </div>
     </div>
-    <button class="btn" onclick="openTaskModal()">+ Task</button>
-    <button class="btn primary" onclick="openProjectModal()">+ Project</button>
+    <button class="btn desktop-task-btn" onclick="openTaskModal()">+ Task</button>
+    <button class="btn primary desktop-project-btn" onclick="openProjectModal()">+ Project</button>
     <button class="hback" onclick="window.close()">← <span class="hback-label">Back to Dashboard</span></button>
   </div>
 </header>
@@ -279,19 +369,29 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
 
 <div id="shell">
   <div id="sidebar">
+    <div class="mobile-project-picker-head">
+      <div class="mobile-project-picker-title"><strong>Choose project</strong><small>Switch the task board instantly</small></div>
+      <button class="mobile-project-close" onclick="closeProjSidebar()" aria-label="Close projects">×</button>
+    </div>
+    <label class="mobile-project-search"><input id="mobileProjectSearch" type="search" placeholder="Search projects" oninput="renderSidebar()" autocomplete="off"></label>
     <div class="sidehead"><span>Projects</span></div>
     <div id="projList"></div>
+    <div class="mobile-project-picker-footer">
+      <button class="btn" id="mobileEditProjectBtn" onclick="editSelectedProject()">Edit selected</button>
+      <button class="btn primary" onclick="closeProjSidebar();openProjectModal()">＋ New project</button>
+    </div>
   </div>
   <div id="main">
     <div class="stats" id="statsRow"></div>
     <div class="filterbar">
-      <select id="itemTypeFilter" onchange="renderView()">
+      <input id="taskSearch" type="search" placeholder="Search tasks" oninput="renderStats();renderView()">
+      <select id="itemTypeFilter" onchange="renderStats();renderView()">
         <option value="all">All items</option>
         <option value="task">Tasks only</option>
         <option value="bug">Bugs only</option>
       </select>
     </div>
-    <div id="viewBoard"><div id="boardWrap"></div></div>
+    <div id="viewBoard"><div class="mobile-status-tabs" id="mobileBoardStatusTabs"></div><div id="boardWrap"></div></div>
     <div id="viewTable" style="display:none"><div class="tbl-wrap"><table><thead><tr>
       <th>Task</th><th>Project</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Due</th>
     </tr></thead><tbody id="tableBody"></tbody></table></div></div>
@@ -309,6 +409,45 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
         <div class="calgrid-hd"><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div></div>
         <div class="calgrid-body" id="calGridBody"></div>
       </div>
+      <div class="mobile-agenda" id="mobileAgenda"></div>
+    </div>
+  </div>
+</div>
+
+<button class="mobile-fab" onclick="openMobileQuickTask()" aria-label="Add task">+</button>
+<nav class="mobile-bottom-nav" aria-label="Projects navigation">
+  <button class="mobile-nav-btn active" data-mobile-view="board" onclick="setView('board')"><span>▦</span>Board</button>
+  <button class="mobile-nav-btn" data-mobile-view="table" onclick="setView('table')"><span>☷</span>Tasks</button>
+  <button class="mobile-nav-btn" data-mobile-view="calendar" onclick="setView('calendar')"><span>▣</span>Calendar</button>
+  <button class="mobile-nav-btn" data-mobile-view="sprints" onclick="setView('sprints')"><span>◫</span>Sprints</button>
+  <button class="mobile-nav-btn" onclick="toggleProjMore(event)"><span>•••</span>More</button>
+</nav>
+
+<!-- MOBILE QUICK TASK SHEET -->
+<div class="modal-overlay" id="mobileQuickTaskOverlay" onclick="if(event.target===this) closeModal('mobileQuickTaskOverlay')">
+  <div class="modal-card">
+    <div class="modal-hd sheet-title"><span>Add Task</span><button class="sheet-close" onclick="closeModal('mobileQuickTaskOverlay')" aria-label="Close">×</button></div>
+    <div class="modal-body">
+      <div class="field"><label>What needs to be done?</label><input id="mqTitle" placeholder="Task title" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();saveMobileQuickTask()}"></div>
+      <div class="field"><label>Project</label><select id="mqProject"></select></div>
+      <div class="field-row">
+        <div class="field"><label>Status</label><select id="mqStatus">
+          <option value="todo">To Do</option><option value="in_progress">In Progress</option>
+          <option value="review">Review</option><option value="blocked">Blocked</option><option value="done">Done</option>
+        </select></div>
+        <div class="field"><label>Priority</label><select id="mqPriority">
+          <option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="urgent">Urgent</option>
+        </select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Assignee</label><select id="mqAssignee"></select></div>
+        <div class="field"><label>Due date</label><input type="date" id="mqDue"></div>
+      </div>
+      <div class="save-msg" id="mqMsg"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="continueTaskDetails()">More details</button>
+      <button class="btn primary" onclick="saveMobileQuickTask()">Add Task</button>
     </div>
   </div>
 </div>
@@ -424,6 +563,9 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
       <div class="subhead">🤝 Client &amp; automation</div>
       <div class="field"><label>Client email</label><input type="email" id="pmClientEmail" placeholder="Used for task completion updates when a task has no linked lead"></div>
       <div class="field"><label class="field-check"><input type="checkbox" id="pmAiAutoStage"> AI-suggest the next task whenever one completes in this project</label></div>
+      <div class="field"><label class="field-check"><input type="checkbox" id="pmTaskReminders"> Email the assignee 48 hours before and on the due date</label></div>
+      <div class="field"><label class="field-check"><input type="checkbox" id="pmOverdueEscalation"> Email the assignee and project owner when a task becomes overdue</label></div>
+      <div class="field-hint">Reminders run at 9:00 AM in the account timezone. Queue retries and Workflow scheduling are monitored in the Project summary.</div>
     </div>
     <div class="modal-footer">
       <button class="btn primary" onclick="saveProject()">Save</button>
@@ -555,16 +697,26 @@ function closeModal(id){ $id(id).classList.remove('active'); }
 // <style>) with nothing that previously opened it, making the project list unreachable on a
 // phone. This hamburger + backdrop is the fix.
 function toggleProjSidebar(){
-  $id('sidebar')?.classList.toggle('open');
-  $id('sidebarBackdrop')?.classList.toggle('show');
+  const sidebar=$id('sidebar'), opening=!sidebar?.classList.contains('open');
+  sidebar?.classList.toggle('open',opening);
+  $id('sidebarBackdrop')?.classList.toggle('show',opening);
+  $id('sidebarToggleBtn')?.setAttribute('aria-expanded',String(opening));
+  if(opening) setTimeout(()=>$id('mobileProjectSearch')?.focus(),220);
 }
 function closeProjSidebar(){
   $id('sidebar')?.classList.remove('open');
   $id('sidebarBackdrop')?.classList.remove('show');
+  $id('sidebarToggleBtn')?.setAttribute('aria-expanded','false');
 }
 function toggleProjMore(e){
   e?.stopPropagation();
   $id('projMore')?.classList.toggle('open');
+}
+function closeProjMore(){ $id('projMore')?.classList.remove('open'); }
+function goBackToDashboard(){
+  closeProjMore();
+  if(history.length>1) history.back();
+  else location.href='dashboard.html';
 }
 document.addEventListener('click', e=>{
   const more=$id('projMore');
@@ -595,9 +747,11 @@ function myCurrentEmail(){
 /* ── STATE ── */
 let clientRecord=null, teamOptions=[];
 let allProjects=[], allTasks=[], allDependencies=[], allTimeEntries=[], allSprints=[], allAutomations=[];
+let pmAutomationHealth={active_workflows:0,failed_jobs:0,queue_configured:false,workflow_configured:false};
 let selectedProjectId='all';
 let selectedSprintId=null;
 let currentView='board';
+let mobileBoardStatus='todo';
 const STATUS_COLS=[
   {key:'todo', label:'To Do'}, {key:'in_progress', label:'In Progress'},
   {key:'review', label:'Review'}, {key:'blocked', label:'Blocked'}, {key:'done', label:'Done'},
@@ -610,6 +764,8 @@ function visibleTasks(){
   let tasks=selectedProjectId==='all' ? allTasks : allTasks.filter(t=>String(t.project_id)===String(selectedProjectId));
   const f=$id('itemTypeFilter')?.value;
   if(f && f!=='all') tasks=tasks.filter(t=>(t.item_type||'task')===f);
+  const q=($id('taskSearch')?.value||'').trim().toLowerCase();
+  if(q) tasks=tasks.filter(t=>[t.title,t.description,t.category,assigneeLabel(t.assignee_email),projectById(t.project_id)?.name].some(v=>String(v||'').toLowerCase().includes(q)));
   return tasks;
 }
 function initials(nameOrEmail){
@@ -637,7 +793,7 @@ async function boot(){
     clientRecord=me.client||{};
     buildTeamOptions();
     await loadProjects(); // dependencies/sprints/automations below all need this list first
-    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations()]);
+    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations(), loadAutomationHealth()]);
     renderSidebar();
     renderStats();
     renderView();
@@ -676,27 +832,40 @@ async function loadDependencies(){
 async function loadTimeEntries(){ allTimeEntries=(await pmFetch('/pm/time',{method:'GET'})).list||[]; }
 async function loadSprints(){ allSprints=(await pmFetch('/pm/sprints',{method:'GET'})).list||[]; }
 async function loadAutomations(){ allAutomations=(await pmFetch('/pm/automations',{method:'GET'})).list||[]; }
+async function loadAutomationHealth(){
+  pmAutomationHealth=await pmFetch('/pm/automation-health',{method:'GET'}).catch(()=>({active_workflows:0,failed_jobs:0,queue_configured:false,workflow_configured:false}));
+}
 
 /* ── SIDEBAR ── */
 function renderSidebar(){
   const wrap=$id('projList');
   const allCount=allTasks.length;
+  const query=String($id('mobileProjectSearch')?.value||'').trim().toLowerCase();
   let html=`<div class="projitem ${selectedProjectId==='all'?'active':''}" onclick="selectProject('all')">
-    <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount">${allCount}</span>
+    <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount ${allCount?'':'zero'}">${allCount}</span>
   </div>`;
-  html+=allProjects.filter(p=>p.status!=='archived').map(p=>{
+  const projects=allProjects.filter(p=>p.status!=='archived'&&(!query||String(p.name||'').toLowerCase().includes(query)));
+  html+=projects.map(p=>{
     const count=allTasks.filter(t=>String(t.project_id)===String(p.Id)).length;
-    return `<div class="projitem ${String(selectedProjectId)===String(p.Id)?'active':''}">
+    return `<div class="projitem ${String(selectedProjectId)===String(p.Id)?'active':''}" onclick="selectProject('${p.Id}')">
       <span class="projdot" style="background:${escAttr(p.color||'#0D9C93')}"></span>
-      <span class="projname" title="${escAttr(p.name)}" onclick="selectProject('${p.Id}')" style="cursor:pointer">${esc(p.name)}</span>
-      <span class="projcount">${count}</span>
-      <span class="projedit" title="Edit project" onclick="openProjectModal(${p.Id})">✎</span>
+      <span class="projname" title="${escAttr(p.name)}">${esc(p.name)}</span>
+      <span class="projcount ${count?'':'zero'}">${count}</span>
+      <span class="projedit" title="Edit project" onclick="event.stopPropagation();openProjectModal(${p.Id})">✎</span>
     </div>`;
   }).join('');
+  if(query&&!projects.length) html+=`<div class="empty-state" style="padding:32px 12px"><div class="empty-icon">⌕</div>No matching projects.</div>`;
   wrap.innerHTML=html;
+  const selected=selectedProjectId==='all'?null:projectById(selectedProjectId);
+  if($id('mobileProjectTitle')) $id('mobileProjectTitle').textContent=selected?.name||'All Projects';
+  if($id('mobileEditProjectBtn')) $id('mobileEditProjectBtn').disabled=!selected;
   populateProjectSelect();
 }
 function selectProject(id){ selectedProjectId=id; renderSidebar(); renderStats(); renderView(); closeProjSidebar(); }
+function editSelectedProject(){
+  if(selectedProjectId==='all') return;
+  closeProjSidebar(); openProjectModal(selectedProjectId);
+}
 function populateProjectSelect(){
   $id('tmProject').innerHTML=allProjects.filter(p=>p.status!=='archived').map(p=>`<option value="${p.Id}">${esc(p.name)}</option>`).join('') || '<option value="">Create a project first</option>';
 }
@@ -713,6 +882,8 @@ function renderStats(){
     <div class="stat"><div class="stat-val" style="color:${counts.blocked?'#DC2626':'var(--accent-ink)'}">${counts.blocked||0}</div><div class="stat-lbl">Blocked</div></div>
     <div class="stat"><div class="stat-val">${counts.done||0}</div><div class="stat-lbl">Done</div></div>
     <div class="stat"><div class="stat-val" style="color:${overdue?'#DC2626':'var(--accent-ink)'}">${overdue}</div><div class="stat-lbl">Overdue</div></div>
+    <div class="stat"><div class="stat-val">${pmAutomationHealth.active_workflows||0}</div><div class="stat-lbl">Scheduled</div></div>
+    <div class="stat"><div class="stat-val" style="color:${pmAutomationHealth.failed_jobs?'#DC2626':'var(--accent-ink)'}">${pmAutomationHealth.failed_jobs||0}</div><div class="stat-lbl">Failed jobs</div></div>
   `;
 }
 
@@ -720,6 +891,8 @@ function renderStats(){
 function setView(v){
   currentView=v;
   document.querySelectorAll('.viewtab').forEach(b=>b.classList.toggle('active', b.dataset.view===v));
+  document.querySelectorAll('.mobile-nav-btn[data-mobile-view]').forEach(b=>b.classList.toggle('active',b.dataset.mobileView===v));
+  closeProjMore();
   $id('viewBoard').style.display=v==='board'?'':'none';
   $id('viewTable').style.display=v==='table'?'':'none';
   $id('viewTimeline').style.display=v==='timeline'?'':'none';
@@ -743,10 +916,10 @@ function renderView(){
 function kanbanColumnsHtml(tasks){
   return STATUS_COLS.map(col=>{
     const colTasks=tasks.filter(t=>t.status===col.key).sort((a,b)=>a.position-b.position);
-    return `<div class="col">
+    return `<div class="col" data-column-status="${col.key}">
       <div class="col-hd">${col.label}<span class="n">${colTasks.length}</span></div>
       <div class="col-body" data-status="${col.key}" ondragover="onColDragOver(event)" ondragleave="onColDragLeave(event)" ondrop="onColDrop(event,'${col.key}')">
-        ${colTasks.map(t=>taskCardHtml(t)).join('') || ''}
+        ${colTasks.map(t=>taskCardHtml(t)).join('') || '<div class="empty-state" style="padding:24px 10px">No tasks in this stage.</div>'}
       </div>
     </div>`;
   }).join('');
@@ -756,14 +929,21 @@ function kanbanColumnsHtml(tasks){
 // card just looks draggable without actually doing anything.
 function wireCardDragHandlers(root){
   root.querySelectorAll('.tcard').forEach(el=>{
+    if(matchMedia('(max-width:760px)').matches){ el.draggable=false; return; }
     el.addEventListener('dragstart', onCardDragStart);
     el.addEventListener('dragend', onCardDragEnd);
   });
 }
 function renderBoard(){
-  $id('boardWrap').innerHTML=kanbanColumnsHtml(visibleTasks());
+  const tasks=visibleTasks();
+  const counts=Object.fromEntries(STATUS_COLS.map(c=>[c.key,tasks.filter(t=>t.status===c.key).length]));
+  if(!STATUS_COLS.some(c=>c.key===mobileBoardStatus)) mobileBoardStatus='todo';
+  $id('mobileBoardStatusTabs').innerHTML=STATUS_COLS.map(c=>`<button class="mobile-status-tab ${c.key===mobileBoardStatus?'active':''}" onclick="setMobileBoardStatus('${c.key}')">${c.label} · ${counts[c.key]}</button>`).join('');
+  $id('boardWrap').innerHTML=kanbanColumnsHtml(tasks);
+  $id('boardWrap').querySelector(`.col[data-column-status="${mobileBoardStatus}"]`)?.classList.add('mobile-active');
   wireCardDragHandlers($id('boardWrap'));
 }
+function setMobileBoardStatus(status){ mobileBoardStatus=status; renderBoard(); }
 // A task is "locked" when it has a real pm_task_dependencies predecessor that isn't done yet —
 // informational only (same as the old system's isStageLocked icon), doesn't block any action.
 function isTaskLocked(t){
@@ -773,7 +953,7 @@ function taskCardHtml(t){
   const proj=projectById(t.project_id);
   const due=t.due_date ? `<span class="chip due ${isOverdue(t.due_date,t.status)?'overdue':''}">${t.due_date.slice(5)}</span>` : '';
   const isBug=t.item_type==='bug';
-  return `<div class="tcard" draggable="true" data-id="${t.Id}" onclick="openTaskModal(${t.Id})">
+  return `<div class="tcard" draggable="${matchMedia('(max-width:760px)').matches?'false':'true'}" data-id="${t.Id}" onclick="openTaskModal(${t.Id})">
     ${proj?`<div style="font-size:10.5px;color:${escAttr(proj.color||'#0D9C93')};font-weight:700;margin-bottom:4px">${esc(proj.name)}</div>`:''}
     <div class="tcard-title">${isTaskLocked(t)?'<span class="lock-icon" title="Waiting on a dependency">🔒</span> ':''}${itemTypeIcon(t)} ${esc(t.title)}</div>
     <div class="tcard-meta">
@@ -784,7 +964,29 @@ function taskCardHtml(t){
       ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="${escAttr(t.link_url)}">🔗</a>`:''}
       ${t.assignee_email?`<span class="avatar" title="${escAttr(assigneeLabel(t.assignee_email))}">${initials(assigneeLabel(t.assignee_email))}</span>`:''}
     </div>
+    <div class="mobile-card-actions" onclick="event.stopPropagation()">
+      <select aria-label="Change task status" onchange="quickSetTaskStatus(event,${t.Id},this.value)">
+        ${STATUS_COLS.map(c=>`<option value="${c.key}" ${c.key===t.status?'selected':''}>${c.label}</option>`).join('')}
+      </select>
+      <button onclick="openTaskModal(${t.Id})">Edit</button>
+    </div>
   </div>`;
+}
+
+async function quickSetTaskStatus(e,id,status){
+  e?.stopPropagation();
+  const task=taskById(id); if(!task||task.status===status) return;
+  const previous=task.status;
+  task.status=status;
+  renderStats(); renderSidebar(); renderView();
+  try{
+    await pmFetch('/pm/tasks',{method:'PATCH',body:JSON.stringify({Id:id,status,position:task.position||0})});
+    onTaskStatusChanged(task,previous);
+  }catch(error){
+    task.status=previous;
+    renderStats(); renderSidebar(); renderView();
+    alert(error.message||'Could not update task.');
+  }
 }
 
 /* Drag and drop — native HTML5 DnD. position is a float: dropping between two cards writes the
@@ -825,11 +1027,11 @@ function renderTable(){
     const proj=projectById(t.project_id);
     return `<tr onclick="openTaskModal(${t.Id})">
       <td>${isTaskLocked(t)?'<span class="lock-icon" title="Waiting on a dependency">🔒</span> ':''}${itemTypeIcon(t)} ${esc(t.title)} ${t.category?`<span class="cat-chip">${esc(t.category)}</span>`:''} ${t.link_url?`<a class="link-badge" href="${escAttr(t.link_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗</a>`:''}</td>
-      <td>${proj?esc(proj.name):'—'}</td>
-      <td><span class="badge st-${t.status}">${STATUS_COLS.find(c=>c.key===t.status)?.label||t.status}</span></td>
-      <td>${t.item_type==='bug' && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}</td>
-      <td>${t.assignee_email?esc(assigneeLabel(t.assignee_email)):'—'}</td>
-      <td style="${isOverdue(t.due_date,t.status)?'color:#DC2626;font-weight:700':''}">${t.due_date||'—'}</td>
+      <td data-label="Project">${proj?esc(proj.name):'—'}</td>
+      <td data-label="Status"><span class="badge st-${t.status}">${STATUS_COLS.find(c=>c.key===t.status)?.label||t.status}</span></td>
+      <td data-label="Priority">${t.item_type==='bug' && t.severity?`<span class="sev-badge sev-${t.severity}">${t.severity}</span>`:`<span class="chip prio-${t.priority}">${t.priority}</span>`}</td>
+      <td data-label="Assignee">${t.assignee_email?esc(assigneeLabel(t.assignee_email)):'—'}</td>
+      <td data-label="Due" style="${isOverdue(t.due_date,t.status)?'color:#DC2626;font-weight:700':''}">${t.due_date||'—'}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📋</div>No tasks yet — click "+ Task" to add one.</div></td></tr>`;
 }
@@ -964,6 +1166,50 @@ function drawDependencyLines(deps){
 
 /* ── TASK MODAL ── */
 let _editingTaskId=null;
+function openMobileQuickTask(){
+  closeProjMore();
+  const projects=allProjects.filter(p=>p.status!=='archived');
+  $id('mqProject').innerHTML=projects.map(p=>`<option value="${p.Id}">${esc(p.name)}</option>`).join('')||'<option value="">Create a project first</option>';
+  if(selectedProjectId!=='all'&&projects.some(p=>String(p.Id)===String(selectedProjectId))) $id('mqProject').value=selectedProjectId;
+  $id('mqAssignee').innerHTML='<option value="">Unassigned</option>'+teamOptions.map(t=>`<option value="${escAttr(t.email)}">${esc(t.name)}</option>`).join('');
+  $id('mqTitle').value='';
+  $id('mqStatus').value=currentView==='board'?mobileBoardStatus:'todo';
+  $id('mqPriority').value='medium';
+  $id('mqDue').value='';
+  $id('mqMsg').textContent='';
+  openModal('mobileQuickTaskOverlay');
+  setTimeout(()=>$id('mqTitle').focus(),80);
+}
+function continueTaskDetails(){
+  const draft={title:$id('mqTitle').value,project:$id('mqProject').value,status:$id('mqStatus').value,priority:$id('mqPriority').value,assignee:$id('mqAssignee').value,due:$id('mqDue').value};
+  closeModal('mobileQuickTaskOverlay');
+  openTaskModal();
+  $id('tmTitle').value=draft.title;
+  if(draft.project){ $id('tmProject').value=draft.project; onTaskProjectChange(); }
+  $id('tmStatus').value=draft.status;
+  $id('tmPriority').value=draft.priority;
+  $id('tmAssignee').value=draft.assignee;
+  $id('tmDue').value=draft.due;
+}
+async function saveMobileQuickTask(){
+  const title=$id('mqTitle').value.trim(), projectId=$id('mqProject').value, status=$id('mqStatus').value;
+  if(!projectId){ $id('mqMsg').textContent='Create a project first.'; return; }
+  if(!title){ $id('mqMsg').textContent='Task title is required.'; $id('mqTitle').focus(); return; }
+  const body={project_id:projectId,title,description:'',status,priority:$id('mqPriority').value,assignee_email:$id('mqAssignee').value,
+    category:'',start_date:'',due_date:$id('mqDue').value,item_type:'task',severity:'',sprint_id:'',story_points:'',link_url:'',link_label:'',lead_id:'',lead_name:'',notify_customer:0,
+    position:allTasks.filter(t=>t.status===status).reduce((m,t)=>Math.max(m,Number(t.position)||0),0)+1};
+  $id('mqMsg').textContent='Adding…';
+  try{
+    const created=await pmFetch('/pm/tasks',{method:'POST',body:JSON.stringify(body)});
+    await loadTasks();
+    closeModal('mobileQuickTaskOverlay');
+    selectedProjectId=projectId;
+    mobileBoardStatus=status;
+    currentView='board';
+    renderSidebar(); renderStats(); setView('board');
+    const fresh=taskById(created.Id); if(fresh) onTaskStatusChanged(fresh,null);
+  }catch(e){ $id('mqMsg').textContent=e.message||'Could not add task.'; }
+}
 function onItemTypeChange(){
   $id('tmSeverityField').style.display = $id('tmItemType').value==='bug' ? '' : 'none';
 }
@@ -1094,6 +1340,8 @@ function openProjectModal(id){
   $id('pmRate').value=proj?(proj.default_hourly_rate??''):'';
   $id('pmClientEmail').value=proj?(proj.client_email||''):'';
   $id('pmAiAutoStage').checked=!!(proj&&proj.ai_auto_stage_enabled);
+  $id('pmTaskReminders').checked=!!(proj&&proj.task_reminders_enabled);
+  $id('pmOverdueEscalation').checked=!!(proj&&proj.overdue_escalation_enabled);
   $id('pmMsg').textContent='';
   $id('pmDeleteBtn').style.display=proj?'':'none';
   openModal('projectModalOverlay');
@@ -1105,12 +1353,13 @@ async function saveProject(){
     name, description:$id('pmDesc').value.trim(), color:$id('pmColor').value, status:$id('pmStatus').value,
     budget_amount:$id('pmBudget').value||'', budget_currency:$id('pmCurrency').value.trim()||'USD', default_hourly_rate:$id('pmRate').value||'',
     client_email:$id('pmClientEmail').value.trim(), ai_auto_stage_enabled:$id('pmAiAutoStage').checked?1:0,
+    task_reminders_enabled:$id('pmTaskReminders').checked?1:0, overdue_escalation_enabled:$id('pmOverdueEscalation').checked?1:0,
   };
   $id('pmMsg').textContent='Saving…';
   try{
     if(_editingProjectId){ body.Id=_editingProjectId; await pmFetch('/pm/projects',{method:'PATCH', body:JSON.stringify(body)}); }
     else await pmFetch('/pm/projects',{method:'POST', body:JSON.stringify(body)});
-    await loadProjects();
+    await Promise.all([loadProjects(),loadAutomationHealth()]);
     closeModal('projectModalOverlay');
     renderSidebar(); renderStats(); renderView();
   }catch(e){ $id('pmMsg').textContent=e.message||'Could not save.'; }
@@ -1581,6 +1830,11 @@ function renderCalendar(){
       ${dayTasks.length>4?`<div class="field-hint">+${dayTasks.length-4} more</div>`:''}
     </div>`;
   }).join('');
+  const agendaTasks=tasks.filter(t=>t.due_date.startsWith(`${_calYear}-${String(_calMonth+1).padStart(2,'0')}`)).sort((a,b)=>a.due_date.localeCompare(b.due_date));
+  const groups=new Map();
+  agendaTasks.forEach(t=>{ if(!groups.has(t.due_date)) groups.set(t.due_date,[]); groups.get(t.due_date).push(t); });
+  $id('mobileAgenda').innerHTML=groups.size?[...groups.entries()].map(([date,list])=>`<div class="agenda-day">${new Date(date+'T00:00:00').toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})}</div>${list.map(taskCardHtml).join('')}`).join('')
+    : '<div class="empty-state"><div class="empty-icon">▣</div>No tasks due this month.</div>';
 }
 
 boot();

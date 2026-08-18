@@ -21,7 +21,326 @@ import {
   engineSendChatwootReply,
   engineBuildFaqSystemPrompt,
   engineExtractPlainOptionsFromReply,
+  hcNormalizeText,
+  hcQueryTokens,
+  hcServiceChoiceItems,
+  hcVerifiedServiceText,
+  hcEmergencyMatch,
+  hcEnsureOperationsSchema,
+  hcAppointmentUtcMs,
+  hcHandleQueueBatch,
+  HealthcareAppointmentWorkflow,
+  pmEnsureAutomationSchema,
+  pmTaskDueUtcMs,
+  pmHandleQueueBatch,
+  ProjectTaskWorkflow,
+  engineParseInstagramEvents,
+  engineSendInstagramReply,
+  subscribeInstagramWebhooks,
+  verifyWebhookSignature,
+  ecomIsGeneralBusinessInfoQuery,
+  ecomMatchProductCategory,
+  ecomAvailableCatalogueItems,
+  ecomExactProductSelection,
+  ecomProductsForCategory,
+  ecomBroadProductMatches,
+  ecomIsGenericProductCatalogueQuery,
+  ecomFashionFieldChoices,
+  ecomFashionOrderItems,
 } from './worker.js';
+
+describe('Ecom category button and minimal matching', () => {
+  const categories=['Mattress','Wooden Bed','Sofa Sets'];
+
+  test('resolves an exact database category regardless of case or punctuation', () => {
+    assert.equal(ecomMatchProductCategory('  MATTRESS! ',categories),'Mattress');
+    assert.equal(ecomMatchProductCategory('Wooden bed',categories),'Wooden Bed');
+    assert.equal(ecomMatchProductCategory('mattresses',categories),'Mattress');
+    assert.equal(ecomMatchProductCategory('sofas',['Sofa']),'Sofa');
+  });
+
+  test('accepts a unique minimal word but never guesses an ambiguous category', () => {
+    assert.equal(ecomMatchProductCategory('sofa',['Premium Sofa Sets','Mattress']),'Premium Sofa Sets');
+    assert.equal(ecomMatchProductCategory('bed',['Wooden Bed','Bed Linen']),null);
+  });
+
+  test('falls back to a verified category when a phrase is not an exact saved product', () => {
+    assert.equal(ecomMatchProductCategory('Cloudnine Mattress Deluxe',categories),'Mattress');
+  });
+
+  test('recognizes a saved category inside a natural product enquiry', () => {
+    assert.equal(ecomMatchProductCategory('I am looking for mattresses',categories),'Mattress');
+  });
+
+  test('accepts only an exact saved product name, short label or SKU as a selection', () => {
+    const products=[{name:'REPOSE Bonnell King',short_label:'Bonnell King',sku:'RBK-01'}];
+    assert.equal(ecomExactProductSelection(products,'Bonnell King')?.sku,'RBK-01');
+    assert.equal(ecomExactProductSelection(products,'RBK-01')?.name,'REPOSE Bonnell King');
+    assert.equal(ecomExactProductSelection(products,'King size'),null);
+  });
+
+  test('lists products from the selected category without relying on NocoDB like syntax', () => {
+    const products=[
+      {name:'Mattress A',category:'Mattress'},
+      {name:'Mattress B',category:' mattress '},
+      {name:'Bed A',category:'Wooden Bed'},
+    ];
+    assert.deepEqual(ecomProductsForCategory(products,'MATTRESS').map(product=>product.name),['Mattress A','Mattress B']);
+  });
+});
+
+describe('Ecom verified fallback catalogue menu', () => {
+  test('broad-matches only real Product rows across category, name and description', () => {
+    const products=[
+      {Id:1,name:'REPOSE Bonnell King',category:'Mattress',description:'King size spring mattress'},
+      {Id:2,name:'Teak Three Seater',category:'Sofa Sets',description:'Solid wood furniture'},
+      {Id:3,name:'Dining Chair',category:'Chairs'},
+    ];
+    assert.deepEqual(ecomBroadProductMatches(products,'Do you have sofa?').map(p=>p.Id),[2]);
+    assert.deepEqual(ecomBroadProductMatches(products,'show king spring mattresses').map(p=>p.Id),[1]);
+    assert.deepEqual(ecomBroadProductMatches(products,'what time do you close?'),[]);
+  });
+
+  test('recognizes generic catalogue browsing without treating business questions as products', () => {
+    assert.equal(ecomIsGenericProductCatalogueQuery('Show me your products'),true);
+    assert.equal(ecomIsGenericProductCatalogueQuery('What do you sell?'),true);
+    assert.equal(ecomIsGenericProductCatalogueQuery('What are your working hours?'),false);
+    assert.equal(ecomIsGenericProductCatalogueQuery('Tell me about your business'),false);
+  });
+
+  test('combines exact categories and active Product rows in one ten-option menu', () => {
+    const categories=['Mattress','Furniture','Bedding','Pillows','Beds','Sofas','Chairs','Tables'];
+    const products=[
+      {Id:1,name:'Cloudnine Ortho Mattress',short_label:'Ortho Mattress'},
+      {Id:2,name:'Teak Wooden Cot'},
+      {Id:3,name:'Three Seater Sofa'},
+      {Id:4,name:'Recliner Chair'},
+    ];
+    const items=ecomAvailableCatalogueItems(categories,products);
+    assert.equal(items.length,10);
+    assert.deepEqual(items.slice(-3),[
+      {title:'Ortho Mattress',value:'Cloudnine Ortho Mattress'},
+      {title:'Teak Wooden Cot',value:'Teak Wooden Cot'},
+      {title:'Three Seater Sofa',value:'Three Seater Sofa'},
+    ]);
+  });
+
+  test('uses only product records when categories are not configured', () => {
+    assert.deepEqual(ecomAvailableCatalogueItems([], [{Id:1,name:'Verified Product'}]),[
+      {title:'Verified Product',value:'Verified Product'},
+    ]);
+  });
+});
+
+describe('Ecom general business information routing', () => {
+  test('recognizes generic ad CTA and business-introduction questions', () => {
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Hello! Can I get more info on this?'),true);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Tell me more about your business'),true);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('What does your company do?'),true);
+  });
+
+  test('never diverts explicit product enquiries from verified Products data', () => {
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Can I get more info on this product?'),false);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('Can I get price and stock for this sofa?'),false);
+    assert.equal(ecomIsGeneralBusinessInfoQuery('I want to order SKU SOFA-3'),false);
+  });
+});
+
+describe('Instagram messaging reliability', () => {
+  test('parses every actionable event in a webhook batch and ignores echoes', () => {
+    const events=engineParseInstagramEvents({id:'business-1',messaging:[
+      {sender:{id:'customer-1'},recipient:{id:'business-1'},message:{mid:'m1',text:'Hello'}},
+      {sender:{id:'business-1'},recipient:{id:'customer-1'},message:{mid:'m2',text:'echo',is_echo:true}},
+      {sender:{id:'customer-1'},recipient:{id:'business-1'},postback:{mid:'m3',title:'Book now',payload:'BOOK'}},
+    ]});
+    assert.deepEqual(events.map(e=>[e.mid,e.text,e.recipientId]),[['m1','Hello','business-1'],['m3','Book now','business-1']]);
+  });
+
+  test('preserves image, voice and story-reply content for the Chats timeline', () => {
+    const events=engineParseInstagramEvents({id:'business-1',messaging:[
+      {sender:{id:'c1'},message:{mid:'i1',attachments:[{type:'image',payload:{url:'https://cdn.example/image.jpg'}}]}},
+      {sender:{id:'c1'},message:{mid:'a1',attachments:[{type:'audio',payload:{url:'https://cdn.example/audio.mp4'}}]}},
+      {sender:{id:'c1'},message:{mid:'s1',text:'How much?',reply_to:{story:{url:'https://cdn.example/story.jpg'}}}},
+    ]});
+    assert.equal(events[0].userMedia.url,'https://cdn.example/image.jpg');
+    assert.equal(events[1].userAttachment.kind,'voice');
+    assert.equal(events[2].text,'How much?');
+    assert.equal(events[2].mediaUrl,'https://cdn.example/story.jpg');
+  });
+
+  test('validates Meta webhook signatures with the Instagram app secret', async () => {
+    const secret='instagram-secret', body='{"object":"instagram"}';
+    const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+    const bytes=new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(body)));
+    const signature='sha256='+[...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+    assert.equal(await verifyWebhookSignature(secret,body,signature),true);
+    const wrong=signature.slice(0,7)+(signature[7]==='0'?'1':'0')+signature.slice(8);
+    assert.equal(await verifyWebhookSignature(secret,body,wrong),false);
+  });
+
+  test('subscribes connected accounts to the required messaging webhook fields', async t => {
+    let captured;
+    t.mock.method(global,'fetch',async (url,opts)=>{ captured={url,opts}; return new Response('{"success":true}',{status:200}); });
+    await subscribeInstagramWebhooks('1789','token');
+    assert.match(captured.url,/\/v24\.0\/1789\/subscribed_apps$/);
+    const body=new URLSearchParams(captured.opts.body);
+    assert.ok(body.get('subscribed_fields').split(',').includes('messages'));
+    assert.equal(captured.opts.headers.Authorization,'Bearer token');
+  });
+
+  test('reports Graph API rejection as non-delivery', async t => {
+    t.mock.method(global,'fetch',async ()=>new Response('{"error":{"message":"expired token"}}',{status:400,headers:{'Content-Type':'application/json'}}));
+    assert.equal(await engineSendInstagramReply({}, {ig_id:'business-1',ig_access_token:'bad'}, 'customer-1', 'Hi'),false);
+  });
+});
+
+describe('Healthcare verified-data routing', () => {
+  test('normalizes natural patient wording without losing Unicode text', () => {
+    assert.equal(hcNormalizeText('  Root-Canal / RCT!  '), 'root canal rct');
+    assert.equal(hcNormalizeText('ദന്ത ചികിത്സ'), 'ദന്ത ചികിത്സ');
+  });
+
+  test('choice labels and values come only from saved Service records', () => {
+    const rows=[
+      {id:1,name:'Root Canal Treatment',short_label:'Root Canal'},
+      {id:2,name:'Dental Cleaning',short_label:''},
+      {id:3,name:'Root Canal Treatment',short_label:'Duplicate'},
+    ];
+    assert.deepEqual(hcServiceChoiceItems(rows), [
+      {title:'Root Canal',value:'Root Canal Treatment'},
+      {title:'Dental Cleaning',value:'Dental Cleaning'},
+    ]);
+  });
+
+  test('verified service reply never invents absent price, duration, preparation or link', () => {
+    const text=hcVerifiedServiceText({name:'Dental Checkup',description:'A routine dental examination.',price:0,duration_minutes:0,preparation:'',booking_url:''}, 'how much and how long?');
+    assert.equal(text, '*Dental Checkup*\n\nA routine dental examination.');
+  });
+
+  test('keeps Healthcare booking inside WhatsApp even when an old service link exists', () => {
+    const text=hcVerifiedServiceText({name:'Dental Care',description:'Dental consultation',booking_url:'https://example.com/book'},'Book a dental appointment');
+    assert.doesNotMatch(text,/https?:\/\//);
+    assert.doesNotMatch(text,/Book here:/);
+  });
+
+  test('emergency matcher catches configured phrases but respects simple negation', () => {
+    const settings={emergency_keywords:'chest pain,severe bleeding'};
+    assert.equal(hcEmergencyMatch(settings,'I have severe chest pain'), 'chest pain');
+    assert.equal(hcEmergencyMatch(settings,'I have no chest pain'), null);
+  });
+
+  test('generic words are removed before service matching', () => {
+    assert.deepEqual(hcQueryTokens('Please book a doctor appointment for root canal'), ['root','canal']);
+  });
+
+  test('repairs a missing Healthcare schema once per D1 binding', async () => {
+    const statements=[];
+    const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
+    await hcEnsureOperationsSchema({DB});
+    await hcEnsureOperationsSchema({DB});
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures','booking_sessions']){
+      assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
+    }
+    assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
+  });
+
+  test('converts a clinic wall-clock appointment to the correct UTC instant', () => {
+    assert.equal(new Date(hcAppointmentUtcMs('2026-08-17','12:30','Asia/Dubai')).toISOString(),'2026-08-17T08:30:00.000Z');
+  });
+
+  test('appointment Workflow queues confirmation, 24-hour and 2-hour reminders', async () => {
+    const jobs=[], sleeps=[], dbUpdates=[];
+    const DB={prepare(sql){return {bind(...values){dbUpdates.push({sql,values});return this;},async run(){return {success:true};}};}};
+    const workflow=new HealthcareAppointmentWorkflow({}, {DB,HEALTHCARE_JOBS:{async send(job){jobs.push(job);}}});
+    const started=Date.parse('2026-08-17T00:00:00.000Z'), appointment=started+26*3600000;
+    const step={
+      async do(name,...args){return args.at(-1)();},
+      async sleepUntil(name,when){sleeps.push({name,when:when.toISOString()});}
+    };
+    const result=await workflow.run({payload:{client_id:7,appointment_id:9,appointment_version:'v1',appointment_at_ms:appointment,workflow_started_at_ms:started,reminder_24h_enabled:true,reminder_2h_enabled:true}},step);
+    assert.deepEqual(jobs.map(x=>x.kind),['confirmation','reminder_24h','reminder_2h']);
+    assert.equal(dbUpdates.length,1);
+    assert.match(dbUpdates[0].sql,/workflow_status='complete'/);
+    assert.deepEqual(sleeps.map(x=>x.when),['2026-08-17T02:00:00.000Z','2026-08-18T00:00:00.000Z']);
+    assert.deepEqual(result,{appointment_id:9,status:'reminders_queued'});
+  });
+
+  test('native WhatsApp booking sends its confirmation immediately and Workflow avoids a duplicate', async () => {
+    const jobs=[];
+    const DB={prepare(){return {bind(){return this;},async run(){return {success:true};}};}};
+    const workflow=new HealthcareAppointmentWorkflow({}, {DB,HEALTHCARE_JOBS:{async send(job){jobs.push(job);}}});
+    const step={async do(name,...args){return args.at(-1)();},async sleepUntil(){}};
+    const started=Date.parse('2026-08-17T00:00:00.000Z');
+    await workflow.run({payload:{client_id:7,appointment_id:10,appointment_version:'v2',appointment_at_ms:started+26*3600000,workflow_started_at_ms:started,skip_confirmation:true,reminder_24h_enabled:true,reminder_2h_enabled:true}},step);
+    assert.deepEqual(jobs.map(x=>x.kind),['reminder_24h','reminder_2h']);
+  });
+
+  test('Queue failures retry exponentially and DLQ messages are durably recorded', async () => {
+    const statements=[];
+    const DB={prepare(sql){statements.push(sql);return {bind(){return this;},async run(){return {success:true};},async first(){return null;}};}};
+    const failed={body:{type:'invalid_test_job',client_id:7,appointment_id:9,appointment_version:'v1'},attempts:2,acked:false,retried:null,ack(){this.acked=true;},retry(options){this.retried=options;}};
+    await hcHandleQueueBatch({queue:'leadvyne-healthcare-jobs',messages:[failed]},{DB});
+    assert.equal(failed.acked,false);
+    assert.deepEqual(failed.retried,{delaySeconds:120});
+
+    const dead={body:{type:'appointment_message',client_id:7,appointment_id:9,appointment_version:'v1'},attempts:6,acked:false,ack(){this.acked=true;},retry(){throw new Error('DLQ record should not retry after a successful insert');}};
+    await hcHandleQueueBatch({queue:'leadvyne-healthcare-jobs-dlq',messages:[dead]},{DB});
+    assert.equal(dead.acked,true);
+    assert.ok(statements.some(sql=>sql.includes('INSERT INTO healthcare_queue_failures')));
+  });
+});
+
+describe('Project Queues and Workflows', () => {
+  test('repairs Project automation tables and settings columns once per D1 binding', async () => {
+    const statements=[];
+    const DB={prepare(sql){
+      statements.push(sql);
+      return {async all(){ return sql.includes('PRAGMA table_info')?{results:[{name:'id'}]}:{results:[]}; },async run(){return {success:true};}};
+    }};
+    await pmEnsureAutomationSchema({DB});
+    await pmEnsureAutomationSchema({DB});
+    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN task_reminders_enabled')).length,1);
+    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN overdue_escalation_enabled')).length,1);
+    for(const table of ['task_automation','task_notifications','queue_failures']){
+      assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS pm_${table}`)).length,1,table);
+    }
+  });
+
+  test('converts the task due-day 9 AM in the account timezone to UTC', () => {
+    assert.equal(new Date(pmTaskDueUtcMs('2026-08-20','Asia/Dubai')).toISOString(),'2026-08-20T05:00:00.000Z');
+    assert.equal(new Date(pmTaskDueUtcMs('2026-08-20','Asia/Dubai',1)).toISOString(),'2026-08-21T05:00:00.000Z');
+  });
+
+  test('task Workflow queues 48-hour, due-day and overdue notifications', async () => {
+    const sent=[],sleeps=[],updates=[];
+    const env={
+      PROJECT_JOBS:{async send(job){sent.push(job);}},
+      DB:{prepare(sql){return {bind(...values){updates.push({sql,values});return this;},async run(){return {success:true};}};}}
+    };
+    const workflow=new ProjectTaskWorkflow({},env);
+    const start=Date.parse('2026-08-17T00:00:00Z'),due=Date.parse('2026-08-20T05:00:00Z');
+    const step={async sleepUntil(name,date){sleeps.push({name,date:date.toISOString()});},async do(name,options,fn){return fn();}};
+    const result=await workflow.run({payload:{client_id:7,task_id:11,task_version:'v1',due_at_ms:due,overdue_at_ms:due+86400000,workflow_started_at_ms:start,reminders_enabled:true,overdue_enabled:true}},step);
+    assert.deepEqual(sent.map(x=>x.kind),['reminder_48h','due_today','overdue']);
+    assert.equal(sleeps.length,3);
+    assert.equal(updates.length,1);
+    assert.deepEqual(result,{task_id:11,status:'reminders_queued'});
+  });
+
+  test('Project Queue retries failures exponentially and records DLQ messages', async () => {
+    const statements=[];
+    const DB={prepare(sql){
+      statements.push(sql);
+      return {bind(){return this;},async all(){return sql.includes('PRAGMA table_info')?{results:[{name:'task_reminders_enabled'},{name:'overdue_escalation_enabled'}]}:{results:[]};},async first(){return null;},async run(){return {success:true,meta:{changes:1}};}};
+    }};
+    let delay=0,retried=false,acked=false;
+    await pmHandleQueueBatch({queue:'leadvyne-project-jobs',messages:[{body:{type:'unknown',client_id:1,project_id:2,task_id:3,task_version:'v1'},attempts:3,ack(){acked=true;},retry(o){retried=true;delay=o.delaySeconds;}}]},{DB});
+    assert.equal(acked,false); assert.equal(retried,true); assert.equal(delay,240);
+    await pmHandleQueueBatch({queue:'leadvyne-project-jobs-dlq',messages:[{body:{type:'pm_notification',client_id:1,project_id:2,task_id:3},attempts:6,ack(){acked=true;},retry(){}}]},{DB});
+    assert.equal(acked,true);
+    assert.ok(statements.some(sql=>sql.includes('INSERT INTO pm_queue_failures')));
+  });
+});
 
 describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #5)', () => {
   test('leaves a short title untouched', () => {
@@ -230,5 +549,41 @@ describe('Button/list titles are pinned to English regardless of reply language 
     assert.match(capturedSystemPrompt, /ALWAYS translated into English/i, 'must not let extracted option labels inherit the source reply\'s language');
     assert.doesNotMatch(capturedSystemPrompt, /keep it in the reply's own language/i, 'the old instruction must not come back');
     assert.deepEqual(options, ['Mattress', 'Wooden bed']);
+  });
+});
+
+describe('Ecom communication style is opt-in per client', () => {
+  const state = {};
+
+  test('existing clients with no selection retain the legacy prompt', () => {
+    const c = { main_prompt: 'Be helpful.', services: '[]', kb_summary: '', bot_config: '{}' };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.doesNotMatch(sys, /FASHION ECOM COMMUNICATION STYLE|SHOPIFY \/ GENERAL STORE COMMUNICATION STYLE|FURNITURE & HOME APPLIANCES COMMUNICATION STYLE/);
+  });
+
+  test('selected fashion style adds fashion guidance without weakening catalogue grounding', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '', bot_config: JSON.stringify({ecom_communication_style:'fashion'}) };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.match(sys, /FASHION ECOM COMMUNICATION STYLE/);
+    assert.match(sys, /VERIFIED ECOM PRODUCT DATA/);
+  });
+
+  test('selected furniture style prohibits invented specifications', () => {
+    const c = { main_prompt: '', services: '[]', kb_summary: '', bot_config: JSON.stringify({ecom_communication_style:'furniture_appliances'}) };
+    const sys = engineBuildFaqSystemPrompt(c, state, null, 'ecommerce', 'en', false);
+    assert.match(sys, /FURNITURE & HOME APPLIANCES COMMUNICATION STYLE/);
+    assert.match(sys, /Never invent dimensions, materials, capacity, warranty, compatibility or availability/);
+  });
+});
+
+describe('Fashion ecommerce verified order flow', () => {
+  test('size and colour choices come only from configured Product fields', () => {
+    assert.deepEqual(ecomFashionFieldChoices('S, M / L | XL'),['S','M','L','XL']);
+    assert.deepEqual(ecomFashionFieldChoices('["Black","White","Black"]'),['Black','White']);
+    assert.deepEqual(ecomFashionFieldChoices(''),[]);
+  });
+
+  test('confirmed order item text contains only selected product variants', () => {
+    assert.equal(ecomFashionOrderItems({productName:'Linen Shirt',size:'M',color:'Blue'}),'Linen Shirt | Size: M | Color: Blue');
   });
 });
