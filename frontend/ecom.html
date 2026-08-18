@@ -464,6 +464,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <input class="s-input" id="pmShortLabel" type="text" maxlength="24" placeholder="e.g. Brightening Cream">
         <div class="s-hint">Shown on WhatsApp buttons/lists instead of the full name when the bot offers this product as a tappable choice — useful if the full name is long (e.g. "Glutathione Brightening Combo – Lotion + Cream" → "Brightening Cream"). Leave blank to use the full name, auto-shortened if needed.</div>
       </div>
+      <div class="s-sec">
+        <span class="s-lbl">Choice Options (optional)</span>
+        <input class="s-input" id="pmChoiceOptions" type="text" placeholder="e.g. Red, Blue, Green  or  Small, Medium, Large">
+        <div class="s-hint">Comma-separated options sent as tappable WhatsApp buttons when the bot asks a customer to pick a variant (color, size, pack, etc.) for this product. Leave blank for products with no variant choice to offer.</div>
+      </div>
       <div class="s-sec"><span class="s-lbl">SKU</span><input class="s-input" id="pmSku" type="text"></div>
       <div class="s-sec"><span class="s-lbl">Category</span><select class="s-input" id="pmCategory" onchange="onCategorySelectChange(this);renderPmCrossSell()"></select></div>
       <div class="s-sec">
@@ -717,10 +722,11 @@ const PRODUCT_FIELDS = [
   { key:'stock',       label:'Stock' },
   { key:'status',      label:'Status' },
   { key:'description', label:'Description' },
-  { key:'image_url',   label:'Image Link' },
-  { key:'audio_url',   label:'Audio Note Link' },
-  { key:'video_url',   label:'Video Link' },
-  { key:'pdf_url',     label:'PDF Link' }
+  { key:'image_url',      label:'Image Link' },
+  { key:'audio_url',      label:'Audio Note Link' },
+  { key:'video_url',      label:'Video Link' },
+  { key:'pdf_url',        label:'PDF Link' },
+  { key:'choice_options', label:'Choice Options' }
 ];
 const ORDER_FIELDS = [
   { key:'order_id',         label:'Order ID',      required:true },
@@ -997,7 +1003,7 @@ const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'G
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
 const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -1022,6 +1028,7 @@ function openEditProductModal(id) {
   document.getElementById('pmId').value = p.Id;
   document.getElementById('pmName').value = p.name || '';
   document.getElementById('pmShortLabel').value = p.short_label || '';
+  document.getElementById('pmChoiceOptions').value = p.choice_options || '';
   document.getElementById('pmSku').value = p.sku || '';
   ensureCategoryOptionExists(p.category);
   document.getElementById('pmCategory').value = p.category || '';
@@ -1130,6 +1137,7 @@ async function submitProductForm() {
   const body = {
     name,
     short_label: document.getElementById('pmShortLabel').value.trim(),
+    choice_options: document.getElementById('pmChoiceOptions').value.trim(),
     sku: document.getElementById('pmSku').value.trim(),
     category: document.getElementById('pmCategory').value.trim(),
     style: document.getElementById('pmStyle').value || 'fashion_garments',
