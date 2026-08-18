@@ -874,52 +874,23 @@ if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches && 'Intersecti
 }
 </script>
 <script>
-// Home-page signup form — submits email to POST /signup on the Worker, which creates an
-// Authentik account and sends a setup link. The existing PKCE login flow is untouched.
-async function handleSignupSubmit(e, formId){
+// Home-page signup form — redirects to app.leadvyne.com with the email so the API
+// call happens from there (already in ALLOWED_ORIGINS), avoiding any cross-origin issue.
+function handleSignupSubmit(e, formId){
   e.preventDefault();
   const form=e.target;
   const input=form.querySelector('input[type=email]');
   const btn=form.querySelector('button[type=submit]');
   const msgEl=document.getElementById(formId==='hero'?'heroSignupMsg':'ctaSignupMsg');
   const email=input.value.trim();
+  if(!email) return;
 
   btn.disabled=true;
-  const origLabel=btn.textContent;
-  btn.textContent='Sending…';
-  msgEl.className='signup-msg';
-  msgEl.textContent='';
+  btn.textContent='Redirecting…';
+  msgEl.className='signup-msg ok';
+  msgEl.textContent='Setting up your account…';
 
-  const reset=()=>{ btn.disabled=false; btn.textContent=origLabel; };
-
-  try{
-    const r=await fetch('https://api.leadvyne.com/signup',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({email})
-    });
-    const data=await r.json().catch(()=>({}));
-
-    if(r.status===409){
-      // Account exists — send them straight to sign in
-      msgEl.className='signup-msg ok';
-      msgEl.textContent='Account found! Redirecting to sign in…';
-      setTimeout(()=>window.location.href='https://app.leadvyne.com/dashboard.html', 1400);
-      return;
-    }
-    if(!r.ok||data.error){
-      msgEl.className='signup-msg err';
-      msgEl.textContent=data.error||'Something went wrong. Please try again.';
-      reset(); return;
-    }
-    // Success
-    form.style.display='none';
-    msgEl.className='signup-msg ok';
-    msgEl.textContent='✓ Check your email to set up your account!';
-  }catch(err){
-    msgEl.className='signup-msg err';
-    msgEl.textContent='Network error — please try again.';
-    reset();
-  }
+  window.location.href='https://app.leadvyne.com/dashboard.html?autoSignup=1&email='+encodeURIComponent(email);
 }
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
