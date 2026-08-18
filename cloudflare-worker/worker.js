@@ -6287,7 +6287,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label'];
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -6576,7 +6576,7 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
 // repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
 // stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
 // here is logged and swallowed rather than ever failing the product save itself.
-const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description'];
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options'];
 async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
   if(!env.DB || !clientId || !nocodbId) return;
   try{
