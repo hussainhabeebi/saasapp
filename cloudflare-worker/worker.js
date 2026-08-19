@@ -8095,6 +8095,18 @@ async function engineClaimProductImageForToday(env, clientId, leadId, productId)
   }catch(e){ await reportOpsError(env, 'engineClaimProductImageForToday', e, {clientId, leadId, productId}); return true; }
 }
 
+// Furniture & Home Appliances same-day repeat: pick 2 random images from the product's pool
+// (image_url through image_url_5) and send them instead of the full bundle or nothing.
+async function engineSendRandomTwoProductImages(env, c, clientId, convId, product){
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url, product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(!pool.length) return;
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    for(const url of pool.slice(0,2)) await sendDriveMediaToChatwoot(c, convId, url, '');
+  }catch(e){ await reportOpsError(env, 'engineSendRandomTwoProductImages', e, {clientId, convId}); }
+}
+
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
   if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
@@ -12761,8 +12773,14 @@ async function handleEngineWebhook(request, env, secret){
         // Claimed once per turn, shared by every branch below that might send this product's
         // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
         // why this is gated per (lead, product, calendar day) rather than resent on every repeat
-        // question.
-        const sendProductImage=product ? await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id) : false;
+        // question. For Furniture & Home Appliances the day restriction is lifted: a same-day
+        // repeat sends 2 random product images instead of the full bundle (sendRandomImages path).
+        let sendProductImage=false, sendRandomImages=false;
+        if(product){
+          const claimed=await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id);
+          if(claimed) sendProductImage=true;
+          else if(botConfig.ecom_communication_style==='furniture_appliances') sendRandomImages=true;
+        }
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
@@ -12778,6 +12796,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
           // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
@@ -12800,6 +12819,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           await engineSendHandoverLabel(c, convId);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
@@ -12814,6 +12834,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -12830,6 +12851,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product && !orderHandledInline){
@@ -12848,6 +12870,7 @@ async function handleEngineWebhook(request, env, secret){
           if(sendProductImage&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
           const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
@@ -12879,6 +12902,7 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
           // Primary image is attached above; additional images, audio, video and PDF follow.
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           else{
             routing.route='human';
