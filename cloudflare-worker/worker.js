@@ -18221,6 +18221,50 @@ async function handleEcomDriveFileSize(request, env){
 // unit gets sent, not just the first one that resolves. Shared by both
 // engineMaybeSendHospitalityMedia branches below (a specific unit named, or the whole active
 // catalog on a general enquiry).
+// WhatsApp per-type size caps (bytes). Files outside these limits are silently skipped — Chatwoot
+// forwards the attachment straight to the WhatsApp Cloud API which rejects oversized files, causing
+// the "Failed to send" error visible in the chat UI. Checking here prevents that.
+const WA_MEDIA_LIMITS={'image/jpeg':5242880,'image/jpg':5242880,'image/png':5242880,
+  'image/webp':5242880,'image/gif':5242880,'video/mp4':16777216,'video/3gpp':16777216,'video/3gp':16777216};
+
+// Fetches one hospitality media item (image or video) as a blob, using the same approach the Ecom
+// module uses for product images — Drive images go through the thumbnail API (sz=w1000) which always
+// serves a compressed, size-safe version instead of the full-resolution original. Videos and R2
+// objects continue to use their own fetch paths. Returns null if the item is missing, unsupported
+// type, or exceeds WhatsApp's size limit for that type.
+async function hospitalityFetchMediaBlob(env, url, isVideo){
+  if(!url) return null;
+  let blob=null;
+  const marker='/hospitality/media/';
+  const idx=url.indexOf(marker);
+  if(idx!==-1){
+    // R2-hosted object
+    const key=url.slice(idx+marker.length);
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(obj) blob=await obj.blob();
+  }else if(isVideo){
+    // Video from Drive — need the full file, not a thumbnail
+    const fileId=driveFileId(url);
+    if(fileId){ const fetched=await driveFetchFile(fileId); if(fetched) blob=fetched.blob; }
+  }else{
+    // Image — use ecom-style thumbnail URL for Drive links (compressed, always under 5 MB) or
+    // fetch directly for plain HTTPS URLs (same as engineSendChatwootImageReply does).
+    const directUrl=engineResolveDirectImageUrl(url);
+    if(directUrl){
+      try{
+        const r=await fetch(directUrl);
+        if(r.ok) blob=await r.blob();
+      }catch(e){}
+    }
+  }
+  if(!blob) return null;
+  const mimeType=(blob.type||'').split(';')[0].trim().toLowerCase();
+  const limit=WA_MEDIA_LIMITS[mimeType];
+  // Skip unsupported MIME types and files that exceed WhatsApp's size cap for that type.
+  if(!limit || blob.size>limit) return null;
+  return blob;
+}
+
 // Sends a plain-text message into a Chatwoot conversation — used by resort media sends to deliver
 // description/amenities text ahead of the photo/video burst so the lead reads context before media.
 async function hospitalityChatwootText(c, convId, text){
@@ -18259,13 +18303,13 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
 
 async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   const items=[
-    {url:unit.image_url_1, name:'photo1.jpg'},
-    {url:unit.image_url_2, name:'photo2.jpg'},
-    {url:unit.image_url_3, name:'photo3.jpg'},
-    {url:unit.image_url_4, name:'photo4.jpg'},
-    {url:unit.image_url_5, name:'photo5.jpg'},
-    {url:unit.video_url, name:'video.mp4'},
-    {url:unit.video_url_2, name:'video2.mp4'},
+    {url:unit.image_url_1, name:'photo1.jpg', isVideo:false},
+    {url:unit.image_url_2, name:'photo2.jpg', isVideo:false},
+    {url:unit.image_url_3, name:'photo3.jpg', isVideo:false},
+    {url:unit.image_url_4, name:'photo4.jpg', isVideo:false},
+    {url:unit.image_url_5, name:'photo5.jpg', isVideo:false},
+    {url:unit.video_url, name:'video.mp4', isVideo:true},
+    {url:unit.video_url_2, name:'video2.mp4', isVideo:true},
   ].filter(m=>m.url);
   if(!items.length) return false;
   // For resort units, send description text first so the lead reads context before the media burst.
@@ -18273,28 +18317,16 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
     await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
   }
   let sentAny=false;
-  for(let i=0;i<items.length;i++){
-    let blob=null;
-    const marker='/hospitality/media/';
-    const idx=items[i].url.indexOf(marker);
-    if(idx!==-1){
-      const key=items[i].url.slice(idx+marker.length);
-      const obj=await env.HOSPITALITY_MEDIA.get(key);
-      if(obj) blob=await obj.blob();
-    }else{
-      const fileId=driveFileId(items[i].url);
-      if(fileId){
-        const fetched=await driveFetchFile(fileId);
-        if(fetched) blob=fetched.blob;
-      }
-    }
+  let captionSent=false;
+  for(const item of items){
+    const blob=await hospitalityFetchMediaBlob(env, item.url, item.isVideo);
     if(!blob) continue;
     const fd=new FormData();
-    fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
+    fd.append('content', captionSent?'':`Here's a look at ${unit.name} 📸`);
     fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', blob, items[i].name);
+    fd.append('attachments[]', blob, item.name);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(r.ok) sentAny=true;
+    if(r.ok){ sentAny=true; captionSent=true; }
   }
   if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
@@ -18372,37 +18404,25 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
   if(property.amenities && String(property.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(property.amenities).trim()}`);
   if(descParts.length) await hospitalityChatwootText(c, convId, `*${property.name}*\n\n${descParts.join('\n\n')}`);
   const items=[
-    {url:property.image_url_1, name:'property-photo1.jpg'},
-    {url:property.image_url_2, name:'property-photo2.jpg'},
-    {url:property.image_url_3, name:'property-photo3.jpg'},
-    {url:property.image_url_4, name:'property-photo4.jpg'},
-    {url:property.image_url_5, name:'property-photo5.jpg'},
-    {url:property.video_url_1, name:'property-video1.mp4'},
-    {url:property.video_url_2, name:'property-video2.mp4'},
+    {url:property.image_url_1, name:'property-photo1.jpg', isVideo:false},
+    {url:property.image_url_2, name:'property-photo2.jpg', isVideo:false},
+    {url:property.image_url_3, name:'property-photo3.jpg', isVideo:false},
+    {url:property.image_url_4, name:'property-photo4.jpg', isVideo:false},
+    {url:property.image_url_5, name:'property-photo5.jpg', isVideo:false},
+    {url:property.video_url_1, name:'property-video1.mp4', isVideo:true},
+    {url:property.video_url_2, name:'property-video2.mp4', isVideo:true},
   ].filter(m=>m.url);
   let sentAny=false;
-  for(let i=0;i<items.length;i++){
-    let blob=null;
-    const marker='/hospitality/media/';
-    const idx=items[i].url.indexOf(marker);
-    if(idx!==-1){
-      const key=items[i].url.slice(idx+marker.length);
-      const obj=await env.HOSPITALITY_MEDIA.get(key);
-      if(obj) blob=await obj.blob();
-    }else{
-      const fileId=driveFileId(items[i].url);
-      if(fileId){
-        const fetched=await driveFetchFile(fileId);
-        if(fetched) blob=fetched.blob;
-      }
-    }
+  let captionSent=false;
+  for(const item of items){
+    const blob=await hospitalityFetchMediaBlob(env, item.url, item.isVideo);
     if(!blob) continue;
     const fd=new FormData();
-    fd.append('content', i===0?`Welcome to ${property.name}! 🏨`:'');
+    fd.append('content', captionSent?'':`Welcome to ${property.name}! 🏨`);
     fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', blob, items[i].name);
+    fd.append('attachments[]', blob, item.name);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(r.ok) sentAny=true;
+    if(r.ok){ sentAny=true; captionSent=true; }
   }
   // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
   // specific unit's photos — instead of sending every room's media upfront at once.
