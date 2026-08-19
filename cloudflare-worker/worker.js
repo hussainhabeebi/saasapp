@@ -1868,6 +1868,7 @@ function leadsAudienceWhereClause(clientId, segmentFilter){
   if(Array.isArray(f.tags_any)&&f.tags_any.length){
     clauses.push('('+f.tags_any.map(t=>`(Tags,like,${emailSanitizeFilterValue(t)})`).join('~or')+')');
   }
+  if(f.product_category) clauses.push(`(ProductCategory,eq,${emailSanitizeFilterValue(f.product_category)})`);
   return clauses.join('~and');
 }
 
@@ -6596,6 +6597,7 @@ async function handleEcomCreate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok && data?.Id) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
+  if(kind==='products' && r.ok && data?.Id) await engineMemoryIndexProduct(env, clientId, data);
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6615,6 +6617,10 @@ async function handleEcomUpdate(request, env, kind){
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
   if(kind==='products' && r.ok) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, id, fields);
+  // Merged with `existing` (fetched above, before the PATCH) rather than just `data` — NocoDB's
+  // PATCH response isn't reliably the full row, and re-embedding needs every field regardless of
+  // which ones this particular save actually touched.
+  if(kind==='products' && r.ok) await engineMemoryIndexProduct(env, clientId, {...existing, ...fields, Id:id});
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -6744,6 +6750,7 @@ async function handleEcomCategoryCreate(request, env){
   if(!clientId||!name) return json({error:'client_id and name required'},400);
   const r=await env.DB.prepare(`INSERT INTO ecom_categories (client_id, name, created_at) VALUES (?,?,?)`)
     .bind(Number(clientId), name, new Date().toISOString()).run();
+  await engineMemoryIndexCategory(env, clientId, {id:r.meta.last_row_id, name});
   return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
 }
 async function findEcomCategory(env, id){
@@ -6770,6 +6777,9 @@ async function handleEcomCategoryUpdate(request, env){
   if(!sets.length) return json({ok:true});
   vals.push(id);
   await env.DB.prepare(`UPDATE ecom_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  // Only re-embeds when the name itself changed — a photo-only save has no effect on the embedded
+  // text, so re-indexing then would just burn an embedding call for no reason.
+  if(body.name!==undefined) await engineMemoryIndexCategory(env, clientId, {id, name:String(body.name).trim().slice(0,80)});
   return json({ok:true});
 }
 async function ecomCategoryDeleteAllMedia(env, clientId, categoryId){
@@ -7008,27 +7018,21 @@ async function handleEcomCategoryMediaServe(env, key){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
-   EDUCATION MODULE (migrations/0060-0064)
-   Mirrors the Ecom module structure: NocoDB-backed courses/enrollments + D1-backed categories,
-   promotions (scholarships), and success stories. Client-id-based auth (no session token) —
-   same trust model as /ecom/*. education.html embeds as an iframe in dashboard.html.
+   EDUCATION MODULE (migrations/0060-0065)
+   All education data lives in D1 — courses, enrollments, categories, promotions, stories.
+   Client-id-based auth (no session token) — same trust model as /ecom/*.
+   education.html embeds as an iframe in dashboard.html.
    ════════════════════════════════════════════════════════════════════════════════════════════════ */
 
-const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
-const EDU_CLIENT_WRITE_FIELDS=['edu_table_ids','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
-
-async function eduResolveTable(env, clientId, kind){
-  const r=await env.DB.prepare(`SELECT edu_table_ids FROM clients WHERE Id=?`).bind(Number(clientId)).first();
-  const ids=engineParseJsonField(r?.edu_table_ids,{});
-  return ids[kind]||null;
-}
+const EDU_CLIENT_READ_FIELDS=['Id','client_name','edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
+const EDU_CLIENT_WRITE_FIELDS=['edu_enrollment_link','edu_enrollments_sheet','edu_enrollments_column_map','bot_config'];
 
 async function handleEduClientGet(request, env){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
-  const c=await env.DB.prepare(`SELECT ${EDU_CLIENT_READ_FIELDS.join(',')} FROM clients WHERE Id=?`).bind(Number(clientId)).first();
-  if(!c) return json({error:'Not found'},404);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
   const out={};
   EDU_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
   return json(out);
@@ -7040,90 +7044,165 @@ async function handleEduClientUpdate(request, env){
   if(!clientId) return json({error:'client_id required'},400);
   const fields={};
   EDU_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
-  if(!Object.keys(fields).length) return json({error:'No fields to update'},400);
-  const sets=Object.keys(fields).map(k=>`${k}=?`);
-  const vals=[...Object.values(fields), Number(clientId)];
-  await env.DB.prepare(`UPDATE clients SET ${sets.join(',')} WHERE Id=?`).bind(...vals).run();
-  return json({ok:true});
+  if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
+  const result=await ncPatchVerified(env, clientId, fields);
+  return json(result.data, result.status);
 }
 
-// NocoDB-backed CRUD for courses and enrollments — exact same pattern as handleEcomList/Create/Update/Delete.
-async function handleEduList(request, env, kind){
+/* ── Education Courses (D1-backed, migration 0065) ── */
+const EDU_COURSE_FIELDS=['name','short_label','category','level','duration','start_date','price','currency','seats_available','status','enrollment_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url','description'];
+
+async function handleEduCoursesList(request, env){
   const url=new URL(request.url);
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({list:[]});
   const includeInactive=url.searchParams.get('include_inactive')==='true';
-  const where=includeInactive?`(client_id,eq,${clientId})`:`(client_id,eq,${clientId})~and(status,neq,inactive)`;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${where}&limit=200&sort=-created_at`);
-  const d=await r.json().catch(()=>({list:[]}));
-  return json({list:d.list||[]});
+  const q=includeInactive
+    ?`SELECT * FROM edu_courses WHERE client_id=? ORDER BY created_at DESC`
+    :`SELECT * FROM edu_courses WHERE client_id=? AND status!='inactive' ORDER BY created_at DESC`;
+  const {results}=await env.DB.prepare(q).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 
-async function handleEduCreate(request, env, kind){
+async function handleEduCourseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  if(!clientId) return json({error:'client_id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured — add table ID in Education → Settings'},400);
-  const {client_id:_,...rest}=body;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:[{...rest, client_id:Number(clientId)}]});
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:'NocoDB error', detail:d},502);
-  const created=(Array.isArray(d)?d[0]:d)||{};
-  if(kind==='courses' && created?.Id){
-    const m=created;
-    await env.DB.prepare(`INSERT OR REPLACE INTO edu_courses_mirror (client_id, nocodb_id, name, short_label, category, level, duration, price, currency, seats_available, start_date, status, enrollment_link, image_url, image_url_2, image_url_3, audio_url, video_url, pdf_url, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .bind(Number(clientId), m.Id, m.name||null, m.short_label||null, m.category||null, m.level||null, m.duration||null, m.price||null, m.currency||null, m.seats_available??null, m.start_date||null, m.status||null, m.enrollment_link||null, m.image_url||null, m.image_url_2||null, m.image_url_3||null, m.audio_url||null, m.video_url||null, m.pdf_url||null, m.description||null, new Date().toISOString(), new Date().toISOString()).run().catch(()=>{});
-  }
-  return json(created);
+  const name=String(body.name||'').trim();
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO edu_courses (client_id,name,short_label,category,level,duration,start_date,price,currency,seats_available,status,enrollment_link,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(Number(clientId),name,String(body.short_label||''),String(body.category||''),String(body.level||''),String(body.duration||''),String(body.start_date||''),body.price??null,String(body.currency||'INR'),body.seats_available??null,body.status==='inactive'?'inactive':'active',String(body.enrollment_link||''),String(body.image_url||''),String(body.image_url_2||''),String(body.image_url_3||''),String(body.audio_url||''),String(body.video_url||''),String(body.pdf_url||''),String(body.description||''),now,now).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
 }
 
-async function handleEduUpdate(request, env, kind){
+async function handleEduCourseUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.Id||body.id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured'},400);
-  const ownCheck=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,eq,${id})&fields=Id&limit=1`);
-  const ownData=await ownCheck.json().catch(()=>({list:[]}));
-  if(!(ownData.list||[]).length) return json({error:'Not found'},404);
-  const {client_id:_,...rest}=body;
-  const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:[{...rest, Id:id}]});
-  if(!r.ok) return json({error:'NocoDB error'},502);
-  if(kind==='courses'){
-    const mirrorFields=['name','short_label','category','level','duration','price','currency','seats_available','start_date','status','enrollment_link','image_url','image_url_2','image_url_3','audio_url','video_url','pdf_url','description'];
-    const sets=[], vals=[];
-    mirrorFields.forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
-    sets.push('updated_at=?'); vals.push(new Date().toISOString());
-    vals.push(Number(clientId)); vals.push(id);
-    if(sets.length>1) await env.DB.prepare(`UPDATE edu_courses_mirror SET ${sets.join(',')} WHERE client_id=? AND nocodb_id=?`).bind(...vals).run().catch(()=>{});
-  }
+  const existing=await env.DB.prepare(`SELECT id FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).first();
+  if(!existing) return json({error:'Not found'},404);
+  const sets=[],vals=[];
+  EDU_COURSE_FIELDS.forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id); vals.push(Number(clientId));
+  await env.DB.prepare(`UPDATE edu_courses SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
   return json({ok:true});
 }
 
-async function handleEduDelete(request, env, kind){
+async function handleEduCourseDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const ids=Array.isArray(body.Ids)?body.Ids.map(Number).filter(n=>n>0):(body.Id?[Number(body.Id)]:[]);
-  if(!clientId||!ids.length) return json({error:'client_id and Id required'},400);
-  const tableId=await eduResolveTable(env, clientId, kind);
-  if(!tableId) return json({error:'Table not configured'},400);
-  const ownedR=await ncFetch(env, `api/v2/tables/${tableId}/records?where=(client_id,eq,${clientId})~and(Id,in,${ids.join(',')})&fields=Id&limit=200`);
-  const owned=await ownedR.json().catch(()=>({list:[]}));
-  const ownedIds=(owned.list||[]).map(row=>row.Id);
-  if(!ownedIds.length) return json({deleted:0, requested:ids.length});
-  const CHUNK=40;
-  let deleted=0;
-  for(let i=0;i<ownedIds.length;i+=CHUNK){
-    const chunk=ownedIds.slice(i,i+CHUNK);
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
-    if(r.ok) deleted+=chunk.length;
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  await env.DB.prepare(`DELETE FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).run();
+  return json({ok:true});
+}
+
+/* ── Education Enrollments (D1-backed, migration 0065) ── */
+async function handleEduEnrollmentsList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_enrollments WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleEduEnrollmentCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(Number(clientId),String(body.enrollment_id||''),String(body.enrollment_date||''),String(body.student_name||''),String(body.student_phone||''),String(body.student_email||''),String(body.course||''),body.status||'pending',String(body.notes||''),now,now).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId)});
+}
+
+async function handleEduEnrollmentUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const sets=[],vals=[];
+  ['enrollment_id','enrollment_date','student_name','student_phone','student_email','course','status','notes'].forEach(f=>{ if(f in body){ sets.push(`${f}=?`); vals.push(body[f]!==undefined?body[f]:null); } });
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(new Date().toISOString());
+  vals.push(id); vals.push(Number(clientId));
+  await env.DB.prepare(`UPDATE edu_enrollments SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleEduEnrollmentDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id||body.id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  await env.DB.prepare(`DELETE FROM edu_enrollments WHERE id=? AND client_id=?`).bind(id,Number(clientId)).run();
+  return json({ok:true});
+}
+
+/* ── Education Students (migration 0066) ── */
+async function handleEduStudentSearch(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  const q=String(url.searchParams.get('q')||'').trim();
+  if(!clientId) return json({error:'client_id required'},400);
+  let results;
+  if(q){
+    const like=`%${q}%`;
+    const r=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? AND (phone LIKE ? OR name LIKE ?) ORDER BY name ASC LIMIT 10`).bind(Number(clientId),like,like).all();
+    results=r.results||[];
+  } else {
+    const r=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? ORDER BY name ASC LIMIT 50`).bind(Number(clientId)).all();
+    results=r.results||[];
   }
-  if(kind==='courses' && ownedIds.length) await env.DB.prepare(`DELETE FROM edu_courses_mirror WHERE client_id=? AND nocodb_id IN (${ownedIds.join(',')})`).bind(Number(clientId)).run().catch(()=>{});
-  return json({deleted, requested:ids.length});
+  return json({students:results});
+}
+
+async function handleEduStudentUpsert(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').trim();
+  const name=String(body.name||'').trim();
+  if(!clientId||!phone||!name) return json({error:'client_id, phone and name required'},400);
+  const existing=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? AND phone=?`).bind(Number(clientId),phone).first();
+  if(existing) return json({...existing, created:false});
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(clientId),name,phone,String(body.email||''),String(body.notes||''),now).run();
+  return json({id:r.meta.last_row_id,client_id:Number(clientId),name,phone,email:body.email||'',created:true});
+}
+
+/* ── Atomic Enrollment (migration 0066) ── */
+async function handleEduEnroll(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const studentId=parseInt(body.student_id,10);
+  const courseId=parseInt(body.course_id,10);
+  if(!clientId||!studentId||!courseId) return json({error:'client_id, student_id and course_id required'},400);
+
+  const course=await env.DB.prepare(`SELECT * FROM edu_courses WHERE id=? AND client_id=?`).bind(courseId,Number(clientId)).first();
+  if(!course) return json({error:'Course not found'},404);
+
+  if(course.seats_available!==null && course.seats_available<=0) return json({error:'No seats available for this course'},400);
+
+  const dup=await env.DB.prepare(`SELECT id FROM edu_enrollments WHERE client_id=? AND student_id=? AND course_id=?`).bind(Number(clientId),studentId,courseId).first();
+  if(dup) return json({error:'Student is already enrolled in this course'},409);
+
+  const enrollmentId=`ENR-${Date.now()}-${Math.floor(Math.random()*9000)+1000}`;
+  const now=new Date().toISOString();
+
+  const stmts=[
+    env.DB.prepare(`INSERT INTO edu_enrollments (client_id,student_id,course_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,fee_amount,fee_currency,payment_status,payment_reference,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId),studentId,courseId,enrollmentId,now.slice(0,10),String(body.student_name||''),String(body.student_phone||''),String(body.student_email||''),course.name,body.status||'enrolled',body.fee_amount??null,String(body.fee_currency||'INR'),body.payment_status||'pending',String(body.payment_reference||''),String(body.notes||''),now,now)
+  ];
+  if(course.seats_available!==null){
+    stmts.push(env.DB.prepare(`UPDATE edu_courses SET seats_available=seats_available-1,updated_at=? WHERE id=? AND client_id=? AND seats_available>0`).bind(now,courseId,Number(clientId)));
+  }
+  const results=await env.DB.batch(stmts);
+  return json({ok:true,enrollment_id:enrollmentId,id:results[0].meta.last_row_id});
 }
 
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
@@ -7132,7 +7211,7 @@ async function handleEduCategoriesList(request, env){
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
   const {results}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
-  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+  return json({categories:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 async function handleEduCategoryCreate(request, env){
   const body=await request.json().catch(()=>({}));
@@ -7149,7 +7228,7 @@ async function findEduCategory(env, id){
 async function handleEduCategoryUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7170,7 +7249,7 @@ async function handleEduCategoryUpdate(request, env){
 async function handleEduCategoryDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduCategory(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7212,7 +7291,7 @@ async function handleEduPromotionsList(request, env){
   const clientId=String(url.searchParams.get('client_id')||'');
   if(!clientId) return json({error:'client_id required'},400);
   const {results}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
-  return json({list:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
+  return json({promotions:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
 }
 async function handleEduPromotionCreate(request, env){
   const body=await request.json().catch(()=>({}));
@@ -7233,7 +7312,7 @@ async function findEduPromotion(env, id){ return await env.DB.prepare(`SELECT * 
 async function handleEduPromotionUpdate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduPromotion(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7259,7 +7338,7 @@ async function handleEduPromotionUpdate(request, env){
 async function handleEduPromotionDelete(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
-  const id=parseInt(body.Id,10);
+  const id=parseInt(body.id||body.Id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
   const existing=await findEduPromotion(env, id);
   if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
@@ -7907,6 +7986,18 @@ async function ensureLastProductSkuField(env){
   }catch(e){ console.error('[ecom] ensureLastProductSkuField failed', e.message); }
 }
 
+let _productCategoryFieldEnsured=false;
+async function ensureProductCategoryField(env){
+  if(_productCategoryFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('ProductCategory')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ProductCategory', uidt:'SingleLineText'}});
+    _productCategoryFieldEnsured=true;
+  }catch(e){ console.error('[engine] ensureProductCategoryField failed', e.message); }
+}
+
 // Writes the order a customer just finished dictating in chat (see the order_collect_items/
 // order_collect_address handling in handleEngineWebhook) — the ecom_order_link_enabled==='No'
 // alternative to sending a checkout link at all. Deliberately its own writer rather than reusing
@@ -8077,6 +8168,18 @@ async function engineClaimProductImageForToday(env, clientId, leadId, productId)
       .bind(Number(clientId), leadId, productId, today, new Date().toISOString()).run();
     return !!ins?.meta?.changes;
   }catch(e){ await reportOpsError(env, 'engineClaimProductImageForToday', e, {clientId, leadId, productId}); return true; }
+}
+
+// Furniture & Home Appliances same-day repeat: pick 2 random images from the product's pool
+// (image_url through image_url_5) and send them instead of the full bundle or nothing.
+async function engineSendRandomTwoProductImages(env, c, clientId, convId, product){
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url, product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(!pool.length) return;
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    for(const url of pool.slice(0,2)) await sendDriveMediaToChatwoot(c, convId, url, '');
+  }catch(e){ await reportOpsError(env, 'engineSendRandomTwoProductImages', e, {clientId, convId}); }
 }
 
 async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
@@ -8411,7 +8514,17 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
     ON healthcare_queue_failures(client_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
-    ON healthcare_booking_sessions(expires_at)`
+    ON healthcare_booking_sessions(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(client_id, doctor_id, service_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_doctor
+    ON healthcare_doctor_services(client_id, doctor_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_service
+    ON healthcare_doctor_services(client_id, service_id)`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -8488,7 +8601,10 @@ async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
 export function hcVerifiedServiceText(service,question){
   const lines=[`*${service.name}*`];
   if(service.description)lines.push(service.description);
-  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${service.currency||''} ${service.price}`.trim());
+  if(/price|cost|fee|how much/i.test(question||'')){
+    if(Number(service.price)>0) lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
+    else lines.push('Price: Available on consultation — contact the clinic for exact pricing.');
+  }
   if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
   if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
   // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
@@ -8535,10 +8651,54 @@ async function engineBuildHealthcareContext(env,clientId){
   const strict=hcSettings?.strict_zero_hallucination!==0;
   const lines=[`\n\n## VERIFIED HEALTHCARE DATA${strict?' — ONLY SOURCE OF TRUTH':''}`,`STRICT_ZERO_HALLUCINATION=${strict?'ON':'OFF'}`];
   lines.push(`Never diagnose, prescribe, guarantee insurance coverage, invent availability, price, doctor, treatment, or policy.${strict?' If the requested fact is absent below, say it is not verified and offer clinic-team handover.':''}`);
-  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | '+(s.currency||'')+' '+s.price:''}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
+  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | price: '+(s.currency||'')+' '+s.price:' | price: On consultation (never invent a number — say exactly "on consultation" when asked)'}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
   if(deps.length){lines.push('### Departments');deps.forEach(d=>lines.push(`- ${d.name}${d.description?' | '+d.description:''}`));}
   if(docs.length){lines.push('### Doctors');docs.forEach(d=>lines.push(`- ${d.name}${d.specialization?' | '+d.specialization:''}${d.qualification?' | '+d.qualification:''}${d.experience_years?' | '+d.experience_years+' years':''}${d.consultation_fee?' | consultation fee '+d.consultation_fee:''}${d.description?' | '+d.description:''}`));}
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
+  return lines.join('\n');
+}
+async function engineBuildEduContext(env, clientId){
+  const [courses, categories, promos]=await Promise.all([
+    env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name,description FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
+  ]);
+  const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
+    `STRICT_ZERO_HALLUCINATION=ON`,
+    `Never invent, estimate, or infer any course name, price, duration, level, start date, seats, link, brochure, certificate, scholarship amount, or instructor. Answer ONLY from the data below and the main business prompt. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover.`
+  ];
+  if(categories.length){
+    lines.push('### Course Categories');
+    categories.forEach(cat=>lines.push(`- ${cat.name}${cat.description?' | '+cat.description:''}`));
+  }
+  if(courses.length){
+    lines.push('### Active Courses');
+    courses.forEach(cr=>{
+      const p=[`- ${cr.name}`];
+      if(cr.short_label) p.push(`label: ${cr.short_label}`);
+      if(cr.category) p.push(`category: ${cr.category}`);
+      if(cr.level) p.push(`level: ${cr.level}`);
+      if(cr.duration) p.push(`duration: ${cr.duration}`);
+      if(cr.start_date) p.push(`starts: ${cr.start_date}`);
+      p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
+      if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
+      if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
+      if(cr.pdf_url) p.push(`brochure: ${cr.pdf_url}`);
+      if(cr.description) p.push(cr.description.slice(0,200));
+      lines.push(p.join(' | '));
+    });
+  } else {
+    lines.push('No active courses in the database — answer from the main business prompt only and never invent course details.');
+  }
+  if(promos.length){
+    lines.push('### Active Scholarships / Offers');
+    promos.forEach(pr=>{
+      const p=[`- ${pr.code}`];
+      if(pr.description) p.push(pr.description.slice(0,150));
+      if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
+      lines.push(p.join(' | '));
+    });
+  }
   return lines.join('\n');
 }
 function ecomProductChoiceItems(products){
@@ -8652,59 +8812,11 @@ function ecomStyleAttributeLines(product){
   return lines;
 }
 
-function engineBuildProductEnquirySystemPrompt(c, product, replyLang, checkoutLink, state={}){
-  const lang=replyLang||c.language||'en';
-  const lines=[`Name: ${product.name}`];
-  if(product.sku) lines.push(`SKU: ${product.sku}`);
-  if(product.description) lines.push(`Description (exact Product record text): ${product.description}`);
-  if(product.price) lines.push(`Price: ${product.currency||''} ${product.price}`.trim());
-  if(product.color) lines.push(`Color: ${product.color}`);
-  if(product.size) lines.push(`Size options: ${product.size}`);
-  if(product.category) lines.push(`Category: ${product.category}`);
-  if(product.brand) lines.push(`Brand: ${product.brand}`);
-  if(product.variant) lines.push(`Variant: ${product.variant}`);
-  if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
-  lines.push(...ecomStyleAttributeLines(product));
-  const stockNum=Number(product.stock);
-  lines.push(Number.isFinite(stockNum) && stockNum<=0 ? 'Currently out of stock' : 'In stock');
-  // main_prompt goes first, same as engineBuildFaqSystemPrompt/engineBuildObjectionSystemPrompt/
-  // engineBuildFirstTouchIntro — this was the one reply-generating prompt in the engine that left
-  // it out entirely, so a client's own persona/tone/closing-style instructions had zero effect on
-  // product-enquiry replies specifically, no matter what they wrote in Main Prompt. Every hardcoded
-  // instruction below is phrased the same "Default X — follow this unless the persona/instructions
-  // above specify otherwise" way as the other three prompts, so main_prompt stays authoritative.
-  let sys=c.main_prompt||'';
-  sys+=`\n\nYou are replying to a customer asking about one specific product. The verified Ecom Product record below is the ONLY source of truth for every product fact:\n${lines.join('\n')}`;
-  sys+='\n\nZERO-HALLUCINATION PRODUCT LOCK: Use only values explicitly present in the verified Product record above. Never use general knowledge, assumptions, likely specifications, the product name, the client persona, or previous conversation to invent or infer a product fact, benefit, compatibility, availability, variant, price, stock, warranty, ingredient, result, or URL. The client main prompt controls tone only; it is not product data. If the customer asks for a detail that is missing, say that detail is not available and offer human confirmation. Never claim that an unavailable field exists.';
-  sys+='\n\nAnswer only what the customer actually asked — do not recite every field above like a spec sheet. Default style (follow this unless the persona/instructions above specify a different tone, reply length, or closing style — in that case, follow those instead): do not mention the price unless the customer\'s message is about price/cost, or you genuinely need it to answer their question. Keep your reply conversational and to the point, not a paragraph — but a short question is never a reason to leave out the actual fact/detail being asked for (price, size, stock, etc.); a brief reply that skips the real answer is worse than a slightly longer one that actually answers it. Sound like a real person texting a quick reply, not a scripted sales pitch — natural and warm, no corporate phrasing, no more than one emoji. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
-  // Recent Conversation/summary — same pattern as engineBuildFaqSystemPrompt/
-  // engineBuildObjectionSystemPrompt (see engineSummaryBlock). This prompt used to build the exact
-  // same reply from scratch every single turn with zero memory of anything already said — real
-  // observed failure: the bot described a product in full, asked "would you like to know about the
-  // pack options and pricing?", the customer said "yes", and got the identical opening description
-  // sent right back instead of an answer to what it had just itself asked.
-  const enquiryHistory=state.activeHistory||[];
-  sys+=engineSummaryBlock(state);
-  if(enquiryHistory.length) sys+='\n\n## Recent Conversation\n'+enquiryHistory.slice(-20).map(m=>m.role+': '+m.content).join('\n');
-  sys+='\n\nDo not repeat something you already said in Recent Conversation above. If the customer\'s message is short or generic ("yes", "ok", "sure", "tell me more") figure out from Recent Conversation exactly what they\'re responding to (e.g. if your last message asked "would you like to know about pack options and pricing?", answer that now — the actual options and prices — not the product description again).';
-  sys+='\n\nDefault approach (follow this unless the persona/instructions above specify otherwise): when you have a genuinely useful next detail to share (price, what\'s included, a real benefit relevant to what they asked), just share it as part of your answer instead of teasing it behind another "would you like to know more?"-style question — that just makes the customer say "yes" again to get information they already asked for. Frame the product as the answer to what they\'re looking for, not a spec sheet. Only ask a real clarifying question when something is genuinely ambiguous and needed to move forward (e.g. which size/color/quantity), not as a routine way to keep the conversation going.';
-  // Opt-in per client (Ecommerce → Settings → "Share order link on product questions",
-  // ecom_link_on_enquiry) — the default product behavior deliberately withholds the checkout link
-  // until real order intent (see the routing comment at this prompt's call site), but a client can
-  // choose to share it earlier, e.g. as soon as a customer asks about size/stock and sounds ready to
-  // move forward. Framed as available-if-natural, not forced into every reply, so a customer who
-  // only asked "is this in stock" doesn't get an unsolicited checkout link shoved at them.
-  if(checkoutLink){
-    sys+=`\n\nYou may also share this checkout link if it naturally helps answer their question or they seem ready to move forward (for example, right after confirming their size or stock is available) — not forced into every reply, only when it fits: ${checkoutLink}`;
-  }else{
-    // No link was configured for this product — explicit guardrail against the model inventing
-    // one anyway (e.g. a plausible-looking store/product URL guessed from the product name), which
-    // is exactly the kind of hallucinated link a customer could click and land nowhere real.
-    sys+='\n\nNo order/checkout link is available for this product right now — never invent, guess, or make up a URL of any kind (not a store link, not a product link, nothing built from the product name). If the customer asks for a link, tell them you\'ll have the team follow up, or ask what they\'d like to order so it can be arranged — do not output anything that looks like a URL.';
-  }
-  sys+=`\n\nRespond ONLY in ${lang}. Never switch languages.`;
-  return sys;
-}
+// engineBuildProductEnquirySystemPrompt (LLM-generated product-enquiry replies) was removed here —
+// its one call site (the `detection.mode==='enquiry' && product` branch in handleEngineWebhook) now
+// renders directly from the verified Ecom Product record instead (see that branch's own comment):
+// a stronger anti-hallucination guarantee than any prompt instruction, since there's no LLM call in
+// that path left to hallucinate in the first place.
 
 // `product` is optional (a general FAQ/objection reply has no specific product in view) — when
 // given, its own shopify_product_url/product_link win over the client-wide external_store_link,
@@ -9688,6 +9800,7 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
   const activeHistory=history.length>20?history.slice(-20):history;
   let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  let customerFacts=[]; try{ customerFacts=JSON.parse(lead?.['Customer Facts']||'[]'); }catch(e){}
   return {
     lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
     qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
@@ -9702,7 +9815,10 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
     // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
     // before that cap. Empty for the vast majority of leads (most conversations never cross 40
     // turns at all), so this stays a no-op read for them.
-    summary:lead?.ConvSummary||''
+    summary:lead?.ConvSummary||'',
+    // See engineMaybeExtractCustomerFacts — durable preferences/constraints, kept up to date every
+    // few turns from early in the conversation, not gated behind the 40-turn ConvSummary threshold.
+    customerFacts
   };
 }
 
@@ -9826,7 +9942,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
   // deterministic lookup, validated against the real configured stage ids below before use.
   const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
-  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
@@ -9920,7 +10036,8 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // only write it onto the lead when non-blank (see engineBuildLeadUpsertBody), same "sparse
   // signal, never overwrite with blank" treatment as LastObjectionCategory.
   const productInterest=typeof aiResult?.product_interest==='string'?aiResult.product_interest.trim().slice(0,120):'';
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest};
+  const productCategory=typeof aiResult?.product_category==='string'?aiResult.product_category.trim().slice(0,60):'';
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -9956,12 +10073,12 @@ export function engineHandoverCannedTexts(botConfig){
 }
 
 export function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
-  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:true, isResub:false};
-  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:true};
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:true};
 
   const botConfig=engineParseJsonField(c.bot_config, {});
   const qualQuestions=engineParseJsonField(c.qual_questions, []);
@@ -10114,7 +10231,7 @@ export function engineRouteFlow(c, state, userText, cls){
   // behavior along with it. This is purely additive: the loop was already detected and already
   // forced effIntent to WANTS_HUMAN above, this just tells the caller it happened.
   const loopDetected=isRealLoop && botConfig.antiloop_enabled!==false;
-  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason, loopDetected};
+  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:false, humanReason, loopDetected};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -10292,7 +10409,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   if(contextBlock) sys+=contextBlock;
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
-    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover.';
+    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
   }
   if(industry==='ecommerce'){
     sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
@@ -10306,11 +10423,47 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
   if(industry==='education'){
-    sys+='\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general answers. Use VERIFIED COURSE DATA only for course facts. Never invent or infer a course name, category, level, price, duration, start date, seats, media, PDF or enrollment link. If a requested fact is absent, say it is not verified and offer staff handover.';
+    sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general questions. Use VERIFIED COURSE DATA (injected above) for all course facts. Never invent or infer a course name, category, fee, duration, level, start date, seats, enrollment link, brochure, certificate, scholarship amount, or instructor. Never list courses or scholarships that are not in VERIFIED COURSE DATA. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover — never guess or estimate.
+
+EDUCATION RULES — apply to EVERY reply without exception:
+
+DATA ACCURACY:
+• Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
+• Never invent or infer any detail not explicitly in your data.
+• If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+
+FORMAT — every single reply must follow this structure:
+• Write in short bullet points (•) only — NO long paragraphs, ever.
+• Each bullet = one fact or one action, max 15 words.
+• Lead every bullet with a matching emoji:
+  📚 course name  🗓 date/schedule  💰 fee/price  🎯 level  ⏱ duration
+  🪑 seats left  📄 brochure/syllabus  🔗 link  ✅ available  ❌ not available
+  🏆 outcome/certificate  👨‍🏫 instructor  📍 location/mode  🎁 scholarship/offer
+
+BUTTONS — mandatory after EVERY reply:
+• Always end with a row of tappable choice buttons — never skip this.
+• Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
+  — After greeting / general query:       [Browse Courses] [Talk to Advisor] [About Us]
+  — After listing courses:                [Enroll Now] [Get Brochure] [Schedule a Call]
+  — After sharing one course detail:      [Enroll Now] [Download Syllabus] [Ask a Question]
+  — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
+  — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
+  — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
+• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
-      higher_education:'HIGHER EDUCATION COMMUNICATION STYLE: Sound professional, supportive and outcomes-focused. Guide discovery in this order when applicable: programme area, entry requirements or level, then verified matching courses. Emphasise academic credibility, career pathways and verified course facts. Never invent qualifications, accreditations, entry criteria or scholarship amounts.',
-      courses_online:'COURSES / ONLINE LEARNING COMMUNICATION STYLE: Sound encouraging, practical and results-oriented. Guide discovery in this order when applicable: topic or skill area, level, then verified matching courses. Emphasise flexibility, self-paced learning and verified course outcomes. Never invent module counts, platform features, completion guarantees or pricing.'
+      higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
+• Tone: professional, supportive, outcomes-focused — like a university admissions advisor.
+• Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
+• Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
+• Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
+• Preferred button set: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]`,
+      courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
+• Tone: encouraging, energetic, results-driven — like a personal learning coach.
+• Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
+• Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
+• Never invent module counts, platform features, completion guarantees or discount amounts.
+• Preferred button set: [Enroll Now] [Watch Free Preview] [Get Syllabus] [Chat with Advisor]`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
@@ -10325,7 +10478,13 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   // to resolve against (see the instruction below), and a returning customer's earlier stated
   // preferences should still be visible several turns later, not just the last couple of messages.
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
+  sys+=engineMemoryBlock(state);
+  // Hospitality: inject the selected unit so the LLM has booking/availability context
+  const hospSelectedUnit=state.lead?.HospSelectedUnit;
+  if(hospSelectedUnit) sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
   // package catalog), the model didn't just say it would connect the customer with support — it
@@ -10381,6 +10540,11 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     // actually support. Only the whole product's `stock` count is real; there is no per-size
     // number to check.
     sys+=' A product\'s size field lists every size it is made in — never claim a size listed there is out of stock or unavailable; only the product\'s overall stock count (available vs. not) is real data you have. If stock is 0 or the product genuinely is not in the catalog, say that honestly instead of guessing.';
+    // General companion to the size/stock and link guardrails above — those close two specific
+    // observed failures, this closes the broader pattern: any product attribute not literally in
+    // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
+    // certification) is not real data, even if it sounds plausible for the category.
+    sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
@@ -10452,6 +10616,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
       : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
   }
   sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
@@ -10516,25 +10681,55 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
   return 'One moment 🙏';
 }
 
-// Deterministic backstop against a reply-generating LLM call regenerating essentially the same
-// message it just sent — engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7
-// threshold) can only ever catch this AFTER it's already happened twice (it looks backward at
-// history at the START of a turn, so it has no way to stop THIS turn's fresh reply from becoming
-// the second half of that very pair) — and the "don't repeat yourself" instructions already
-// baked into engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt are a request, not
-// a guarantee (real recurring observed failure, Wellness Virtue: a "yes"/"ok" to "would you like
-// to know more?" kept getting essentially the same pitch/question back despite that instruction
-// already being in the prompt). This checks the actual generated text before it goes out and
-// forces exactly one retry, with an explicit instruction quoting the rejected duplicate, only
-// when the model has demonstrably disregarded the softer version already in systemPrompt — fully
-// fail-open: any retry failure just falls back to the original (possibly-repetitive) reply rather
-// than blocking the customer's message.
-async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg){
+// Finds a URL in `replyText` that isn't one of the real links the model was actually handed this
+// turn — `allowedLinks` (e.g. the enquiry/checkout link, a product's own configured links, the
+// client's catalog order link). Real observed failure (Wellness Virtue): asked to share a
+// product's checkout link when none was actually configured on that product, the model invented a
+// plausible-looking Shopify collection URL out of thin air ("https://thevirtues.in/collections/
+// glutathione-collection") instead of saying it didn't have one — despite engineBuildFaqSystemPrompt
+// already carrying an explicit "never invent a link" instruction, the same class of "instruction
+// isn't a guarantee" gap engineCallLlmAvoidingRepeat exists to close for repeats. A returned URL
+// counts as allowed if it exactly matches, or is a prefix/suffix match of, one of allowedLinks —
+// tolerates trailing slashes/punctuation without requiring byte-exact equality.
+export function engineFindHallucinatedLink(replyText, allowedLinks){
+  const urls=(replyText.match(/https?:\/\/[^\s)\]]+/g))||[];
+  for(const raw of urls){
+    const url=raw.replace(/[.,;:!?]+$/,'');
+    if(!allowedLinks.some(a=>a && (url===a || url.startsWith(a) || a.startsWith(url)))) return url;
+  }
+  return null;
+}
+
+// Deterministic backstop against a reply-generating LLM call (a) regenerating essentially the same
+// message it just sent, and (b) inventing a link that was never actually given to it — both are
+// cases where a "don't do this" instruction already baked into
+// engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt is a request, not a guarantee.
+// engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7 threshold) can only ever catch
+// case (a) AFTER it's already happened twice (it looks backward at history at the START of a
+// turn, so it has no way to stop THIS turn's fresh reply from becoming the second half of that
+// very pair) — nothing existed to catch (b) at all. This checks the actual generated text before
+// it goes out and forces at most one retry, with an explicit instruction addressing whichever
+// problem(s) were found, quoting the specific rejected text. `allowedLinks` is optional — omit it
+// (or pass undefined) to skip the link check entirely, same behavior as before this existed;
+// pass `[]` explicitly to mean "no link is legitimate at all this turn." Fully fail-open: if the
+// retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
+// knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks){
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
-  if(!lastBotMsg || !reply || engineTextSimilarity(reply, lastBotMsg)<0.7) return reply;
-  const retryPrompt=systemPrompt+`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
-  const retryReply=await engineCallLlm(env, c, retryPrompt, userText, maxTokens);
-  return retryReply || reply;
+  if(!reply) return reply;
+  const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
+  const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
+  if(!isRepeat && !badLink) return reply;
+  let correction='';
+  if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
+  if(badLink){
+    const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
+    correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
+  }
+  const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
+  if(!retryReply) return reply;
+  const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
+  return retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
 }
 
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
@@ -10544,6 +10739,173 @@ async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTo
 // reads in actual chronological order: summary of what came before, then the recent turns.
 function engineSummaryBlock(state){
   return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
+}
+
+// See engineMaybeExtractCustomerFacts — same "shared by every reply-generating prompt" pairing as
+// engineSummaryBlock above, placed right alongside it everywhere it's used.
+function engineCustomerFactsBlock(state){
+  return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+}
+
+// ── Semantic memory (Tier 2 — SETUP.md "Semantic memory") ──────────────────────────────────────
+// Distinct from Customer Facts above (a short curated list a human would just remember) — this is
+// for pulling back SPECIFIC old context (a particular past exchange, a particular product) by
+// actual relevance to what's being asked right now, via embeddings + Cloudflare Vectorize
+// (MEMORY_INDEX binding, wrangler.toml — requires a one-time `wrangler vectorize create` plus two
+// `create-metadata-index` calls before this does anything useful; see wrangler.toml's own comment
+// and SETUP.md). Every function below checks env.MEMORY_INDEX exists and fails open (returns
+// null/[]/no-op, never throws) so a deployment that hasn't run that setup, or any live API hiccup,
+// degrades straight back to Tier 1 behavior instead of breaking a reply. This is the first use of
+// Vectorize/embeddings anywhere in this file — treat the exact request/response shapes below as
+// worth re-verifying against Cloudflare's current docs before trusting in production, same caveat
+// already flagged for the WhatsApp Business Profile Resumable Upload API elsewhere in this file.
+//
+// Embeddings via the Gemini Generative Language API's text-embedding-004 model (768 dimensions) —
+// reuses the same shared GEMINI_API_KEY already configured for the intent classifier/voice
+// transcription, no separate credential to provision.
+async function engineEmbedText(env, text){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
+    });
+    const data=await r.json().catch(()=>({}));
+    return Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+  }catch(e){ return null; }
+}
+
+// Embeds `text` and stores it — D1 (migrations/0056_memory_chunks.sql) for the full text, Vectorize
+// for the vector — under a fresh UUID shared between both. Every indexing function below
+// (product/category/conversation) funnels through this one write path.
+async function engineMemoryUpsert(env, {clientId, leadId, kind, refId, text}){
+  if(!env.MEMORY_INDEX || !env.DB || !text) return;
+  try{
+    const values=await engineEmbedText(env, text);
+    if(!values) return;
+    const id=crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO memory_chunks (id, client_id, lead_id, kind, ref_id, text, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(id, Number(clientId), leadId?Number(leadId):null, kind, refId?String(refId):null, String(text).slice(0,2000), new Date().toISOString()).run();
+    await env.MEMORY_INDEX.upsert([{id, values, metadata:{client_id:Number(clientId), kind}}]);
+  }catch(e){ console.error('[engineMemoryUpsert] failed', kind, e.message); }
+}
+
+// Called from handleEcomCreate/handleEcomUpdate (kind==='products') right after a successful save
+// — see those call sites.
+async function engineMemoryIndexProduct(env, clientId, product){
+  if(!product?.name) return;
+  const parts=[product.name];
+  if(product.category) parts.push('Category: '+product.category);
+  if(product.description) parts.push(product.description);
+  parts.push(...ecomStyleAttributeLines(product));
+  await engineMemoryUpsert(env, {clientId, kind:'product', refId:product.Id||product.id, text:parts.filter(Boolean).join('. ')});
+}
+
+// Called from handleEcomCategoryCreate/handleEcomCategoryUpdate right after a successful save.
+async function engineMemoryIndexCategory(env, clientId, category){
+  if(!category?.name) return;
+  await engineMemoryUpsert(env, {clientId, kind:'category', refId:category.id||category.Id, text:'Category: '+category.name});
+}
+
+// Called alongside engineMaybeSummarizeHistory/engineMaybeExtractCustomerFacts at the lead-upsert
+// step (both WhatsApp and Instagram handlers) — unlike those two, this runs every turn rather than
+// on a cadence, since fine-grained per-exchange recall is the entire point of this tier (a periodic
+// rollup would defeat it).
+async function engineMemoryIndexConversationTurn(env, clientId, leadId, userText, botText){
+  if(!userText && !botText) return;
+  const text=`Customer: ${userText||''}\nBot: ${botText||''}`.trim();
+  await engineMemoryUpsert(env, {clientId, leadId, kind:'conversation', text});
+}
+
+// Retrieves the topK most relevant chunks to `queryText` for this client — 'conversation' results
+// are further filtered to this specific lead (a client-wide product/category chunk is fair game for
+// every customer, but one customer's past messages are not relevant context for a different one).
+// Requires the `client_id` and `kind` metadata indexes to exist (wrangler.toml one-time setup) —
+// without them Vectorize's own `.query()` call throws, caught here and treated as "no results".
+async function engineMemoryRetrieve(env, clientId, leadId, queryText, {kinds=['conversation','product','category'], topK=5}={}){
+  if(!env.MEMORY_INDEX || !env.DB || !queryText) return [];
+  try{
+    const values=await engineEmbedText(env, queryText);
+    if(!values) return [];
+    const scored=[];
+    for(const kind of kinds){
+      const matches=await env.MEMORY_INDEX.query(values, {topK:topK*2, filter:{client_id:Number(clientId), kind}});
+      for(const m of (matches?.matches||[])) scored.push({id:m.id, score:m.score, kind});
+    }
+    if(!scored.length) return [];
+    scored.sort((a,b)=>b.score-a.score);
+    const ids=scored.map(s=>s.id).slice(0, topK*3);
+    if(!ids.length) return [];
+    const placeholders=ids.map(()=>'?').join(',');
+    const {results:rows}=await env.DB.prepare(`SELECT id, lead_id, kind, text FROM memory_chunks WHERE id IN (${placeholders})`).bind(...ids).all();
+    const byId=new Map((rows||[]).map(r=>[r.id, r]));
+    const chunks=[];
+    for(const s of scored){
+      const row=byId.get(s.id);
+      if(!row) continue;
+      if(row.kind==='conversation' && String(row.lead_id)!==String(leadId)) continue;
+      chunks.push({kind:row.kind, text:row.text, score:s.score});
+      if(chunks.length>=topK) break;
+    }
+    return chunks;
+  }catch(e){ console.error('[engineMemoryRetrieve] failed', e.message); return []; }
+}
+
+// Shared by every reply-generating prompt that opts into semantic memory (see state.memoryChunks,
+// set by the caller right before building the system prompt — same pattern as
+// state.customerFacts/state.summary).
+function engineMemoryBlock(state){
+  const chunks=state.memoryChunks;
+  if(!chunks?.length) return '';
+  const byKind={conversation:[], product:[], category:[]};
+  chunks.forEach(c=>{ if(byKind[c.kind]) byKind[c.kind].push(c.text); });
+  const lines=[];
+  if(byKind.conversation.length) lines.push('### Relevant past exchanges with this customer\n'+byKind.conversation.map(t=>'- '+t.replace(/\n/g,' ')).join('\n'));
+  if(byKind.product.length) lines.push('### Possibly relevant products\n'+byKind.product.map(t=>'- '+t).join('\n'));
+  if(byKind.category.length) lines.push('### Possibly relevant categories\n'+byKind.category.map(t=>'- '+t).join('\n'));
+  return lines.length?`\n\n## Semantic Memory (may or may not be relevant — use only what actually applies, ignore the rest)\n${lines.join('\n\n')}`:'';
+}
+
+// Backfills existing catalog items into semantic memory for a client who had products/categories
+// before this feature shipped — indexing otherwise only happens going forward, on create/update.
+// Deliberately NOT run inline during a live customer reply (this Worker's fetch handler has no
+// ctx.waitUntil — see engineMaybeSummarizeHistory's neighboring functions for the same constraint
+// — so anything run inline is fully awaited and would add real latency to whichever customer's
+// message happened to trigger it first); instead piggybacked on the existing daily 2am cron sweep
+// (see the scheduled() handler) alongside runDailyHealthCheckForAllClients and friends. Capped at
+// 60 products / 30 categories per client per run so a huge catalog can't make one cron tick run
+// long; a client above that cap just backfills the rest on the next day's tick (the COUNT(*) check
+// only skips a client once memory_chunks already has ANY product/category rows for them, so this
+// naturally continues rather than silently topping out at the cap forever — see the loop in
+// runMemoryBackfillForAllClients below).
+async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
+  if(!env.MEMORY_INDEX || !env.DB) return;
+  try{
+    const existing=await env.DB.prepare(`SELECT COUNT(*) as n FROM memory_chunks WHERE client_id=? AND kind IN ('product','category')`).bind(Number(clientId)).first();
+    if(existing?.n>0) return;
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=60`);
+      const pd=await pr.json().catch(()=>({}));
+      for(const p of (pd?.list||[])) await engineMemoryIndexProduct(env, clientId, p);
+    }
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? LIMIT 30`).bind(Number(clientId)).all();
+    for(const cat of (categories||[])) await engineMemoryIndexCategory(env, clientId, cat);
+  }catch(e){ console.error('[engineMemoryBackfillCatalogIfNeeded] failed', clientId, e.message); }
+}
+
+// Daily cron entry point (scheduled() handler, "0 2 * * *" tick) — every ecommerce client with an
+// OpenRouter key (a reasonable proxy for "actively using the engine") gets one backfill check.
+async function runMemoryBackfillForAllClients(env){
+  if(!env.MEMORY_INDEX) return;
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const d=await r.json().catch(()=>({}));
+    for(const c of (d?.list||[])){
+      if(!c.openrouter_key) continue;
+      await engineMemoryBackfillCatalogIfNeeded(env, c.Id);
+    }
+  }catch(e){ console.error('[runMemoryBackfillForAllClients] failed', e.message); }
 }
 
 // Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
@@ -10570,6 +10932,36 @@ async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
   // already makes internally.
   await ensureLeadsColumns(env, ['ConvSummary']);
   return summary;
+}
+
+// Durable "what we know about this customer" — distinct from ConvSummary above, which only exists
+// to cover for the 40-turn ConvHistory cap and so never runs on the vast majority of real
+// conversations (most never reach 40 messages). Facts a human rep would just remember — stated
+// preferences (size/color/style/budget), constraints (allergies, must-haves, deal-breakers),
+// preferred language/communication style — are usually said once, early, and are worth recalling
+// from message 5 onward, not just once a conversation has gotten unusually long. Runs every
+// ENGINE_FACTS_EVERY_N_TURNS turns starting almost immediately (see the length<4 floor below, not
+// gated behind the 40-turn ConvSummary threshold), each time re-reading the last 20 messages and
+// merging with whatever was already extracted — so a stated fact survives even after the raw
+// message that stated it ages out of the "Recent Conversation" window, and a later contradiction
+// ("actually I don't want that color anymore") can update/drop it instead of both facts coexisting
+// forever. Persists on the same lead row as ConvSummary/ConvHistory, so it survives a Resolve/
+// Reopen cycle or an opt-out/resub (neither clears ConvHistory or this) — the closest thing this
+// data model has to "the relationship continues even across separate conversation sessions."
+const ENGINE_FACTS_EVERY_N_TURNS=6;
+async function engineMaybeExtractCustomerFacts(env, c, fullHistory, priorFactsJson){
+  if(fullHistory.length<4 || fullHistory.length%ENGINE_FACTS_EVERY_N_TURNS!==0) return null;
+  let priorFacts=[]; try{ priorFacts=JSON.parse(priorFactsJson||'[]'); }catch(e){}
+  const recentSlice=fullHistory.slice(-20);
+  const transcript=recentSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Extract durable facts about this customer from the WhatsApp conversation below — things worth remembering for future replies, not one-off details that only matter for the current message. Examples of what counts: stated preferences (color/size/style/budget), constraints (allergies, must-haves, deal-breakers), preferred language or communication style, anything they explicitly told you to remember. Examples of what does NOT count: "asked about pricing just now", "said hello" — routine turns, not standing facts.${priorFacts.length?` You already know this about them: ${JSON.stringify(priorFacts)} — update or drop any of these the conversation below contradicts, keep the rest, add anything new. Return the full updated list, not just what's new.`:''} Respond with ONLY a JSON array of short fact strings (max 10), e.g. ["Prefers Malayalam","Budget around ₹2000","Has sensitive skin"]. Empty array if nothing durable was said.`;
+  const raw=await engineCallLlm(env, c, system, transcript, 200);
+  let facts=null; try{ facts=JSON.parse(raw); }catch(e){}
+  if(!Array.isArray(facts)) return null;
+  const merged=facts.filter(f=>typeof f==='string' && f.trim()).slice(0,10);
+  if(!merged.length && !priorFacts.length) return null;
+  await ensureLeadsColumns(env, ['Customer Facts']);
+  return JSON.stringify(merged);
 }
 
 // flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
@@ -11203,7 +11595,14 @@ async function engineTtsWithFallback(env, text, langCode, provider){
   const mode=(provider||'').toLowerCase();
   if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
   if(mode==='piper') return enginePiperTts(env, text, iso);
-  if(mode==='ai4bharat') return engineAi4BharatTts(env, text, iso);
+  if(mode==='ai4bharat'){
+    const ai4bharatBuf=await engineAi4BharatTts(env, text, iso);
+    if(ai4bharatBuf) return ai4bharatBuf;
+    // AI4Bharat failed (render pipeline unavailable / AI4BHARAT_TTS_ENABLED not set) — fall back
+    // to Sarvam so the customer still gets a voice reply instead of silently downgrading to text.
+    if(bcp47) return engineSarvamTts(env, text, bcp47);
+    return null;
+  }
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
     if(sarvamBuf) return sarvamBuf;
@@ -11800,7 +12199,7 @@ async function handleReferralsReward(request, env){
 // engineClaimMessage ran (state.leadId itself is no longer reliable for that by this point — a
 // brand-new lead may already have a stub row and leadId from the claim).
 function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead){
-  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, isOptOut, isResub}=routing;
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, productCategory, isOptOut, isResub}=routing;
   const reply=routing.reply;
   let next=routeNext;
   const isHuman=routing.route==='human';
@@ -11910,6 +12309,13 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // pointed to something specific, so a lead's last-known brand/category/product interest survives
   // in-between messages ("yes", "ok") that have nothing new to add.
   if(productInterest) body.InterestedProduct=productInterest;
+  // Prefer ecom catalog-matched category (validated against live catalog) over classifier free-text,
+  // but fall back to classifier when no catalog match. Both are sparse-signal writes.
+  const resolvedProductCategory=routing.matchedCategory||productCategory;
+  if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
+  // Catalog-matched brand (ecom only; only written when the classifier confidently matched a
+  // catalog brand entry alongside a category — never set from free-text guess alone).
+  if(routing.matchedBrand) body.Brand=routing.matchedBrand;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
@@ -12379,9 +12785,11 @@ async function handleEngineWebhook(request, env, secret){
             sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
             routing.reply=sentText;
             if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:doctor.image_url||null});
+            // Send image first (no caption), then doctor bio + "📅 Book Appointment" button together
+            // so the action button is visually attached to the bio text, not buried after extra media.
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
             await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book an appointment?',[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`}]);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
             orderHandledInline=true;
           }else{
             const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
@@ -12451,10 +12859,13 @@ async function handleEngineWebhook(request, env, secret){
       // Fashion greeting is prompt-led, but navigation is database-led. A configured category
       // image is sent as the visual header; every button is an exact category from active Ecom
       // Products. Other Ecom styles keep the existing greeting path.
-      if(isFashionEcom&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+      if(isFashionEcom&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
         const categories=await ecomListCategories(env,clientId);
         if(categories.length){
-          const intro=await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang);
+          // New leads get the personalised first-touch intro; returning customers get a simpler prompt
+          const intro=isNewLead
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
           // Send each category's image in sequence before presenting the category buttons
           let anySent=false;
           for(const category of categories){
@@ -12490,21 +12901,36 @@ async function handleEngineWebhook(request, env, secret){
         // active products. The same exact rows are included in the message body and interactive
         // picker, so a provider-side button failure can never leave only a dead-end instruction.
         const categories=await ecomListCategories(env, clientId);
-        const productChoices=broadMatches.length?broadMatches:activeProducts;
-        const items=ecomAvailableCatalogueItems(categories,productChoices);
-        if(items.length){
-          const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
-          const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
-          const categoryLines=[],productLines=[];
-          for(const item of items){
-            const line=`- ${item.title}`;
-            if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
-            else productLines.push(line);
+        if(isFashionEcom){
+          // Fashion: broad match routes to the category picker with images — keeps the
+          // deterministic Categories → Products → Order flow intact instead of a mixed text list.
+          if(categories.length){
+            for(const category of categories){
+              const catImg=await ecomFindCategoryImage(env,clientId,category);
+              if(catImg) await engineSendChatwootImageReply(env,c,clientId,convId,catImg,'');
+            }
+            sentText=await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(cat=>({title:cat,value:cat})));
+            orderHandledInline=true;
           }
-          sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
-          routing.reply=sentText;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
-          orderHandledInline=true;
+        }else{
+          const productChoices=broadMatches.length?broadMatches:activeProducts;
+          const items=ecomAvailableCatalogueItems(categories,productChoices);
+          if(items.length){
+            const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
+            const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
+            const categoryLines=[],productLines=[];
+            for(const item of items){
+              const line=`- ${item.title}`;
+              if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
+              else productLines.push(line);
+            }
+            sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
+            orderHandledInline=true;
+          }
         }
       }
       if(detection.signal && !orderHandledInline){
@@ -12522,11 +12948,22 @@ async function handleEngineWebhook(request, env, secret){
           matchedProduct=product;
           if(product.sku){ routing.matchedProductSku=product.sku; await ensureLastProductSkuField(env); }
         }
+        // Persist catalog-matched category and brand onto routing so engineBuildLeadUpsertBody can
+        // write them to the Leads table — gives Campaign filters a clean, catalog-validated value
+        // to filter on, not just the classifier's free-text product_interest string.
+        if(detection.category) routing.matchedCategory=detection.category;
+        if(detection.brand) routing.matchedBrand=detection.brand;
         // Claimed once per turn, shared by every branch below that might send this product's
         // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
         // why this is gated per (lead, product, calendar day) rather than resent on every repeat
-        // question.
-        const sendProductImage=product ? await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id) : false;
+        // question. For Furniture & Home Appliances the day restriction is lifted: a same-day
+        // repeat sends 2 random product images instead of the full bundle (sendRandomImages path).
+        let sendProductImage=false, sendRandomImages=false;
+        if(product){
+          const claimed=await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id);
+          if(claimed) sendProductImage=true;
+          else if(botConfig.ecom_communication_style==='furniture_appliances') sendRandomImages=true;
+        }
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
@@ -12542,6 +12979,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
           // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
@@ -12564,6 +13002,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           await engineSendHandoverLabel(c, convId);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
@@ -12578,6 +13017,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -12594,6 +13034,7 @@ async function handleEngineWebhook(request, env, secret){
           // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
           if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product && !orderHandledInline){
@@ -12612,6 +13053,7 @@ async function handleEngineWebhook(request, env, secret){
           if(sendProductImage&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
           const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
@@ -12620,7 +13062,11 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
-          // product name/description/link stay verbatim and absent facts remain absent.
+          // product name/description/link stay verbatim and absent facts remain absent — a
+          // stronger anti-hallucination guarantee than any prompt instruction or post-hoc check
+          // can give, since there's no LLM call in this branch to hallucinate in the first place
+          // (see engineFindHallucinatedLink/engineCallLlmAvoidingRepeat for the deterministic
+          // backstop still used everywhere else an LLM does generate the reply, e.g. ecom_faq).
           const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
           const productLines=[`*${product.name}*`];
           if(product.description) productLines.push(String(product.description));
@@ -12639,6 +13085,7 @@ async function handleEngineWebhook(request, env, secret){
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
           // Primary image is attached above; additional images, audio, video and PDF follow.
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           else{
             routing.route='human';
@@ -12781,6 +13228,16 @@ async function handleEngineWebhook(request, env, secret){
       if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
+    // Resort first-inquiry gate — if this lead has never received resort media before, suppress
+    // the LLM reply entirely this turn; the description + images + videos are sent later by
+    // engineMaybeSendHospitalityMedia. Follow-up turns (lead already received media) skip this
+    // gate and continue to the LLM block normally. Hotel/houseboat paths are untouched.
+    if(!orderHandledInline && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+      try{
+        if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
+      }catch(e){}
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -12907,9 +13364,20 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
+      // Product/category recall only makes sense for ecom_faq — other industries have no such
+      // catalog concept indexed into memory_chunks at all, so a query there would just return
+      // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
+      state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
-      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
+      // own catalogOrderLink exactly (same pure function, same args), the one real link this
+      // route's prompt was actually handed via "## Order Link" this turn. undefined (not []) for
+      // every other industry, so the check is skipped there rather than treating a link the model
+      // may legitimately reference from Knowledge Base text as a hallucination.
+      const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -12970,6 +13438,16 @@ async function handleEngineWebhook(request, env, secret){
           const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
           faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
         }
+        // Healthcare: when the LLM answered a question but offered no tappable choice, always
+        // surface a "Book Appointment" CTA so the customer can act without typing a command.
+        if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
+          const hcServices=await hcListActiveServices(env,clientId);
+          if(hcServices.length===1){
+            faqQuickReplies=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+          } else if(hcServices.length>1){
+            faqQuickReplies=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+          }
+        }
       }
       // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
       // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
@@ -13006,6 +13484,7 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=quickReplies?.length ? sentReply : null;
     }
 
+    if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
     // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
@@ -13024,7 +13503,10 @@ async function handleEngineWebhook(request, env, secret){
     leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
+    const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+    if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
@@ -13163,10 +13645,14 @@ async function handleInstagramWebhookVerify(request, env){
 }
 
 async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
+  if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
+  const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+  if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
   // Verify those identity fields before considering the first inbound turn durable.
   if(isNewLead&&resolvedLeadId){
@@ -13238,8 +13724,10 @@ export async function processInstagramWebhookBody(env, body){
       }else if(routing.route==='qualify_next'){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
         const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
-        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1])).text;
+        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='objection'){
         sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
@@ -17709,11 +18197,12 @@ async function handleHospitalityUnitCreate(request, env){
     currency:String(body.currency||'INR').trim().slice(0,10).toUpperCase(),
     description:String(body.description||'').trim().slice(0,1000),
     active:body.active===false?0:1, created_at:new Date().toISOString(),
+    property_id:body.property_id?Number(body.property_id):null,
   };
   const r=await env.DB.prepare(`INSERT INTO hospitality_units
-    (client_id, name, unit_type, capacity_adults, capacity_children, amenities, base_rate, weekend_rate, currency, description, active, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.name, fields.unit_type, fields.capacity_adults, fields.capacity_children, fields.amenities, fields.base_rate, fields.weekend_rate, fields.currency, fields.description, fields.active, fields.created_at)
+    (client_id, name, unit_type, capacity_adults, capacity_children, amenities, base_rate, weekend_rate, currency, description, active, created_at, property_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.name, fields.unit_type, fields.capacity_adults, fields.capacity_children, fields.amenities, fields.base_rate, fields.weekend_rate, fields.currency, fields.description, fields.active, fields.created_at, fields.property_id)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -17749,7 +18238,11 @@ async function handleHospitalityUnitUpdate(request, env){
   if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
   if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
   if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(body.image_url_4!==undefined){ sets.push('image_url_4=?'); vals.push(body.image_url_4?String(body.image_url_4).trim().slice(0,500):null); }
+  if(body.image_url_5!==undefined){ sets.push('image_url_5=?'); vals.push(body.image_url_5?String(body.image_url_5).trim().slice(0,500):null); }
   if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.video_url_2!==undefined){ sets.push('video_url_2=?'); vals.push(body.video_url_2?String(body.video_url_2).trim().slice(0,500):null); }
+  if(body.property_id!==undefined){ sets.push('property_id=?'); vals.push(body.property_id?Number(body.property_id):null); }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
   await env.DB.prepare(`UPDATE hospitality_units SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
@@ -17781,7 +18274,7 @@ async function handleHospitalityUnitDelete(request, env){
 // one via the same remove button. R2 key extension isn't tracked separately in D1, so delete/replace
 // try every extension that upload validation could ever have accepted — an R2 delete on a
 // nonexistent key is a harmless no-op.
-const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', video:'video_url'};
+const HOSPITALITY_MEDIA_SLOTS={image1:'image_url_1', image2:'image_url_2', image3:'image_url_3', image4:'image_url_4', image5:'image_url_5', video:'video_url', video2:'video_url_2'};
 const HOSPITALITY_MEDIA_MAX_BYTES=9*1024*1024;
 const HOSPITALITY_IMAGE_EXTS=['jpg','jpeg','png','webp','gif'];
 const HOSPITALITY_VIDEO_EXTS=['mp4','mov','webm','mkv','avi'];
@@ -17853,6 +18346,8 @@ async function handleHospitalityMediaServe(env, key){
 // LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
+const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury)\b/i;
+const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|backwaters?|canal|river|cabins?|rooms?|available|availability|stays?|nights?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
 // Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
 // "share" link (drive.google.com/file/d/<id>/view?usp=sharing) or an "open"/"uc" link
@@ -17949,41 +18444,242 @@ async function handleEcomDriveFileSize(request, env){
 // unit gets sent, not just the first one that resolves. Shared by both
 // engineMaybeSendHospitalityMedia branches below (a specific unit named, or the whole active
 // catalog on a general enquiry).
+// WhatsApp per-type size caps (bytes). Files outside these limits are silently skipped — Chatwoot
+// forwards the attachment straight to the WhatsApp Cloud API which rejects oversized files, causing
+// the "Failed to send" error visible in the chat UI. Checking here prevents that.
+const WA_MEDIA_LIMITS={'image/jpeg':5242880,'image/jpg':5242880,'image/png':5242880,
+  'image/webp':5242880,'image/gif':5242880,'video/mp4':16777216,'video/3gpp':16777216,'video/3gp':16777216};
+
+// Fetches one hospitality media item (image or video) as a blob, using the same approach the Ecom
+// module uses for product images — Drive images go through the thumbnail API (sz=w1000) which always
+// serves a compressed, size-safe version instead of the full-resolution original. Videos and R2
+// objects continue to use their own fetch paths. Returns null if the item is missing, unsupported
+// type, or exceeds WhatsApp's size limit for that type.
+async function hospitalityFetchMediaBlob(env, url, isVideo){
+  if(!url) return null;
+  let blob=null;
+  const marker='/hospitality/media/';
+  const idx=url.indexOf(marker);
+  if(idx!==-1){
+    // R2-hosted object
+    const key=url.slice(idx+marker.length);
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(obj) blob=await obj.blob();
+  }else if(isVideo){
+    // Video from Drive — need the full file, not a thumbnail
+    const fileId=driveFileId(url);
+    if(fileId){ const fetched=await driveFetchFile(fileId); if(fetched) blob=fetched.blob; }
+  }else{
+    // Image — use ecom-style thumbnail URL for Drive links (compressed, always under 5 MB) or
+    // fetch directly for plain HTTPS URLs (same as engineSendChatwootImageReply does).
+    const directUrl=engineResolveDirectImageUrl(url);
+    if(directUrl){
+      try{
+        const r=await fetch(directUrl);
+        if(r.ok) blob=await r.blob();
+      }catch(e){}
+    }
+  }
+  if(!blob) return null;
+  const mimeType=(blob.type||'').split(';')[0].trim().toLowerCase();
+  const limit=WA_MEDIA_LIMITS[mimeType];
+  // Skip unsupported MIME types and files that exceed WhatsApp's size cap for that type.
+  if(!limit || blob.size>limit) return null;
+  return blob;
+}
+
+// Sends a plain-text message into a Chatwoot conversation — used by resort media sends to deliver
+// description/amenities text ahead of the photo/video burst so the lead reads context before media.
+async function hospitalityChatwootText(c, convId, text){
+  if(!text || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+    body:JSON.stringify({content:String(text), message_type:'outgoing', private:false})
+  }).catch(()=>{});
+}
+
+// Matches a unit/property name against customer text, including truncated button taps.
+// WhatsApp quick-reply buttons are capped at 20–24 chars with "..." appended; when the customer
+// taps "Premium Tea Garden..." the raw text ending with "..." must still match the full unit name
+// "Premium Tea Garden View". Handles both exact substring and truncated-prefix cases.
+function hospUnitNameMatch(lower, unitName){
+  const name=(unitName||'').trim().toLowerCase();
+  if(name.length<4) return false;
+  if(lower.includes(name)) return true;
+  // Truncated button tap: strip trailing "..." from customer text, check if unit name starts with it
+  if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
+  return false;
+}
+
+// Returns true when a resort client's lead should receive media+description instead of an LLM reply
+// this turn. True when:
+//   - Message matches a resort enquiry signal (keyword regex, or property/unit name mention)
+//   - Lead has never previously received any resort media (first-ever enquiry)
+// leadId is null for brand-new leads — that counts as never having received media.
+async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
+  if(!userText) return false;
+  const lower=userText.toLowerCase();
+  // Specific unit name match — always suppress LLM so the unit media speaks for itself,
+  // regardless of whether this lead has received media before.
+  const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+  if(units && units.some(u=>hospUnitNameMatch(lower, u.name))) return true;
+  // Specific property name match — same: always suppress LLM.
+  const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+  if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
+  // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
+  // subsequent keyword-only messages still get a normal LLM reply.
+  if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
+  if(!leadId) return true;
+  const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  if(sentUnit) return false;
+  const sentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+  return !sentProp;
+}
+
 async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   const items=[
-    {url:unit.image_url_1, name:'photo1.jpg'},
-    {url:unit.image_url_2, name:'photo2.jpg'},
-    {url:unit.image_url_3, name:'photo3.jpg'},
-    {url:unit.video_url, name:'video.mp4'},
+    {url:unit.image_url_1, name:'photo1.jpg', isVideo:false},
+    {url:unit.image_url_2, name:'photo2.jpg', isVideo:false},
+    {url:unit.image_url_3, name:'photo3.jpg', isVideo:false},
+    {url:unit.image_url_4, name:'photo4.jpg', isVideo:false},
+    {url:unit.image_url_5, name:'photo5.jpg', isVideo:false},
+    {url:unit.video_url, name:'video.mp4', isVideo:true},
+    {url:unit.video_url_2, name:'video2.mp4', isVideo:true},
   ].filter(m=>m.url);
   if(!items.length) return false;
+  // For resort units, send description text first so the lead reads context before the media burst.
+  if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
+    await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
+  }
   let sentAny=false;
-  for(let i=0;i<items.length;i++){
-    let blob=null;
-    const marker='/hospitality/media/';
-    const idx=items[i].url.indexOf(marker);
-    if(idx!==-1){
-      const key=items[i].url.slice(idx+marker.length);
-      const obj=await env.HOSPITALITY_MEDIA.get(key);
-      if(obj) blob=await obj.blob();
-    }else{
-      const fileId=driveFileId(items[i].url);
-      if(fileId){
-        const fetched=await driveFetchFile(fileId);
-        if(fetched) blob=fetched.blob;
-      }
-    }
+  let captionSent=false;
+  for(const item of items){
+    const blob=await hospitalityFetchMediaBlob(env, item.url, item.isVideo);
     if(!blob) continue;
     const fd=new FormData();
-    fd.append('content', i===0?`Here's a look at ${unit.name} 📸`:'');
+    fd.append('content', captionSent?'':`Here's a look at ${unit.name} 📸`);
     fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', blob, items[i].name);
+    fd.append('attachments[]', blob, item.name);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-    if(r.ok) sentAny=true;
+    if(r.ok){ sentAny=true; captionSent=true; }
   }
   if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+    // Resort: after unit media, offer a booking/availability button so the customer can connect
+    // with the team in one tap. The button value is a generic phrase so it routes to human handover
+    // via intent classification without re-triggering unit name matching.
+    if(c.hospitality_style==='resort'){
+      await engineSendChatwootQuickReply(env, c, clientId, convId,
+        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
+    }
+  }
+  return sentAny;
+}
+
+// ── Resort properties CRUD (migrations/0066_resort_properties.sql) ──
+async function handleHospitalityPropertiesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleHospitalityPropertyCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO hospitality_properties (client_id, name, description, amenities, active, created_at) VALUES (?,?,?,?,1,?)`)
+    .bind(Number(payload.cid), String(body.name).trim().slice(0,140), String(body.description||'').trim().slice(0,1000), String(body.amenities||'').trim().slice(0,500), now)
+    .run();
+  return json({Id:r.meta.last_row_id, client_id:Number(payload.cid), name:body.name, description:body.description||'', amenities:body.amenities||'', active:1, created_at:now});
+}
+async function findHospitalityProperty(env, id){
+  return await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=?`).bind(Number(id)).first();
+}
+async function handleHospitalityPropertyUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityProperty(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,1000)); }
+  if(body.amenities!==undefined){ sets.push('amenities=?'); vals.push(String(body.amenities).trim().slice(0,500)); }
+  if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(body.image_url_4!==undefined){ sets.push('image_url_4=?'); vals.push(body.image_url_4?String(body.image_url_4).trim().slice(0,500):null); }
+  if(body.image_url_5!==undefined){ sets.push('image_url_5=?'); vals.push(body.image_url_5?String(body.image_url_5).trim().slice(0,500):null); }
+  if(body.video_url_1!==undefined){ sets.push('video_url_1=?'); vals.push(body.video_url_1?String(body.video_url_1).trim().slice(0,500):null); }
+  if(body.video_url_2!==undefined){ sets.push('video_url_2=?'); vals.push(body.video_url_2?String(body.video_url_2).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE hospitality_properties SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleHospitalityPropertyDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findHospitalityProperty(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`UPDATE hospitality_units SET property_id=NULL WHERE property_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_property_media_sent WHERE property_id=?`).bind(Number(body.id)).run();
+  await env.DB.prepare(`DELETE FROM hospitality_properties WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Sends property-level media (up to 5 images + 2 videos) then lists the property's sub-units as
+// tappable quick-reply buttons. The lead sees the resort overview first; tapping a unit name
+// triggers the specificUnit branch in engineMaybeSendHospitalityMedia which sends that unit's own
+// photos — avoids dumping every room's photo catalog at once on a general enquiry.
+async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
+  // Send property description + amenities as text before the media burst so the lead reads context first.
+  const descParts=[];
+  if(property.description && String(property.description).trim()) descParts.push(String(property.description).trim());
+  if(property.amenities && String(property.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(property.amenities).trim()}`);
+  if(descParts.length) await hospitalityChatwootText(c, convId, `*${property.name}*\n\n${descParts.join('\n\n')}`);
+  const items=[
+    {url:property.image_url_1, name:'property-photo1.jpg', isVideo:false},
+    {url:property.image_url_2, name:'property-photo2.jpg', isVideo:false},
+    {url:property.image_url_3, name:'property-photo3.jpg', isVideo:false},
+    {url:property.image_url_4, name:'property-photo4.jpg', isVideo:false},
+    {url:property.image_url_5, name:'property-photo5.jpg', isVideo:false},
+    {url:property.video_url_1, name:'property-video1.mp4', isVideo:true},
+    {url:property.video_url_2, name:'property-video2.mp4', isVideo:true},
+  ].filter(m=>m.url);
+  let sentAny=false;
+  let captionSent=false;
+  for(const item of items){
+    const blob=await hospitalityFetchMediaBlob(env, item.url, item.isVideo);
+    if(!blob) continue;
+    const fd=new FormData();
+    fd.append('content', captionSent?'':`Welcome to ${property.name}! 🏨`);
+    fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, item.name);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(r.ok){ sentAny=true; captionSent=true; }
+  }
+  // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
+  // specific unit's photos — instead of sending every room's media upfront at once.
+  // Fall back to all active units if none are linked to this property via property_id.
+  const linkedRooms=(allUnits||[]).filter(u=>u.property_id===property.id);
+  const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
+  if(rooms.length){
+    const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
+    await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which option would you like to know more about? 👇', unitButtons);
+  }
+  if(sentAny || rooms.length){
+    await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_property_media_sent (client_id, lead_id, property_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, property.id, new Date().toISOString()).run();
   }
   return sentAny;
 }
@@ -18007,14 +18703,60 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
     const {results:units}=await env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
     if(!units || !units.length) return;
     const lower=userText.toLowerCase();
-    const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+
+    if(c.hospitality_style==='resort'){
+      // Resort 2-tier matching (migrations/0066_resort_properties.sql):
+      // 1. Specific room name → send that room's media (5 images + 2 videos)
+      const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
+      if(specificUnit){
+        const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
+        if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        // Store selected unit in lead memory so the LLM knows their interest on the next turn
+        try{
+          await ensureLeadsColumns(env, ['HospSelectedUnit']);
+          await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:specificUnit.name}});
+        }catch(e){}
+        return;
+      }
+      // 2. Property name → send property media + all its rooms
+      const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+      if(properties && properties.length){
+        const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
+        if(specificProp){
+          const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
+          if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          return;
+        }
+        // 3. General enquiry → send all properties (overview)
+        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
+        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+        if(alreadyAny) return;
+        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
+      } else {
+        // No properties configured — fall back to sending all rooms directly
+        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
+        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+        if(alreadyAny) return;
+        for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
+      }
+      return;
+    }
+
+    // Existing hotel / houseboat logic — unchanged
+    const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
     if(specificUnit){
       const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
       if(already) return;
       await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+      // Store selected unit in lead memory
+      try{
+        await ensureLeadsColumns(env, ['HospSelectedUnit']);
+        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:specificUnit.name}});
+      }catch(e){}
       return;
     }
-    if(!HOSPITALITY_GENERAL_ENQUIRY_RE.test(lower)) return;
+    const enquiryRe=c.hospitality_style==='houseboat'?HOSPITALITY_HOUSEBOAT_ENQUIRY_RE:HOSPITALITY_GENERAL_ENQUIRY_RE;
+    if(!enquiryRe.test(lower)) return;
     const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
     if(alreadyAny) return;
     for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
@@ -21045,6 +21787,40 @@ const hcInsuranceCrud=reCrud('healthcare_insurance', [
   {key:'last_verified_at', type:'text', maxLen:40}
 ]);
 
+// GET /healthcare/doctor-services?doctor_id=X → {list:[service_id,...]}
+// POST /healthcare/doctor-services {doctor_id, service_ids:[...]} → replaces full set for that doctor
+async function handleHcDoctorServicesGet(request, env){
+  const auth=await requireSessionAuth(request, env);
+  if(auth.error) return json({error:auth.error}, auth.status||401);
+  await hcEnsureOperationsSchema(env);
+  const doctorId=Number(new URL(request.url).searchParams.get('doctor_id')||0);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const {results}=await env.DB.prepare(
+    `SELECT ds.service_id, s.name FROM healthcare_doctor_services ds
+     LEFT JOIN healthcare_services s ON s.id=ds.service_id
+     WHERE ds.client_id=? AND ds.doctor_id=? ORDER BY s.name`
+  ).bind(Number(auth.payload.cid),doctorId).all().catch(()=>({results:[]}));
+  return json({list:(results||[]).map(r=>({service_id:r.service_id,name:r.name}))});
+}
+async function handleHcDoctorServicesSet(request, env){
+  const auth=await requireSessionAuth(request, env);
+  if(auth.error) return json({error:auth.error}, auth.status||401);
+  await hcEnsureOperationsSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const doctorId=Number(body.doctor_id||0);
+  const serviceIds=(body.service_ids||[]).map(Number).filter(Boolean);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const clientId=Number(auth.payload.cid);
+  const now=new Date().toISOString();
+  // Replace the full set atomically: delete existing, insert new
+  await env.DB.prepare(`DELETE FROM healthcare_doctor_services WHERE client_id=? AND doctor_id=?`).bind(clientId,doctorId).run();
+  for(const sid of serviceIds){
+    await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_doctor_services(client_id,doctor_id,service_id,created_at) VALUES(?,?,?,?)`)
+      .bind(clientId,doctorId,sid,now).run();
+  }
+  return json({ok:true,count:serviceIds.length});
+}
+
 async function hcRequireSessionClient(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return null;
@@ -21199,14 +21975,52 @@ async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang)
   const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
   return {handled:true,text,quickReplies};
 }
+async function hcDoctorServices(env,clientId,doctorId){
+  // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
+  // department-based lookup so clinics that haven't set up explicit links still work.
+  const {results:linked}=await env.DB.prepare(
+    `SELECT s.* FROM healthcare_services s
+     INNER JOIN healthcare_doctor_services ds ON ds.service_id=s.id AND ds.client_id=s.client_id
+     WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 20`
+  ).bind(Number(clientId),Number(doctorId)).all().catch(()=>({results:[]}));
+  if(linked&&linked.length) return linked;
+  // Fallback: department-based
+  const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(Number(doctorId),Number(clientId)).first().catch(()=>null);
+  if(!doc?.department_id) return [];
+  const {results:dept}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId),Number(doc.department_id)).all().catch(()=>({results:[]}));
+  return dept||[];
+}
 async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
   const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
   const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
   if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
   const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
-  if(doctor) return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
-  const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
-  const doctors=results||[];
+  if(doctor){
+    // When a doctor is chosen, check which services they handle. If multiple, ask the patient
+    // to pick a service first (so the appointment record has a service_id).
+    if(!service){
+      const doctorSvcs=await hcDoctorServices(env,clientId,doctor.id);
+      if(doctorSvcs.length>1){
+        await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
+        const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
+        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(doctorSvcs));
+        return {handled:true,text,quickReplies};
+      }
+      if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
+    }
+    return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
+  }
+  // Service chosen first — find doctors who handle it (explicit links first, department fallback)
+  const {results:linkedDocs}=await env.DB.prepare(
+    `SELECT d.id,d.name FROM healthcare_doctors d
+     INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
+     WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
+  ).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+  let doctors=linkedDocs||[];
+  if(!doctors.length){
+    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
+    doctors=results||[];
+  }
   if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
   if(!doctors.length){
     const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
@@ -21228,8 +22042,29 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
     return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
   }
+  // Service name tapped while in choose_service stage (doctor already chosen, now picking service)
+  {
+    const preSession=await hcBookingSession(env,clientId,phone);
+    if(preSession?.stage==='choose_service'&&!action.startsWith('HC_BOOK_')){
+      const svc=await env.DB.prepare(`SELECT id FROM healthcare_services WHERE client_id=? AND (name=? OR short_label=?) AND status='active' LIMIT 1`).bind(Number(clientId),action,action).first().catch(()=>null);
+      if(svc) return hcSendBookingDates(env,c,clientId,convId,phone,{...preSession,service_id:Number(svc.id),stage:'choose_date'},replyLang);
+    }
+  }
   const session=await hcBookingSession(env,clientId,phone);
-  if(!session) return {handled:false};
+  if(!session){
+    // Plain-text booking intent ("book", "schedule", "I want an appointment", etc.) — start the
+    // native WhatsApp flow directly instead of falling through to the FAQ LLM which can't offer
+    // the actual slot picker buttons.
+    if(!action.startsWith('HC_BOOK_') && /\b(?:book|schedule|appoint|reserv|slot|visit)\b/i.test(action)){
+      const allServices=await hcListActiveServices(env,clientId);
+      if(!allServices.length) return {handled:false};
+      if(allServices.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(allServices[0].id)});
+      const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(allServices));
+      return {handled:true,text,quickReplies};
+    }
+    return {handled:false};
+  }
   if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
     await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
     const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
@@ -22086,14 +22921,17 @@ export default {
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
-      else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduList(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCreate(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'courses'); }
-      else if(url.pathname==='/edu/courses' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'courses'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='GET'){ res=await handleEduList(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='POST'){ res=await handleEduCreate(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='PATCH'){ res=await handleEduUpdate(request, env, 'enrollments'); }
-      else if(url.pathname==='/edu/enrollments' && request.method==='DELETE'){ res=await handleEduDelete(request, env, 'enrollments'); }
+      else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
+      else if(url.pathname==='/edu/students' && request.method==='POST'){ res=await handleEduStudentUpsert(request, env); }
+      else if(url.pathname==='/edu/enroll' && request.method==='POST'){ res=await handleEduEnroll(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
+      else if(url.pathname==='/edu/courses' && request.method==='DELETE'){ res=await handleEduCourseDelete(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='GET'){ res=await handleEduEnrollmentsList(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='POST'){ res=await handleEduEnrollmentCreate(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='PATCH'){ res=await handleEduEnrollmentUpdate(request, env); }
+      else if(url.pathname==='/edu/enrollments' && request.method==='DELETE'){ res=await handleEduEnrollmentDelete(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='GET'){ res=await handleEduCategoriesList(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='POST'){ res=await handleEduCategoryCreate(request, env); }
       else if(url.pathname==='/edu/categories' && request.method==='PATCH'){ res=await handleEduCategoryUpdate(request, env); }
@@ -22356,6 +23194,8 @@ export default {
       else if(url.pathname==='/healthcare/services' && request.method==='POST'){ res=await hcServicesCrud.create(request, env); }
       else if(url.pathname==='/healthcare/services' && request.method==='PATCH'){ res=await hcServicesCrud.update(request, env); }
       else if(url.pathname==='/healthcare/services' && request.method==='DELETE'){ res=await hcServicesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/doctor-services' && request.method==='GET'){ res=await handleHcDoctorServicesGet(request, env); }
+      else if(url.pathname==='/healthcare/doctor-services' && request.method==='POST'){ res=await handleHcDoctorServicesSet(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='GET'){ res=await hcSchedulesCrud.list(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='POST'){ res=await hcSchedulesCrud.create(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='PATCH'){ res=await hcSchedulesCrud.update(request, env); }
@@ -22419,6 +23259,10 @@ export default {
       else if(url.pathname==='/erpnext/companies' && request.method==='GET'){ res=await handleErpnextCompaniesList(request, env); }
       else if(url.pathname==='/erpnext/currencies' && request.method==='GET'){ res=await handleErpnextCurrenciesList(request, env); }
       else if(url.pathname==='/erpnext/accounts' && request.method==='GET'){ res=await handleErpnextAccountsList(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='GET'){ res=await handleHospitalityPropertiesList(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='POST'){ res=await handleHospitalityPropertyCreate(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='PATCH'){ res=await handleHospitalityPropertyUpdate(request, env); }
+      else if(url.pathname==='/hospitality/properties' && request.method==='DELETE'){ res=await handleHospitalityPropertyDelete(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='POST'){ res=await handleHospitalityUnitMediaUpload(request, env); }
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
@@ -22535,6 +23379,10 @@ export default {
       // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
       // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
       ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
+      // Semantic memory — one-time-per-client catalog backfill (SETUP.md "Semantic memory"),
+      // piggybacked here rather than the live customer-reply path since this Worker has no
+      // ctx.waitUntil available there — see engineMemoryBackfillCatalogIfNeeded's own comment.
+      ctx.waitUntil(runMemoryBackfillForAllClients(env));
       // Rate limiting (SETUP.md "DDoS protection") — sweep expired per-IP counters so the table
       // doesn't grow unbounded; daily is plenty since rows expire on their own within minutes.
       ctx.waitUntil(cleanupRateLimitCounters(env));

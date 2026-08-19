@@ -1721,6 +1721,7 @@ const ROLES = {
     <div class="page hidden" id="pageHospitality">
       <div id="hospSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
         <button class="hosp-tab active" data-hosp="dashboard">📊 Dashboard</button>
+        <button class="hosp-tab" data-hosp="properties" id="hospPropertiesTab" style="display:none">🏨 Properties</button>
         <button class="hosp-tab" data-hosp="units">🏠 Units</button>
         <button class="hosp-tab" data-hosp="availability">📅 Availability</button>
         <button class="hosp-tab" data-hosp="bookings">📖 Bookings</button>
@@ -2961,11 +2962,22 @@ const ROLES = {
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, and other stay-based tourism businesses.</div></div>
+              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, resorts, and other stay-based tourism businesses.</div></div>
               <select class="form-input" id="cfgHospitalityEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveHospitalityEnabled">Save</button>
               <span class="save-msg" id="saveHospitalityEnabledMsg"></span>
               <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ Sub-style</b><div class="s-note" style="margin:2px 0 0">Adjusts terminology and WhatsApp keyword matching for your hospitality type.</div></div>
+              <select class="form-input" id="cfgHospitalityStyle" style="max-width:160px">
+                <option value="hotel">Hotel / General</option>
+                <option value="resort">Resort</option>
+                <option value="houseboat">Houseboat</option>
+              </select>
+              <button class="save-btn" id="saveHospitalityStyle">Save</button>
+              <span class="save-msg" id="saveHospitalityStyleMsg"></span>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -8696,6 +8708,14 @@ async function ensureHospitalityEnabledColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+async function ensureHospitalityStyleColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -15600,6 +15620,7 @@ $id('saveMarketingStudioEnabled').addEventListener('click',async()=>{
 function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
+  const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
   updateHospitalityTabVisibility();
 }
 
@@ -15612,6 +15633,22 @@ $id('saveHospitalityEnabled').addEventListener('click',async()=>{
     await patchClient({hospitality_enabled:val});
     updateHospitalityTabVisibility();
     _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+$id('saveHospitalityStyle').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityStyle'),msg=$id('saveHospitalityStyleMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityStyle').value;
+  try{
+    await ensureHospitalityStyleColumn();
+    await patchClient({hospitality_style:val});
+    clientRecord.hospitality_style=val;
+    _hospLoaded=false; hospProperties=[];
+    const propTab=$id('hospPropertiesTab');
+    if(propTab) propTab.style.display=val==='resort'?'':'none';
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -16085,12 +16122,16 @@ function renderRecoveryChip(lead){
    (cloudflare-worker/migrations/0009_hospitality.sql) via dedicated /hospitality/* Worker routes —
    unlike Agency/Recruit/Appointments above, no per-client dynamic NocoDB tables here. ── */
 let _hospPage='dashboard', _hospLoaded=false;
-let hospUnits=[], hospBookings=[];
+let hospUnits=[], hospBookings=[], hospProperties=[];
 let _hospEditBookingId=null;
 let _hospCalUnitId=null, _hospCalYear=null, _hospCalMonth=null, _hospCalDays=[];
 
+function _hospIsResort(){ return clientRecord.hospitality_style==='resort'; }
+
 async function renderHospitality(){
   const el=$id('hospContent');
+  const propTab=$id('hospPropertiesTab');
+  if(propTab) propTab.style.display=_hospIsResort()?'':'none';
   if(!_hospLoaded){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
     await hospLoad();
@@ -16099,20 +16140,24 @@ async function renderHospitality(){
 }
 async function hospLoad(){
   try{
-    const [unitsR, bookingsR]=await Promise.all([
+    const fetches=[
       fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{headers:ncAuthHeaders()}),
       fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{headers:ncAuthHeaders()}),
-    ]);
-    hospUnits=(await unitsR.json()).list||[];
-    hospBookings=(await bookingsR.json()).list||[];
+    ];
+    if(_hospIsResort()) fetches.push(fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{headers:ncAuthHeaders()}));
+    const results=await Promise.all(fetches);
+    hospUnits=(await results[0].json()).list||[];
+    hospBookings=(await results[1].json()).list||[];
+    hospProperties=results[2]?(await results[2].json()).list||[]:[];
     _hospLoaded=true;
-  }catch(e){ hospUnits=[]; hospBookings=[]; }
+  }catch(e){ hospUnits=[]; hospBookings=[]; hospProperties=[]; }
 }
 function renderHospSubPage(page){
   _hospPage=page;
   document.querySelectorAll('.hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.hosp===page));
   switch(page){
     case'dashboard':renderHospDashboard();break;
+    case'properties':renderHospProperties();break;
     case'units':renderHospUnits();break;
     case'availability':renderHospAvailability();break;
     case'bookings':renderHospBookings();break;
@@ -16161,6 +16206,12 @@ async function renderHospDashboard(){
 // Every field — including description and media — is edited in place; there is no Add/Edit
 // popup for units at all. Autosaves per-field on blur/change via the existing PATCH endpoint
 // (which already supports partial single-field updates).
+function hospStyleLabel(){
+  const s=clientRecord.hospitality_style||'hotel';
+  if(s==='resort') return {icon:'🌴',heading:'Units & Villa Types',addLabel:'+ Add Unit',typeLabel:'Villa/Unit Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first villa or unit type.'};
+  if(s==='houseboat') return {icon:'🛶',heading:'Boats & Houseboat Types',addLabel:'+ Add Boat',typeLabel:'Houseboat Type',emptyMsg:'No boats yet. Click "+ Add Boat" to create your first houseboat type.'};
+  return {icon:'🏠',heading:'Units & Room Types',addLabel:'+ Add Unit',typeLabel:'Room Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first room/unit type.'};
+}
 const HOSP_UNIT_FIELDS=[
   {field:'name', label:'Name', type:'text', width:150, placeholder:'Unit name'},
   {field:'unit_type', label:'Type', type:'text', width:100, placeholder:'Deluxe'},
@@ -16177,8 +16228,10 @@ function hospUnitRow(u){
     const val=u[f.field]==null?'':u[f.field];
     return `<td><input ${f.type==='number'?`type="number"${f.min!=null?` min="${f.min}"`:''}`:'type="text"'} class="form-input hosp-cell" style="width:${f.width}px" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}" data-field="${f.field}" onblur="hospUnitCellChange(${u.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
   }).join('');
+  const propCell=_hospIsResort()?`<td><select class="form-input hosp-cell" style="width:160px" data-field="property_id" onchange="hospUnitCellChange(${u.Id},this)"><option value="">— None —</option>${hospProperties.map(p=>`<option value="${p.Id}"${u.property_id===p.Id?' selected':''}>${esc(p.name)}</option>`).join('')}</select></td>`:'';
   return `<tr data-unit-row="${u.Id}" style="${u.active?'':'opacity:.55'}">
     <td style="text-align:center"><input type="checkbox" ${u.active?'checked':''} data-field="active" onchange="hospUnitCellChange(${u.Id},this)"></td>
+    ${propCell}
     ${cells}
     <td>${hospMediaCellHtml(u)}</td>
     <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospUnit(${u.Id})" title="Delete">🗑</button></td>
@@ -16186,20 +16239,21 @@ function hospUnitRow(u){
 }
 function renderHospUnits(){
   const el=$id('hospContent');
+  const lbl=hospStyleLabel();
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏠 Units &amp; Room Types <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">+ Add Unit</button>
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">${lbl.icon} ${esc(lbl.heading)} <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">${esc(lbl.addLabel)}</button>
     </div>
     ${hospUnits.length?`
     <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
       <thead><tr>
-        <th>Active</th><th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Description</th><th>Photos &amp; Video</th><th></th>
+        <th>Active</th>${_hospIsResort()?'<th>Property</th>':''}<th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Description</th><th>${_hospIsResort()?'Photos &amp; Videos (5+2)':'Photos &amp; Video'}</th><th></th>
       </tr></thead>
       <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
     </table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>`
-    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
+    :`<div class="empty-state"><div class="ei">${lbl.icon}</div>${esc(lbl.emptyMsg)}</div>`}`;
 }
 async function hospAddUnitRow(){
   const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
@@ -16218,6 +16272,7 @@ async function hospUnitCellChange(id, el){
   const u=hospUnits.find(x=>x.Id===id); if(!u) return;
   let value;
   if(field==='active') value=el.checked;
+  else if(field==='property_id') value=el.value?Number(el.value):null;
   else if(field==='capacity_adults') value=parseInt(el.value)||1;
   else if(field==='capacity_children') value=parseInt(el.value)||0;
   else if(field==='base_rate') value=parseFloat(el.value)||0;
@@ -16249,6 +16304,25 @@ const HOSP_MEDIA_SLOTS=[
   {slot:'image3', column:'image_url_3', label:'Photo 3'},
   {slot:'video', column:'video_url', label:'Video'},
 ];
+const HOSP_UNIT_RESORT_MEDIA_SLOTS=[
+  {slot:'image1', column:'image_url_1', label:'Photo 1'},
+  {slot:'image2', column:'image_url_2', label:'Photo 2'},
+  {slot:'image3', column:'image_url_3', label:'Photo 3'},
+  {slot:'image4', column:'image_url_4', label:'Photo 4'},
+  {slot:'image5', column:'image_url_5', label:'Photo 5'},
+  {slot:'video', column:'video_url', label:'Video 1'},
+  {slot:'video2', column:'video_url_2', label:'Video 2'},
+];
+const HOSP_PROPERTY_MEDIA_SLOTS=[
+  {slot:'image1', column:'image_url_1', label:'Photo 1'},
+  {slot:'image2', column:'image_url_2', label:'Photo 2'},
+  {slot:'image3', column:'image_url_3', label:'Photo 3'},
+  {slot:'image4', column:'image_url_4', label:'Photo 4'},
+  {slot:'image5', column:'image_url_5', label:'Photo 5'},
+  {slot:'video1', column:'video_url_1', label:'Video 1'},
+  {slot:'video2', column:'video_url_2', label:'Video 2'},
+];
+function hospUnitMediaSlots(){ return _hospIsResort()?HOSP_UNIT_RESORT_MEDIA_SLOTS:HOSP_MEDIA_SLOTS; }
 // Pulls the file id out of whichever Drive share-link shape was pasted — mirrors worker.js's own
 // driveFileId(), duplicated rather than shared since this app has no build step and every page is
 // already a self-contained file (same reasoning as this file's other small duplicated helpers).
@@ -16265,11 +16339,13 @@ function driveThumbnailUrl(url){
   const id=driveFileId(url);
   return id?`https://drive.google.com/thumbnail?id=${id}&sz=w200`:'';
 }
+function _hospMediaSlotIsVideo(slot){ return slot==='video'||slot==='video1'||slot==='video2'; }
 function hospMediaCellHtml(u){
-  const inner=HOSP_MEDIA_SLOTS.map(s=>{
+  const slots=hospUnitMediaSlots();
+  const inner=slots.map(s=>{
     const url=u[s.column];
     if(url){
-      const preview=s.slot==='video'
+      const preview=_hospMediaSlotIsVideo(s.slot)
         ? `<span style="font-size:18px">🎬</span>`
         : `<img src="${esc(driveThumbnailUrl(url))}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:16px;display:none">🔗</span>`;
       return `<div class="hosp-media-slot-sm" title="${esc(s.label)} — click to open in Drive, or the ✕ to remove" onclick="window.open('${esc(url)}','_blank')">${preview}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemoveUnitMedia(${u.Id},'${s.slot}')">✕</button></div>`;
@@ -16284,11 +16360,12 @@ function hospRerenderMediaCell(unitId){
   if(cell) cell.outerHTML=hospMediaCellHtml(u);
 }
 async function hospSetUnitMediaLink(unitId, slot){
-  const s=HOSP_MEDIA_SLOTS.find(x=>x.slot===slot);
-  const unit=hospUnits.find(u=>u.Id===unitId); if(!unit) return;
+  const slots=hospUnitMediaSlots();
+  const s=slots.find(x=>x.slot===slot);
+  const unit=hospUnits.find(u=>u.Id===unitId); if(!unit||!s) return;
   const current=unit[s.column]||'';
   const url=prompt(`Paste the Google Drive share link for ${s.label}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
-  if(url===null) return; // cancelled
+  if(url===null) return;
   const trimmed=url.trim();
   if(trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
   const prev=unit[s.column];
@@ -16304,13 +16381,137 @@ async function hospSetUnitMediaLink(unitId, slot){
 }
 async function hospRemoveUnitMedia(unitId, slot){
   if(!confirm('Remove this media?')) return;
+  const slots=hospUnitMediaSlots();
+  const s=slots.find(x=>x.slot===slot); if(!s) return;
   try{
     await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:unitId, slot})});
     const unit=hospUnits.find(u=>u.Id===unitId);
-    const col=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).column;
-    if(unit) unit[col]=null;
+    if(unit) unit[s.column]=null;
     hospRerenderMediaCell(unitId);
   }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── Resort properties: inline-edit table, media slots, CRUD ── */
+function hospPropertyMediaCellHtml(p){
+  const inner=HOSP_PROPERTY_MEDIA_SLOTS.map(s=>{
+    const url=p[s.column];
+    if(url){
+      const preview=_hospMediaSlotIsVideo(s.slot)
+        ? `<span style="font-size:18px">🎬</span>`
+        : `<img src="${esc(driveThumbnailUrl(url))}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:16px;display:none">🔗</span>`;
+      return `<div class="hosp-media-slot-sm" title="${esc(s.label)} — click to open in Drive, or the ✕ to remove" onclick="window.open('${esc(url)}','_blank')">${preview}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemovePropertyMedia(${p.Id},'${s.slot}')">✕</button></div>`;
+    }
+    return `<div class="hosp-media-slot-sm" onclick="hospSetPropertyMediaLink(${p.Id},'${s.slot}')" title="Paste a Google Drive link for ${esc(s.label)}">🔗+</div>`;
+  }).join('');
+  return `<div class="hosp-media-inline" data-prop-media-cell="${p.Id}">${inner}</div>`;
+}
+function hospRerenderPropertyMediaCell(propId){
+  const p=hospProperties.find(x=>x.Id===propId); if(!p) return;
+  const cell=document.querySelector(`[data-prop-media-cell="${propId}"]`);
+  if(cell) cell.outerHTML=hospPropertyMediaCellHtml(p);
+}
+async function hospSetPropertyMediaLink(propId, slot){
+  const s=HOSP_PROPERTY_MEDIA_SLOTS.find(x=>x.slot===slot);
+  const prop=hospProperties.find(p=>p.Id===propId); if(!prop||!s) return;
+  const current=prop[s.column]||'';
+  const url=prompt(`Paste the Google Drive share link for ${s.label}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
+  if(url===null) return;
+  const trimmed=url.trim();
+  if(trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
+  const prev=prop[s.column];
+  prop[s.column]=trimmed||null;
+  hospRerenderPropertyMediaCell(propId);
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:propId,[s.column]:trimmed})});
+  }catch(e){
+    prop[s.column]=prev;
+    hospRerenderPropertyMediaCell(propId);
+    alert('Failed to save: '+e.message);
+  }
+}
+async function hospRemovePropertyMedia(propId, slot){
+  if(!confirm('Remove this media?')) return;
+  const s=HOSP_PROPERTY_MEDIA_SLOTS.find(x=>x.slot===slot); if(!s) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:propId,[s.column]:null})});
+    const prop=hospProperties.find(p=>p.Id===propId);
+    if(prop) prop[s.column]=null;
+    hospRerenderPropertyMediaCell(propId);
+  }catch(e){ alert('Failed: '+e.message); }
+}
+const HOSP_PROPERTY_FIELDS=[
+  {field:'name', label:'Name', type:'text', width:160, placeholder:'Property name'},
+  {field:'amenities', label:'Amenities', type:'text', width:200, placeholder:'Pool, Spa, Restaurant…'},
+  {field:'description', label:'Description', type:'text', width:220, placeholder:'Short description'},
+];
+function hospPropertyRow(p){
+  const cells=HOSP_PROPERTY_FIELDS.map(f=>{
+    const val=p[f.field]==null?'':p[f.field];
+    return `<td><input type="text" class="form-input hosp-cell" style="width:${f.width}px" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}" data-field="${f.field}" onblur="hospPropertyCellChange(${p.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
+  }).join('');
+  return `<tr data-prop-row="${p.Id}" style="${p.active?'':'opacity:.55'}">
+    <td style="text-align:center"><input type="checkbox" ${p.active?'checked':''} data-field="active" onchange="hospPropertyCellChange(${p.Id},this)"></td>
+    ${cells}
+    <td>${hospPropertyMediaCellHtml(p)}</td>
+    <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospProperty(${p.Id})" title="Delete">🗑</button></td>
+  </tr>`;
+}
+function renderHospProperties(){
+  const el=$id('hospContent');
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏨 Resort Properties <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospProperties.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="hospAddPropertyRow()">+ Add Property</button>
+    </div>
+    ${hospProperties.length?`
+    <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
+      <thead><tr>
+        <th>Active</th><th>Name</th><th>Amenities</th><th>Description</th><th>Photos &amp; Videos (5+2)</th><th></th>
+      </tr></thead>
+      <tbody>${hospProperties.map(hospPropertyRow).join('')}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Each property holds up to 5 photos and 2 videos. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view"). Rooms are assigned to a property in the Units tab.</div>`
+    :'<div class="empty-state"><div class="ei">🏨</div>No properties yet. Click "+ Add Property" to create your first resort property.</div>'}`;
+}
+async function hospAddPropertyRow(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:'New property'})});
+    const created=await r.json();
+    hospProperties.push(created);
+    renderHospProperties();
+    const row=document.querySelector(`tr[data-prop-row="${created.Id}"]`);
+    const nameInput=row&&row.querySelector('input[data-field="name"]');
+    if(nameInput){ nameInput.focus(); nameInput.select(); }
+  }catch(e){ alert('Failed to add property: '+e.message); }
+}
+async function hospPropertyCellChange(id, el){
+  const field=el.dataset.field;
+  const p=hospProperties.find(x=>x.Id===id); if(!p) return;
+  let value;
+  if(field==='active') value=el.checked;
+  else value=el.value.trim();
+  if(field==='name'&&!value){ alert('Name is required.'); el.value=p.name; return; }
+  if(el.type!=='checkbox') el.value=value===null?'':value;
+  if(p[field]===value) return;
+  const prev=p[field];
+  p[field]=value;
+  if(field==='active'){ const row=el.closest('tr'); if(row) row.style.opacity=value?'':'.55'; }
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id,[field]:value})});
+  }catch(e){
+    p[field]=prev;
+    alert('Failed to save: '+e.message);
+    renderHospProperties();
+  }
+}
+async function deleteHospProperty(id){
+  if(!confirm('Delete this property? Its rooms will be unlinked but not deleted.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    hospProperties=hospProperties.filter(p=>p.Id!==id);
+    hospUnits.forEach(u=>{ if(u.property_id===id) u.property_id=null; });
+    renderHospProperties();
+  }catch(e){ alert('Failed to delete: '+e.message); }
 }
 async function deleteHospUnit(id){
   if(!confirm('Delete this unit? Its blocked dates and rate overrides will be removed too.')) return;
@@ -16698,6 +16899,51 @@ function showUpdateBanner(){
     history.replaceState({},'',location.pathname);
     startAuthentikLogin();
     return;
+  }
+  // Marketing site email form — email collected on leadvyne.com, redirected here with
+  // ?autoSignup=1&email=xxx so the Worker call happens from app.leadvyne.com (already in
+  // ALLOWED_ORIGINS), sidestepping any cross-origin restriction on the landing page.
+  const _autoSignupParams=new URLSearchParams(location.search);
+  if(_autoSignupParams.get('autoSignup')==='1'){
+    const _autoEmail=_autoSignupParams.get('email')||'';
+    history.replaceState({},'',location.pathname);
+    if(_autoEmail){
+      (async()=>{
+        try{
+          const r=await fetch('https://api.leadvyne.com/signup',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({email:_autoEmail})
+          });
+          const data=await r.json().catch(()=>({}));
+          if(r.status===409){
+            // Account exists — proceed to normal login
+            startAuthentikLogin(); return;
+          }
+          if(r.ok && !data.error){
+            // Account created — show confirmation, stay on page
+            document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+              +'<svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="28" fill="#0d9c93"/><path d="M16 28l8 8 16-16" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+              +'<h2 style="margin:0;font-size:22px;color:#1a202c">Check your email</h2>'
+              +'<p style="margin:0;color:#4a5568;max-width:340px">We sent a setup link to <strong>'+_autoEmail+'</strong>. Click it to finish creating your account.</p>'
+              +'<a href="https://leadvyne.com" style="margin-top:8px;font-size:14px;color:#0d9c93">← Back to Leadvyne</a>'
+              +'</div>';
+            return;
+          }
+          // Error — show message with option to go back
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">'+(data.error||'Something went wrong. Please try again.')+'</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }catch(e){
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">Could not connect. Please check your connection and try again.</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }
+      })();
+      return;
+    }
+    // No email — fall through to normal flow
   }
   // No local session and no explicit signup intent — before leaving the interactive "Secure
   // Login" button up, check whether Authentik itself still has this browser signed in (see

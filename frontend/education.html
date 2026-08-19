@@ -103,6 +103,13 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 .loading-row td{text-align:center;padding:30px;color:var(--muted)}
 .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:10px}
+.enroll-steps{display:flex;align-items:center;gap:4px;margin-bottom:18px;flex-wrap:wrap}
+.enroll-step{font-size:12px;font-weight:600;color:var(--muted);padding:4px 12px;border-radius:6px;background:var(--bg);border:1.5px solid var(--line)}
+.enroll-step.active{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
+.enroll-step-sep{font-size:11px;color:var(--muted)}
+.student-found{background:#D1FAE5;border-radius:10px;padding:12px 14px;border:1.5px solid #6EE7B7}
+.student-new{background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:14px}
+.success-id{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent-ink);background:var(--accent-soft);padding:10px 24px;border-radius:10px;display:inline-block;margin:12px 0}
 </style>
 </head>
 <body>
@@ -251,11 +258,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <table>
         <thead>
           <tr>
-            <th>Enrollment #</th><th>Student</th><th>Date</th><th>Course</th><th>Status</th><th>Actions</th>
+            <th>Enrollment #</th><th>Student</th><th>Date</th><th>Course</th><th>Status</th><th>Payment</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="enrollmentsTbody">
-          <tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -274,24 +281,6 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="s-row">
       <button class="save-btn" onclick="saveEnrollmentLink()">Save</button>
       <span class="save-msg" id="enrollmentLinkMsg"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Education Table IDs (NocoDB)</div>
-    <div class="s-sec">
-      <span class="s-lbl">Courses Table ID</span>
-      <input class="s-input" id="cfgCoursesTable" type="text" placeholder="e.g. abc123xyz">
-      <div class="s-hint">NocoDB table ID for your courses catalogue</div>
-    </div>
-    <div class="s-sec">
-      <span class="s-lbl">Enrollments Table ID</span>
-      <input class="s-input" id="cfgEnrollmentsTable" type="text" placeholder="e.g. def456uvw">
-      <div class="s-hint">NocoDB table ID for enrollment records</div>
-    </div>
-    <div class="s-row">
-      <button class="save-btn" onclick="saveTableIds()">Save Table IDs</button>
-      <span class="save-msg" id="tableIdsMsg"></span>
     </div>
   </div>
 
@@ -490,6 +479,92 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- ENROLL MODAL -->
+<div class="modal-overlay" id="enrollModalOverlay" onclick="if(event.target===this)closeEnrollModal()">
+  <div class="modal-card">
+    <div class="enroll-steps">
+      <div class="enroll-step active" id="estep1">1 Student</div>
+      <div class="enroll-step-sep">→</div>
+      <div class="enroll-step" id="estep2">2 Payment</div>
+      <div class="enroll-step-sep">→</div>
+      <div class="enroll-step" id="estep3">3 Done</div>
+    </div>
+
+    <!-- Step 1: Student Search / Create -->
+    <div id="enrollPane1">
+      <div class="modal-title" id="enrollModalCourseName">Enroll Student</div>
+      <div id="enrollCourseInfo" style="background:var(--accent-soft);border-radius:10px;padding:11px 14px;margin-bottom:16px;font-size:13px;color:var(--accent-ink)"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Student Phone *</span>
+        <div style="display:flex;gap:8px">
+          <input class="s-input" id="enrollPhone" type="tel" placeholder="e.g. 9876543210" style="flex:1" onkeydown="if(event.key==='Enter')searchEnrollStudent()">
+          <button class="save-btn" onclick="searchEnrollStudent()">Search</button>
+        </div>
+        <div class="s-hint">Enter phone to find an existing student, or create a new one.</div>
+      </div>
+      <div id="enrollStudentResult" style="margin-top:10px;min-height:60px"></div>
+      <div class="s-row" style="justify-content:flex-end;margin-top:18px">
+        <button class="save-btn sec" onclick="closeEnrollModal()">Cancel</button>
+        <button class="save-btn" id="enrollNextBtn" onclick="enrollGoStep2()" disabled>Next →</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Payment & Confirm -->
+    <div id="enrollPane2" style="display:none">
+      <div class="modal-title">Confirm Enrollment</div>
+      <div id="enrollConfirmSummary" style="background:var(--accent-soft);border-radius:10px;padding:11px 14px;margin-bottom:16px;font-size:13px;color:var(--accent-ink)"></div>
+      <div class="modal-grid">
+        <div class="s-sec">
+          <span class="s-lbl">Fee Amount</span>
+          <input class="s-input" id="enrollFeeAmount" type="number" step="0.01" placeholder="0.00">
+        </div>
+        <div class="s-sec">
+          <span class="s-lbl">Currency</span>
+          <input class="s-input" id="enrollFeeCurrency" type="text" maxlength="5" placeholder="INR">
+        </div>
+        <div class="s-sec">
+          <span class="s-lbl">Payment Status</span>
+          <select class="s-input" id="enrollPaymentStatus">
+            <option value="pending">Pending</option>
+            <option value="paid">Paid</option>
+            <option value="waived">Waived</option>
+          </select>
+        </div>
+        <div class="s-sec">
+          <span class="s-lbl">Enrollment Status</span>
+          <select class="s-input" id="enrollStatus">
+            <option value="enrolled">Enrolled</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Payment Reference (optional)</span>
+        <input class="s-input" id="enrollPaymentRef" type="text" placeholder="Transaction ID, receipt no…">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Notes (optional)</span>
+        <input class="s-input" id="enrollNotes2" type="text">
+      </div>
+      <div class="s-row" style="justify-content:flex-end;margin-top:18px">
+        <button class="save-btn sec" onclick="enrollGoStep1()">← Back</button>
+        <button class="save-btn" id="enrollSubmitBtn" onclick="submitEnroll()">Confirm Enrollment</button>
+        <span class="save-msg" id="enrollMsg"></span>
+      </div>
+    </div>
+
+    <!-- Step 3: Success -->
+    <div id="enrollPane3" style="display:none;text-align:center;padding:10px 0 20px">
+      <div style="font-size:52px;margin-bottom:10px">🎓</div>
+      <div style="font-family:var(--disp);font-size:20px;font-weight:700;color:var(--accent-ink);margin-bottom:6px">Enrolled!</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:4px" id="enrollSuccessText"></div>
+      <div class="success-id" id="enrollSuccessId"></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:20px">Enrollment ID</div>
+      <button class="save-btn" onclick="closeEnrollModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 </div><!-- /inner -->
 </main>
 
@@ -499,7 +574,6 @@ const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
 const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
-let eduTableIds = {};
 let allCourses = [];
 let allCategories = [];
 let allPromotions = [];
@@ -512,6 +586,9 @@ let columnMap = {};
 // For category photo editing
 let _catMediaRowId = null;
 let _catMediaSlot = null;
+// For enrollment modal
+let _enrollCourse = null;
+let _enrollStudent = null; // {id, name, phone, email, isNew}
 
 const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
@@ -528,10 +605,7 @@ async function init() {
   const res = await fetch(`${WORKER_BASE}/edu/client?client_id=${encodeURIComponent(clientId)}`);
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
-  try { eduTableIds = JSON.parse(clientRecord.edu_table_ids || '{}'); } catch(e) { eduTableIds = {}; }
 
-  if (document.getElementById('cfgCoursesTable'))    document.getElementById('cfgCoursesTable').value    = eduTableIds.courses    || '';
-  if (document.getElementById('cfgEnrollmentsTable')) document.getElementById('cfgEnrollmentsTable').value = eduTableIds.enrollments || '';
   if (document.getElementById('cfgEnrollmentLink'))  document.getElementById('cfgEnrollmentLink').value  = clientRecord.edu_enrollment_link || '';
   if (document.getElementById('cfgEnrollmentsSheet')) document.getElementById('cfgEnrollmentsSheet').value = clientRecord.edu_enrollments_sheet || '';
   try {
@@ -554,7 +628,6 @@ function showTab(tab) {
 
 // ── COURSES ──────────────────────────────────────
 async function loadCourses() {
-  if (!eduTableIds.courses) { renderCoursesTable(); return; }
   const res = await fetch(`${WORKER_BASE}/edu/courses?client_id=${encodeURIComponent(clientId)}&include_inactive=true`);
   const data = await res.json().catch(() => ({}));
   allCourses = data.list || [];
@@ -596,6 +669,7 @@ function renderCoursesTable() {
       <td><span class="badge ${statusClass}">${esc(c.status||'active')}</span></td>
       <td><div class="row-actions">
         ${mediaIcons?`<span title="Has media: ${mediaIcons}" style="font-size:13px">${mediaIcons}</span>`:''}
+        <button class="icon-btn" onclick="openEnrollModal(${c.Id})" title="Enroll Student" style="color:var(--accent-ink)">🎓</button>
         <button class="icon-btn" onclick="openEditCourseModal(${c.Id})" title="Edit">✏️</button>
         <button class="icon-btn danger" onclick="deleteCourse(${c.Id})" title="Delete">🗑</button>
       </div></td>
@@ -985,7 +1059,6 @@ async function deleteStory(id) {
 
 // ── ENROLLMENTS ───────────────────────────────────
 async function loadEnrollments() {
-  if (!eduTableIds.enrollments) { renderEnrollmentsTable(); return; }
   const res = await fetch(`${WORKER_BASE}/edu/enrollments?client_id=${encodeURIComponent(clientId)}`);
   const data = await res.json().catch(() => ({}));
   allEnrollments = data.list || [];
@@ -1004,7 +1077,7 @@ function renderEnrollmentsTable() {
   const rows = allEnrollments.filter(e => !q || (e.student_name||'').toLowerCase().includes(q) || (e.course||'').toLowerCase().includes(q) || (e.enrollment_id||'').toLowerCase().includes(q));
   const tbody = document.getElementById('enrollmentsTbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📋</div>No enrollments yet.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">📋</div>No enrollments yet.</div></td></tr>`;
     return;
   }
   const statusClass = s => ({ pending:'pending', enrolled:'enrolled', completed:'completed', cancelled:'cancelled' }[s] || '');
@@ -1016,6 +1089,7 @@ function renderEnrollmentsTable() {
     <td><select class="badge ${statusClass(e.status)}" onchange="updateEnrollmentStatus(${e.Id},this.value)">
       ${['pending','enrolled','completed','cancelled'].map(s=>`<option value="${s}"${e.status===s?' selected':''}>${s}</option>`).join('')}
     </select></td>
+    <td><span class="badge ${e.payment_status==='paid'?'active':e.payment_status==='waived'?'completed':'pending'}">${esc(e.payment_status||'pending')}</span>${e.fee_amount?`<br><span style="font-size:11px;color:var(--muted)">${esc(e.fee_currency||'INR')} ${e.fee_amount}</span>`:''}</td>
     <td><div class="row-actions">
       <button class="icon-btn danger" onclick="deleteEnrollment(${e.Id})">🗑</button>
     </div></td>
@@ -1051,22 +1125,135 @@ async function deleteEnrollment(id) {
   await loadEnrollments();
 }
 
+// ── ENROLL MODAL ──────────────────────────────────────
+function showEnrollPane(n) {
+  [1,2,3].forEach(i => {
+    document.getElementById(`enrollPane${i}`).style.display = i === n ? '' : 'none';
+    const step = document.getElementById(`estep${i}`);
+    if (step) step.classList.toggle('active', i <= n);
+  });
+}
+
+function openEnrollModal(courseId) {
+  _enrollCourse = allCourses.find(c => c.Id === courseId); if (!_enrollCourse) return;
+  _enrollStudent = null;
+  document.getElementById('enrollPhone').value = '';
+  document.getElementById('enrollStudentResult').innerHTML = '';
+  document.getElementById('enrollNextBtn').disabled = true;
+  document.getElementById('enrollMsg').textContent = '';
+  document.getElementById('enrollModalCourseName').textContent = `Enroll — ${_enrollCourse.name}`;
+  const seats = _enrollCourse.seats_available != null ? `${_enrollCourse.seats_available} seat(s) left` : 'Unlimited seats';
+  const fee = _enrollCourse.price ? `${_enrollCourse.currency || 'INR'} ${_enrollCourse.price}` : 'No fee set';
+  document.getElementById('enrollCourseInfo').innerHTML = `<strong>${esc(_enrollCourse.name)}</strong> &nbsp;&middot;&nbsp; ${esc(seats)} &nbsp;&middot;&nbsp; ${esc(fee)}`;
+  document.getElementById('enrollFeeAmount').value = _enrollCourse.price || '';
+  document.getElementById('enrollFeeCurrency').value = _enrollCourse.currency || 'INR';
+  document.getElementById('enrollPaymentStatus').value = 'pending';
+  document.getElementById('enrollStatus').value = 'enrolled';
+  document.getElementById('enrollPaymentRef').value = '';
+  document.getElementById('enrollNotes2').value = '';
+  showEnrollPane(1);
+  document.getElementById('enrollModalOverlay').classList.add('active');
+}
+
+function closeEnrollModal() { document.getElementById('enrollModalOverlay').classList.remove('active'); }
+
+async function searchEnrollStudent() {
+  const phone = document.getElementById('enrollPhone').value.trim();
+  const result = document.getElementById('enrollStudentResult');
+  if (!phone) { result.innerHTML = '<div style="color:var(--muted);font-size:13px">Enter a phone number first.</div>'; return; }
+  result.innerHTML = '<span class="spinner"></span><span style="font-size:13px;color:var(--muted)">Searching...</span>';
+  _enrollStudent = null;
+  document.getElementById('enrollNextBtn').disabled = true;
+  try {
+    const res = await fetch(`${WORKER_BASE}/edu/students?client_id=${encodeURIComponent(clientId)}&q=${encodeURIComponent(phone)}`);
+    const data = await res.json().catch(() => ({}));
+    const students = (data.students || []).filter(s => s.phone === phone);
+    if (students.length) {
+      const s = students[0];
+      _enrollStudent = { id: s.id, name: s.name, phone: s.phone, email: s.email, isNew: false };
+      result.innerHTML = `<div class="student-found">
+        <div style="font-size:11px;color:#065F46;font-weight:600;margin-bottom:4px">Student found</div>
+        <div style="font-weight:600">${esc(s.name)}</div>
+        <div style="font-size:12px;color:var(--muted)">${esc(s.phone)}${s.email ? ' · ' + esc(s.email) : ''}</div>
+      </div>`;
+    } else {
+      _enrollStudent = { id: null, name: '', phone, email: '', isNew: true };
+      result.innerHTML = `<div class="student-new">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">No student found — fill in details to create one:</div>
+        <div class="modal-grid" style="gap:10px;margin-bottom:0">
+          <div class="s-sec" style="margin-bottom:0"><span class="s-lbl">Name *</span><input class="s-input" id="newStudentName" type="text" placeholder="Full name"></div>
+          <div class="s-sec" style="margin-bottom:0"><span class="s-lbl">Email</span><input class="s-input" id="newStudentEmail" type="email" placeholder="optional"></div>
+        </div>
+      </div>`;
+    }
+    document.getElementById('enrollNextBtn').disabled = false;
+  } catch(e) {
+    result.innerHTML = `<div style="color:#991B1B;font-size:13px">Search error: ${esc(e.message)}</div>`;
+  }
+}
+
+function enrollGoStep1() { showEnrollPane(1); }
+
+async function enrollGoStep2() {
+  if (_enrollStudent?.isNew) {
+    const name = (document.getElementById('newStudentName')?.value || '').trim();
+    if (!name) { alert('Student name is required'); return; }
+    _enrollStudent.name = name;
+    _enrollStudent.email = (document.getElementById('newStudentEmail')?.value || '').trim();
+  }
+  if (!_enrollStudent?.name && !_enrollStudent?.phone) { alert('Please search for a student first'); return; }
+  document.getElementById('enrollConfirmSummary').innerHTML =
+    `<strong>${esc(_enrollStudent.name || _enrollStudent.phone)}</strong> (${esc(_enrollStudent.phone)}) &nbsp;→&nbsp; <strong>${esc(_enrollCourse.name)}</strong>`;
+  showEnrollPane(2);
+}
+
+async function submitEnroll() {
+  const btn = document.getElementById('enrollSubmitBtn');
+  const msg = document.getElementById('enrollMsg');
+  btn.disabled = true; msg.textContent = '';
+  try {
+    let studentId = _enrollStudent.id;
+    if (_enrollStudent.isNew) {
+      const sRes = await fetch(`${WORKER_BASE}/edu/students`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, name: _enrollStudent.name, phone: _enrollStudent.phone, email: _enrollStudent.email })
+      });
+      const sData = await sRes.json();
+      if (!sRes.ok) throw new Error(sData.error || 'Failed to create student');
+      studentId = sData.id;
+    }
+    const feeVal = document.getElementById('enrollFeeAmount').value;
+    const body = {
+      client_id: clientId, student_id: studentId, course_id: _enrollCourse.Id,
+      student_name: _enrollStudent.name, student_phone: _enrollStudent.phone, student_email: _enrollStudent.email,
+      fee_amount: feeVal !== '' ? Number(feeVal) : null,
+      fee_currency: document.getElementById('enrollFeeCurrency').value.trim() || 'INR',
+      payment_status: document.getElementById('enrollPaymentStatus').value,
+      payment_reference: document.getElementById('enrollPaymentRef').value.trim(),
+      status: document.getElementById('enrollStatus').value,
+      notes: document.getElementById('enrollNotes2').value.trim(),
+    };
+    const res = await fetch(`${WORKER_BASE}/edu/enroll`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Enrollment failed');
+    document.getElementById('enrollSuccessText').textContent = `${_enrollStudent.name || _enrollStudent.phone} enrolled in ${_enrollCourse.name}`;
+    document.getElementById('enrollSuccessId').textContent = data.enrollment_id;
+    showEnrollPane(3);
+    await loadCourses();
+    await loadEnrollments();
+  } catch(e) {
+    msg.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { if (msg) msg.textContent = ''; }, 6000);
+  }
+}
+
 // ── SETTINGS ──────────────────────────────────────
 async function saveEnrollmentLink() {
   const link = document.getElementById('cfgEnrollmentLink').value.trim();
   const msg = document.getElementById('enrollmentLinkMsg');
   const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_enrollment_link: link }) });
-  msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
-  setTimeout(() => msg.textContent = '', 3000);
-}
-
-async function saveTableIds() {
-  const courses    = document.getElementById('cfgCoursesTable').value.trim();
-  const enrollments = document.getElementById('cfgEnrollmentsTable').value.trim();
-  const msg = document.getElementById('tableIdsMsg');
-  const ids = {}; if (courses) ids.courses = courses; if (enrollments) ids.enrollments = enrollments;
-  const res = await fetch(`${WORKER_BASE}/edu/client`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, edu_table_ids: JSON.stringify(ids) }) });
-  if (res.ok) { eduTableIds = ids; await loadCourses(); await loadEnrollments(); }
   msg.textContent = res.ok ? '✓ Saved' : 'Error saving';
   setTimeout(() => msg.textContent = '', 3000);
 }

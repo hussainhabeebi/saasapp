@@ -74,6 +74,23 @@ bucket_name = "leadvyne-ecom-category-media"
 binding = "MARKETING_MEDIA"
 bucket_name = "leadvyne-marketing-media"
 
+# Vectorize — semantic memory (SETUP.md "Semantic memory"). One shared index across all clients
+# (metadata-filtered by client_id/kind per query, not a physical per-client index, since Vectorize
+# indexes are a paid-per-index resource). Holds embeddings of past conversation exchanges plus
+# Ecommerce product/category text; the actual chunk text lives in D1 (migrations/0056_memory_chunks.sql),
+# keyed by the same id as the Vectorize vector. text-embedding-004 (768 dimensions, via the shared
+# GEMINI_API_KEY secret — no separate embeddings credential needed). One-time setup:
+#   1. wrangler vectorize create leadvyne-memory --dimensions=768 --metric=cosine
+#   2. wrangler vectorize create-metadata-index leadvyne-memory --property-name=client_id --type=number
+#   3. wrangler vectorize create-metadata-index leadvyne-memory --property-name=kind --type=string
+#   4. wrangler d1 migrations apply leadvyne-d1 --remote   (creates the memory_chunks table)
+# Every call site checks this binding exists and fails open if it's missing/misconfigured — a
+# deployment that skips this setup just runs without semantic memory (Tier 1 customer-facts memory
+# and everything else keep working normally), not a broken deploy.
+[[vectorize]]
+binding = "MEMORY_INDEX"
+index_name = "leadvyne-memory"
+
 # Durable Object — one instance per client (idFromName(clientId) in worker.js), holding that
 # client's currently-connected dashboard WebSockets so a new inbound message can push straight to
 # an open tab instead of waiting for the next 60s poll (SETUP.md "Real-time dashboard updates").
@@ -157,7 +174,7 @@ class_name = "ProjectTaskWorkflow"
 [vars]
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
-ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com"
+ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com,https://www.leadvyne.com"
 # Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 # Billing module — see SETUP.md "Billing module"

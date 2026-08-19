@@ -17,6 +17,7 @@ import {
   engineExtractReplyOptions,
   engineHandoverCannedTexts,
   engineRouteFlow,
+  engineFindHallucinatedLink,
   engineSendChatwootReply,
   engineBuildFaqSystemPrompt,
   engineExtractPlainOptionsFromReply,
@@ -379,6 +380,32 @@ describe('engineTextSimilarity — near-duplicate loop detection (FIXES.md #13)'
 
   test('short unrelated replies do not false-positive on shared function words', () => {
     assert.ok(engineTextSimilarity('Do you need help?', 'Do you want more?') < 0.7);
+  });
+});
+
+describe('engineFindHallucinatedLink — reject invented URLs (FIXES.md #21)', () => {
+  test('the exact Wellness Virtue hallucinated Shopify link is caught when no link was given', () => {
+    const reply = 'You can order them directly from our Shopify store here: https://thevirtues.in/collections/glutathione-collection';
+    assert.equal(engineFindHallucinatedLink(reply, []), 'https://thevirtues.in/collections/glutathione-collection');
+  });
+
+  test('a link that exactly matches an allowed link passes through', () => {
+    const reply = 'Order here: https://thevirtues.in/products/glutathione-tablets';
+    assert.equal(engineFindHallucinatedLink(reply, ['https://thevirtues.in/products/glutathione-tablets']), null);
+  });
+
+  test('a reply with no link at all is never flagged', () => {
+    assert.equal(engineFindHallucinatedLink('Yes, it is in stock right now!', []), null);
+  });
+
+  test('trailing punctuation on a real link does not false-positive', () => {
+    const reply = 'Here you go: https://thevirtues.in/products/glutathione-tablets.';
+    assert.equal(engineFindHallucinatedLink(reply, ['https://thevirtues.in/products/glutathione-tablets']), null);
+  });
+
+  test('a second, different invented link is still caught even with one real link present', () => {
+    const reply = 'Real one: https://thevirtues.in/products/real. Also try https://thevirtues.in/made-up-page for more.';
+    assert.equal(engineFindHallucinatedLink(reply, ['https://thevirtues.in/products/real']), 'https://thevirtues.in/made-up-page');
   });
 });
 
