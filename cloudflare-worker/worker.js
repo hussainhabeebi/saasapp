@@ -10352,11 +10352,32 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
   if(industry==='education'){
-    sys+='\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general answers. Use VERIFIED COURSE DATA only for course facts. Never invent or infer a course name, category, level, price, duration, start date, seats, media, PDF or enrollment link. If a requested fact is absent, say it is not verified and offer staff handover.';
+    sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK:
+• Only use VERIFIED COURSE DATA for course facts (name, level, price, duration, start date, seats, links, media).
+• Never invent or infer any course detail that is not explicitly in your data.
+• If a fact is missing, say "I don't have that detail confirmed" and offer to connect them with our team.
+
+EDUCATION FORMAT RULES — follow every reply:
+• Use short bullet points (•) instead of long paragraphs.
+• Each bullet = one clear fact or one action — never more than 15 words per bullet.
+• Use relevant emojis as bullet icons: 📚 for courses, 🗓 for dates, 💰 for fees, 🎯 for levels, ⏱ for duration, 🪑 for seats, 📄 for brochure, 🔗 for links, ✅ for availability, ❌ for unavailable.
+• After listing course options, always offer *choice buttons* so the student can tap instead of type — format: "Would you like to: [Enroll Now] [Get Brochure] [Talk to Advisor] [See All Courses]".
+• Keep total reply under 5 bullets unless listing multiple courses.
+• End every reply with one clear next-step button prompt.`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
-      higher_education:'HIGHER EDUCATION COMMUNICATION STYLE: Sound professional, supportive and outcomes-focused. Guide discovery in this order when applicable: programme area, entry requirements or level, then verified matching courses. Emphasise academic credibility, career pathways and verified course facts. Never invent qualifications, accreditations, entry criteria or scholarship amounts.',
-      courses_online:'COURSES / ONLINE LEARNING COMMUNICATION STYLE: Sound encouraging, practical and results-oriented. Guide discovery in this order when applicable: topic or skill area, level, then verified matching courses. Emphasise flexibility, self-paced learning and verified course outcomes. Never invent module counts, platform features, completion guarantees or pricing.'
+      higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
+• Tone: professional, supportive, outcomes-focused — like a university admissions advisor.
+• Discovery order: 1️⃣ Area of study → 2️⃣ Entry level / requirements → 3️⃣ Matched verified programmes.
+• Highlight: 🎓 academic credibility, 💼 career pathways, 🏛 institutional reputation.
+• Button prompts to use: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]
+• Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.`,
+      courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
+• Tone: encouraging, energetic, results-driven — like a learning coach.
+• Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
+• Highlight: ⚡ flexibility, 📱 self-paced learning, 🏆 outcomes and certifications.
+• Button prompts to use: [Enroll Now] [Watch Preview] [Get Syllabus] [Chat with Advisor]
+• Never invent module counts, platform features, completion guarantees or discounts.`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
