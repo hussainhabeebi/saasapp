@@ -10299,6 +10299,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineMemoryBlock(state);
+  // Hospitality: inject the selected unit so the LLM has booking/availability context
+  const hospSelectedUnit=state.lead?.HospSelectedUnit;
+  if(hospSelectedUnit) sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
@@ -18276,6 +18279,19 @@ async function hospitalityChatwootText(c, convId, text){
   }).catch(()=>{});
 }
 
+// Matches a unit/property name against customer text, including truncated button taps.
+// WhatsApp quick-reply buttons are capped at 20–24 chars with "..." appended; when the customer
+// taps "Premium Tea Garden..." the raw text ending with "..." must still match the full unit name
+// "Premium Tea Garden View". Handles both exact substring and truncated-prefix cases.
+function hospUnitNameMatch(lower, unitName){
+  const name=(unitName||'').trim().toLowerCase();
+  if(name.length<4) return false;
+  if(lower.includes(name)) return true;
+  // Truncated button tap: strip trailing "..." from customer text, check if unit name starts with it
+  if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
+  return false;
+}
+
 // Returns true when a resort client's lead should receive media+description instead of an LLM reply
 // this turn. True when:
 //   - Message matches a resort enquiry signal (keyword regex, or property/unit name mention)
@@ -18287,10 +18303,10 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific unit name match — always suppress LLM so the unit media speaks for itself,
   // regardless of whether this lead has received media before.
   const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-  if(units && units.some(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()))) return true;
+  if(units && units.some(u=>hospUnitNameMatch(lower, u.name))) return true;
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-  if(props && props.some(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()))) return true;
+  if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -18331,6 +18347,14 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+    // Resort: after unit media, offer a booking/availability button so the customer can connect
+    // with the team in one tap. The button value is a generic phrase so it routes to human handover
+    // via intent classification without re-triggering unit name matching.
+    if(c.hospitality_style==='resort'){
+      await engineSendChatwootQuickReply(env, c, clientId, convId,
+        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
+    }
   }
   return sentAny;
 }
@@ -18463,16 +18487,21 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
     if(c.hospitality_style==='resort'){
       // Resort 2-tier matching (migrations/0066_resort_properties.sql):
       // 1. Specific room name → send that room's media (5 images + 2 videos)
-      const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+      const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
       if(specificUnit){
         const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
         if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        // Store selected unit in lead memory so the LLM knows their interest on the next turn
+        try{
+          await ensureLeadsColumns(env, ['HospSelectedUnit']);
+          await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:specificUnit.name}});
+        }catch(e){}
         return;
       }
       // 2. Property name → send property media + all its rooms
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
       if(properties && properties.length){
-        const specificProp=properties.find(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()));
+        const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
           const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
           if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
@@ -18494,11 +18523,16 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
     }
 
     // Existing hotel / houseboat logic — unchanged
-    const specificUnit=units.find(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()));
+    const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
     if(specificUnit){
       const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
       if(already) return;
       await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+      // Store selected unit in lead memory
+      try{
+        await ensureLeadsColumns(env, ['HospSelectedUnit']);
+        await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:specificUnit.name}});
+      }catch(e){}
       return;
     }
     const enquiryRe=c.hospitality_style==='houseboat'?HOSPITALITY_HOUSEBOAT_ENQUIRY_RE:HOSPITALITY_GENERAL_ENQUIRY_RE;
