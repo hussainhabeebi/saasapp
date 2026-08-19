@@ -13366,6 +13366,16 @@ async function handleEngineWebhook(request, env, secret){
           const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
           faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
         }
+        // Healthcare: when the LLM answered a question but offered no tappable choice, always
+        // surface a "Book Appointment" CTA so the customer can act without typing a command.
+        if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
+          const hcServices=await hcListActiveServices(env,clientId);
+          if(hcServices.length===1){
+            faqQuickReplies=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+          } else if(hcServices.length>1){
+            faqQuickReplies=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+          }
+        }
       }
       // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
       // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
@@ -21889,7 +21899,20 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
   }
   const session=await hcBookingSession(env,clientId,phone);
-  if(!session) return {handled:false};
+  if(!session){
+    // Plain-text booking intent ("book", "schedule", "I want an appointment", etc.) — start the
+    // native WhatsApp flow directly instead of falling through to the FAQ LLM which can't offer
+    // the actual slot picker buttons.
+    if(!action.startsWith('HC_BOOK_') && /\b(?:book|schedule|appoint|reserv|slot|visit)\b/i.test(action)){
+      const allServices=await hcListActiveServices(env,clientId);
+      if(!allServices.length) return {handled:false};
+      if(allServices.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(allServices[0].id)});
+      const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(allServices));
+      return {handled:true,text,quickReplies};
+    }
+    return {handled:false};
+  }
   if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
     await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
     const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
