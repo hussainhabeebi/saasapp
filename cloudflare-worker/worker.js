@@ -8647,6 +8647,50 @@ async function engineBuildHealthcareContext(env,clientId){
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
   return lines.join('\n');
 }
+async function engineBuildEduContext(env, clientId){
+  const [courses, categories, promos]=await Promise.all([
+    env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name,description FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
+  ]);
+  const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
+    `STRICT_ZERO_HALLUCINATION=ON`,
+    `Never invent, estimate, or infer any course name, price, duration, level, start date, seats, link, brochure, certificate, scholarship amount, or instructor. Answer ONLY from the data below and the main business prompt. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover.`
+  ];
+  if(categories.length){
+    lines.push('### Course Categories');
+    categories.forEach(cat=>lines.push(`- ${cat.name}${cat.description?' | '+cat.description:''}`));
+  }
+  if(courses.length){
+    lines.push('### Active Courses');
+    courses.forEach(cr=>{
+      const p=[`- ${cr.name}`];
+      if(cr.short_label) p.push(`label: ${cr.short_label}`);
+      if(cr.category) p.push(`category: ${cr.category}`);
+      if(cr.level) p.push(`level: ${cr.level}`);
+      if(cr.duration) p.push(`duration: ${cr.duration}`);
+      if(cr.start_date) p.push(`starts: ${cr.start_date}`);
+      p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
+      if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
+      if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
+      if(cr.pdf_url) p.push(`brochure: ${cr.pdf_url}`);
+      if(cr.description) p.push(cr.description.slice(0,200));
+      lines.push(p.join(' | '));
+    });
+  } else {
+    lines.push('No active courses in the database — answer from the main business prompt only and never invent course details.');
+  }
+  if(promos.length){
+    lines.push('### Active Scholarships / Offers');
+    promos.forEach(pr=>{
+      const p=[`- ${pr.code}`];
+      if(pr.description) p.push(pr.description.slice(0,150));
+      if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
+      lines.push(p.join(' | '));
+    });
+  }
+  return lines.join('\n');
+}
 function ecomProductChoiceItems(products){
   const seen=new Set();
   const items=[];
@@ -10369,7 +10413,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
   if(industry==='education'){
-    sys+=`\n\nEDUCATION RULES — apply to EVERY reply without exception:
+    sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general questions. Use VERIFIED COURSE DATA (injected above) for all course facts. Never invent or infer a course name, category, fee, duration, level, start date, seats, enrollment link, brochure, certificate, scholarship amount, or instructor. Never list courses or scholarships that are not in VERIFIED COURSE DATA. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover — never guess or estimate.
+
+EDUCATION RULES — apply to EVERY reply without exception:
 
 DATA ACCURACY:
 • Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
@@ -13306,6 +13352,7 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
