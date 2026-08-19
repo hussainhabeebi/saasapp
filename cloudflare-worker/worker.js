@@ -18364,9 +18364,10 @@ async function handleHospitalityPropertyDelete(request, env){
   return json({ok:true});
 }
 
-// Sends property-level media (up to 5 images + 2 videos) then sends each of the property's rooms.
-// Used by the resort 2-tier engine — a property match triggers this so the lead sees the full
-// resort overview in one burst rather than needing to name an individual villa/room.
+// Sends property-level media (up to 5 images + 2 videos) then lists the property's sub-units as
+// tappable quick-reply buttons. The lead sees the resort overview first; tapping a unit name
+// triggers the specificUnit branch in engineMaybeSendHospitalityMedia which sends that unit's own
+// photos — avoids dumping every room's photo catalog at once on a general enquiry.
 async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
   // Send property description + amenities as text before the media burst so the lead reads context first.
   const descParts=[];
@@ -18384,19 +18385,35 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
   ].filter(m=>m.url);
   let sentAny=false;
   for(let i=0;i<items.length;i++){
-    const fileId=driveFileId(items[i].url);
-    if(!fileId) continue;
-    const fetched=await driveFetchFile(fileId);
-    if(!fetched) continue;
+    let blob=null;
+    const marker='/hospitality/media/';
+    const idx=items[i].url.indexOf(marker);
+    if(idx!==-1){
+      const key=items[i].url.slice(idx+marker.length);
+      const obj=await env.HOSPITALITY_MEDIA.get(key);
+      if(obj) blob=await obj.blob();
+    }else{
+      const fileId=driveFileId(items[i].url);
+      if(fileId){
+        const fetched=await driveFetchFile(fileId);
+        if(fetched) blob=fetched.blob;
+      }
+    }
+    if(!blob) continue;
     const fd=new FormData();
     fd.append('content', i===0?`Welcome to ${property.name}! 🏨`:'');
     fd.append('message_type','outgoing'); fd.append('private','false');
-    fd.append('attachments[]', fetched.blob, items[i].name);
+    fd.append('attachments[]', blob, items[i].name);
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(r.ok) sentAny=true;
   }
+  // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
+  // specific unit's photos — instead of sending every room's media upfront at once.
   const rooms=(allUnits||[]).filter(u=>u.property_id===property.id);
-  for(const room of rooms) await hospitalitySendUnitMedia(env, c, clientId, convId, leadId, room);
+  if(rooms.length){
+    const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
+    await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which option would you like to know more about? 👇', unitButtons);
+  }
   if(sentAny || rooms.length){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_property_media_sent (client_id, lead_id, property_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, property.id, new Date().toISOString()).run();
