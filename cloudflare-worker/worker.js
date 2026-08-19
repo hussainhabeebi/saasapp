@@ -18240,20 +18240,17 @@ async function hospitalityChatwootText(c, convId, text){
 async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
   if(!userText) return false;
   const lower=userText.toLowerCase();
-  // Fast path — check keyword / name signal first before touching DB
-  let hasSignal=HOSPITALITY_RESORT_ENQUIRY_RE.test(lower);
-  if(!hasSignal){
-    const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-    if(units && units.some(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()))) hasSignal=true;
-  }
-  if(!hasSignal){
-    const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-    if(props && props.some(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()))) hasSignal=true;
-  }
-  if(!hasSignal) return false;
-  // Brand-new lead → definitely first inquiry
+  // Specific unit name match — always suppress LLM so the unit media speaks for itself,
+  // regardless of whether this lead has received media before.
+  const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+  if(units && units.some(u=>u.name && u.name.trim().length>=4 && lower.includes(u.name.trim().toLowerCase()))) return true;
+  // Specific property name match — same: always suppress LLM.
+  const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+  if(props && props.some(p=>p.name && p.name.trim().length>=4 && lower.includes(p.name.trim().toLowerCase()))) return true;
+  // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
+  // subsequent keyword-only messages still get a normal LLM reply.
+  if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
   if(!leadId) return true;
-  // Returning lead — check if they've ever received any resort media
   const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
   if(sentUnit) return false;
   const sentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
@@ -18409,7 +18406,9 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
   }
   // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
   // specific unit's photos — instead of sending every room's media upfront at once.
-  const rooms=(allUnits||[]).filter(u=>u.property_id===property.id);
+  // Fall back to all active units if none are linked to this property via property_id.
+  const linkedRooms=(allUnits||[]).filter(u=>u.property_id===property.id);
+  const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
   if(rooms.length){
     const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
     await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which option would you like to know more about? 👇', unitButtons);
