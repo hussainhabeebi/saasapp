@@ -11411,7 +11411,14 @@ async function engineTtsWithFallback(env, text, langCode, provider){
   const mode=(provider||'').toLowerCase();
   if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
   if(mode==='piper') return enginePiperTts(env, text, iso);
-  if(mode==='ai4bharat') return engineAi4BharatTts(env, text, iso);
+  if(mode==='ai4bharat'){
+    const ai4bharatBuf=await engineAi4BharatTts(env, text, iso);
+    if(ai4bharatBuf) return ai4bharatBuf;
+    // AI4Bharat failed (render pipeline unavailable / AI4BHARAT_TTS_ENABLED not set) — fall back
+    // to Sarvam so the customer still gets a voice reply instead of silently downgrading to text.
+    if(bcp47) return engineSarvamTts(env, text, bcp47);
+    return null;
+  }
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
     if(sarvamBuf) return sarvamBuf;
