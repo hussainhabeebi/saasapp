@@ -10369,32 +10369,45 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
   }
   if(industry==='education'){
-    sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK:
-• Only use VERIFIED COURSE DATA for course facts (name, level, price, duration, start date, seats, links, media).
-• Never invent or infer any course detail that is not explicitly in your data.
-• If a fact is missing, say "I don't have that detail confirmed" and offer to connect them with our team.
+    sys+=`\n\nEDUCATION RULES — apply to EVERY reply without exception:
 
-EDUCATION FORMAT RULES — follow every reply:
-• Use short bullet points (•) instead of long paragraphs.
-• Each bullet = one clear fact or one action — never more than 15 words per bullet.
-• Use relevant emojis as bullet icons: 📚 for courses, 🗓 for dates, 💰 for fees, 🎯 for levels, ⏱ for duration, 🪑 for seats, 📄 for brochure, 🔗 for links, ✅ for availability, ❌ for unavailable.
-• After listing course options, always offer *choice buttons* so the student can tap instead of type — format: "Would you like to: [Enroll Now] [Get Brochure] [Talk to Advisor] [See All Courses]".
-• Keep total reply under 5 bullets unless listing multiple courses.
-• End every reply with one clear next-step button prompt.`;
+DATA ACCURACY:
+• Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
+• Never invent or infer any detail not explicitly in your data.
+• If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+
+FORMAT — every single reply must follow this structure:
+• Write in short bullet points (•) only — NO long paragraphs, ever.
+• Each bullet = one fact or one action, max 15 words.
+• Lead every bullet with a matching emoji:
+  📚 course name  🗓 date/schedule  💰 fee/price  🎯 level  ⏱ duration
+  🪑 seats left  📄 brochure/syllabus  🔗 link  ✅ available  ❌ not available
+  🏆 outcome/certificate  👨‍🏫 instructor  📍 location/mode  🎁 scholarship/offer
+
+BUTTONS — mandatory after EVERY reply:
+• Always end with a row of tappable choice buttons — never skip this.
+• Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
+  — After greeting / general query:       [Browse Courses] [Talk to Advisor] [About Us]
+  — After listing courses:                [Enroll Now] [Get Brochure] [Schedule a Call]
+  — After sharing one course detail:      [Enroll Now] [Download Syllabus] [Ask a Question]
+  — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
+  — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
+  — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
+• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
       higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
 • Tone: professional, supportive, outcomes-focused — like a university admissions advisor.
-• Discovery order: 1️⃣ Area of study → 2️⃣ Entry level / requirements → 3️⃣ Matched verified programmes.
-• Highlight: 🎓 academic credibility, 💼 career pathways, 🏛 institutional reputation.
-• Button prompts to use: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]
-• Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.`,
+• Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
+• Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
+• Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
+• Preferred button set: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]`,
       courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
-• Tone: encouraging, energetic, results-driven — like a learning coach.
+• Tone: encouraging, energetic, results-driven — like a personal learning coach.
 • Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
-• Highlight: ⚡ flexibility, 📱 self-paced learning, 🏆 outcomes and certifications.
-• Button prompts to use: [Enroll Now] [Watch Preview] [Get Syllabus] [Chat with Advisor]
-• Never invent module counts, platform features, completion guarantees or discounts.`
+• Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
+• Never invent module counts, platform features, completion guarantees or discount amounts.
+• Preferred button set: [Enroll Now] [Watch Free Preview] [Get Syllabus] [Chat with Advisor]`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
