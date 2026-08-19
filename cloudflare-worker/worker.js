@@ -7142,6 +7142,68 @@ async function handleEduEnrollmentDelete(request, env){
   return json({ok:true});
 }
 
+/* ── Education Students (migration 0066) ── */
+async function handleEduStudentSearch(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  const q=String(url.searchParams.get('q')||'').trim();
+  if(!clientId) return json({error:'client_id required'},400);
+  let results;
+  if(q){
+    const like=`%${q}%`;
+    const r=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? AND (phone LIKE ? OR name LIKE ?) ORDER BY name ASC LIMIT 10`).bind(Number(clientId),like,like).all();
+    results=r.results||[];
+  } else {
+    const r=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? ORDER BY name ASC LIMIT 50`).bind(Number(clientId)).all();
+    results=r.results||[];
+  }
+  return json({students:results});
+}
+
+async function handleEduStudentUpsert(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').trim();
+  const name=String(body.name||'').trim();
+  if(!clientId||!phone||!name) return json({error:'client_id, phone and name required'},400);
+  const existing=await env.DB.prepare(`SELECT * FROM edu_students WHERE client_id=? AND phone=?`).bind(Number(clientId),phone).first();
+  if(existing) return json({...existing, created:false});
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)`)
+    .bind(Number(clientId),name,phone,String(body.email||''),String(body.notes||''),now).run();
+  return json({id:r.meta.last_row_id,client_id:Number(clientId),name,phone,email:body.email||'',created:true});
+}
+
+/* ── Atomic Enrollment (migration 0066) ── */
+async function handleEduEnroll(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const studentId=parseInt(body.student_id,10);
+  const courseId=parseInt(body.course_id,10);
+  if(!clientId||!studentId||!courseId) return json({error:'client_id, student_id and course_id required'},400);
+
+  const course=await env.DB.prepare(`SELECT * FROM edu_courses WHERE id=? AND client_id=?`).bind(courseId,Number(clientId)).first();
+  if(!course) return json({error:'Course not found'},404);
+
+  if(course.seats_available!==null && course.seats_available<=0) return json({error:'No seats available for this course'},400);
+
+  const dup=await env.DB.prepare(`SELECT id FROM edu_enrollments WHERE client_id=? AND student_id=? AND course_id=?`).bind(Number(clientId),studentId,courseId).first();
+  if(dup) return json({error:'Student is already enrolled in this course'},409);
+
+  const enrollmentId=`ENR-${Date.now()}-${Math.floor(Math.random()*9000)+1000}`;
+  const now=new Date().toISOString();
+
+  const stmts=[
+    env.DB.prepare(`INSERT INTO edu_enrollments (client_id,student_id,course_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,fee_amount,fee_currency,payment_status,payment_reference,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId),studentId,courseId,enrollmentId,now.slice(0,10),String(body.student_name||''),String(body.student_phone||''),String(body.student_email||''),course.name,body.status||'enrolled',body.fee_amount??null,String(body.fee_currency||'INR'),body.payment_status||'pending',String(body.payment_reference||''),String(body.notes||''),now,now)
+  ];
+  if(course.seats_available!==null){
+    stmts.push(env.DB.prepare(`UPDATE edu_courses SET seats_available=seats_available-1,updated_at=? WHERE id=? AND client_id=? AND seats_available>0`).bind(now,courseId,Number(clientId)));
+  }
+  const results=await env.DB.batch(stmts);
+  return json({ok:true,enrollment_id:enrollmentId,id:results[0].meta.last_row_id});
+}
+
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
 async function handleEduCategoriesList(request, env){
   const url=new URL(request.url);
@@ -22632,6 +22694,9 @@ export default {
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
+      else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
+      else if(url.pathname==='/edu/students' && request.method==='POST'){ res=await handleEduStudentUpsert(request, env); }
+      else if(url.pathname==='/edu/enroll' && request.method==='POST'){ res=await handleEduEnroll(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
