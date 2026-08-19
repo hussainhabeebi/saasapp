@@ -22096,7 +22096,7 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
   if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
     const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
     if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
-    const result=await hcFinalizeWhatsappBooking(env,c,clientId,phone,leadId,session,chosen);
+    const result=await hcFinalizeWhatsappBooking(env,c,clientId,phone,session,chosen);
     if(result.slotTaken){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
     const row=result.row;
     const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\nRef: ${result.aptRef}\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
@@ -22105,21 +22105,17 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
   }
   return {handled:false};
 }
-async function hcFinalizeWhatsappBooking(env,c,clientId,phone,leadId,session,chosen){
+async function hcFinalizeWhatsappBooking(env,c,clientId,phone,session,chosen){
   const now=new Date().toISOString(), aptRef='APT-'+Date.now();
   let result;
   try{
     result=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'confirmed','whatsapp','','',?,?)`)
-      .bind(Number(clientId),session.patient_name,String(phone),Number(leadId)||0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
+      .bind(Number(clientId),session.patient_name,String(phone),0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
   }catch(e){
     if(/unique|constraint/i.test(String(e?.message||e))) return {ok:false,slotTaken:true};
     throw e;
   }
   const row=await hcAppointmentRow(env,clientId,result.meta.last_row_id);
-  if(leadId){
-    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:leadId,AppointmentRef:aptRef}}).catch(()=>{});
-    await sendMetaCapiEvent(env,c,'booked',{Id:leadId},{}).catch(()=>{});
-  }
   await hcQueueAppointmentAutomation(env,row,null,'upsert');
   await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
   return {ok:true,row,aptRef};
