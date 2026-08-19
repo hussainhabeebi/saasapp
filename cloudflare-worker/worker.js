@@ -8591,7 +8591,10 @@ async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
 export function hcVerifiedServiceText(service,question){
   const lines=[`*${service.name}*`];
   if(service.description)lines.push(service.description);
-  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${service.currency||''} ${service.price}`.trim());
+  if(/price|cost|fee|how much/i.test(question||'')){
+    if(Number(service.price)>0) lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
+    else lines.push('Price: Available on consultation — contact the clinic for exact pricing.');
+  }
   if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
   if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
   // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
@@ -8638,7 +8641,7 @@ async function engineBuildHealthcareContext(env,clientId){
   const strict=hcSettings?.strict_zero_hallucination!==0;
   const lines=[`\n\n## VERIFIED HEALTHCARE DATA${strict?' — ONLY SOURCE OF TRUTH':''}`,`STRICT_ZERO_HALLUCINATION=${strict?'ON':'OFF'}`];
   lines.push(`Never diagnose, prescribe, guarantee insurance coverage, invent availability, price, doctor, treatment, or policy.${strict?' If the requested fact is absent below, say it is not verified and offer clinic-team handover.':''}`);
-  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | '+(s.currency||'')+' '+s.price:''}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
+  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | price: '+(s.currency||'')+' '+s.price:' | price: On consultation (never invent a number — say exactly "on consultation" when asked)'}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
   if(deps.length){lines.push('### Departments');deps.forEach(d=>lines.push(`- ${d.name}${d.description?' | '+d.description:''}`));}
   if(docs.length){lines.push('### Doctors');docs.forEach(d=>lines.push(`- ${d.name}${d.specialization?' | '+d.specialization:''}${d.qualification?' | '+d.qualification:''}${d.experience_years?' | '+d.experience_years+' years':''}${d.consultation_fee?' | consultation fee '+d.consultation_fee:''}${d.description?' | '+d.description:''}`));}
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
@@ -10352,7 +10355,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   if(contextBlock) sys+=contextBlock;
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
-    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover.';
+    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
   }
   if(industry==='ecommerce'){
     sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
