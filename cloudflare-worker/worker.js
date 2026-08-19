@@ -8514,7 +8514,17 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
     ON healthcare_queue_failures(client_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
-    ON healthcare_booking_sessions(expires_at)`
+    ON healthcare_booking_sessions(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(client_id, doctor_id, service_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_doctor
+    ON healthcare_doctor_services(client_id, doctor_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_service
+    ON healthcare_doctor_services(client_id, service_id)`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -12775,9 +12785,11 @@ async function handleEngineWebhook(request, env, secret){
             sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
             routing.reply=sentText;
             if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:doctor.image_url||null});
+            // Send image first (no caption), then doctor bio + "📅 Book Appointment" button together
+            // so the action button is visually attached to the bio text, not buried after extra media.
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
             await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book an appointment?',[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`}]);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
             orderHandledInline=true;
           }else{
             const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
@@ -21775,6 +21787,40 @@ const hcInsuranceCrud=reCrud('healthcare_insurance', [
   {key:'last_verified_at', type:'text', maxLen:40}
 ]);
 
+// GET /healthcare/doctor-services?doctor_id=X → {list:[service_id,...]}
+// POST /healthcare/doctor-services {doctor_id, service_ids:[...]} → replaces full set for that doctor
+async function handleHcDoctorServicesGet(request, env){
+  const auth=await requireSessionAuth(request, env);
+  if(auth.error) return json({error:auth.error}, auth.status||401);
+  await hcEnsureOperationsSchema(env);
+  const doctorId=Number(new URL(request.url).searchParams.get('doctor_id')||0);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const {results}=await env.DB.prepare(
+    `SELECT ds.service_id, s.name FROM healthcare_doctor_services ds
+     LEFT JOIN healthcare_services s ON s.id=ds.service_id
+     WHERE ds.client_id=? AND ds.doctor_id=? ORDER BY s.name`
+  ).bind(Number(auth.payload.cid),doctorId).all().catch(()=>({results:[]}));
+  return json({list:(results||[]).map(r=>({service_id:r.service_id,name:r.name}))});
+}
+async function handleHcDoctorServicesSet(request, env){
+  const auth=await requireSessionAuth(request, env);
+  if(auth.error) return json({error:auth.error}, auth.status||401);
+  await hcEnsureOperationsSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const doctorId=Number(body.doctor_id||0);
+  const serviceIds=(body.service_ids||[]).map(Number).filter(Boolean);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const clientId=Number(auth.payload.cid);
+  const now=new Date().toISOString();
+  // Replace the full set atomically: delete existing, insert new
+  await env.DB.prepare(`DELETE FROM healthcare_doctor_services WHERE client_id=? AND doctor_id=?`).bind(clientId,doctorId).run();
+  for(const sid of serviceIds){
+    await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_doctor_services(client_id,doctor_id,service_id,created_at) VALUES(?,?,?,?)`)
+      .bind(clientId,doctorId,sid,now).run();
+  }
+  return json({ok:true,count:serviceIds.length});
+}
+
 async function hcRequireSessionClient(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return null;
@@ -21929,14 +21975,52 @@ async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang)
   const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
   return {handled:true,text,quickReplies};
 }
+async function hcDoctorServices(env,clientId,doctorId){
+  // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
+  // department-based lookup so clinics that haven't set up explicit links still work.
+  const {results:linked}=await env.DB.prepare(
+    `SELECT s.* FROM healthcare_services s
+     INNER JOIN healthcare_doctor_services ds ON ds.service_id=s.id AND ds.client_id=s.client_id
+     WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 20`
+  ).bind(Number(clientId),Number(doctorId)).all().catch(()=>({results:[]}));
+  if(linked&&linked.length) return linked;
+  // Fallback: department-based
+  const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(Number(doctorId),Number(clientId)).first().catch(()=>null);
+  if(!doc?.department_id) return [];
+  const {results:dept}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId),Number(doc.department_id)).all().catch(()=>({results:[]}));
+  return dept||[];
+}
 async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
   const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
   const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
   if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
   const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
-  if(doctor) return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
-  const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
-  const doctors=results||[];
+  if(doctor){
+    // When a doctor is chosen, check which services they handle. If multiple, ask the patient
+    // to pick a service first (so the appointment record has a service_id).
+    if(!service){
+      const doctorSvcs=await hcDoctorServices(env,clientId,doctor.id);
+      if(doctorSvcs.length>1){
+        await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
+        const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
+        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(doctorSvcs));
+        return {handled:true,text,quickReplies};
+      }
+      if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
+    }
+    return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
+  }
+  // Service chosen first — find doctors who handle it (explicit links first, department fallback)
+  const {results:linkedDocs}=await env.DB.prepare(
+    `SELECT d.id,d.name FROM healthcare_doctors d
+     INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
+     WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
+  ).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+  let doctors=linkedDocs||[];
+  if(!doctors.length){
+    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
+    doctors=results||[];
+  }
   if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
   if(!doctors.length){
     const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
@@ -21957,6 +22041,14 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     const session=await hcBookingSession(env,clientId,phone);
     if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
     return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
+  }
+  // Service name tapped while in choose_service stage (doctor already chosen, now picking service)
+  {
+    const preSession=await hcBookingSession(env,clientId,phone);
+    if(preSession?.stage==='choose_service'&&!action.startsWith('HC_BOOK_')){
+      const svc=await env.DB.prepare(`SELECT id FROM healthcare_services WHERE client_id=? AND (name=? OR short_label=?) AND status='active' LIMIT 1`).bind(Number(clientId),action,action).first().catch(()=>null);
+      if(svc) return hcSendBookingDates(env,c,clientId,convId,phone,{...preSession,service_id:Number(svc.id),stage:'choose_date'},replyLang);
+    }
   }
   const session=await hcBookingSession(env,clientId,phone);
   if(!session){
@@ -23102,6 +23194,8 @@ export default {
       else if(url.pathname==='/healthcare/services' && request.method==='POST'){ res=await hcServicesCrud.create(request, env); }
       else if(url.pathname==='/healthcare/services' && request.method==='PATCH'){ res=await hcServicesCrud.update(request, env); }
       else if(url.pathname==='/healthcare/services' && request.method==='DELETE'){ res=await hcServicesCrud.del(request, env); }
+      else if(url.pathname==='/healthcare/doctor-services' && request.method==='GET'){ res=await handleHcDoctorServicesGet(request, env); }
+      else if(url.pathname==='/healthcare/doctor-services' && request.method==='POST'){ res=await handleHcDoctorServicesSet(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='GET'){ res=await hcSchedulesCrud.list(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='POST'){ res=await hcSchedulesCrud.create(request, env); }
       else if(url.pathname==='/healthcare/schedules' && request.method==='PATCH'){ res=await hcSchedulesCrud.update(request, env); }
