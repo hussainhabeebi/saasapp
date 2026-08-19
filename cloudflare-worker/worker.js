@@ -1868,6 +1868,7 @@ function leadsAudienceWhereClause(clientId, segmentFilter){
   if(Array.isArray(f.tags_any)&&f.tags_any.length){
     clauses.push('('+f.tags_any.map(t=>`(Tags,like,${emailSanitizeFilterValue(t)})`).join('~or')+')');
   }
+  if(f.product_category) clauses.push(`(ProductCategory,eq,${emailSanitizeFilterValue(f.product_category)})`);
   return clauses.join('~and');
 }
 
@@ -7923,6 +7924,18 @@ async function ensureLastProductSkuField(env){
   }catch(e){ console.error('[ecom] ensureLastProductSkuField failed', e.message); }
 }
 
+let _productCategoryFieldEnsured=false;
+async function ensureProductCategoryField(env){
+  if(_productCategoryFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('ProductCategory')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ProductCategory', uidt:'SingleLineText'}});
+    _productCategoryFieldEnsured=true;
+  }catch(e){ console.error('[engine] ensureProductCategoryField failed', e.message); }
+}
+
 // Writes the order a customer just finished dictating in chat (see the order_collect_items/
 // order_collect_address handling in handleEngineWebhook) — the ecom_order_link_enabled==='No'
 // alternative to sending a checkout link at all. Deliberately its own writer rather than reusing
@@ -9798,7 +9811,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
   // deterministic lookup, validated against the real configured stage ids below before use.
   const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
-  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
@@ -9892,7 +9905,8 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // only write it onto the lead when non-blank (see engineBuildLeadUpsertBody), same "sparse
   // signal, never overwrite with blank" treatment as LastObjectionCategory.
   const productInterest=typeof aiResult?.product_interest==='string'?aiResult.product_interest.trim().slice(0,120):'';
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest};
+  const productCategory=typeof aiResult?.product_category==='string'?aiResult.product_category.trim().slice(0,60):'';
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -9928,12 +9942,12 @@ export function engineHandoverCannedTexts(botConfig){
 }
 
 export function engineRouteFlow(c, state, userText, cls){
-  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest}=cls;
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
   const isResub=lowText==='start' && state.leadOptOut==='Yes';
-  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:true, isResub:false};
-  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:true};
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:true};
 
   const botConfig=engineParseJsonField(c.bot_config, {});
   const qualQuestions=engineParseJsonField(c.qual_questions, []);
@@ -10086,7 +10100,7 @@ export function engineRouteFlow(c, state, userText, cls){
   // behavior along with it. This is purely additive: the loop was already detected and already
   // forced effIntent to WANTS_HUMAN above, this just tells the caller it happened.
   const loopDetected=isRealLoop && botConfig.antiloop_enabled!==false;
-  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, isOptOut:false, isResub:false, humanReason, loopDetected};
+  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:false, humanReason, loopDetected};
 }
 
 // From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
@@ -12008,7 +12022,7 @@ async function handleReferralsReward(request, env){
 // engineClaimMessage ran (state.leadId itself is no longer reliable for that by this point — a
 // brand-new lead may already have a stub row and leadId from the claim).
 function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead){
-  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, isOptOut, isResub}=routing;
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, productCategory, isOptOut, isResub}=routing;
   const reply=routing.reply;
   let next=routeNext;
   const isHuman=routing.route==='human';
@@ -12118,6 +12132,13 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // pointed to something specific, so a lead's last-known brand/category/product interest survives
   // in-between messages ("yes", "ok") that have nothing new to add.
   if(productInterest) body.InterestedProduct=productInterest;
+  // Prefer ecom catalog-matched category (validated against live catalog) over classifier free-text,
+  // but fall back to classifier when no catalog match. Both are sparse-signal writes.
+  const resolvedProductCategory=routing.matchedCategory||productCategory;
+  if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
+  // Catalog-matched brand (ecom only; only written when the classifier confidently matched a
+  // catalog brand entry alongside a category — never set from free-text guess alone).
+  if(routing.matchedBrand) body.Brand=routing.matchedBrand;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
@@ -12748,6 +12769,11 @@ async function handleEngineWebhook(request, env, secret){
           matchedProduct=product;
           if(product.sku){ routing.matchedProductSku=product.sku; await ensureLastProductSkuField(env); }
         }
+        // Persist catalog-matched category and brand onto routing so engineBuildLeadUpsertBody can
+        // write them to the Leads table — gives Campaign filters a clean, catalog-validated value
+        // to filter on, not just the classifier's free-text product_interest string.
+        if(detection.category) routing.matchedCategory=detection.category;
+        if(detection.brand) routing.matchedBrand=detection.brand;
         // Claimed once per turn, shared by every branch below that might send this product's
         // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
         // why this is gated per (lead, product, calendar day) rather than resent on every repeat
@@ -13256,6 +13282,7 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=quickReplies?.length ? sentReply : null;
     }
 
+    if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
     // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
@@ -13416,6 +13443,7 @@ async function handleInstagramWebhookVerify(request, env){
 }
 
 async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
+  if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
