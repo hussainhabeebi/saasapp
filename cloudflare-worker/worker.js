@@ -8657,7 +8657,7 @@ async function engineBuildHealthcareContext(env,clientId){
 async function engineBuildEduContext(env, clientId){
   const [courses, categories, promos]=await Promise.all([
     env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
-    env.DB.prepare(`SELECT name,description FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
     env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
   ]);
   const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
@@ -8666,7 +8666,7 @@ async function engineBuildEduContext(env, clientId){
   ];
   if(categories.length){
     lines.push('### Course Categories');
-    categories.forEach(cat=>lines.push(`- ${cat.name}${cat.description?' | '+cat.description:''}`));
+    categories.forEach(cat=>lines.push(`- ${cat.name}`));
   }
   if(courses.length){
     lines.push('### Active Courses');
