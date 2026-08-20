@@ -1,4 +1,4 @@
-const CACHE = 'lv-v9';
+const CACHE = 'lv-v10';
 const OFFLINE_URL = '/offline.html';
 // Shared across every page on every domain this file is served from (app.leadvyne.com,
 // leadvyne.com, onshope.com — same physical file, isolated per-origin by the browser).
