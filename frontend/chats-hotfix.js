@@ -141,6 +141,4 @@
   };
 
   makeDashboardButton();
-  const mo=new MutationObserver(()=>{makeDashboardButton();if(document.getElementById('thread'))requestAnimationFrame(enhanceThread);});
-  mo.observe(document.body,{childList:true,subtree:true});
 })();
