@@ -10389,6 +10389,53 @@ async function engineBuildTravelContext(env, c, clientId){
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
+// Builds verified resort property + room data for injection into the LLM system prompt so
+// follow-up questions are answered from real D1 records — no hallucinated prices or names.
+async function engineBuildResortContext(env, clientId){
+  const lines=['\n\n## VERIFIED RESORT DATA (use ONLY these facts for prices, names, descriptions, amenities — never invent or infer anything not listed here)'];
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const propList=properties||[];
+  const unitList=units||[];
+  for(const prop of propList){
+    lines.push(`\n### ${prop.name}`);
+    if(prop.description && String(prop.description).trim()) lines.push(`Description: ${String(prop.description).trim()}`);
+    if(prop.amenities && String(prop.amenities).trim()) lines.push(`Amenities: ${String(prop.amenities).trim()}`);
+    const rooms=unitList.filter(u=>String(u.property_id)===String(prop.id));
+    if(rooms.length){
+      lines.push('Rooms:');
+      for(const r of rooms){
+        let roomLine=`  - **${r.name}**`;
+        if(r.unit_type) roomLine+=` (${r.unit_type})`;
+        roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+        if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+        if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+        if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+        if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+        lines.push(roomLine);
+      }
+    }
+  }
+  const unassigned=unitList.filter(u=>!u.property_id);
+  if(unassigned.length){
+    lines.push('\n### Rooms (no property assigned)');
+    for(const r of unassigned){
+      let roomLine=`  - **${r.name}**`;
+      if(r.unit_type) roomLine+=` (${r.unit_type})`;
+      roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+      if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+      if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+      if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+      if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+      lines.push(roomLine);
+    }
+  }
+  if(propList.length===0 && unassigned.length===0) return '';
+  return lines.join('\n');
+}
+
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
@@ -10399,11 +10446,17 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   const services=engineParseJsonField(c.services, []);
   const defaultCurrency=industry==='ecommerce'?'INR':'AED';
   const defaultUnit=industry==='ecommerce'?'item':'person';
-  if(services.length){
+  // Resort: suppress c.services — all property/room/rate facts come exclusively from VERIFIED RESORT
+  // DATA injected via contextBlock; a services list here would add a second, potentially stale source.
+  const isResort=c.hospitality_enabled==='Yes' && c.hospitality_style==='resort';
+  if(services.length && !isResort){
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
+  if(isResort){
+    sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
+  }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
@@ -13362,6 +13415,12 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
+      // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
+      // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
+      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+        const resortCtx=await engineBuildResortContext(env, clientId);
+        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+      }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
@@ -18703,11 +18762,10 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 
     if(c.hospitality_style==='resort'){
       // Resort 2-tier matching (migrations/0066_resort_properties.sql):
-      // 1. Specific room name → send that room's media (5 images + 2 videos)
+      // 1. Specific room name → always send that room's media (no dedup — lead explicitly chose it)
       const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
       if(specificUnit){
-        const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
-        if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
         // Store selected unit in lead memory so the LLM knows their interest on the next turn
         try{
           await ensureLeadsColumns(env, ['HospSelectedUnit']);
@@ -18715,20 +18773,22 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         }catch(e){}
         return;
       }
-      // 2. Property name → send property media + all its rooms
+      // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
       if(properties && properties.length){
         const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
-          const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
-          if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
           return;
         }
-        // 3. General enquiry → send all properties (overview)
+        // 3. General enquiry → send all properties (overview) then offer a property-picker button
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
         const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
         if(alreadyAny) return;
         for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
+        if(properties.length>=2 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 🏨', properties.map(p=>({title:p.name, value:p.name})));
+        }
       } else {
         // No properties configured — fall back to sending all rooms directly
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
