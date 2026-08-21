@@ -1194,13 +1194,16 @@ const ROLES = {
             <input class="home-ai-input" id="bizChatInput" type="text" placeholder="Ask anything about your business… e.g. &quot;Which leads need follow-up?&quot;" autocomplete="off" onkeydown="if(event.key==='Enter')bizChatSubmit()">
             <button class="home-ai-submit" onclick="bizChatSubmit()" id="bizChatBtn">Ask →</button>
           </div>
-          <div class="home-ai-chips">
-            <button class="home-ai-chip" onclick="bizChatChip('What needs my attention today?')">⚡ Today's priorities</button>
-            <button class="home-ai-chip" onclick="bizChatChip('Show this week\'s new leads')">📋 This week's leads</button>
-            <button class="home-ai-chip" onclick="bizChatChip('Which leads are hot?')">🔥 Hot leads</button>
-            <button class="home-ai-chip" onclick="bizChatChip('What tasks are overdue?')">⏰ Overdue tasks</button>
-            <button class="home-ai-chip" onclick="bizChatChip('How is my bot performing?')">🤖 Bot performance</button>
-            <button class="home-ai-chip" onclick="bizChatChip('Show my conversion rate')">📈 Conversion rate</button>
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:10px">
+            <div class="home-ai-chips" style="margin-top:0">
+              <button class="home-ai-chip" onclick="bizChatChip('What needs my attention today?')">⚡ Today's priorities</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Show this week\'s new leads')">📋 This week's leads</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Which leads are hot?')">🔥 Hot leads</button>
+              <button class="home-ai-chip" onclick="bizChatChip('What tasks are overdue?')">⏰ Overdue tasks</button>
+              <button class="home-ai-chip" onclick="bizChatChip('How is my bot performing?')">🤖 Bot performance</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Show my conversion rate')">📈 Conversion rate</button>
+            </div>
+            <div id="bizChatUsage" style="font-size:11px;color:rgba(255,255,255,.35);white-space:nowrap;flex-shrink:0"></div>
           </div>
           <div id="bizChatResult" class="home-ai-result" style="display:none">
             <div class="home-ai-result-q" id="bizChatResultQ"></div>
@@ -4972,6 +4975,11 @@ function renderHome(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}
   try{renderMorningBriefing(allLeads);}catch(e){}
+  try{
+    const limitKey='lv_biz_chat_'+clientId+'_'+new Date().toISOString().slice(0,10);
+    const used=parseInt(localStorage.getItem(limitKey)||'0',10);
+    bizUpdateUsageBadge(used,10);
+  }catch(e){}
   try{renderNbaStrip(allLeads);}catch(e){}
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
@@ -8142,19 +8150,105 @@ function bizChatChip(q){
   bizChatSubmit();
 }
 
-function bizChatSubmit(){
-  const inp=$id('bizChatInput');
-  const q=(inp?.value||'').trim();
-  if(!q) return;
-  const result=bizChatQuery(q,allLeads);
+function bizBuildSummary(leads){
+  const today=new Date().toISOString().slice(0,10);
+  const weekAgo=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  const ind=getIndustry();
+  const stages={}, sources={}, agents={};
+  for(const l of leads){
+    if(l.Stage) stages[l.Stage]=(stages[l.Stage]||0)+1;
+    if(l.Source) sources[l.Source]=(sources[l.Source]||0)+1;
+    if(l.AgentName||l.Agent) { const a=l.AgentName||l.Agent; agents[a]=(agents[a]||0)+1; }
+  }
+  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+  return {
+    totalLeads:leads.length,
+    newToday:leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length,
+    newThisWeek:leads.filter(l=>l.Date&&l.Date.slice(0,10)>=weekAgo).length,
+    hot:leads.filter(l=>l.Score==='Hot').length,
+    warm:leads.filter(l=>l.Score==='Warm').length,
+    converted:conv,
+    convRate:leads.length?Math.round(conv/leads.length*100):0,
+    botPct:leads.length?Math.round(leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length/leads.length*100):0,
+    tasksOverdue:tasks.filter(t=>t.due.slice(0,10)<today).length,
+    tasksDueToday:tasks.filter(t=>t.due.slice(0,10)===today).length,
+    stages, sources, agents
+  };
+}
+
+function bizShowResult(q, html){
   const resEl=$id('bizChatResult');
   const qEl=$id('bizChatResultQ');
   const bodyEl=$id('bizChatResultBody');
   if(!resEl||!bodyEl) return;
   if(qEl) qEl.innerHTML='<button class="home-ai-result-close" onclick="$id(\'bizChatResult\').style.display=\'none\'">✕</button>You asked: <em>'+esc(q)+'</em>';
-  bodyEl.innerHTML=result;
+  bodyEl.innerHTML=html;
   resEl.style.display='';
   resEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+async function bizChatSubmit(){
+  const inp=$id('bizChatInput');
+  const q=(inp?.value||'').trim();
+  if(!q) return;
+
+  // Try local pattern matching first (instant, no API)
+  const local=bizChatQuery(q,allLeads);
+  if(local!==null){
+    bizShowResult(q, local);
+    return;
+  }
+
+  // Fallback to AI — check daily limit from localStorage first (optimistic, server enforces)
+  const limitKey='lv_biz_chat_'+clientId+'_'+new Date().toISOString().slice(0,10);
+  const usedLocal=parseInt(localStorage.getItem(limitKey)||'0',10);
+  const LIMIT=10;
+  if(usedLocal>=LIMIT){
+    bizShowResult(q,`<span style="color:#FCA5A5">⚠️ You've used all ${LIMIT} AI chats for today. Resets at midnight.</span>`);
+    return;
+  }
+
+  const btn=$id('bizChatBtn');
+  if(btn){btn.disabled=true;btn.textContent='Thinking…';}
+  bizShowResult(q,'<span style="color:rgba(255,255,255,.5)">✨ Thinking…</span>');
+
+  try{
+    const summary=bizBuildSummary(allLeads);
+    const r=await fetch(WORKER_BASE+'/ai/business-chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+sessionToken},
+      body:JSON.stringify({question:q, summary})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(r.status===429||data.error==='daily_limit_reached'){
+      bizShowResult(q,`<span style="color:#FCA5A5">⚠️ You've used all ${LIMIT} AI chats for today. Resets at midnight.</span>`);
+      bizUpdateUsageBadge(LIMIT,LIMIT);
+      return;
+    }
+    if(!r.ok||data.error){
+      bizShowResult(q,'<span style="color:#FCA5A5">Could not get an answer — please try again.</span>');
+      return;
+    }
+    // Increment local counter and update badge
+    const newUsed=usedLocal+1;
+    try{localStorage.setItem(limitKey,String(newUsed));}catch(e){}
+    bizUpdateUsageBadge(newUsed,LIMIT);
+    const html=String(data.answer||'').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+    bizShowResult(q, html);
+  }catch(e){
+    bizShowResult(q,'<span style="color:#FCA5A5">Network error — check your connection and try again.</span>');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Ask →';}
+  }
+}
+
+function bizUpdateUsageBadge(used,limit){
+  const el=$id('bizChatUsage');
+  if(!el) return;
+  const remaining=Math.max(0,limit-used);
+  el.textContent=remaining>0?`✨ ${remaining} AI chats left today`:`✨ AI chat limit reached`;
+  el.style.color=remaining<=2?'rgba(252,165,165,.7)':'rgba(255,255,255,.35)';
 }
 
 function bizChatQuery(q,leads){
@@ -8274,14 +8368,8 @@ function bizChatQuery(q,leads){
     return '💳 For accounting data, open the <span class="biz-bi-action" onclick="navigate(\'accounting\')">Accounting module →</span>';
   }
 
-  // Default fallback with suggestions
-  return `I can answer questions about your leads, tasks, bot performance, and pipeline. Try:<ul>
-    <li>"What needs my attention today?"</li>
-    <li>"Which leads are hot?"</li>
-    <li>"Show my conversion rate"</li>
-    <li>"What tasks are overdue?"</li>
-    <li>"Where are my leads coming from?"</li>
-    <li>"Pipeline breakdown"</li></ul>`;
+  // No local match — return null so caller falls through to AI
+  return null;
 }
 
 /* ── SETTINGS ── */

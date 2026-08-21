@@ -2273,6 +2273,87 @@ async function handleAiComplete(request, env){
   return json({choices:[{message:{role:'assistant',content:text}}]});
 }
 
+// Business AI chat — natural language questions answered from a compact data snapshot the
+// dashboard sends alongside the question. Never fetches raw PII; the frontend computes
+// aggregates client-side and sends only the summary. Daily limit: 10 per user (email) per day,
+// tracked in D1. All answers are grounded in the sent snapshot — AI cannot invent numbers.
+async function handleAiBusinessChat(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const question=String(body.question||'').trim();
+  const summary=body.summary||{};
+  if(!question) return json({error:'question required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!env.GEMINI_API_KEY&&!c.openrouter_key) return json({error:'No AI provider configured.'}, 503);
+
+  // Daily limit tracking per user email in D1
+  const DAILY_LIMIT=10;
+  const userKey=String(payload.email||payload.cid||'').toLowerCase()||String(payload.cid);
+  const today=new Date().toISOString().slice(0,10);
+  let usedToday=0;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ai_chat_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL, user_key TEXT NOT NULL, date TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(client_id, user_key, date)
+    )`).run().catch(()=>{});
+    const row=await env.DB.prepare(`SELECT count FROM ai_chat_usage WHERE client_id=? AND user_key=? AND date=?`)
+      .bind(Number(payload.cid), userKey, today).first().catch(()=>null);
+    usedToday=Number(row?.count||0);
+  }catch(e){}
+
+  if(usedToday>=DAILY_LIMIT){
+    return json({error:'daily_limit_reached', remaining:0, limit:DAILY_LIMIT}, 429);
+  }
+
+  // Build context from the summary the frontend sent (no PII, only aggregates)
+  const ctx=[];
+  if(summary.totalLeads!=null) ctx.push(`Total leads: ${summary.totalLeads}`);
+  if(summary.newToday!=null)   ctx.push(`New leads today: ${summary.newToday}`);
+  if(summary.hot!=null)        ctx.push(`Hot leads: ${summary.hot}`);
+  if(summary.warm!=null)       ctx.push(`Warm leads: ${summary.warm}`);
+  if(summary.converted!=null)  ctx.push(`Converted/booked: ${summary.converted}`);
+  if(summary.convRate!=null)   ctx.push(`Conversion rate: ${summary.convRate}%`);
+  if(summary.botPct!=null)     ctx.push(`Leads engaged by bot: ${summary.botPct}%`);
+  if(summary.tasksOverdue!=null) ctx.push(`Overdue tasks: ${summary.tasksOverdue}`);
+  if(summary.tasksDueToday!=null) ctx.push(`Tasks due today: ${summary.tasksDueToday}`);
+  if(summary.newThisWeek!=null) ctx.push(`New leads this week: ${summary.newThisWeek}`);
+  if(summary.stages&&typeof summary.stages==='object'){
+    const top=Object.entries(summary.stages).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Pipeline stages: ${top}`);
+  }
+  if(summary.sources&&typeof summary.sources==='object'){
+    const top=Object.entries(summary.sources).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Lead sources: ${top}`);
+  }
+  if(summary.agents&&typeof summary.agents==='object'){
+    const top=Object.entries(summary.agents).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Agents (leads handled): ${top}`);
+  }
+
+  const system=`You are a business intelligence assistant for "${String(c.client_name||'this business').slice(0,60)}" on Leadvyne CRM. Answer the user's question using ONLY the data snapshot below — never invent numbers, never reference data not shown. Keep answers concise, specific, and actionable. Use plain text with short bullet points where helpful. If the question cannot be answered from the snapshot, say so clearly and suggest what data would help.
+
+BUSINESS DATA SNAPSHOT (today ${today}):
+${ctx.length?ctx.join('\n'):'No data available yet.'}`;
+
+  const answer=await engineGeminiGenerateWithFallback(env, c, system, question, {
+    temperature:0.3, maxOutputTokens:350
+  });
+  if(!answer) return json({error:'AI generation failed.'}, 502);
+
+  // Increment usage counter
+  try{
+    await env.DB.prepare(`INSERT INTO ai_chat_usage(client_id,user_key,date,count) VALUES(?,?,?,1)
+      ON CONFLICT(client_id,user_key,date) DO UPDATE SET count=count+1`)
+      .bind(Number(payload.cid), userKey, today).run();
+  }catch(e){}
+
+  const remaining=Math.max(0, DAILY_LIMIT-usedToday-1);
+  return json({answer, remaining, limit:DAILY_LIMIT});
+}
+
 // Automation entry point for objection/trust-signal handling — meant to be called by the
 // external n8n bot as ONE step inside its own reply flow (not an independent Chatwoot webhook
 // listener), so n8n stays the single point of truth for what actually gets sent to the customer
@@ -23931,6 +24012,7 @@ export default {
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/ai/business-chat' && request.method==='POST'){ res=await handleAiBusinessChat(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
       else if(url.pathname==='/ai/booking-signal' && request.method==='POST'){ res=await handleAiBookingSignal(request, env); }
