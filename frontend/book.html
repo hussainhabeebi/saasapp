@@ -28,10 +28,10 @@ html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body)
 input,select,textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 12px;font-family:var(--body);font-size:14.5px;color:var(--ink);background:var(--bg)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);background:#fff}
 textarea{resize:vertical;min-height:60px}
-.svc-opt{display:block;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--bg)}
-.svc-opt.sel{border-color:var(--accent);background:var(--accent-soft)}
-.svc-name{font-weight:600;font-size:14px}
-.svc-meta{font-size:12.5px;color:var(--muted);margin-top:2px}
+.svc-opt,.doc-opt{display:block;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--bg)}
+.svc-opt.sel,.doc-opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+.svc-name,.doc-name{font-weight:600;font-size:14px}
+.svc-meta,.doc-meta{font-size:12.5px;color:var(--muted);margin-top:2px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:var(--body)}
 .btn:active{background:var(--accent-ink)}
@@ -66,13 +66,44 @@ const clientId = params.get('client') || params.get('client_id') || '';
 
 let bizInfo = {};
 let services = [];
+let doctors = [];
 let selectedServiceId = '';
+let selectedDoctorId = '';
+let isHealthcare = false;
 
 function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function selectService(id){
   selectedServiceId = String(id);
   document.querySelectorAll('.svc-opt').forEach(el => el.classList.toggle('sel', el.dataset.id === selectedServiceId));
+  if(isHealthcare) loadDoctorsForService(id);
+}
+
+function selectDoctor(id){
+  selectedDoctorId = String(id);
+  document.querySelectorAll('.doc-opt').forEach(el => el.classList.toggle('sel', el.dataset.id === selectedDoctorId));
+}
+
+async function loadDoctorsForService(serviceId){
+  const docArea = document.getElementById('doctorArea');
+  if(!docArea) return;
+  docArea.innerHTML = '<span class="label">Doctor / Consultant</span><div style="font-size:13px;color:var(--muted);padding:6px 0">Loading…</div>';
+  const r = await fetch(`${WORKER_BASE}/appt/public/doctors?client=${encodeURIComponent(clientId)}&service_id=${encodeURIComponent(serviceId||'')}`).catch(()=>null);
+  const data = r ? await r.json().catch(()=>({list:[]})) : {list:[]};
+  doctors = data.list || [];
+  selectedDoctorId = doctors.length ? String(doctors[0].Id) : '';
+  renderDoctorPicker(docArea);
+}
+
+function renderDoctorPicker(docArea){
+  if(!doctors.length){ docArea.innerHTML = ''; return; }
+  docArea.innerHTML = `
+    <span class="label">Doctor / Consultant</span>
+    ${doctors.map(d => `
+      <div class="doc-opt${String(d.Id)===selectedDoctorId?' sel':''}" data-id="${escHtml(d.Id)}" onclick="selectDoctor('${escHtml(d.Id)}')">
+        <div class="doc-name">${escHtml(d.name||'Doctor')}</div>
+        <div class="doc-meta">${[d.qualification,d.specialization].filter(Boolean).map(escHtml).join(' · ')||'&nbsp;'}</div>
+      </div>`).join('')}`;
 }
 
 function renderForm(){
@@ -87,9 +118,12 @@ function renderForm(){
         </div>`).join('')}
     </div>` : '';
 
+  const docSectionHtml = isHealthcare ? `<div id="doctorArea"></div>` : '';
+
   document.getElementById('formArea').innerHTML = `
     ${svcHtml}
     <div class="card">
+      ${docSectionHtml}
       <div class="field"><span class="label">Your Name</span><input id="fName" placeholder="Full name"></div>
       <div class="field"><span class="label">Phone (with country code) *</span><input id="fPhone" placeholder="e.g. 971501234567"></div>
       <div class="row2">
@@ -101,7 +135,12 @@ function renderForm(){
       <div class="msg" id="formMsg"></div>
     </div>`;
 
-  if(services.length) selectService(services[0].Id);
+  if(services.length){
+    selectService(services[0].Id);
+  } else if(isHealthcare){
+    // No services but still load all doctors
+    loadDoctorsForService('');
+  }
 }
 
 async function submitBooking(){
@@ -113,15 +152,18 @@ async function submitBooking(){
 
   btn.disabled = true; msg.textContent = 'Sending your request…'; msg.className = 'msg';
   try{
+    const body = {
+      client_id: clientId, name, phone,
+      service_id: selectedServiceId || undefined,
+      date: document.getElementById('fDate').value || '',
+      time: document.getElementById('fTime').value || '',
+      notes: document.getElementById('fNotes').value.trim(),
+    };
+    if(isHealthcare && selectedDoctorId) body.doctor_id = selectedDoctorId;
+
     const r = await fetch(`${WORKER_BASE}/appt/public/book`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        client_id: clientId, name, phone,
-        service_id: selectedServiceId || undefined,
-        date: document.getElementById('fDate').value || '',
-        time: document.getElementById('fTime').value || '',
-        notes: document.getElementById('fNotes').value.trim(),
-      })
+      body: JSON.stringify(body)
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(data.error || 'Something went wrong');
@@ -147,6 +189,7 @@ async function load(){
     ]);
     if(!clientRes.ok) throw new Error('not found');
     bizInfo = await clientRes.json();
+    isHealthcare = !!bizInfo.healthcare_enabled || false;
     const svcData = await servicesRes.json().catch(() => ({list:[]}));
     services = svcData.list || [];
 
