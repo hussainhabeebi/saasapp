@@ -22376,8 +22376,8 @@ async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPh
 }
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
-  // Intercept appointment/booking keyword messages — expanded to cover common patient phrasings
-  if(!/\b(?:book|schedule|appoint|reserv|slot|visit|rebook|meeting|consult|checkup|check.?up|see\s+(?:a\s+)?(?:doctor|physician|specialist)|clinic\s+visit)\b/i.test(action)) return {handled:false};
+  // Intercept any booking/appointment/link intent — covers all common patient phrasings
+  if(!/\b(?:book(?:ing)?|appoint(?:ment)?|link|schedul(?:e|ing)|reserv(?:e|ation)?|slot|visit|rebook|meeting|consult(?:ation)?|check.?up|doctor|physician|specialist|clinic|available|when\s+can|come\s+in|walk.?in)\b/i.test(action)) return {handled:false};
 
   await hcEnsureOperationsSchema(env);
   // Resolve booking link: service-specific booking_url → client external_store_link → public book.html
