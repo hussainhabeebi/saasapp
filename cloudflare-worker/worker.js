@@ -22029,9 +22029,9 @@ async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang)
   }
   await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
   const list=availDates.map((d,i)=>`${i+1}. ${hcBookingDateTitle(d)}`).join('\n');
-  const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}\n\nReply with the number or date (e.g. tomorrow, 25 Aug).`,replyLang);
-  await engineSendChatwootReply(env,c,clientId,convId,text);
-  return {handled:true,text,quickReplies:null,_availDates:availDates};
+  const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}`,replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,availDates.map(d=>({title:hcBookingDateTitle(d),value:d})));
+  return {handled:true,text,quickReplies};
 }
 async function hcDoctorServices(env,clientId,doctorId){
   // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
@@ -22104,9 +22104,9 @@ async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{ser
       if(doctorSvcs.length>1){
         await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
         const list=doctorSvcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-        const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
-        await engineSendChatwootReply(env,c,clientId,convId,text);
-        return {handled:true,text,quickReplies:null};
+        const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}`,replyLang);
+        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctorSvcs.map(s=>({title:s.name,value:s.name})));
+        return {handled:true,text,quickReplies};
       }
       if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
     }
@@ -22130,9 +22130,9 @@ async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{ser
   }
   await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
   const list=doctors.map((d,i)=>`${i+1}. ${d.name}`).join('\n');
-  const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}\n\nReply with the number or name.`,replyLang);
-  await engineSendChatwootReply(env,c,clientId,convId,text);
-  return {handled:true,text,quickReplies:null};
+  const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}`,replyLang);
+  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:d.name})));
+  return {handled:true,text,quickReplies};
 }
 async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
   await hcEnsureOperationsSchema(env);
@@ -22145,10 +22145,10 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     if(!svcs.length) return {handled:false};
     if(svcs.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(svcs[0].id)});
     await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
-    const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-    const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
+    const slist=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+    const stext=await engineLocalizeReply(env,c,`Please choose a service:\n\n${slist}`,replyLang);
+    const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,svcs.map(s=>({title:s.name,value:s.name})));
+    return {handled:true,text:stext,quickReplies:sqr};
   }
 
   const session=await hcBookingSession(env,clientId,phone);
@@ -22160,10 +22160,10 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
       if(!svcs.length) return {handled:false};
       if(svcs.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(svcs[0].id)});
       await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
-      const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
-      await engineSendChatwootReply(env,c,clientId,convId,text);
-      return {handled:true,text,quickReplies:null};
+      const slist=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+      const stext=await engineLocalizeReply(env,c,`Please choose a service:\n\n${slist}`,replyLang);
+      const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,svcs.map(s=>({title:s.name,value:s.name})));
+      return {handled:true,text:stext,quickReplies:sqr};
     }
     return {handled:false};
   }
@@ -22182,9 +22182,9 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     const matched=hcMatchByNumberOrKeyword(svcs,action,s=>s.name);
     if(!matched){
       const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
-      await engineSendChatwootReply(env,c,clientId,convId,text);
-      return {handled:true,text,quickReplies:null};
+      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}`,replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,svcs.map(s=>({title:s.name,value:s.name})));
+      return {handled:true,text,quickReplies};
     }
     return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(matched.id)});
   }
@@ -22206,9 +22206,9 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     const matched=hcMatchByNumberOrKeyword(doctors,action,d=>d.name);
     if(!matched){
       const list=doctors.map((d,i)=>`${i+1}. ${d.name}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}\n\nReply with the number or name.`,replyLang);
-      await engineSendChatwootReply(env,c,clientId,convId,text);
-      return {handled:true,text,quickReplies:null};
+      const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}`,replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:d.name})));
+      return {handled:true,text,quickReplies};
     }
     return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(matched.id)},replyLang);
   }
@@ -22227,17 +22227,18 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     if(!chosenDate){const parsed=hcParsePatientDate(c,action);if(parsed&&availDates.includes(parsed))chosenDate=parsed;}
     if(!chosenDate){
       const list=availDates.map((d,i)=>`${i+1}. ${hcBookingDateTitle(d)}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}\n\nReply with the number or date (e.g. tomorrow, 25 Aug).`,replyLang);
-      await engineSendChatwootReply(env,c,clientId,convId,text);
-      return {handled:true,text,quickReplies:null};
+      const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}`,replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,availDates.map(d=>({title:hcBookingDateTitle(d),value:d})));
+      return {handled:true,text,quickReplies};
     }
     const slots=hcBookableSlots(c,chosenDate,await hcAvailableSlots(env,clientId,c,session.doctor_id,chosenDate,session.service_id,0));
     if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
     await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:chosenDate,start_time:'',end_time:''});
-    const list=slots.slice(0,10).map((s,i)=>`${i+1}. ${s.start_time}–${s.end_time}`).join('\n');
-    const text=await engineLocalizeReply(env,c,`Choose a time for ${hcBookingDateTitle(chosenDate)}:\n\n${list}\n\nReply with the number or time (e.g. 10am, 10:30).`,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
+    const slotItems=slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:s.start_time}));
+    const slotList=slotItems.map((s,i)=>`${i+1}. ${s.title}`).join('\n');
+    const text=await engineLocalizeReply(env,c,`Choose a time for ${hcBookingDateTitle(chosenDate)}:\n\n${slotList}`,replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slotItems);
+    return {handled:true,text,quickReplies};
   }
 
   // Stage: choose_slot
@@ -22247,10 +22248,11 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     let chosen=(!isNaN(n)&&n>=1&&n<=slots.length)?slots[n-1]:null;
     if(!chosen){const pt=hcParsePatientTime(action);if(pt)chosen=slots.find(s=>s.start_time===pt)||slots.find(s=>s.start_time.slice(0,5)===pt.slice(0,5))||null;}
     if(!chosen){
-      const list=slots.slice(0,10).map((s,i)=>`${i+1}. ${s.start_time}–${s.end_time}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Choose an available time:\n\n${list}\n\nReply with the number or time (e.g. 10am, 10:30).`,replyLang);
-      await engineSendChatwootReply(env,c,clientId,convId,text);
-      return {handled:true,text,quickReplies:null};
+      const slotItems=slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:s.start_time}));
+      const slotList=slotItems.map((s,i)=>`${i+1}. ${s.title}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Choose an available time:\n\n${slotList}`,replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slotItems);
+      return {handled:true,text,quickReplies};
     }
     await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
     const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);
@@ -22269,10 +22271,10 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
     const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
     const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
-    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${patientName}\n\nReply YES to confirm or NO to cancel.`;
+    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${patientName}`;
     const text=await engineLocalizeReply(env,c,summary,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'✅ Confirm',value:'yes'},{title:'❌ Cancel',value:'no'}]);
+    return {handled:true,text,quickReplies};
   }
 
   // Stage: confirm
@@ -22303,13 +22305,13 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
       await engineSendChatwootReply(env,c,clientId,convId,text);
       return {handled:true,text,quickReplies:null};
     }
-    // Re-show summary if reply not recognized
+    // Re-show summary with confirm buttons if reply not recognized
     const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
     const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
-    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${session.patient_name}\n\nReply YES to confirm or NO to cancel.`;
+    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${session.patient_name}`;
     const text=await engineLocalizeReply(env,c,summary,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
+    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'✅ Confirm',value:'yes'},{title:'❌ Cancel',value:'no'}]);
+    return {handled:true,text,quickReplies};
   }
 
   return {handled:false};
