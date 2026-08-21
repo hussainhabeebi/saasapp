@@ -13180,8 +13180,8 @@ async function handleEngineWebhook(request, env, secret){
           sentText=await engineLocalizeReply(env,c,isReturning?`Welcome back to ${clinicName}! How can we help you today?`:`Welcome to ${clinicName}! How can we help you today?`,replyLang);
           routing.reply=sentText;
           const btns=isReturning
-            ?[{title:'📅 Book Appointment',value:'book appointment'},{title:'🗂️ See All Services',value:'see all services'},{title:'🙋 Talk to Human',value:'Talk to a human'}]
-            :[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to Human',value:'Talk to a human'}];
+            ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
+            :[{title:'Book Appointment',value:'book appointment'},{title:'Talk to Human',value:'Talk to a human'}];
           routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,btns);
           orderHandledInline=true;
         }
@@ -13192,7 +13192,7 @@ async function handleEngineWebhook(request, env, secret){
           sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
           routing.reply=sentText;
           if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
-          const bookingChoices=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to Human',value:'Talk to a human'}];
+          const bookingChoices=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to Human',value:'Talk to a human'}];
           const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
           if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'How can we help?',bookingChoices);
@@ -13227,7 +13227,7 @@ async function handleEngineWebhook(request, env, secret){
               if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
               if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
               await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to a human',value:'Talk to a human'}]);
               orderHandledInline=true;
             }
           }else{
@@ -13889,9 +13889,9 @@ async function handleEngineWebhook(request, env, secret){
         if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
           const hcServices=await hcListActiveServices(env,clientId);
           if(hcServices.length===1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'Talk to a human',value:'Talk to a human'}];
           } else if(hcServices.length>1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
           }
         }
       }
@@ -13916,9 +13916,9 @@ async function handleEngineWebhook(request, env, secret){
       // new intent handling needed for either. Opt-out via the same bot_config a client already
       // uses for the other handover/objection toggles.
       const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
-        {title:"👍 I'm convinced", value:"Okay, I'm convinced — let's proceed"},
-        {title:'❓ Another question', value:'I have another question'},
-        {title:'🙋 Talk to a human', value:'Talk to a human'},
+        {title:"I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'Another question', value:'I have another question'},
+        {title:'Talk to a human', value:'Talk to a human'},
       ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
@@ -22440,17 +22440,27 @@ async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPh
 }
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
-  // Handle doctor-specific booking button tap (value sent by WhatsApp quick reply button)
+  // Handle structured booking button taps (values set by HC_BOOK_DOCTOR/HC_BOOK_SERVICE quick replies)
   const docBookMatch=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(action);
-  if(docBookMatch){
-    const doctorId=Number(docBookMatch[1]);
+  const svcBookMatch=/^HC_BOOK_SERVICE:(\d+)$/i.exec(action);
+  if(docBookMatch||svcBookMatch){
     const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
-    let bookingLink=(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&doctor_id=${doctorId}`;
-    // Append doctor_id to custom link if it doesn't already have booking params
-    if(c.external_store_link&&!/doctor_id/i.test(bookingLink)) bookingLink+=`${bookingLink.includes('?')?'&':'?'}doctor_id=${doctorId}`;
-    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1`).bind(doctorId,Number(clientId)).first().catch(()=>null);
-    const doctorName=doctor?.name||'your selected doctor';
-    const msg=`📅 To book an appointment with ${doctorName}, use the link below:\n${bookingLink}`;
+    let bookingLink='';
+    let label='';
+    if(docBookMatch){
+      const doctorId=Number(docBookMatch[1]);
+      const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1`).bind(doctorId,Number(clientId)).first().catch(()=>null);
+      label=doctor?.name||'your selected doctor';
+      bookingLink=(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&doctor_id=${doctorId}`;
+      if(c.external_store_link&&!/doctor_id/i.test(bookingLink)) bookingLink+=`${bookingLink.includes('?')?'&':'?'}doctor_id=${doctorId}`;
+    }else{
+      const serviceId=Number(svcBookMatch[1]);
+      const svc=await env.DB.prepare(`SELECT name,booking_url FROM healthcare_services WHERE id=? AND client_id=? LIMIT 1`).bind(serviceId,Number(clientId)).first().catch(()=>null);
+      label=svc?.name||'this service';
+      bookingLink=svc?.booking_url||(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&service_id=${serviceId}`;
+    }
+    if(!bookingLink) bookingLink=`${appBase}book.html?client=${clientId}`;
+    const msg=`To book an appointment for ${label}, use the link below:\n${bookingLink}`;
     const text=await engineLocalizeReply(env,c,msg,replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
