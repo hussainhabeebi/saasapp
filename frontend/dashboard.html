@@ -166,6 +166,42 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .kpi-icon{font-size:20px;margin-bottom:10px;display:block;opacity:.45}
 .kpi-val{font-family:var(--disp);font-size:30px;font-weight:700;color:var(--accent-ink);line-height:1;letter-spacing:-.5px}
 .kpi-lbl{font-size:11.5px;color:var(--muted);margin-top:5px;font-weight:500}
+/* ── BUSINESS AI CHAT WIDGET ── */
+.home-ai-row{padding:14px 32px 18px;background:linear-gradient(135deg,#0A1F38 0%,#123152 55%,#0E4A44 100%);border-top:1px solid rgba(255,255,255,.07)}
+.home-ai-row-inner{max-width:1800px;margin:0 auto}
+.home-ai-bar{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.09);border:1.5px solid rgba(255,255,255,.15);border-radius:14px;padding:10px 14px;transition:border-color .2s,background .2s}
+.home-ai-bar:focus-within{border-color:rgba(61,217,200,.6);background:rgba(255,255,255,.13)}
+.home-ai-icon{font-size:18px;flex:none;opacity:.7}
+.home-ai-input{flex:1;background:none;border:none;outline:none;color:#fff;font-family:var(--body);font-size:14px;min-width:0}
+.home-ai-input::placeholder{color:rgba(255,255,255,.35)}
+.home-ai-submit{flex:none;background:rgba(61,217,200,.2);border:1px solid rgba(61,217,200,.35);border-radius:9px;color:#3DD9C8;font-size:13px;font-weight:600;padding:5px 14px;cursor:pointer;transition:background .15s}
+.home-ai-submit:hover{background:rgba(61,217,200,.35)}
+.home-ai-submit:disabled{opacity:.4;cursor:default}
+.home-ai-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.home-ai-chip{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:5px 13px;font-size:12px;color:rgba(255,255,255,.7);cursor:pointer;transition:background .15s,border-color .15s;white-space:nowrap;font-family:var(--body)}
+.home-ai-chip:hover{background:rgba(61,217,200,.18);border-color:rgba(61,217,200,.4);color:#3DD9C8}
+.home-ai-result{margin-top:12px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px 16px}
+.home-ai-result-q{font-size:11.5px;color:rgba(255,255,255,.4);margin-bottom:7px;font-style:italic}
+.home-ai-result-body{font-size:13.5px;color:#fff;line-height:1.55}
+.home-ai-result-body strong{color:#3DD9C8}
+.home-ai-result-body ul{padding-left:16px;margin-top:6px;margin-bottom:0}
+.home-ai-result-body li{margin-bottom:3px}
+.home-ai-result-close{float:right;background:none;border:none;color:rgba(255,255,255,.4);cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 8px}
+.home-ai-result-close:hover{color:#fff}
+/* Briefing card */
+.biz-briefing{background:linear-gradient(135deg,rgba(13,156,147,.08),rgba(30,58,110,.06));border:1px solid rgba(13,156,147,.2);border-radius:16px;padding:16px 20px;margin-bottom:18px}
+.biz-briefing-head{display:flex;align-items:center;gap:8px;font-family:var(--disp);font-size:13.5px;font-weight:700;color:var(--accent-ink);margin-bottom:10px}
+.biz-briefing-head span{font-size:17px}
+.biz-briefing-items{display:flex;gap:24px;flex-wrap:wrap}
+.biz-bi{display:flex;align-items:flex-start;gap:8px;flex:1;min-width:160px}
+.biz-bi-icon{font-size:16px;flex:none;margin-top:1px}
+.biz-bi-body{flex:1}
+.biz-bi-val{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--accent-ink);line-height:1.1}
+.biz-bi-val.warn{color:var(--warn)}
+.biz-bi-val.hot{color:#DC2626}
+.biz-bi-lbl{font-size:11.5px;color:var(--muted);margin-top:2px}
+.biz-bi-action{font-size:11.5px;color:var(--accent);font-weight:600;cursor:pointer;margin-top:3px;display:inline-block}
+.biz-bi-action:hover{text-decoration:underline}
 /* home grid */
 .home-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
 @media(max-width:1100px){.home-grid{grid-template-columns:1fr}}
@@ -1150,12 +1186,41 @@ const ROLES = {
         </div>
       </div>
 
+      <!-- AI Business Chat Bar -->
+      <div class="home-ai-row">
+        <div class="home-ai-row-inner">
+          <div class="home-ai-bar">
+            <span class="home-ai-icon">✨</span>
+            <input class="home-ai-input" id="bizChatInput" type="text" placeholder="Ask anything about your business… e.g. &quot;Which leads need follow-up?&quot;" autocomplete="off" onkeydown="if(event.key==='Enter')bizChatSubmit()">
+            <button class="home-ai-submit" onclick="bizChatSubmit()" id="bizChatBtn">Ask →</button>
+          </div>
+          <div class="home-ai-chips">
+            <button class="home-ai-chip" onclick="bizChatChip('What needs my attention today?')">⚡ Today's priorities</button>
+            <button class="home-ai-chip" onclick="bizChatChip('Show this week\'s new leads')">📋 This week's leads</button>
+            <button class="home-ai-chip" onclick="bizChatChip('Which leads are hot?')">🔥 Hot leads</button>
+            <button class="home-ai-chip" onclick="bizChatChip('What tasks are overdue?')">⏰ Overdue tasks</button>
+            <button class="home-ai-chip" onclick="bizChatChip('How is my bot performing?')">🤖 Bot performance</button>
+            <button class="home-ai-chip" onclick="bizChatChip('Show my conversion rate')">📈 Conversion rate</button>
+          </div>
+          <div id="bizChatResult" class="home-ai-result" style="display:none">
+            <div class="home-ai-result-q" id="bizChatResultQ"></div>
+            <div class="home-ai-result-body" id="bizChatResultBody"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="home-body">
         <!-- Payment / billing-health banners -->
         <div id="homeBillingBanners"></div>
 
         <!-- Getting Started checklist (new/incomplete accounts only) -->
         <div id="onboardingChecklist" style="display:none;margin-bottom:18px"></div>
+
+        <!-- Morning Briefing Card -->
+        <div id="bizBriefingCard" style="display:none" class="biz-briefing">
+          <div class="biz-briefing-head"><span>☀️</span> <span id="bizBriefingTitle">Your business at a glance</span></div>
+          <div class="biz-briefing-items" id="bizBriefingItems"></div>
+        </div>
 
         <!-- KPI Strip -->
         <div class="kpi-grid">
@@ -4934,6 +4999,7 @@ function onLiveViewingEvent(msg){
 function renderHome(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}
+  try{renderMorningBriefing(allLeads);}catch(e){}
   try{renderNbaStrip(allLeads);}catch(e){}
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
@@ -8040,6 +8106,210 @@ function timeAgo(iso){
   const h=Math.floor(m/60);
   if(h<24) return h+'h ago';
   return Math.floor(h/24)+'d ago';
+}
+
+/* ── BUSINESS AI CHAT WIDGET ── */
+
+function renderMorningBriefing(leads){
+  const card=$id('bizBriefingCard');
+  const itemsEl=$id('bizBriefingItems');
+  const titleEl=$id('bizBriefingTitle');
+  if(!card||!itemsEl) return;
+  const today=new Date().toISOString().slice(0,10);
+  const h=new Date().getHours();
+  const prefix=h<12?'Morning briefing':h<17?'Afternoon snapshot':'Evening summary';
+  if(titleEl) titleEl.textContent=prefix;
+
+  const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
+  const hot=leads.filter(l=>l.Score==='Hot').length;
+  const ind=getIndustry();
+  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const convRate=leads.length?Math.round(conv/leads.length*100):0;
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+  const overdue=tasks.filter(t=>t.due.slice(0,10)<today).length;
+  const dueToday=tasks.filter(t=>t.due.slice(0,10)===today).length;
+  const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
+  const botPct=leads.length?Math.round(botCount/leads.length*100):0;
+
+  const items=[];
+
+  if(newToday>0){
+    items.push({icon:'💬',val:String(newToday),cls:'',lbl:'new lead'+(newToday!==1?'s':'')+' today',action:'navigate(\'leads\')',actionLbl:'View leads'});
+  } else {
+    items.push({icon:'💬',val:'0',cls:'',lbl:'new leads today',action:'navigate(\'leads\')',actionLbl:'Add lead'});
+  }
+
+  items.push({icon:'🔥',val:String(hot),cls:hot>0?'hot':'',lbl:'hot lead'+(hot!==1?'s':''),action:'navigate(\'leads\')',actionLbl:'Follow up'});
+
+  if(overdue>0){
+    items.push({icon:'⏰',val:String(overdue),cls:'warn',lbl:'overdue task'+(overdue!==1?'s':''),action:'navigate(\'tasks\')',actionLbl:'View tasks'});
+  } else if(dueToday>0){
+    items.push({icon:'⏰',val:String(dueToday),cls:'',lbl:'task'+(dueToday!==1?'s':'')+' due today',action:'navigate(\'tasks\')',actionLbl:'View tasks'});
+  } else {
+    items.push({icon:'✅',val:'All clear',cls:'',lbl:'no overdue tasks',action:'',actionLbl:''});
+  }
+
+  items.push({icon:'📈',val:convRate+'%',cls:'',lbl:'conversion rate ('+conv+' '+esc(ind.booked||'converted')+')',action:'',actionLbl:''});
+  items.push({icon:'🤖',val:botPct+'%',cls:'',lbl:'leads engaged by bot',action:'',actionLbl:''});
+
+  itemsEl.innerHTML=items.map(it=>`<div class="biz-bi">
+    <div class="biz-bi-icon">${it.icon}</div>
+    <div class="biz-bi-body">
+      <div class="biz-bi-val ${it.cls}">${it.val}</div>
+      <div class="biz-bi-lbl">${it.lbl}</div>
+      ${it.action?`<span class="biz-bi-action" onclick="${it.action}">${it.actionLbl} →</span>`:''}
+    </div>
+  </div>`).join('');
+
+  card.style.display='';
+}
+
+function bizChatChip(q){
+  const inp=$id('bizChatInput');
+  if(inp) inp.value=q;
+  bizChatSubmit();
+}
+
+function bizChatSubmit(){
+  const inp=$id('bizChatInput');
+  const q=(inp?.value||'').trim();
+  if(!q) return;
+  const result=bizChatQuery(q,allLeads);
+  const resEl=$id('bizChatResult');
+  const qEl=$id('bizChatResultQ');
+  const bodyEl=$id('bizChatResultBody');
+  if(!resEl||!bodyEl) return;
+  if(qEl) qEl.innerHTML='<button class="home-ai-result-close" onclick="$id(\'bizChatResult\').style.display=\'none\'">✕</button>You asked: <em>'+esc(q)+'</em>';
+  bodyEl.innerHTML=result;
+  resEl.style.display='';
+  resEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function bizChatQuery(q,leads){
+  const today=new Date().toISOString().slice(0,10);
+  const ql=q.toLowerCase();
+  const ind=getIndustry();
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+
+  // Today's priorities / attention
+  if(/attention|priorit|focus|today.*do|do.*today|what.*need/i.test(ql)){
+    const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
+    const hot=leads.filter(l=>l.Score==='Hot');
+    const overdue=tasks.filter(t=>t.due.slice(0,10)<today);
+    const dueToday=tasks.filter(t=>t.due.slice(0,10)===today);
+    const parts=[];
+    if(overdue.length) parts.push(`<li>⏰ <strong>${overdue.length} overdue task${overdue.length!==1?'s':''}</strong> — <span class="biz-bi-action" onclick="navigate('tasks')">View tasks →</span></li>`);
+    if(hot.length) parts.push(`<li>🔥 <strong>${hot.length} hot lead${hot.length!==1?'s':''}</strong> needing follow-up — <span class="biz-bi-action" onclick="navigate('leads')">View leads →</span></li>`);
+    if(newToday>0) parts.push(`<li>💬 <strong>${newToday} new lead${newToday!==1?'s':''}</strong> came in today</li>`);
+    if(dueToday.length) parts.push(`<li>📌 <strong>${dueToday.length} task${dueToday.length!==1?'s':''}</strong> due today</li>`);
+    if(!parts.length) return '✅ Everything looks good — no urgent items today.';
+    return `Here's what needs your attention:<ul>${parts.join('')}</ul>`;
+  }
+
+  // Hot leads
+  if(/hot\b/i.test(ql)){
+    const hot=leads.filter(l=>l.Score==='Hot');
+    if(!hot.length) return '🔥 No hot leads right now.';
+    const list=hot.slice(0,8).map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong>${l.Phone?' · '+esc(l.Phone):''}${l.Stage?' · '+esc(l.Stage):''}</li>`).join('');
+    return `🔥 <strong>${hot.length} hot lead${hot.length!==1?'s':''}</strong>:<ul>${list}</ul>${hot.length>8?`<em>…and ${hot.length-8} more</em>`:''}`;
+  }
+
+  // This week's leads
+  if(/week/i.test(ql)&&/lead/i.test(ql)){
+    const weekAgo=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+    const recent=leads.filter(l=>l.Date&&l.Date.slice(0,10)>=weekAgo);
+    if(!recent.length) return '📋 No new leads this week yet.';
+    const list=recent.slice(0,8).map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong> · ${esc(l.Stage||'new')}${l.Date?' · '+l.Date.slice(0,10):''}</li>`).join('');
+    return `📋 <strong>${recent.length} lead${recent.length!==1?'s':''}</strong> this week:<ul>${list}</ul>`;
+  }
+
+  // Today's leads
+  if(/today/i.test(ql)&&/lead/i.test(ql)){
+    const todayLeads=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today);
+    if(!todayLeads.length) return '📋 No new leads today yet.';
+    const list=todayLeads.map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong> · ${esc(l.Stage||'new')}</li>`).join('');
+    return `📋 <strong>${todayLeads.length} new lead${todayLeads.length!==1?'s':''}</strong> today:<ul>${list}</ul>`;
+  }
+
+  // Overdue tasks
+  if(/overdue/i.test(ql)){
+    const overdue=tasks.filter(t=>t.due.slice(0,10)<today);
+    if(!overdue.length) return '✅ No overdue tasks — you\'re on top of things!';
+    const list=overdue.slice(0,8).map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong> · due ${t.due.slice(0,10)}</li>`).join('');
+    return `⏰ <strong>${overdue.length} overdue task${overdue.length!==1?'s':''}</strong>:<ul>${list}</ul>`;
+  }
+
+  // Tasks due today
+  if(/task/i.test(ql)&&/today/i.test(ql)){
+    const dueToday=tasks.filter(t=>t.due.slice(0,10)===today);
+    if(!dueToday.length) return '✅ No tasks due today.';
+    const list=dueToday.map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong></li>`).join('');
+    return `📌 <strong>${dueToday.length} task${dueToday.length!==1?'s':''}</strong> due today:<ul>${list}</ul>`;
+  }
+
+  // Conversion rate
+  if(/conver/i.test(ql)){
+    const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+    const rate=leads.length?Math.round(conv/leads.length*100):0;
+    return `📈 Conversion rate: <strong>${rate}%</strong> — ${conv} of ${leads.length} lead${leads.length!==1?'s':''} ${esc(ind.booked||'converted')}.`;
+  }
+
+  // Bot performance
+  if(/bot|assistant|automat/i.test(ql)){
+    const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
+    const pct=leads.length?Math.round(botCount/leads.length*100):0;
+    let msgCount=0;
+    for(const l of leads){try{const h=JSON.parse(l.ConvHistory||'[]');msgCount+=h.filter(m=>m.role==='assistant').length;}catch(e){}}
+    return `🤖 Bot engaged <strong>${pct}%</strong> of leads (${botCount} of ${leads.length}). Total messages sent: <strong>${msgCount.toLocaleString()}</strong>.`;
+  }
+
+  // Total leads / lead count
+  if(/total|count|how many.*lead/i.test(ql)){
+    const active=leads.filter(l=>!TERMINAL.has(l.Stage)).length;
+    return `👥 You have <strong>${leads.length} total lead${leads.length!==1?'s':''}</strong> — <strong>${active} active</strong>, ${leads.length-active} in terminal stage.`;
+  }
+
+  // Stage breakdown
+  if(/stage|pipeline|breakdown|funnel/i.test(ql)){
+    const counts={};
+    for(const l of leads) counts[l.Stage||'unknown']=(counts[l.Stage||'unknown']||0)+1;
+    const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const list=sorted.map(([s,n])=>`<li><strong>${esc(s)}</strong>: ${n} lead${n!==1?'s':''}</li>`).join('');
+    return `📊 Pipeline breakdown (${leads.length} total):<ul>${list}</ul>`;
+  }
+
+  // Follow-ups
+  if(/follow.?up|reminder/i.test(ql)){
+    const due=tasks.filter(t=>t.due&&t.due.slice(0,10)<=today).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,8);
+    if(!due.length) return '✅ No follow-ups due right now.';
+    const list=due.map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong> · ${t.due.slice(0,10)<today?'<span style="color:#DC2626">overdue</span>':'today'}</li>`).join('');
+    return `⏰ <strong>${due.length}</strong> follow-up${due.length!==1?'s':''} pending:<ul>${list}</ul>`;
+  }
+
+  // Source breakdown
+  if(/source|where.*lead|lead.*from|channel/i.test(ql)){
+    const counts={};
+    for(const l of leads) if(l.Source){counts[l.Source]=(counts[l.Source]||0)+1;}
+    const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,6);
+    if(!sorted.length) return 'No source data recorded yet.';
+    const top=sorted[0];
+    const list=sorted.map(([s,n])=>`<li><strong>${esc(s)}</strong>: ${n}</li>`).join('');
+    return `📡 Top lead source: <strong>${esc(top[0])}</strong> (${top[1]} leads)<br><ul>${list}</ul>`;
+  }
+
+  // Revenue / accounting
+  if(/revenue|invoice|income|accounting|money|paid/i.test(ql)){
+    return '💳 For accounting data, open the <span class="biz-bi-action" onclick="navigate(\'accounting\')">Accounting module →</span>';
+  }
+
+  // Default fallback with suggestions
+  return `I can answer questions about your leads, tasks, bot performance, and pipeline. Try:<ul>
+    <li>"What needs my attention today?"</li>
+    <li>"Which leads are hot?"</li>
+    <li>"Show my conversion rate"</li>
+    <li>"What tasks are overdue?"</li>
+    <li>"Where are my leads coming from?"</li>
+    <li>"Pipeline breakdown"</li></ul>`;
 }
 
 /* ── SETTINGS ── */
