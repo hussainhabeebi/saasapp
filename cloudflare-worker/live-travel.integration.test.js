@@ -12,7 +12,7 @@ class D1Statement {
   async all(){return {results:this.db.prepare(this.sql).all(...this.args)};}
 }
 class D1Database {
-  constructor(){this.db=new DatabaseSync(':memory:');this.db.exec(readFileSync(new URL('./migrations/0069_live_travel_agency.sql',import.meta.url),'utf8'));}
+  constructor(){this.db=new DatabaseSync(':memory:');this.db.exec(readFileSync(new URL('./migrations/0069_live_travel_agency.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0070_live_travel_client_credentials.sql',import.meta.url),'utf8'));}
   prepare(sql){return new D1Statement(this.db,sql);}
 }
 async function token(secret,cid=7,email='agent@example.com'){
@@ -35,9 +35,11 @@ test('Live Travel authenticated D1 workflow remains tenant scoped and operationa
   assert.deepEqual(r.data.suppliers.map(s=>s.supplier),['serpapi','riya','tripjack']);
   assert.equal(r.data.suppliers.every(s=>s.credentials_configured===false),true);
 
-  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'tripjack',enabled:true,mode:'sandbox',markup_type:'percent',markup_value:5,priority:10});
+  r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'tripjack',enabled:true,mode:'sandbox',markup_type:'percent',markup_value:5,priority:10,credentials:{api_key:'tenant-tripjack-key'},endpoints:{search:'https://sandbox.tripjack.test/search',revalidate:'https://sandbox.tripjack.test/revalidate'}});
   assert.equal(r.status,200);
   assert.equal(r.data.enabled,1);
+  assert.equal(r.data.credentials_configured,true);
+  assert.equal(JSON.stringify(r.data).includes('tenant-tripjack-key'),false);
 
   r=await call(env,session,'/live-travel/agents','POST',{name:'Dubai Master',agent_type:'master_agent',credit_limit:25000});
   assert.equal(r.status,200);

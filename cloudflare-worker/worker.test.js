@@ -53,9 +53,18 @@ import {
   eduEmailValid,
   eduYearValid,
   ltNormalizeOffer,
+  ltEncryptCredentials,
+  ltDecryptCredentials,
 } from './worker.js';
 
 describe('Live Travel supplier normalization and booking safety', () => {
+  test('encrypts client supplier credentials and rejects a different tenant key', async () => {
+    const encrypted=await ltEncryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},{api_key:'client-secret'});
+    assert.equal(encrypted.includes('client-secret'),false);
+    assert.deepEqual(await ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},encrypted),{api_key:'client-secret'});
+    await assert.rejects(()=>ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-two'},encrypted),/could not be decrypted/);
+  });
+
   test('keeps SerpApi Google Flights results comparison-only', () => {
     const offer=ltNormalizeOffer('serpapi',{
       price:1250,
