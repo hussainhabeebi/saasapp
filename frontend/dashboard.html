@@ -1222,38 +1222,10 @@ const ROLES = {
           <div class="biz-briefing-items" id="bizBriefingItems"></div>
         </div>
 
-        <!-- KPI Strip -->
-        <div class="kpi-grid">
-          <div class="kpi-card accent">
-            <div class="kpi-icon">💬</div>
-            <div class="kpi-val" id="tsNew">—</div>
-            <div class="kpi-lbl">New Today</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">👥</div>
-            <div class="kpi-val" id="tsTotal">—</div>
-            <div class="kpi-lbl">Total Leads</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">🔥</div>
-            <div class="kpi-val" id="tsHot">—</div>
-            <div class="kpi-lbl">Hot Leads</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">✅</div>
-            <div class="kpi-val" id="tsConv">—</div>
-            <div class="kpi-lbl">Converted</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">⏰</div>
-            <div class="kpi-val" id="tsReminders">—</div>
-            <div class="kpi-lbl">Follow-ups Due</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">🤖</div>
-            <div class="kpi-val" id="tsBotRate">—</div>
-            <div class="kpi-lbl">Bot Engaged</div>
-          </div>
+        <!-- Hidden KPI elements preserved for JS compatibility -->
+        <div style="display:none">
+          <div id="tsNew"></div><div id="tsTotal"></div><div id="tsHot"></div>
+          <div id="tsConv"></div><div id="tsReminders"></div><div id="tsBotRate"></div>
         </div>
 
         <!-- NBA priority -->
