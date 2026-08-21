@@ -13207,15 +13207,29 @@ async function handleEngineWebhook(request, env, secret){
             orderHandledInline=true;
           }else if(doctorMatches.length===1){
             const doctor=doctorMatches[0];
-            sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
-            routing.reply=sentText;
-            if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-            // Send image first (no caption), then doctor bio + "📅 Book Appointment" button together
-            // so the action button is visually attached to the bio text, not buried after extra media.
-            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
-            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
-            orderHandledInline=true;
+            // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
+            // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
+            const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
+            const nameToks=new Set(hcQueryTokens(doctor.name));
+            const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
+            if(!isNameSelection){
+              // General query → show all active doctors so patient can choose
+              const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId)).all().catch(()=>({results:[]}));
+              const showList=allDocs&&allDocs.length>1?allDocs:[doctor];
+              sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
+              orderHandledInline=true;
+            }else{
+              // Explicit name selection → show that doctor's full profile
+              sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
+              routing.reply=sentText;
+              if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+              if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
+              await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
+              orderHandledInline=true;
+            }
           }else{
             const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
             if(departmentMatches.length){
@@ -14491,7 +14505,7 @@ async function handleApptPublicBook(request, env){
     await hcEnsureOperationsSchema(env);
     const now=new Date().toISOString();
     const ins=await env.DB.prepare(
-      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,?,?)`
+      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,'',?,?)`
     ).bind(Number(clientId),name,phone,Number(body.service_id)||0,Number(body.doctor_id)||0,date,time,notes,now,now).run();
     const row=await hcAppointmentRow(env,clientId,ins.meta.last_row_id);
     if(row){
@@ -22426,6 +22440,21 @@ async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPh
 }
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
+  // Handle doctor-specific booking button tap (value sent by WhatsApp quick reply button)
+  const docBookMatch=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(action);
+  if(docBookMatch){
+    const doctorId=Number(docBookMatch[1]);
+    const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
+    let bookingLink=(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&doctor_id=${doctorId}`;
+    // Append doctor_id to custom link if it doesn't already have booking params
+    if(c.external_store_link&&!/doctor_id/i.test(bookingLink)) bookingLink+=`${bookingLink.includes('?')?'&':'?'}doctor_id=${doctorId}`;
+    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1`).bind(doctorId,Number(clientId)).first().catch(()=>null);
+    const doctorName=doctor?.name||'your selected doctor';
+    const msg=`📅 To book an appointment with ${doctorName}, use the link below:\n${bookingLink}`;
+    const text=await engineLocalizeReply(env,c,msg,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
   // Intercept clear booking intent; general questions (about doctors, services, availability) fall through to AI
   if(!/\b(?:book(?:ing)?|appoint(?:ment)?|schedul(?:e|ing)|reserv(?:e|ation)?|slot|rebook|meeting|consult(?:ation)?|check.?up|walk.?in)\b/i.test(action)) return {handled:false};
 

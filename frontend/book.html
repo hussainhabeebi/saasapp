@@ -63,6 +63,7 @@ textarea{resize:vertical;min-height:60px}
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
 const clientId = params.get('client') || params.get('client_id') || '';
+const preselectedDoctorId = params.get('doctor_id') || '';
 
 let bizInfo = {};
 let services = [];
@@ -91,7 +92,8 @@ async function loadDoctorsForService(serviceId){
   const r = await fetch(`${WORKER_BASE}/appt/public/doctors?client=${encodeURIComponent(clientId)}&service_id=${encodeURIComponent(serviceId||'')}`).catch(()=>null);
   const data = r ? await r.json().catch(()=>({list:[]})) : {list:[]};
   doctors = data.list || [];
-  selectedDoctorId = doctors.length ? String(doctors[0].Id) : '';
+  const preDoc = preselectedDoctorId && doctors.find(d => String(d.Id) === preselectedDoctorId);
+  selectedDoctorId = preDoc ? preselectedDoctorId : (doctors.length ? String(doctors[0].Id) : '');
   renderDoctorPicker(docArea);
 }
 
@@ -136,9 +138,10 @@ function renderForm(){
     </div>`;
 
   if(services.length){
-    selectService(services[0].Id);
+    // Use preselected service if available, otherwise first service
+    const defaultSvc = services.find(s => String(s.Id) === String(params.get('service_id'))) || services[0];
+    selectService(defaultSvc.Id);
   } else if(isHealthcare){
-    // No services but still load all doctors
     loadDoctorsForService('');
   }
 }
