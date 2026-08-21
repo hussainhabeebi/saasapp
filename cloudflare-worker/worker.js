@@ -8547,7 +8547,7 @@ export function hcServiceChoiceItems(services){
   for(const s of services||[]){
     const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
     if(!name||seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase()); items.push({title:label,value:name});
+    seen.add(name.toLowerCase()); items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
   }
   return items.slice(0,10);
 }
@@ -22141,9 +22141,8 @@ async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{ser
 async function hcRepromptBookingStage(env,c,clientId,convId,phone,session,replyLang){
   if(session.stage==='choose_service'){
     const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
-    const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-    const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}`,replyLang);
-    const qr=await engineSendChatwootQuickReply(env,c,clientId,convId,text,svcs.map(s=>({title:s.name,value:s.name})));
+    const text=await engineLocalizeReply(env,c,'Please choose a service:',replyLang);
+    const qr=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(svcs));
     return {handled:true,text,quickReplies:qr};
   }
   if(session.stage==='choose_doctor'){
@@ -22183,10 +22182,21 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
   await hcEnsureOperationsSchema(env);
   const action=String(userText||'').trim();
 
-  // Handle "Book Appointment" button taps — send the public web form link
+  // Generic "Book Appointment" button (value sent when >3 services in greeting) → form link
+  if(/^book\s+appointment$/i.test(action)){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const base=env.WORKER_BASE_URL||'';
+    const formUrl=`${base}/hc/book?cid=${clientId}`;
+    const text=await engineLocalizeReply(env,c,`Please fill in your appointment details using the link below and submit — it will be confirmed shortly.\n\n${formUrl}`,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+
+  // Service / doctor button taps (HC_BOOK_SERVICE:{id} or HC_BOOK_DOCTOR:{id}) → form link
   const hcbSvc=/^HC_BOOK_SERVICE:(\d+)$/.exec(action);
   if(hcbSvc){
     const svcId=Number(hcbSvc[1]);
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
     const svcRow=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(svcId,Number(clientId)).first().catch(()=>null);
     const base=env.WORKER_BASE_URL||'';
     const formUrl=(svcRow?.booking_url&&svcRow.booking_url.trim())?svcRow.booking_url.trim():`${base}/hc/book?cid=${clientId}&sid=${svcId}`;
@@ -22197,6 +22207,7 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
   const hcbDoc=/^HC_BOOK_DOCTOR:(\d+)$/.exec(action);
   if(hcbDoc){
     const docId=Number(hcbDoc[1]);
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
     const base=env.WORKER_BASE_URL||'';
     const formUrl=`${base}/hc/book?cid=${clientId}&did=${docId}`;
     const text=await engineLocalizeReply(env,c,`Please fill in your appointment details using the link below and submit — it will be confirmed shortly.\n\n${formUrl}`,replyLang);
@@ -22219,9 +22230,8 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
       return {handled:true,text:rbText,quickReplies:null};
     }
     await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
-    const slist=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-    const stext=await engineLocalizeReply(env,c,`Please choose a service:\n\n${slist}`,replyLang);
-    const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,svcs.map(s=>({title:s.name,value:s.name})));
+    const stext=await engineLocalizeReply(env,c,'Please choose a service:',replyLang);
+    const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,hcServiceChoiceItems(svcs));
     return {handled:true,text:stext,quickReplies:sqr};
   }
 
@@ -22255,9 +22265,8 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
         return {handled:true,text:ft1,quickReplies:null};
       }
       await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
-      const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}`,replyLang);
-      const qr=await engineSendChatwootQuickReply(env,c,clientId,convId,text,svcs.map(s=>({title:s.name,value:s.name})));
+      const text=await engineLocalizeReply(env,c,'Please choose a service:',replyLang);
+      const qr=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(svcs));
       return {handled:true,text,quickReplies:qr};
     }
     if(/^(continue|resume|yes|1)$/i.test(action)){
@@ -22288,11 +22297,10 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
         await engineSendChatwootReply(env,c,clientId,convId,ft0);
         return {handled:true,text:ft0,quickReplies:null};
       }
-      // Multiple services — let patient choose, then form link on selection
+      // Multiple services — show service buttons (each tap goes to HC_BOOK_SERVICE handler → form link)
       await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
-      const slist=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-      const stext=await engineLocalizeReply(env,c,`Please choose a service:\n\n${slist}`,replyLang);
-      const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,svcs.map(s=>({title:s.name,value:s.name})));
+      const stext=await engineLocalizeReply(env,c,'Please choose a service:',replyLang);
+      const sqr=await engineSendChatwootQuickReply(env,c,clientId,convId,stext,hcServiceChoiceItems(svcs));
       return {handled:true,text:stext,quickReplies:sqr};
     }
     return {handled:false};
@@ -22318,12 +22326,11 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
     const matched=hcMatchByNumberOrKeyword(svcs,action,s=>s.name);
     if(!matched){
-      const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
-      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}`,replyLang);
-      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,svcs.map(s=>({title:s.name,value:s.name})));
+      const text=await engineLocalizeReply(env,c,'Please choose a service:',replyLang);
+      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(svcs));
       return {handled:true,text,quickReplies};
     }
-    // Service selected — send the public form link and clear session
+    // Service selected by text — send the public form link and clear session
     await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
     const svcRow2=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(matched.id),Number(clientId)).first().catch(()=>null);
     const base2=env.WORKER_BASE_URL||'';
