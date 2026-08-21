@@ -12802,9 +12802,9 @@ async function handleEngineWebhook(request, env, secret){
         }
         if(!orderHandledInline){
         let matches=await hcFindBroadServiceMatches(env,clientId,userText);
-        if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
+        if(!matches.length&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
         if(matches.length>1){
-          sentText=await engineLocalizeReply(env,c,isNewLead?`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`:'Please choose the exact service you need:',replyLang);
+          sentText=await engineLocalizeReply(env,c,`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`,replyLang);
           routing.reply=sentText;
           routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
           orderHandledInline=true;
@@ -22253,6 +22253,13 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
     return {handled:false};
   }
 
+  // Greeting with active session — remind and re-prompt current stage
+  if(/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(action)){
+    const resumeMsg=await engineLocalizeReply(env,c,'You have a booking in progress. Let\'s continue from where you left off.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,resumeMsg);
+    return hcRepromptBookingStage(env,c,clientId,convId,phone,session,replyLang);
+  }
+
   // Cancel at any stage
   if(/^(cancel|stop|no)(\s+(booking|appointment))?$/i.test(action)){
     await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
@@ -22348,7 +22355,7 @@ async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userTe
   // Stage: patient_name
   if(session.stage==='patient_name'){
     const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
-    if(patientName.length<2){
+    if(patientName.length<3||/^(?:hi|hello|hey|ok|yes|no|new|cancel|stop)$/i.test(patientName)){
       const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);
       await engineSendChatwootReply(env,c,clientId,convId,text);
       return {handled:true,text,quickReplies:null};
