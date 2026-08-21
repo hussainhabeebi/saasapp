@@ -21987,6 +21987,7 @@ async function hcClearSimpleSession(env,clientId,phone){
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   await hcEnsureOperationsSchema(env);
   const action=String(userText||'').trim();
+  const base=env.WORKER_BASE_URL||'';
 
   // Cancel at any point
   if(/^(cancel|stop|exit|quit)$/i.test(action)){
@@ -22000,13 +22001,11 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
   if(/^see\s+(all\s+)?services$/i.test(action)){
     const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
     if(!svcs.length){const t=await engineLocalizeReply(env,c,'No services are currently listed. Please contact us for more information.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,t);return {handled:true,text:t,quickReplies:null};}
-    // Fetch all doctor↔service links in one query
     const svcIds=svcs.map(s=>Number(s.id));
     const ph=svcIds.map(()=>'?').join(',');
     const {results:links}=await env.DB.prepare(
       `SELECT ds.service_id,ds.doctor_id,d.name doctor_name,s.name service_name FROM healthcare_doctor_services ds JOIN healthcare_doctors d ON d.id=ds.doctor_id AND d.client_id=ds.client_id JOIN healthcare_services s ON s.id=ds.service_id AND s.client_id=ds.client_id WHERE ds.client_id=? AND ds.service_id IN (${ph}) AND d.status='active' ORDER BY d.name,s.name`
     ).bind(Number(clientId),...svcIds).all().catch(()=>({results:[]}));
-    // Build service→doctors map
     const byService={};
     const byDoctor={};
     for(const r of links||[]){
@@ -22015,14 +22014,12 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
       if(!byDoctor[r.doctor_id]) byDoctor[r.doctor_id]={name:r.doctor_name,services:[]};
       byDoctor[r.doctor_id].services.push(r.service_name);
     }
-    // Section 1: Services with their doctors
     const svcLines=svcs.map(s=>{
       const desc=s.description?` — ${s.description}`:'';
       const docs=(byService[Number(s.id)]||[]);
       const docLine=docs.length?`\n   👨‍⚕️ ${docs.join(', ')}` :'';
       return `• ${s.name}${desc}${docLine}`;
     });
-    // Section 2: Doctors with their services (only those linked to at least one service)
     const docEntries=Object.values(byDoctor);
     const docLines=docEntries.map(d=>`• ${d.name}\n   🏥 ${d.services.join(', ')}`);
     let msg=`🏥 *Our Services*\n\n${svcLines.join('\n\n')}`;
