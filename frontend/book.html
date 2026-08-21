@@ -138,7 +138,6 @@ function renderForm(){
     </div>`;
 
   if(services.length){
-    // Use preselected service if available, otherwise first service
     const defaultSvc = services.find(s => String(s.Id) === String(params.get('service_id'))) || services[0];
     selectService(defaultSvc.Id);
   } else if(isHealthcare){
