@@ -8390,3 +8390,41 @@ npx wrangler deploy
 
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
+
+## Live Travel Agency
+
+`frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy
+`travel-agency.html` remains on its existing NocoDB tables and only links to the new page. Apply
+the D1 migration before opening Live Agency:
+
+```bash
+cd cloudflare-worker
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+```
+
+Configure supplier credentials and the exact certified sandbox/production endpoint URLs as Worker
+secrets. Endpoint URLs are secrets too because some suppliers issue account-specific hosts:
+
+```bash
+npx wrangler secret put SERPAPI_API_KEY
+npx wrangler secret put RIYA_API_KEY
+npx wrangler secret put RIYA_CLIENT_ID
+npx wrangler secret put RIYA_FLIGHT_SEARCH_URL
+npx wrangler secret put RIYA_FLIGHT_REVALIDATE_URL
+npx wrangler secret put RIYA_FLIGHT_BOOK_URL
+npx wrangler secret put RIYA_FLIGHT_TICKET_URL
+npx wrangler secret put RIYA_FLIGHT_SYNC_URL
+npx wrangler secret put RIYA_FLIGHT_CANCEL_URL
+npx wrangler secret put TRIPJACK_API_KEY
+npx wrangler secret put TRIPJACK_FLIGHT_SEARCH_URL
+npx wrangler secret put TRIPJACK_FLIGHT_REVALIDATE_URL
+npx wrangler secret put TRIPJACK_FLIGHT_BOOK_URL
+npx wrangler secret put TRIPJACK_FLIGHT_TICKET_URL
+npx wrangler secret put TRIPJACK_FLIGHT_SYNC_URL
+npx wrangler secret put TRIPJACK_FLIGHT_CANCEL_URL
+```
+
+Enable each adapter from **Live Agency → Suppliers** only after its secrets are configured. Keep
+Riya and TripJack in sandbox until supplier UAT/certification passes. SerpApi Google Flights is
+always stored as non-bookable market comparison data; only a revalidated Riya or TripJack offer
+can become a booking. Never point staging at production credentials or the production D1 database.
