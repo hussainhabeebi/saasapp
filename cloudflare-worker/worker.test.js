@@ -238,7 +238,7 @@ describe('Healthcare verified-data routing', () => {
     const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
     await hcEnsureOperationsSchema({DB});
     await hcEnsureOperationsSchema({DB});
-    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures','booking_sessions']){
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
     }
     assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
