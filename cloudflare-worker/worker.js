@@ -8809,6 +8809,15 @@ async function hcListActiveServices(env, clientId){
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
   return results||[];
 }
+function hcDedupeServices(services){
+  const seen=new Set(), out=[];
+  for(const s of services||[]){
+    const key=String(s.name||'').trim().toLowerCase();
+    if(!key||seen.has(key)) continue;
+    seen.add(key); out.push(s);
+  }
+  return out;
+}
 export function hcServiceChoiceItems(services){
   const seen=new Set(), items=[];
   for(const s of services||[]){
@@ -22346,17 +22355,21 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
     return {handled:true,text,quickReplies:null};
   }
 
-  // Service button tap → show doctors for that service
+  // Service button tap → show ALL doctors for that service
   const hcSvcMatch=/^HC_SVC:(\d+)$/.exec(action);
   if(hcSvcMatch){
     const svcId=Number(hcSvcMatch[1]);
     const svcRow=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(svcId,Number(clientId)).first().catch(()=>null);
     if(!svcRow) return {handled:false};
     const {results:docs}=await env.DB.prepare(
-      `SELECT d.id,d.name FROM healthcare_doctor_services ds JOIN healthcare_doctors d ON d.id=ds.doctor_id AND d.client_id=ds.client_id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
+      `SELECT d.id,d.name FROM healthcare_doctor_services ds JOIN healthcare_doctors d ON d.id=ds.doctor_id AND d.client_id=ds.client_id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name`
     ).bind(Number(clientId),svcId).all().catch(()=>({results:[]}));
     await hcSaveSimpleSession(env,clientId,phone,{stage:'choose_doctor',service_id:svcId,doctor_id:0,appt_date:'',appt_time:''});
-    const text=await engineLocalizeReply(env,c,`Which doctor would you prefer for ${svcRow.name}?`,replyLang);
+    // List ALL doctors in the text message so patient sees everyone
+    const docList=(docs||[]).map(d=>`👨‍⚕️ ${d.name}`).join('\n');
+    const introLine=docList?`Our ${svcRow.name} doctors:\n${docList}\n\nWho would you prefer?`:`Which doctor would you prefer for ${svcRow.name}?`;
+    const text=await engineLocalizeReply(env,c,introLine,replyLang);
+    // Buttons: up to 2 named doctors + Any Doctor (keeps WhatsApp quick-reply limit of ≤3)
     const btns=(docs||[]).slice(0,2).map(d=>({title:String(d.name).slice(0,20),value:`HC_DOC:${d.id}`}));
     btns.push({title:'👨‍⚕️ Any Doctor',value:'HC_DOC:0'});
     const qr=await engineSendChatwootQuickReply(env,c,clientId,convId,text,btns);

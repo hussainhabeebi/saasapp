@@ -15748,10 +15748,11 @@ $id('saveApptEnabled').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
+function isHcAppt(){ return clientRecord?.healthcare_enabled==='Yes'; }
 async function renderAppointments(){
   renderApptLinkBar();
   const el=$id('appointmentsContent');
-  if(!apptTablesReady()){el.innerHTML=renderApptSetupNeeded();document.querySelectorAll('.appt-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!isHcAppt()&&!apptTablesReady()){el.innerHTML=renderApptSetupNeeded();document.querySelectorAll('.appt-tab').forEach(t=>t.classList.remove('active'));return;}
   if(!_apptLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await apptLoad();}
   renderApptSubPage(_apptPage);
 }
@@ -15848,6 +15849,21 @@ async function apptSetupTables(){
 }
 
 async function apptLoad(){
+  if(isHcAppt()){
+    const hdrs=ncAuthHeaders();
+    const [svcRes,aptRes]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{headers:hdrs}).then(r=>r.json()).catch(()=>({list:[]})),
+      fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{headers:hdrs}).then(r=>r.json()).catch(()=>({list:[]})),
+    ]);
+    _apptServices=(svcRes.list||[]).map(s=>({...s,Id:s.id}));
+    _apptBookings=(aptRes.list||[]).map(b=>({
+      ...b,Id:b.id,
+      customer_name:b.patient_name,customer_phone:b.patient_phone,
+      appt_date:b.appointment_date,appt_time:b.start_time
+    }));
+    _apptLoaded=true;
+    return;
+  }
   const [services,bookings]=await Promise.all([
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('services')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('bookings')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
@@ -15941,6 +15957,7 @@ function renderApptBookings(filter=''){
 }
 
 function openAddAppt(){
+  if(isHcAppt()){ showToast('ℹ️ Create appointments via WhatsApp booking or the Healthcare module'); navigate('healthcare'); return; }
   _editApptId=null;
   $id('apptModalTitle').textContent='New Appointment';
   ['apCustomerName','apCustomerPhone','apNotes'].forEach(id=>$id(id).value='');
@@ -15970,16 +15987,34 @@ async function saveApptFromModal(){
   if(!phone){ msg.textContent='Customer phone is required.'; msg.className='save-msg err'; return; }
   const svcId=$id('apService').value;
   const svc=svcId?_apptServices.find(s=>String(s.Id)===svcId):null;
-  const body={
-    customer_name:$id('apCustomerName').value.trim(), customer_phone:phone,
-    service_id:svcId||'', service_name:svc?.name||'',
-    appt_date:$id('apDate').value||'', appt_time:$id('apTime').value||'',
-    status:$id('apStatus').value, notes:$id('apNotes').value.trim(),
-  };
   const btn=$id('saveApptBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    if(_editApptId) await apptUpdate('bookings',Number(_editApptId),body);
-    else await apptCreate('bookings',{...body,source:'manual',created_at:new Date().toISOString()});
+    if(isHcAppt()){
+      if(!_editApptId){ msg.textContent='New appointments must be created from the Healthcare module or via WhatsApp booking.'; msg.className='save-msg err'; return; }
+      const existing=_apptBookings.find(b=>String(b.Id)===String(_editApptId));
+      const hcBody={
+        id:Number(_editApptId),
+        patient_name:$id('apCustomerName').value.trim()||existing?.patient_name||'',
+        patient_phone:phone,
+        service_id:svcId?Number(svcId):existing?.service_id||0,
+        doctor_id:existing?.doctor_id||0,
+        appointment_date:$id('apDate').value||existing?.appointment_date||'',
+        start_time:$id('apTime').value||existing?.start_time||'',
+        status:$id('apStatus').value,
+        notes:$id('apNotes').value.trim(),
+      };
+      const r=await fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(hcBody)});
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||r.statusText);}
+    } else {
+      const body={
+        customer_name:$id('apCustomerName').value.trim(), customer_phone:phone,
+        service_id:svcId||'', service_name:svc?.name||'',
+        appt_date:$id('apDate').value||'', appt_time:$id('apTime').value||'',
+        status:$id('apStatus').value, notes:$id('apNotes').value.trim(),
+      };
+      if(_editApptId) await apptUpdate('bookings',Number(_editApptId),body);
+      else await apptCreate('bookings',{...body,source:'manual',created_at:new Date().toISOString()});
+    }
     await apptLoad();
     closeModal('modalAppt');
     renderApptSubPage(_apptPage);
@@ -15990,28 +16025,34 @@ async function saveApptFromModal(){
 
 async function deleteAppt(id){
   if(!confirm('Delete this appointment?')) return;
-  await apptDeleteRow('bookings',Number(id));
+  if(isHcAppt()){
+    await fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:Number(id)})});
+  } else {
+    await apptDeleteRow('bookings',Number(id));
+  }
   await apptLoad();
   renderApptSubPage(_apptPage);
 }
 
 function renderApptServices(){
   const el=$id('appointmentsContent');
+  const hc=isHcAppt();
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
       <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🧾 Services <span style="color:var(--muted);font-size:13px;font-weight:500">(${_apptServices.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="openAddApptService()">+ New Service</button>
+      ${hc?`<span style="font-size:12px;color:var(--muted)">Managed in</span><button class="btn btn-secondary btn-sm" onclick="navigate('healthcare')">🏥 Healthcare module</button>`:`<button class="btn btn-primary btn-sm" onclick="openAddApptService()">+ New Service</button>`}
     </div>
+    ${hc?'<div class="s-note" style="margin-bottom:12px">These services are synced from your Healthcare module. To add, edit, or remove services go to the Healthcare tab → Services.</div>':''}
     ${_apptServices.length?`<div class="card" style="padding:0;overflow:hidden">${_apptServices.map(s=>`
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="openEditApptService('${s.Id}')">
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)${hc?'':';cursor:pointer'}" ${hc?'':`onclick="openEditApptService('${s.Id}')"`}>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${esc(s.name||'Untitled')}</div>
           <div style="font-size:12px;color:var(--muted)">${s.duration_minutes?s.duration_minutes+' min':'—'}${s.price?' · '+esc(s.currency||'')+' '+s.price:''}</div>
         </div>
         <span style="background:${s.status==='inactive'?'#F1F5F9':'#DCFCE7'};color:${s.status==='inactive'?'#64748B':'#166534'};font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;font-family:var(--disp)">${s.status==='inactive'?'Inactive':'Active'}</span>
-        <button class="btn-ghost" onclick="event.stopPropagation();deleteApptService('${s.Id}')">🗑</button>
+        ${hc?'':`<button class="btn-ghost" onclick="event.stopPropagation();deleteApptService('${s.Id}')">🗑</button>`}
       </div>`).join('')}</div>`
-    :'<div class="empty-state"><div class="ei">🧾</div>No services yet. Add what you offer — e.g. "Initial Consultation, 30 min".</div>'}`;
+    :`<div class="empty-state"><div class="ei">🧾</div>${hc?'No healthcare services found. Add services in the Healthcare module → Services tab.':'No services yet. Add what you offer — e.g. "Initial Consultation, 30 min".'}</div>`}`;
 }
 
 function openAddApptService(){
@@ -16040,12 +16081,19 @@ async function saveApptServiceFromModal(){
   if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
   const body={
     name, duration_minutes:Number($id('asDuration').value)||0, price:Number($id('asPrice').value)||0,
-    currency:$id('asCurrency').value.trim(), description:$id('asDescription').value.trim(), status:$id('asStatus').value,
+    currency:$id('asCurrency').value.trim(), description:$id('asDescription').value.trim()||name, status:$id('asStatus').value,
   };
   const btn=$id('saveApptSvcBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    if(_editApptSvcId) await apptUpdate('services',Number(_editApptSvcId),body);
-    else await apptCreate('services',{...body,created_at:new Date().toISOString()});
+    if(isHcAppt()){
+      const method=_editApptSvcId?'PATCH':'POST';
+      const hcBody=_editApptSvcId?{id:Number(_editApptSvcId),...body}:body;
+      const r=await fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{method,headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(hcBody)});
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||r.statusText);}
+    } else {
+      if(_editApptSvcId) await apptUpdate('services',Number(_editApptSvcId),body);
+      else await apptCreate('services',{...body,created_at:new Date().toISOString()});
+    }
     await apptLoad();
     closeModal('modalApptService');
     renderApptSubPage(_apptPage);
@@ -16056,7 +16104,11 @@ async function saveApptServiceFromModal(){
 
 async function deleteApptService(id){
   if(!confirm('Delete this service?')) return;
-  await apptDeleteRow('services',Number(id));
+  if(isHcAppt()){
+    await fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:Number(id)})});
+  } else {
+    await apptDeleteRow('services',Number(id));
+  }
   await apptLoad();
   renderApptSubPage(_apptPage);
 }
