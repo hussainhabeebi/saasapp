@@ -12806,7 +12806,11 @@ async function handleEngineWebhook(request, env, secret){
         if(matches.length>1){
           sentText=await engineLocalizeReply(env,c,`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`,replyLang);
           routing.reply=sentText;
-          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
+          const svcItems=hcServiceChoiceItems(matches);
+          // Keep greeting in quick-reply mode (≤3 items) — list pickers (>3) don't always render.
+          // If there are more than 3 services, collapse to a generic Book Appointment entry point.
+          const greetBtns=svcItems.length<=3?svcItems:[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,greetBtns);
           orderHandledInline=true;
         }else if(matches.length===1){
           const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
