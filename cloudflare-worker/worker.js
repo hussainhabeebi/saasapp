@@ -141,7 +141,7 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
-  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
+  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'||p==='/appt/public/doctors'), bucket:'appt-public-read', limit:120, windowSec:60},
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
@@ -14407,7 +14407,7 @@ async function handleEcomPublicStores(request, env){
    table. This is the manual, customer-self-serve counterpart to the Cal.com sync and the AI
    auto-send — a client with no Cal.com account (or who just wants a simple always-available link)
    can hand out `book.html?client=<id>` directly. ── */
-const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug'];
+const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','healthcare_enabled'];
 const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
 
 async function apptPublicResolveClient(env, url){
@@ -14421,20 +14421,52 @@ async function apptPublicResolveClient(env, url){
 async function handleApptPublicClient(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  // Healthcare clients use D1; non-healthcare clients require appt_enabled
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
   return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
 }
 
 async function handleApptPublicServices(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  // Healthcare: serve active services from D1
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const svcs=await hcListActiveServices(env, c.Id);
+    return json({list:svcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
+  }
   const servicesTable=apptResolveTable(c, 'services');
   if(!servicesTable) return json({list:[]});
   const r=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${c.Id})~and(status,neq,inactive)&limit=100`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({list:(data.list||[]).map(row=>ecomPublicPick(row, APPT_PUBLIC_SERVICE_FIELDS))});
+}
+
+// Healthcare-only: returns active doctors so the public booking page can show a doctor picker
+async function handleApptPublicDoctors(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.healthcare_enabled!=='Yes') return json({list:[]});
+  await hcEnsureOperationsSchema(env);
+  const serviceId=Number(url.searchParams.get('service_id')||0);
+  let rows;
+  if(serviceId){
+    // Prefer doctors linked to the selected service; fall back to all active doctors
+    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
+    rows=linked.results||[];
+    if(!rows.length){
+      const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+      rows=all.results||[];
+    }
+  }else{
+    const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+    rows=all.results||[];
+  }
+  return json({list:rows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
 }
 
 // The one write path this whole public surface has — always creates a `requested` row (never
@@ -14445,9 +14477,7 @@ async function handleApptPublicBook(request, env){
   const clientId=String(body.client_id||'');
   if(!clientId) return json({error:'client_id required'}, 400);
   const c=await getClientById(env, clientId);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
-  const bookingsTable=apptResolveTable(c, 'bookings');
-  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
+  if(!c) return json({error:'Booking page not found'}, 404);
 
   const name=String(body.name||'').trim().slice(0,120);
   const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
@@ -14455,6 +14485,26 @@ async function handleApptPublicBook(request, env){
   const date=String(body.date||'').slice(0,10);
   const time=String(body.time||'').slice(0,5);
   const notes=String(body.notes||'').trim().slice(0,500);
+
+  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const now=new Date().toISOString();
+    const ins=await env.DB.prepare(
+      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,?,?)`
+    ).bind(Number(clientId),name,phone,Number(body.service_id)||0,Number(body.doctor_id)||0,date,time,notes,now,now).run();
+    const row=await hcAppointmentRow(env,clientId,ins.meta.last_row_id);
+    if(row){
+      await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
+      await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
+    }
+    return json({ok:true});
+  }
+
+  // Non-healthcare (NocoDB) path
+  if(c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
 
   let service=null;
   if(body.service_id){
@@ -22376,8 +22426,8 @@ async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPh
 }
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
-  // Intercept any booking/appointment/link intent — covers all common patient phrasings
-  if(!/\b(?:book(?:ing)?|appoint(?:ment)?|link|schedul(?:e|ing)|reserv(?:e|ation)?|slot|visit|rebook|meeting|consult(?:ation)?|check.?up|doctor|physician|specialist|clinic|available|when\s+can|come\s+in|walk.?in)\b/i.test(action)) return {handled:false};
+  // Intercept clear booking intent; general questions (about doctors, services, availability) fall through to AI
+  if(!/\b(?:book(?:ing)?|appoint(?:ment)?|schedul(?:e|ing)|reserv(?:e|ation)?|slot|rebook|meeting|consult(?:ation)?|check.?up|walk.?in)\b/i.test(action)) return {handled:false};
 
   await hcEnsureOperationsSchema(env);
   // Resolve booking link: service-specific booking_url → client external_store_link → public book.html
@@ -23873,6 +23923,7 @@ export default {
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
       else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
+      else if(url.pathname==='/appt/public/doctors' && request.method==='GET'){ res=await handleApptPublicDoctors(request, env); }
       else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
