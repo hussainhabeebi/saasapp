@@ -23224,6 +23224,394 @@ async function handleReAnalytics(request, env){
    getWebSockets) rather than holding sockets in a plain in-memory field, so an idle DO with open
    connections isn't billed as continuously active. Push-only — the dashboard never sends
    anything meaningful back, so webSocketMessage is a no-op. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIVE TRAVEL AGENCY
+   A D1-backed, session-authenticated module kept deliberately separate from the
+   legacy Travel Agency/NocoDB implementation. Supplier credentials are read
+   only from Worker secrets. SerpApi is discovery-only; a fare is bookable only
+   after Riya or TripJack returns and subsequently revalidates it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const LT_SUPPLIERS=['serpapi','riya','tripjack'];
+const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack']);
+const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
+
+function ltNow(){ return new Date().toISOString(); }
+function ltRef(prefix){
+  const stamp=new Date().toISOString().replace(/\D/g,'').slice(2,14);
+  const rand=crypto.randomUUID().replace(/-/g,'').slice(0,6).toUpperCase();
+  return `${prefix}-${stamp}-${rand}`;
+}
+function ltText(value,max=250){ return String(value??'').trim().slice(0,max); }
+function ltJson(value,fallback){ try{return JSON.parse(value);}catch(e){return fallback;} }
+function ltRow(row){
+  if(!row)return row;
+  const out={...row};
+  for(const key of Object.keys(out)) if(LT_JSON_FIELDS.has(key)) out[key.replace(/_json$/,'')]=ltJson(out[key],key==='itinerary_json'||key==='ticket_numbers_json'?[]:{});
+  return out;
+}
+function ltPositiveInt(value,fallback,min=0,max=9){ const n=Math.floor(Number(value)); return Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback; }
+function ltMoney(value){ const n=Number(value); return Number.isFinite(n)?Math.max(0,Math.round(n*100)/100):0; }
+function ltMarkup(base,type,value){ const v=ltMoney(value); return type==='percent'?Math.round(base*v)/100:Math.min(v,1e9); }
+function ltSearchParams(body={}){
+  const tripType=['one_way','round_trip','multi_city'].includes(body.trip_type)?body.trip_type:'round_trip';
+  const origin=ltText(body.origin,3).toUpperCase(), destination=ltText(body.destination,3).toUpperCase();
+  const date=ltText(body.departure_date,10), ret=ltText(body.return_date,10);
+  if(!/^[A-Z]{3}$/.test(origin)||!/^[A-Z]{3}$/.test(destination)||origin===destination) throw new Error('Use different 3-letter origin and destination airport codes.');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('A valid departure date is required.');
+  if(tripType==='round_trip'&&!/^\d{4}-\d{2}-\d{2}$/.test(ret)) throw new Error('A valid return date is required for a round trip.');
+  const adults=ltPositiveInt(body.adults,1,1,9), children=ltPositiveInt(body.children,0), infants=ltPositiveInt(body.infants,0);
+  if(infants>adults) throw new Error('Infants cannot exceed adults.');
+  return {trip_type:tripType,origin,destination,departure_date:date,return_date:tripType==='round_trip'?ret:null,adults,children,infants,
+    cabin:['economy','premium_economy','business','first'].includes(body.cabin)?body.cabin:'economy',currency:/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED',lead_id:ltText(body.lead_id,80)};
+}
+
+export function ltNormalizeOffer(supplier,raw,ctx={}){
+  const source=String(supplier||'').toLowerCase();
+  const price=ltMoney(raw?.total_amount??raw?.totalPrice??raw?.total_price??raw?.price?.total??raw?.price??raw?.fare?.totalFare??raw?.fare?.total_amount);
+  const tax=ltMoney(raw?.tax_amount??raw?.taxes??raw?.price?.tax??raw?.fare?.totalTax);
+  const segments=raw?.itinerary||raw?.segments||raw?.flights||raw?.journeys||[];
+  const first=Array.isArray(segments)?segments[0]:{};
+  const airline=raw?.airline_name||raw?.airline||first?.airline||first?.airline_name||'';
+  const airlineCode=raw?.airline_code||raw?.carrier_code||first?.airline_code||first?.airlineCode||'';
+  const numbers=raw?.flight_numbers||raw?.flight_number||first?.flight_number||first?.flightNumber||'';
+  const base=ltMoney(raw?.base_amount??raw?.baseFare??raw?.base_fare??Math.max(0,price-tax));
+  const markup=ltMarkup(price||base,ctx.markup_type||'fixed',ctx.markup_value||0);
+  return {
+    supplier:source,supplier_offer_id:ltText(raw?.id??raw?.offer_id??raw?.result_index??raw?.token??raw?.booking_token,300),
+    bookable:LT_BOOKABLE_SUPPLIERS.has(source),validating:source==='serpapi',validating_supplier:source==='serpapi'?'riya_or_tripjack':'',
+    airline_code:ltText(airlineCode,12).toUpperCase(),airline_name:ltText(airline,120),flight_numbers:ltText(Array.isArray(numbers)?numbers.join(', '):numbers,200),
+    itinerary:Array.isArray(segments)?segments:[],baggage:raw?.baggage||raw?.baggage_info||{},fare_rules:raw?.fare_rules||raw?.fareRules||{},
+    cabin:ltText(raw?.cabin||ctx.cabin||'economy',40),seats_left:Number.isFinite(Number(raw?.seats_left??raw?.seats))?Number(raw?.seats_left??raw?.seats):null,
+    currency:ltText(raw?.currency||raw?.price?.currency||ctx.currency||'AED',3).toUpperCase(),base_amount:base,tax_amount:tax,markup_amount:markup,total_amount:ltMoney(price+markup),raw
+  };
+}
+
+async function ltAudit(env,cid,entityType,entityId,action,email,details={}){
+  await env.DB.prepare(`INSERT INTO live_travel_audit_log (client_id,entity_type,entity_id,action,actor_email,details_json,created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(cid,entityType,String(entityId),action,ltText(email,250),JSON.stringify(details),ltNow()).run();
+}
+async function ltAuth(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return null;
+  return {cid:Number(payload.cid),email:ltText(payload.email,250)};
+}
+async function ltSeedSuppliers(env,cid){
+  const now=ltNow();
+  for(const [i,supplier] of LT_SUPPLIERS.entries()) await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`).bind(cid,supplier,(i+1)*10,now,now).run();
+}
+function ltSupplierConfigured(env,supplier){
+  if(supplier==='serpapi')return !!env.SERPAPI_API_KEY;
+  if(supplier==='riya')return !!(env.RIYA_FLIGHT_SEARCH_URL&&env.RIYA_API_KEY);
+  if(supplier==='tripjack')return !!(env.TRIPJACK_FLIGHT_SEARCH_URL&&env.TRIPJACK_API_KEY);
+  return false;
+}
+function ltSupplierHeaders(env,supplier){
+  if(supplier==='riya')return {'Content-Type':'application/json','Authorization':`Bearer ${env.RIYA_API_KEY}`,'X-Client-Id':env.RIYA_CLIENT_ID||''};
+  return {'Content-Type':'application/json','apikey':env.TRIPJACK_API_KEY||'','Authorization':env.TRIPJACK_API_KEY?`Bearer ${env.TRIPJACK_API_KEY}`:''};
+}
+async function ltFetchJson(url,options={},timeoutMs=25000){
+  const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{
+    const r=await fetch(url,{...options,signal:ctl.signal});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||data?.message||`HTTP ${r.status}`);
+    return data;
+  }finally{clearTimeout(timer);}
+}
+function ltExtractOffers(supplier,data){
+  if(supplier==='serpapi')return [...(data?.best_flights||[]),...(data?.other_flights||[])];
+  for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
+  return Array.isArray(data)?data:[];
+}
+async function ltSupplierSearch(env,supplier,input){
+  if(!ltSupplierConfigured(env,supplier)) throw new Error('Credentials or endpoint are not configured.');
+  if(supplier==='serpapi'){
+    const q=new URLSearchParams({engine:'google_flights',api_key:env.SERPAPI_API_KEY,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
+    if(input.return_date)q.set('return_date',input.return_date);
+    return ltFetchJson(`https://serpapi.com/search.json?${q}`);
+  }
+  const endpoint=supplier==='riya'?env.RIYA_FLIGHT_SEARCH_URL:env.TRIPJACK_FLIGHT_SEARCH_URL;
+  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(env,supplier),body:JSON.stringify(input)});
+}
+async function ltSupplierAction(env,supplier,action,payload){
+  const key=`${supplier.toUpperCase()}_FLIGHT_${action.toUpperCase()}_URL`, endpoint=env[key];
+  if(!endpoint||!ltSupplierConfigured(env,supplier)) throw new Error(`${supplier} ${action} endpoint is not configured.`);
+  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(env,supplier),body:JSON.stringify(payload)});
+}
+async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+
+async function handleLtBootstrap(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await ltSeedSuppliers(env,auth.cid);
+  const [suppliers,searches,quotes,bookings,service,wallet,walletEntries,agents,commissions]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? ORDER BY priority`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 20`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE client_id=? ORDER BY updated_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT currency,COALESCE(SUM(CASE WHEN entry_type IN ('credit','refund') THEN amount ELSE -amount END),0) balance FROM live_travel_wallet_ledger WHERE client_id=? GROUP BY currency`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT c.*,b.booking_ref,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 200`).bind(auth.cid).all()
+  ]);
+  const supplierList=(suppliers.results||[]).map(s=>({...s,credentials_configured:ltSupplierConfigured(env,s.supplier)}));
+  return json({suppliers:supplierList,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
+}
+async function handleLtSuppliersUpdate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  await ltSeedSuppliers(env,auth.cid);
+  const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,updated_at=? WHERE client_id=? AND supplier=?`)
+    .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),ltNow(),auth.cid,supplier).run();
+  await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value)});
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  return json({...row,credentials_configured:ltSupplierConfigured(env,supplier)});
+}
+async function handleLtSupplierHealth(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const supplier=new URL(request.url).searchParams.get('supplier')||'';
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  const configured=ltSupplierConfigured(env,supplier), status=configured?'configured':'not_configured', now=ltNow();
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET last_status=?,last_checked_at=?,updated_at=? WHERE client_id=? AND supplier=?`).bind(status,now,now,auth.cid,supplier).run();
+  return json({supplier,status,credentials_configured:configured,checked_at:now});
+}
+async function handleLtSearch(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  let input; try{input=ltSearchParams(await request.json().catch(()=>({})));}catch(e){return json({error:e.message},400);}
+  await ltSeedSuppliers(env,auth.cid);
+  const {results:settings}=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all();
+  if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
+  const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
+  const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
+    .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
+  const searchId=insert.meta.last_row_id, errors={}, offers=[];
+  const settled=await Promise.all((settings||[]).map(async setting=>{
+    try{return {setting,data:await ltSupplierSearch(env,setting.supplier,input)};}catch(e){return {setting,error:String(e?.message||e)};}
+  }));
+  for(const result of settled){
+    const supplier=result.setting.supplier;
+    if(result.error){errors[supplier]=result.error;continue;}
+    for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
+      const normalized=ltNormalizeOffer(supplier,raw,{...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value});
+      if(!normalized.total_amount)continue;
+      const offerRef=ltRef('OF');
+      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),now).run();
+      offers.push(ltRow({id:saved.meta.last_row_id,search_id:searchId,offer_ref:offerRef,...normalized,expires_at:expires,created_at:now}));
+    }
+  }
+  offers.sort((a,b)=>a.total_amount-b.total_amount);
+  const status=offers.length?'complete':'failed';
+  await env.DB.prepare(`UPDATE live_travel_searches SET status=?,supplier_errors_json=? WHERE id=? AND client_id=?`).bind(status,JSON.stringify(errors),searchId,auth.cid).run();
+  await ltAudit(env,auth.cid,'search',searchRef,'completed',auth.email,{offer_count:offers.length,suppliers:(settings||[]).map(s=>s.supplier),errors});
+  return json({search:{id:searchId,search_ref:searchRef,...input,status,errors,created_at:now,expires_at:expires},offers});
+}
+async function handleLtSearchList(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const u=new URL(request.url), searchId=Number(u.searchParams.get('search_id')||0);
+  if(searchId){
+    const search=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE id=? AND client_id=?`).bind(searchId,auth.cid).first();
+    if(!search)return json({error:'Search not found'},404);
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_offers WHERE search_id=? AND client_id=? ORDER BY total_amount`).bind(searchId,auth.cid).all();
+    return json({search:ltRow(search),offers:(results||[]).map(ltRow)});
+  }
+  const {results}=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all();
+  return json({list:(results||[]).map(ltRow)});
+}
+async function handleLtRevalidate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), offer=await ltOfferById(env,auth.cid,body.offer_id);
+  if(!offer)return json({error:'Offer not found'},404);
+  if(!offer.bookable)return json({error:'SerpApi prices are indicative only. Select a matching Riya or TripJack fare to continue.'},409);
+  if(new Date(offer.expires_at).getTime()<Date.now())return json({error:'This offer expired. Run a new search.'},409);
+  let data; try{data=await ltSupplierAction(env,offer.supplier,'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
+  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.currency,cabin:offer.cabin,markup_type:'fixed',markup_value:offer.markup_amount});
+  const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
+  await env.DB.prepare(`UPDATE live_travel_offers SET base_amount=?,tax_amount=?,total_amount=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
+    .bind(normalized.base_amount,normalized.tax_amount,normalized.total_amount,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'offer',offer.offer_ref,'revalidated',auth.email,{old_total:offer.total_amount,new_total:normalized.total_amount});
+  return json({offer:ltRow(await ltOfferById(env,auth.cid,offer.id)),price_changed:Number(offer.total_amount)!==Number(normalized.total_amount)});
+}
+async function handleLtQuotes(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT q.*,o.airline_name,o.flight_numbers FROM live_travel_quotes q LEFT JOIN live_travel_offers o ON o.id=q.offer_id AND o.client_id=q.client_id WHERE q.client_id=? ORDER BY q.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const offer=await ltOfferById(env,auth.cid,body.offer_id); if(!offer)return json({error:'Offer not found'},404);
+    const serviceFee=ltMoney(body.service_fee),discount=ltMoney(body.discount),subtotal=ltMoney(offer.total_amount),total=ltMoney(subtotal+serviceFee-discount),now=ltNow(),ref=ltRef('QT');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,search_id,offer_id,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,valid_until,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,ref,offer.search_id,offer.id,ltText(body.lead_id,80),ltText(body.customer_name,180),ltText(body.customer_phone,40),ltText(body.customer_email,250),offer.currency,subtotal,serviceFee,discount,total,ltText(body.notes,2000),body.valid_until||offer.expires_at,auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'quote',ref,'created',auth.email,{offer_ref:offer.offer_ref,total});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id||0), status=['draft','sent','accepted','expired','cancelled'].includes(body.status)?body.status:'draft';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Quote not found'},404);
+  const fee=body.service_fee===undefined?old.service_fee:ltMoney(body.service_fee), discount=body.discount===undefined?old.discount:ltMoney(body.discount), total=ltMoney(Number(old.subtotal)+fee-discount);
+  await env.DB.prepare(`UPDATE live_travel_quotes SET customer_name=?,customer_phone=?,customer_email=?,status=?,service_fee=?,discount=?,total_amount=?,notes=?,valid_until=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(ltText(body.customer_name??old.customer_name,180),ltText(body.customer_phone??old.customer_phone,40),ltText(body.customer_email??old.customer_email,250),status,fee,discount,total,ltText(body.notes??old.notes,2000),body.valid_until??old.valid_until,ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'quote',old.quote_ref,'updated',auth.email,{status,total});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+async function handleLtBookings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const u=new URL(request.url), id=Number(u.searchParams.get('id')||0);
+    if(id){
+      const booking=await ltBookingById(env,auth.cid,id); if(!booking)return json({error:'Booking not found'},404);
+      const [pax,pay,svc]=await Promise.all([
+        env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE booking_id=? AND client_id=? ORDER BY id`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_payments WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all()]);
+      return json({booking:ltRow(booking),passengers:(pax.results||[]).map(ltRow),payments:pay.results||[],service_requests:svc.results||[]});
+    }
+    const {results}=await env.DB.prepare(`SELECT b.*,q.customer_name,q.customer_phone FROM live_travel_bookings b LEFT JOIN live_travel_quotes q ON q.id=b.quote_id AND q.client_id=b.client_id WHERE b.client_id=? ORDER BY b.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:(results||[]).map(ltRow)});
+  }
+  const body=await request.json().catch(()=>({})), quote=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(Number(body.quote_id),auth.cid).first();
+  if(!quote)return json({error:'Quote not found'},404);
+  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer is required.'},409);
+  if(!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  const now=ltNow(),ref=ltRef('BK');
+  const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?, ?,?)`)
+    .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now).run();
+  const bookingId=r.meta.last_row_id;
+  await env.DB.prepare(`UPDATE live_travel_quotes SET status='accepted',updated_at=? WHERE id=? AND client_id=?`).bind(now,quote.id,auth.cid).run();
+  for(const pax of Array.isArray(body.passengers)?body.passengers:[]){
+    if(!ltText(pax.first_name,100)||!ltText(pax.last_name,100))continue;
+    await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,bookingId,['adult','child','infant'].includes(pax.passenger_type)?pax.passenger_type:'adult',ltText(pax.title,20),ltText(pax.first_name,100),ltText(pax.last_name,100),pax.date_of_birth||null,ltText(pax.gender,20),ltText(pax.nationality,80),ltText(pax.passport_number,80),pax.passport_expiry||null,ltText(pax.issuing_country,80),JSON.stringify(pax.frequent_flyer||{}),now,now).run();
+  }
+  await ltAudit(env,auth.cid,'booking',ref,'created',auth.email,{quote_ref:quote.quote_ref,supplier:offer.supplier});
+  return json(ltRow(await ltBookingById(env,auth.cid,bookingId)));
+}
+async function handleLtBookingAction(request,env,action){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const allowed={book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
+  if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
+  let data; try{data=await ltSupplierAction(env,booking.supplier,action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
+  const statuses={book:'confirmed',ticket:'ticketed',cancel:'cancelled',sync:ltText(data.status||booking.status,30)};
+  const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]),now=ltNow();
+  await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,ticket_numbers_json=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,JSON.stringify(tickets),now,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,action,auth.email,{status,pnr});
+  return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+}
+async function handleLtPassengers(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})),now=ltNow();
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    if(!ltText(body.first_name,100)||!ltText(body.last_name,100))return json({error:'Passenger first and last name are required'},400);
+    const r=await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,booking.id,['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:'adult',ltText(body.title,20),ltText(body.first_name,100),ltText(body.last_name,100),body.date_of_birth||null,ltText(body.gender,20),ltText(body.nationality,80),ltText(body.passport_number,80),body.passport_expiry||null,ltText(body.issuing_country,80),JSON.stringify(body.frequent_flyer||{}),now,now).run();
+    await ltAudit(env,auth.cid,'booking',booking.booking_ref,'passenger_added',auth.email,{passenger_id:r.meta.last_row_id});
+    return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first()));
+  }
+  const old=await env.DB.prepare(`SELECT p.*,b.booking_ref FROM live_travel_passengers p JOIN live_travel_bookings b ON b.id=p.booking_id AND b.client_id=p.client_id WHERE p.id=? AND p.client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Passenger not found'},404);
+  if(request.method==='DELETE'){
+    if(['confirmed','ticketed'].includes((await ltBookingById(env,auth.cid,old.booking_id))?.status))return json({error:'Use a name-correction or cancellation request after supplier confirmation.'},409);
+    await env.DB.prepare(`DELETE FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).run();
+    await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_removed',auth.email,{passenger_id:old.id}); return json({ok:true});
+  }
+  await env.DB.prepare(`UPDATE live_travel_passengers SET passenger_type=?,title=?,first_name=?,last_name=?,date_of_birth=?,gender=?,nationality=?,passport_number=?,passport_expiry=?,issuing_country=?,frequent_flyer_json=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:old.passenger_type,ltText(body.title??old.title,20),ltText(body.first_name??old.first_name,100),ltText(body.last_name??old.last_name,100),body.date_of_birth??old.date_of_birth,ltText(body.gender??old.gender,20),ltText(body.nationality??old.nationality,80),ltText(body.passport_number??old.passport_number,80),body.passport_expiry??old.passport_expiry,ltText(body.issuing_country??old.issuing_country,80),JSON.stringify(body.frequent_flyer??ltJson(old.frequent_flyer_json,{})),now,old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_updated',auth.email,{passenger_id:old.id});
+  return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first()));
+}
+async function handleLtPayment(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const now=ltNow(),ref=ltRef('PY'),direction=body.direction==='refund'?'refund':'receipt';
+  await env.DB.prepare(`INSERT INTO live_travel_payments (client_id,booking_id,payment_ref,method,direction,amount,currency,status,external_ref,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,'received',?,?,?,?)`)
+    .bind(auth.cid,booking.id,ref,ltText(body.method||'cash',40),direction,amount,booking.currency,ltText(body.external_ref,120),ltText(body.notes,1000),auth.email,now).run();
+  const paid=ltMoney(Number(booking.amount_paid)+(direction==='receipt'?amount:-amount)),balance=ltMoney(Number(booking.total_amount)-paid),paymentStatus=balance<=0?'paid':paid>0?'partial':'unpaid';
+  await env.DB.prepare(`UPDATE live_travel_bookings SET amount_paid=?,balance_due=?,payment_status=?,updated_at=? WHERE id=? AND client_id=?`).bind(paid,balance,paymentStatus,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,direction==='receipt'?'payment_received':'payment_refunded',auth.email,{amount,currency:booking.currency,reference:ref});
+  return json({payment_ref:ref,booking:ltRow(await ltBookingById(env,auth.cid,booking.id))});
+}
+async function handleLtWallet(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({})),amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const currency=/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED', agent=ltText(body.agent_ref||'owner',100),type=['credit','debit','refund','commission'].includes(body.entry_type)?body.entry_type:'credit';
+  const prev=await env.DB.prepare(`SELECT balance_after FROM live_travel_wallet_ledger WHERE client_id=? AND agent_ref=? AND currency=? ORDER BY id DESC LIMIT 1`).bind(auth.cid,agent,currency).first(), balance=ltMoney(Number(prev?.balance_after||0)+(type==='credit'||type==='refund'?amount:-amount)),now=ltNow(),ref=ltRef('WL');
+  await env.DB.prepare(`INSERT INTO live_travel_wallet_ledger (client_id,entry_ref,agent_ref,booking_id,entry_type,amount,currency,balance_after,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,agent,body.booking_id||null,type,amount,currency,balance,ltText(body.notes,1000),auth.email,now).run();
+  await ltAudit(env,auth.cid,'wallet',ref,'entry_created',auth.email,{type,amount,currency,agent_ref:agent});
+  return json({entry_ref:ref,balance});
+}
+async function handleLtServiceRequests(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT s.*,b.booking_ref,b.pnr FROM live_travel_service_requests s JOIN live_travel_bookings b ON b.id=s.booking_id AND b.client_id=s.client_id WHERE s.client_id=? ORDER BY s.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const type=['cancel','refund','reissue','name_correction','baggage','seat','other'].includes(body.request_type)?body.request_type:'other',now=ltNow(),ref=ltRef('SR');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_service_requests (client_id,request_ref,booking_id,request_type,status,reason,estimated_amount,currency,notes,created_by,created_at,updated_at) VALUES (?,?,?,?,'open',?,?,?,?,?,?,?)`).bind(auth.cid,ref,booking.id,type,ltText(body.reason,1000),ltMoney(body.estimated_amount),booking.currency,ltText(body.notes,2000),auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'service_request',ref,'created',auth.email,{type,booking_ref:booking.booking_ref});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id),status=['open','submitted','approved','rejected','completed','cancelled'].includes(body.status)?body.status:'open';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Service request not found'},404);
+  await env.DB.prepare(`UPDATE live_travel_service_requests SET status=?,supplier_reference=?,estimated_amount=?,notes=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltText(body.supplier_reference??old.supplier_reference,120),ltMoney(body.estimated_amount??old.estimated_amount),ltText(body.notes??old.notes,2000),ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'service_request',old.request_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+
+async function handleLtAgents(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT a.*,COALESCE((SELECT balance_after FROM live_travel_wallet_ledger w WHERE w.client_id=a.client_id AND w.agent_ref=a.agent_ref ORDER BY w.id DESC LIMIT 1),0) wallet_balance FROM live_travel_agents a WHERE a.client_id=? ORDER BY a.created_at DESC`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const name=ltText(body.name,180); if(!name)return json({error:'Agent name is required'},400);
+    const ref=ltText(body.agent_ref,80)||ltRef('AG'),parent=ltText(body.parent_agent_ref||'owner',80),type=['master_agent','agent','sub_agent'].includes(body.agent_type)?body.agent_type:'agent',now=ltNow();
+    try{await env.DB.prepare(`INSERT INTO live_travel_agents (client_id,agent_ref,parent_agent_ref,agent_type,name,email,phone,credit_limit,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,parent,type,name,ltText(body.email,250),ltText(body.phone,40),ltMoney(body.credit_limit),'active',now,now).run();}
+    catch(e){if(/unique|constraint/i.test(String(e?.message||e)))return json({error:'That agent reference already exists.'},409);throw e;}
+    await ltAudit(env,auth.cid,'agent',ref,'created',auth.email,{name,type,parent});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? AND agent_ref=?`).bind(auth.cid,ref).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Agent not found'},404);
+  const status=['active','suspended','closed'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_agents SET name=?,email=?,phone=?,credit_limit=?,status=?,updated_at=? WHERE id=? AND client_id=?`).bind(ltText(body.name??old.name,180),ltText(body.email??old.email,250),ltText(body.phone??old.phone,40),ltMoney(body.credit_limit??old.credit_limit),status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'agent',old.agent_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+async function handleLtCommissions(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT c.*,b.booking_ref,b.pnr,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const agent=ltText(body.agent_ref||'owner',80),type=body.commission_type==='percent'?'percent':'fixed',value=ltMoney(body.commission_value),amount=type==='percent'?Math.round(Number(booking.total_amount)*value)/100:value,now=ltNow();
+    const r=await env.DB.prepare(`INSERT INTO live_travel_commissions (client_id,booking_id,agent_ref,commission_type,commission_value,commission_amount,currency,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'pending',?,?)`).bind(auth.cid,booking.id,agent,type,value,amount,booking.currency,now,now).run();
+    await ltAudit(env,auth.cid,'commission',r.meta.last_row_id,'created',auth.email,{booking_ref:booking.booking_ref,agent_ref:agent,amount});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Commission not found'},404);
+  const status=['pending','approved','paid','cancelled'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_commissions SET status=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'commission',old.id,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -23334,6 +23722,24 @@ export default {
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
+      else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
+      else if(url.pathname==='/live-travel/suppliers' && request.method==='PATCH'){ res=await handleLtSuppliersUpdate(request, env); }
+      else if(url.pathname==='/live-travel/suppliers/health' && request.method==='GET'){ res=await handleLtSupplierHealth(request, env); }
+      else if(url.pathname==='/live-travel/search' && request.method==='POST'){ res=await handleLtSearch(request, env); }
+      else if(url.pathname==='/live-travel/searches' && request.method==='GET'){ res=await handleLtSearchList(request, env); }
+      else if(url.pathname==='/live-travel/offers/revalidate' && request.method==='POST'){ res=await handleLtRevalidate(request, env); }
+      else if(url.pathname==='/live-travel/quotes' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtQuotes(request, env); }
+      else if(url.pathname==='/live-travel/bookings' && ['GET','POST'].includes(request.method)){ res=await handleLtBookings(request, env); }
+      else if(url.pathname.startsWith('/live-travel/bookings/') && request.method==='POST'){
+        const action=url.pathname.slice('/live-travel/bookings/'.length);
+        res=['book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
+      }
+      else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
+      else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
+      else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
+      else if(url.pathname==='/live-travel/service-requests' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtServiceRequests(request, env); }
+      else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
+      else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }

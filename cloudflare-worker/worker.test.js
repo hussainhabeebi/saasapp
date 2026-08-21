@@ -52,7 +52,43 @@ import {
   eduNormalizePhone,
   eduEmailValid,
   eduYearValid,
+  ltNormalizeOffer,
 } from './worker.js';
+
+describe('Live Travel supplier normalization and booking safety', () => {
+  test('keeps SerpApi Google Flights results comparison-only', () => {
+    const offer=ltNormalizeOffer('serpapi',{
+      price:1250,
+      flights:[{airline:'Example Air',flight_number:'EA 101'}]
+    },{currency:'AED',cabin:'economy',markup_type:'fixed',markup_value:50});
+    assert.equal(offer.supplier,'serpapi');
+    assert.equal(offer.bookable,false);
+    assert.equal(offer.validating,true);
+    assert.equal(offer.total_amount,1300);
+    assert.equal(offer.airline_name,'Example Air');
+  });
+
+  test('normalizes a TripJack supplier fare as bookable with percentage markup', () => {
+    const offer=ltNormalizeOffer('tripjack',{
+      id:'TJ-1',totalPrice:1000,taxes:200,currency:'INR',airline_code:'6E',
+      segments:[{flightNumber:'6E 145'}],seats:3,baggage:{check_in:'15 KG'}
+    },{cabin:'economy',markup_type:'percent',markup_value:5});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,1050);
+    assert.equal(offer.base_amount,800);
+    assert.equal(offer.seats_left,3);
+    assert.deepEqual(offer.baggage,{check_in:'15 KG'});
+  });
+
+  test('normalizes a Riya fare without inventing absent details', () => {
+    const offer=ltNormalizeOffer('riya',{offer_id:'R-1',fare:{totalFare:720,totalTax:120}},{currency:'AED'});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,720);
+    assert.equal(offer.base_amount,600);
+    assert.equal(offer.airline_name,'');
+    assert.deepEqual(offer.itinerary,[]);
+  });
+});
 
 describe('Education chat-only admission intent safety', () => {
   test('starts only from explicit application intent, not ordinary admission questions', () => {

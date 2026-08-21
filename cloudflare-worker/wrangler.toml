@@ -284,3 +284,14 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           Native Forms on; handleNativeFormSync fails with a clear error if unset.
 #                           /native-forms/endpoint's only auth is META_APP_SECRET (above) signing
 #                           X-Hub-Signature-256 — no session, called directly by Meta.
+#   SERPAPI_API_KEY         Google Flights comparison search only; its offers are never bookable.
+#   RIYA_API_KEY / RIYA_CLIENT_ID
+#   RIYA_FLIGHT_SEARCH_URL / RIYA_FLIGHT_REVALIDATE_URL / RIYA_FLIGHT_BOOK_URL /
+#   RIYA_FLIGHT_TICKET_URL / RIYA_FLIGHT_SYNC_URL / RIYA_FLIGHT_CANCEL_URL
+#                           Riya credentials and certified account-specific flight endpoints.
+#   TRIPJACK_API_KEY
+#   TRIPJACK_FLIGHT_SEARCH_URL / TRIPJACK_FLIGHT_REVALIDATE_URL /
+#   TRIPJACK_FLIGHT_BOOK_URL / TRIPJACK_FLIGHT_TICKET_URL /
+#   TRIPJACK_FLIGHT_SYNC_URL / TRIPJACK_FLIGHT_CANCEL_URL
+#                           TripJack credentials and certified flight endpoints. See SETUP.md
+#                           "Live Travel Agency". Keep staging and production secrets separate.
