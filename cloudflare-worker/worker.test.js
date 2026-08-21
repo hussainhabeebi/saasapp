@@ -47,7 +47,36 @@ import {
   ecomIsGenericProductCatalogueQuery,
   ecomFashionFieldChoices,
   ecomFashionOrderItems,
+  eduAdmissionWantsStart,
+  eduAdmissionWantsAdvisor,
+  eduNormalizePhone,
+  eduEmailValid,
+  eduYearValid,
 } from './worker.js';
+
+describe('Education chat-only admission intent safety', () => {
+  test('starts only from explicit application intent, not ordinary admission questions', () => {
+    assert.equal(eduAdmissionWantsStart('Apply for admission'),true);
+    assert.equal(eduAdmissionWantsStart('I want admission'),true);
+    assert.equal(eduAdmissionWantsStart('📚 Choose Course'),true);
+    assert.equal(eduAdmissionWantsStart('What is the admission fee?'),false);
+    assert.equal(eduAdmissionWantsStart('Tell me about your admission process'),false);
+  });
+
+  test('routes advisor choices away from saved form answers', () => {
+    assert.equal(eduAdmissionWantsAdvisor('👤 Talk to Advisor'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Book Consultation'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Habeeb Khan'),false);
+  });
+
+  test('validates normalized contact and education fields', () => {
+    assert.equal(eduNormalizePhone(' +971 (50) 123-4567 '),'+971501234567');
+    assert.equal(eduEmailValid('student@example.com'),true);
+    assert.equal(eduEmailValid('student@example'),false);
+    assert.equal(eduYearValid('Completed in 2024'),true);
+    assert.equal(eduYearValid('1940'),false);
+  });
+});
 
 describe('Ecom category button and minimal matching', () => {
   const categories=['Mattress','Wooden Bed','Sofa Sets'];
