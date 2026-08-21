@@ -22016,21 +22016,22 @@ function hcBookableSlots(c,date,slots){
   return (slots||[]).filter(slot=>slot.start_time>current);
 }
 async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang){
-  const items=[];
-  for(let day=0;day<14&&items.length<7;day++){
+  const availDates=[];
+  for(let day=0;day<14&&availDates.length<7;day++){
     const date=hcClinicDateAfter(c,day);
     const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
-    if(slots.length) items.push({title:hcBookingDateTitle(date),value:`HC_BOOK_DATE:${date}`});
+    if(slots.length) availDates.push(date);
   }
-  if(!items.length){
+  if(!availDates.length){
     const text=await engineLocalizeReply(env,c,'No available appointment dates are configured. I will connect you to the clinic team.',replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
     return {handled:true,text,quickReplies:null};
   }
   await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
-  const text=await engineLocalizeReply(env,c,'Please choose an available appointment date:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
-  return {handled:true,text,quickReplies};
+  const list=availDates.map((d,i)=>`${i+1}. ${hcBookingDateTitle(d)}`).join('\n');
+  const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}\n\nReply with the number or date (e.g. tomorrow, 25 Aug).`,replyLang);
+  await engineSendChatwootReply(env,c,clientId,convId,text);
+  return {handled:true,text,quickReplies:null,_availDates:availDates};
 }
 async function hcDoctorServices(env,clientId,doctorId){
   // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
@@ -22047,27 +22048,70 @@ async function hcDoctorServices(env,clientId,doctorId){
   const {results:dept}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId),Number(doc.department_id)).all().catch(()=>({results:[]}));
   return dept||[];
 }
+function hcDedupeServices(services){
+  const seen=new Set(),out=[];
+  for(const s of services||[]){const k=(s.name||'').toLowerCase().trim();if(!k||seen.has(k))continue;seen.add(k);out.push(s);}
+  return out;
+}
+function hcMatchByNumberOrKeyword(items,text,nameOf){
+  const t=(text||'').trim(),n=parseInt(t,10);
+  if(!isNaN(n)&&n>=1&&n<=items.length) return items[n-1];
+  const tl=t.toLowerCase();
+  for(const it of items){if(nameOf(it).toLowerCase()===tl)return it;}
+  const stop=new Set(['and','the','for','with','care','health','medical','service','treatment','appointment']);
+  const all=tl.replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(w=>w.length>=3);
+  const words=all.filter(w=>!stop.has(w));
+  const scoreWords=words.length?words:all;
+  if(!scoreWords.length) return null;
+  let best=null,bestScore=0;
+  for(const it of items){
+    const name=nameOf(it).toLowerCase();
+    const bonus=name.startsWith(scoreWords[0])?2:0;
+    const score=bonus+scoreWords.filter(w=>name.includes(w)).length;
+    if(score>bestScore){best=it;bestScore=score;}
+  }
+  return bestScore>=1?best:null;
+}
+function hcParsePatientDate(c,text){
+  const t=(text||'').toLowerCase().trim();
+  const iso=(text||'').match(/(\d{4}-\d{2}-\d{2})/);if(iso)return iso[1];
+  if(/\btoday\b/.test(t))return hcClinicDateAfter(c,0);
+  if(/\btomorrow\b/.test(t))return hcClinicDateAfter(c,1);
+  const wdm={monday:1,tuesday:2,wednesday:3,thursday:4,friday:5,saturday:6,sunday:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6,sun:0};
+  for(const[w,n] of Object.entries(wdm)){if(t.includes(w)){for(let i=1;i<=7;i++){const d=hcClinicDateAfter(c,i);if(new Date(d+'T12:00:00Z').getDay()===n)return d;}}}
+  const mo={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+  const dm=t.match(/(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/);
+  if(dm){const y=new Date().getFullYear();return `${y}-${String(mo[dm[2]]).padStart(2,'0')}-${String(dm[1]).padStart(2,'0')}`;}
+  const md=t.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})/);
+  if(md){const y=new Date().getFullYear();return `${y}-${String(mo[md[1]]).padStart(2,'0')}-${String(md[2]).padStart(2,'0')}`;}
+  return null;
+}
+function hcParsePatientTime(text){
+  const t=(text||'').trim();
+  const hm=t.match(/(\d{1,2}):(\d{2})/);if(hm)return `${String(hm[1]).padStart(2,'0')}:${hm[2]}`;
+  const ap=t.match(/(\d{1,2})\s*(am|pm)/i);
+  if(ap){let h=parseInt(ap[1]);const pm=/pm/i.test(ap[2]);if(pm&&h<12)h+=12;if(!pm&&h===12)h=0;return `${String(h).padStart(2,'0')}:00`;}
+  return null;
+}
 async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
   const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
   const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
   if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
   const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
   if(doctor){
-    // When a doctor is chosen, check which services they handle. If multiple, ask the patient
-    // to pick a service first (so the appointment record has a service_id).
     if(!service){
-      const doctorSvcs=await hcDoctorServices(env,clientId,doctor.id);
+      const doctorSvcs=hcDedupeServices(await hcDoctorServices(env,clientId,doctor.id));
       if(doctorSvcs.length>1){
         await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
-        const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(doctorSvcs));
-        return {handled:true,text,quickReplies};
+        const list=doctorSvcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+        const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
+        await engineSendChatwootReply(env,c,clientId,convId,text);
+        return {handled:true,text,quickReplies:null};
       }
       if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
     }
     return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
   }
-  // Service chosen first — find doctors who handle it (explicit links first, department fallback)
   const {results:linkedDocs}=await env.DB.prepare(
     `SELECT d.id,d.name FROM healthcare_doctors d
      INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
@@ -22075,7 +22119,7 @@ async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{ser
   ).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
   let doctors=linkedDocs||[];
   if(!doctors.length){
-    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
+    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all().catch(()=>({results:[]}));
     doctors=results||[];
   }
   if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
@@ -22085,84 +22129,189 @@ async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{ser
     return {handled:true,text,quickReplies:null};
   }
   await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
-  const text=await engineLocalizeReply(env,c,'Please choose a doctor:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:`HC_BOOK_DOCTOR:${d.id}`})));
-  return {handled:true,text,quickReplies};
+  const list=doctors.map((d,i)=>`${i+1}. ${d.name}`).join('\n');
+  const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}\n\nReply with the number or name.`,replyLang);
+  await engineSendChatwootReply(env,c,clientId,convId,text);
+  return {handled:true,text,quickReplies:null};
 }
 async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
   await hcEnsureOperationsSchema(env);
   const action=String(userText||'').trim();
-  let match;
-  match=action.match(/^HC_BOOK_SERVICE:(\d+)$/); if(match) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(match[1])});
-  match=action.match(/^HC_BOOK_DOCTOR:(\d+)$/);
-  if(match){
-    const session=await hcBookingSession(env,clientId,phone);
-    if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
-    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
+
+  // REBOOK — clear any existing session and restart
+  if(/^rebook$/i.test(action)){
+    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+    const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
+    if(!svcs.length) return {handled:false};
+    if(svcs.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(svcs[0].id)});
+    await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
+    const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+    const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
   }
-  {
-    const preSession=await hcBookingSession(env,clientId,phone);
-    if(preSession?.stage==='choose_service'&&!action.startsWith('HC_BOOK_')){
-      const svc=await env.DB.prepare(`SELECT id FROM healthcare_services WHERE client_id=? AND (name=? OR short_label=?) AND status='active' LIMIT 1`).bind(Number(clientId),action,action).first().catch(()=>null);
-      if(svc) return hcSendBookingDates(env,c,clientId,convId,phone,{...preSession,service_id:Number(svc.id),stage:'choose_date'},replyLang);
-    }
-  }
+
   const session=await hcBookingSession(env,clientId,phone);
+
+  // No active session — start on booking intent keyword
   if(!session){
-    if(!action.startsWith('HC_BOOK_')&&/\b(?:book|schedule|appoint|reserv|slot|visit)\b/i.test(action)){
-      const allServices=await hcListActiveServices(env,clientId);
-      if(!allServices.length) return {handled:false};
-      if(allServices.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(allServices[0].id)});
-      const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(allServices));
-      return {handled:true,text,quickReplies};
+    if(/\b(?:book|schedule|appoint|reserv|slot|visit|rebook)\b/i.test(action)){
+      const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
+      if(!svcs.length) return {handled:false};
+      if(svcs.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(svcs[0].id)});
+      await hcSaveBookingSession(env,clientId,phone,{conversation_id:Number(convId)||0,stage:'choose_service',service_id:0,doctor_id:0,appointment_date:'',start_time:'',end_time:'',patient_name:''});
+      const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
     }
     return {handled:false};
   }
-  if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
+
+  // Cancel at any stage
+  if(/^(cancel|stop|no)(\s+(booking|appointment))?$/i.test(action)){
     await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
-  if(action==='HC_BOOK_DATES') return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-  match=action.match(/^HC_BOOK_DATE:(\d{4}-\d{2}-\d{2})$/);
-  if(match&&session.doctor_id){
-    const date=match[1], slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+
+  // Stage: choose_service
+  if(session.stage==='choose_service'){
+    const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
+    const matched=hcMatchByNumberOrKeyword(svcs,action,s=>s.name);
+    if(!matched){
+      const list=svcs.map((s,i)=>`${i+1}. ${s.name}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Please choose a service:\n\n${list}\n\nReply with the number or name.`,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
+    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(matched.id)});
+  }
+
+  // Stage: choose_doctor
+  if(session.stage==='choose_doctor'){
+    const {results:linked}=await env.DB.prepare(
+      `SELECT d.id,d.name FROM healthcare_doctors d
+       INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
+       WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
+    ).bind(Number(clientId),Number(session.service_id)).all().catch(()=>({results:[]}));
+    let doctors=(linked&&linked.length)?linked:[];
+    if(!doctors.length){
+      const svc=session.service_id?await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(session.service_id),Number(clientId)).first().catch(()=>null):null;
+      const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(svc?.department_id)||0).all().catch(()=>({results:[]}));
+      doctors=results||[];
+    }
+    if(!doctors.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    const matched=hcMatchByNumberOrKeyword(doctors,action,d=>d.name);
+    if(!matched){
+      const list=doctors.map((d,i)=>`${i+1}. ${d.name}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Please choose a doctor:\n\n${list}\n\nReply with the number or name.`,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
+    return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(matched.id)},replyLang);
+  }
+
+  // Stage: choose_date
+  if(session.stage==='choose_date'){
+    const availDates=[];
+    for(let day=0;day<14&&availDates.length<7;day++){
+      const date=hcClinicDateAfter(c,day);
+      const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
+      if(slots.length) availDates.push(date);
+    }
+    if(!availDates.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+    const n=parseInt(action,10);
+    let chosenDate=(!isNaN(n)&&n>=1&&n<=availDates.length)?availDates[n-1]:null;
+    if(!chosenDate){const parsed=hcParsePatientDate(c,action);if(parsed&&availDates.includes(parsed))chosenDate=parsed;}
+    if(!chosenDate){
+      const list=availDates.map((d,i)=>`${i+1}. ${hcBookingDateTitle(d)}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Choose an appointment date:\n\n${list}\n\nReply with the number or date (e.g. tomorrow, 25 Aug).`,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
+    const slots=hcBookableSlots(c,chosenDate,await hcAvailableSlots(env,clientId,c,session.doctor_id,chosenDate,session.service_id,0));
     if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:date,start_time:'',end_time:''});
-    const text=await engineLocalizeReply(env,c,'Please choose an available time:',replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:`HC_BOOK_SLOT:${s.start_time}`})));
-    return {handled:true,text,quickReplies};
-  }
-  match=action.match(/^HC_BOOK_SLOT:(\d{2}:\d{2})$/);
-  if(match&&session.appointment_date&&session.doctor_id){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===match[1]);
-    if(!chosen) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
-    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:chosenDate,start_time:'',end_time:''});
+    const list=slots.slice(0,10).map((s,i)=>`${i+1}. ${s.start_time}–${s.end_time}`).join('\n');
+    const text=await engineLocalizeReply(env,c,`Choose a time for ${hcBookingDateTitle(chosenDate)}:\n\n${list}\n\nReply with the number or time (e.g. 10am, 10:30).`,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
-  if(session.stage==='patient_name'&&!action.startsWith('HC_BOOK_')){
+
+  // Stage: choose_slot
+  if(session.stage==='choose_slot'){
+    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0));
+    const n=parseInt(action,10);
+    let chosen=(!isNaN(n)&&n>=1&&n<=slots.length)?slots[n-1]:null;
+    if(!chosen){const pt=hcParsePatientTime(action);if(pt)chosen=slots.find(s=>s.start_time===pt)||slots.find(s=>s.start_time.slice(0,5)===pt.slice(0,5))||null;}
+    if(!chosen){
+      const list=slots.slice(0,10).map((s,i)=>`${i+1}. ${s.start_time}–${s.end_time}`).join('\n');
+      const text=await engineLocalizeReply(env,c,`Choose an available time:\n\n${list}\n\nReply with the number or time (e.g. 10am, 10:30).`,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
+    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
+    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+
+  // Stage: patient_name
+  if(session.stage==='patient_name'){
     const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
-    if(patientName.length<2){const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return {handled:true,text,quickReplies:null};}
+    if(patientName.length<2){
+      const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
     await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
     const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
     const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
-    const summary=`📅 ${session.appointment_date} at ${session.start_time}\n${service?.name?service.name+' · ':''}${doctor?.name||''}\nPatient: ${patientName}`;
+    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${patientName}\n\nReply YES to confirm or NO to cancel.`;
     const text=await engineLocalizeReply(env,c,summary,replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'✅ Confirm Appointment',value:'HC_BOOK_CONFIRM'},{title:'Cancel',value:'HC_BOOK_CANCEL'}]);
-    return {handled:true,text,quickReplies};
-  }
-  if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
-    if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
-    const result=await hcFinalizeWhatsappBooking(env,c,clientId,phone,session,chosen);
-    if(result.slotTaken){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
-    const row=result.row;
-    const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\nRef: ${result.aptRef}\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null,appointmentId:row.id};
+    return {handled:true,text,quickReplies:null};
   }
+
+  // Stage: confirm
+  if(session.stage==='confirm'){
+    if(/^(yes|confirm|ok|okay|yep|sure|1)$/i.test(action)){
+      const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0));
+      const chosen=slots.find(s=>s.start_time===session.start_time);
+      if(!chosen){
+        const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);
+        await engineSendChatwootReply(env,c,clientId,convId,text);
+        return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+      }
+      const result=await hcFinalizeWhatsappBooking(env,c,clientId,phone,session,chosen);
+      if(result.slotTaken){
+        const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);
+        await engineSendChatwootReply(env,c,clientId,convId,text);
+        return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
+      }
+      const row=result.row;
+      const confirmMsg=`Appointment confirmed ✅\n\nRef: ${result.aptRef}\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${hcBookingDateTitle(row.appointment_date)} at ${row.start_time}\nPatient: ${row.patient_name||session.patient_name}\n\nType REBOOK to book another appointment.`;
+      const text=await engineLocalizeReply(env,c,confirmMsg,replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null,appointmentId:row.id};
+    }
+    if(/^(no|cancel|2)$/i.test(action)){
+      await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+      const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang);
+      await engineSendChatwootReply(env,c,clientId,convId,text);
+      return {handled:true,text,quickReplies:null};
+    }
+    // Re-show summary if reply not recognized
+    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
+    const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
+    const summary=`📋 Appointment Summary\n\n${service?.name?service.name+'\n':''}Doctor: ${doctor?.name||'–'}\nDate: ${hcBookingDateTitle(session.appointment_date)}\nTime: ${session.start_time}–${session.end_time}\nPatient: ${session.patient_name}\n\nReply YES to confirm or NO to cancel.`;
+    const text=await engineLocalizeReply(env,c,summary,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
+    return {handled:true,text,quickReplies:null};
+  }
+
   return {handled:false};
 }
 async function hcFinalizeWhatsappBooking(env,c,clientId,phone,session,chosen){
