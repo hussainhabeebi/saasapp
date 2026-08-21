@@ -207,8 +207,8 @@ describe('Healthcare verified-data routing', () => {
       {id:3,name:'Root Canal Treatment',short_label:'Duplicate'},
     ];
     assert.deepEqual(hcServiceChoiceItems(rows), [
-      {title:'Root Canal',value:'Root Canal Treatment'},
-      {title:'Dental Cleaning',value:'Dental Cleaning'},
+      {title:'Root Canal',value:'HC_BOOK_SERVICE:1'},
+      {title:'Dental Cleaning',value:'HC_BOOK_SERVICE:2'},
     ]);
   });
 
