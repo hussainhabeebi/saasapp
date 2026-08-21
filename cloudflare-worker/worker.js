@@ -21996,12 +21996,28 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
     return {handled:true,text,quickReplies:null};
   }
 
-  // "See All Services" button → show service list as info
+  // "See All Services" button → show service list with doctors per service
   if(/^see\s+(all\s+)?services$/i.test(action)){
     const svcs=hcDedupeServices(await hcListActiveServices(env,clientId));
     if(!svcs.length){const t=await engineLocalizeReply(env,c,'No services are currently listed. Please contact us for more information.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,t);return {handled:true,text:t,quickReplies:null};}
-    const list=svcs.map(s=>`• ${s.name}${s.description?' — '+s.description:''}`).join('\n');
-    const text=await engineLocalizeReply(env,c,`Our services:\n\n${list}\n\nType "Book Appointment" to schedule.`,replyLang);
+    // Fetch doctors for each service in one query
+    const svcIds=svcs.map(s=>Number(s.id));
+    const placeholders=svcIds.map(()=>'?').join(',');
+    const {results:docRows}=await env.DB.prepare(
+      `SELECT ds.service_id,d.name FROM healthcare_doctor_services ds JOIN healthcare_doctors d ON d.id=ds.doctor_id AND d.client_id=ds.client_id WHERE ds.client_id=? AND ds.service_id IN (${placeholders}) AND d.status='active' ORDER BY d.name`
+    ).bind(Number(clientId),...svcIds).all().catch(()=>({results:[]}));
+    const doctorsByService={};
+    for(const r of docRows||[]){
+      if(!doctorsByService[r.service_id]) doctorsByService[r.service_id]=[];
+      doctorsByService[r.service_id].push(r.name);
+    }
+    const lines=svcs.map(s=>{
+      const desc=s.description?` — ${s.description}`:'';
+      const docs=(doctorsByService[Number(s.id)]||[]);
+      const docLine=docs.length?`\n   👨‍⚕️ ${docs.join(', ')}`:'' ;
+      return `• ${s.name}${desc}${docLine}`;
+    });
+    const text=await engineLocalizeReply(env,c,`Our services:\n\n${lines.join('\n\n')}\n\nType "Book Appointment" to schedule.`,replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
