@@ -125,6 +125,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
   <button class="tab" data-tab="promotions" onclick="showTab('promotions')">🎁 Scholarships</button>
   <button class="tab" data-tab="stories" onclick="showTab('stories')">🌟 Success Stories</button>
+  <button class="tab" data-tab="admissions" onclick="showTab('admissions')">🎓 Admissions</button>
   <button class="tab" data-tab="enrollments" onclick="showTab('enrollments')">📋 Enrollments</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
 </div>
@@ -236,6 +237,32 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<!-- CHAT ADMISSIONS TAB -->
+<div id="tabAdmissions" class="page">
+  <div class="stats">
+    <div class="stat"><div class="stat-val" id="statAdmissionTotal">—</div><div class="stat-lbl">Applications</div></div>
+    <div class="stat"><div class="stat-val" id="statAdmissionProgress">—</div><div class="stat-lbl">In Chat</div></div>
+    <div class="stat"><div class="stat-val" id="statAdmissionReview">—</div><div class="stat-lbl">Awaiting Review</div></div>
+    <div class="stat"><div class="stat-val" id="statAdmissionSubmitted">—</div><div class="stat-lbl">Submitted</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div><div class="card-title">Chat Admission Applications</div><div class="s-hint">Every chat step is saved. Students can pause for questions, resume, or change course without losing progress.</div></div>
+      <div class="card-actions">
+        <input class="search-input" id="admissionSearch" type="text" placeholder="🔍 Name, phone or ID…" oninput="renderAdmissionsTable()">
+        <select class="search-input" id="admissionStatusFilter" onchange="renderAdmissionsTable()">
+          <option value="">All statuses</option><option value="in_progress">In chat</option><option value="payment_pending">Payment pending</option><option value="awaiting_review">Awaiting review</option><option value="admitted">Admitted</option><option value="rejected">Rejected</option><option value="cancelled">Cancelled</option>
+        </select>
+        <button class="save-btn sec" onclick="loadAdmissions()">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Application</th><th>Student</th><th>Course</th><th>Current Step</th><th>Eligibility</th><th>Payment</th><th>Status</th><th>Documents</th><th>Actions</th></tr></thead>
+      <tbody id="admissionsTbody"><tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr></tbody>
+    </table></div>
   </div>
 </div>
 
@@ -579,6 +606,7 @@ let allCategories = [];
 let allPromotions = [];
 let allStories = [];
 let allEnrollments = [];
+let allAdmissions = [];
 let pmoSelectedCourseIds = new Set();
 let ssSelectedCourseIds = new Set();
 let sheetHeaders = [];
@@ -615,7 +643,7 @@ async function init() {
   } catch(e) {}
   if (sheetHeaders.length) renderColumnMap(sheetHeaders);
 
-  await Promise.all([loadCourses(), loadCategories(), loadPromotions(), loadStories(), loadEnrollments()]);
+  await Promise.all([loadCourses(), loadCategories(), loadPromotions(), loadStories(), loadEnrollments(), loadAdmissions()]);
 }
 
 // ── TABS ──────────────────────────────────────────
@@ -1247,6 +1275,83 @@ async function submitEnroll() {
     btn.disabled = false;
     setTimeout(() => { if (msg) msg.textContent = ''; }, 6000);
   }
+}
+
+
+// ── CHAT ADMISSIONS ADMIN ─────────────────────────
+async function loadAdmissions() {
+  const tbody = document.getElementById('admissionsTbody');
+  try {
+    const res = await fetch(`${WORKER_BASE}/edu/admissions?client_id=${encodeURIComponent(clientId)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load admissions');
+    allAdmissions = data.list || [];
+    renderAdmissionsStats();
+    renderAdmissionsTable();
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state">⚠️ ${esc(e.message)}</div></td></tr>`;
+  }
+}
+function admissionStepLabel(step) {
+  const map = {welcome:'👋 Welcome',course:'📚 Course',full_name:'👤 Name',email:'📧 Email',qualification:'🎓 Qualification',completion_year:'📅 Completion year',study_mode:'🖥️ Study mode',scholarship:'🎁 Scholarship',id_proof:'🪪 ID proof',qualification_document:'📄 Certificate',photo:'🖼️ Photo',payment_option:'💳 Payment',confirm:'✅ Confirmation',submitted:'🎉 Submitted'};
+  return map[step] || step || '—';
+}
+function renderAdmissionsStats() {
+  document.getElementById('statAdmissionTotal').textContent = allAdmissions.length;
+  document.getElementById('statAdmissionProgress').textContent = allAdmissions.filter(a => a.status === 'in_progress' || a.status === 'payment_pending').length;
+  document.getElementById('statAdmissionReview').textContent = allAdmissions.filter(a => a.status === 'awaiting_review').length;
+  document.getElementById('statAdmissionSubmitted').textContent = allAdmissions.filter(a => a.submitted_at).length;
+}
+function renderAdmissionsTable() {
+  const tbody = document.getElementById('admissionsTbody'); if (!tbody) return;
+  const q = (document.getElementById('admissionSearch')?.value || '').toLowerCase();
+  const status = document.getElementById('admissionStatusFilter')?.value || '';
+  const rows = allAdmissions.filter(a => (!status || a.status === status) && (!q || [a.application_id,a.full_name,a.phone,a.email,a.course_name].some(v => String(v||'').toLowerCase().includes(q))));
+  if (!rows.length) { tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">🎓</div>No matching chat applications.</div></td></tr>`; return; }
+  tbody.innerHTML = rows.map(a => `<tr>
+    <td><strong>${esc(a.application_id)}</strong><br><span class="s-hint">${esc((a.updated_at||'').replace('T',' ').slice(0,16))}</span></td>
+    <td><strong>${esc(a.full_name||'Not collected')}</strong><br><span class="s-hint">${esc(a.phone||'')}</span></td>
+    <td>${esc(a.course_name||'Not selected')}</td>
+    <td>${admissionStepLabel(a.paused_step || a.current_step)}${a.paused_step?'<br><span class="badge pending">Question mode</span>':''}</td>
+    <td><span class="badge ${a.eligibility_status==='eligible'?'active':a.eligibility_status==='ineligible'?'inactive':'pending'}">${esc(a.eligibility_status||'pending')}</span></td>
+    <td><span class="badge ${a.payment_status==='paid'?'active':'pending'}">${esc(a.payment_status||'pending')}</span></td>
+    <td><span class="badge ${a.status==='admitted'?'active':a.status==='rejected'||a.status==='cancelled'?'inactive':'pending'}">${esc(a.status||'')}</span></td>
+    <td>${Number(a.document_count||0)} / 3</td>
+    <td><button class="icon-btn" onclick="openAdmissionDetail(${Number(a.id)})">View</button></td>
+  </tr>`).join('');
+}
+async function openAdmissionDetail(id) {
+  const res = await fetch(`${WORKER_BASE}/edu/admissions/detail?client_id=${encodeURIComponent(clientId)}&id=${id}`);
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || 'Unable to load application'); return; }
+  const a = data.application, docs = data.documents || [], events = data.events || [];
+  const docRows = docs.length ? docs.map(d => `<tr><td>${esc(d.document_type)}</td><td><a href="${esc(d.file_url)}" target="_blank" rel="noopener">Open file</a></td><td><select class="badge ${d.verification_status==='verified'?'active':'pending'}" onchange="updateAdmission(${a.id},{document_id:${d.id},verification_status:this.value})">${['pending','verified','rejected'].map(s=>`<option value="${s}"${d.verification_status===s?' selected':''}>${s}</option>`).join('')}</select></td></tr>`).join('') : '<tr><td colspan="3">No documents uploaded yet.</td></tr>';
+  const eventRows = events.slice(0,20).map(e => `<tr><td>${esc((e.created_at||'').replace('T',' ').slice(0,16))}</td><td>${esc(e.event_type)}</td><td>${esc(admissionStepLabel(e.step))}</td></tr>`).join('');
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `<div class="modal-card" style="max-width:850px">
+    <div class="card-title-row"><div class="modal-title">🎓 ${esc(a.application_id)}</div><button class="icon-btn" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+    <div class="stats" style="margin-bottom:16px">
+      <div class="stat"><div class="stat-lbl">Student</div><strong>${esc(a.full_name||'—')}</strong><br><span class="s-hint">${esc(a.phone)} · ${esc(a.email||'')}</span></div>
+      <div class="stat"><div class="stat-lbl">Course</div><strong>${esc(a.course_name||'—')}</strong><br><span class="s-hint">${esc(a.study_mode||'')}</span></div>
+      <div class="stat"><div class="stat-lbl">Education</div><strong>${esc(a.qualification||'—')}</strong><br><span class="s-hint">${esc(a.completion_year||'')}</span></div>
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec"><span class="s-lbl">Application Status</span><select class="s-input" onchange="updateAdmission(${a.id},{status:this.value})">${['in_progress','payment_pending','awaiting_review','admitted','rejected','cancelled'].map(s=>`<option value="${s}"${a.status===s?' selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="s-sec"><span class="s-lbl">Eligibility</span><select class="s-input" onchange="updateAdmission(${a.id},{eligibility_status:this.value})">${['pending','review_required','eligible','ineligible'].map(s=>`<option value="${s}"${a.eligibility_status===s?' selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="s-sec"><span class="s-lbl">Payment</span><select class="s-input" onchange="updateAdmission(${a.id},{payment_status:this.value})">${['pending','link_sent','partially_paid','paid','failed','refunded'].map(s=>`<option value="${s}"${a.payment_status===s?' selected':''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <div class="card-title">Documents</div><div class="tbl-wrap"><table><thead><tr><th>Type</th><th>File</th><th>Verification</th></tr></thead><tbody>${docRows}</tbody></table></div>
+    <div class="card-title" style="margin-top:20px">Chat Progress History</div><div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Step</th></tr></thead><tbody>${eventRows}</tbody></table></div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+async function updateAdmission(id, patch) {
+  const res = await fetch(`${WORKER_BASE}/edu/admissions`, {method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,id,...patch})});
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) { alert(data.error || 'Update failed'); return; }
+  await loadAdmissions();
 }
 
 // ── SETTINGS ──────────────────────────────────────

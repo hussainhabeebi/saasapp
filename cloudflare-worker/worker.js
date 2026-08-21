@@ -7205,6 +7205,278 @@ async function handleEduEnroll(request, env){
   return json({ok:true,enrollment_id:enrollmentId,id:results[0].meta.last_row_id});
 }
 
+
+/* ── Education chat-only admissions (migration 0068) ─────────────────────────
+   A deterministic, resumable state machine. Course/general questions fall through
+   to the normal education FAQ route; the active step is injected into its verified
+   context so the answer always offers Continue / Ask / Change Course. */
+const EDU_ADMISSION_START_RE=/\b(start (?:an? )?(?:application|admission)|apply now|apply for admission|enrol(?:l)? now|begin (?:an? )?(?:application|admission)|i (?:want|would like) (?:to apply|admission))\b/i;
+const EDU_ADMISSION_CONTINUE_RE=/^(?:▶️?\s*)?(?:continue|continue application|resume|resume application)$/i;
+const EDU_ADMISSION_CHANGE_RE=/^(?:🔄?\s*)?(?:change course|choose another course|another course)$/i;
+const EDU_ADMISSION_CANCEL_RE=/^(?:❌?\s*)?(?:cancel|cancel application|stop application)$/i;
+const EDU_ADMISSION_QUESTION_RE=/\?$|^(?:what|why|when|where|who|how|can|could|is|are|do|does|tell me|explain|ask another question)\b/i;
+const EDU_ADMISSION_ADVISOR_RE=/^(?:👤\s*)?(?:talk to (?:an? )?advisor|speak to (?:an? )?advisor|contact (?:an? )?advisor|book consultation|call us)$/i;
+const EDU_ADMISSION_STEPS=['welcome','course','full_name','email','qualification','completion_year','study_mode','scholarship','id_proof','qualification_document','photo','payment_option','confirm','submitted'];
+
+function eduAdmissionId(){ return 'APP-'+Date.now()+'-'+String(Math.floor(Math.random()*9000)+1000); }
+function eduAdmissionOptions(items){ return (items||[]).slice(0,10).map(function(x){ return {title:x[0],value:x[1]||x[0]}; }); }
+export function eduNormalizePhone(v){ return String(v||'').replace(/[^\d+]/g,'').slice(-18); }
+export function eduEmailValid(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim()); }
+export function eduYearValid(v){ const y=Number(String(v||'').match(/\d{4}/)?.[0]); return y>=1950&&y<=new Date().getFullYear()+1; }
+export function eduAdmissionWantsStart(v){
+  const text=String(v||'').trim();
+  return EDU_ADMISSION_START_RE.test(text)||/^(?:📚\s*)?choose course$/i.test(text);
+}
+export function eduAdmissionWantsAdvisor(v){ return EDU_ADMISSION_ADVISOR_RE.test(String(v||'').trim()); }
+
+async function eduAdmissionEvent(env,app,type,data){
+  await env.DB.prepare('INSERT INTO edu_admission_events (client_id,application_id,event_type,step,event_data,created_at) VALUES (?,?,?,?,?,?)')
+    .bind(Number(app.client_id),Number(app.id),type,String(app.current_step||''),JSON.stringify(data||{}),new Date().toISOString()).run();
+}
+async function eduAdmissionPatch(env,app,fields,eventType){
+  const allowed=['lead_id','conversation_id','student_id','course_id','full_name','email','qualification','completion_year','study_mode','scholarship_code','eligibility_status','current_step','paused_step','status','payment_option','payment_status','payment_reference','answers_json','submitted_at'];
+  const sets=[],vals=[];
+  allowed.forEach(function(k){ if(Object.prototype.hasOwnProperty.call(fields,k)){ sets.push(k+'=?'); vals.push(fields[k]); app[k]=fields[k]; } });
+  sets.push('updated_at=?'); vals.push(new Date().toISOString()); vals.push(Number(app.id));
+  await env.DB.prepare('UPDATE edu_admission_applications SET '+sets.join(',')+' WHERE id=?').bind(...vals).run();
+  if(eventType) await eduAdmissionEvent(env,app,eventType,fields);
+  return app;
+}
+async function eduAdmissionActive(env,clientId,phone){
+  return await env.DB.prepare("SELECT * FROM edu_admission_applications WHERE client_id=? AND phone=? AND status IN ('in_progress','awaiting_review','payment_pending') ORDER BY updated_at DESC LIMIT 1")
+    .bind(Number(clientId),eduNormalizePhone(phone)).first();
+}
+async function eduAdmissionCreate(env,clientId,phone,leadId,convId){
+  const now=new Date().toISOString(),applicationId=eduAdmissionId();
+  const r=await env.DB.prepare("INSERT INTO edu_admission_applications (client_id,application_id,lead_id,conversation_id,phone,current_step,status,created_at,updated_at) VALUES (?,?,?,?,?,'welcome','in_progress',?,?)")
+    .bind(Number(clientId),applicationId,String(leadId||''),String(convId||''),eduNormalizePhone(phone),now,now).run();
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE id=?').bind(r.meta.last_row_id).first();
+  await eduAdmissionEvent(env,app,'application_started',{channel:'chat'});
+  return app;
+}
+async function eduAdmissionSend(env,c,clientId,convId,text,options){
+  if(options&&options.length) return await engineSendChatwootQuickReply(env,c,clientId,convId,text,options);
+  return await engineSendChatwootReply(env,c,clientId,convId,text);
+}
+async function eduAdmissionCourses(env,clientId){
+  const r=await env.DB.prepare("SELECT * FROM edu_courses WHERE client_id=? AND status='active' AND (admission_open IS NULL OR admission_open=1) ORDER BY name LIMIT 30").bind(Number(clientId)).all();
+  return r.results||[];
+}
+async function eduAdmissionPrompt(env,c,clientId,convId,app,extra){
+  const courses=await eduAdmissionCourses(env,clientId);
+  let text='',options=[];
+  switch(app.current_step){
+    case 'welcome':
+      text='🎓 *Admission Application*\n\n• I will guide you step by step.\n• You can ask a question at any time.\n• Your progress is saved automatically.';
+      options=eduAdmissionOptions([['📚 Choose Course','Choose Course'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]); break;
+    case 'course':
+      text='📚 *Step 1 of 8 · Choose a Course*\n\n• Select one verified course to continue.';
+      options=eduAdmissionOptions(courses.slice(0,8).map(function(x){return ['📘 '+String(x.short_label||x.name).slice(0,20),x.name];}));
+      if(!options.length) options=eduAdmissionOptions([['👤 Talk to Advisor','Talk to Advisor']]);
+      break;
+    case 'full_name':
+      text='👤 *Step 2 of 8 · Personal Details*\n\n• Please enter your full name.';
+      options=eduAdmissionOptions([['🔄 Change Course','Change Course'],['❓ Ask a Question','Ask another question']]); break;
+    case 'email':
+      text='📧 *Step 2 of 8 · Personal Details*\n\n• Please enter your email address.';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification':
+      text='🎓 *Step 3 of 8 · Education*\n\n• What is your highest qualification?';
+      options=eduAdmissionOptions([['10th','10th'],['12th','12th'],['🎓 Diploma','Diploma'],['🎓 Graduate','Graduate'],['🎓 Postgraduate','Postgraduate']]); break;
+    case 'completion_year':
+      text='📅 *Step 3 of 8 · Education*\n\n• What year did you complete it?';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'study_mode':
+      text='🖥️ *Step 4 of 8 · Study Mode*\n\n• Choose your preferred learning mode.';
+      options=eduAdmissionOptions([['🏫 Classroom','Classroom'],['💻 Online','Online'],['🔄 Hybrid','Hybrid']]); break;
+    case 'scholarship':
+      text='🎁 *Step 5 of 8 · Scholarship*\n\n• Would you like us to check available offers?';
+      options=eduAdmissionOptions([['🎁 Check Offers','Check Offers'],['⏭️ Skip','Skip'],['❓ Ask a Question','Ask another question']]); break;
+    case 'id_proof':
+      text='🪪 *Step 6 of 8 · Documents*\n\n• Upload your ID proof here.\n• Send one clear image or PDF.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification_document':
+      text='📄 *Step 6 of 8 · Documents*\n\n• Upload your qualification certificate.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'photo':
+      text='🖼️ *Step 6 of 8 · Documents*\n\n• Upload your passport-size photograph.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'payment_option':
+      text='💳 *Step 7 of 8 · Payment Preference*\n\n• Choose how you prefer to pay.\n• Never send card or bank details in chat.';
+      options=eduAdmissionOptions([['💰 Full Fee','Full Fee'],['📅 Installments','Installments'],['👤 Discuss with Advisor','Discuss with Advisor']]); break;
+    case 'confirm': {
+      const course=courses.find(function(x){return Number(x.id)===Number(app.course_id);});
+      text='✅ *Step 8 of 8 · Confirm Application*\n\n• 👤 '+(app.full_name||'—')+'\n• 📘 '+(course?.name||'—')+'\n• 🎓 '+(app.qualification||'—')+'\n• 🖥️ '+(app.study_mode||'—')+'\n• 💳 '+(app.payment_option||'—');
+      options=eduAdmissionOptions([['✅ Submit Application','Submit Application'],['✏️ Edit Details','Edit Details'],['❓ Ask a Question','Ask another question']]); break;
+    }
+    if(extra) text=extra+'\n\n'+text;
+    await eduAdmissionSend(env,c,clientId,convId,text,options);
+    return {handled:true,step:app.current_step};
+  }
+}
+async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
+  const now=new Date().toISOString();
+  await env.DB.prepare("INSERT INTO edu_admission_documents (client_id,application_id,document_type,file_url,media_type,verification_status,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?) ON CONFLICT(application_id,document_type) DO UPDATE SET file_url=excluded.file_url,media_type=excluded.media_type,verification_status='pending',updated_at=excluded.updated_at")
+    .bind(Number(app.client_id),Number(app.id),type,String(url||''),String(mediaType||''),now,now).run();
+  await eduAdmissionEvent(env,app,'document_received',{document_type:type});
+}
+async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl){
+  if(c.industry!=='education') return null;
+  const clean=String(userText||'').trim();
+  let app=await eduAdmissionActive(env,clientId,phone);
+  const wantsStart=eduAdmissionWantsStart(clean);
+  if(!app&&!wantsStart) return null;
+  if(!app) app=await eduAdmissionCreate(env,clientId,phone,leadId,convId);
+  if(String(app.lead_id||'')!==String(leadId||'')||String(app.conversation_id||'')!==String(convId||'')) await eduAdmissionPatch(env,app,{lead_id:String(leadId||''),conversation_id:String(convId||'')},null);
+
+  if(EDU_ADMISSION_CANCEL_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{status:'cancelled',current_step:'cancelled'},'application_cancelled');
+    await eduAdmissionSend(env,c,clientId,convId,'❌ *Application cancelled*\n\n• Your saved application has been closed.\n• You can start a new application anytime.',eduAdmissionOptions([['🎓 Start Application','Start Application'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'cancelled'};
+  }
+  if(eduAdmissionWantsAdvisor(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'advisor_requested');
+    return null;
+  }
+  if(EDU_ADMISSION_CHANGE_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{course_id:null,current_step:'course',paused_step:''},'course_change_requested');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^(?:❓\s*)?ask another question$/i.test(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'question_mode_started');
+    await eduAdmissionSend(env,c,clientId,convId,'❓ *Ask your question*\n\n• Your application progress is safely saved.\n• I will return you to the same step.',eduAdmissionOptions([['▶️ Continue Application','Continue Application'],['🔄 Change Course','Change Course']]));
+    return {handled:true,step:app.current_step};
+  }
+  if(EDU_ADMISSION_CONTINUE_RE.test(clean)){
+    if(app.paused_step) await eduAdmissionPatch(env,app,{current_step:app.paused_step,paused_step:''},'application_resumed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'▶️ Your application has resumed.');
+  }
+  if(app.paused_step&&EDU_ADMISSION_QUESTION_RE.test(clean)) return null;
+  if(EDU_ADMISSION_QUESTION_RE.test(clean)&&!wantsStart){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'application_paused_for_question');
+    return null;
+  }
+  if(wantsStart&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{current_step:'course'},'step_completed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^back$/i.test(clean)){
+    const back={email:'full_name',completion_year:'qualification',confirm:'payment_option'}[app.current_step];
+    if(back) await eduAdmissionPatch(env,app,{current_step:back},'step_back');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+
+  if(app.current_step==='welcome') return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  if(app.current_step==='course'){
+    const courses=await eduAdmissionCourses(env,clientId);
+    const wanted=clean.toLowerCase().replace(/^📘\s*/,'');
+    const course=courses.find(function(x){return [x.name,x.short_label].filter(Boolean).some(function(v){return String(v).toLowerCase()===wanted;});});
+    if(!course) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please select one of the verified courses.');
+    await eduAdmissionPatch(env,app,{course_id:Number(course.id),current_step:'full_name'},'course_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+course.name+' selected.');
+  }
+  if(app.current_step==='full_name'){
+    if(clean.length<2||clean.length>100) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid full name.');
+    await eduAdmissionPatch(env,app,{full_name:clean,current_step:'email'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='email'){
+    if(!eduEmailValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid email address.');
+    await eduAdmissionPatch(env,app,{email:clean.toLowerCase(),current_step:'qualification'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='qualification'){
+    await eduAdmissionPatch(env,app,{qualification:clean.slice(0,80),current_step:'completion_year'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='completion_year'){
+    if(!eduYearValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid four-digit year.');
+    await eduAdmissionPatch(env,app,{completion_year:String(clean.match(/\d{4}/)[0]),current_step:'study_mode',eligibility_status:'review_required'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ Details saved. Eligibility will be verified by admissions.');
+  }
+  if(app.current_step==='study_mode'){
+    const mode=/online/i.test(clean)?'Online':/class/i.test(clean)?'Classroom':/hybrid/i.test(clean)?'Hybrid':'';
+    if(!mode) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one study mode.');
+    await eduAdmissionPatch(env,app,{study_mode:mode,current_step:'scholarship'},'study_mode_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='scholarship'){
+    let code='';
+    if(!/^skip$/i.test(clean)){
+      const p=await env.DB.prepare("SELECT code FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 1").bind(Number(clientId)).first();
+      code=p?.code||'review_requested';
+    }
+    await eduAdmissionPatch(env,app,{scholarship_code:code,current_step:'id_proof'},'scholarship_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  const docSteps={id_proof:['id_proof','qualification_document'],qualification_document:['qualification_certificate','photo'],photo:['passport_photo','payment_option']};
+  if(docSteps[app.current_step]){
+    const spec=docSteps[app.current_step];
+    if(mediaUrl) await eduAdmissionSaveDocument(env,app,spec[0],mediaUrl,mediaType);
+    else if(!/^upload later$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please upload a file or choose Upload Later.');
+    await eduAdmissionPatch(env,app,{current_step:spec[1]},mediaUrl?'document_step_completed':'document_deferred');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,mediaUrl?'✅ Document received securely.':'⏭️ Document marked for later upload.');
+  }
+  if(app.current_step==='payment_option'){
+    const option=/install/i.test(clean)?'Installments':/full/i.test(clean)?'Full Fee':/advisor|discuss/i.test(clean)?'Discuss with Advisor':'';
+    if(!option) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one payment preference.');
+    await eduAdmissionPatch(env,app,{payment_option:option,current_step:'confirm',status:'payment_pending'},'payment_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='confirm'){
+    if(/^edit details$/i.test(clean)){
+      await eduAdmissionPatch(env,app,{current_step:'full_name',status:'in_progress'},'edit_requested');
+      return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    }
+    if(!/^submit application$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    const now=new Date().toISOString();
+    let student=await env.DB.prepare('SELECT * FROM edu_students WHERE client_id=? AND phone=?').bind(Number(clientId),eduNormalizePhone(phone)).first();
+    if(!student){
+      const sr=await env.DB.prepare('INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),app.full_name,eduNormalizePhone(phone),app.email,'Created from chat admission',now).run();
+      student={id:sr.meta.last_row_id};
+    }else{
+      await env.DB.prepare('UPDATE edu_students SET name=?,email=? WHERE id=?').bind(app.full_name,app.email,student.id).run();
+    }
+    await eduAdmissionPatch(env,app,{student_id:Number(student.id),current_step:'submitted',status:'awaiting_review',submitted_at:now},'application_submitted');
+    await eduAdmissionSend(env,c,clientId,convId,'🎉 *Application submitted!*\n\n• 🆔 '+app.application_id+'\n• ✅ Your details are saved.\n• 🎓 Admissions will verify eligibility and documents.\n• 💳 Use only the secure payment link shared by the team.',eduAdmissionOptions([['📋 Application Status','Application Status'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'submitted'};
+  }
+  return null;
+}
+
+async function handleEduAdmissionApplicationsList(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const r=await env.DB.prepare('SELECT a.*,c.name AS course_name,(SELECT COUNT(*) FROM edu_admission_documents d WHERE d.application_id=a.id) AS document_count FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? ORDER BY a.updated_at DESC LIMIT 500').bind(Number(clientId)).all();
+  return json({list:r.results||[]});
+}
+async function handleEduAdmissionApplicationDetail(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||''),id=Number(url.searchParams.get('id'));
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const application=await env.DB.prepare('SELECT a.*,c.name AS course_name FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? AND a.id=?').bind(Number(clientId),id).first();
+  if(!application) return json({error:'Not found'},404);
+  const [docs,events]=await Promise.all([
+    env.DB.prepare('SELECT * FROM edu_admission_documents WHERE client_id=? AND application_id=? ORDER BY created_at').bind(Number(clientId),id).all(),
+    env.DB.prepare('SELECT * FROM edu_admission_events WHERE client_id=? AND application_id=? ORDER BY created_at DESC LIMIT 100').bind(Number(clientId),id).all()
+  ]);
+  return json({application:application,documents:docs.results||[],events:events.results||[]});
+}
+async function handleEduAdmissionApplicationUpdate(request,env){
+  const body=await request.json().catch(function(){return {};});
+  const clientId=String(body.client_id||''),id=Number(body.id);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE client_id=? AND id=?').bind(Number(clientId),id).first();
+  if(!app) return json({error:'Not found'},404);
+  const patch={};
+  ['status','eligibility_status','payment_status','payment_reference'].forEach(function(k){if(Object.prototype.hasOwnProperty.call(body,k))patch[k]=String(body[k]||'');});
+  await eduAdmissionPatch(env,app,patch,'admin_updated');
+  if(body.document_id&&body.verification_status){
+    await env.DB.prepare('UPDATE edu_admission_documents SET verification_status=?,updated_at=? WHERE id=? AND client_id=? AND application_id=?').bind(String(body.verification_status),new Date().toISOString(),Number(body.document_id),Number(clientId),id).run();
+  }
+  return json({ok:true});
+}
+
+
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
 async function handleEduCategoriesList(request, env){
   const url=new URL(request.url);
@@ -8649,7 +8921,7 @@ async function engineBuildHealthcareContext(env,clientId){
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
   return lines.join('\n');
 }
-async function engineBuildEduContext(env, clientId){
+async function engineBuildEduContext(env, clientId, phone){
   const [courses, categories, promos]=await Promise.all([
     env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
     env.DB.prepare(`SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
@@ -8690,6 +8962,15 @@ async function engineBuildEduContext(env, clientId){
       if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
       lines.push(p.join(' | '));
     });
+  }
+  if(phone){
+    const app=await eduAdmissionActive(env,clientId,phone).catch(function(){return null;});
+    if(app){
+      lines.push('### ACTIVE CHAT ADMISSION — STRICT MEMORY');
+      lines.push('- application id: '+app.application_id+' | current step: '+app.current_step+' | paused step: '+(app.paused_step||'none')+' | status: '+app.status);
+      lines.push('- saved name: '+(app.full_name||'not collected')+' | qualification: '+(app.qualification||'not collected')+' | mode: '+(app.study_mode||'not selected'));
+      lines.push('- Never restart or repeat completed questions. Answer the current question first, then offer exactly: OPTIONS: Continue Application | Ask Another Question | Change Course');
+    }
   }
   return lines.join('\n');
 }
@@ -10494,7 +10775,7 @@ BUTTONS — mandatory after EVERY reply:
   — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
   — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
   — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
-• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
+• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
       higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
@@ -12638,6 +12919,11 @@ async function handleEngineWebhook(request, env, secret){
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl);
+    if(eduAdmissionTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
+    }
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
     // A generic ad CTA/business-information request must be answered from the client's prompt,
@@ -13414,7 +13700,7 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
-      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
       // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
       // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
       if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
@@ -21980,6 +22266,7 @@ async function hcSaveSimpleSession(env,clientId,phone,data){
   const now=new Date().toISOString();
   await env.DB.prepare(`INSERT INTO healthcare_simple_sessions (client_id,patient_phone,stage,service_id,doctor_id,appt_date,appt_time,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET stage=excluded.stage,service_id=excluded.service_id,doctor_id=excluded.doctor_id,appt_date=excluded.appt_date,appt_time=excluded.appt_time,updated_at=excluded.updated_at`)
     .bind(Number(clientId),String(phone),String(data.stage||''),Number(data.service_id)||0,Number(data.doctor_id)||0,String(data.appt_date||''),String(data.appt_time||''),now).run();
+
 }
 async function hcClearSimpleSession(env,clientId,phone){
   await env.DB.prepare(`DELETE FROM healthcare_simple_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
@@ -22000,12 +22287,14 @@ async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPh
 async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   await hcEnsureOperationsSchema(env);
   await hcEnsureSimpleSessionColumns(env);
+
   const action=String(userText||'').trim();
 
   // Cancel at any point
   if(/^(cancel|stop|exit|quit)$/i.test(action)){
     await hcClearSimpleSession(env,clientId,phone);
     const text=await engineLocalizeReply(env,c,'Booking cancelled. Say "Hi" anytime to start again.',replyLang);
+
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
@@ -22051,6 +22340,7 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
     let msg=`🏥 *Our Services*\n\n${svcLines.join('\n\n')}`;
     if(docLines.length) msg+=`\n\n─────────────\n👨‍⚕️ *Our Doctors*\n\n${docLines.join('\n\n')}`;
     msg+=`\n\nSay "Hi" to book an appointment.`;
+
     const text=await engineLocalizeReply(env,c,msg,replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
@@ -22096,6 +22386,7 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
       return {handled:true,text,quickReplies:qr};
     }
     await hcSaveSimpleSession(env,clientId,phone,{stage:'ask_date',service_id:0,doctor_id:0,appt_date:'',appt_time:''});
+
     const text=await engineLocalizeReply(env,c,'What date would you like your appointment?\n(e.g. tomorrow, Monday, 25 Aug)',replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
@@ -22113,6 +22404,7 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
     }
     await hcSaveSimpleSession(env,clientId,phone,{stage:'ask_time',service_id:Number(session.service_id)||0,doctor_id:Number(session.doctor_id)||0,appt_date:action,appt_time:''});
     const text=await engineLocalizeReply(env,c,'What time? (e.g. 10 AM, 2:30 PM)',replyLang);
+
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
@@ -22124,6 +22416,7 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
       return {handled:true,text,quickReplies:null};
     }
     await hcSaveSimpleSession(env,clientId,phone,{stage:'ask_name',service_id:Number(session.service_id)||0,doctor_id:Number(session.doctor_id)||0,appt_date:session.appt_date,appt_time:action});
+
     const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
@@ -22140,6 +22433,7 @@ async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,
     const svcLabel=row?.service_name?`\nService: ${row.service_name}`:'';
     const docLabel=row?.doctor_name?`\nDoctor: ${row.doctor_name}`:'';
     const confirmMsg=`✅ Appointment Requested!\n\nPatient: ${action}${svcLabel}${docLabel}\nDate: ${session.appt_date}\nTime: ${session.appt_time}\n\nOur team will contact you shortly to confirm.`;
+
     const text=await engineLocalizeReply(env,c,confirmMsg,replyLang);
     await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
@@ -23130,6 +23424,9 @@ export default {
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='POST'){ res=await handleEduStudentUpsert(request, env); }
       else if(url.pathname==='/edu/enroll' && request.method==='POST'){ res=await handleEduEnroll(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='GET'){ res=await handleEduAdmissionApplicationsList(request, env); }
+      else if(url.pathname==='/edu/admissions/detail' && request.method==='GET'){ res=await handleEduAdmissionApplicationDetail(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='PATCH'){ res=await handleEduAdmissionApplicationUpdate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
