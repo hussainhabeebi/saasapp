@@ -23240,8 +23240,9 @@ async function handleReAnalytics(request, env){
 /* ═══════════════════════════════════════════════════════════════════════════
    LIVE TRAVEL AGENCY
    A D1-backed, session-authenticated module kept deliberately separate from the
-   legacy Travel Agency/NocoDB implementation. Supplier credentials are read
-   only from Worker secrets. SerpApi is discovery-only; a fare is bookable only
+   legacy Travel Agency/NocoDB implementation. Each client owns its supplier
+   credentials in encrypted D1 settings; saved secrets are never returned to the
+   browser. SerpApi is discovery-only; a fare is bookable only
    after Riya or TripJack returns and subsequently revalidates it.
    ═══════════════════════════════════════════════════════════════════════════ */
 const LT_SUPPLIERS=['serpapi','riya','tripjack'];
@@ -23312,15 +23313,44 @@ async function ltSeedSuppliers(env,cid){
   const now=ltNow();
   for(const [i,supplier] of LT_SUPPLIERS.entries()) await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`).bind(cid,supplier,(i+1)*10,now,now).run();
 }
-function ltSupplierConfigured(env,supplier){
-  if(supplier==='serpapi')return !!env.SERPAPI_API_KEY;
-  if(supplier==='riya')return !!(env.RIYA_FLIGHT_SEARCH_URL&&env.RIYA_API_KEY);
-  if(supplier==='tripjack')return !!(env.TRIPJACK_FLIGHT_SEARCH_URL&&env.TRIPJACK_API_KEY);
+function ltBytesB64(bytes){return btoa(String.fromCharCode(...bytes));}
+function ltB64Bytes(value){return Uint8Array.from(atob(value),c=>c.charCodeAt(0));}
+async function ltCredentialsCryptoKey(env){
+  const secret=String(env.LIVE_TRAVEL_CREDENTIALS_KEY||env.SESSION_SIGNING_KEY||'');
+  if(!secret)throw new Error('Live Travel credential encryption is not configured.');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(secret));
+  return crypto.subtle.importKey('raw',digest,{name:'AES-GCM'},false,['encrypt','decrypt']);
+}
+export async function ltEncryptCredentials(env,value){
+  const iv=crypto.getRandomValues(new Uint8Array(12)),key=await ltCredentialsCryptoKey(env);
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify(value||{})));
+  return `${ltBytesB64(iv)}.${ltBytesB64(new Uint8Array(encrypted))}`;
+}
+export async function ltDecryptCredentials(env,value){
+  if(!value)return {};
+  try{
+    const [iv,cipher]=String(value).split('.'); if(!iv||!cipher)return {};
+    const key=await ltCredentialsCryptoKey(env),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:ltB64Bytes(iv)},key,ltB64Bytes(cipher));
+    return JSON.parse(new TextDecoder().decode(plain))||{};
+  }catch(e){throw new Error('Saved supplier credentials could not be decrypted.');}
+}
+async function ltSupplierRuntime(env,row){
+  return {...row,credentials:await ltDecryptCredentials(env,row?.credentials_encrypted),endpoints:ltJson(row?.endpoints_json,{})};
+}
+function ltSupplierConfigured(config){
+  const supplier=config?.supplier,credentials=config?.credentials||{},endpoints=config?.endpoints||{};
+  if(supplier==='serpapi')return !!credentials.api_key;
+  if(supplier==='riya'||supplier==='tripjack')return !!(credentials.api_key&&endpoints.search);
   return false;
 }
-function ltSupplierHeaders(env,supplier){
-  if(supplier==='riya')return {'Content-Type':'application/json','Authorization':`Bearer ${env.RIYA_API_KEY}`,'X-Client-Id':env.RIYA_CLIENT_ID||''};
-  return {'Content-Type':'application/json','apikey':env.TRIPJACK_API_KEY||'','Authorization':env.TRIPJACK_API_KEY?`Bearer ${env.TRIPJACK_API_KEY}`:''};
+function ltSupplierPublic(config){
+  const {credentials_encrypted,endpoints_json,credentials,...safe}=config;
+  return {...safe,endpoints:config.endpoints||{},credentials_configured:ltSupplierConfigured(config),credential_fields:Object.keys(credentials||{}).filter(k=>!!credentials[k])};
+}
+function ltSupplierHeaders(config){
+  const credentials=config.credentials||{};
+  if(config.supplier==='riya')return {'Content-Type':'application/json','Authorization':`Bearer ${credentials.api_key||''}`,'X-Client-Id':credentials.client_id||'','X-Api-Secret':credentials.api_secret||''};
+  return {'Content-Type':'application/json','apikey':credentials.api_key||'','Authorization':credentials.api_key?`Bearer ${credentials.api_key}`:''};
 }
 async function ltFetchJson(url,options={},timeoutMs=25000){
   const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),timeoutMs);
@@ -23336,20 +23366,20 @@ function ltExtractOffers(supplier,data){
   for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
   return Array.isArray(data)?data:[];
 }
-async function ltSupplierSearch(env,supplier,input){
-  if(!ltSupplierConfigured(env,supplier)) throw new Error('Credentials or endpoint are not configured.');
+async function ltSupplierSearch(config,input){
+  const supplier=config.supplier;
+  if(!ltSupplierConfigured(config)) throw new Error('Client credentials or search endpoint are not configured.');
   if(supplier==='serpapi'){
-    const q=new URLSearchParams({engine:'google_flights',api_key:env.SERPAPI_API_KEY,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
+    const q=new URLSearchParams({engine:'google_flights',api_key:config.credentials.api_key,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
     if(input.return_date)q.set('return_date',input.return_date);
-    return ltFetchJson(`https://serpapi.com/search.json?${q}`);
+    return ltFetchJson(`${config.endpoints.search||'https://serpapi.com/search.json'}?${q}`);
   }
-  const endpoint=supplier==='riya'?env.RIYA_FLIGHT_SEARCH_URL:env.TRIPJACK_FLIGHT_SEARCH_URL;
-  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(env,supplier),body:JSON.stringify(input)});
+  return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
 }
-async function ltSupplierAction(env,supplier,action,payload){
-  const key=`${supplier.toUpperCase()}_FLIGHT_${action.toUpperCase()}_URL`, endpoint=env[key];
-  if(!endpoint||!ltSupplierConfigured(env,supplier)) throw new Error(`${supplier} ${action} endpoint is not configured.`);
-  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(env,supplier),body:JSON.stringify(payload)});
+async function ltSupplierAction(config,action,payload){
+  const endpoint=config.endpoints?.[action];
+  if(!endpoint||!ltSupplierConfigured(config)) throw new Error(`${config.supplier} client ${action} settings are not configured.`);
+  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(payload)});
 }
 async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
 async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
@@ -23368,7 +23398,7 @@ async function handleLtBootstrap(request,env){
     env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(auth.cid).all(),
     env.DB.prepare(`SELECT c.*,b.booking_ref,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 200`).bind(auth.cid).all()
   ]);
-  const supplierList=(suppliers.results||[]).map(s=>({...s,credentials_configured:ltSupplierConfigured(env,s.supplier)}));
+  const supplierList=await Promise.all((suppliers.results||[]).map(async s=>ltSupplierPublic(await ltSupplierRuntime(env,s))));
   return json({suppliers:supplierList,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
 }
 async function handleLtSuppliersUpdate(request,env){
@@ -23376,18 +23406,28 @@ async function handleLtSuppliersUpdate(request,env){
   const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
   if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
   await ltSeedSuppliers(env,auth.cid);
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  const previous=await ltSupplierRuntime(env,old),credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:['api_key'];
+  const credentials=body.clear_credentials?{}:{...(previous.credentials||{})};
+  for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
+  const endpointKeys=supplier==='serpapi'?['search']:['search','revalidate','book','ticket','sync','cancel'],endpoints={...(previous.endpoints||{})};
+  for(const key of endpointKeys)if(body.endpoints?.[key]!==undefined)endpoints[key]=ltText(body.endpoints[key],1000);
+  if(supplier==='serpapi'&&!endpoints.search)endpoints.search='https://serpapi.com/search.json';
   const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
-  await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,updated_at=? WHERE client_id=? AND supplier=?`)
-    .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),ltNow(),auth.cid,supplier).run();
-  await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value)});
+  const runtime={...old,supplier,credentials,endpoints};
+  if(body.enabled&&!ltSupplierConfigured(runtime))return json({error:'Save this client’s required API key and search endpoint before enabling the supplier.'},400);
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,credentials_encrypted=?,endpoints_json=?,updated_at=? WHERE client_id=? AND supplier=?`)
+    .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),await ltEncryptCredentials(env,credentials),JSON.stringify(endpoints),ltNow(),auth.cid,supplier).run();
+  await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value),credential_fields:Object.keys(credentials),endpoint_fields:Object.keys(endpoints)});
   const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
-  return json({...row,credentials_configured:ltSupplierConfigured(env,supplier)});
+  return json(ltSupplierPublic(await ltSupplierRuntime(env,row)));
 }
 async function handleLtSupplierHealth(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const supplier=new URL(request.url).searchParams.get('supplier')||'';
   if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
-  const configured=ltSupplierConfigured(env,supplier), status=configured?'configured':'not_configured', now=ltNow();
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first(),runtime=await ltSupplierRuntime(env,row);
+  const configured=ltSupplierConfigured(runtime), status=configured?'configured':'not_configured', now=ltNow();
   await env.DB.prepare(`UPDATE live_travel_suppliers SET last_status=?,last_checked_at=?,updated_at=? WHERE client_id=? AND supplier=?`).bind(status,now,now,auth.cid,supplier).run();
   return json({supplier,status,credentials_configured:configured,checked_at:now});
 }
@@ -23402,7 +23442,7 @@ async function handleLtSearch(request,env){
     .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
   const searchId=insert.meta.last_row_id, errors={}, offers=[];
   const settled=await Promise.all((settings||[]).map(async setting=>{
-    try{return {setting,data:await ltSupplierSearch(env,setting.supplier,input)};}catch(e){return {setting,error:String(e?.message||e)};}
+    try{const runtime=await ltSupplierRuntime(env,setting);return {setting,data:await ltSupplierSearch(runtime,input)};}catch(e){return {setting,error:String(e?.message||e)};}
   }));
   for(const result of settled){
     const supplier=result.setting.supplier;
@@ -23440,7 +23480,8 @@ async function handleLtRevalidate(request,env){
   if(!offer)return json({error:'Offer not found'},404);
   if(!offer.bookable)return json({error:'SerpApi prices are indicative only. Select a matching Riya or TripJack fare to continue.'},409);
   if(new Date(offer.expires_at).getTime()<Date.now())return json({error:'This offer expired. Run a new search.'},409);
-  let data; try{data=await ltSupplierAction(env,offer.supplier,'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,offer.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
   const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.currency,cabin:offer.cabin,markup_type:'fixed',markup_value:offer.markup_amount});
   const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
   await env.DB.prepare(`UPDATE live_travel_offers SET base_amount=?,tax_amount=?,total_amount=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
@@ -23508,7 +23549,8 @@ async function handleLtBookingAction(request,env,action){
   const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
   const allowed={book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
   if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
-  let data; try{data=await ltSupplierAction(env,booking.supplier,action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,booking.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
   const statuses={book:'confirmed',ticket:'ticketed',cancel:'cancelled',sync:ltText(data.status||booking.status,30)};
   const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]),now=ltNow();
   await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,ticket_numbers_json=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,JSON.stringify(tickets),now,now,booking.id,auth.cid).run();
