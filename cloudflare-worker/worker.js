@@ -14446,10 +14446,18 @@ async function handleApptPublicServices(request, env){
   const c=await apptPublicResolveClient(env, url);
   if(!c) return json({error:'Booking page not found'}, 404);
   if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
-  // Healthcare: serve active services from D1
+  // Healthcare: serve active services from D1, optionally filtered by doctor_id
   if(c.healthcare_enabled==='Yes'){
     await hcEnsureOperationsSchema(env);
-    const svcs=await hcListActiveServices(env, c.Id);
+    const doctorId=Number(url.searchParams.get('doctor_id')||0);
+    let svcs;
+    if(doctorId){
+      const linked=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
+      svcs=linked.results||[];
+      if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+    }else{
+      svcs=await hcListActiveServices(env, c.Id);
+    }
     return json({list:svcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
   }
   const servicesTable=apptResolveTable(c, 'services');
@@ -14500,7 +14508,7 @@ async function handleApptPublicBook(request, env){
   const time=String(body.time||'').slice(0,5);
   const notes=String(body.notes||'').trim().slice(0,500);
 
-  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar
+  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar + CRM lead
   if(c.healthcare_enabled==='Yes'){
     await hcEnsureOperationsSchema(env);
     const now=new Date().toISOString();
@@ -14512,6 +14520,10 @@ async function handleApptPublicBook(request, env){
       await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
       await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
     }
+    // Also save to CRM (NocoDB lead + task) — best-effort, don't fail the booking on CRM error
+    let svc=null;
+    if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
+    await advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
     return json({ok:true});
   }
 
