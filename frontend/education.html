@@ -367,10 +367,10 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="s-sec"><span class="s-lbl">Image Link 3 (optional)</span><input class="s-input" id="cmImage3" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Audio Overview Link</span><input class="s-input" id="cmAudioUrl" type="url" placeholder="Google Drive share link"></div>
       <div class="s-sec"><span class="s-lbl">Promo Video Link</span><input class="s-input" id="cmVideoUrl" type="url" placeholder="Google Drive share link"></div>
-      <div class="s-sec"><span class="s-lbl">Brochure / Syllabus PDF Link</span><input class="s-input" id="cmPdfUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec"><span class="s-lbl">Brochure / Syllabus PDF Link</span><input class="s-input" id="cmPdfUrl" type="url" placeholder="Google Drive PDF share link"></div>
       <div class="s-sec"><span class="s-lbl">Enrollment Link (optional)</span><input class="s-input" id="cmEnrollmentLink" type="url" placeholder="Overrides the default enrollment link for this course"></div>
     </div>
-    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). The course image is sent with the bot's reply; Image 2–3, Audio, Video, and the Brochure PDF are sent right after — all together, once per student per day when they ask about this specific course.</div>
+    <div class="s-hint" style="margin-top:-8px;margin-bottom:12px">Image/Audio/Video/PDF Links are pasted Google Drive share links (shared as "Anyone with the link can view"). The Brochure PDF is delivered directly in chat as a downloadable document—not as a Drive preview link. Course media is sent once per student per day when they ask about that specific course.</div>
     <div class="s-sec">
       <span class="s-lbl">Description</span>
       <textarea class="s-input" id="cmDescription" rows="3"></textarea>
@@ -787,6 +787,11 @@ async function submitCourseForm() {
     enrollment_link: document.getElementById('cmEnrollmentLink').value.trim(),
     description: document.getElementById('cmDescription').value.trim(),
   };
+  if (/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(body.pdf_url)) {
+    msg.textContent = 'Use the PDF file link, not a Drive folder link.';
+    btn.disabled = false;
+    return;
+  }
   if (id) body.Id = Number(id);
   try {
     const res = await fetch(`${WORKER_BASE}/edu/courses`, {
