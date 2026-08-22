@@ -7802,6 +7802,8 @@ async function eduMaybeSendCourseMedia(env, c, clientId, convId, course, pdfOnly
       if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
       return;
     }
+    // Primary image first (image_url), then secondary images, then audio/video, then PDF
+    if(course.image_url) await sendDriveMediaToChatwoot(c, convId, course.image_url, '');
     if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
     if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
     if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
@@ -7853,17 +7855,18 @@ async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadI
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   const wantsPdf=/\b(brochure|syllabus|prospectus|course\s*pdf|pdf|download)\b/i.test(userText);
   try{
-    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
+    // Include image_url (primary) in addition to secondary images
+    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
     if(!courses?.length) return;
-    // Prefer an explicit course in the customer's current message. For a brochure/syllabus tap,
-    // fall back to the immediately preceding assistant turn only; never scan the whole chat and
-    // accidentally attach an older course after the student has switched.
+    // 1. Try explicit course name in student's current message
     let course=eduResolveCourseForMedia(courses,[userText]);
-    if(!course&&wantsPdf){
+    // 2. Always fall back to the last assistant reply and bot reply text when no match in userText
+    //    (covers "Tell me more", button taps, "enroll", etc. where the course name is in the bot's reply)
+    if(!course){
       const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
       course=eduResolveCourseForMedia(courses,[lastAssistant?.content,replyText]);
     }
-    if(!course||(!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
+    if(!course||(!course.image_url&&!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
     if(!await eduClaimCourseBrochureForToday(env,clientId,resolvedLeadId,course.id)) return;
     await eduMaybeSendCourseMedia(env,c,clientId,convId,course,wantsPdf);
   }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
