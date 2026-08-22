@@ -141,7 +141,7 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
-  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
+  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'||p==='/appt/public/doctors'), bucket:'appt-public-read', limit:120, windowSec:60},
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
@@ -2271,6 +2271,87 @@ async function handleAiComplete(request, env){
   });
   if(!text) return json({error:'All configured AI providers failed.'}, 502);
   return json({choices:[{message:{role:'assistant',content:text}}]});
+}
+
+// Business AI chat — natural language questions answered from a compact data snapshot the
+// dashboard sends alongside the question. Never fetches raw PII; the frontend computes
+// aggregates client-side and sends only the summary. Daily limit: 10 per user (email) per day,
+// tracked in D1. All answers are grounded in the sent snapshot — AI cannot invent numbers.
+async function handleAiBusinessChat(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const question=String(body.question||'').trim();
+  const summary=body.summary||{};
+  if(!question) return json({error:'question required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!env.GEMINI_API_KEY&&!c.openrouter_key) return json({error:'No AI provider configured.'}, 503);
+
+  // Daily limit tracking per user email in D1
+  const DAILY_LIMIT=10;
+  const userKey=String(payload.email||payload.cid||'').toLowerCase()||String(payload.cid);
+  const today=new Date().toISOString().slice(0,10);
+  let usedToday=0;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ai_chat_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL, user_key TEXT NOT NULL, date TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(client_id, user_key, date)
+    )`).run().catch(()=>{});
+    const row=await env.DB.prepare(`SELECT count FROM ai_chat_usage WHERE client_id=? AND user_key=? AND date=?`)
+      .bind(Number(payload.cid), userKey, today).first().catch(()=>null);
+    usedToday=Number(row?.count||0);
+  }catch(e){}
+
+  if(usedToday>=DAILY_LIMIT){
+    return json({error:'daily_limit_reached', remaining:0, limit:DAILY_LIMIT}, 429);
+  }
+
+  // Build context from the summary the frontend sent (no PII, only aggregates)
+  const ctx=[];
+  if(summary.totalLeads!=null) ctx.push(`Total leads: ${summary.totalLeads}`);
+  if(summary.newToday!=null)   ctx.push(`New leads today: ${summary.newToday}`);
+  if(summary.hot!=null)        ctx.push(`Hot leads: ${summary.hot}`);
+  if(summary.warm!=null)       ctx.push(`Warm leads: ${summary.warm}`);
+  if(summary.converted!=null)  ctx.push(`Converted/booked: ${summary.converted}`);
+  if(summary.convRate!=null)   ctx.push(`Conversion rate: ${summary.convRate}%`);
+  if(summary.botPct!=null)     ctx.push(`Leads engaged by bot: ${summary.botPct}%`);
+  if(summary.tasksOverdue!=null) ctx.push(`Overdue tasks: ${summary.tasksOverdue}`);
+  if(summary.tasksDueToday!=null) ctx.push(`Tasks due today: ${summary.tasksDueToday}`);
+  if(summary.newThisWeek!=null) ctx.push(`New leads this week: ${summary.newThisWeek}`);
+  if(summary.stages&&typeof summary.stages==='object'){
+    const top=Object.entries(summary.stages).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Pipeline stages: ${top}`);
+  }
+  if(summary.sources&&typeof summary.sources==='object'){
+    const top=Object.entries(summary.sources).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Lead sources: ${top}`);
+  }
+  if(summary.agents&&typeof summary.agents==='object'){
+    const top=Object.entries(summary.agents).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Agents (leads handled): ${top}`);
+  }
+
+  const system=`You are a business intelligence assistant for "${String(c.client_name||'this business').slice(0,60)}" on Leadvyne CRM. Answer the user's question using ONLY the data snapshot below — never invent numbers, never reference data not shown. Keep answers concise, specific, and actionable. Use plain text with short bullet points where helpful. If the question cannot be answered from the snapshot, say so clearly and suggest what data would help.
+
+BUSINESS DATA SNAPSHOT (today ${today}):
+${ctx.length?ctx.join('\n'):'No data available yet.'}`;
+
+  const answer=await engineGeminiGenerateWithFallback(env, c, system, question, {
+    temperature:0.3, maxOutputTokens:350
+  });
+  if(!answer) return json({error:'AI generation failed.'}, 502);
+
+  // Increment usage counter
+  try{
+    await env.DB.prepare(`INSERT INTO ai_chat_usage(client_id,user_key,date,count) VALUES(?,?,?,1)
+      ON CONFLICT(client_id,user_key,date) DO UPDATE SET count=count+1`)
+      .bind(Number(payload.cid), userKey, today).run();
+  }catch(e){}
+
+  const remaining=Math.max(0, DAILY_LIMIT-usedToday-1);
+  return json({answer, remaining, limit:DAILY_LIMIT});
 }
 
 // Automation entry point for objection/trust-signal handling — meant to be called by the
@@ -7064,11 +7145,21 @@ async function handleEduCoursesList(request, env){
   return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 
+export function eduCoursePdfUrlError(value){
+  const url=String(value||'').trim();
+  if(!url) return '';
+  if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return 'Paste the Google Drive link for the PDF file, not a Drive folder. The file must be shared as "Anyone with the link can view."';
+  if(/(?:drive|docs)\.google\.com/i.test(url)&&!driveFileId(url)) return 'Use a valid Google Drive file, Doc, Slides, or Sheets share link for the brochure PDF.';
+  return '';
+}
+
 async function handleEduCourseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
   const name=String(body.name||'').trim();
   if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const now=new Date().toISOString();
   const r=await env.DB.prepare(
     `INSERT INTO edu_courses (client_id,name,short_label,category,level,duration,start_date,price,currency,seats_available,status,enrollment_link,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -7081,6 +7172,8 @@ async function handleEduCourseUpdate(request, env){
   const clientId=String(body.client_id||'');
   const id=parseInt(body.Id||body.id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const existing=await env.DB.prepare(`SELECT id FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).first();
   if(!existing) return json({error:'Not found'},404);
   const sets=[],vals=[];
@@ -7204,6 +7297,303 @@ async function handleEduEnroll(request, env){
   const results=await env.DB.batch(stmts);
   return json({ok:true,enrollment_id:enrollmentId,id:results[0].meta.last_row_id});
 }
+
+
+/* ── Education chat-only admissions (migration 0068) ─────────────────────────
+   A deterministic, resumable state machine. Course/general questions fall through
+   to the normal education FAQ route; the active step is injected into its verified
+   context so the answer always offers Continue / Ask / Change Course. */
+const EDU_ADMISSION_START_RE=/\b(start (?:an? )?(?:application|admission)|apply now|apply for admission|enrol(?:l)? now|begin (?:an? )?(?:application|admission)|i (?:want|would like) (?:to apply|admission))\b/i;
+const EDU_ADMISSION_CONTINUE_RE=/^(?:▶️?\s*)?(?:continue|continue application|resume|resume application)$/i;
+const EDU_ADMISSION_CHANGE_RE=/^(?:🔄?\s*)?(?:change course|choose another course|another course)$/i;
+const EDU_ADMISSION_CANCEL_RE=/^(?:❌?\s*)?(?:cancel|cancel application|stop application)$/i;
+const EDU_ADMISSION_QUESTION_RE=/\?$|^(?:what|why|when|where|who|how|can|could|is|are|do|does|tell me|explain|ask another question)\b/i;
+const EDU_ADMISSION_ADVISOR_RE=/^(?:👤\s*)?(?:talk to (?:an? )?advisor|speak to (?:an? )?advisor|contact (?:an? )?advisor|book consultation|call us)$/i;
+const EDU_ADMISSION_STEPS=['welcome','course','full_name','email','qualification','completion_year','study_mode','scholarship','id_proof','qualification_document','photo','payment_option','confirm','submitted'];
+
+function eduAdmissionId(){ return 'APP-'+Date.now()+'-'+String(Math.floor(Math.random()*9000)+1000); }
+function eduAdmissionOptions(items){ return (items||[]).slice(0,10).map(function(x){ return {title:x[0],value:x[1]||x[0]}; }); }
+export function eduNormalizePhone(v){ return String(v||'').replace(/[^\d+]/g,'').slice(-18); }
+export function eduEmailValid(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim()); }
+export function eduYearValid(v){ const y=Number(String(v||'').match(/\d{4}/)?.[0]); return y>=1950&&y<=new Date().getFullYear()+1; }
+export function eduAdmissionWantsStart(v){
+  const text=String(v||'').trim();
+  return EDU_ADMISSION_START_RE.test(text)||/^(?:📚\s*)?choose course$/i.test(text);
+}
+export function eduAdmissionWantsAdvisor(v){ return EDU_ADMISSION_ADVISOR_RE.test(String(v||'').trim()); }
+
+// A short affirmative after one specific course's details should continue into enrollment rather
+// than ask about the same missing duration again. Explicit Enroll/Apply taps use the same resolver,
+// so the student is not forced to choose the course a second time.
+export function eduEnrollmentCourseFromChat(courses,userText,history){
+  const clean=String(userText||'').trim();
+  const affirmative=/^(?:yes|yes please|sure|ok|okay|please do|continue)$/i.test(clean);
+  if(!affirmative&&!eduAdmissionWantsStart(clean)) return null;
+  const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+  if(!lastAssistant) return null;
+  if(affirmative&&!/(?:would you like|want to|shall i|can i).*(?:know more|details|syllabus|eligibility|enrol|admission|apply)/is.test(lastAssistant.content)) return null;
+  return eduResolveCourseForMedia(courses,[lastAssistant.content]);
+}
+
+async function eduAdmissionEvent(env,app,type,data){
+  await env.DB.prepare('INSERT INTO edu_admission_events (client_id,application_id,event_type,step,event_data,created_at) VALUES (?,?,?,?,?,?)')
+    .bind(Number(app.client_id),Number(app.id),type,String(app.current_step||''),JSON.stringify(data||{}),new Date().toISOString()).run();
+}
+async function eduAdmissionPatch(env,app,fields,eventType){
+  const allowed=['lead_id','conversation_id','student_id','course_id','full_name','email','qualification','completion_year','study_mode','scholarship_code','eligibility_status','current_step','paused_step','status','payment_option','payment_status','payment_reference','answers_json','submitted_at'];
+  const sets=[],vals=[];
+  allowed.forEach(function(k){ if(Object.prototype.hasOwnProperty.call(fields,k)){ sets.push(k+'=?'); vals.push(fields[k]); app[k]=fields[k]; } });
+  sets.push('updated_at=?'); vals.push(new Date().toISOString()); vals.push(Number(app.id));
+  await env.DB.prepare('UPDATE edu_admission_applications SET '+sets.join(',')+' WHERE id=?').bind(...vals).run();
+  if(eventType) await eduAdmissionEvent(env,app,eventType,fields);
+  return app;
+}
+async function eduAdmissionActive(env,clientId,phone){
+  return await env.DB.prepare("SELECT * FROM edu_admission_applications WHERE client_id=? AND phone=? AND status IN ('in_progress','awaiting_review','payment_pending') ORDER BY updated_at DESC LIMIT 1")
+    .bind(Number(clientId),eduNormalizePhone(phone)).first();
+}
+async function eduAdmissionCreate(env,clientId,phone,leadId,convId){
+  const now=new Date().toISOString(),applicationId=eduAdmissionId();
+  const r=await env.DB.prepare("INSERT INTO edu_admission_applications (client_id,application_id,lead_id,conversation_id,phone,current_step,status,created_at,updated_at) VALUES (?,?,?,?,?,'welcome','in_progress',?,?)")
+    .bind(Number(clientId),applicationId,String(leadId||''),String(convId||''),eduNormalizePhone(phone),now,now).run();
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE id=?').bind(r.meta.last_row_id).first();
+  await eduAdmissionEvent(env,app,'application_started',{channel:'chat'});
+  return app;
+}
+async function eduAdmissionSend(env,c,clientId,convId,text,options){
+  if(options&&options.length) return await engineSendChatwootQuickReply(env,c,clientId,convId,text,options);
+  return await engineSendChatwootReply(env,c,clientId,convId,text);
+}
+async function eduAdmissionCourses(env,clientId){
+  const r=await env.DB.prepare("SELECT * FROM edu_courses WHERE client_id=? AND status='active' AND (admission_open IS NULL OR admission_open=1) ORDER BY name LIMIT 30").bind(Number(clientId)).all();
+  return r.results||[];
+}
+async function eduAdmissionPrompt(env,c,clientId,convId,app,extra){
+  const courses=await eduAdmissionCourses(env,clientId);
+  let text='',options=[];
+  switch(app.current_step){
+    case 'welcome':
+      text='🎓 *Admission Application*\n\n• I will guide you step by step.\n• You can ask a question at any time.\n• Your progress is saved automatically.';
+      options=eduAdmissionOptions([['📚 Choose Course','Choose Course'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]); break;
+    case 'course':
+      text='📚 *Step 1 of 8 · Choose a Course*\n\n• Select one verified course to continue.';
+      options=eduAdmissionOptions(courses.slice(0,8).map(function(x){return ['📘 '+String(x.short_label||x.name).slice(0,20),x.name];}));
+      if(!options.length) options=eduAdmissionOptions([['👤 Talk to Advisor','Talk to Advisor']]);
+      break;
+    case 'full_name':
+      text='👤 *Step 2 of 8 · Personal Details*\n\n• Please enter your full name.';
+      options=eduAdmissionOptions([['🔄 Change Course','Change Course'],['❓ Ask a Question','Ask another question']]); break;
+    case 'email':
+      text='📧 *Step 2 of 8 · Personal Details*\n\n• Please enter your email address.';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification':
+      text='🎓 *Step 3 of 8 · Education*\n\n• What is your highest qualification?';
+      options=eduAdmissionOptions([['10th','10th'],['12th','12th'],['🎓 Diploma','Diploma'],['🎓 Graduate','Graduate'],['🎓 Postgraduate','Postgraduate']]); break;
+    case 'completion_year':
+      text='📅 *Step 3 of 8 · Education*\n\n• What year did you complete it?';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'study_mode':
+      text='🖥️ *Step 4 of 8 · Study Mode*\n\n• Choose your preferred learning mode.';
+      options=eduAdmissionOptions([['🏫 Classroom','Classroom'],['💻 Online','Online'],['🔄 Hybrid','Hybrid']]); break;
+    case 'scholarship':
+      text='🎁 *Step 5 of 8 · Scholarship*\n\n• Would you like us to check available offers?';
+      options=eduAdmissionOptions([['🎁 Check Offers','Check Offers'],['⏭️ Skip','Skip'],['❓ Ask a Question','Ask another question']]); break;
+    case 'id_proof':
+      text='🪪 *Step 6 of 8 · Documents*\n\n• Upload your ID proof here.\n• Send one clear image or PDF.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification_document':
+      text='📄 *Step 6 of 8 · Documents*\n\n• Upload your qualification certificate.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'photo':
+      text='🖼️ *Step 6 of 8 · Documents*\n\n• Upload your passport-size photograph.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'payment_option':
+      text='💳 *Step 7 of 8 · Payment Preference*\n\n• Choose how you prefer to pay.\n• Never send card or bank details in chat.';
+      options=eduAdmissionOptions([['💰 Full Fee','Full Fee'],['📅 Installments','Installments'],['👤 Discuss with Advisor','Discuss with Advisor']]); break;
+    case 'confirm': {
+      const course=courses.find(function(x){return Number(x.id)===Number(app.course_id);});
+      text='✅ *Step 8 of 8 · Confirm Application*\n\n• 👤 '+(app.full_name||'—')+'\n• 📘 '+(course?.name||'—')+'\n• 🎓 '+(app.qualification||'—')+'\n• 🖥️ '+(app.study_mode||'—')+'\n• 💳 '+(app.payment_option||'—');
+      options=eduAdmissionOptions([['✅ Submit Application','Submit Application'],['✏️ Edit Details','Edit Details'],['❓ Ask a Question','Ask another question']]); break;
+    }
+    if(extra) text=extra+'\n\n'+text;
+    await eduAdmissionSend(env,c,clientId,convId,text,options);
+    return {handled:true,step:app.current_step};
+  }
+}
+async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
+  const now=new Date().toISOString();
+  await env.DB.prepare("INSERT INTO edu_admission_documents (client_id,application_id,document_type,file_url,media_type,verification_status,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?) ON CONFLICT(application_id,document_type) DO UPDATE SET file_url=excluded.file_url,media_type=excluded.media_type,verification_status='pending',updated_at=excluded.updated_at")
+    .bind(Number(app.client_id),Number(app.id),type,String(url||''),String(mediaType||''),now,now).run();
+  await eduAdmissionEvent(env,app,'document_received',{document_type:type});
+}
+async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl,history){
+  if(c.industry!=='education') return null;
+  const clean=String(userText||'').trim();
+  let app=await eduAdmissionActive(env,clientId,phone);
+  let wantsStart=eduAdmissionWantsStart(clean);
+  let preselectedCourse=null;
+  if(!app){
+    const courses=await eduAdmissionCourses(env,clientId);
+    preselectedCourse=eduEnrollmentCourseFromChat(courses,clean,history);
+    if(preselectedCourse) wantsStart=true;
+  }
+  if(!app&&!wantsStart) return null;
+  if(!app) app=await eduAdmissionCreate(env,clientId,phone,leadId,convId);
+  if(String(app.lead_id||'')!==String(leadId||'')||String(app.conversation_id||'')!==String(convId||'')) await eduAdmissionPatch(env,app,{lead_id:String(leadId||''),conversation_id:String(convId||'')},null);
+
+  if(preselectedCourse&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{course_id:Number(preselectedCourse.id),current_step:'full_name'},'course_selected');
+    const durationNote=preselectedCourse.duration?'':'⏱ Duration is not confirmed yet.\n• It does not block enrollment.\n\n';
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+preselectedCourse.name+' selected.\n\n'+durationNote+'▶️ Let’s continue your enrollment.');
+  }
+
+  if(EDU_ADMISSION_CANCEL_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{status:'cancelled',current_step:'cancelled'},'application_cancelled');
+    await eduAdmissionSend(env,c,clientId,convId,'❌ *Application cancelled*\n\n• Your saved application has been closed.\n• You can start a new application anytime.',eduAdmissionOptions([['🎓 Start Application','Start Application'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'cancelled'};
+  }
+  if(eduAdmissionWantsAdvisor(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'advisor_requested');
+    return null;
+  }
+  if(EDU_ADMISSION_CHANGE_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{course_id:null,current_step:'course',paused_step:''},'course_change_requested');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^(?:❓\s*)?ask another question$/i.test(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'question_mode_started');
+    await eduAdmissionSend(env,c,clientId,convId,'❓ *Ask your question*\n\n• Your application progress is safely saved.\n• I will return you to the same step.',eduAdmissionOptions([['▶️ Continue Application','Continue Application'],['🔄 Change Course','Change Course']]));
+    return {handled:true,step:app.current_step};
+  }
+  if(EDU_ADMISSION_CONTINUE_RE.test(clean)){
+    if(app.paused_step) await eduAdmissionPatch(env,app,{current_step:app.paused_step,paused_step:''},'application_resumed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'▶️ Your application has resumed.');
+  }
+  if(app.paused_step&&EDU_ADMISSION_QUESTION_RE.test(clean)) return null;
+  if(EDU_ADMISSION_QUESTION_RE.test(clean)&&!wantsStart){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'application_paused_for_question');
+    return null;
+  }
+  if(wantsStart&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{current_step:'course'},'step_completed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^back$/i.test(clean)){
+    const back={email:'full_name',completion_year:'qualification',confirm:'payment_option'}[app.current_step];
+    if(back) await eduAdmissionPatch(env,app,{current_step:back},'step_back');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+
+  if(app.current_step==='welcome') return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  if(app.current_step==='course'){
+    const courses=await eduAdmissionCourses(env,clientId);
+    const wanted=clean.toLowerCase().replace(/^📘\s*/,'');
+    const course=courses.find(function(x){return [x.name,x.short_label].filter(Boolean).some(function(v){return String(v).toLowerCase()===wanted;});});
+    if(!course) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please select one of the verified courses.');
+    await eduAdmissionPatch(env,app,{course_id:Number(course.id),current_step:'full_name'},'course_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+course.name+' selected.');
+  }
+  if(app.current_step==='full_name'){
+    if(clean.length<2||clean.length>100) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid full name.');
+    await eduAdmissionPatch(env,app,{full_name:clean,current_step:'email'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='email'){
+    if(!eduEmailValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid email address.');
+    await eduAdmissionPatch(env,app,{email:clean.toLowerCase(),current_step:'qualification'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='qualification'){
+    await eduAdmissionPatch(env,app,{qualification:clean.slice(0,80),current_step:'completion_year'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='completion_year'){
+    if(!eduYearValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid four-digit year.');
+    await eduAdmissionPatch(env,app,{completion_year:String(clean.match(/\d{4}/)[0]),current_step:'study_mode',eligibility_status:'review_required'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ Details saved. Eligibility will be verified by admissions.');
+  }
+  if(app.current_step==='study_mode'){
+    const mode=/online/i.test(clean)?'Online':/class/i.test(clean)?'Classroom':/hybrid/i.test(clean)?'Hybrid':'';
+    if(!mode) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one study mode.');
+    await eduAdmissionPatch(env,app,{study_mode:mode,current_step:'scholarship'},'study_mode_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='scholarship'){
+    let code='';
+    if(!/^skip$/i.test(clean)){
+      const p=await env.DB.prepare("SELECT code FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 1").bind(Number(clientId)).first();
+      code=p?.code||'review_requested';
+    }
+    await eduAdmissionPatch(env,app,{scholarship_code:code,current_step:'id_proof'},'scholarship_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  const docSteps={id_proof:['id_proof','qualification_document'],qualification_document:['qualification_certificate','photo'],photo:['passport_photo','payment_option']};
+  if(docSteps[app.current_step]){
+    const spec=docSteps[app.current_step];
+    if(mediaUrl) await eduAdmissionSaveDocument(env,app,spec[0],mediaUrl,mediaType);
+    else if(!/^upload later$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please upload a file or choose Upload Later.');
+    await eduAdmissionPatch(env,app,{current_step:spec[1]},mediaUrl?'document_step_completed':'document_deferred');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,mediaUrl?'✅ Document received securely.':'⏭️ Document marked for later upload.');
+  }
+  if(app.current_step==='payment_option'){
+    const option=/install/i.test(clean)?'Installments':/full/i.test(clean)?'Full Fee':/advisor|discuss/i.test(clean)?'Discuss with Advisor':'';
+    if(!option) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one payment preference.');
+    await eduAdmissionPatch(env,app,{payment_option:option,current_step:'confirm',status:'payment_pending'},'payment_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='confirm'){
+    if(/^edit details$/i.test(clean)){
+      await eduAdmissionPatch(env,app,{current_step:'full_name',status:'in_progress'},'edit_requested');
+      return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    }
+    if(!/^submit application$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    const now=new Date().toISOString();
+    let student=await env.DB.prepare('SELECT * FROM edu_students WHERE client_id=? AND phone=?').bind(Number(clientId),eduNormalizePhone(phone)).first();
+    if(!student){
+      const sr=await env.DB.prepare('INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),app.full_name,eduNormalizePhone(phone),app.email,'Created from chat admission',now).run();
+      student={id:sr.meta.last_row_id};
+    }else{
+      await env.DB.prepare('UPDATE edu_students SET name=?,email=? WHERE id=?').bind(app.full_name,app.email,student.id).run();
+    }
+    await eduAdmissionPatch(env,app,{student_id:Number(student.id),current_step:'submitted',status:'awaiting_review',submitted_at:now},'application_submitted');
+    await eduAdmissionSend(env,c,clientId,convId,'🎉 *Application submitted!*\n\n• 🆔 '+app.application_id+'\n• ✅ Your details are saved.\n• 🎓 Admissions will verify eligibility and documents.\n• 💳 Use only the secure payment link shared by the team.',eduAdmissionOptions([['📋 Application Status','Application Status'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'submitted'};
+  }
+  return null;
+}
+
+async function handleEduAdmissionApplicationsList(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const r=await env.DB.prepare('SELECT a.*,c.name AS course_name,(SELECT COUNT(*) FROM edu_admission_documents d WHERE d.application_id=a.id) AS document_count FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? ORDER BY a.updated_at DESC LIMIT 500').bind(Number(clientId)).all();
+  return json({list:r.results||[]});
+}
+async function handleEduAdmissionApplicationDetail(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||''),id=Number(url.searchParams.get('id'));
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const application=await env.DB.prepare('SELECT a.*,c.name AS course_name FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? AND a.id=?').bind(Number(clientId),id).first();
+  if(!application) return json({error:'Not found'},404);
+  const [docs,events]=await Promise.all([
+    env.DB.prepare('SELECT * FROM edu_admission_documents WHERE client_id=? AND application_id=? ORDER BY created_at').bind(Number(clientId),id).all(),
+    env.DB.prepare('SELECT * FROM edu_admission_events WHERE client_id=? AND application_id=? ORDER BY created_at DESC LIMIT 100').bind(Number(clientId),id).all()
+  ]);
+  return json({application:application,documents:docs.results||[],events:events.results||[]});
+}
+async function handleEduAdmissionApplicationUpdate(request,env){
+  const body=await request.json().catch(function(){return {};});
+  const clientId=String(body.client_id||''),id=Number(body.id);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE client_id=? AND id=?').bind(Number(clientId),id).first();
+  if(!app) return json({error:'Not found'},404);
+  const patch={};
+  ['status','eligibility_status','payment_status','payment_reference'].forEach(function(k){if(Object.prototype.hasOwnProperty.call(body,k))patch[k]=String(body[k]||'');});
+  await eduAdmissionPatch(env,app,patch,'admin_updated');
+  if(body.document_id&&body.verification_status){
+    await env.DB.prepare('UPDATE edu_admission_documents SET verification_status=?,updated_at=? WHERE id=? AND client_id=? AND application_id=?').bind(String(body.verification_status),new Date().toISOString(),Number(body.document_id),Number(clientId),id).run();
+  }
+  return json({ok:true});
+}
+
 
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
 async function handleEduCategoriesList(request, env){
@@ -7405,15 +7795,154 @@ async function eduClaimCourseBrochureForToday(env, clientId, leadId, courseId){
   }catch(e){ await reportOpsError(env, 'eduClaimCourseBrochureForToday', e, {clientId, leadId, courseId}); return true; }
 }
 
-async function eduMaybeSendCourseMedia(env, c, clientId, convId, course){
+async function eduMaybeSendCourseMedia(env, c, clientId, convId, course, pdfOnly=false){
   if(!course || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
+    if(pdfOnly){
+      if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
+      return;
+    }
+    // Primary image first (image_url), then secondary images, then audio/video, then PDF
+    if(course.image_url) await sendDriveMediaToChatwoot(c, convId, course.image_url, '');
     if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
     if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
     if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
     if(course.video_url) await sendDriveMediaToChatwoot(c, convId, course.video_url, '');
-    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '');
+    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
   }catch(e){ await reportOpsError(env, 'eduMaybeSendCourseMedia', e, {clientId, convId}); }
+}
+
+function eduMediaNormalize(value){
+  return String(value||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+// Resolve a course only when the current/recent chat names exactly one verified active course.
+// This lets a tap on "Get Brochure" reuse the one course named in the immediately preceding bot
+// reply, while refusing to guess when that reply listed several courses.
+export function eduResolveCourseForMedia(courses, texts){
+  const haystacks=(texts||[]).map(eduMediaNormalize).filter(Boolean);
+  if(!haystacks.length) return null;
+  const matches=(courses||[]).filter(course=>{
+    const names=[course.name,course.short_label].map(eduMediaNormalize).filter(name=>name.length>=3);
+    return names.some(name=>haystacks.some(text=>text===name||text.includes(` ${name} `)||text.startsWith(`${name} `)||text.endsWith(` ${name}`)));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+export function eduVerifiedChoicesFromReply(courses,categories,replyText){
+  const text=eduMediaNormalize(replyText);
+  if(!text) return [];
+  const mentioned=(rows,labelKey)=>{
+    const seen=new Set();
+    return (rows||[]).filter(row=>{
+      const label=String(typeof row==='string'?row:row?.[labelKey]||'').trim();
+      const normalized=eduMediaNormalize(label);
+      if(normalized.length<3||seen.has(normalized)) return false;
+      const found=text===normalized||text.includes(` ${normalized} `)||text.startsWith(`${normalized} `)||text.endsWith(` ${normalized}`);
+      if(found) seen.add(normalized);
+      return found;
+    }).map(row=>String(typeof row==='string'?row:row?.[labelKey]||'').trim());
+  };
+  const courseNames=mentioned(courses,'name');
+  if(courseNames.length>=2) return courseNames.slice(0,10).map(name=>({title:name,value:name}));
+  const categoryNames=mentioned(categories,'name');
+  if(categoryNames.length>=2) return categoryNames.slice(0,10).map(name=>({title:name,value:name}));
+  return [];
+}
+
+async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,history,replyText){
+  if(c.industry!=='education'||!convId||!userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  const wantsPdf=/\b(brochure|syllabus|prospectus|course\s*pdf|pdf|download)\b/i.test(userText);
+  try{
+    // Include image_url (primary) in addition to secondary images
+    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
+    if(!courses?.length) return;
+    // 1. Try explicit course name in student's current message
+    let course=eduResolveCourseForMedia(courses,[userText]);
+    // 2. Always fall back to the last assistant reply and bot reply text when no match in userText
+    //    (covers "Tell me more", button taps, "enroll", etc. where the course name is in the bot's reply)
+    if(!course){
+      const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+      course=eduResolveCourseForMedia(courses,[lastAssistant?.content,replyText]);
+    }
+    if(!course||(!course.image_url&&!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
+    if(!await eduClaimCourseBrochureForToday(env,clientId,resolvedLeadId,course.id)) return;
+    await eduMaybeSendCourseMedia(env,c,clientId,convId,course,wantsPdf);
+  }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
+}
+
+/* ── Education enrollment collection flow ─────────────────────────────────────────────────────
+   Deterministic name → phone collection, then INSERT into edu_enrollments.
+   Intercepts BEFORE the FAQ LLM so the bot never hallucinates "recorded" without actually saving.
+   State is stored as EduEnrollState (JSON) on the lead row in NocoDB.
+   ─────────────────────────────────────────────────────────────────────────────────────────── */
+const EDU_ENROLL_INTENT_RE=/\b(enroll|admission|apply|register|i want to join|want enroll|need enroll|enroll me|i want to enroll|how to enroll|how to apply|start enrollment|begin enrollment|take admission)\b/i;
+
+async function engineMaybeEduEnrollFlow(env, c, clientId, convId, leadId, userText, state, routing){
+  if(c.industry!=='education'||!leadId||!userText) return false;
+  const enrollState=engineParseJsonField(state.lead?.EduEnrollState, null);
+
+  // STEP: awaiting_name — previous turn asked for full name
+  if(enrollState?.step==='awaiting_name'){
+    const studentName=userText.trim();
+    const next={...enrollState, step:'awaiting_phone', student_name:studentName};
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(next)}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`Thanks, ${studentName}! 😊\n\nCould you please share your *Mobile Number* so we can complete your enrollment for *${courseName}*?`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // STEP: awaiting_phone — previous turn asked for phone, now save to D1
+  if(enrollState?.step==='awaiting_phone'){
+    const phone=userText.replace(/[^\d+]/g,'').trim()||userText.trim();
+    const now=new Date().toISOString();
+    const enrollmentId='ENR-'+Date.now();
+    try{
+      await env.DB.prepare(
+        `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(Number(clientId),enrollmentId,now.slice(0,10),String(enrollState.student_name||''),phone,'',String(enrollState.course_name||''),'pending','via WhatsApp',now,now).run();
+    }catch(e){ await reportOpsError(env,'eduEnrollFlowInsert',e,{clientId,convId}); }
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:null}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`✅ Your enrollment request for *${courseName}* has been recorded!\n\n• 📚 Course: ${courseName}\n• 👤 Name: ${enrollState.student_name}\n• 📱 Mobile: ${phone}\n• 🆔 Reference: ${enrollmentId}\n\nOur admissions team will contact you shortly to confirm. 🎓\n\n*Reply with:* [Ask a Question] [View Other Courses] [Talk to Advisor]`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // DETECT ENROLLMENT INTENT — start the collection flow
+  if(!EDU_ENROLL_INTENT_RE.test(userText)) return false;
+  let courseName='';
+  try{
+    const {results:courses}=await env.DB.prepare(`SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    let found=courses.find(cr=>cr.name&&lower.includes(cr.name.toLowerCase()));
+    if(!found){
+      // Search recent conversation history for a course name the bot mentioned
+      const history=(state.activeHistory||[]).slice(-8).reverse();
+      for(const msg of history){
+        if(!msg.content) continue;
+        const msgLower=msg.content.toLowerCase();
+        found=courses.find(cr=>cr.name&&msgLower.includes(cr.name.toLowerCase()));
+        if(found) break;
+      }
+    }
+    if(!found&&courses.length===1) found=courses[0];
+    if(found) courseName=found.name;
+  }catch(e){}
+  const newState={step:'awaiting_name',course_name:courseName};
+  await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+  await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(newState)}}).catch(()=>{});
+  const courseLabel=courseName?`the *${courseName}*`:`a course`;
+  const reply=`Great! To enroll in ${courseLabel}, I need a few details. 📋\n\nCould you please share your *Full Name*?`;
+  await engineSendChatwootReply(env,c,clientId,convId,reply);
+  routing.reply=reply;
+  return true;
 }
 
 /* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
@@ -8488,15 +9017,6 @@ const HC_OPERATIONS_SCHEMA=[
     failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS healthcare_booking_sessions (
-    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
-    conversation_id INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '',
-    service_id INTEGER NOT NULL DEFAULT 0, doctor_id INTEGER NOT NULL DEFAULT 0,
-    appointment_date TEXT NOT NULL DEFAULT '', start_time TEXT NOT NULL DEFAULT '',
-    end_time TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
-    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    PRIMARY KEY (client_id, patient_phone)
-  )`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
@@ -8513,8 +9033,6 @@ const HC_OPERATIONS_SCHEMA=[
     ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
     ON healthcare_queue_failures(client_id, created_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
-    ON healthcare_booking_sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS healthcare_doctor_services (
     id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
     doctor_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
@@ -8524,7 +9042,13 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_doctor
     ON healthcare_doctor_services(client_id, doctor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_service
-    ON healthcare_doctor_services(client_id, service_id)`
+    ON healthcare_doctor_services(client_id, service_id)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_simple_sessions (
+    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '', appt_date TEXT NOT NULL DEFAULT '',
+    appt_time TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, patient_phone)
+  )`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -8542,12 +9066,21 @@ async function hcListActiveServices(env, clientId){
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
   return results||[];
 }
+function hcDedupeServices(services){
+  const seen=new Set(), out=[];
+  for(const s of services||[]){
+    const key=String(s.name||'').trim().toLowerCase();
+    if(!key||seen.has(key)) continue;
+    seen.add(key); out.push(s);
+  }
+  return out;
+}
 export function hcServiceChoiceItems(services){
   const seen=new Set(), items=[];
   for(const s of services||[]){
     const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
     if(!name||seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase()); items.push({title:label,value:name});
+    seen.add(name.toLowerCase()); items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
   }
   return items.slice(0,10);
 }
@@ -8601,10 +9134,7 @@ async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
 export function hcVerifiedServiceText(service,question){
   const lines=[`*${service.name}*`];
   if(service.description)lines.push(service.description);
-  if(/price|cost|fee|how much/i.test(question||'')){
-    if(Number(service.price)>0) lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
-    else lines.push('Price: Available on consultation — contact the clinic for exact pricing.');
-  }
+  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
   if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
   if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
   // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
@@ -8657,10 +9187,10 @@ async function engineBuildHealthcareContext(env,clientId){
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
   return lines.join('\n');
 }
-async function engineBuildEduContext(env, clientId){
+async function engineBuildEduContext(env, clientId, phone){
   const [courses, categories, promos]=await Promise.all([
     env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
-    env.DB.prepare(`SELECT name,description FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
     env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
   ]);
   const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
@@ -8669,7 +9199,7 @@ async function engineBuildEduContext(env, clientId){
   ];
   if(categories.length){
     lines.push('### Course Categories');
-    categories.forEach(cat=>lines.push(`- ${cat.name}${cat.description?' | '+cat.description:''}`));
+    categories.forEach(cat=>lines.push(`- ${cat.name}`));
   }
   if(courses.length){
     lines.push('### Active Courses');
@@ -8683,7 +9213,7 @@ async function engineBuildEduContext(env, clientId){
       p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
       if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
       if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
-      if(cr.pdf_url) p.push(`brochure: ${cr.pdf_url}`);
+      if(cr.pdf_url) p.push('brochure: available — attach it directly in chat; never print or expose its Drive URL');
       if(cr.description) p.push(cr.description.slice(0,200));
       lines.push(p.join(' | '));
     });
@@ -8698,6 +9228,15 @@ async function engineBuildEduContext(env, clientId){
       if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
       lines.push(p.join(' | '));
     });
+  }
+  if(phone){
+    const app=await eduAdmissionActive(env,clientId,phone).catch(function(){return null;});
+    if(app){
+      lines.push('### ACTIVE CHAT ADMISSION — STRICT MEMORY');
+      lines.push('- application id: '+app.application_id+' | current step: '+app.current_step+' | paused step: '+(app.paused_step||'none')+' | status: '+app.status);
+      lines.push('- saved name: '+(app.full_name||'not collected')+' | qualification: '+(app.qualification||'not collected')+' | mode: '+(app.study_mode||'not selected'));
+      lines.push('- Never restart or repeat completed questions. Answer the current question first, then offer exactly: OPTIONS: Continue Application | Ask Another Question | Change Course');
+    }
   }
   return lines.join('\n');
 }
@@ -10392,6 +10931,53 @@ async function engineBuildTravelContext(env, c, clientId){
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
+// Builds verified resort property + room data for injection into the LLM system prompt so
+// follow-up questions are answered from real D1 records — no hallucinated prices or names.
+async function engineBuildResortContext(env, clientId){
+  const lines=['\n\n## VERIFIED RESORT DATA (use ONLY these facts for prices, names, descriptions, amenities — never invent or infer anything not listed here)'];
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const propList=properties||[];
+  const unitList=units||[];
+  for(const prop of propList){
+    lines.push(`\n### ${prop.name}`);
+    if(prop.description && String(prop.description).trim()) lines.push(`Description: ${String(prop.description).trim()}`);
+    if(prop.amenities && String(prop.amenities).trim()) lines.push(`Amenities: ${String(prop.amenities).trim()}`);
+    const rooms=unitList.filter(u=>String(u.property_id)===String(prop.id));
+    if(rooms.length){
+      lines.push('Rooms:');
+      for(const r of rooms){
+        let roomLine=`  - **${r.name}**`;
+        if(r.unit_type) roomLine+=` (${r.unit_type})`;
+        roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+        if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+        if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+        if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+        if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+        lines.push(roomLine);
+      }
+    }
+  }
+  const unassigned=unitList.filter(u=>!u.property_id);
+  if(unassigned.length){
+    lines.push('\n### Rooms (no property assigned)');
+    for(const r of unassigned){
+      let roomLine=`  - **${r.name}**`;
+      if(r.unit_type) roomLine+=` (${r.unit_type})`;
+      roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+      if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+      if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+      if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+      if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+      lines.push(roomLine);
+    }
+  }
+  if(propList.length===0 && unassigned.length===0) return '';
+  return lines.join('\n');
+}
+
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
@@ -10402,11 +10988,17 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   const services=engineParseJsonField(c.services, []);
   const defaultCurrency=industry==='ecommerce'?'INR':'AED';
   const defaultUnit=industry==='ecommerce'?'item':'person';
-  if(services.length){
+  // Resort: suppress c.services — all property/room/rate facts come exclusively from VERIFIED RESORT
+  // DATA injected via contextBlock; a services list here would add a second, potentially stale source.
+  const isResort=c.hospitality_enabled==='Yes' && c.hospitality_style==='resort';
+  if(services.length && !isResort){
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
   if(contextBlock) sys+=contextBlock;
+  if(isResort){
+    sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
+  }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
@@ -10431,6 +11023,8 @@ DATA ACCURACY:
 • Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
 • Never invent or infer any detail not explicitly in your data.
 • If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+• Missing duration, fee, date, or another optional fact never blocks enrollment.
+• Mention an unavailable fact once, then continue to the next enrollment action.
 
 FORMAT — every single reply must follow this structure:
 • Write in short bullet points (•) only — NO long paragraphs, ever.
@@ -10443,13 +11037,13 @@ FORMAT — every single reply must follow this structure:
 BUTTONS — mandatory after EVERY reply:
 • Always end with a row of tappable choice buttons — never skip this.
 • Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
-  — After greeting / general query:       [Browse Courses] [Talk to Advisor] [About Us]
-  — After listing courses:                [Enroll Now] [Get Brochure] [Schedule a Call]
-  — After sharing one course detail:      [Enroll Now] [Download Syllabus] [Ask a Question]
-  — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
-  — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
-  — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
-• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
+  — After greeting / general query: Browse Courses · Talk to Advisor · About Us
+  — After listing courses: Enroll Now · Get Brochure · Schedule a Call
+  — After sharing one course detail: Enroll Now · Download Syllabus · Ask a Question
+  — After fee / scholarship question: Check Eligibility · Apply for Scholarship · Enroll Now
+  — After enrollment / application topic: Start Application · Book Consultation · Call Us
+  — After answering any question: Learn More · Enroll Now · Talk to Advisor
+• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Never print "Reply with", square-bracket choices, or button instructions to the customer.\n• When offering choices, append only the internal OPTIONS: marker described below; the system removes it and creates real WhatsApp buttons or a list.\n• When listing 2–10 courses or categories, use those exact verified names as OPTIONS instead of generic navigation choices.\n• Never expose a Google Drive brochure URL in reply text; the system sends the PDF as a direct document attachment.`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
       higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
@@ -10457,13 +11051,13 @@ BUTTONS — mandatory after EVERY reply:
 • Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
 • Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
 • Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
-• Preferred button set: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]`,
+• Preferred choices: View Programme · Check Eligibility · Book Consultation · Download Prospectus`,
       courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
 • Tone: encouraging, energetic, results-driven — like a personal learning coach.
 • Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
 • Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
 • Never invent module counts, platform features, completion guarantees or discount amounts.
-• Preferred button set: [Enroll Now] [Watch Free Preview] [Get Syllabus] [Chat with Advisor]`
+• Preferred choices: Enroll Now · Watch Free Preview · Get Syllabus · Chat with Advisor`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
@@ -11054,13 +11648,20 @@ export async function engineSendChatwootReply(env, c, clientId, convId, text){
 // render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
 export function engineExtractReplyOptions(replyText){
   const text=(typeof replyText==='string'?replyText:'');
-  const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  const optionsMatch=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  // Backward compatibility for old Education prompts that told the model to print
+  // "Reply with: [A] [B]". Strip that internal syntax and turn it into real interactive choices
+  // instead of ever showing square brackets to a customer.
+  const bracketMatch=!optionsMatch?text.match(/\n?\*?Reply\s+with:\*?\s*((?:\[[^\]\r\n]+\]\s*){2,10})$/i):null;
+  const match=optionsMatch||bracketMatch;
   if(!match) return {text, options:null};
-  const stripped=text.slice(0, match.index).trimEnd();
+  const stripped=text.slice(0,match.index).trimEnd();
   // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
   // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
   // a first-touch reply naming several catalog categories) isn't silently truncated back down.
-  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
+  const options=optionsMatch
+    ?match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10)
+    :[...match[1].matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
 // Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
@@ -11128,7 +11729,7 @@ export function engineTruncateButtonTitle(title, cap){
   // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
   // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
-  return cut.trimEnd()+'…';
+  return cut.trimEnd();
 }
 // Returns the items actually presented to the customer as tappable buttons — {title, value},
 // title truncated/deduped exactly as sent — or null on every path that fell back to plain text
@@ -12593,6 +13194,11 @@ async function handleEngineWebhook(request, env, secret){
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
+    if(eduAdmissionTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
+    }
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
     // A generic ad CTA/business-information request must be answered from the client's prompt,
@@ -12745,66 +13351,164 @@ async function handleEngineWebhook(request, env, secret){
         await engineSendHandoverLabel(c,convId);
         orderHandledInline=true;
       }else{
-        const bookingFlow=await hcHandleWhatsappBooking(env,c,clientId,convId,phone,state.leadId,userText,replyLang);
+        const bookingFlow=await hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang);
         if(bookingFlow.handled){
           sentText=bookingFlow.text; routing.reply=sentText; routing.quickReplies=bookingFlow.quickReplies||null;
           orderHandledInline=true;
         }
         if(!orderHandledInline){
+        // ── GREETING ──────────────────────────────────────────────────────────────
+        // For healthcare, greeting shows departments (navigation) when available,
+        // otherwise shows the standard service/booking quick-reply buttons.
+        if(/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+          const clinicName=c.client_name||'our clinic';
+          const prevApt=await env.DB.prepare(`SELECT id FROM healthcare_appointments WHERE client_id=? AND patient_phone=? LIMIT 1`).bind(Number(clientId),String(phone)).first().catch(()=>null);
+          const isReturning=!!prevApt;
+          const greetMsg=isReturning?`Welcome back to ${clinicName}! Which department can we help you with today?`:`Welcome to ${clinicName}! Which department can we help you with today?`;
+          sentText=await engineLocalizeReply(env,c,greetMsg,replyLang);
+          routing.reply=sentText;
+          // Show departments as nav buttons, fallback to standard booking buttons
+          const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
+          let greetBtns;
+          if(depts&&depts.length){
+            greetBtns=[...depts.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+          }else{
+            greetBtns=isReturning
+              ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
+              :[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}];
+          }
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,greetBtns);
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
+        // ── "SEE ALL SERVICES" button tap ─────────────────────────────────────────
+        if(/^see\s+(?:all\s+)?services?$/i.test(userText.trim())||/^all\s+services?$/i.test(userText.trim())){
+          const allSvcs=await hcListActiveServices(env,clientId);
+          if(allSvcs.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(allSvcs));
+          }else{
+            sentText=await engineLocalizeReply(env,c,'No services are listed yet — please contact us directly.',replyLang);
+            routing.reply=sentText;
+            await engineSendChatwootReply(env,c,clientId,convId,sentText);
+          }
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── SERVICE MATCH ─────────────────────────────────────────────────────────
         let matches=await hcFindBroadServiceMatches(env,clientId,userText);
-        if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
-        if(matches.length>1){
-          sentText=await engineLocalizeReply(env,c,isNewLead?`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`:'Please choose the exact service you need:',replyLang);
+        if(matches.length===1){
+          const service=matches[0];
+          const sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          // Build service profile; include doctors offering this service for guidance
+          let svcText=hcVerifiedServiceText(service,userText);
+          const {results:svcDocs}=await env.DB.prepare(`SELECT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+          if(svcDocs&&svcDocs.length){
+            const docNames=svcDocs.map(d=>d.name+(d.specialization?' ('+d.specialization+')':'')).join(', ');
+            svcText+=`\n\nAvailable with: ${docNames}`;
+          }
+          sentText=await engineLocalizeReply(env,c,svcText,replyLang);
+          routing.reply=sentText;
+          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
+          // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
+          const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
+          const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
+          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
+          else routing.quickReplies=bookingChoices.length?delivered:null;
+          orderHandledInline=true;
+        }else if(matches.length>1){
+          // Multiple services matched → let patient pick
+          sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
           routing.reply=sentText;
           routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
           orderHandledInline=true;
-        }else if(matches.length===1){
-          const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
-          sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
+        }
+        }
+        if(!orderHandledInline){
+        // ── DOCTOR MATCH ──────────────────────────────────────────────────────────
+        const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+        if(doctorMatches.length>1){
+          sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
           routing.reply=sentText;
-          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
-          const {results:serviceDoctors}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 9`).bind(Number(clientId),Number(service.department_id||0)).all();
-          const doctorChoices=(serviceDoctors||[]).map(d=>({title:d.name,value:d.name}));
-          const bookingChoices=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${service.id}`},...doctorChoices];
-          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
-          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
-          // If the primary image path was used, send the exact doctor choices as a separate picker
-          // because engineDeliverReply deliberately prioritizes an image over quick replies.
-          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Book or choose a doctor:',bookingChoices);
-          else routing.quickReplies=bookingChoices.length?delivered:null;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
           orderHandledInline=true;
-        }else{
-          const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
-          if(doctorMatches.length>1){
-            sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+        }else if(doctorMatches.length===1){
+          const doctor=doctorMatches[0];
+          // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
+          // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
+          const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
+          const nameToks=new Set(hcQueryTokens(doctor.name));
+          const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
+          if(!isNameSelection){
+            // General query ("dental doctor available") → check department first, else show all doctors
+            const deptMatch=doctor.department_id
+              ?await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE id=? AND client_id=?`).bind(Number(doctor.department_id),Number(clientId)).first().catch(()=>null)
+              :null;
+            const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active'${deptMatch?' AND department_id=?':''} ORDER BY name LIMIT 20`).bind(...[Number(clientId),...(deptMatch?[Number(deptMatch.id)]:[])]).all().catch(()=>({results:[]}));
+            const showList=(allDocs&&allDocs.length>1)?allDocs:[doctor];
+            const prompt=deptMatch?`Here are our ${deptMatch.name} doctors:`:'Please choose the doctor you are interested in:';
+            sentText=await engineLocalizeReply(env,c,prompt,replyLang);
             routing.reply=sentText;
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
-            orderHandledInline=true;
-          }else if(doctorMatches.length===1){
-            const doctor=doctorMatches[0];
-            sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
-            routing.reply=sentText;
-            if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-            // Send image first (no caption), then doctor bio + "📅 Book Appointment" button together
-            // so the action button is visually attached to the bio text, not buried after extra media.
-            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
-            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
             orderHandledInline=true;
           }else{
-            const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
-            if(departmentMatches.length){
-              const ids=departmentMatches.map(d=>Number(d.id));
-              const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
-              if(departmentServices.length){
-                sentText=await engineLocalizeReply(env,c,'Please choose the exact service you need:',replyLang);
-                routing.reply=sentText;
-                routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
-                orderHandledInline=true;
-              }
+            // Explicit name selection → show full profile + services this doctor provides
+            let profileText=hcVerifiedDoctorText(doctor,userText);
+            // List services this doctor offers, so patient knows what to book
+            const {results:drSvcs}=await env.DB.prepare(`SELECT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
+            if(drSvcs&&drSvcs.length){
+              profileText+=`\n\nServices offered: ${drSvcs.map(s=>s.name).join(', ')}`;
+            }
+            sentText=await engineLocalizeReply(env,c,profileText,replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url) routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            // If doctor offers multiple services, show them as buttons; otherwise go straight to booking
+            let docActionBtns;
+            if(drSvcs&&drSvcs.length>1){
+              docActionBtns=[...drSvcs.slice(0,2).map(s=>({title:s.name,value:`HC_BOOK_SERVICE:${s.id}`})),{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }else{
+              docActionBtns=[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docActionBtns);
+            orderHandledInline=true;
+          }
+        }
+        }
+        if(!orderHandledInline){
+        // ── DEPARTMENT MATCH ──────────────────────────────────────────────────────
+        // Departments matched by name → show doctors in that dept first, then services.
+        const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+        if(departmentMatches.length){
+          const ids=departmentMatches.map(d=>Number(d.id));
+          const deptName=departmentMatches[0].name;
+          // Prefer showing doctors (patient can then choose and see their profile)
+          const {results:deptDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id IN (${ids.map(()=>'?').join(',')}) ORDER BY name LIMIT 10`).bind(Number(clientId),...ids).all().catch(()=>({results:[]}));
+          if(deptDocs&&deptDocs.length){
+            sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} doctors:`,replyLang);
+            routing.reply=sentText;
+            // Doctor buttons: name as value so tapping triggers the name-selection profile flow
+            const docBtns=[...deptDocs.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docBtns);
+            orderHandledInline=true;
+          }else{
+            // No doctors in dept → show dept services
+            const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+            if(departmentServices.length){
+              sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} services:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+              orderHandledInline=true;
             }
           }
         }
+        }
+        // ── INSURANCE ─────────────────────────────────────────────────────────────
         if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
           const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
           if(providers?.length){
@@ -12814,8 +13518,8 @@ async function handleEngineWebhook(request, env, secret){
             orderHandledInline=true;
           }
         }
-        }
       }
+    }
     }
     // Order-readiness overrides the flow_json state machine's own routing entirely, not just
     // within the ecom_faq branch — observed real failure: a customer given a product's full detail
@@ -13238,6 +13942,14 @@ async function handleEngineWebhook(request, env, secret){
       }catch(e){}
     }
 
+    // Education enrollment flow — deterministic name/phone collection + D1 insert.
+    // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
+    if(!orderHandledInline && c.industry==='education' && state.leadId){
+      try{
+        if(await engineMaybeEduEnrollFlow(env, c, clientId, convId, state.leadId, userText, state, routing)) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env,'eduEnrollFlow',e,{clientId,convId}); }
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -13364,7 +14076,13 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
-      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
+      // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
+      // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
+      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+        const resortCtx=await engineBuildResortContext(env, clientId);
+        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+      }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
@@ -13386,7 +14104,18 @@ async function handleEngineWebhook(request, env, secret){
       // The LLM never creates Ecom navigation. Exact categories/products are handled before this
       // branch; general/additional Ecom questions receive prompt text only.
       if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
-        if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
+        // Education course/category menus must use the verified D1 names actually shown in the
+        // reply. With 4-10 names, engineSendChatwootQuickReply renders a native WhatsApp list;
+        // this takes priority over generic legacy choices such as "Browse Courses" that the model
+        // may have emitted after already listing the real courses in its message.
+        if(c.industry==='education'){
+          const [courseRows,categoryRows]=await Promise.all([
+            env.DB.prepare("SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60").bind(Number(clientId)).all().then(r=>r.results||[]),
+            env.DB.prepare('SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30').bind(Number(clientId)).all().then(r=>r.results||[]),
+          ]);
+          faqQuickReplies=eduVerifiedChoicesFromReply(courseRows,categoryRows,reply);
+        }
+        if(!faqQuickReplies?.length&&!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
           // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
@@ -13443,9 +14172,9 @@ async function handleEngineWebhook(request, env, secret){
         if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
           const hcServices=await hcListActiveServices(env,clientId);
           if(hcServices.length===1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'Talk to a human',value:'Talk to a human'}];
           } else if(hcServices.length>1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
           }
         }
       }
@@ -13470,9 +14199,9 @@ async function handleEngineWebhook(request, env, secret){
       // new intent handling needed for either. Opt-out via the same bot_config a client already
       // uses for the other handover/objection toggles.
       const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
-        {title:"👍 I'm convinced", value:"Okay, I'm convinced — let's proceed"},
-        {title:'❓ Another question', value:'I have another question'},
-        {title:'🙋 Talk to a human', value:'Talk to a human'},
+        {title:"I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'Another question', value:'I have another question'},
+        {title:'Talk to a human', value:'Talk to a human'},
       ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
@@ -13564,6 +14293,11 @@ async function handleEngineWebhook(request, env, secret){
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
+    // A specifically named course also sends its configured Drive media bundle. Brochure,
+    // syllabus, prospectus and PDF requests send the PDF itself as a Chatwoot/WhatsApp document,
+    // not a Drive preview-page link. A button tap can resolve the one course named in the
+    // immediately preceding assistant turn; multiple course names remain intentionally ambiguous.
+    await engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,state.activeHistory,routing.reply);
     await engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText);
     await engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText);
     // Full product description — sent inline, right before the photo/media bundle, at each
@@ -13975,7 +14709,7 @@ async function handleEcomPublicStores(request, env){
    table. This is the manual, customer-self-serve counterpart to the Cal.com sync and the AI
    auto-send — a client with no Cal.com account (or who just wants a simple always-available link)
    can hand out `book.html?client=<id>` directly. ── */
-const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug'];
+const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','healthcare_enabled'];
 const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
 
 async function apptPublicResolveClient(env, url){
@@ -13989,20 +14723,60 @@ async function apptPublicResolveClient(env, url){
 async function handleApptPublicClient(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  // Healthcare clients use D1; non-healthcare clients require appt_enabled
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
   return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
 }
 
 async function handleApptPublicServices(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  // Healthcare: serve active services from D1, optionally filtered by doctor_id
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const doctorId=Number(url.searchParams.get('doctor_id')||0);
+    let svcs;
+    if(doctorId){
+      const linked=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
+      svcs=linked.results||[];
+      if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+    }else{
+      svcs=await hcListActiveServices(env, c.Id);
+    }
+    return json({list:svcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
+  }
   const servicesTable=apptResolveTable(c, 'services');
   if(!servicesTable) return json({list:[]});
   const r=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${c.Id})~and(status,neq,inactive)&limit=100`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({list:(data.list||[]).map(row=>ecomPublicPick(row, APPT_PUBLIC_SERVICE_FIELDS))});
+}
+
+// Healthcare-only: returns active doctors so the public booking page can show a doctor picker
+async function handleApptPublicDoctors(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.healthcare_enabled!=='Yes') return json({list:[]});
+  await hcEnsureOperationsSchema(env);
+  const serviceId=Number(url.searchParams.get('service_id')||0);
+  let rows;
+  if(serviceId){
+    // Prefer doctors linked to the selected service; fall back to all active doctors
+    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
+    rows=linked.results||[];
+    if(!rows.length){
+      const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+      rows=all.results||[];
+    }
+  }else{
+    const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+    rows=all.results||[];
+  }
+  return json({list:rows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
 }
 
 // The one write path this whole public surface has — always creates a `requested` row (never
@@ -14013,9 +14787,7 @@ async function handleApptPublicBook(request, env){
   const clientId=String(body.client_id||'');
   if(!clientId) return json({error:'client_id required'}, 400);
   const c=await getClientById(env, clientId);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
-  const bookingsTable=apptResolveTable(c, 'bookings');
-  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
+  if(!c) return json({error:'Booking page not found'}, 404);
 
   const name=String(body.name||'').trim().slice(0,120);
   const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
@@ -14023,6 +14795,51 @@ async function handleApptPublicBook(request, env){
   const date=String(body.date||'').slice(0,10);
   const time=String(body.time||'').slice(0,5);
   const notes=String(body.notes||'').trim().slice(0,500);
+
+  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar + CRM lead
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const now=new Date().toISOString();
+    const ins=await env.DB.prepare(
+      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,'',?,?)`
+    ).bind(Number(clientId),name,phone,Number(body.service_id)||0,Number(body.doctor_id)||0,date,time,notes,now,now).run();
+    const row=await hcAppointmentRow(env,clientId,ins.meta.last_row_id);
+    if(row){
+      await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
+      await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
+    }
+    // Save to CRM — best-effort
+    let svc=null;
+    if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
+    advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
+    // Send WhatsApp confirmation via the patient's existing Chatwoot conversation (looked up by phone)
+    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+      (async()=>{
+        try{
+          const srch=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,{headers:{api_access_token:c.chatwoot_token}});
+          const srchData=srch.ok?await srch.json().catch(()=>null):null;
+          const contact=(srchData?.payload||[])[0]||null;
+          if(!contact) return;
+          const convR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,{headers:{api_access_token:c.chatwoot_token}});
+          const convData=convR.ok?await convR.json().catch(()=>null):null;
+          const convId=((convData?.payload||[])[0])?.id||null;
+          if(!convId) return;
+          const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
+          const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
+          const dateLine=date?`\n📅 *Date:* ${date}`:'';
+          const timeLine=time?`\n⏰ *Time:* ${time}`:'';
+          const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
+          await sendFlowWhatsappDm(c, convId, confirmMsg);
+        }catch(e){}
+      })();
+    }
+    return json({ok:true});
+  }
+
+  // Non-healthcare (NocoDB) path
+  if(c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
 
   let service=null;
   if(body.service_id){
@@ -18354,18 +19171,28 @@ const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|
 // (?id=<id>) — so the rest of this file can build its own direct-content URL regardless of which
 // one was pasted. Returns null for anything that doesn't look like a Drive link at all (a legacy
 // R2-hosted URL, or some other public URL a rep pasted instead — see hospitalitySendUnitMedia()).
-function driveFileId(url){
+export function driveFileId(url){
   if(!url) return null;
-  let m=String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  m=String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  return null;
+  try{
+    const parsed=new URL(String(url).trim());
+    if(!['drive.google.com','docs.google.com'].includes(parsed.hostname.toLowerCase())) return null;
+    const m=parsed.pathname.match(/\/(?:file|document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]+)/);
+    return m?.[1]||parsed.searchParams.get('id')?.match(/^[a-zA-Z0-9_-]+$/)?.[0]||null;
+  }catch(e){ return null; }
 }
 // Google Drive serves an HTML "Google Drive can't scan this file for viruses" interstitial
 // instead of the raw bytes for some files (mostly larger ones) unless a `confirm=` token is also
 // present. Appending `confirm=t` upfront skips that for most files without needing to scrape a
 // token first; driveFetchFile below falls back to extracting and replaying the real token from
 // the interstitial's own HTML if the file still needs it.
-function driveDirectUrl(fileId, confirmToken){
+function driveDirectUrl(fileId, confirmToken, sourceUrl=''){
+  try{
+    const parsed=new URL(String(sourceUrl||''));
+    const kind=parsed.pathname.match(/^\/(document|presentation|spreadsheets)\/d\//)?.[1];
+    if(kind==='document') return `https://docs.google.com/document/d/${fileId}/export?format=pdf`;
+    if(kind==='presentation') return `https://docs.google.com/presentation/d/${fileId}/export/pdf`;
+    if(kind==='spreadsheets') return `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf`;
+  }catch(e){}
   return `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken||'t'}`;
 }
 // Fetches a Google Drive file's actual bytes for forwarding as a WhatsApp/Chatwoot attachment —
@@ -18373,20 +19200,27 @@ function driveDirectUrl(fileId, confirmToken){
 // account behind it) to read it at all. Returns null (never throws) on anything that didn't work
 // out — an unshared/deleted file, or a file too large for the confirm=t bypass above to satisfy —
 // so callers can just skip that one item rather than attaching garbage/an HTML page as "the photo".
-async function driveFetchFile(fileId){
+function driveResponseFilename(headers){
+  const disposition=headers?.get?.('content-disposition')||'';
+  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if(encoded){ try{return decodeURIComponent(encoded).replace(/[\\/\r\n"]/g,'_').slice(0,160);}catch(e){} }
+  const plain=disposition.match(/filename="?([^";]+)"?/i)?.[1]?.trim();
+  return plain?plain.replace(/[\\/\r\n"]/g,'_').slice(0,160):'';
+}
+async function driveFetchFile(fileId, sourceUrl=''){
   try{
-    let r=await fetch(driveDirectUrl(fileId));
+    let r=await fetch(driveDirectUrl(fileId,undefined,sourceUrl));
     let ct=(r.headers.get('content-type')||'');
     if(ct.includes('text/html')){
       const html=await r.text();
       const m=html.match(/confirm=([0-9A-Za-z_-]+)/);
       if(!m) return null;
-      r=await fetch(driveDirectUrl(fileId, m[1]));
+      r=await fetch(driveDirectUrl(fileId,m[1],sourceUrl));
       ct=(r.headers.get('content-type')||'');
       if(ct.includes('text/html')) return null; // still the interstitial — give up rather than send it as-is
     }
     if(!r.ok) return null;
-    return {blob:await r.blob(), contentType:ct};
+    return {blob:await r.blob(), contentType:ct, filename:driveResponseFilename(r.headers)};
   }catch(e){ return null; }
 }
 
@@ -18407,15 +19241,16 @@ function driveGuessFilename(contentType){
 // promotions/testimonials/product media, and others. Returns false (never throws) on anything that
 // didn't work — an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it
 // as best-effort exactly like every other WhatsApp send in this file.
-async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
+export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, filenameHint=''){
   const fileId=driveFileId(driveUrl);
   if(!fileId) return false;
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return false;
   const fd=new FormData();
   fd.append('content', caption||'');
   fd.append('message_type','outgoing'); fd.append('private','false');
-  fd.append('attachments[]', fetched.blob, driveGuessFilename(fetched.contentType));
+  const hinted=String(filenameHint||'').trim().replace(/[\\/\r\n"]/g,'_').slice(0,160);
+  fd.append('attachments[]', fetched.blob, fetched.filename||hinted||driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
 }
@@ -18432,7 +19267,7 @@ async function handleEcomDriveFileSize(request, env){
   const driveUrl=url.searchParams.get('url')||'';
   const fileId=driveFileId(driveUrl);
   if(!fileId) return json({error:'Not a recognizable Google Drive share link.'}, 400);
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return json({error:'Could not read this file — make sure it\'s shared as "Anyone with the link can view."'}, 400);
   return json({size_bytes:fetched.blob.size, content_type:fetched.contentType});
 }
@@ -18706,11 +19541,10 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 
     if(c.hospitality_style==='resort'){
       // Resort 2-tier matching (migrations/0066_resort_properties.sql):
-      // 1. Specific room name → send that room's media (5 images + 2 videos)
+      // 1. Specific room name → always send that room's media (no dedup — lead explicitly chose it)
       const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
       if(specificUnit){
-        const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
-        if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
         // Store selected unit in lead memory so the LLM knows their interest on the next turn
         try{
           await ensureLeadsColumns(env, ['HospSelectedUnit']);
@@ -18718,20 +19552,22 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         }catch(e){}
         return;
       }
-      // 2. Property name → send property media + all its rooms
+      // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
       if(properties && properties.length){
         const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
-          const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
-          if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
           return;
         }
-        // 3. General enquiry → send all properties (overview)
+        // 3. General enquiry → send all properties (overview) then offer a property-picker button
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
         const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
         if(alreadyAny) return;
         for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
+        if(properties.length>=2 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 🏨', properties.map(p=>({title:p.name, value:p.name})));
+        }
       } else {
         // No properties configured — fall back to sending all rooms directly
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
@@ -21916,206 +22752,82 @@ async function handleHcAvailability(request, env){
   return json({list:await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,appointmentId), gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
-function hcBookingExpiry(){ return new Date(Date.now()+30*60*1000).toISOString(); }
-async function hcBookingSession(env,clientId,phone){
-  const row=await env.DB.prepare(`SELECT * FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first();
-  if(row&&Date.parse(row.expires_at)<=Date.now()){
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    return null;
-  }
-  return row||null;
+async function hcSimpleSession(env,clientId,phone){
+  return env.DB.prepare(`SELECT * FROM healthcare_simple_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first().catch(()=>null);
 }
-async function hcSaveBookingSession(env,clientId,phone,values={}){
-  const old=await hcBookingSession(env,clientId,phone)||{};
-  const row={...old,...values,client_id:Number(clientId),patient_phone:String(phone),expires_at:hcBookingExpiry(),updated_at:new Date().toISOString()};
-  await env.DB.prepare(`INSERT INTO healthcare_booking_sessions
-    (client_id,patient_phone,conversation_id,stage,service_id,doctor_id,appointment_date,start_time,end_time,patient_name,expires_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET
-    conversation_id=excluded.conversation_id,stage=excluded.stage,service_id=excluded.service_id,
-    doctor_id=excluded.doctor_id,appointment_date=excluded.appointment_date,start_time=excluded.start_time,
-    end_time=excluded.end_time,patient_name=excluded.patient_name,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
-    .bind(row.client_id,row.patient_phone,Number(row.conversation_id)||0,String(row.stage||''),Number(row.service_id)||0,
-      Number(row.doctor_id)||0,String(row.appointment_date||''),String(row.start_time||''),String(row.end_time||''),
-      String(row.patient_name||'').slice(0,200),row.expires_at,row.updated_at).run();
+async function hcSaveSimpleSession(env,clientId,phone,data){
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO healthcare_simple_sessions (client_id,patient_phone,stage,service_id,doctor_id,appt_date,appt_time,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET stage=excluded.stage,service_id=excluded.service_id,doctor_id=excluded.doctor_id,appt_date=excluded.appt_date,appt_time=excluded.appt_time,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),String(data.stage||''),Number(data.service_id)||0,Number(data.doctor_id)||0,String(data.appt_date||''),String(data.appt_time||''),now).run();
+
+}
+async function hcClearSimpleSession(env,clientId,phone){
+  await env.DB.prepare(`DELETE FROM healthcare_simple_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+}
+async function hcEnsureSimpleSessionColumns(env){
+  for(const col of ['service_id INTEGER NOT NULL DEFAULT 0','doctor_id INTEGER NOT NULL DEFAULT 0']){
+    await env.DB.prepare(`ALTER TABLE healthcare_simple_sessions ADD COLUMN ${col}`).run().catch(()=>null);
+  }
+}
+async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPhone,serviceId,doctorId,apptDate,apptTime}){
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','whatsapp','','',?,?)`)
+    .bind(Number(clientId),String(patientName).slice(0,200),String(patientPhone).slice(0,40),Number(serviceId)||0,Number(doctorId)||0,String(apptDate),String(apptTime),now,now).run();
+  const row=await hcAppointmentRow(env,clientId,r.meta.last_row_id);
+  if(row) await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
   return row;
 }
-function hcClinicDateAfter(c,days){
-  const timezone=hcClientTimezone(c), shifted=new Date(Date.now()+Number(days||0)*86400000);
-  try{
-    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(shifted);
-    const v=Object.fromEntries(parts.map(p=>[p.type,p.value]));
-    return `${v.year}-${v.month}-${v.day}`;
-  }catch(e){ return shifted.toISOString().slice(0,10); }
-}
-function hcBookingDateTitle(date){
-  try{return new Intl.DateTimeFormat('en',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}).format(new Date(`${date}T12:00:00Z`));}
-  catch(e){return date;}
-}
-function hcBookableSlots(c,date,slots){
-  const today=hcClinicDateAfter(c,0);
-  if(date!==today) return slots;
-  let current='00:00';
-  try{current=new Intl.DateTimeFormat('en-GB',{timeZone:hcClientTimezone(c),hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());}catch(e){}
-  return (slots||[]).filter(slot=>slot.start_time>current);
-}
-async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang){
-  const items=[];
-  for(let day=0;day<14&&items.length<7;day++){
-    const date=hcClinicDateAfter(c,day);
-    const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
-    if(slots.length) items.push({title:hcBookingDateTitle(date),value:`HC_BOOK_DATE:${date}`});
-  }
-  if(!items.length){
-    const text=await engineLocalizeReply(env,c,'No available appointment dates are configured. I will connect you to the clinic team.',replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
-    return {handled:true,text,quickReplies:null};
-  }
-  await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
-  const text=await engineLocalizeReply(env,c,'Please choose an available appointment date:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
-  return {handled:true,text,quickReplies};
-}
-async function hcDoctorServices(env,clientId,doctorId){
-  // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
-  // department-based lookup so clinics that haven't set up explicit links still work.
-  const {results:linked}=await env.DB.prepare(
-    `SELECT s.* FROM healthcare_services s
-     INNER JOIN healthcare_doctor_services ds ON ds.service_id=s.id AND ds.client_id=s.client_id
-     WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 20`
-  ).bind(Number(clientId),Number(doctorId)).all().catch(()=>({results:[]}));
-  if(linked&&linked.length) return linked;
-  // Fallback: department-based
-  const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(Number(doctorId),Number(clientId)).first().catch(()=>null);
-  if(!doc?.department_id) return [];
-  const {results:dept}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId),Number(doc.department_id)).all().catch(()=>({results:[]}));
-  return dept||[];
-}
-async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
-  const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
-  const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
-  if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
-  const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
-  if(doctor){
-    // When a doctor is chosen, check which services they handle. If multiple, ask the patient
-    // to pick a service first (so the appointment record has a service_id).
-    if(!service){
-      const doctorSvcs=await hcDoctorServices(env,clientId,doctor.id);
-      if(doctorSvcs.length>1){
-        await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
-        const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(doctorSvcs));
-        return {handled:true,text,quickReplies};
-      }
-      if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
-    }
-    return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
-  }
-  // Service chosen first — find doctors who handle it (explicit links first, department fallback)
-  const {results:linkedDocs}=await env.DB.prepare(
-    `SELECT d.id,d.name FROM healthcare_doctors d
-     INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
-     WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
-  ).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
-  let doctors=linkedDocs||[];
-  if(!doctors.length){
-    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
-    doctors=results||[];
-  }
-  if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
-  if(!doctors.length){
-    const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
-    return {handled:true,text,quickReplies:null};
-  }
-  await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
-  const text=await engineLocalizeReply(env,c,'Please choose a doctor:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:`HC_BOOK_DOCTOR:${d.id}`})));
-  return {handled:true,text,quickReplies};
-}
-async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
-  await hcEnsureOperationsSchema(env);
+async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
-  let match=action.match(/^HC_BOOK_SERVICE:(\d+)$/); if(match) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(match[1])});
-  match=action.match(/^HC_BOOK_DOCTOR:(\d+)$/);
-  if(match){
-    const session=await hcBookingSession(env,clientId,phone);
-    if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
-    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
-  }
-  // Service name tapped while in choose_service stage (doctor already chosen, now picking service)
-  {
-    const preSession=await hcBookingSession(env,clientId,phone);
-    if(preSession?.stage==='choose_service'&&!action.startsWith('HC_BOOK_')){
-      const svc=await env.DB.prepare(`SELECT id FROM healthcare_services WHERE client_id=? AND (name=? OR short_label=?) AND status='active' LIMIT 1`).bind(Number(clientId),action,action).first().catch(()=>null);
-      if(svc) return hcSendBookingDates(env,c,clientId,convId,phone,{...preSession,service_id:Number(svc.id),stage:'choose_date'},replyLang);
+  // Handle structured booking button taps (values set by HC_BOOK_DOCTOR/HC_BOOK_SERVICE quick replies)
+  const docBookMatch=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(action);
+  const svcBookMatch=/^HC_BOOK_SERVICE:(\d+)$/i.exec(action);
+  if(docBookMatch||svcBookMatch){
+    const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
+    let bookingLink='';
+    let label='';
+    if(docBookMatch){
+      const doctorId=Number(docBookMatch[1]);
+      const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1`).bind(doctorId,Number(clientId)).first().catch(()=>null);
+      label=doctor?.name||'your selected doctor';
+      bookingLink=(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&doctor_id=${doctorId}`;
+      if(c.external_store_link&&!/doctor_id/i.test(bookingLink)) bookingLink+=`${bookingLink.includes('?')?'&':'?'}doctor_id=${doctorId}`;
+    }else{
+      const serviceId=Number(svcBookMatch[1]);
+      const svc=await env.DB.prepare(`SELECT name,booking_url FROM healthcare_services WHERE id=? AND client_id=? LIMIT 1`).bind(serviceId,Number(clientId)).first().catch(()=>null);
+      label=svc?.name||'this service';
+      bookingLink=svc?.booking_url||(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&service_id=${serviceId}`;
     }
-  }
-  const session=await hcBookingSession(env,clientId,phone);
-  if(!session){
-    // Plain-text booking intent ("book", "schedule", "I want an appointment", etc.) — start the
-    // native WhatsApp flow directly instead of falling through to the FAQ LLM which can't offer
-    // the actual slot picker buttons.
-    if(!action.startsWith('HC_BOOK_') && /\b(?:book|schedule|appoint|reserv|slot|visit)\b/i.test(action)){
-      const allServices=await hcListActiveServices(env,clientId);
-      if(!allServices.length) return {handled:false};
-      if(allServices.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(allServices[0].id)});
-      const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(allServices));
-      return {handled:true,text,quickReplies};
-    }
-    return {handled:false};
-  }
-  if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    if(!bookingLink) bookingLink=`${appBase}book.html?client=${clientId}`;
+    const msg=`To book an appointment for ${label}, use the link below:\n${bookingLink}`;
+    const text=await engineLocalizeReply(env,c,msg,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
-  if(action==='HC_BOOK_DATES') return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-  match=action.match(/^HC_BOOK_DATE:(\d{4}-\d{2}-\d{2})$/);
-  if(match&&session.doctor_id){
-    const date=match[1], slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
-    if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:date,start_time:'',end_time:''});
-    const text=await engineLocalizeReply(env,c,'Please choose an available time:',replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:`HC_BOOK_SLOT:${s.start_time}`})));
-    return {handled:true,text,quickReplies};
+  // Intercept clear booking intent; general questions (about doctors, services, availability) fall through to AI
+  if(!/\b(?:book(?:ing)?|appoint(?:ment)?|schedul(?:e|ing)|reserv(?:e|ation)?|slot|rebook|meeting|consult(?:ation)?|check.?up|walk.?in)\b/i.test(action)) return {handled:false};
+
+  await hcEnsureOperationsSchema(env);
+  // Resolve booking link: service-specific booking_url → client external_store_link → public book.html
+  const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
+  let bookingLink=(c.external_store_link||'').trim();
+  // Check if the message mentions a specific service and use that service's booking_url if set
+  const svcs=await hcListActiveServices(env,clientId);
+  if(svcs.length&&!bookingLink){
+    // Try to find a service mentioned in the message
+    const lower=action.toLowerCase();
+    const matched=svcs.find(s=>{
+      const names=[s.name,s.short_label,...(String(s.aliases||'').split(','))].map(x=>String(x||'').toLowerCase().trim()).filter(Boolean);
+      return names.some(n=>n&&lower.includes(n));
+    });
+    if(matched?.booking_url) bookingLink=matched.booking_url.trim();
   }
-  match=action.match(/^HC_BOOK_SLOT:(\d{2}:\d{2})$/);
-  if(match&&session.appointment_date&&session.doctor_id){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===match[1]);
-    if(!chosen) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
-    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
-  }
-  if(session.stage==='patient_name'&&!action.startsWith('HC_BOOK_')){
-    const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
-    if(patientName.length<2){const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return {handled:true,text,quickReplies:null};}
-    const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
-    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
-    const summary=`Please confirm your appointment:\n\nPatient: ${patientName}\n${service?.name?`Service: ${service.name}\n`:''}Doctor: ${doctor?.name||''}\nDate: ${session.appointment_date}\nTime: ${session.start_time}`;
-    const text=await engineLocalizeReply(env,c,summary,replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'Confirm Booking',value:'HC_BOOK_CONFIRM'},{title:'Change Date',value:'HC_BOOK_DATES'},{title:'Cancel',value:'HC_BOOK_CANCEL'}]);
-    return {handled:true,text,quickReplies};
-  }
-  if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
-    if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
-    const now=new Date().toISOString(); let result;
-    try{
-      result=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'confirmed','whatsapp','','',?,?)`)
-        .bind(Number(clientId),session.patient_name,String(phone),Number(leadId)||0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
-    }catch(error){
-      if(/unique|constraint/i.test(String(error?.message||error))) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-      throw error;
-    }
-    const row=await hcAppointmentRow(env,clientId,result.meta.last_row_id); await hcQueueAppointmentAutomation(env,row,null,'upsert');
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); return {handled:true,text,quickReplies:null,appointmentId:row.id};
-  }
-  return {handled:false};
+  if(!bookingLink) bookingLink=`${appBase}book.html?client=${clientId}`;
+
+  const msg=`📅 To book an appointment, use the link below:\n${bookingLink}`;
+  const text=await engineLocalizeReply(env,c,msg,replyLang);
+  await engineSendChatwootReply(env,c,clientId,convId,text);
+  return {handled:true,text,quickReplies:null};
 }
 
 async function hcAppointmentRow(env, clientId, id){
@@ -22452,6 +23164,182 @@ async function handleHcAnalytics(request,env){
     gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
+/* ── Healthcare Public Booking Form ──────────────────────────────────────────────────────────
+   Patient-facing, no authentication. Replaces the multi-step WhatsApp conversation: the bot
+   sends a short URL; the patient opens it in a browser and completes a step-by-step form.
+   Appointment creation goes through the same D1 path and queues the same reminders.
+   Routes: GET /hc/book  GET /hc/book/services  GET /hc/book/doctors
+           GET /hc/book/dates  GET /hc/book/slots  POST /hc/book/submit              ── */
+async function hcPublicClientForBooking(env,cidStr){
+  const clientId=Number(cidStr||0); if(!clientId) return null;
+  await hcEnsureOperationsSchema(env);
+  const c=await getClientById(env,clientId).catch(()=>null);
+  if(!c||c.industry!=='healthcare') return null;
+  return {clientId,c};
+}
+async function handleHcPublicBookPage(request,env){
+  const u=new URL(request.url), cid=u.searchParams.get('cid')||'', sid=u.searchParams.get('sid')||'', did=u.searchParams.get('did')||'';
+  const ctx=await hcPublicClientForBooking(env,cid);
+  if(!ctx) return new Response('Booking link not found.',{status:404,headers:{'Content-Type':'text/plain'}});
+  const clinicName=(ctx.c.name||'').replace(/</g,'&lt;');
+  const base=`${new URL(request.url).origin}/hc/book`;
+  const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book Appointment — ${clinicName}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f7fa;color:#1a202c;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:20px 16px}
+.card{background:#fff;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.08);width:100%;max-width:480px;padding:28px 24px}
+h1{font-size:1.2rem;font-weight:700;margin-bottom:4px}.sub{color:#718096;font-size:.85rem;margin-bottom:24px}
+.step{display:none}.step.active{display:block}
+h2{font-size:1rem;font-weight:600;margin-bottom:14px;color:#2d3748}
+.choices{display:flex;flex-direction:column;gap:10px}
+.choice{border:1.5px solid #e2e8f0;border-radius:10px;padding:13px 16px;cursor:pointer;font-size:.93rem;transition:border-color .15s,background .15s;text-align:left;background:#fff;width:100%}
+.choice:hover,.choice.selected{border-color:#4f46e5;background:#f0f0ff;color:#3730a3}
+.input-row{display:flex;flex-direction:column;gap:14px;margin-bottom:20px}
+label{font-size:.85rem;font-weight:500;color:#4a5568;display:block;margin-bottom:4px}
+input{width:100%;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.95rem;outline:none}
+input:focus{border-color:#4f46e5}
+.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;margin-top:8px}
+.btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#4338ca}
+.btn-back{background:#f7fafc;color:#4a5568;border:1.5px solid #e2e8f0;margin-top:4px}.btn-back:hover{background:#edf2f7}
+.slots{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.summary{background:#f7fafc;border-radius:10px;padding:16px;font-size:.88rem;line-height:1.8;margin-bottom:16px}
+.summary b{color:#2d3748}.ok{text-align:center;padding:20px 0}.ok .icon{font-size:3rem;margin-bottom:12px}
+.ok h2{color:#2f855a}.ok p{color:#718096;margin-top:6px;font-size:.88rem}
+.err{color:#e53e3e;font-size:.82rem;margin-top:6px;display:none}.loading{color:#718096;font-size:.88rem;padding:8px 0}
+</style></head><body><div class="card">
+<h1>${clinicName}</h1><p class="sub">Book an appointment</p>
+<div id="s0" class="step active"><h2>Choose a service</h2><div id="svcList" class="choices"><p class="loading">Loading…</p></div></div>
+<div id="s1" class="step"><h2>Choose a doctor</h2><div id="docList" class="choices"><p class="loading">Loading…</p></div><button class="btn btn-back" onclick="goStep(0)">← Back</button></div>
+<div id="s2" class="step"><h2>Choose a date</h2><div id="dateList" class="choices"><p class="loading">Loading…</p></div><button class="btn btn-back" onclick="goStep(1)">← Back</button></div>
+<div id="s3" class="step"><h2>Choose a time</h2><div id="slotList" class="slots"></div><button class="btn btn-back" onclick="goStep(2)">← Back</button></div>
+<div id="s4" class="step"><h2>Your details</h2><div class="input-row">
+<div><label>Full name</label><input id="fname" placeholder="Patient name" autocomplete="name"></div>
+<div><label>Phone number</label><input id="fphone" placeholder="+971 50 123 4567" type="tel" autocomplete="tel"></div>
+</div><div id="ferr" class="err"></div>
+<button class="btn btn-primary" onclick="submitBooking()">Confirm Booking</button>
+<button class="btn btn-back" onclick="goStep(3)">← Back</button></div>
+<div id="s5" class="step ok"><div class="icon">✅</div><h2>Appointment Confirmed</h2><p id="confMsg"></p></div>
+</div>
+<script>
+const B='${base}',CID='${cid}',PRE_SID='${sid}',PRE_DID='${did}';
+let sel={sid:'',did:'',date:'',slot:''};
+function goStep(n){document.querySelectorAll('.step').forEach((s,i)=>s.classList.toggle('active',i===n));}
+async function api(path){const r=await fetch(B+path);return r.json();}
+async function loadServices(){
+  const d=await api('/services?cid='+CID);
+  const el=document.getElementById('svcList'); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading">No services available.</p>';return;}
+  if(PRE_SID){sel.sid=PRE_SID;loadDoctors();goStep(1);return;}
+  d.list.forEach(s=>{const b=document.createElement('button');b.className='choice';b.textContent=s.short_label||s.name;b.onclick=()=>{sel.sid=String(s.id);loadDoctors();goStep(1);};el.appendChild(b);});
+}
+async function loadDoctors(){
+  const el=document.getElementById('docList'); el.innerHTML='<p class="loading">Loading…</p>';
+  const d=await api('/doctors?cid='+CID+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading">No doctors available.</p>';return;}
+  if(PRE_DID&&!sel.did){sel.did=PRE_DID;loadDates();goStep(2);return;}
+  d.list.forEach(doc=>{const b=document.createElement('button');b.className='choice';
+    b.innerHTML='<b>'+doc.name+'</b>'+(doc.specialization?'<br><span style="font-size:.8rem;color:#718096">'+doc.specialization+'</span>':'');
+    b.onclick=()=>{sel.did=String(doc.id);loadDates();goStep(2);};el.appendChild(b);});
+}
+async function loadDates(){
+  const el=document.getElementById('dateList'); el.innerHTML='<p class="loading">Loading…</p>';
+  const d=await api('/dates?cid='+CID+'&doctor_id='+sel.did+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.dates||!d.dates.length){el.innerHTML='<p class="loading">No available dates. Please try another doctor.</p>';return;}
+  d.dates.forEach(dt=>{const b=document.createElement('button');b.className='choice';b.textContent=dt.label;
+    b.onclick=()=>{sel.date=dt.date;loadSlots();goStep(3);};el.appendChild(b);});
+}
+async function loadSlots(){
+  const el=document.getElementById('slotList'); el.innerHTML='<p class="loading" style="grid-column:1/-1">Loading…</p>';
+  const d=await api('/slots?cid='+CID+'&doctor_id='+sel.did+'&date='+sel.date+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading" style="grid-column:1/-1">No slots for this date. Please go back and choose another.</p>';return;}
+  d.list.forEach(s=>{const b=document.createElement('button');b.className='choice';b.textContent=s.start_time+' – '+s.end_time;
+    b.onclick=()=>{sel.slot=s.start_time;goStep(4);};el.appendChild(b);});
+}
+async function submitBooking(){
+  const name=document.getElementById('fname').value.trim(), phone=document.getElementById('fphone').value.trim();
+  const err=document.getElementById('ferr');
+  if(name.length<2){err.style.display='block';err.textContent='Please enter the patient name.';return;}
+  if(phone.length<5){err.style.display='block';err.textContent='Please enter a valid phone number.';return;}
+  err.style.display='none';
+  const r=await fetch(B+'/submit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cid:CID,service_id:sel.sid,doctor_id:sel.did,appointment_date:sel.date,start_time:sel.slot,patient_name:name,patient_phone:phone})});
+  const d=await r.json();
+  if(!d.ok){err.style.display='block';err.textContent=d.error||'Booking failed. Please try again.';return;}
+  document.getElementById('confMsg').textContent='Date: '+d.appointment_date+' at '+d.start_time+(d.doctor_name?' · '+d.doctor_name:'');
+  goStep(5);
+}
+loadServices();
+</script></body></html>`;
+  return new Response(html,{status:200,headers:{'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store'}});
+}
+async function handleHcPublicBookServices(request,env){
+  const u=new URL(request.url); const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid'));
+  if(!ctx) return json({error:'Not found'},404);
+  const {results}=await env.DB.prepare(`SELECT id,name,short_label FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(ctx.clientId).all();
+  return json({list:results||[]});
+}
+async function handleHcPublicBookDoctors(request,env){
+  const u=new URL(request.url), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  let doctors;
+  if(sid){
+    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 20`).bind(ctx.clientId,sid).all().catch(()=>({results:[]}));
+    doctors=(linked.results||[]);
+    if(!doctors.length){
+      const svc=await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(sid,ctx.clientId).first().catch(()=>null);
+      if(svc?.department_id){const r=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(ctx.clientId,Number(svc.department_id)).all().catch(()=>({results:[]}));doctors=r.results||[];}
+    }
+  } else {
+    const r=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 20`).bind(ctx.clientId).all().catch(()=>({results:[]}));
+    doctors=r.results||[];
+  }
+  return json({list:doctors});
+}
+async function handleHcPublicBookDates(request,env){
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')||0), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const dates=[];
+  for(let day=0;day<14&&dates.length<7;day++){
+    const date=hcClinicDateAfter(ctx.c,day);
+    const slots=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,sid,0));
+    if(slots.length) dates.push({date,label:hcBookingDateTitle(date)});
+  }
+  return json({dates});
+}
+async function handleHcPublicBookSlots(request,env){
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')||0), date=String(u.searchParams.get('date')||''), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  if(!doctorId||!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'doctor_id and date required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const list=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,sid,0));
+  return json({list});
+}
+async function handleHcPublicBookSubmit(request,env){
+  const b=await request.json().catch(()=>({}));
+  const ctx=await hcPublicClientForBooking(env,String(b.cid||'')); if(!ctx) return json({error:'Not found'},404);
+  const doctorId=Number(b.doctor_id||0), serviceId=Number(b.service_id||0), date=String(b.appointment_date||''), startTime=String(b.start_time||''), patientName=String(b.patient_name||'').trim().slice(0,200), patientPhone=String(b.patient_phone||'').trim().slice(0,40);
+  if(!doctorId||!date||!startTime||patientName.length<2||!patientPhone) return json({error:'All fields are required'},400);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'Invalid date'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const slots=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,serviceId,0));
+  const chosen=slots.find(s=>s.start_time===startTime);
+  if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+  const now=new Date().toISOString(); let r;
+  try{
+    r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'requested','form','','',?,?)`)
+      .bind(ctx.clientId,patientName,patientPhone,0,serviceId,doctorId,date,startTime,chosen.end_time,now,now).run();
+  }catch(e){
+    if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409);
+    throw e;
+  }
+  const row=await hcAppointmentRow(env,ctx.clientId,r.meta.last_row_id);
+  await hcQueueAppointmentAutomation(env,row,null,'upsert');
+  return json({ok:true,appointment_date:row.appointment_date,start_time:row.start_time,doctor_name:row.doctor_name||'',service_name:row.service_name||''});
+}
+
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
    can't express: sweeping expired holds back to "available" on every list, and writing a
    re_price_audit row whenever base_price/plc_charges/floor_rise_charges change (RERA compliance —
@@ -22724,6 +23612,466 @@ async function handleReAnalytics(request, env){
    getWebSockets) rather than holding sockets in a plain in-memory field, so an idle DO with open
    connections isn't billed as continuously active. Push-only — the dashboard never sends
    anything meaningful back, so webSocketMessage is a no-op. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIVE TRAVEL AGENCY
+   A D1-backed, session-authenticated module kept deliberately separate from the
+   legacy Travel Agency/NocoDB implementation. Each client owns its supplier
+   credentials in encrypted D1 settings; saved secrets are never returned to the
+   browser. SerpApi is discovery-only; a fare is bookable only
+   after Riya or TripJack returns and subsequently revalidates it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const LT_SUPPLIERS=['serpapi','riya','tripjack'];
+const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack']);
+const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
+
+function ltNow(){ return new Date().toISOString(); }
+function ltRef(prefix){
+  const stamp=new Date().toISOString().replace(/\D/g,'').slice(2,14);
+  const rand=crypto.randomUUID().replace(/-/g,'').slice(0,6).toUpperCase();
+  return `${prefix}-${stamp}-${rand}`;
+}
+function ltText(value,max=250){ return String(value??'').trim().slice(0,max); }
+function ltJson(value,fallback){ try{return JSON.parse(value);}catch(e){return fallback;} }
+function ltRow(row){
+  if(!row)return row;
+  const out={...row};
+  for(const key of Object.keys(out)) if(LT_JSON_FIELDS.has(key)) out[key.replace(/_json$/,'')]=ltJson(out[key],key==='itinerary_json'||key==='ticket_numbers_json'?[]:{});
+  return out;
+}
+function ltPositiveInt(value,fallback,min=0,max=9){ const n=Math.floor(Number(value)); return Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback; }
+function ltMoney(value){ const n=Number(value); return Number.isFinite(n)?Math.max(0,Math.round(n*100)/100):0; }
+function ltMarkup(base,type,value){ const v=ltMoney(value); return type==='percent'?Math.round(base*v)/100:Math.min(v,1e9); }
+function ltSearchParams(body={}){
+  const tripType=['one_way','round_trip','multi_city'].includes(body.trip_type)?body.trip_type:'round_trip';
+  const origin=ltText(body.origin,3).toUpperCase(), destination=ltText(body.destination,3).toUpperCase();
+  const date=ltText(body.departure_date,10), ret=ltText(body.return_date,10);
+  if(!/^[A-Z]{3}$/.test(origin)||!/^[A-Z]{3}$/.test(destination)||origin===destination) throw new Error('Use different 3-letter origin and destination airport codes.');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('A valid departure date is required.');
+  if(tripType==='round_trip'&&!/^\d{4}-\d{2}-\d{2}$/.test(ret)) throw new Error('A valid return date is required for a round trip.');
+  const adults=ltPositiveInt(body.adults,1,1,9), children=ltPositiveInt(body.children,0), infants=ltPositiveInt(body.infants,0);
+  if(infants>adults) throw new Error('Infants cannot exceed adults.');
+  return {trip_type:tripType,origin,destination,departure_date:date,return_date:tripType==='round_trip'?ret:null,adults,children,infants,
+    cabin:['economy','premium_economy','business','first'].includes(body.cabin)?body.cabin:'economy',currency:/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED',lead_id:ltText(body.lead_id,80)};
+}
+
+export function ltNormalizeOffer(supplier,raw,ctx={}){
+  const source=String(supplier||'').toLowerCase();
+  const price=ltMoney(raw?.total_amount??raw?.totalPrice??raw?.total_price??raw?.price?.total??raw?.price??raw?.fare?.totalFare??raw?.fare?.total_amount);
+  const tax=ltMoney(raw?.tax_amount??raw?.taxes??raw?.price?.tax??raw?.fare?.totalTax);
+  const segments=raw?.itinerary||raw?.segments||raw?.flights||raw?.journeys||[];
+  const first=Array.isArray(segments)?segments[0]:{};
+  const airline=raw?.airline_name||raw?.airline||first?.airline||first?.airline_name||'';
+  const airlineCode=raw?.airline_code||raw?.carrier_code||first?.airline_code||first?.airlineCode||'';
+  const numbers=raw?.flight_numbers||raw?.flight_number||first?.flight_number||first?.flightNumber||'';
+  const base=ltMoney(raw?.base_amount??raw?.baseFare??raw?.base_fare??Math.max(0,price-tax));
+  const markup=ltMarkup(price||base,ctx.markup_type||'fixed',ctx.markup_value||0);
+  return {
+    supplier:source,supplier_offer_id:ltText(raw?.id??raw?.offer_id??raw?.result_index??raw?.token??raw?.booking_token,300),
+    bookable:LT_BOOKABLE_SUPPLIERS.has(source),validating:source==='serpapi',validating_supplier:source==='serpapi'?'riya_or_tripjack':'',
+    airline_code:ltText(airlineCode,12).toUpperCase(),airline_name:ltText(airline,120),flight_numbers:ltText(Array.isArray(numbers)?numbers.join(', '):numbers,200),
+    itinerary:Array.isArray(segments)?segments:[],baggage:raw?.baggage||raw?.baggage_info||{},fare_rules:raw?.fare_rules||raw?.fareRules||{},
+    cabin:ltText(raw?.cabin||ctx.cabin||'economy',40),seats_left:Number.isFinite(Number(raw?.seats_left??raw?.seats))?Number(raw?.seats_left??raw?.seats):null,
+    currency:ltText(raw?.currency||raw?.price?.currency||ctx.currency||'AED',3).toUpperCase(),base_amount:base,tax_amount:tax,markup_amount:markup,total_amount:ltMoney(price+markup),raw
+  };
+}
+
+async function ltAudit(env,cid,entityType,entityId,action,email,details={}){
+  await env.DB.prepare(`INSERT INTO live_travel_audit_log (client_id,entity_type,entity_id,action,actor_email,details_json,created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(cid,entityType,String(entityId),action,ltText(email,250),JSON.stringify(details),ltNow()).run();
+}
+async function ltAuth(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return null;
+  return {cid:Number(payload.cid),email:ltText(payload.email,250)};
+}
+async function ltSeedSuppliers(env,cid){
+  const now=ltNow();
+  for(const [i,supplier] of LT_SUPPLIERS.entries()) await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`).bind(cid,supplier,(i+1)*10,now,now).run();
+}
+function ltBytesB64(bytes){return btoa(String.fromCharCode(...bytes));}
+function ltB64Bytes(value){return Uint8Array.from(atob(value),c=>c.charCodeAt(0));}
+async function ltCredentialsCryptoKey(env){
+  const secret=String(env.LIVE_TRAVEL_CREDENTIALS_KEY||env.SESSION_SIGNING_KEY||'');
+  if(!secret)throw new Error('Live Travel credential encryption is not configured.');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(secret));
+  return crypto.subtle.importKey('raw',digest,{name:'AES-GCM'},false,['encrypt','decrypt']);
+}
+export async function ltEncryptCredentials(env,value){
+  const iv=crypto.getRandomValues(new Uint8Array(12)),key=await ltCredentialsCryptoKey(env);
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify(value||{})));
+  return `${ltBytesB64(iv)}.${ltBytesB64(new Uint8Array(encrypted))}`;
+}
+export async function ltDecryptCredentials(env,value){
+  if(!value)return {};
+  try{
+    const [iv,cipher]=String(value).split('.'); if(!iv||!cipher)return {};
+    const key=await ltCredentialsCryptoKey(env),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:ltB64Bytes(iv)},key,ltB64Bytes(cipher));
+    return JSON.parse(new TextDecoder().decode(plain))||{};
+  }catch(e){throw new Error('Saved supplier credentials could not be decrypted.');}
+}
+async function ltSupplierRuntime(env,row){
+  return {...row,credentials:await ltDecryptCredentials(env,row?.credentials_encrypted),endpoints:ltJson(row?.endpoints_json,{})};
+}
+function ltSupplierConfigured(config){
+  const supplier=config?.supplier,credentials=config?.credentials||{},endpoints=config?.endpoints||{};
+  if(supplier==='serpapi')return !!credentials.api_key;
+  if(supplier==='riya'||supplier==='tripjack')return !!(credentials.api_key&&endpoints.search);
+  return false;
+}
+function ltSupplierPublic(config){
+  const {credentials_encrypted,endpoints_json,credentials,...safe}=config;
+  return {...safe,endpoints:config.endpoints||{},credentials_configured:ltSupplierConfigured(config),credential_fields:Object.keys(credentials||{}).filter(k=>!!credentials[k])};
+}
+function ltSupplierHeaders(config){
+  const credentials=config.credentials||{};
+  if(config.supplier==='riya')return {'Content-Type':'application/json','Authorization':`Bearer ${credentials.api_key||''}`,'X-Client-Id':credentials.client_id||'','X-Api-Secret':credentials.api_secret||''};
+  return {'Content-Type':'application/json','apikey':credentials.api_key||'','Authorization':credentials.api_key?`Bearer ${credentials.api_key}`:''};
+}
+async function ltFetchJson(url,options={},timeoutMs=25000){
+  const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{
+    const r=await fetch(url,{...options,signal:ctl.signal});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data?.error?.message||data?.message||`HTTP ${r.status}`);
+    return data;
+  }finally{clearTimeout(timer);}
+}
+function ltExtractOffers(supplier,data){
+  if(supplier==='serpapi')return [...(data?.best_flights||[]),...(data?.other_flights||[])];
+  for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
+  return Array.isArray(data)?data:[];
+}
+async function ltSupplierSearch(config,input){
+  const supplier=config.supplier;
+  if(!ltSupplierConfigured(config)) throw new Error('Client credentials or search endpoint are not configured.');
+  if(supplier==='serpapi'){
+    const q=new URLSearchParams({engine:'google_flights',api_key:config.credentials.api_key,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
+    if(input.return_date)q.set('return_date',input.return_date);
+    return ltFetchJson(`${config.endpoints.search||'https://serpapi.com/search.json'}?${q}`);
+  }
+  return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
+}
+async function ltSupplierAction(config,action,payload){
+  const endpoint=config.endpoints?.[action];
+  if(!endpoint||!ltSupplierConfigured(config)) throw new Error(`${config.supplier} client ${action} settings are not configured.`);
+  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(payload)});
+}
+async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+async function ltEnsureSchema(env){
+  const stmts=[
+    `CREATE TABLE IF NOT EXISTS live_travel_agents (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,agent_ref TEXT NOT NULL,parent_agent_ref TEXT NOT NULL DEFAULT 'owner',agent_type TEXT NOT NULL DEFAULT 'agent',name TEXT NOT NULL,email TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',credit_limit REAL NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,agent_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_agents_client ON live_travel_agents(client_id,parent_agent_ref,status)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,supplier TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,mode TEXT NOT NULL DEFAULT 'sandbox',priority INTEGER NOT NULL DEFAULT 100,markup_type TEXT NOT NULL DEFAULT 'fixed',markup_value REAL NOT NULL DEFAULT 0,last_status TEXT NOT NULL DEFAULT 'not_configured',last_checked_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,credentials_encrypted TEXT,endpoints_json TEXT NOT NULL DEFAULT '{}',UNIQUE(client_id,supplier))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_suppliers_client ON live_travel_suppliers(client_id,enabled,priority)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_searches (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_ref TEXT NOT NULL,lead_id TEXT NOT NULL DEFAULT '',trip_type TEXT NOT NULL DEFAULT 'round_trip',origin TEXT NOT NULL,destination TEXT NOT NULL,departure_date TEXT NOT NULL,return_date TEXT,adults INTEGER NOT NULL DEFAULT 1,children INTEGER NOT NULL DEFAULT 0,infants INTEGER NOT NULL DEFAULT 0,cabin TEXT NOT NULL DEFAULT 'economy',currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'searching',supplier_errors_json TEXT NOT NULL DEFAULT '{}',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,expires_at TEXT NOT NULL,UNIQUE(client_id,search_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_searches_client ON live_travel_searches(client_id,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_offers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_id INTEGER NOT NULL,offer_ref TEXT NOT NULL,supplier TEXT NOT NULL,supplier_offer_id TEXT NOT NULL DEFAULT '',bookable INTEGER NOT NULL DEFAULT 0,validating INTEGER NOT NULL DEFAULT 0,validating_supplier TEXT NOT NULL DEFAULT '',airline_code TEXT NOT NULL DEFAULT '',airline_name TEXT NOT NULL DEFAULT '',flight_numbers TEXT NOT NULL DEFAULT '',itinerary_json TEXT NOT NULL DEFAULT '[]',baggage_json TEXT NOT NULL DEFAULT '{}',fare_rules_json TEXT NOT NULL DEFAULT '{}',cabin TEXT NOT NULL DEFAULT 'economy',seats_left INTEGER,currency TEXT NOT NULL DEFAULT 'AED',base_amount REAL NOT NULL DEFAULT 0,tax_amount REAL NOT NULL DEFAULT 0,markup_amount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,last_validated_at TEXT,expires_at TEXT NOT NULL,raw_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,UNIQUE(client_id,offer_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_offers_search ON live_travel_offers(client_id,search_id,total_amount)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_quotes (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,quote_ref TEXT NOT NULL,search_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',customer_name TEXT NOT NULL DEFAULT '',customer_phone TEXT NOT NULL DEFAULT '',customer_email TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'draft',currency TEXT NOT NULL DEFAULT 'AED',subtotal REAL NOT NULL DEFAULT 0,service_fee REAL NOT NULL DEFAULT 0,discount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',valid_until TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,quote_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_quotes_client ON live_travel_quotes(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_bookings (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_ref TEXT NOT NULL,quote_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',supplier TEXT NOT NULL DEFAULT '',supplier_booking_id TEXT NOT NULL DEFAULT '',pnr TEXT NOT NULL DEFAULT '',ticket_numbers_json TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'draft',payment_status TEXT NOT NULL DEFAULT 'unpaid',currency TEXT NOT NULL DEFAULT 'AED',total_amount REAL NOT NULL DEFAULT 0,amount_paid REAL NOT NULL DEFAULT 0,balance_due REAL NOT NULL DEFAULT 0,hold_expires_at TEXT,last_synced_at TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,booking_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_bookings_client ON live_travel_bookings(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_passengers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,passenger_type TEXT NOT NULL DEFAULT 'adult',title TEXT NOT NULL DEFAULT '',first_name TEXT NOT NULL,last_name TEXT NOT NULL,date_of_birth TEXT,gender TEXT NOT NULL DEFAULT '',nationality TEXT NOT NULL DEFAULT '',passport_number TEXT NOT NULL DEFAULT '',passport_expiry TEXT,issuing_country TEXT NOT NULL DEFAULT '',frequent_flyer_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_passengers_booking ON live_travel_passengers(client_id,booking_id)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_payments (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,payment_ref TEXT NOT NULL,method TEXT NOT NULL DEFAULT 'cash',direction TEXT NOT NULL DEFAULT 'receipt',amount REAL NOT NULL,currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'received',external_ref TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,payment_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_payments_booking ON live_travel_payments(client_id,booking_id,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_wallet_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,entry_ref TEXT NOT NULL,agent_ref TEXT NOT NULL DEFAULT 'owner',booking_id INTEGER,entry_type TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL DEFAULT 'AED',balance_after REAL NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,entry_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_wallet_client ON live_travel_wallet_ledger(client_id,agent_ref,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_commissions (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,agent_ref TEXT NOT NULL DEFAULT 'owner',commission_type TEXT NOT NULL DEFAULT 'fixed',commission_value REAL NOT NULL DEFAULT 0,commission_amount REAL NOT NULL DEFAULT 0,currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_commissions_client ON live_travel_commissions(client_id,status,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_service_requests (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,request_ref TEXT NOT NULL,booking_id INTEGER NOT NULL,request_type TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'open',reason TEXT NOT NULL DEFAULT '',supplier_reference TEXT NOT NULL DEFAULT '',estimated_amount REAL NOT NULL DEFAULT 0,currency TEXT NOT NULL DEFAULT 'AED',notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,request_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_service_requests_client ON live_travel_service_requests(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,entity_type TEXT NOT NULL,entity_id TEXT NOT NULL,action TEXT NOT NULL,actor_email TEXT NOT NULL DEFAULT '',details_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_audit_client ON live_travel_audit_log(client_id,created_at)`,
+  ];
+  await env.DB.batch(stmts.map(s=>env.DB.prepare(s)));
+}
+
+async function handleLtBootstrap(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await ltEnsureSchema(env);
+  await ltSeedSuppliers(env,auth.cid);
+  const [suppliers,searches,quotes,bookings,service,wallet,walletEntries,agents,commissions]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? ORDER BY priority`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 20`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE client_id=? ORDER BY updated_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT currency,COALESCE(SUM(CASE WHEN entry_type IN ('credit','refund') THEN amount ELSE -amount END),0) balance FROM live_travel_wallet_ledger WHERE client_id=? GROUP BY currency`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT c.*,b.booking_ref,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 200`).bind(auth.cid).all()
+  ]);
+  const supplierList=await Promise.all((suppliers.results||[]).map(async s=>ltSupplierPublic(await ltSupplierRuntime(env,s))));
+  return json({suppliers:supplierList,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
+}
+async function handleLtSuppliersUpdate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  await ltSeedSuppliers(env,auth.cid);
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  const previous=await ltSupplierRuntime(env,old),credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:['api_key'];
+  const credentials=body.clear_credentials?{}:{...(previous.credentials||{})};
+  for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
+  const endpointKeys=supplier==='serpapi'?['search']:['search','revalidate','book','ticket','sync','cancel'],endpoints={...(previous.endpoints||{})};
+  for(const key of endpointKeys)if(body.endpoints?.[key]!==undefined)endpoints[key]=ltText(body.endpoints[key],1000);
+  if(supplier==='serpapi'&&!endpoints.search)endpoints.search='https://serpapi.com/search.json';
+  const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
+  const runtime={...old,supplier,credentials,endpoints};
+  if(body.enabled&&!ltSupplierConfigured(runtime))return json({error:'Save this client’s required API key and search endpoint before enabling the supplier.'},400);
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,credentials_encrypted=?,endpoints_json=?,updated_at=? WHERE client_id=? AND supplier=?`)
+    .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),await ltEncryptCredentials(env,credentials),JSON.stringify(endpoints),ltNow(),auth.cid,supplier).run();
+  await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value),credential_fields:Object.keys(credentials),endpoint_fields:Object.keys(endpoints)});
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  return json(ltSupplierPublic(await ltSupplierRuntime(env,row)));
+}
+async function handleLtSupplierHealth(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const supplier=new URL(request.url).searchParams.get('supplier')||'';
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first(),runtime=await ltSupplierRuntime(env,row);
+  const configured=ltSupplierConfigured(runtime), status=configured?'configured':'not_configured', now=ltNow();
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET last_status=?,last_checked_at=?,updated_at=? WHERE client_id=? AND supplier=?`).bind(status,now,now,auth.cid,supplier).run();
+  return json({supplier,status,credentials_configured:configured,checked_at:now});
+}
+async function handleLtSearch(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  let input; try{input=ltSearchParams(await request.json().catch(()=>({})));}catch(e){return json({error:e.message},400);}
+  await ltSeedSuppliers(env,auth.cid);
+  const {results:settings}=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all();
+  if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
+  const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
+  const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
+    .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
+  const searchId=insert.meta.last_row_id, errors={}, offers=[];
+  const settled=await Promise.all((settings||[]).map(async setting=>{
+    try{const runtime=await ltSupplierRuntime(env,setting);return {setting,data:await ltSupplierSearch(runtime,input)};}catch(e){return {setting,error:String(e?.message||e)};}
+  }));
+  for(const result of settled){
+    const supplier=result.setting.supplier;
+    if(result.error){errors[supplier]=result.error;continue;}
+    for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
+      const normalized=ltNormalizeOffer(supplier,raw,{...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value});
+      if(!normalized.total_amount)continue;
+      const offerRef=ltRef('OF');
+      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),now).run();
+      offers.push(ltRow({id:saved.meta.last_row_id,search_id:searchId,offer_ref:offerRef,...normalized,expires_at:expires,created_at:now}));
+    }
+  }
+  offers.sort((a,b)=>a.total_amount-b.total_amount);
+  const status=offers.length?'complete':'failed';
+  await env.DB.prepare(`UPDATE live_travel_searches SET status=?,supplier_errors_json=? WHERE id=? AND client_id=?`).bind(status,JSON.stringify(errors),searchId,auth.cid).run();
+  await ltAudit(env,auth.cid,'search',searchRef,'completed',auth.email,{offer_count:offers.length,suppliers:(settings||[]).map(s=>s.supplier),errors});
+  return json({search:{id:searchId,search_ref:searchRef,...input,status,errors,created_at:now,expires_at:expires},offers});
+}
+async function handleLtSearchList(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const u=new URL(request.url), searchId=Number(u.searchParams.get('search_id')||0);
+  if(searchId){
+    const search=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE id=? AND client_id=?`).bind(searchId,auth.cid).first();
+    if(!search)return json({error:'Search not found'},404);
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_offers WHERE search_id=? AND client_id=? ORDER BY total_amount`).bind(searchId,auth.cid).all();
+    return json({search:ltRow(search),offers:(results||[]).map(ltRow)});
+  }
+  const {results}=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all();
+  return json({list:(results||[]).map(ltRow)});
+}
+async function handleLtRevalidate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), offer=await ltOfferById(env,auth.cid,body.offer_id);
+  if(!offer)return json({error:'Offer not found'},404);
+  if(!offer.bookable)return json({error:'SerpApi prices are indicative only. Select a matching Riya or TripJack fare to continue.'},409);
+  if(new Date(offer.expires_at).getTime()<Date.now())return json({error:'This offer expired. Run a new search.'},409);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,offer.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
+  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.currency,cabin:offer.cabin,markup_type:'fixed',markup_value:offer.markup_amount});
+  const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
+  await env.DB.prepare(`UPDATE live_travel_offers SET base_amount=?,tax_amount=?,total_amount=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
+    .bind(normalized.base_amount,normalized.tax_amount,normalized.total_amount,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'offer',offer.offer_ref,'revalidated',auth.email,{old_total:offer.total_amount,new_total:normalized.total_amount});
+  return json({offer:ltRow(await ltOfferById(env,auth.cid,offer.id)),price_changed:Number(offer.total_amount)!==Number(normalized.total_amount)});
+}
+async function handleLtQuotes(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT q.*,o.airline_name,o.flight_numbers FROM live_travel_quotes q LEFT JOIN live_travel_offers o ON o.id=q.offer_id AND o.client_id=q.client_id WHERE q.client_id=? ORDER BY q.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const offer=await ltOfferById(env,auth.cid,body.offer_id); if(!offer)return json({error:'Offer not found'},404);
+    const serviceFee=ltMoney(body.service_fee),discount=ltMoney(body.discount),subtotal=ltMoney(offer.total_amount),total=ltMoney(subtotal+serviceFee-discount),now=ltNow(),ref=ltRef('QT');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,search_id,offer_id,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,valid_until,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,ref,offer.search_id,offer.id,ltText(body.lead_id,80),ltText(body.customer_name,180),ltText(body.customer_phone,40),ltText(body.customer_email,250),offer.currency,subtotal,serviceFee,discount,total,ltText(body.notes,2000),body.valid_until||offer.expires_at,auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'quote',ref,'created',auth.email,{offer_ref:offer.offer_ref,total});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id||0), status=['draft','sent','accepted','expired','cancelled'].includes(body.status)?body.status:'draft';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Quote not found'},404);
+  const fee=body.service_fee===undefined?old.service_fee:ltMoney(body.service_fee), discount=body.discount===undefined?old.discount:ltMoney(body.discount), total=ltMoney(Number(old.subtotal)+fee-discount);
+  await env.DB.prepare(`UPDATE live_travel_quotes SET customer_name=?,customer_phone=?,customer_email=?,status=?,service_fee=?,discount=?,total_amount=?,notes=?,valid_until=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(ltText(body.customer_name??old.customer_name,180),ltText(body.customer_phone??old.customer_phone,40),ltText(body.customer_email??old.customer_email,250),status,fee,discount,total,ltText(body.notes??old.notes,2000),body.valid_until??old.valid_until,ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'quote',old.quote_ref,'updated',auth.email,{status,total});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+async function handleLtBookings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const u=new URL(request.url), id=Number(u.searchParams.get('id')||0);
+    if(id){
+      const booking=await ltBookingById(env,auth.cid,id); if(!booking)return json({error:'Booking not found'},404);
+      const [pax,pay,svc]=await Promise.all([
+        env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE booking_id=? AND client_id=? ORDER BY id`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_payments WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all()]);
+      return json({booking:ltRow(booking),passengers:(pax.results||[]).map(ltRow),payments:pay.results||[],service_requests:svc.results||[]});
+    }
+    const {results}=await env.DB.prepare(`SELECT b.*,q.customer_name,q.customer_phone FROM live_travel_bookings b LEFT JOIN live_travel_quotes q ON q.id=b.quote_id AND q.client_id=b.client_id WHERE b.client_id=? ORDER BY b.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:(results||[]).map(ltRow)});
+  }
+  const body=await request.json().catch(()=>({})), quote=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(Number(body.quote_id),auth.cid).first();
+  if(!quote)return json({error:'Quote not found'},404);
+  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer is required.'},409);
+  if(!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  const now=ltNow(),ref=ltRef('BK');
+  const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?, ?,?)`)
+    .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now).run();
+  const bookingId=r.meta.last_row_id;
+  await env.DB.prepare(`UPDATE live_travel_quotes SET status='accepted',updated_at=? WHERE id=? AND client_id=?`).bind(now,quote.id,auth.cid).run();
+  for(const pax of Array.isArray(body.passengers)?body.passengers:[]){
+    if(!ltText(pax.first_name,100)||!ltText(pax.last_name,100))continue;
+    await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,bookingId,['adult','child','infant'].includes(pax.passenger_type)?pax.passenger_type:'adult',ltText(pax.title,20),ltText(pax.first_name,100),ltText(pax.last_name,100),pax.date_of_birth||null,ltText(pax.gender,20),ltText(pax.nationality,80),ltText(pax.passport_number,80),pax.passport_expiry||null,ltText(pax.issuing_country,80),JSON.stringify(pax.frequent_flyer||{}),now,now).run();
+  }
+  await ltAudit(env,auth.cid,'booking',ref,'created',auth.email,{quote_ref:quote.quote_ref,supplier:offer.supplier});
+  return json(ltRow(await ltBookingById(env,auth.cid,bookingId)));
+}
+async function handleLtBookingAction(request,env,action){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const allowed={book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
+  if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,booking.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
+  const statuses={book:'confirmed',ticket:'ticketed',cancel:'cancelled',sync:ltText(data.status||booking.status,30)};
+  const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]),now=ltNow();
+  await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,ticket_numbers_json=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,JSON.stringify(tickets),now,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,action,auth.email,{status,pnr});
+  return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+}
+async function handleLtPassengers(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})),now=ltNow();
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    if(!ltText(body.first_name,100)||!ltText(body.last_name,100))return json({error:'Passenger first and last name are required'},400);
+    const r=await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,booking.id,['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:'adult',ltText(body.title,20),ltText(body.first_name,100),ltText(body.last_name,100),body.date_of_birth||null,ltText(body.gender,20),ltText(body.nationality,80),ltText(body.passport_number,80),body.passport_expiry||null,ltText(body.issuing_country,80),JSON.stringify(body.frequent_flyer||{}),now,now).run();
+    await ltAudit(env,auth.cid,'booking',booking.booking_ref,'passenger_added',auth.email,{passenger_id:r.meta.last_row_id});
+    return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first()));
+  }
+  const old=await env.DB.prepare(`SELECT p.*,b.booking_ref FROM live_travel_passengers p JOIN live_travel_bookings b ON b.id=p.booking_id AND b.client_id=p.client_id WHERE p.id=? AND p.client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Passenger not found'},404);
+  if(request.method==='DELETE'){
+    if(['confirmed','ticketed'].includes((await ltBookingById(env,auth.cid,old.booking_id))?.status))return json({error:'Use a name-correction or cancellation request after supplier confirmation.'},409);
+    await env.DB.prepare(`DELETE FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).run();
+    await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_removed',auth.email,{passenger_id:old.id}); return json({ok:true});
+  }
+  await env.DB.prepare(`UPDATE live_travel_passengers SET passenger_type=?,title=?,first_name=?,last_name=?,date_of_birth=?,gender=?,nationality=?,passport_number=?,passport_expiry=?,issuing_country=?,frequent_flyer_json=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:old.passenger_type,ltText(body.title??old.title,20),ltText(body.first_name??old.first_name,100),ltText(body.last_name??old.last_name,100),body.date_of_birth??old.date_of_birth,ltText(body.gender??old.gender,20),ltText(body.nationality??old.nationality,80),ltText(body.passport_number??old.passport_number,80),body.passport_expiry??old.passport_expiry,ltText(body.issuing_country??old.issuing_country,80),JSON.stringify(body.frequent_flyer??ltJson(old.frequent_flyer_json,{})),now,old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_updated',auth.email,{passenger_id:old.id});
+  return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first()));
+}
+async function handleLtPayment(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const now=ltNow(),ref=ltRef('PY'),direction=body.direction==='refund'?'refund':'receipt';
+  await env.DB.prepare(`INSERT INTO live_travel_payments (client_id,booking_id,payment_ref,method,direction,amount,currency,status,external_ref,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,'received',?,?,?,?)`)
+    .bind(auth.cid,booking.id,ref,ltText(body.method||'cash',40),direction,amount,booking.currency,ltText(body.external_ref,120),ltText(body.notes,1000),auth.email,now).run();
+  const paid=ltMoney(Number(booking.amount_paid)+(direction==='receipt'?amount:-amount)),balance=ltMoney(Number(booking.total_amount)-paid),paymentStatus=balance<=0?'paid':paid>0?'partial':'unpaid';
+  await env.DB.prepare(`UPDATE live_travel_bookings SET amount_paid=?,balance_due=?,payment_status=?,updated_at=? WHERE id=? AND client_id=?`).bind(paid,balance,paymentStatus,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,direction==='receipt'?'payment_received':'payment_refunded',auth.email,{amount,currency:booking.currency,reference:ref});
+  return json({payment_ref:ref,booking:ltRow(await ltBookingById(env,auth.cid,booking.id))});
+}
+async function handleLtWallet(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({})),amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const currency=/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED', agent=ltText(body.agent_ref||'owner',100),type=['credit','debit','refund','commission'].includes(body.entry_type)?body.entry_type:'credit';
+  const prev=await env.DB.prepare(`SELECT balance_after FROM live_travel_wallet_ledger WHERE client_id=? AND agent_ref=? AND currency=? ORDER BY id DESC LIMIT 1`).bind(auth.cid,agent,currency).first(), balance=ltMoney(Number(prev?.balance_after||0)+(type==='credit'||type==='refund'?amount:-amount)),now=ltNow(),ref=ltRef('WL');
+  await env.DB.prepare(`INSERT INTO live_travel_wallet_ledger (client_id,entry_ref,agent_ref,booking_id,entry_type,amount,currency,balance_after,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,agent,body.booking_id||null,type,amount,currency,balance,ltText(body.notes,1000),auth.email,now).run();
+  await ltAudit(env,auth.cid,'wallet',ref,'entry_created',auth.email,{type,amount,currency,agent_ref:agent});
+  return json({entry_ref:ref,balance});
+}
+async function handleLtServiceRequests(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT s.*,b.booking_ref,b.pnr FROM live_travel_service_requests s JOIN live_travel_bookings b ON b.id=s.booking_id AND b.client_id=s.client_id WHERE s.client_id=? ORDER BY s.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const type=['cancel','refund','reissue','name_correction','baggage','seat','other'].includes(body.request_type)?body.request_type:'other',now=ltNow(),ref=ltRef('SR');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_service_requests (client_id,request_ref,booking_id,request_type,status,reason,estimated_amount,currency,notes,created_by,created_at,updated_at) VALUES (?,?,?,?,'open',?,?,?,?,?,?,?)`).bind(auth.cid,ref,booking.id,type,ltText(body.reason,1000),ltMoney(body.estimated_amount),booking.currency,ltText(body.notes,2000),auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'service_request',ref,'created',auth.email,{type,booking_ref:booking.booking_ref});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id),status=['open','submitted','approved','rejected','completed','cancelled'].includes(body.status)?body.status:'open';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Service request not found'},404);
+  await env.DB.prepare(`UPDATE live_travel_service_requests SET status=?,supplier_reference=?,estimated_amount=?,notes=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltText(body.supplier_reference??old.supplier_reference,120),ltMoney(body.estimated_amount??old.estimated_amount),ltText(body.notes??old.notes,2000),ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'service_request',old.request_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+
+async function handleLtAgents(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT a.*,COALESCE((SELECT balance_after FROM live_travel_wallet_ledger w WHERE w.client_id=a.client_id AND w.agent_ref=a.agent_ref ORDER BY w.id DESC LIMIT 1),0) wallet_balance FROM live_travel_agents a WHERE a.client_id=? ORDER BY a.created_at DESC`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const name=ltText(body.name,180); if(!name)return json({error:'Agent name is required'},400);
+    const ref=ltText(body.agent_ref,80)||ltRef('AG'),parent=ltText(body.parent_agent_ref||'owner',80),type=['master_agent','agent','sub_agent'].includes(body.agent_type)?body.agent_type:'agent',now=ltNow();
+    try{await env.DB.prepare(`INSERT INTO live_travel_agents (client_id,agent_ref,parent_agent_ref,agent_type,name,email,phone,credit_limit,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,parent,type,name,ltText(body.email,250),ltText(body.phone,40),ltMoney(body.credit_limit),'active',now,now).run();}
+    catch(e){if(/unique|constraint/i.test(String(e?.message||e)))return json({error:'That agent reference already exists.'},409);throw e;}
+    await ltAudit(env,auth.cid,'agent',ref,'created',auth.email,{name,type,parent});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? AND agent_ref=?`).bind(auth.cid,ref).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Agent not found'},404);
+  const status=['active','suspended','closed'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_agents SET name=?,email=?,phone=?,credit_limit=?,status=?,updated_at=? WHERE id=? AND client_id=?`).bind(ltText(body.name??old.name,180),ltText(body.email??old.email,250),ltText(body.phone??old.phone,40),ltMoney(body.credit_limit??old.credit_limit),status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'agent',old.agent_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+async function handleLtCommissions(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT c.*,b.booking_ref,b.pnr,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const agent=ltText(body.agent_ref||'owner',80),type=body.commission_type==='percent'?'percent':'fixed',value=ltMoney(body.commission_value),amount=type==='percent'?Math.round(Number(booking.total_amount)*value)/100:value,now=ltNow();
+    const r=await env.DB.prepare(`INSERT INTO live_travel_commissions (client_id,booking_id,agent_ref,commission_type,commission_value,commission_amount,currency,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'pending',?,?)`).bind(auth.cid,booking.id,agent,type,value,amount,booking.currency,now,now).run();
+    await ltAudit(env,auth.cid,'commission',r.meta.last_row_id,'created',auth.email,{booking_ref:booking.booking_ref,agent_ref:agent,amount});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Commission not found'},404);
+  const status=['pending','approved','paid','cancelled'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_commissions SET status=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'commission',old.id,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -22825,7 +24173,7 @@ export default {
 
     let res;
     try{
-      if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
+      if(url.pathname.startsWith('/healthcare/')||url.pathname.startsWith('/hc/book')) await hcEnsureOperationsSchema(env);
       if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
       if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
@@ -22834,6 +24182,24 @@ export default {
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
+      else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
+      else if(url.pathname==='/live-travel/suppliers' && request.method==='PATCH'){ res=await handleLtSuppliersUpdate(request, env); }
+      else if(url.pathname==='/live-travel/suppliers/health' && request.method==='GET'){ res=await handleLtSupplierHealth(request, env); }
+      else if(url.pathname==='/live-travel/search' && request.method==='POST'){ res=await handleLtSearch(request, env); }
+      else if(url.pathname==='/live-travel/searches' && request.method==='GET'){ res=await handleLtSearchList(request, env); }
+      else if(url.pathname==='/live-travel/offers/revalidate' && request.method==='POST'){ res=await handleLtRevalidate(request, env); }
+      else if(url.pathname==='/live-travel/quotes' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtQuotes(request, env); }
+      else if(url.pathname==='/live-travel/bookings' && ['GET','POST'].includes(request.method)){ res=await handleLtBookings(request, env); }
+      else if(url.pathname.startsWith('/live-travel/bookings/') && request.method==='POST'){
+        const action=url.pathname.slice('/live-travel/bookings/'.length);
+        res=['book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
+      }
+      else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
+      else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
+      else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
+      else if(url.pathname==='/live-travel/service-requests' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtServiceRequests(request, env); }
+      else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
+      else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
@@ -22924,6 +24290,9 @@ export default {
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='POST'){ res=await handleEduStudentUpsert(request, env); }
       else if(url.pathname==='/edu/enroll' && request.method==='POST'){ res=await handleEduEnroll(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='GET'){ res=await handleEduAdmissionApplicationsList(request, env); }
+      else if(url.pathname==='/edu/admissions/detail' && request.method==='GET'){ res=await handleEduAdmissionApplicationDetail(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='PATCH'){ res=await handleEduAdmissionApplicationUpdate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
@@ -22962,11 +24331,13 @@ export default {
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
       else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
+      else if(url.pathname==='/appt/public/doctors' && request.method==='GET'){ res=await handleApptPublicDoctors(request, env); }
       else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/ai/business-chat' && request.method==='POST'){ res=await handleAiBusinessChat(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
       else if(url.pathname==='/ai/booking-signal' && request.method==='POST'){ res=await handleAiBookingSignal(request, env); }
@@ -23212,6 +24583,12 @@ export default {
       else if(url.pathname==='/healthcare/settings' && request.method==='GET'){ res=await handleHcSettingsGet(request, env); }
       else if(url.pathname==='/healthcare/settings' && request.method==='PATCH'){ res=await handleHcSettingsUpdate(request, env); }
       else if(url.pathname==='/healthcare/analytics' && request.method==='GET'){ res=await handleHcAnalytics(request, env); }
+      else if(url.pathname==='/hc/book' && request.method==='GET'){ res=await handleHcPublicBookPage(request,env); }
+      else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }
+      else if(url.pathname==='/hc/book/doctors' && request.method==='GET'){ res=await handleHcPublicBookDoctors(request,env); }
+      else if(url.pathname==='/hc/book/dates' && request.method==='GET'){ res=await handleHcPublicBookDates(request,env); }
+      else if(url.pathname==='/hc/book/slots' && request.method==='GET'){ res=await handleHcPublicBookSlots(request,env); }
+      else if(url.pathname==='/hc/book/submit' && request.method==='POST'){ res=await handleHcPublicBookSubmit(request,env); }
       else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }

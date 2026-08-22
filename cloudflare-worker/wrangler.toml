@@ -284,3 +284,7 @@ MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 #                           Native Forms on; handleNativeFormSync fails with a clear error if unset.
 #                           /native-forms/endpoint's only auth is META_APP_SECRET (above) signing
 #                           X-Hub-Signature-256 — no session, called directly by Meta.
+#   LIVE_TRAVEL_CREDENTIALS_KEY   platform AES-GCM encryption key for tenant-owned supplier
+#                           credentials stored in D1. Riya, TripJack and SerpApi credentials are
+#                           entered per client in Live Agency → Suppliers, never as Worker secrets.
+#                           Use a different encryption key and D1 database in every environment.

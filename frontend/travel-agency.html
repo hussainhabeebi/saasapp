@@ -287,6 +287,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   <header>
     <span class="brand">Leadvyne<span>.</span></span>
     <span class="chip">✈️ Travel Agency</span>
+    <button class="hback" style="background:#d92d20;color:#fff;border-color:#d92d20;font-weight:700" onclick="openLiveAgency()">🔴 Live Agency</button>
     <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
   </header>
 
@@ -302,6 +303,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="ta-tab" data-ta="bookings">🎫 Bookings</button>
     <button class="ta-tab" data-ta="cars">🚗 Cars</button>
     <button class="ta-tab" data-ta="finance">💰 Finance</button>
+    <button class="ta-tab" style="color:#d92d20;font-weight:800" onclick="openLiveAgency()">🔴 Live Agency</button>
   </div>
   <div id="taMissingTablesBanner" style="display:none"></div>
 
@@ -785,6 +787,10 @@ async function loadLeads(){
    rather than duplicating that UI in this standalone module). */
 function openLeadInParent(leadId){
   window.parent.postMessage({type:'ta:openLead', leadId}, location.origin);
+}
+
+function openLiveAgency(){
+  window.location.href=`live-travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`;
 }
 
 async function init(){
