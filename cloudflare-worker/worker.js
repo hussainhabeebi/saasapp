@@ -14808,22 +14808,30 @@ async function handleApptPublicBook(request, env){
       await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
       await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
     }
-    // Save to CRM and send WhatsApp confirmation via the patient's existing Chatwoot conversation
+    // Save to CRM — best-effort
     let svc=null;
     if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
-    const crmResult=await advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>({}));
-    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token && crmResult?.lead_id){
-      const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${crmResult.lead_id}`).catch(()=>null);
-      const lead=leadR?await leadR.json().catch(()=>null):null;
-      const convId=lead?.ConversationID||lead?.conv_id||lead?.ConversationId||lead?.chatwoot_conv_id||null;
-      if(convId){
-        const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
-        const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
-        const dateLine=date?`\n📅 *Date:* ${date}`:'';
-        const timeLine=time?`\n⏰ *Time:* ${time}`:'';
-        const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
-        sendFlowWhatsappDm(c, convId, confirmMsg).catch(()=>null);
-      }
+    advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
+    // Send WhatsApp confirmation via the patient's existing Chatwoot conversation (looked up by phone)
+    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+      (async()=>{
+        try{
+          const srch=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,{headers:{api_access_token:c.chatwoot_token}});
+          const srchData=srch.ok?await srch.json().catch(()=>null):null;
+          const contact=(srchData?.payload||[])[0]||null;
+          if(!contact) return;
+          const convR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,{headers:{api_access_token:c.chatwoot_token}});
+          const convData=convR.ok?await convR.json().catch(()=>null):null;
+          const convId=((convData?.payload||[])[0])?.id||null;
+          if(!convId) return;
+          const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
+          const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
+          const dateLine=date?`\n📅 *Date:* ${date}`:'';
+          const timeLine=time?`\n⏰ *Time:* ${time}`:'';
+          const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
+          await sendFlowWhatsappDm(c, convId, confirmMsg);
+        }catch(e){}
+      })();
     }
     return json({ok:true});
   }
