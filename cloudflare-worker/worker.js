@@ -7869,6 +7869,79 @@ async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadI
   }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
 }
 
+/* ── Education enrollment collection flow ─────────────────────────────────────────────────────
+   Deterministic name → phone collection, then INSERT into edu_enrollments.
+   Intercepts BEFORE the FAQ LLM so the bot never hallucinates "recorded" without actually saving.
+   State is stored as EduEnrollState (JSON) on the lead row in NocoDB.
+   ─────────────────────────────────────────────────────────────────────────────────────────── */
+const EDU_ENROLL_INTENT_RE=/\b(enroll|admission|apply|register|i want to join|want enroll|need enroll|enroll me|i want to enroll|how to enroll|how to apply|start enrollment|begin enrollment|take admission)\b/i;
+
+async function engineMaybeEduEnrollFlow(env, c, clientId, convId, leadId, userText, state, routing){
+  if(c.industry!=='education'||!leadId||!userText) return false;
+  const enrollState=engineParseJsonField(state.lead?.EduEnrollState, null);
+
+  // STEP: awaiting_name — previous turn asked for full name
+  if(enrollState?.step==='awaiting_name'){
+    const studentName=userText.trim();
+    const next={...enrollState, step:'awaiting_phone', student_name:studentName};
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(next)}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`Thanks, ${studentName}! 😊\n\nCould you please share your *Mobile Number* so we can complete your enrollment for *${courseName}*?`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // STEP: awaiting_phone — previous turn asked for phone, now save to D1
+  if(enrollState?.step==='awaiting_phone'){
+    const phone=userText.replace(/[^\d+]/g,'').trim()||userText.trim();
+    const now=new Date().toISOString();
+    const enrollmentId='ENR-'+Date.now();
+    try{
+      await env.DB.prepare(
+        `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(Number(clientId),enrollmentId,now.slice(0,10),String(enrollState.student_name||''),phone,'',String(enrollState.course_name||''),'pending','via WhatsApp',now,now).run();
+    }catch(e){ await reportOpsError(env,'eduEnrollFlowInsert',e,{clientId,convId}); }
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:null}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`✅ Your enrollment request for *${courseName}* has been recorded!\n\n• 📚 Course: ${courseName}\n• 👤 Name: ${enrollState.student_name}\n• 📱 Mobile: ${phone}\n• 🆔 Reference: ${enrollmentId}\n\nOur admissions team will contact you shortly to confirm. 🎓\n\n*Reply with:* [Ask a Question] [View Other Courses] [Talk to Advisor]`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // DETECT ENROLLMENT INTENT — start the collection flow
+  if(!EDU_ENROLL_INTENT_RE.test(userText)) return false;
+  let courseName='';
+  try{
+    const {results:courses}=await env.DB.prepare(`SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    let found=courses.find(cr=>cr.name&&lower.includes(cr.name.toLowerCase()));
+    if(!found){
+      // Search recent conversation history for a course name the bot mentioned
+      const history=(state.activeHistory||[]).slice(-8).reverse();
+      for(const msg of history){
+        if(!msg.content) continue;
+        const msgLower=msg.content.toLowerCase();
+        found=courses.find(cr=>cr.name&&msgLower.includes(cr.name.toLowerCase()));
+        if(found) break;
+      }
+    }
+    if(!found&&courses.length===1) found=courses[0];
+    if(found) courseName=found.name;
+  }catch(e){}
+  const newState={step:'awaiting_name',course_name:courseName};
+  await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+  await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(newState)}}).catch(()=>{});
+  const courseLabel=courseName?`the *${courseName}*`:`a course`;
+  const reply=`Great! To enroll in ${courseLabel}, I need a few details. 📋\n\nCould you please share your *Full Name*?`;
+  await engineSendChatwootReply(env,c,clientId,convId,reply);
+  routing.reply=reply;
+  return true;
+}
+
 /* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
 async function engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText){
   if(c.industry!=='education' || !userText || !resolvedLeadId || !convId) return;
@@ -13863,6 +13936,14 @@ async function handleEngineWebhook(request, env, secret){
       try{
         if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
       }catch(e){}
+    }
+
+    // Education enrollment flow — deterministic name/phone collection + D1 insert.
+    // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
+    if(!orderHandledInline && c.industry==='education' && state.leadId){
+      try{
+        if(await engineMaybeEduEnrollFlow(env, c, clientId, convId, state.leadId, userText, state, routing)) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env,'eduEnrollFlow',e,{clientId,convId}); }
     }
 
     // A brand-new ecom lead's very first message, when this client has product categories
