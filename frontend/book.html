@@ -12,156 +12,237 @@
      data, or read/update/delete anything. -->
 <style>
 :root{
-  --bg:#F0FDFF;--card:#FFFFFF;--ink:#0C1B1E;--muted:#5B6B70;
-  --accent:#0891B2;--accent-ink:#0E7490;--accent-soft:#CFFAFE;
-  --line:#CFFAFE;--body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --bg:#ECE5DD;--card:#FFFFFF;--ink:#111B21;--muted:#667781;
+  --accent:#25D366;--accent-dark:#128C7E;--accent-soft:#DCF8C6;
+  --header:#128C7E;--line:#E0E0E0;--input-bg:#F0F2F5;
+  --body:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
 }
-*{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
-.hdr{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:16px 18px}
-.biz-name{font-size:19px;font-weight:700;letter-spacing:-.01em}
-.biz-sub{font-size:13px;color:var(--muted);margin-top:2px}
-.wrap{max-width:520px;margin:0 auto;padding:18px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
-.label{font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:6px;display:block}
-.field{margin-bottom:16px}
-input,select,textarea{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 12px;font-family:var(--body);font-size:14.5px;color:var(--ink);background:var(--bg)}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);background:#fff}
-textarea{resize:vertical;min-height:60px}
-.svc-opt,.doc-opt{display:block;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer;background:var(--bg)}
-.svc-opt.sel,.doc-opt.sel{border-color:var(--accent);background:var(--accent-soft)}
-.svc-name,.doc-name{font-weight:600;font-size:14px}
-.svc-meta,.doc-meta{font-size:12.5px;color:var(--muted);margin-top:2px}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:13px;font-size:14.5px;font-weight:700;cursor:pointer;font-family:var(--body)}
-.btn:active{background:var(--accent-ink)}
-.btn:disabled{background:var(--line);color:var(--muted);cursor:not-allowed}
-.msg{text-align:center;font-size:13px;margin-top:10px;min-height:18px}
-.msg.err{color:#B42318}
-.msg.ok{color:var(--accent-ink)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased;min-height:100vh}
+.hdr{background:var(--header);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.hdr-avatar{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.hdr-info{flex:1;min-width:0}
+.biz-name{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.biz-sub{font-size:12px;opacity:.85;margin-top:1px}
+.wrap{max-width:480px;margin:0 auto;padding:12px 10px 100px}
+.bubble{background:var(--card);border-radius:12px 12px 12px 4px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);position:relative}
+.bubble::after{content:'';position:absolute;left:-6px;bottom:10px;border:6px solid transparent;border-right-color:var(--card);border-left:0}
+.bubble-label{font-size:12px;color:var(--header);font-weight:600;margin-bottom:10px}
+.field{margin-bottom:12px}
+.label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px;display:block;text-transform:uppercase;letter-spacing:.03em}
+select,input,textarea{width:100%;border:none;border-radius:10px;padding:13px 14px;font-family:var(--body);font-size:15px;color:var(--ink);background:var(--input-bg);-webkit-appearance:none;appearance:none;outline:none}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23667781' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;cursor:pointer}
+select:focus,input:focus,textarea:focus{background:var(--card);box-shadow:0 0 0 2px var(--accent)}
+textarea{resize:none;min-height:72px;line-height:1.5}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.doc-detail{font-size:11.5px;color:var(--muted);margin-top:4px;padding-left:2px}
+.sticky-footer{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:var(--bg);border-top:1px solid var(--line);max-width:480px;margin:0 auto;left:50%;transform:translateX(-50%)}
+@media(max-width:480px){.sticky-footer{max-width:100%;left:0;transform:none}}
+.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:25px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--body);letter-spacing:.02em;box-shadow:0 2px 8px rgba(37,211,102,.4)}
+.btn:active{background:var(--accent-dark)}
+.btn:disabled{background:#ccc;color:#888;cursor:not-allowed;box-shadow:none}
+.msg{text-align:center;font-size:13px;margin-top:8px;min-height:16px}
+.msg.err{color:#D32F2F}
+.msg.ok{color:var(--accent-dark)}
 .empty,.err-page{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
-.success{text-align:center;padding:40px 20px}
-.success .ic{font-size:48px;margin-bottom:12px}
-.success h2{font-size:18px;margin:0 0 8px}
-.success p{color:var(--muted);font-size:14px;line-height:1.6}
+.success-bubble{background:var(--accent-soft);border-radius:12px;padding:24px 20px;text-align:center;margin-top:20px}
+.success-bubble .ic{font-size:44px;margin-bottom:10px}
+.success-bubble h2{font-size:17px;margin:0 0 6px;color:var(--accent-dark)}
+.success-bubble p{color:var(--muted);font-size:13.5px;line-height:1.6;margin:0}
+.loading-text{font-size:13px;color:var(--muted);padding:8px 0}
 </style>
 </head>
 <body>
 
 <div class="hdr">
-  <div class="biz-name" id="bizName">Book an Appointment</div>
-  <div class="biz-sub" id="bizSub">Select a service and pick a time that works for you.</div>
+  <div class="hdr-avatar">🏥</div>
+  <div class="hdr-info">
+    <div class="biz-name" id="bizName">Book an Appointment</div>
+    <div class="biz-sub" id="bizSub">Online booking</div>
+  </div>
 </div>
 
 <div class="wrap">
   <div id="formArea"></div>
   <div class="empty" id="emptyMsg" style="display:none">No services listed yet — contact the business directly to book.</div>
-  <div class="err-page" id="errMsg" style="display:none">Sorry, this booking link isn't working right now.</div>
+  <div class="err-page" id="errMsg" style="display:none">Sorry, this booking link is not working right now.</div>
 </div>
 
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
 const clientId = params.get('client') || params.get('client_id') || '';
-const preselectedDoctorId = params.get('doctor_id') || '';
+const urlDoctorId = params.get('doctor_id') || '';
+const urlServiceId = params.get('service_id') || '';
 
 let bizInfo = {};
-let services = [];
-let doctors = [];
-let selectedServiceId = '';
-let selectedDoctorId = '';
+let allServices = [];
+let allDoctors = [];
 let isHealthcare = false;
 
-function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-function selectService(id){
-  selectedServiceId = String(id);
-  document.querySelectorAll('.svc-opt').forEach(el => el.classList.toggle('sel', el.dataset.id === selectedServiceId));
-  if(isHealthcare) loadDoctorsForService(id);
-}
+function getEl(id){ return document.getElementById(id); }
 
-function selectDoctor(id){
-  selectedDoctorId = String(id);
-  document.querySelectorAll('.doc-opt').forEach(el => el.classList.toggle('sel', el.dataset.id === selectedDoctorId));
-}
-
-async function loadDoctorsForService(serviceId){
-  const docArea = document.getElementById('doctorArea');
-  if(!docArea) return;
-  docArea.innerHTML = '<span class="label">Doctor / Consultant</span><div style="font-size:13px;color:var(--muted);padding:6px 0">Loading…</div>';
-  const r = await fetch(`${WORKER_BASE}/appt/public/doctors?client=${encodeURIComponent(clientId)}&service_id=${encodeURIComponent(serviceId||'')}`).catch(()=>null);
+async function loadServices(doctorId){
+  const qs = clientId ? `client=${encodeURIComponent(clientId)}${doctorId?'&doctor_id='+encodeURIComponent(doctorId):''}` : '';
+  const r = await fetch(`${WORKER_BASE}/appt/public/services?${qs}`).catch(()=>null);
   const data = r ? await r.json().catch(()=>({list:[]})) : {list:[]};
-  doctors = data.list || [];
-  const preDoc = preselectedDoctorId && doctors.find(d => String(d.Id) === preselectedDoctorId);
-  selectedDoctorId = preDoc ? preselectedDoctorId : (doctors.length ? String(doctors[0].Id) : '');
-  renderDoctorPicker(docArea);
+  return data.list || [];
 }
 
-function renderDoctorPicker(docArea){
-  if(!doctors.length){ docArea.innerHTML = ''; return; }
-  docArea.innerHTML = `
-    <span class="label">Doctor / Consultant</span>
-    ${doctors.map(d => `
-      <div class="doc-opt${String(d.Id)===selectedDoctorId?' sel':''}" data-id="${escHtml(d.Id)}" onclick="selectDoctor('${escHtml(d.Id)}')">
-        <div class="doc-name">${escHtml(d.name||'Doctor')}</div>
-        <div class="doc-meta">${[d.qualification,d.specialization].filter(Boolean).map(escHtml).join(' · ')||'&nbsp;'}</div>
-      </div>`).join('')}`;
+async function loadDoctors(serviceId){
+  const qs = clientId ? `client=${encodeURIComponent(clientId)}${serviceId?'&service_id='+encodeURIComponent(serviceId):''}` : '';
+  const r = await fetch(`${WORKER_BASE}/appt/public/doctors?${qs}`).catch(()=>null);
+  const data = r ? await r.json().catch(()=>({list:[]})) : {list:[]};
+  return data.list || [];
+}
+
+function populateSelect(selectEl, items, valueFn, labelFn, selectedVal, placeholder){
+  selectEl.innerHTML = '';
+  if(placeholder){
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = placeholder; o.disabled = false;
+    selectEl.appendChild(o);
+  }
+  items.forEach(item => {
+    const o = document.createElement('option');
+    o.value = valueFn(item); o.textContent = labelFn(item);
+    if(String(valueFn(item)) === String(selectedVal)) o.selected = true;
+    selectEl.appendChild(o);
+  });
+  if(selectedVal && items.some(i => String(valueFn(i)) === String(selectedVal))){
+    selectEl.value = String(selectedVal);
+  } else if(items.length && !placeholder){
+    selectEl.value = String(valueFn(items[0]));
+  }
+}
+
+async function onServiceChange(){
+  const svcSel = getEl('fService');
+  const svcId = svcSel ? svcSel.value : '';
+  if(!isHealthcare) return;
+  updateDoctorDetail();
+  const docSel = getEl('fDoctor');
+  if(!docSel) return;
+  docSel.disabled = true;
+  docSel.innerHTML = '<option>Loading…</option>';
+  const docs = await loadDoctors(svcId);
+  allDoctors = docs;
+  const curDoc = docSel.dataset.selected || urlDoctorId;
+  populateSelect(docSel, docs, d => d.Id, d => d.name, curDoc, docs.length ? '' : '(No doctors)');
+  docSel.disabled = false;
+  updateDoctorDetail();
+}
+
+async function onDoctorChange(){
+  const docSel = getEl('fDoctor');
+  const docId = docSel ? docSel.value : '';
+  updateDoctorDetail();
+  if(!isHealthcare) return;
+  const svcSel = getEl('fService');
+  if(!svcSel) return;
+  const curSvc = svcSel.value;
+  svcSel.disabled = true;
+  const svcs = await loadServices(docId);
+  allServices = svcs;
+  populateSelect(svcSel, svcs, s => s.Id, s => svcLabel(s), curSvc, svcs.length ? '' : '(No services)');
+  svcSel.disabled = false;
+}
+
+function svcLabel(s){
+  let label = s.name || 'Service';
+  const parts = [];
+  if(s.duration_minutes) parts.push(s.duration_minutes + ' min');
+  if(s.price) parts.push((s.currency||'') + ' ' + s.price);
+  if(parts.length) label += ' — ' + parts.join(', ');
+  return label;
+}
+
+function updateDoctorDetail(){
+  const docSel = getEl('fDoctor');
+  const detail = getEl('docDetail');
+  if(!docSel || !detail) return;
+  const docId = docSel.value;
+  const doc = allDoctors.find(d => String(d.Id) === String(docId));
+  if(doc && (doc.qualification || doc.specialization)){
+    detail.textContent = [doc.qualification, doc.specialization].filter(Boolean).join(' · ');
+  } else {
+    detail.textContent = '';
+  }
 }
 
 function renderForm(){
   const today = new Date().toISOString().slice(0,10);
-  const svcHtml = services.length ? `
-    <div class="card">
-      <span class="label">Service</span>
-      ${services.map(s => `
-        <div class="svc-opt" data-id="${escHtml(s.Id)}" onclick="selectService('${escHtml(s.Id)}')">
-          <div class="svc-name">${escHtml(s.name||'Untitled')}</div>
-          <div class="svc-meta">${[s.duration_minutes?s.duration_minutes+' min':'', (s.price?((s.currency||'')+' '+s.price):'')].filter(Boolean).join(' · ')||'&nbsp;'}</div>
-        </div>`).join('')}
-    </div>` : '';
+  const hasSvcs = allServices.length > 0;
+  const hasDocs = allDoctors.length > 0;
+  const preDoc = urlDoctorId && allDoctors.find(d => String(d.Id) === urlDoctorId);
+  const preDocVal = preDoc ? urlDoctorId : (allDoctors.length ? String(allDoctors[0].Id) : '');
+  const preSvc = urlServiceId && allServices.find(s => String(s.Id) === urlServiceId);
+  const preSvcVal = preSvc ? urlServiceId : (allServices.length ? String(allServices[0].Id) : '');
 
-  const docSectionHtml = isHealthcare ? `<div id="doctorArea"></div>` : '';
+  let svcHtml = '';
+  if(hasSvcs){
+    const opts = allServices.map(s => `<option value="${escHtml(s.Id)}"${String(s.Id)===preSvcVal?' selected':''}>${escHtml(svcLabel(s))}</option>`).join('');
+    svcHtml = `<div class="field">
+      <label class="label" for="fService">Service</label>
+      <select id="fService" onchange="onServiceChange()">${opts}</select>
+    </div>`;
+  }
 
-  document.getElementById('formArea').innerHTML = `
-    ${svcHtml}
-    <div class="card">
-      ${docSectionHtml}
-      <div class="field"><span class="label">Your Name</span><input id="fName" placeholder="Full name"></div>
-      <div class="field"><span class="label">Phone (with country code) *</span><input id="fPhone" placeholder="e.g. 971501234567"></div>
+  let docHtml = '';
+  if(isHealthcare){
+    const docOpts = hasDocs
+      ? allDoctors.map(d => `<option value="${escHtml(d.Id)}"${String(d.Id)===preDocVal?' selected':''}>${escHtml(d.name)}</option>`).join('')
+      : '<option value="">No doctors available</option>';
+    const preDocObj = allDoctors.find(d => String(d.Id) === preDocVal);
+    const preDocMeta = preDocObj ? [preDocObj.qualification, preDocObj.specialization].filter(Boolean).join(' · ') : '';
+    docHtml = `<div class="field">
+      <label class="label" for="fDoctor">Doctor / Consultant</label>
+      <select id="fDoctor" onchange="onDoctorChange()">${docOpts}</select>
+      <div class="doc-detail" id="docDetail">${escHtml(preDocMeta)}</div>
+    </div>`;
+  }
+
+  getEl('formArea').innerHTML = `
+    <div class="bubble">
+      <div class="bubble-label">Appointment Details</div>
+      ${svcHtml}
+      ${docHtml}
+      <div class="field"><label class="label" for="fName">Your Name</label><input id="fName" placeholder="Full name" autocomplete="name"></div>
+      <div class="field"><label class="label" for="fPhone">Phone (with country code) *</label><input id="fPhone" type="tel" placeholder="e.g. 971501234567" autocomplete="tel" inputmode="tel"></div>
       <div class="row2">
-        <div class="field"><span class="label">Preferred Date</span><input type="date" id="fDate" min="${today}"></div>
-        <div class="field"><span class="label">Preferred Time</span><input type="time" id="fTime"></div>
+        <div class="field"><label class="label" for="fDate">Preferred Date</label><input type="date" id="fDate" min="${today}"></div>
+        <div class="field"><label class="label" for="fTime">Preferred Time</label><input type="time" id="fTime"></div>
       </div>
-      <div class="field"><span class="label">Notes (optional)</span><textarea id="fNotes" placeholder="Anything the business should know"></textarea></div>
+      <div class="field"><label class="label" for="fNotes">Notes (optional)</label><textarea id="fNotes" placeholder="Anything the clinic should know"></textarea></div>
+    </div>
+    <div class="sticky-footer">
       <button class="btn" id="submitBtn" onclick="submitBooking()">Request Appointment</button>
       <div class="msg" id="formMsg"></div>
     </div>`;
-
-  if(services.length){
-    const defaultSvc = services.find(s => String(s.Id) === String(params.get('service_id'))) || services[0];
-    selectService(defaultSvc.Id);
-  } else if(isHealthcare){
-    loadDoctorsForService('');
-  }
 }
 
 async function submitBooking(){
-  const btn = document.getElementById('submitBtn');
-  const msg = document.getElementById('formMsg');
-  const name = document.getElementById('fName').value.trim();
-  const phone = document.getElementById('fPhone').value.trim();
+  const btn = getEl('submitBtn');
+  const msg = getEl('formMsg');
+  const name = (getEl('fName').value||'').trim();
+  const phone = (getEl('fPhone').value||'').trim();
   if(!phone){ msg.textContent='Phone number is required.'; msg.className='msg err'; return; }
 
-  btn.disabled = true; msg.textContent = 'Sending your request…'; msg.className = 'msg';
+  const svcSel = getEl('fService');
+  const docSel = getEl('fDoctor');
+
+  btn.disabled = true; msg.textContent = 'Sending…'; msg.className = 'msg';
   try{
     const body = {
       client_id: clientId, name, phone,
-      service_id: selectedServiceId || undefined,
-      date: document.getElementById('fDate').value || '',
-      time: document.getElementById('fTime').value || '',
-      notes: document.getElementById('fNotes').value.trim(),
+      service_id: svcSel ? (svcSel.value || undefined) : undefined,
+      date: (getEl('fDate').value||''),
+      time: (getEl('fTime').value||''),
+      notes: (getEl('fNotes').value||'').trim(),
     };
-    if(isHealthcare && selectedDoctorId) body.doctor_id = selectedDoctorId;
+    if(isHealthcare && docSel && docSel.value) body.doctor_id = docSel.value;
 
     const r = await fetch(`${WORKER_BASE}/appt/public/book`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -169,21 +250,24 @@ async function submitBooking(){
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(data.error || 'Something went wrong');
-    document.getElementById('formArea').innerHTML = `
-      <div class="card success">
+    getEl('formArea').innerHTML = `
+      <div class="success-bubble">
         <div class="ic">✅</div>
         <h2>Request sent!</h2>
-        <p>${escHtml(bizInfo.client_name||'The business')} will confirm your appointment shortly.</p>
+        <p>${escHtml(bizInfo.client_name||'The team')} will confirm your appointment shortly.</p>
       </div>`;
+    // remove sticky footer
+    const footer = document.querySelector('.sticky-footer');
+    if(footer) footer.remove();
   }catch(e){
-    msg.textContent = 'Error: ' + e.message;
+    msg.textContent = e.message;
     msg.className = 'msg err';
     btn.disabled = false;
   }
 }
 
 async function load(){
-  if(!clientId){ document.getElementById('errMsg').style.display = 'block'; return; }
+  if(!clientId){ getEl('errMsg').style.display='block'; return; }
   try{
     const [clientRes, servicesRes] = await Promise.all([
       fetch(`${WORKER_BASE}/appt/public/client?client=${encodeURIComponent(clientId)}`),
@@ -191,15 +275,26 @@ async function load(){
     ]);
     if(!clientRes.ok) throw new Error('not found');
     bizInfo = await clientRes.json();
-    isHealthcare = !!bizInfo.healthcare_enabled || false;
+    isHealthcare = !!bizInfo.healthcare_enabled && bizInfo.healthcare_enabled === 'Yes';
     const svcData = await servicesRes.json().catch(() => ({list:[]}));
-    services = svcData.list || [];
+    allServices = svcData.list || [];
+
+    if(isHealthcare){
+      // Load doctors in parallel; pre-filter by URL service_id if provided
+      const docs = await loadDoctors(urlServiceId || '');
+      allDoctors = docs;
+    }
 
     document.title = 'Book with ' + (bizInfo.client_name || 'us');
-    document.getElementById('bizName').textContent = bizInfo.client_name || 'Book an Appointment';
+    getEl('bizName').textContent = bizInfo.client_name || 'Book an Appointment';
+    getEl('bizSub').textContent = isHealthcare ? 'Healthcare booking' : 'Appointment booking';
+
+    if(!allServices.length && !isHealthcare){
+      getEl('emptyMsg').style.display='block'; return;
+    }
     renderForm();
   }catch(e){
-    document.getElementById('errMsg').style.display = 'block';
+    getEl('errMsg').style.display='block';
   }
 }
 load();
