@@ -421,17 +421,17 @@ describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #
     assert.equal(engineTruncateButtonTitle('Mattress', 24), 'Mattress');
   });
 
-  test('truncates a long title at a word boundary with an ellipsis', () => {
+  test('truncates a long title at a word boundary without an ellipsis', () => {
     const out = engineTruncateButtonTitle('Semi Medicated Orthopedic Mattress', 24);
     assert.ok(out.length <= 24, `expected <=24 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
-    assert.ok(!out.includes('  '), 'should not leave a double space before the ellipsis');
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
+    assert.ok(!out.includes('  '), 'should not leave a double space');
   });
 
   test('never exceeds the cap even with no good word boundary', () => {
     const out = engineTruncateButtonTitle('Supercalifragilisticexpialidocious', 20);
     assert.ok(out.length <= 20, `expected <=20 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
   });
 });
 
