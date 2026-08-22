@@ -14,6 +14,7 @@ class D1Statement {
 class D1Database {
   constructor(){this.db=new DatabaseSync(':memory:');this.db.exec(readFileSync(new URL('./migrations/0069_live_travel_agency.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0070_live_travel_client_credentials.sql',import.meta.url),'utf8'));}
   prepare(sql){return new D1Statement(this.db,sql);}
+  async batch(statements){return Promise.all(statements.map(statement=>statement.run()));}
 }
 async function token(secret,cid=7,email='agent@example.com'){
   const body=btoa(JSON.stringify({cid:String(cid),email,exp:Math.floor(Date.now()/1000)+3600}));
