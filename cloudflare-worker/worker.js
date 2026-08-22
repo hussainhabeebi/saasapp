@@ -13172,78 +13172,157 @@ async function handleEngineWebhook(request, env, secret){
           orderHandledInline=true;
         }
         if(!orderHandledInline){
-        // Greeting → show greeting buttons based on whether this is a returning patient
+        // ── GREETING ──────────────────────────────────────────────────────────────
+        // For healthcare, greeting shows departments (navigation) when available,
+        // otherwise shows the standard service/booking quick-reply buttons.
         if(/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
           const clinicName=c.client_name||'our clinic';
           const prevApt=await env.DB.prepare(`SELECT id FROM healthcare_appointments WHERE client_id=? AND patient_phone=? LIMIT 1`).bind(Number(clientId),String(phone)).first().catch(()=>null);
           const isReturning=!!prevApt;
-          sentText=await engineLocalizeReply(env,c,isReturning?`Welcome back to ${clinicName}! How can we help you today?`:`Welcome to ${clinicName}! How can we help you today?`,replyLang);
+          const greetMsg=isReturning?`Welcome back to ${clinicName}! Which department can we help you with today?`:`Welcome to ${clinicName}! Which department can we help you with today?`;
+          sentText=await engineLocalizeReply(env,c,greetMsg,replyLang);
           routing.reply=sentText;
-          const btns=isReturning
-            ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
-            :[{title:'Book Appointment',value:'book appointment'},{title:'Talk to Human',value:'Talk to a human'}];
-          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,btns);
+          // Show departments as nav buttons, fallback to standard booking buttons
+          const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
+          let greetBtns;
+          if(depts&&depts.length){
+            greetBtns=[...depts.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+          }else{
+            greetBtns=isReturning
+              ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
+              :[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}];
+          }
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,greetBtns);
           orderHandledInline=true;
         }
         if(!orderHandledInline){
+        // ── "SEE ALL SERVICES" button tap ─────────────────────────────────────────
+        if(/^see\s+(?:all\s+)?services?$/i.test(userText.trim())||/^all\s+services?$/i.test(userText.trim())){
+          const allSvcs=await hcListActiveServices(env,clientId);
+          if(allSvcs.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(allSvcs));
+          }else{
+            sentText=await engineLocalizeReply(env,c,'No services are listed yet — please contact us directly.',replyLang);
+            routing.reply=sentText;
+            await engineSendChatwootReply(env,c,clientId,convId,sentText);
+          }
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── SERVICE MATCH ─────────────────────────────────────────────────────────
         let matches=await hcFindBroadServiceMatches(env,clientId,userText);
         if(matches.length===1){
-          const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
-          sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
+          const service=matches[0];
+          const sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          // Build service profile; include doctors offering this service for guidance
+          let svcText=hcVerifiedServiceText(service,userText);
+          const {results:svcDocs}=await env.DB.prepare(`SELECT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+          if(svcDocs&&svcDocs.length){
+            const docNames=svcDocs.map(d=>d.name+(d.specialization?' ('+d.specialization+')':'')).join(', ');
+            svcText+=`\n\nAvailable with: ${docNames}`;
+          }
+          sentText=await engineLocalizeReply(env,c,svcText,replyLang);
           routing.reply=sentText;
           if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
-          const bookingChoices=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to Human',value:'Talk to a human'}];
+          // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
+          const bookingChoices=[{title:'Book Now',value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
           const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
-          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'How can we help?',bookingChoices);
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
           else routing.quickReplies=bookingChoices.length?delivered:null;
           orderHandledInline=true;
-        }else{
-          const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
-          if(doctorMatches.length>1){
-            sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+        }else if(matches.length>1){
+          // Multiple services matched → let patient pick
+          sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── DOCTOR MATCH ──────────────────────────────────────────────────────────
+        const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+        if(doctorMatches.length>1){
+          sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
+          orderHandledInline=true;
+        }else if(doctorMatches.length===1){
+          const doctor=doctorMatches[0];
+          // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
+          // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
+          const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
+          const nameToks=new Set(hcQueryTokens(doctor.name));
+          const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
+          if(!isNameSelection){
+            // General query ("dental doctor available") → check department first, else show all doctors
+            const deptMatch=doctor.department_id
+              ?await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE id=? AND client_id=?`).bind(Number(doctor.department_id),Number(clientId)).first().catch(()=>null)
+              :null;
+            const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active'${deptMatch?' AND department_id=?':''} ORDER BY name LIMIT 20`).bind(...[Number(clientId),...(deptMatch?[Number(deptMatch.id)]:[])]).all().catch(()=>({results:[]}));
+            const showList=(allDocs&&allDocs.length>1)?allDocs:[doctor];
+            const prompt=deptMatch?`Here are our ${deptMatch.name} doctors:`:'Please choose the doctor you are interested in:';
+            sentText=await engineLocalizeReply(env,c,prompt,replyLang);
             routing.reply=sentText;
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
             orderHandledInline=true;
-          }else if(doctorMatches.length===1){
-            const doctor=doctorMatches[0];
-            // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
-            // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
-            const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
-            const nameToks=new Set(hcQueryTokens(doctor.name));
-            const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
-            if(!isNameSelection){
-              // General query → show all active doctors so patient can choose
-              const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId)).all().catch(()=>({results:[]}));
-              const showList=allDocs&&allDocs.length>1?allDocs:[doctor];
-              sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
-              routing.reply=sentText;
-              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
-              orderHandledInline=true;
-            }else{
-              // Explicit name selection → show that doctor's full profile
-              sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
-              routing.reply=sentText;
-              if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-              if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
-              await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to a human',value:'Talk to a human'}]);
-              orderHandledInline=true;
-            }
           }else{
-            const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
-            if(departmentMatches.length){
-              const ids=departmentMatches.map(d=>Number(d.id));
-              const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
-              if(departmentServices.length){
-                sentText=await engineLocalizeReply(env,c,'Please choose the exact service you need:',replyLang);
-                routing.reply=sentText;
-                routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
-                orderHandledInline=true;
-              }
+            // Explicit name selection → show full profile + services this doctor provides
+            let profileText=hcVerifiedDoctorText(doctor,userText);
+            // List services this doctor offers, so patient knows what to book
+            const {results:drSvcs}=await env.DB.prepare(`SELECT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
+            if(drSvcs&&drSvcs.length){
+              profileText+=`\n\nServices offered: ${drSvcs.map(s=>s.name).join(', ')}`;
+            }
+            sentText=await engineLocalizeReply(env,c,profileText,replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url) routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            // If doctor offers multiple services, show them as buttons; otherwise go straight to booking
+            let docActionBtns;
+            if(drSvcs&&drSvcs.length>1){
+              docActionBtns=[...drSvcs.slice(0,2).map(s=>({title:s.name,value:`HC_BOOK_SERVICE:${s.id}`})),{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }else{
+              docActionBtns=[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docActionBtns);
+            orderHandledInline=true;
+          }
+        }
+        }
+        if(!orderHandledInline){
+        // ── DEPARTMENT MATCH ──────────────────────────────────────────────────────
+        // Departments matched by name → show doctors in that dept first, then services.
+        const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+        if(departmentMatches.length){
+          const ids=departmentMatches.map(d=>Number(d.id));
+          const deptName=departmentMatches[0].name;
+          // Prefer showing doctors (patient can then choose and see their profile)
+          const {results:deptDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id IN (${ids.map(()=>'?').join(',')}) ORDER BY name LIMIT 10`).bind(Number(clientId),...ids).all().catch(()=>({results:[]}));
+          if(deptDocs&&deptDocs.length){
+            sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} doctors:`,replyLang);
+            routing.reply=sentText;
+            // Doctor buttons: name as value so tapping triggers the name-selection profile flow
+            const docBtns=[...deptDocs.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docBtns);
+            orderHandledInline=true;
+          }else{
+            // No doctors in dept → show dept services
+            const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+            if(departmentServices.length){
+              sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} services:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+              orderHandledInline=true;
             }
           }
         }
+        }
+        // ── INSURANCE ─────────────────────────────────────────────────────────────
         if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
           const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
           if(providers?.length){
@@ -13252,7 +13331,6 @@ async function handleEngineWebhook(request, env, secret){
             routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,providers.map(p=>({title:p.provider_name,value:p.provider_name})));
             orderHandledInline=true;
           }
-        }
         }
       }
     }
