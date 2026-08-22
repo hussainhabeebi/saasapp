@@ -52,6 +52,12 @@ import {
   eduNormalizePhone,
   eduEmailValid,
   eduYearValid,
+  eduResolveCourseForMedia,
+  eduVerifiedChoicesFromReply,
+  eduEnrollmentCourseFromChat,
+  eduCoursePdfUrlError,
+  driveFileId,
+  sendDriveMediaToChatwoot,
   ltNormalizeOffer,
   ltEncryptCredentials,
   ltDecryptCredentials,
@@ -120,6 +126,75 @@ describe('Education chat-only admission intent safety', () => {
     assert.equal(eduEmailValid('student@example'),false);
     assert.equal(eduYearValid('Completed in 2024'),true);
     assert.equal(eduYearValid('1940'),false);
+  });
+
+  test('continues enrollment for the one course already selected even when duration is unset', () => {
+    const courses=[{id:7,name:'PG Diploma in Food Safety',duration:''}];
+    const history=[{role:'assistant',content:'• 📚 PG Diploma in Food Safety\n• ⏱ Duration is not confirmed.\n\nWould you like to know more about its syllabus or eligibility?'}];
+    assert.equal(eduEnrollmentCourseFromChat(courses,'yes',history)?.id,7);
+    assert.equal(eduEnrollmentCourseFromChat(courses,'Enroll Now',history)?.id,7);
+  });
+});
+
+describe('Education Google Drive brochure delivery', () => {
+  const courses=[
+    {id:1,name:'Digital Marketing',short_label:'DM',pdf_url:'https://drive.google.com/file/d/PDF_ONE/view'},
+    {id:2,name:'Graphic Design',short_label:'Design',pdf_url:'https://drive.google.com/file/d/PDF_TWO/view'},
+  ];
+
+  test('recognizes Drive files and Google-native document share links', () => {
+    assert.equal(driveFileId('https://drive.google.com/file/d/FILE_123/view?usp=sharing'),'FILE_123');
+    assert.equal(driveFileId('https://drive.google.com/open?id=FILE_456'),'FILE_456');
+    assert.equal(driveFileId('https://docs.google.com/document/d/DOC_123/edit'),'DOC_123');
+    assert.equal(driveFileId('https://docs.google.com/presentation/d/SLIDE_123/edit'),'SLIDE_123');
+    assert.equal(driveFileId('https://docs.google.com/spreadsheets/d/SHEET_123/edit'),'SHEET_123');
+    assert.equal(driveFileId('https://example.com/file/d/FILE_123/view'),null);
+  });
+
+  test('rejects a Drive folder in the PDF field and accepts a direct file link', () => {
+    assert.match(eduCoursePdfUrlError('https://drive.google.com/drive/folders/FOLDER_123'),/PDF file, not a Drive folder/i);
+    assert.equal(eduCoursePdfUrlError('https://drive.google.com/file/d/PDF_123/view'),'');
+  });
+
+  test('resolves only one verified course and refuses an ambiguous course list', () => {
+    assert.equal(eduResolveCourseForMedia(courses,['Please send the Digital Marketing syllabus'])?.id,1);
+    assert.equal(eduResolveCourseForMedia(courses,['Digital Marketing or Graphic Design'])?.id,undefined);
+    assert.equal(eduResolveCourseForMedia(courses,['Please send a brochure']),null);
+  });
+
+  test('turns multiple verified course names in a reply into a native list source', () => {
+    const items=eduVerifiedChoicesFromReply(courses,[],'Choose Digital Marketing or Graphic Design.');
+    assert.deepEqual(items,[
+      {title:'Digital Marketing',value:'Digital Marketing'},
+      {title:'Graphic Design',value:'Graphic Design'},
+    ]);
+    assert.deepEqual(eduVerifiedChoicesFromReply(courses,[],'Digital Marketing is available.'),[]);
+  });
+
+  test('uploads the actual PDF bytes to Chatwoot with a downloadable filename', async (t) => {
+    const calls=[];
+    t.mock.method(global,'fetch',async (url,options)=>{
+      calls.push({url:String(url),options});
+      if(String(url).includes('drive.google.com/uc')) return new Response(new Blob(['%PDF-1.7'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://drive.google.com/file/d/PDF_ONE/view','', 'Digital-Marketing-brochure.pdf');
+    assert.equal(ok,true);
+    assert.match(calls[0].url,/export=download/);
+    assert.equal(calls[1].options.body.get('attachments[]').name,'Digital-Marketing-brochure.pdf');
+    assert.equal(calls[1].options.body.get('attachments[]').type,'application/pdf');
+  });
+
+  test('exports a shared Google Doc as PDF before attaching it', async (t) => {
+    const urls=[];
+    t.mock.method(global,'fetch',async (url)=>{
+      urls.push(String(url));
+      if(String(url).includes('/export?format=pdf')) return new Response(new Blob(['%PDF'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://docs.google.com/document/d/DOC_123/edit','', 'prospectus.pdf');
+    assert.equal(ok,true);
+    assert.equal(urls[0],'https://docs.google.com/document/d/DOC_123/export?format=pdf');
   });
 });
 
@@ -515,6 +590,12 @@ describe('engineExtractReplyOptions — the OPTIONS: marker parser', () => {
     const { text, options } = engineExtractReplyOptions('We deliver within 3-5 days.');
     assert.equal(text, 'We deliver within 3-5 days.');
     assert.equal(options, null);
+  });
+
+  test('strips legacy square-bracket Education choices and converts them to buttons', () => {
+    const {text,options}=engineExtractReplyOptions('Choose a course.\nReply with: [Browse Courses] [Talk to Advisor] [About Us]');
+    assert.equal(text,'Choose a course.');
+    assert.deepEqual(options,['Browse Courses','Talk to Advisor','About Us']);
   });
 });
 

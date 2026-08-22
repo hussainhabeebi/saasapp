@@ -7145,11 +7145,21 @@ async function handleEduCoursesList(request, env){
   return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 
+export function eduCoursePdfUrlError(value){
+  const url=String(value||'').trim();
+  if(!url) return '';
+  if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return 'Paste the Google Drive link for the PDF file, not a Drive folder. The file must be shared as "Anyone with the link can view."';
+  if(/(?:drive|docs)\.google\.com/i.test(url)&&!driveFileId(url)) return 'Use a valid Google Drive file, Doc, Slides, or Sheets share link for the brochure PDF.';
+  return '';
+}
+
 async function handleEduCourseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
   const name=String(body.name||'').trim();
   if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const now=new Date().toISOString();
   const r=await env.DB.prepare(
     `INSERT INTO edu_courses (client_id,name,short_label,category,level,duration,start_date,price,currency,seats_available,status,enrollment_link,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -7162,6 +7172,8 @@ async function handleEduCourseUpdate(request, env){
   const clientId=String(body.client_id||'');
   const id=parseInt(body.Id||body.id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const existing=await env.DB.prepare(`SELECT id FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).first();
   if(!existing) return json({error:'Not found'},404);
   const sets=[],vals=[];
@@ -7310,6 +7322,19 @@ export function eduAdmissionWantsStart(v){
 }
 export function eduAdmissionWantsAdvisor(v){ return EDU_ADMISSION_ADVISOR_RE.test(String(v||'').trim()); }
 
+// A short affirmative after one specific course's details should continue into enrollment rather
+// than ask about the same missing duration again. Explicit Enroll/Apply taps use the same resolver,
+// so the student is not forced to choose the course a second time.
+export function eduEnrollmentCourseFromChat(courses,userText,history){
+  const clean=String(userText||'').trim();
+  const affirmative=/^(?:yes|yes please|sure|ok|okay|please do|continue)$/i.test(clean);
+  if(!affirmative&&!eduAdmissionWantsStart(clean)) return null;
+  const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+  if(!lastAssistant) return null;
+  if(affirmative&&!/(?:would you like|want to|shall i|can i).*(?:know more|details|syllabus|eligibility|enrol|admission|apply)/is.test(lastAssistant.content)) return null;
+  return eduResolveCourseForMedia(courses,[lastAssistant.content]);
+}
+
 async function eduAdmissionEvent(env,app,type,data){
   await env.DB.prepare('INSERT INTO edu_admission_events (client_id,application_id,event_type,step,event_data,created_at) VALUES (?,?,?,?,?,?)')
     .bind(Number(app.client_id),Number(app.id),type,String(app.current_step||''),JSON.stringify(data||{}),new Date().toISOString()).run();
@@ -7401,14 +7426,26 @@ async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
     .bind(Number(app.client_id),Number(app.id),type,String(url||''),String(mediaType||''),now,now).run();
   await eduAdmissionEvent(env,app,'document_received',{document_type:type});
 }
-async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl){
+async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl,history){
   if(c.industry!=='education') return null;
   const clean=String(userText||'').trim();
   let app=await eduAdmissionActive(env,clientId,phone);
-  const wantsStart=eduAdmissionWantsStart(clean);
+  let wantsStart=eduAdmissionWantsStart(clean);
+  let preselectedCourse=null;
+  if(!app){
+    const courses=await eduAdmissionCourses(env,clientId);
+    preselectedCourse=eduEnrollmentCourseFromChat(courses,clean,history);
+    if(preselectedCourse) wantsStart=true;
+  }
   if(!app&&!wantsStart) return null;
   if(!app) app=await eduAdmissionCreate(env,clientId,phone,leadId,convId);
   if(String(app.lead_id||'')!==String(leadId||'')||String(app.conversation_id||'')!==String(convId||'')) await eduAdmissionPatch(env,app,{lead_id:String(leadId||''),conversation_id:String(convId||'')},null);
+
+  if(preselectedCourse&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{course_id:Number(preselectedCourse.id),current_step:'full_name'},'course_selected');
+    const durationNote=preselectedCourse.duration?'':'⏱ Duration is not confirmed yet.\n• It does not block enrollment.\n\n';
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+preselectedCourse.name+' selected.\n\n'+durationNote+'▶️ Let’s continue your enrollment.');
+  }
 
   if(EDU_ADMISSION_CANCEL_RE.test(clean)){
     await eduAdmissionPatch(env,app,{status:'cancelled',current_step:'cancelled'},'application_cancelled');
@@ -7758,15 +7795,154 @@ async function eduClaimCourseBrochureForToday(env, clientId, leadId, courseId){
   }catch(e){ await reportOpsError(env, 'eduClaimCourseBrochureForToday', e, {clientId, leadId, courseId}); return true; }
 }
 
-async function eduMaybeSendCourseMedia(env, c, clientId, convId, course){
+async function eduMaybeSendCourseMedia(env, c, clientId, convId, course, pdfOnly=false){
   if(!course || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
+    if(pdfOnly){
+      if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
+      return;
+    }
+    // Primary image first (image_url), then secondary images, then audio/video, then PDF
+    if(course.image_url) await sendDriveMediaToChatwoot(c, convId, course.image_url, '');
     if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
     if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
     if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
     if(course.video_url) await sendDriveMediaToChatwoot(c, convId, course.video_url, '');
-    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '');
+    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
   }catch(e){ await reportOpsError(env, 'eduMaybeSendCourseMedia', e, {clientId, convId}); }
+}
+
+function eduMediaNormalize(value){
+  return String(value||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+// Resolve a course only when the current/recent chat names exactly one verified active course.
+// This lets a tap on "Get Brochure" reuse the one course named in the immediately preceding bot
+// reply, while refusing to guess when that reply listed several courses.
+export function eduResolveCourseForMedia(courses, texts){
+  const haystacks=(texts||[]).map(eduMediaNormalize).filter(Boolean);
+  if(!haystacks.length) return null;
+  const matches=(courses||[]).filter(course=>{
+    const names=[course.name,course.short_label].map(eduMediaNormalize).filter(name=>name.length>=3);
+    return names.some(name=>haystacks.some(text=>text===name||text.includes(` ${name} `)||text.startsWith(`${name} `)||text.endsWith(` ${name}`)));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+export function eduVerifiedChoicesFromReply(courses,categories,replyText){
+  const text=eduMediaNormalize(replyText);
+  if(!text) return [];
+  const mentioned=(rows,labelKey)=>{
+    const seen=new Set();
+    return (rows||[]).filter(row=>{
+      const label=String(typeof row==='string'?row:row?.[labelKey]||'').trim();
+      const normalized=eduMediaNormalize(label);
+      if(normalized.length<3||seen.has(normalized)) return false;
+      const found=text===normalized||text.includes(` ${normalized} `)||text.startsWith(`${normalized} `)||text.endsWith(` ${normalized}`);
+      if(found) seen.add(normalized);
+      return found;
+    }).map(row=>String(typeof row==='string'?row:row?.[labelKey]||'').trim());
+  };
+  const courseNames=mentioned(courses,'name');
+  if(courseNames.length>=2) return courseNames.slice(0,10).map(name=>({title:name,value:name}));
+  const categoryNames=mentioned(categories,'name');
+  if(categoryNames.length>=2) return categoryNames.slice(0,10).map(name=>({title:name,value:name}));
+  return [];
+}
+
+async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,history,replyText){
+  if(c.industry!=='education'||!convId||!userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  const wantsPdf=/\b(brochure|syllabus|prospectus|course\s*pdf|pdf|download)\b/i.test(userText);
+  try{
+    // Include image_url (primary) in addition to secondary images
+    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
+    if(!courses?.length) return;
+    // 1. Try explicit course name in student's current message
+    let course=eduResolveCourseForMedia(courses,[userText]);
+    // 2. Always fall back to the last assistant reply and bot reply text when no match in userText
+    //    (covers "Tell me more", button taps, "enroll", etc. where the course name is in the bot's reply)
+    if(!course){
+      const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+      course=eduResolveCourseForMedia(courses,[lastAssistant?.content,replyText]);
+    }
+    if(!course||(!course.image_url&&!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
+    if(!await eduClaimCourseBrochureForToday(env,clientId,resolvedLeadId,course.id)) return;
+    await eduMaybeSendCourseMedia(env,c,clientId,convId,course,wantsPdf);
+  }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
+}
+
+/* ── Education enrollment collection flow ─────────────────────────────────────────────────────
+   Deterministic name → phone collection, then INSERT into edu_enrollments.
+   Intercepts BEFORE the FAQ LLM so the bot never hallucinates "recorded" without actually saving.
+   State is stored as EduEnrollState (JSON) on the lead row in NocoDB.
+   ─────────────────────────────────────────────────────────────────────────────────────────── */
+const EDU_ENROLL_INTENT_RE=/\b(enroll|admission|apply|register|i want to join|want enroll|need enroll|enroll me|i want to enroll|how to enroll|how to apply|start enrollment|begin enrollment|take admission)\b/i;
+
+async function engineMaybeEduEnrollFlow(env, c, clientId, convId, leadId, userText, state, routing){
+  if(c.industry!=='education'||!leadId||!userText) return false;
+  const enrollState=engineParseJsonField(state.lead?.EduEnrollState, null);
+
+  // STEP: awaiting_name — previous turn asked for full name
+  if(enrollState?.step==='awaiting_name'){
+    const studentName=userText.trim();
+    const next={...enrollState, step:'awaiting_phone', student_name:studentName};
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(next)}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`Thanks, ${studentName}! 😊\n\nCould you please share your *Mobile Number* so we can complete your enrollment for *${courseName}*?`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // STEP: awaiting_phone — previous turn asked for phone, now save to D1
+  if(enrollState?.step==='awaiting_phone'){
+    const phone=userText.replace(/[^\d+]/g,'').trim()||userText.trim();
+    const now=new Date().toISOString();
+    const enrollmentId='ENR-'+Date.now();
+    try{
+      await env.DB.prepare(
+        `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(Number(clientId),enrollmentId,now.slice(0,10),String(enrollState.student_name||''),phone,'',String(enrollState.course_name||''),'pending','via WhatsApp',now,now).run();
+    }catch(e){ await reportOpsError(env,'eduEnrollFlowInsert',e,{clientId,convId}); }
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:null}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`✅ Your enrollment request for *${courseName}* has been recorded!\n\n• 📚 Course: ${courseName}\n• 👤 Name: ${enrollState.student_name}\n• 📱 Mobile: ${phone}\n• 🆔 Reference: ${enrollmentId}\n\nOur admissions team will contact you shortly to confirm. 🎓\n\n*Reply with:* [Ask a Question] [View Other Courses] [Talk to Advisor]`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // DETECT ENROLLMENT INTENT — start the collection flow
+  if(!EDU_ENROLL_INTENT_RE.test(userText)) return false;
+  let courseName='';
+  try{
+    const {results:courses}=await env.DB.prepare(`SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    let found=courses.find(cr=>cr.name&&lower.includes(cr.name.toLowerCase()));
+    if(!found){
+      // Search recent conversation history for a course name the bot mentioned
+      const history=(state.activeHistory||[]).slice(-8).reverse();
+      for(const msg of history){
+        if(!msg.content) continue;
+        const msgLower=msg.content.toLowerCase();
+        found=courses.find(cr=>cr.name&&msgLower.includes(cr.name.toLowerCase()));
+        if(found) break;
+      }
+    }
+    if(!found&&courses.length===1) found=courses[0];
+    if(found) courseName=found.name;
+  }catch(e){}
+  const newState={step:'awaiting_name',course_name:courseName};
+  await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+  await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(newState)}}).catch(()=>{});
+  const courseLabel=courseName?`the *${courseName}*`:`a course`;
+  const reply=`Great! To enroll in ${courseLabel}, I need a few details. 📋\n\nCould you please share your *Full Name*?`;
+  await engineSendChatwootReply(env,c,clientId,convId,reply);
+  routing.reply=reply;
+  return true;
 }
 
 /* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
@@ -9037,7 +9213,7 @@ async function engineBuildEduContext(env, clientId, phone){
       p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
       if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
       if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
-      if(cr.pdf_url) p.push(`brochure: ${cr.pdf_url}`);
+      if(cr.pdf_url) p.push('brochure: available — attach it directly in chat; never print or expose its Drive URL');
       if(cr.description) p.push(cr.description.slice(0,200));
       lines.push(p.join(' | '));
     });
@@ -10847,6 +11023,8 @@ DATA ACCURACY:
 • Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
 • Never invent or infer any detail not explicitly in your data.
 • If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+• Missing duration, fee, date, or another optional fact never blocks enrollment.
+• Mention an unavailable fact once, then continue to the next enrollment action.
 
 FORMAT — every single reply must follow this structure:
 • Write in short bullet points (•) only — NO long paragraphs, ever.
@@ -10859,13 +11037,13 @@ FORMAT — every single reply must follow this structure:
 BUTTONS — mandatory after EVERY reply:
 • Always end with a row of tappable choice buttons — never skip this.
 • Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
-  — After greeting / general query:       [Browse Courses] [Talk to Advisor] [About Us]
-  — After listing courses:                [Enroll Now] [Get Brochure] [Schedule a Call]
-  — After sharing one course detail:      [Enroll Now] [Download Syllabus] [Ask a Question]
-  — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
-  — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
-  — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
-• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
+  — After greeting / general query: Browse Courses · Talk to Advisor · About Us
+  — After listing courses: Enroll Now · Get Brochure · Schedule a Call
+  — After sharing one course detail: Enroll Now · Download Syllabus · Ask a Question
+  — After fee / scholarship question: Check Eligibility · Apply for Scholarship · Enroll Now
+  — After enrollment / application topic: Start Application · Book Consultation · Call Us
+  — After answering any question: Learn More · Enroll Now · Talk to Advisor
+• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Never print "Reply with", square-bracket choices, or button instructions to the customer.\n• When offering choices, append only the internal OPTIONS: marker described below; the system removes it and creates real WhatsApp buttons or a list.\n• When listing 2–10 courses or categories, use those exact verified names as OPTIONS instead of generic navigation choices.\n• Never expose a Google Drive brochure URL in reply text; the system sends the PDF as a direct document attachment.`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
       higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
@@ -10873,13 +11051,13 @@ BUTTONS — mandatory after EVERY reply:
 • Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
 • Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
 • Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
-• Preferred button set: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]`,
+• Preferred choices: View Programme · Check Eligibility · Book Consultation · Download Prospectus`,
       courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
 • Tone: encouraging, energetic, results-driven — like a personal learning coach.
 • Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
 • Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
 • Never invent module counts, platform features, completion guarantees or discount amounts.
-• Preferred button set: [Enroll Now] [Watch Free Preview] [Get Syllabus] [Chat with Advisor]`
+• Preferred choices: Enroll Now · Watch Free Preview · Get Syllabus · Chat with Advisor`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
@@ -11470,13 +11648,20 @@ export async function engineSendChatwootReply(env, c, clientId, convId, text){
 // render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
 export function engineExtractReplyOptions(replyText){
   const text=(typeof replyText==='string'?replyText:'');
-  const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  const optionsMatch=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  // Backward compatibility for old Education prompts that told the model to print
+  // "Reply with: [A] [B]". Strip that internal syntax and turn it into real interactive choices
+  // instead of ever showing square brackets to a customer.
+  const bracketMatch=!optionsMatch?text.match(/\n?\*?Reply\s+with:\*?\s*((?:\[[^\]\r\n]+\]\s*){2,10})$/i):null;
+  const match=optionsMatch||bracketMatch;
   if(!match) return {text, options:null};
-  const stripped=text.slice(0, match.index).trimEnd();
+  const stripped=text.slice(0,match.index).trimEnd();
   // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
   // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
   // a first-touch reply naming several catalog categories) isn't silently truncated back down.
-  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
+  const options=optionsMatch
+    ?match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10)
+    :[...match[1].matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
 // Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
@@ -13009,7 +13194,7 @@ async function handleEngineWebhook(request, env, secret){
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
-    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl);
+    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
     if(eduAdmissionTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
@@ -13757,6 +13942,14 @@ async function handleEngineWebhook(request, env, secret){
       }catch(e){}
     }
 
+    // Education enrollment flow — deterministic name/phone collection + D1 insert.
+    // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
+    if(!orderHandledInline && c.industry==='education' && state.leadId){
+      try{
+        if(await engineMaybeEduEnrollFlow(env, c, clientId, convId, state.leadId, userText, state, routing)) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env,'eduEnrollFlow',e,{clientId,convId}); }
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -13911,7 +14104,18 @@ async function handleEngineWebhook(request, env, secret){
       // The LLM never creates Ecom navigation. Exact categories/products are handled before this
       // branch; general/additional Ecom questions receive prompt text only.
       if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
-        if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
+        // Education course/category menus must use the verified D1 names actually shown in the
+        // reply. With 4-10 names, engineSendChatwootQuickReply renders a native WhatsApp list;
+        // this takes priority over generic legacy choices such as "Browse Courses" that the model
+        // may have emitted after already listing the real courses in its message.
+        if(c.industry==='education'){
+          const [courseRows,categoryRows]=await Promise.all([
+            env.DB.prepare("SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60").bind(Number(clientId)).all().then(r=>r.results||[]),
+            env.DB.prepare('SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30').bind(Number(clientId)).all().then(r=>r.results||[]),
+          ]);
+          faqQuickReplies=eduVerifiedChoicesFromReply(courseRows,categoryRows,reply);
+        }
+        if(!faqQuickReplies?.length&&!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
           // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
@@ -14089,6 +14293,11 @@ async function handleEngineWebhook(request, env, secret){
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
+    // A specifically named course also sends its configured Drive media bundle. Brochure,
+    // syllabus, prospectus and PDF requests send the PDF itself as a Chatwoot/WhatsApp document,
+    // not a Drive preview-page link. A button tap can resolve the one course named in the
+    // immediately preceding assistant turn; multiple course names remain intentionally ambiguous.
+    await engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,state.activeHistory,routing.reply);
     await engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText);
     await engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText);
     // Full product description — sent inline, right before the photo/media bundle, at each
@@ -18962,18 +19171,28 @@ const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|
 // (?id=<id>) — so the rest of this file can build its own direct-content URL regardless of which
 // one was pasted. Returns null for anything that doesn't look like a Drive link at all (a legacy
 // R2-hosted URL, or some other public URL a rep pasted instead — see hospitalitySendUnitMedia()).
-function driveFileId(url){
+export function driveFileId(url){
   if(!url) return null;
-  let m=String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  m=String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  return null;
+  try{
+    const parsed=new URL(String(url).trim());
+    if(!['drive.google.com','docs.google.com'].includes(parsed.hostname.toLowerCase())) return null;
+    const m=parsed.pathname.match(/\/(?:file|document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]+)/);
+    return m?.[1]||parsed.searchParams.get('id')?.match(/^[a-zA-Z0-9_-]+$/)?.[0]||null;
+  }catch(e){ return null; }
 }
 // Google Drive serves an HTML "Google Drive can't scan this file for viruses" interstitial
 // instead of the raw bytes for some files (mostly larger ones) unless a `confirm=` token is also
 // present. Appending `confirm=t` upfront skips that for most files without needing to scrape a
 // token first; driveFetchFile below falls back to extracting and replaying the real token from
 // the interstitial's own HTML if the file still needs it.
-function driveDirectUrl(fileId, confirmToken){
+function driveDirectUrl(fileId, confirmToken, sourceUrl=''){
+  try{
+    const parsed=new URL(String(sourceUrl||''));
+    const kind=parsed.pathname.match(/^\/(document|presentation|spreadsheets)\/d\//)?.[1];
+    if(kind==='document') return `https://docs.google.com/document/d/${fileId}/export?format=pdf`;
+    if(kind==='presentation') return `https://docs.google.com/presentation/d/${fileId}/export/pdf`;
+    if(kind==='spreadsheets') return `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf`;
+  }catch(e){}
   return `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken||'t'}`;
 }
 // Fetches a Google Drive file's actual bytes for forwarding as a WhatsApp/Chatwoot attachment —
@@ -18981,20 +19200,27 @@ function driveDirectUrl(fileId, confirmToken){
 // account behind it) to read it at all. Returns null (never throws) on anything that didn't work
 // out — an unshared/deleted file, or a file too large for the confirm=t bypass above to satisfy —
 // so callers can just skip that one item rather than attaching garbage/an HTML page as "the photo".
-async function driveFetchFile(fileId){
+function driveResponseFilename(headers){
+  const disposition=headers?.get?.('content-disposition')||'';
+  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if(encoded){ try{return decodeURIComponent(encoded).replace(/[\\/\r\n"]/g,'_').slice(0,160);}catch(e){} }
+  const plain=disposition.match(/filename="?([^";]+)"?/i)?.[1]?.trim();
+  return plain?plain.replace(/[\\/\r\n"]/g,'_').slice(0,160):'';
+}
+async function driveFetchFile(fileId, sourceUrl=''){
   try{
-    let r=await fetch(driveDirectUrl(fileId));
+    let r=await fetch(driveDirectUrl(fileId,undefined,sourceUrl));
     let ct=(r.headers.get('content-type')||'');
     if(ct.includes('text/html')){
       const html=await r.text();
       const m=html.match(/confirm=([0-9A-Za-z_-]+)/);
       if(!m) return null;
-      r=await fetch(driveDirectUrl(fileId, m[1]));
+      r=await fetch(driveDirectUrl(fileId,m[1],sourceUrl));
       ct=(r.headers.get('content-type')||'');
       if(ct.includes('text/html')) return null; // still the interstitial — give up rather than send it as-is
     }
     if(!r.ok) return null;
-    return {blob:await r.blob(), contentType:ct};
+    return {blob:await r.blob(), contentType:ct, filename:driveResponseFilename(r.headers)};
   }catch(e){ return null; }
 }
 
@@ -19015,15 +19241,16 @@ function driveGuessFilename(contentType){
 // promotions/testimonials/product media, and others. Returns false (never throws) on anything that
 // didn't work — an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it
 // as best-effort exactly like every other WhatsApp send in this file.
-async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
+export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, filenameHint=''){
   const fileId=driveFileId(driveUrl);
   if(!fileId) return false;
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return false;
   const fd=new FormData();
   fd.append('content', caption||'');
   fd.append('message_type','outgoing'); fd.append('private','false');
-  fd.append('attachments[]', fetched.blob, driveGuessFilename(fetched.contentType));
+  const hinted=String(filenameHint||'').trim().replace(/[\\/\r\n"]/g,'_').slice(0,160);
+  fd.append('attachments[]', fetched.blob, fetched.filename||hinted||driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
 }
@@ -19040,7 +19267,7 @@ async function handleEcomDriveFileSize(request, env){
   const driveUrl=url.searchParams.get('url')||'';
   const fileId=driveFileId(driveUrl);
   if(!fileId) return json({error:'Not a recognizable Google Drive share link.'}, 400);
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return json({error:'Could not read this file — make sure it\'s shared as "Anyone with the link can view."'}, 400);
   return json({size_bytes:fetched.blob.size, content_type:fetched.contentType});
 }
