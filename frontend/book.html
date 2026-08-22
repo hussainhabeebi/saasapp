@@ -19,37 +19,49 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased;min-height:100vh}
-.hdr{background:var(--header);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5;box-shadow:0 1px 3px rgba(0,0,0,.2)}
-.hdr-avatar{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.hdr{background:var(--header);color:#fff;padding:12px 16px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:5;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.hdr-avatar{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
 .hdr-info{flex:1;min-width:0}
-.biz-name{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.biz-sub{font-size:12px;opacity:.85;margin-top:1px}
-.wrap{max-width:480px;margin:0 auto;padding:12px 10px 100px}
-.bubble{background:var(--card);border-radius:12px 12px 12px 4px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.08);position:relative}
-.bubble::after{content:'';position:absolute;left:-6px;bottom:10px;border:6px solid transparent;border-right-color:var(--card);border-left:0}
-.bubble-label{font-size:12px;color:var(--header);font-weight:600;margin-bottom:10px}
+.biz-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.biz-sub{font-size:11.5px;opacity:.85;margin-top:1px}
+/* Desktop: centered card with normal scrolling */
+.wrap{max-width:520px;margin:0 auto;padding:16px 14px 24px}
+/* Mobile only: bottom padding for sticky footer */
+@media(max-width:600px){.wrap{padding-bottom:80px}}
+.bubble{background:var(--card);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+/* Chat tail only on mobile */
+@media(max-width:600px){
+  .bubble{border-radius:12px 12px 12px 4px;position:relative}
+  .bubble::after{content:'';position:absolute;left:-6px;bottom:10px;border:6px solid transparent;border-right-color:var(--card);border-left:0}
+}
+.bubble-label{font-size:12px;color:var(--header);font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.04em}
 .field{margin-bottom:12px}
-.label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px;display:block;text-transform:uppercase;letter-spacing:.03em}
-select,input,textarea{width:100%;border:none;border-radius:10px;padding:13px 14px;font-family:var(--body);font-size:15px;color:var(--ink);background:var(--input-bg);-webkit-appearance:none;appearance:none;outline:none}
-select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23667781' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;cursor:pointer}
-select:focus,input:focus,textarea:focus{background:var(--card);box-shadow:0 0 0 2px var(--accent)}
-textarea{resize:none;min-height:72px;line-height:1.5}
+.label{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;display:block;text-transform:uppercase;letter-spacing:.05em}
+select,input,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--input-bg);-webkit-appearance:none;appearance:none;outline:none;transition:border-color .15s}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23667781' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:36px;cursor:pointer}
+select:focus,input:focus,textarea:focus{outline:none;border-color:var(--accent);background:#fff}
+textarea{resize:none;min-height:64px;line-height:1.5}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.doc-detail{font-size:11.5px;color:var(--muted);margin-top:4px;padding-left:2px}
-.sticky-footer{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:var(--bg);border-top:1px solid var(--line);max-width:480px;margin:0 auto;left:50%;transform:translateX(-50%)}
-@media(max-width:480px){.sticky-footer{max-width:100%;left:0;transform:none}}
-.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:25px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--body);letter-spacing:.02em;box-shadow:0 2px 8px rgba(37,211,102,.4)}
+.doc-detail{font-size:11px;color:var(--muted);margin-top:3px;padding-left:1px}
+/* Submit button — inline on desktop, sticky on mobile */
+.form-footer{margin-top:16px}
+.sticky-footer{display:none}
+@media(max-width:600px){
+  .form-footer{display:none}
+  .sticky-footer{display:block;position:fixed;bottom:0;left:0;right:0;padding:10px 14px;background:rgba(236,229,221,.96);backdrop-filter:blur(6px);border-top:1px solid var(--line);z-index:10}
+}
+.btn{width:100%;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:11px 20px;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--body);letter-spacing:.01em;box-shadow:0 1px 4px rgba(37,211,102,.35)}
+.btn:hover{background:#22c55e}
 .btn:active{background:var(--accent-dark)}
-.btn:disabled{background:#ccc;color:#888;cursor:not-allowed;box-shadow:none}
-.msg{text-align:center;font-size:13px;margin-top:8px;min-height:16px}
+.btn:disabled{background:#ccc;color:#999;cursor:not-allowed;box-shadow:none}
+.msg{text-align:center;font-size:12.5px;margin-top:6px;min-height:16px}
 .msg.err{color:#D32F2F}
 .msg.ok{color:var(--accent-dark)}
 .empty,.err-page{text-align:center;color:var(--muted);padding:60px 20px;font-size:14px}
-.success-bubble{background:var(--accent-soft);border-radius:12px;padding:24px 20px;text-align:center;margin-top:20px}
-.success-bubble .ic{font-size:44px;margin-bottom:10px}
-.success-bubble h2{font-size:17px;margin:0 0 6px;color:var(--accent-dark)}
-.success-bubble p{color:var(--muted);font-size:13.5px;line-height:1.6;margin:0}
-.loading-text{font-size:13px;color:var(--muted);padding:8px 0}
+.success-bubble{background:var(--accent-soft);border-radius:12px;padding:28px 20px;text-align:center;margin-top:16px}
+.success-bubble .ic{font-size:40px;margin-bottom:10px}
+.success-bubble h2{font-size:16px;margin:0 0 6px;color:var(--accent-dark)}
+.success-bubble p{color:var(--muted);font-size:13px;line-height:1.6;margin:0}
 </style>
 </head>
 <body>
@@ -216,24 +228,35 @@ function renderForm(){
         <div class="field"><label class="label" for="fTime">Preferred Time</label><input type="time" id="fTime"></div>
       </div>
       <div class="field"><label class="label" for="fNotes">Notes (optional)</label><textarea id="fNotes" placeholder="Anything the clinic should know"></textarea></div>
+      <div class="form-footer">
+        <button class="btn" id="submitBtn" onclick="submitBooking()">Request Appointment</button>
+        <div class="msg" id="formMsg"></div>
+      </div>
     </div>
     <div class="sticky-footer">
-      <button class="btn" id="submitBtn" onclick="submitBooking()">Request Appointment</button>
-      <div class="msg" id="formMsg"></div>
+      <button class="btn" id="submitBtnMobile" onclick="submitBooking()">Request Appointment</button>
+      <div class="msg" id="formMsgMobile"></div>
     </div>`;
 }
 
 async function submitBooking(){
-  const btn = getEl('submitBtn');
-  const msg = getEl('formMsg');
   const name = (getEl('fName').value||'').trim();
   const phone = (getEl('fPhone').value||'').trim();
-  if(!phone){ msg.textContent='Phone number is required.'; msg.className='msg err'; return; }
+
+  // Show error on whichever button/msg pair is visible
+  function setMsg(text, cls){
+    ['formMsg','formMsgMobile'].forEach(id=>{ const el=getEl(id); if(el){el.textContent=text; el.className='msg'+(cls?' '+cls:'');} });
+  }
+  function setBtns(disabled, label){
+    ['submitBtn','submitBtnMobile'].forEach(id=>{ const el=getEl(id); if(el){el.disabled=disabled; if(label) el.textContent=label;} });
+  }
+
+  if(!phone){ setMsg('Phone number is required.','err'); return; }
 
   const svcSel = getEl('fService');
   const docSel = getEl('fDoctor');
 
-  btn.disabled = true; msg.textContent = 'Sending…'; msg.className = 'msg';
+  setBtns(true, 'Sending…'); setMsg('','');
   try{
     const body = {
       client_id: clientId, name, phone,
@@ -256,13 +279,11 @@ async function submitBooking(){
         <h2>Request sent!</h2>
         <p>${escHtml(bizInfo.client_name||'The team')} will confirm your appointment shortly.</p>
       </div>`;
-    // remove sticky footer
     const footer = document.querySelector('.sticky-footer');
-    if(footer) footer.remove();
+    if(footer) footer.style.display='none';
   }catch(e){
-    msg.textContent = e.message;
-    msg.className = 'msg err';
-    btn.disabled = false;
+    setMsg(e.message,'err');
+    setBtns(false, 'Request Appointment');
   }
 }
 
