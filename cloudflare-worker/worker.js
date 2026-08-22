@@ -14597,6 +14597,18 @@ async function handleApptPublicBook(request, env){
     if(row){
       await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
       await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
+      // Send WhatsApp confirmation to the patient — best-effort
+      if(c.wa_phone_id && c.wa_token){
+        const svcLine=row.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
+        const drLine=row.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
+        const dateLine=date?`\n📅 *Date:* ${date}`:'';
+        const timeLine=time?`\n⏰ *Time:* ${time}`:'';
+        const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
+        fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+          method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+          body:JSON.stringify({messaging_product:'whatsapp',to:phone,type:'text',text:{body:confirmMsg}})
+        }).catch(()=>null);
+      }
     }
     // Also save to CRM (NocoDB lead + task) — best-effort, don't fail the booking on CRM error
     let svc=null;
