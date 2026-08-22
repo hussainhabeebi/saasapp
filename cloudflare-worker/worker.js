@@ -11729,7 +11729,7 @@ export function engineTruncateButtonTitle(title, cap){
   // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
   // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
-  return cut.trimEnd()+'…';
+  return cut.trimEnd();
 }
 // Returns the items actually presented to the customer as tappable buttons — {title, value},
 // title truncated/deduped exactly as sent — or null on every path that fell back to plain text
@@ -13413,7 +13413,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
           // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
-          const bookingChoices=[{title:'Book Now',value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+          const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
+          const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
           const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
           if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
