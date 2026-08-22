@@ -11544,7 +11544,7 @@ export function engineTruncateButtonTitle(title, cap){
   // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
   // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
-  return cut.trimEnd()+'…';
+  return cut.trimEnd();
 }
 // Returns the items actually presented to the customer as tappable buttons — {title, value},
 // title truncated/deduped exactly as sent — or null on every path that fell back to plain text
