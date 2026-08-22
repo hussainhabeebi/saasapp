@@ -13228,7 +13228,8 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
           // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
-          const bookingChoices=[{title:'Book Now',value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+          const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
+          const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
           const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
           if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);

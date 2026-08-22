@@ -290,9 +290,13 @@ async function submitBooking(){
 async function load(){
   if(!clientId){ getEl('errMsg').style.display='block'; return; }
   try{
-    const [clientRes, servicesRes] = await Promise.all([
+    // Fetch client info, services, and doctors all at once
+    const svcQs = `client=${encodeURIComponent(clientId)}${urlServiceId?'&service_id='+encodeURIComponent(urlServiceId):''}`;
+    const docQs = `client=${encodeURIComponent(clientId)}${urlServiceId?'&service_id='+encodeURIComponent(urlServiceId):''}${urlDoctorId?'&doctor_id='+encodeURIComponent(urlDoctorId):''}`;
+    const [clientRes, servicesRes, doctorsRes] = await Promise.all([
       fetch(`${WORKER_BASE}/appt/public/client?client=${encodeURIComponent(clientId)}`),
-      fetch(`${WORKER_BASE}/appt/public/services?client=${encodeURIComponent(clientId)}`),
+      fetch(`${WORKER_BASE}/appt/public/services?${svcQs}`),
+      fetch(`${WORKER_BASE}/appt/public/doctors?${docQs}`),
     ]);
     if(!clientRes.ok) throw new Error('not found');
     bizInfo = await clientRes.json();
@@ -301,9 +305,8 @@ async function load(){
     allServices = svcData.list || [];
 
     if(isHealthcare){
-      // Load doctors in parallel; pre-filter by URL service_id if provided
-      const docs = await loadDoctors(urlServiceId || '');
-      allDoctors = docs;
+      const docData = await doctorsRes.json().catch(() => ({list:[]}));
+      allDoctors = docData.list || [];
     }
 
     document.title = 'Book with ' + (bizInfo.client_name || 'us');
