@@ -3,7 +3,20 @@ const POOMAS_API='https://api.flypoomas.com';
 const POOMAS_WEB='https://flypoomas.com';
 function json(data,status=200,origin='*'){return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Access-Control-Allow-Origin':origin,'Access-Control-Allow-Headers':'Authorization, Content-Type','Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS','Vary':'Origin'}})}
 function corsOrigin(req,env){const origin=req.headers.get('Origin')||'*';const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);return !allowed.length||allowed.includes(origin)?origin:'null'}
-async function auth(req){const token=req.headers.get('Authorization');if(!token)return null;const r=await fetch(`${LEADVYNE_API}/session/me`,{headers:{Authorization:token}});if(!r.ok)return null;const d=await r.json().catch(()=>null);if(!d?.client_id)return null;return {clientId:Number(d.client_id),email:d.email||''};}
+function decodeJwtPayload(raw){try{const token=String(raw||'').replace(/^Bearer\s+/i,'');const part=token.split('.')[1];if(!part)return null;const normalized=part.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(part.length/4)*4,'=');return JSON.parse(atob(normalized));}catch{return null}}
+async function auth(req){
+  const authorization=req.headers.get('Authorization');
+  if(!authorization)return null;
+  // Live Agency already proves this exact bearer token against /live-travel/*.
+  // Validate through that authenticated route instead of the obsolete /session/me path,
+  // then read cid from the signed JWT payload only after the upstream accepted the token.
+  const r=await fetch(`${LEADVYNE_API}/live-travel/bootstrap`,{headers:{Authorization:authorization}});
+  if(!r.ok)return null;
+  const payload=decodeJwtPayload(authorization);
+  const cid=Number(payload?.cid||payload?.client_id||payload?.clientId||0);
+  if(!Number.isFinite(cid)||cid<=0)return null;
+  return {clientId:cid,email:String(payload?.email||'')};
+}
 async function ensureDb(env){await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_poomas_settings (client_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, api_base TEXT NOT NULL DEFAULT 'https://api.flypoomas.com', checkout_base TEXT NOT NULL DEFAULT 'https://flypoomas.com', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`).run();}
 async function setting(env,cid){await ensureDb(env);return await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(cid).first();}
 async function enabledSetting(env,cid){const s=await setting(env,cid);if(!s||!s.enabled)throw new Error('POOMAS API is not enabled for this client.');return s;}
