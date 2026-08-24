@@ -8390,3 +8390,29 @@ npx wrangler deploy
 
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
+
+## Live Travel Agency
+
+`frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy
+`travel-agency.html` remains on its existing NocoDB tables and only links to the new page. Apply
+the D1 migration before opening Live Agency:
+
+```bash
+cd cloudflare-worker
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+```
+
+Configure one platform encryption key as a Worker secret. This key encrypts/decrypts tenant-owned
+supplier credentials but is not itself a Riya, TripJack or SerpApi credential:
+
+```bash
+npx wrangler secret put LIVE_TRAVEL_CREDENTIALS_KEY
+```
+
+Each client enters its own API keys, supplier account identifiers and certified endpoint URLs from
+**Live Agency → Suppliers**. The Worker encrypts those values before writing them to that client's
+D1 row and never returns saved credentials to the browser. Blank credential fields preserve the
+saved value; **Clear credentials** removes them. Keep Riya and TripJack in sandbox until supplier
+UAT/certification passes. SerpApi Google Flights is always non-bookable comparison data; only a
+revalidated Riya or TripJack offer can become a booking. Never point staging at production
+credentials or the production D1 database.

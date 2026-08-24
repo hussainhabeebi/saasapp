@@ -1,0 +1,26 @@
+name: Deploy POOMAS Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-worker/poomas-bridge.js'
+      - 'cloudflare-worker/wrangler.poomas.toml'
+      - '.github/workflows/deploy-poomas-bridge.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx wrangler@4 deploy --config wrangler.poomas.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
