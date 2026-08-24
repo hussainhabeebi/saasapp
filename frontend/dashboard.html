@@ -17311,7 +17311,7 @@ function showUpdateBanner(){
     if(_autoEmail){
       (async()=>{
         try{
-          const r=await fetch('https://api.leadvyne.com/signup',{
+          const r=await fetch(WORKER_BASE+'/signup',{
             method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({email:_autoEmail})
           });

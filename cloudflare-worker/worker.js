@@ -698,8 +698,22 @@ async function handleSignup(request, env){
     if(recR.ok){ const d=await recR.json().catch(()=>({})); inviteLink=d?.link||null; }
   }catch(e){}
 
-  // Send invite email (reuses existing Resend helper)
-  if(inviteLink) await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+  if(inviteLink){
+    await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+  } else if(env.RESEND_API_KEY){
+    // Recovery link unavailable — send a plain welcome email pointing to the login page so
+    // the user can use "Forgot password" to set their own password and reach their account.
+    const from=env.TEAM_INVITE_FROM_EMAIL||'Leadvyne <team@leadvyne.com>';
+    const loginUrl='https://app.leadvyne.com';
+    const bodyHtml=`<p>Hi ${esc(deriveBusinessNameServer(emailNorm)||'there')},</p>
+      <p>Your Leadvyne account has been created for <b>${esc(emailNorm)}</b>.</p>
+      <p>Visit the link below and use <b>Forgot password</b> to set your password and sign in.</p>`;
+    await fetch('https://api.resend.com/emails',{
+      method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+      body:JSON.stringify({from, to:[emailNorm], subject:'Your Leadvyne account is ready',
+        html:renderBillingEmailHtml({heading:'Account created',bodyHtml,ctaLabel:'Go to Leadvyne',ctaUrl:loginUrl})})
+    }).catch(()=>{});
+  }
 
   return json({ok:true, message:'Check your email to set up your account.'});
 }
