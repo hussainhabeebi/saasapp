@@ -14279,7 +14279,7 @@ async function handleEngineWebhook(request, env, secret){
     // time this lead's message mentions a unit by name, send its photos/video straight into the
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
-    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit});
     // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
     // the hospitality call just above: the first time this lead's message names a project or
     // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
@@ -19425,6 +19425,22 @@ function hospUnitNameMatch(lower, unitName){
   return false;
 }
 
+// Returns 1-based index if the text is a numeric/ordinal selection ("1", "option 2", "2nd", etc.), else null.
+function resortOrdinalFromText(lower){
+  const s=lower.trim();
+  let m;
+  // "1", "2.", "option 1", "option 2", "#1", "no 1", "no. 2"
+  if((m=s.match(/^(?:option|no\.?|#)?\s*([1-9]\d*)\.?$/))){
+    return parseInt(m[1], 10);
+  }
+  // "option one" / "option two" etc.
+  const words={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+  if((m=s.match(/^option\s+([a-z]+)$/)) && words[m[1]]){
+    return words[m[1]];
+  }
+  return null;
+}
+
 // Returns true when a resort client's lead should receive media+description instead of an LLM reply
 // this turn. True when:
 //   - Message matches a resort enquiry signal (keyword regex, or property/unit name mention)
@@ -19440,6 +19456,8 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
+  // Numeric/ordinal selection ("1", "option 2") — suppress LLM if there are selectable items
+  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length)) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -19614,7 +19632,9 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 //    happens to contain a word like "available".
 // "Once per session" in both modes means once per (lead, unit) ever, not re-sent on every later
 // message that happens to mention the same unit (or ask about availability) again.
-async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText){
+// hospContext = { selectedProperty, selectedUnit } from the lead's stored NocoDB values — passed in
+// by handleEngineWebhook so we don't need an extra NocoDB read here.
+async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -19637,6 +19657,52 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       }
       // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+
+      // 2b. Numeric/ordinal selection ("1", "option 2") — map to property or room by position.
+      // If the lead already has a property selected (HospSelectedProperty), "1" = Nth room of that
+      // property; otherwise "1" = Nth property (or Nth unit if no properties configured).
+      const ordinalIdx=resortOrdinalFromText(lower);
+      if(ordinalIdx!==null){
+        const selectedPropName=hospContext.selectedProperty;
+        if(selectedPropName && properties && properties.length){
+          const selectedProp=properties.find(p=>p.name===selectedPropName);
+          if(selectedProp){
+            const linkedRooms=units.filter(u=>Number(u.property_id)===Number(selectedProp.id));
+            const roomList=linkedRooms.length?linkedRooms:units;
+            const target=roomList[ordinalIdx-1];
+            if(target){
+              await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
+              try{
+                await ensureLeadsColumns(env, ['HospSelectedUnit']);
+                await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
+              }catch(e){}
+              return;
+            }
+          }
+        }
+        if(properties && properties.length){
+          const target=properties[ordinalIdx-1];
+          if(target){
+            await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, target, units, true);
+            try{
+              await ensureLeadsColumns(env, ['HospSelectedProperty']);
+              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:target.name}});
+            }catch(e){}
+            return;
+          }
+        } else {
+          const target=units[ordinalIdx-1];
+          if(target){
+            await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
+            try{
+              await ensureLeadsColumns(env, ['HospSelectedUnit']);
+              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
+            }catch(e){}
+            return;
+          }
+        }
+      }
+
       if(properties && properties.length){
         const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
