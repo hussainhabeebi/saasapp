@@ -6,16 +6,29 @@ function json(data,status=200,origin='*'){
   return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Access-Control-Allow-Origin':origin,'Access-Control-Allow-Headers':'Authorization, Content-Type, X-Leadvyne-Client','Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS','Vary':'Origin'}});
 }
 function corsOrigin(req,env){const origin=req.headers.get('Origin')||'*';const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);return !allowed.length||allowed.includes(origin)?origin:'null';}
+function decodeLeadvynePayload(raw){
+  try{
+    const token=String(raw||'').replace(/^Bearer\s+/i,'').trim();
+    const body=token.split('.')[0];
+    if(!body)return null;
+    const normalized=body.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(body.length/4)*4,'=');
+    const text=decodeURIComponent(Array.from(atob(normalized)).map(c=>'%'+c.charCodeAt(0).toString(16).padStart(2,'0')).join(''));
+    return JSON.parse(text);
+  }catch{return null;}
+}
 
-// Authentication is delegated to the existing Live Travel API. This avoids duplicating
-// Leadvyne's session signing/decoding logic in a second Worker.
+// Authenticate with the exact same endpoint and headers used by Live Agency itself.
+// Once bootstrap accepts the bearer token, the token payload is trusted only to obtain
+// the already-signed client id; we do not perform a second, incompatible signature check.
 async function auth(req){
   const raw=String(req.headers.get('Authorization')||'').trim();
-  const cid=Number(req.headers.get('X-Leadvyne-Client')||0);
-  if(!raw||!Number.isFinite(cid)||cid<=0)return null;
+  if(!raw)return null;
   try{
-    const r=await fetch(`${LEADVYNE_API}/live-travel/bootstrap?client=${encodeURIComponent(cid)}`,{headers:{Authorization:raw,'X-Leadvyne-Client':String(cid)}});
+    const r=await fetch(`${LEADVYNE_API}/live-travel/bootstrap`,{headers:{Authorization:raw,'Content-Type':'application/json'}});
     if(!r.ok)return null;
+    const payload=decodeLeadvynePayload(raw);
+    const cid=Number(payload?.cid||payload?.client_id||payload?.clientId||0);
+    if(!Number.isFinite(cid)||cid<=0)return null;
     return {clientId:cid};
   }catch{return null;}
 }
@@ -28,7 +41,7 @@ export default {async fetch(req,env){
   const origin=corsOrigin(req,env);
   if(req.method==='OPTIONS')return new Response(null,{status:204,headers:{'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Headers':'Authorization, Content-Type, X-Leadvyne-Client','Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS'}});
   const u=new URL(req.url);
-  if(u.pathname==='/health')return json({status:'ok',service:'leadvyne-poomas-bridge',auth:'native-live-travel'},200,origin);
+  if(u.pathname==='/health')return json({status:'ok',service:'leadvyne-poomas-bridge',auth:'live-travel-bootstrap-v2'},200,origin);
   const a=await auth(req);
   if(!a)return json({error:'Leadvyne Live Agency session validation failed'},401,origin);
   try{
