@@ -15924,6 +15924,72 @@ async function handleRecruitDelete(request, env, kind){
    the client's own copy; deleting a project cascades to its tasks; a task's `done_at` is
    maintained by the server on status transitions, not directly writable, and a task status change
    or creation runs any matching automations (see PM automation engine below). ── */
+let _pmSchemaEnsured=false;
+async function pmEnsureSchema(env){
+  if(_pmSchemaEnsured)return;
+  // Create all tables with full current schema (CREATE TABLE IF NOT EXISTS is idempotent)
+  await env.DB.batch([
+    `CREATE TABLE IF NOT EXISTS pm_projects (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,color TEXT NOT NULL DEFAULT '#0D9C93',status TEXT NOT NULL DEFAULT 'active',budget_amount REAL,budget_currency TEXT NOT NULL DEFAULT 'USD',default_hourly_rate REAL,client_email TEXT,ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0,task_reminders_enabled INTEGER NOT NULL DEFAULT 0,overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_projects_client ON pm_projects(client_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_client ON pm_tasks(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_project ON pm_tasks(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_sprint ON pm_tasks(client_id,sprint_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_task_dependencies (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,predecessor_id INTEGER NOT NULL,successor_id INTEGER NOT NULL,lag_days INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,UNIQUE(predecessor_id,successor_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_client ON pm_task_dependencies(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_project ON pm_task_dependencies(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,task_id INTEGER NOT NULL,project_id INTEGER NOT NULL,user_email TEXT,entry_date TEXT NOT NULL,hours REAL NOT NULL DEFAULT 0,note TEXT,billable INTEGER NOT NULL DEFAULT 1,hourly_rate REAL,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_client ON pm_time_entries(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_project ON pm_time_entries(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_task ON pm_time_entries(client_id,task_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_sprints (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,start_date TEXT,end_date TEXT,status TEXT NOT NULL DEFAULT 'planned',created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_client ON pm_sprints(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_project ON pm_sprints(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_automations (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,trigger_type TEXT NOT NULL,trigger_config TEXT,action_type TEXT NOT NULL,action_config TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_client ON pm_automations(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_project ON pm_automations(client_id,project_id)`,
+  ].map(s=>env.DB.prepare(s)));
+  // For clients whose pm_tasks/pm_projects were created by the base migration (0050) and are
+  // missing phase-2/3 columns, add those columns now. ALTER TABLE ADD COLUMN has no IF NOT EXISTS
+  // so we check PRAGMA table_info first and only add what's actually missing.
+  const [taskCols,projCols]=await Promise.all([
+    env.DB.prepare('PRAGMA table_info(pm_tasks)').all(),
+    env.DB.prepare('PRAGMA table_info(pm_projects)').all(),
+  ]);
+  const tc=new Set((taskCols.results||[]).map(r=>r.name));
+  const pc=new Set((projCols.results||[]).map(r=>r.name));
+  const taskAlters=[
+    ['item_type',`ALTER TABLE pm_tasks ADD COLUMN item_type TEXT NOT NULL DEFAULT 'task'`],
+    ['severity',`ALTER TABLE pm_tasks ADD COLUMN severity TEXT`],
+    ['story_points',`ALTER TABLE pm_tasks ADD COLUMN story_points INTEGER`],
+    ['sprint_id',`ALTER TABLE pm_tasks ADD COLUMN sprint_id INTEGER`],
+    ['link_url',`ALTER TABLE pm_tasks ADD COLUMN link_url TEXT`],
+    ['link_label',`ALTER TABLE pm_tasks ADD COLUMN link_label TEXT`],
+    ['done_at',`ALTER TABLE pm_tasks ADD COLUMN done_at TEXT`],
+    ['lead_id',`ALTER TABLE pm_tasks ADD COLUMN lead_id INTEGER`],
+    ['lead_name',`ALTER TABLE pm_tasks ADD COLUMN lead_name TEXT`],
+    ['category',`ALTER TABLE pm_tasks ADD COLUMN category TEXT`],
+    ['channel',`ALTER TABLE pm_tasks ADD COLUMN channel TEXT`],
+    ['mode',`ALTER TABLE pm_tasks ADD COLUMN mode TEXT`],
+    ['followup_step',`ALTER TABLE pm_tasks ADD COLUMN followup_step INTEGER`],
+    ['notify_customer',`ALTER TABLE pm_tasks ADD COLUMN notify_customer INTEGER NOT NULL DEFAULT 0`],
+    ['ai_created',`ALTER TABLE pm_tasks ADD COLUMN ai_created INTEGER NOT NULL DEFAULT 0`],
+    ['auto_generated',`ALTER TABLE pm_tasks ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0`],
+    ['gcal_event_id',`ALTER TABLE pm_tasks ADD COLUMN gcal_event_id TEXT`],
+  ].filter(([col])=>!tc.has(col));
+  const projAlters=[
+    ['budget_amount',`ALTER TABLE pm_projects ADD COLUMN budget_amount REAL`],
+    ['budget_currency',`ALTER TABLE pm_projects ADD COLUMN budget_currency TEXT NOT NULL DEFAULT 'USD'`],
+    ['default_hourly_rate',`ALTER TABLE pm_projects ADD COLUMN default_hourly_rate REAL`],
+    ['client_email',`ALTER TABLE pm_projects ADD COLUMN client_email TEXT`],
+    ['ai_auto_stage_enabled',`ALTER TABLE pm_projects ADD COLUMN ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0`],
+    ['task_reminders_enabled',`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`],
+    ['overdue_escalation_enabled',`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`],
+  ].filter(([col])=>!pc.has(col));
+  const allAlters=[...taskAlters,...projAlters];
+  if(allAlters.length) await env.DB.batch(allAlters.map(([,sql])=>env.DB.prepare(sql)));
+  _pmSchemaEnsured=true;
+}
 const PM_TABLES={
   projects:{
     table:'pm_projects', requiredField:'name', orderBy:'created_at DESC',
@@ -16033,6 +16099,7 @@ async function pmVerifyProject(env, cid, projectId){
 async function handlePmList(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const url=new URL(request.url);
   const projectId=parseInt(url.searchParams.get('project_id'),10);
@@ -16046,6 +16113,7 @@ async function handlePmList(request, env, kind){
 async function handlePmCreate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
@@ -16078,6 +16146,7 @@ async function handlePmCreate(request, env, kind){
 async function handlePmUpdate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
@@ -16119,6 +16188,7 @@ async function handlePmUpdate(request, env, kind){
 async function handlePmDelete(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
