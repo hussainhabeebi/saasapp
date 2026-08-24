@@ -23623,6 +23623,7 @@ async function handleReAnalytics(request, env){
 const LT_SUPPLIERS=['serpapi','riya','tripjack'];
 const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack']);
 const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
+let _ltSchemaEnsured=false;
 
 function ltNow(){ return new Date().toISOString(); }
 function ltRef(prefix){
@@ -23685,8 +23686,8 @@ async function ltAuth(request,env){
   return {cid:Number(payload.cid),email:ltText(payload.email,250)};
 }
 async function ltSeedSuppliers(env,cid){
-  const now=ltNow();
-  for(const [i,supplier] of LT_SUPPLIERS.entries()) await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`).bind(cid,supplier,(i+1)*10,now,now).run();
+  const now=ltNow(),stmt=`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`;
+  await env.DB.batch(LT_SUPPLIERS.map((s,i)=>env.DB.prepare(stmt).bind(cid,s,(i+1)*10,now,now)));
 }
 function ltBytesB64(bytes){return btoa(String.fromCharCode(...bytes));}
 function ltB64Bytes(value){return Uint8Array.from(atob(value),c=>c.charCodeAt(0));}
@@ -23759,6 +23760,7 @@ async function ltSupplierAction(config,action,payload){
 async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
 async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
 async function ltEnsureSchema(env){
+  if(_ltSchemaEnsured)return;
   const stmts=[
     `CREATE TABLE IF NOT EXISTS live_travel_agents (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,agent_ref TEXT NOT NULL,parent_agent_ref TEXT NOT NULL DEFAULT 'owner',agent_type TEXT NOT NULL DEFAULT 'agent',name TEXT NOT NULL,email TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',credit_limit REAL NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,agent_ref))`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_agents_client ON live_travel_agents(client_id,parent_agent_ref,status)`,
@@ -23786,12 +23788,12 @@ async function ltEnsureSchema(env){
     `CREATE INDEX IF NOT EXISTS idx_live_travel_audit_client ON live_travel_audit_log(client_id,created_at)`,
   ];
   await env.DB.batch(stmts.map(s=>env.DB.prepare(s)));
+  _ltSchemaEnsured=true;
 }
 
 async function handleLtBootstrap(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
-  await ltEnsureSchema(env);
-  await ltSeedSuppliers(env,auth.cid);
+  await Promise.all([ltEnsureSchema(env),ltSeedSuppliers(env,auth.cid)]);
   const [suppliers,searches,quotes,bookings,service,wallet,walletEntries,agents,commissions]=await Promise.all([
     env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? ORDER BY priority`).bind(auth.cid).all(),
     env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 20`).bind(auth.cid).all(),
@@ -23810,8 +23812,7 @@ async function handleLtSuppliersUpdate(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
   if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
-  await ltSeedSuppliers(env,auth.cid);
-  const old=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  const [,old]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first()]);
   const previous=await ltSupplierRuntime(env,old),credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:['api_key'];
   const credentials=body.clear_credentials?{}:{...(previous.credentials||{})};
   for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
@@ -23839,8 +23840,7 @@ async function handleLtSupplierHealth(request,env){
 async function handleLtSearch(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   let input; try{input=ltSearchParams(await request.json().catch(()=>({})));}catch(e){return json({error:e.message},400);}
-  await ltSeedSuppliers(env,auth.cid);
-  const {results:settings}=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all();
+  const [,{results:settings}]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all()]);
   if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
   const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
   const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
