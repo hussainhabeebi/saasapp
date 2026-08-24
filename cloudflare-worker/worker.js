@@ -19416,8 +19416,11 @@ async function hospitalityChatwootText(c, convId, text){
 function hospUnitNameMatch(lower, unitName){
   const name=(unitName||'').trim().toLowerCase();
   if(name.length<4) return false;
+  // Full match: user text contains the complete unit name
   if(lower.includes(name)) return true;
-  // Truncated button tap: strip trailing "..." from customer text, check if unit name starts with it
+  // Partial match: unit name starts with what user typed ("Standard ac" → "Standard AC Room (2 Pax)")
+  if(lower.length>=4 && name.startsWith(lower)) return true;
+  // Truncated button tap: strip trailing "..." from customer text
   if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
   return false;
 }
