@@ -1,5 +1,5 @@
 name = "leadvyne-api-proxy"
-main = "worker.js"
+main = "worker-entry.js"
 compatibility_date = "2026-01-01"
 
 # Enabled via the dashboard (Observability tab) to debug the voice-to-voice transcription issue —
@@ -175,116 +175,13 @@ class_name = "ProjectTaskWorkflow"
 NOCODB_BASE = "https://whizz.aiingo.com"
 AUTHENTIK_BASE = "https://secure.leadvyne.com"
 ALLOWED_ORIGINS = "https://app.leadvyne.com,https://leadvyne.com,https://www.leadvyne.com"
-# Channels module — base URL of the Chatwoot install new client accounts are provisioned on.
 CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
-# Billing module — see SETUP.md "Billing module"
 APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
-# This Worker's own public base URL — used to build the Shopify OAuth redirect_uri and webhook
-# address (Shopify calls back into this Worker, so it needs to know its own address).
 WORKER_BASE_URL = "https://leadvyne-api-proxy.leadvyne.workers.dev"
-# Global kill switch for the Conversation Engine (SETUP.md "Conversation Engine") — set to
-# "false" to make /engine/webhook go silent for every client at once (an emergency stop, not a
-# fallback to n8n). Requires a redeploy to change; there's no live/dynamic toggle. Any value other
-# than the literal string "false" (including leaving this unset) means enabled.
 ENGINE_ENABLED = "true"
-# 4-tier plan structure (Basic/Standard/Business Intelligence/Marketing Pro — see PLAN_TIERS
-# above, which controls feature/seat/channel limits independently of these Stripe Prices). INR
-# only for now; add AED Price IDs to this same list once created in Stripe (handleBillingPlans
-# fetches each by id and the dashboard's currency toggle filters by each Price's own `currency`
-# field — see its own comment for why order in this list doesn't matter).
 STRIPE_PLAN_PRICE_IDS = "price_1U2XJAJWa5B2ayZg2jScv4AN,price_1U2XTJJWa5B2ayZga444C5SV,price_1U2XMvJWa5B2ayZgPRBaFUX2,price_1U2XW2JWa5B2ayZgTeXP12Yo"
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
-# Marketing Studio module (SETUP.md "Marketing Studio module") — fallback minutes/month for a
-# client with no marketing_minutes_limit set on their Clients row yet.
 MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 
-# Secrets (NOT stored here — set via `wrangler secret put <NAME>`):
-#   NOCODB_TOKEN            the master NocoDB token (nc_pat_...)
-#   SESSION_SIGNING_KEY     a long random string, e.g. `openssl rand -hex 32`
-#   CHATWOOT_PLATFORM_TOKEN Chatwoot Platform API token — see SETUP.md "Channels module"
-#   META_APP_ID             Meta Tech Provider app id (Embedded Signup token exchange)
-#   META_APP_SECRET         Meta Tech Provider app secret (Embedded Signup token exchange)
-#   STRIPE_SECRET_KEY       Stripe secret key — see SETUP.md "Billing module"
-#   STRIPE_WEBHOOK_SECRET   Stripe webhook signing secret for /billing/webhook
-#   RESEND_API_KEY          Resend API key — task-notify emails (SETUP.md "Tasks") AND billing
-#                           receipts/dunning/trial-reminder emails (SETUP.md "Billing module")
-#   RESEND_FROM_EMAIL       optional, defaults to "Leadvyne Tasks <tasks@leadvyne.com>"
-#   BILLING_FROM_EMAIL      optional, defaults to "Leadvyne Billing <billing@leadvyne.com>" — set
-#                           this to a domain verified in Resend, or billing emails will be rejected
-#   ADMIN_PASSCODE          admin.html login passcode — see SETUP.md "Admin panel"
-#   SHOPIFY_API_KEY         Shopify Partners app's Client ID — see SETUP.md "Shopify module"
-#   SHOPIFY_API_SECRET      Shopify Partners app's Client Secret (also verifies OAuth + webhook HMACs)
-#   GEMINI_API_KEY          Google Generative Language API key (Google AI Studio) — see SETUP.md
-#                           "Conversation Engine". One shared key for all clients, same as
-#                           the n8n engine's single Gemini credential — not per-client. Powers the
-#                           /engine/webhook intent/sentiment classifier and voice transcription;
-#                           if unset, the classifier falls back to each client's own OpenRouter
-#                           key and voice notes fall back to a placeholder ("(sent a voice note)")
-#                           instead of a real transcript.
-#   OPS_ALERT_WEBHOOK_URL   optional — any URL accepting a JSON {text:"..."} POST (a Slack
-#                           incoming webhook works as-is). Platform-level failure alerts (engine
-#                           crashes, failed customer replies, any unhandled route error) — see
-#                           SETUP.md "Error monitoring". Distinct from clients' own per-client
-#                           slack_webhook_url (business alerts like hot leads).
-#   OPS_ALERT_EMAIL         optional — email address for the same alerts as OPS_ALERT_WEBHOOK_URL,
-#                           sent via Resend. Requires RESEND_API_KEY (above) to also be set.
-#   SARVAM_API_KEY          Sarvam AI API key — see SETUP.md "Voice-to-voice replies". Powers the
-#                           /engine/webhook voice-note reply (female TTS, Indic languages incl.
-#                           Malayalam/Hindi/Tamil/etc), as the PRIMARY TTS provider. One shared key
-#                           for all clients, same pattern as GEMINI_API_KEY. If unset, or the
-#                           customer's detected language isn't a supported Indic language, the
-#                           engine tries the AI4Bharat standby below (if configured) before falling
-#                           back to a normal text reply, even for clients with voice_addon_active='Yes'.
-#   GOOGLE_CLIENT_ID        Google Cloud OAuth 2.0 Client (Web application type) Client ID — see
-#                           SETUP.md "Reports page" (SEO tab / Google Search Console) AND SETUP.md
-#                           "Google Calendar sync" (Task Manager) — the SAME Cloud OAuth Client is
-#                           reused for both, just with a different scope requested per flow. One
-#                           shared OAuth app for all clients, same pattern as SHOPIFY_API_KEY — each
-#                           client connects their own Search Console property / Google Calendar
-#                           through it. Needs BOTH this Worker's /gsc/oauth/callback AND
-#                           /gcal/oauth/callback URLs added as authorized redirect URIs on the Cloud
-#                           project, and BOTH the Search Console API and Google Calendar API enabled.
-#   GOOGLE_CLIENT_SECRET    Client Secret for the same OAuth 2.0 Client as GOOGLE_CLIENT_ID.
-#   MARKETING_TRANSCRIBE_API_URL   optional — OpenAI-compatible audio-transcription endpoint
-#                           (defaults to https://api.openai.com/v1/audio/transcriptions if unset).
-#                           Point this at any provider that speaks the same multipart request /
-#                           verbose_json-with-word-timestamps response shape (self-hosted Whisper,
-#                           Groq, etc.) — see SETUP.md "Marketing Studio module" for the exact
-#                           contract and its known size/language caveats.
-#   MARKETING_TRANSCRIBE_API_KEY   bearer token for the above. If unset, transcription requests
-#                           fail with a clear "not configured" error instead of a silent no-op.
-#   MARKETING_RENDER_WEBHOOK_URL   optional — URL of the external render pipeline this Worker
-#                           posts a render spec to (crop/caption-burn/auto-zoom/music/silence-cut —
-#                           none of which a Cloudflare Worker can do itself, no ffmpeg available).
-#                           See SETUP.md "Marketing Studio module" for the request/callback
-#                           contract. Renders fail fast with a clear error until this is set.
-#   MARKETING_RENDER_WEBHOOK_SECRET   shared HMAC secret for that same webhook, verified in both
-#                           directions: signs the outbound POST to MARKETING_RENDER_WEBHOOK_URL,
-#                           and authenticates the pipeline's inbound callback to
-#                           POST /marketing/webhook/render-complete (same X-Signature HMAC-SHA256
-#                           scheme as verifyShopifyWebhookHmac, over the raw body).
-#                           Also reused (both vars) by engineAi4BharatTts — the STANDBY text-to-speech
-#                           provider for voice-to-voice replies, calling the same render pipeline's
-#                           POST /synthesize-voice-reply. Sarvam (SARVAM_API_KEY, above) stays PRIMARY;
-#                           this only matters when Sarvam's call already failed. See SETUP.md
-#                           "Voice-to-voice replies" and render-pipeline/README.md's "AI4Bharat TTS
-#                           standby" section.
-#   MYMEMORY_EMAIL          optional — a contact email appended to every MyMemory Translation API
-#                           call (auto-translate captions, handleMarketingTranslateCaptions).
-#                           MyMemory needs no API key/signup at all; adding an email via this var
-#                           just raises the free daily character quota 10x (5,000 -> 50,000/day),
-#                           shared across every client on this Worker — not a real credential, so
-#                           it's one server-level setting, not a per-client one like the keys
-#                           below.
-#   NATIVE_FORMS_PRIVATE_KEY_PEM / NATIVE_FORMS_PUBLIC_KEY_PEM   optional — one shared RSA keypair
-#                           (PEM) used by the Native Forms module (SETUP.md "Native Forms (WhatsApp
-#                           Flows)") to decrypt/encrypt WhatsApp Flow data-exchange submissions at
-#                           POST /native-forms/endpoint. `openssl genrsa`/`openssl rsa -pubout` —
-#                           see SETUP.md for the exact commands. Only needed if a client turns
-#                           Native Forms on; handleNativeFormSync fails with a clear error if unset.
-#                           /native-forms/endpoint's only auth is META_APP_SECRET (above) signing
-#                           X-Hub-Signature-256 — no session, called directly by Meta.
-#   LIVE_TRAVEL_CREDENTIALS_KEY   platform AES-GCM encryption key for tenant-owned supplier
-#                           credentials stored in D1. Riya, TripJack and SerpApi credentials are
-#                           entered per client in Live Agency → Suppliers, never as Worker secrets.
-#                           Use a different encryption key and D1 database in every environment.
+# Secrets are configured in Cloudflare dashboard / wrangler secret put.
+# POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
