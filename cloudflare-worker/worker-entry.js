@@ -1,6 +1,8 @@
 import legacy from './worker.js';
 import {handleNativePoomas} from './live-travel-poomas-native.js';
 
+export * from './worker.js';
+
 const wrapped={
   ...legacy,
   async fetch(req,env,ctx){
