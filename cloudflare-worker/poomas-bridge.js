@@ -3,16 +3,15 @@ const POOMAS_API='https://api.flypoomas.com';
 const POOMAS_WEB='https://flypoomas.com';
 function json(data,status=200,origin='*'){return new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json','Access-Control-Allow-Origin':origin,'Access-Control-Allow-Headers':'Authorization, Content-Type','Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS','Vary':'Origin'}})}
 function corsOrigin(req,env){const origin=req.headers.get('Origin')||'*';const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);return !allowed.length||allowed.includes(origin)?origin:'null'}
-function decodeJwtPayload(raw){try{const token=String(raw||'').replace(/^Bearer\s+/i,'');const part=token.split('.')[1];if(!part)return null;const normalized=part.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(part.length/4)*4,'=');return JSON.parse(atob(normalized));}catch{return null}}
+function decodeLeadvynePayload(raw){try{const token=String(raw||'').replace(/^Bearer\s+/i,'').trim();const parts=token.split('.');const part=parts.length===2?parts[0]:parts.length>=3?parts[1]:'';if(!part)return null;const normalized=part.replace(/-/g,'+').replace(/_/g,'/').padEnd(Math.ceil(part.length/4)*4,'=');return JSON.parse(atob(normalized));}catch{return null}}
 async function auth(req){
   const authorization=req.headers.get('Authorization');
   if(!authorization)return null;
-  // Live Agency already proves this exact bearer token against /live-travel/*.
-  // Validate through that authenticated route instead of the obsolete /session/me path,
-  // then read cid from the signed JWT payload only after the upstream accepted the token.
+  // Validate the bearer token through Leadvyne's authenticated Live Travel route first.
+  // Leadvyne session tokens are body.signature (2 parts), not standard 3-part JWTs.
   const r=await fetch(`${LEADVYNE_API}/live-travel/bootstrap`,{headers:{Authorization:authorization}});
   if(!r.ok)return null;
-  const payload=decodeJwtPayload(authorization);
+  const payload=decodeLeadvynePayload(authorization);
   const cid=Number(payload?.cid||payload?.client_id||payload?.clientId||0);
   if(!Number.isFinite(cid)||cid<=0)return null;
   return {clientId:cid,email:String(payload?.email||'')};
