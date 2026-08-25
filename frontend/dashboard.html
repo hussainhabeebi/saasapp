@@ -11390,6 +11390,7 @@ async function buyAddon(price_id){
 function $id(id){return document.getElementById(id);}
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
 // The bot writes the linked Chatwoot conversation id as "ConversationID" — read that,
