@@ -13974,7 +13974,11 @@ function renderReportsTeamReport(){
   el.innerHTML=`
     <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically.</div>
     <div id="reportsTeamStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
-    <div class="card"><div id="reportsTeamTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`;
+    <div class="card"><div id="reportsTeamTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+
+    <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📞 Call Tracking</div><div class="s-note">Same call data as Team → Call Tracking — logged from the 📞 Call button on the Leads page.</div></div>
+    <div id="reportsCallStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
+    <div class="card"><div id="reportsCallTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`;
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
   const members=getTeamMembers();
@@ -14025,6 +14029,45 @@ function renderReportsTeamReport(){
         <td>${r.taskRate}%</td>
       </tr>`).join('')}</tbody>
     </table></div>`;
+
+  // Call Tracking — same computation as the Team page's renderCallTrackingReport, kept as a
+  // second copy targeting this page's own container ids (reportsCallStats/reportsCallTable)
+  // rather than a shared-id refactor, same "avoid regressing the already-live page" convention
+  // this function already follows for the leads/tasks table above.
+  const callStatsEl=$id('reportsCallStats'), callTableEl=$id('reportsCallTable');
+  const leadCalls=allLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
+  const allCalls=[];
+  leadCalls.forEach(calls=>{ calls.slice().reverse().forEach((c,i)=>allCalls.push({...c, ordinal:i+1})); });
+  const totalCalls=allCalls.length;
+  const answeredCalls=allCalls.filter(c=>c.outcome==='Answered').length;
+  const firstCallLeads=leadCalls.filter(c=>c.length>=1).length;
+  const secondCallLeads=leadCalls.filter(c=>c.length>=2).length;
+  if(callStatsEl) callStatsEl.innerHTML=`
+    <div class="stat"><div class="stat-lbl">Total Calls Logged</div><div class="stat-val">${totalCalls}</div></div>
+    <div class="stat accent"><div class="stat-lbl">Answered</div><div class="stat-val">${answeredCalls}</div></div>
+    <div class="stat"><div class="stat-lbl">Leads — 1st Call Done</div><div class="stat-val">${firstCallLeads}</div></div>
+    <div class="stat"><div class="stat-lbl">Leads — 2nd+ Call Done</div><div class="stat-val">${secondCallLeads}</div></div>
+  `;
+  if(!members.length){ if(callTableEl) callTableEl.innerHTML='<div style="color:var(--muted);font-size:13px">No team members yet — add one in Settings → User Management.</div>'; return; }
+  const callRows=members.map(m=>{
+    const mine=allCalls.filter(c=>c.by===m.email);
+    const outcomeCounts={Answered:0,'No Answer':0,Voicemail:0,'Callback Requested':0};
+    mine.forEach(c=>{ if(outcomeCounts[c.outcome]!==undefined) outcomeCounts[c.outcome]++; });
+    const durations=mine.map(c=>Number(c.duration)||0).filter(n=>n>0);
+    const avgDuration=durations.length?Math.round(durations.reduce((s,n)=>s+n,0)/durations.length):0;
+    return {member:m, total:mine.length, outcomeCounts, avgDuration, first:mine.filter(c=>c.ordinal===1).length, second:mine.filter(c=>c.ordinal===2).length};
+  }).sort((a,b)=>b.total-a.total);
+  if(callTableEl) callTableEl.innerHTML=`
+    <div style="overflow-x:auto">
+    <table class="leads-tbl" style="width:100%;min-width:820px">
+      <thead><tr><th>Agent</th><th>Total Calls</th><th>✅ Answered</th><th>📵 No Answer</th><th>📬 Voicemail</th><th>🔁 Callback</th><th>Avg Duration</th><th>1st Calls</th><th>2nd Calls</th></tr></thead>
+      <tbody>${callRows.map(r=>`<tr>
+        <td><b>${esc(r.member.name)}</b>${r.member.email!==r.member.name?`<div style="font-size:11px;color:var(--muted)">${esc(r.member.email)}</div>`:''}</td>
+        <td>${r.total}</td><td>${r.outcomeCounts.Answered}</td><td>${r.outcomeCounts['No Answer']}</td><td>${r.outcomeCounts.Voicemail}</td><td>${r.outcomeCounts['Callback Requested']}</td>
+        <td>${r.avgDuration?r.avgDuration+' min':'—'}</td><td>${r.first}</td><td>${r.second}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    ${totalCalls?'':'<div class="s-note" style="margin-top:10px">No calls logged yet — use the 📞 Call button on the Leads page.</div>'}`;
 }
 
 /* ── Marketing — Meta Ads ROI (unchanged computation, moved here from the old Team → Reports
