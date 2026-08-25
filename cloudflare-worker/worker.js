@@ -11334,6 +11334,16 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  if(c.b2b_stock_json && c.b2b_stock_json.trim()){
+    try{
+      const stockRows=JSON.parse(c.b2b_stock_json);
+      if(Array.isArray(stockRows) && stockRows.length){
+        const cols=Object.keys(stockRows[0]);
+        sys+='\n\n## Current Stock (live — uploaded by business)\n'+stockRows.slice(0,300).map(r=>cols.map(k=>`${k}: ${r[k]??''}`).join(' | ')).join('\n');
+        sys+='\n\nB2B STOCK RULE: When a customer asks about availability or quantity of any product, refer only to the Current Stock table above. Never invent stock levels. If a product is not listed, say it is not in the current stock list and offer to connect them with the sales team.';
+      }
+    }catch(e){}
+  }
   if(contextBlock) sys+=contextBlock;
   if(isResort){
     sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
@@ -13258,9 +13268,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // but fall back to classifier when no catalog match. Both are sparse-signal writes.
   const resolvedProductCategory=routing.matchedCategory||productCategory;
   if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
-  // Catalog-matched brand (ecom only; only written when the classifier confidently matched a
-  // catalog brand entry alongside a category — never set from free-text guess alone).
+  // Catalog-matched brand wins (ecom — validated against live catalog). When no catalog match
+  // exists, fall back to the classifier's free-text product_interest so non-ecom clients (B2B,
+  // general) still get their Brand/Product column populated when a customer names a brand.
   if(routing.matchedBrand) body.Brand=routing.matchedBrand;
+  else if(productInterest) body.Brand=productInterest;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
@@ -15255,6 +15267,7 @@ async function ensureB2bClientFields(env){
     const existing=await existingR.json().catch(()=>({}));
     const names=new Set((existing.list||[]).map(f=>f.title));
     if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
+    if(!names.has('b2b_stock_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_stock_json', uidt:'LongText'}});
     _b2bClientFieldsEnsured=true;
   }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
 }
@@ -15265,6 +15278,26 @@ async function handleB2bInit(request, env){
   await ensureB2bLeadFields(env);
   await ensureB2bClientFields(env);
   return json({ok:true});
+}
+
+async function handleB2bStockGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`);
+  if(!r.ok) return json({error:'Client not found'}, 404);
+  const c=await r.json().catch(()=>({}));
+  let rows=[]; try{ rows=JSON.parse(c.b2b_stock_json||'[]'); }catch(e){}
+  return json({rows, updated_at:c.b2b_stock_updated_at||null});
+}
+
+async function handleB2bStockSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!Array.isArray(body.rows)) return json({error:'rows array required'}, 400);
+  const stockJson=JSON.stringify(body.rows.slice(0,5000));
+  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), b2b_stock_json:stockJson}});
+  return json({ok:true, saved:body.rows.length});
 }
 
 function computeB2bDocSubtotal(lineItems){
@@ -24919,6 +24952,8 @@ export default {
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
+      else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }
+      else if(url.pathname==='/b2b/stock' && request.method==='POST'){ res=await handleB2bStockSave(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='GET'){ res=await handleB2bDocumentsList(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='POST'){ res=await handleB2bDocumentCreate(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='PATCH'){ res=await handleB2bDocumentUpdate(request, env); }
