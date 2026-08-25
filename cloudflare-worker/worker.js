@@ -13385,6 +13385,13 @@ async function handleEngineWebhook(request, env, secret){
   if(!secret) return json({ok:true, skipped:'no-secret'});
   const c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
+  // Attach D1 stock rows so engineBuildFaqSystemPrompt can reference current stock without
+  // an extra NocoDB round trip — just overwrites the (now unused) NocoDB field with the
+  // authoritative D1 value.
+  try{
+    const _sr=await env.DB.prepare('SELECT stock_json FROM b2b_stock WHERE client_id=?').bind(Number(c.Id)).first();
+    if(_sr?.stock_json) c.b2b_stock_json=_sr.stock_json;
+  }catch(e){}
   const clientId=String(c.Id);
   if(c.active==='No'){ await logEngineSkip(env, clientId, null, null, 'client-inactive'); return json({ok:true, skipped:'client-inactive'}); }
   // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
@@ -15267,7 +15274,6 @@ async function ensureB2bClientFields(env){
     const existing=await existingR.json().catch(()=>({}));
     const names=new Set((existing.list||[]).map(f=>f.title));
     if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
-    if(!names.has('b2b_stock_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_stock_json', uidt:'LongText'}});
     _b2bClientFieldsEnsured=true;
   }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
 }
@@ -15283,11 +15289,10 @@ async function handleB2bInit(request, env){
 async function handleB2bStockGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`);
-  if(!r.ok) return json({error:'Client not found'}, 404);
-  const c=await r.json().catch(()=>({}));
-  let rows=[]; try{ rows=JSON.parse(c.b2b_stock_json||'[]'); }catch(e){}
-  return json({rows, updated_at:c.b2b_stock_updated_at||null});
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS b2b_stock (client_id INTEGER PRIMARY KEY, stock_json TEXT NOT NULL DEFAULT \'[]\', updated_at TEXT NOT NULL)').run().catch(()=>{});
+  const row=await env.DB.prepare('SELECT stock_json, updated_at FROM b2b_stock WHERE client_id=?').bind(Number(payload.cid)).first().catch(()=>null);
+  let rows=[]; try{ rows=JSON.parse(row?.stock_json||'[]'); }catch(e){}
+  return json({rows, updated_at:row?.updated_at||null});
 }
 
 async function handleB2bStockSave(request, env){
@@ -15296,7 +15301,9 @@ async function handleB2bStockSave(request, env){
   const body=await request.json().catch(()=>({}));
   if(!Array.isArray(body.rows)) return json({error:'rows array required'}, 400);
   const stockJson=JSON.stringify(body.rows.slice(0,5000));
-  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), b2b_stock_json:stockJson}});
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO b2b_stock (client_id, stock_json, updated_at) VALUES (?,?,?) ON CONFLICT(client_id) DO UPDATE SET stock_json=excluded.stock_json, updated_at=excluded.updated_at')
+    .bind(Number(payload.cid), stockJson, now).run();
   return json({ok:true, saved:body.rows.length});
 }
 
