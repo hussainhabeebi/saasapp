@@ -769,7 +769,8 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
       <div class="form-group"><label class="form-label">Currency</label>
         <select class="form-input" id="attestCurrency"><option>INR</option><option>AED</option><option>SAR</option><option>USD</option><option>EUR</option></select>
       </div>
-      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Turnaround Time</label><input class="form-input" id="attestTAT" placeholder="e.g. 3-5 working days"></div>
+      <div class="form-group"><label class="form-label">Turnaround Time</label><input class="form-input" id="attestTAT" placeholder="e.g. 3-5 working days"></div>
+      <div class="form-group"><label class="form-label">Country / Destination</label><input class="form-input" id="attestCountry" placeholder="e.g. UAE, Saudi Arabia"></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents (one per line)</label><textarea class="form-input" id="attestDocs" rows="3" placeholder="Original certificate&#10;Passport copy&#10;Application form"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="attestDesc" rows="2"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Checklist URL (Google Drive link or direct URL)</label><input class="form-input" id="attestPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
@@ -3675,6 +3676,7 @@ function renderTaAttestation(){
       <thead><tr style="background:var(--bg);border-bottom:1px solid var(--line)">
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Service</th>
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Type</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Country</th>
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Fee</th>
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Turnaround</th>
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">PDF</th>
@@ -3685,6 +3687,7 @@ function renderTaAttestation(){
         <tr style="border-bottom:1px solid var(--line);cursor:pointer" onclick="openAttestModal('${s.id}')">
           <td style="padding:10px 14px;font-weight:600">${esc(s.name)}</td>
           <td style="padding:10px 14px;color:var(--muted)">${esc(ATTEST_TYPE_LABELS[s.service_type]||s.service_type||'—')}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(s.country||'—')}</td>
           <td style="padding:10px 14px;font-family:var(--mono)">${s.fee?esc(s.currency||'INR')+' '+fmtMoney(s.fee):'—'}</td>
           <td style="padding:10px 14px;color:var(--muted)">${esc(s.turnaround_time||'—')}</td>
           <td style="padding:10px 14px">${s.pdf_url?`<a href="${escAttr(s.pdf_url)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);font-size:12px">📄 View</a>`:'—'}</td>
@@ -3709,6 +3712,7 @@ function openAttestModal(id){
   $id('attestFee').value=s.fee||'';
   $id('attestCurrency').value=s.currency||'INR';
   $id('attestTAT').value=s.turnaround_time||'';
+  $id('attestCountry').value=s.country||'';
   $id('attestDocs').value=s.required_docs||'';
   $id('attestDesc').value=s.description||'';
   $id('attestPdf').value=s.pdf_url||'';
@@ -3727,6 +3731,7 @@ async function saveAttestService(){
     fee:parseFloat($id('attestFee').value)||null,
     currency:$id('attestCurrency').value,
     turnaround_time:$id('attestTAT').value.trim(),
+    country:$id('attestCountry').value.trim(),
     required_docs:$id('attestDocs').value.trim(),
     description:$id('attestDesc').value.trim(),
     pdf_url:$id('attestPdf').value.trim(),
