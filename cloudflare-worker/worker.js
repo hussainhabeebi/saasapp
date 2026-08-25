@@ -7306,6 +7306,117 @@ async function handleBsServiceDelete(request, env){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
+   ATTESTATION MODULE (D1-backed, auto-schema)
+   Document attestation services catalog for travel agencies — MEA, Embassy, MOFA, Apostille,
+   HRD, State, Notary, CoC, Police Clearance, Birth/Marriage/Degree certificate attestation.
+   Client-id-based auth (no session token). Bot auto-sends service PDF when customer enquires.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+let _attestSchemaEnsured=false;
+async function attestEnsureSchema(env){
+  if(_attestSchemaEnsured)return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS attest_services(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    service_type TEXT,
+    fee REAL,
+    currency TEXT DEFAULT 'INR',
+    turnaround_time TEXT,
+    required_docs TEXT,
+    description TEXT,
+    pdf_url TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT(datetime('now'))
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_attest_services_client ON attest_services(client_id)`).run();
+  _attestSchemaEnsured=true;
+}
+
+const ATTEST_SERVICE_FIELDS=['name','service_type','fee','currency','turnaround_time','required_docs','description','pdf_url','status'];
+
+async function handleAttestServicesList(request, env){
+  await attestEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const includeInactive=url.searchParams.get('include_inactive')==='true';
+  const q=includeInactive
+    ?`SELECT * FROM attest_services WHERE client_id=? ORDER BY created_at DESC`
+    :`SELECT * FROM attest_services WHERE client_id=? AND status='active' ORDER BY created_at DESC`;
+  const {results}=await env.DB.prepare(q).bind(clientId).all();
+  return json({list:results||[]});
+}
+
+async function handleAttestServiceCreate(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId||!body.name) return json({error:'client_id and name required'},400);
+  const cols=['client_id','name'];
+  const vals=[clientId,body.name];
+  for(const f of ATTEST_SERVICE_FIELDS.slice(1)){
+    if(f in body){cols.push(f);vals.push(body[f]);}
+  }
+  const placeholders=cols.map(()=>'?').join(',');
+  const result=await env.DB.prepare(`INSERT INTO attest_services(${cols.join(',')}) VALUES(${placeholders})`).bind(...vals).run();
+  return json({ok:true,id:result.meta?.last_row_id});
+}
+
+async function findAttestService(env,id){
+  const {results}=await env.DB.prepare(`SELECT * FROM attest_services WHERE id=?`).bind(id).all();
+  return results?.[0]||null;
+}
+
+async function handleAttestServiceUpdate(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findAttestService(env,id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[]; const vals=[];
+  for(const f of ATTEST_SERVICE_FIELDS){
+    if(f in body){sets.push(`${f}=?`);vals.push(body[f]);}
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE attest_services SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleAttestServiceDelete(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findAttestService(env,id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM attest_services WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+// Auto-sends attestation service PDF when the bot mentions a specific service by name.
+// Called after travel_faq bot reply; at most one PDF per turn (first match wins).
+async function travelMaybeSendAttestPdf(env, clientId, convId, replyText, c){
+  await attestEnsureSchema(env);
+  const {results:services}=await env.DB.prepare(
+    `SELECT name, pdf_url FROM attest_services WHERE client_id=? AND status='active' AND pdf_url IS NOT NULL AND pdf_url!=''`
+  ).bind(clientId).all();
+  if(!services||!services.length)return;
+  const lower=(replyText||'').toLowerCase();
+  for(const svc of services){
+    const svcName=(svc.name||'').toLowerCase();
+    if(svcName.length>3&&lower.includes(svcName)){
+      await sendDriveMediaToChatwoot(c, convId, svc.pdf_url, '', `${(svc.name).replace(/\s+/g,'-').toLowerCase()}-checklist.pdf`);
+      break;
+    }
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
    EDUCATION MODULE (migrations/0060-0065)
    All education data lives in D1 — courses, enrollments, categories, promotions, stories.
    Client-id-based auth (no session token) — same trust model as /ecom/*.
@@ -11135,6 +11246,20 @@ async function engineBuildTravelContext(env, c, clientId){
       });
     }
   }
+  const {results:attestSvcs}=await env.DB.prepare(
+    `SELECT name,service_type,fee,currency,turnaround_time,required_docs FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`
+  ).bind(clientId).all().catch(()=>({results:[]}));
+  if(attestSvcs&&attestSvcs.length){
+    lines.push('## Attestation Services');
+    attestSvcs.forEach(s=>{
+      let line=`- ${s.name}`;
+      if(s.service_type) line+=` (${s.service_type})`;
+      if(s.fee) line+=` — ${s.currency||'INR'} ${s.fee}`;
+      if(s.turnaround_time) line+=`, turnaround: ${s.turnaround_time}`;
+      if(s.required_docs) line+=` — docs: ${String(s.required_docs).slice(0,120)}`;
+      lines.push(line);
+    });
+  }
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
@@ -14396,6 +14521,8 @@ async function handleEngineWebhook(request, env, secret){
       // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
       const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
+      // Auto-send attestation service checklist PDF when the bot's reply names a specific service
+      if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
@@ -24661,6 +24788,10 @@ export default {
       else if(url.pathname==='/bs/services' && request.method==='POST'){ res=await handleBsServiceCreate(request, env); }
       else if(url.pathname==='/bs/services' && request.method==='PATCH'){ res=await handleBsServiceUpdate(request, env); }
       else if(url.pathname==='/bs/services' && request.method==='DELETE'){ res=await handleBsServiceDelete(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='GET'){ res=await handleAttestServicesList(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='POST'){ res=await handleAttestServiceCreate(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='PATCH'){ res=await handleAttestServiceUpdate(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='DELETE'){ res=await handleAttestServiceDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
