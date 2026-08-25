@@ -2221,9 +2221,8 @@ function buildDocumentPdf(id){
   const contentW=pageW-marginX*2;
   let y=56;
   const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document';
-  // Defaults to black/white (the reference template's own look) — still overridable via the
-  // existing Accent Color setting for a client who wants their own brand color instead.
-  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[0,0,0];
+  // Defaults to Leadvyne teal — still overridable via Accent Color in quotation settings.
+  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[13,156,147];
 
   // ── Header: logo mark top-left, large document-type wordmark top-right ──
   let logoBottom=y;
@@ -2315,33 +2314,44 @@ function buildDocumentPdf(id){
 
   y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+18;
 
-  // ── Summary: Subtotal / Tax (if any, pre-existing documents only — see "No GST" note) / Total ──
-  // Total gets a filled bar (accent color, white text) the same way the reference highlights it.
-  const summaryX=pageW-marginX-160;
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(0);
+  // ── Summary: Subtotal / Tax (if any) / Total ──
+  // Clean border-based layout — no filled box; a thin separator above subtotal, a
+  // double rule above the total row, and bold accent-colored label for the total.
+  const summaryX=pageW-marginX-180;
+  const summaryRight=pageW-marginX;
+
+  // Light separator above the subtotal block
+  doc.setDrawColor(210,210,210);doc.setLineWidth(0.5);
+  doc.line(summaryX-16,y-8,summaryRight,y-8);
+
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(90);
   doc.text('Subtotal',summaryX,y);
-  doc.setFont('helvetica','normal');
-  doc.text(fmtMoney(d.subtotal,d.currency),pageW-marginX,y,{align:'right'});
+  doc.text(fmtMoney(d.subtotal,d.currency),summaryRight,y,{align:'right'});
   y+=18;
   if(Number(d.tax_pct)>0){
-    doc.setFont('helvetica','bold');
     doc.text(`Tax (${d.tax_pct}%)`,summaryX,y);
-    doc.setFont('helvetica','normal');
-    doc.text(fmtMoney(d.tax_amount,d.currency),pageW-marginX,y,{align:'right'});
+    doc.text(fmtMoney(d.tax_amount,d.currency),summaryRight,y,{align:'right'});
     y+=18;
   }
-  y+=18;
-  const barH=30;
-  doc.setFillColor(...accentRgb);
-  doc.rect(summaryX-16,y-barH+9,pageW-marginX-(summaryX-16),barH,'F');
-  doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(12);
+  y+=8;
+
+  // Double rule before the total row — standard professional invoice convention
+  doc.setDrawColor(160,160,160);doc.setLineWidth(1);
+  doc.line(summaryX-16,y-2,summaryRight,y-2);
+  doc.setLineWidth(0.35);
+  doc.line(summaryX-16,y+3,summaryRight,y+3);
+  y+=16;
+
   // Total bar label — an unpaid Invoice reads "Amount Due" (a payment demand), everything else
   // (Quotation, Receipt, a paid Invoice) reads "Total"/"Amount Paid".
   const totalLabel=d.type==='invoice'?(d.status==='paid'?'Amount Paid':'Amount Due'):(d.type==='receipt'?'Amount Paid':'Total');
-  doc.text(totalLabel,summaryX,y+9);
-  doc.text(fmtMoney(d.total,d.currency),pageW-marginX,y+9,{align:'right'});
+  doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.setTextColor(...accentRgb);
+  doc.text(totalLabel,summaryX,y);
   doc.setTextColor(0);
-  y+=barH+34;
+  doc.text(fmtMoney(d.total,d.currency),summaryRight,y,{align:'right'});
+  doc.setTextColor(0);
+  y+=48;
 
   // ── Thank you — an italic serif flourish standing in for a script font (jsPDF only ships the
   // core Helvetica/Times/Courier faces; embedding a custom script font is a heavier lift not

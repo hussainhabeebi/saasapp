@@ -297,7 +297,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
 
       <div class="form-field">
         <label>Message Text</label>
-        <textarea id="dmText" placeholder="Type your message here… Use {{name}} to personalize with the lead's name." oninput="updateDmPreview()"></textarea>
+        <textarea id="dmText" placeholder="Type your message here… Use {{name}} for lead's name, {{product}} for their product interest." oninput="updateDmPreview()"></textarea>
       </div>
 
       <div class="form-field">
@@ -323,7 +323,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <div class="form-field" style="margin-bottom:0">
             <label>Personalization</label>
             <select id="dmPersonalize">
-              <option value="yes">Yes — replace {{name}} with lead's name</option>
+              <option value="yes">Yes — replace {{name}} and {{product}} with lead's details</option>
               <option value="no">No — send as-is</option>
             </select>
           </div>
@@ -354,6 +354,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         </select>
         <select id="dmBrandFilter" onchange="filterDmLeads()">
           <option value="">All brands</option>
+        </select>
+        <select id="dmProductCategoryFilter" onchange="filterDmLeads()">
+          <option value="">All categories</option>
         </select>
         <select id="dmCountryFilter" onchange="filterDmLeads()">
           <option value="">All countries</option>
@@ -438,7 +441,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <div class="form-field">
             <label>Personalize with lead name?</label>
             <select id="varPersonalize">
-              <option value="yes">Yes — use lead name in {{1}} if applicable</option>
+              <option value="yes">Yes — replace {{name}} / {{product}} tokens in any variable</option>
               <option value="no">No — use variables as-is</option>
             </select>
           </div>
@@ -463,6 +466,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         </select>
         <select id="metaBrandFilter" onchange="filterMetaLeads()">
           <option value="">All brands</option>
+        </select>
+        <select id="metaProductCategoryFilter" onchange="filterMetaLeads()">
+          <option value="">All categories</option>
         </select>
         <select id="metaCountryFilter" onchange="filterMetaLeads()">
           <option value="">All countries</option>
@@ -923,10 +929,11 @@ async function loadLeads(){
     const data=await ncGet(url);
     allLeads=data.list||[];
 
-    // Populate stage/brand/country filters
+    // Populate stage/brand/category/country filters
     const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
     knownStages=stages;
     const brands=[...new Set(allLeads.map(l=>l.Brand).filter(Boolean))].sort();
+    const productCategories=[...new Set(allLeads.map(l=>l.ProductCategory).filter(Boolean))].sort();
     const countries=[...new Set(allLeads.map(l=>l.Country).filter(Boolean))].sort();
     const populate=(id,values)=>{
       const sf=$id(id);
@@ -936,6 +943,7 @@ async function loadLeads(){
     };
     populate('dmStageFilter',stages); populate('metaStageFilter',stages);
     populate('dmBrandFilter',brands); populate('metaBrandFilter',brands);
+    populate('dmProductCategoryFilter',productCategories); populate('metaProductCategoryFilter',productCategories);
     populate('dmCountryFilter',countries); populate('metaCountryFilter',countries);
 
     // Real Estate module fields (only populated/visible for real_estate clients — see initApp).
@@ -963,10 +971,12 @@ async function loadLeads(){
 function applyFilterPresetsFromUrl(){
   const qp=new URLSearchParams(location.search);
   const stage=qp.get('stage')||'', brand=qp.get('brand')||'', country=qp.get('country')||'';
+  const productCategory=qp.get('product_category')||'';
   const reProject=qp.get('re_project')||'', reZone=qp.get('re_zone')||'', reUrgency=qp.get('re_urgency')||'';
   const reSource=qp.get('re_source')||'', reInvestor=qp.get('re_investor')||'';
   [
     ['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],
+    ['dmProductCategoryFilter',productCategory],['metaProductCategoryFilter',productCategory],
     ['dmCountryFilter',country],['metaCountryFilter',country],
     ['dmReProjectFilter',reProject],['metaReProjectFilter',reProject],['dmReZoneFilter',reZone],['metaReZoneFilter',reZone],
     ['dmReUrgencyFilter',reUrgency],['metaReUrgencyFilter',reUrgency],['dmReSourceFilter',reSource],['metaReSourceFilter',reSource],
@@ -982,6 +992,7 @@ function filterDmLeads(){
   const q=($id('dmSearch').value||'').toLowerCase();
   const stage=$id('dmStageFilter').value;
   const brand=$id('dmBrandFilter').value;
+  const productCategory=$id('dmProductCategoryFilter').value;
   const country=$id('dmCountryFilter').value;
   const window=$id('dmWindowFilter').value;
   const reProject=$id('dmReProjectFilter')?.value||'';
@@ -993,6 +1004,7 @@ function filterDmLeads(){
   let leads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
+    if(productCategory&&l.ProductCategory!==productCategory) return false;
     if(country&&l.Country!==country) return false;
     if(reProject&&l.re_project!==reProject) return false;
     if(reZone&&l.re_zone!==reZone) return false;
@@ -1042,6 +1054,7 @@ function filterMetaLeads(){
   const q=($id('metaLeadSearch').value||'').toLowerCase();
   const stage=$id('metaStageFilter').value;
   const brand=$id('metaBrandFilter').value;
+  const productCategory=$id('metaProductCategoryFilter').value;
   const country=$id('metaCountryFilter').value;
   const score=$id('metaScoreFilter').value;
   const reProject=$id('metaReProjectFilter')?.value||'';
@@ -1052,6 +1065,7 @@ function filterMetaLeads(){
   metaFilteredLeads=allLeads.filter(l=>{
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
+    if(productCategory&&l.ProductCategory!==productCategory) return false;
     if(country&&l.Country!==country) return false;
     if(score&&l.Score!==score) return false;
     if(reProject&&l.re_project!==reProject) return false;
@@ -1120,7 +1134,7 @@ function clearImage(){
 // ── DM PREVIEW ──
 function updateDmPreview(){
   let txt=$id('dmText').value||'';
-  txt=txt.replace(/\{\{name\}\}/gi,'John');
+  txt=txt.replace(/\{\{name\}\}/gi,'John').replace(/\{\{product\}\}/gi,'Nike Air Max');
   $id('dmPreviewBubble').textContent=txt||'Type a message to preview…';
 }
 
@@ -1147,7 +1161,10 @@ async function sendDm(){
     if(!convId){ failed++; appendLog('dm',`⚠️ ${lead.Name||lead.Phone} — no conversation ID`); setProgress('dm',i+1,leads.length); await sleep(400); continue; }
 
     let content=text;
-    if(personalize) content=content.replace(/\{\{name\}\}/gi, lead.Name||'');
+    if(personalize){
+      content=content.replace(/\{\{name\}\}/gi, lead.Name||'');
+      content=content.replace(/\{\{product\}\}/gi, lead.InterestedProduct||'');
+    }
 
     try{
       const fd=new FormData();
@@ -1357,8 +1374,8 @@ function buildVarFields(){
   if(!count){ container.innerHTML='<div class="msg info" style="margin-bottom:12px">This template has no variables.</div>'; return; }
   container.innerHTML=Array.from({length:count},(_,i)=>`
     <div class="form-field">
-      <label>Variable {{${i+1}}}</label>
-      <input type="text" id="var${i+1}" placeholder="Value for {{${i+1}}}" oninput="updatePreview()">
+      <label>Variable {{${i+1}}} <span style="font-weight:400;color:var(--muted);font-size:11px">use {{name}} or {{product}} to personalize per-lead</span></label>
+      <input type="text" id="var${i+1}" placeholder="${i===0?'e.g. {{name}} or fixed text':'e.g. {{product}} or fixed text'}" oninput="updatePreview()">
     </div>`).join('');
 }
 
@@ -1396,7 +1413,10 @@ async function sendTemplateBroadcast(){
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
     const convId=leadConvId(lead);
-    const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
+    const resolvedVars=vars.map(v=>{
+      if(!personalize) return v;
+      return v.replace(/\{\{name\}\}/gi, lead.Name||'').replace(/\{\{product\}\}/gi, lead.InterestedProduct||'');
+    });
 
     // No existing WhatsApp conversation (e.g. a Google Sheet import that's never messaged in) —
     // Chatwoot has nothing to deliver into, but an approved template can still reach a cold phone

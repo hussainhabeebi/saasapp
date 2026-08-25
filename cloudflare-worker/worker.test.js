@@ -47,7 +47,156 @@ import {
   ecomIsGenericProductCatalogueQuery,
   ecomFashionFieldChoices,
   ecomFashionOrderItems,
+  eduAdmissionWantsStart,
+  eduAdmissionWantsAdvisor,
+  eduNormalizePhone,
+  eduEmailValid,
+  eduYearValid,
+  eduResolveCourseForMedia,
+  eduVerifiedChoicesFromReply,
+  eduEnrollmentCourseFromChat,
+  eduCoursePdfUrlError,
+  driveFileId,
+  sendDriveMediaToChatwoot,
+  ltNormalizeOffer,
+  ltEncryptCredentials,
+  ltDecryptCredentials,
 } from './worker.js';
+
+describe('Live Travel supplier normalization and booking safety', () => {
+  test('encrypts client supplier credentials and rejects a different tenant key', async () => {
+    const encrypted=await ltEncryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},{api_key:'client-secret'});
+    assert.equal(encrypted.includes('client-secret'),false);
+    assert.deepEqual(await ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},encrypted),{api_key:'client-secret'});
+    await assert.rejects(()=>ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-two'},encrypted),/could not be decrypted/);
+  });
+
+  test('keeps SerpApi Google Flights results comparison-only', () => {
+    const offer=ltNormalizeOffer('serpapi',{
+      price:1250,
+      flights:[{airline:'Example Air',flight_number:'EA 101'}]
+    },{currency:'AED',cabin:'economy',markup_type:'fixed',markup_value:50});
+    assert.equal(offer.supplier,'serpapi');
+    assert.equal(offer.bookable,false);
+    assert.equal(offer.validating,true);
+    assert.equal(offer.total_amount,1300);
+    assert.equal(offer.airline_name,'Example Air');
+  });
+
+  test('normalizes a TripJack supplier fare as bookable with percentage markup', () => {
+    const offer=ltNormalizeOffer('tripjack',{
+      id:'TJ-1',totalPrice:1000,taxes:200,currency:'INR',airline_code:'6E',
+      segments:[{flightNumber:'6E 145'}],seats:3,baggage:{check_in:'15 KG'}
+    },{cabin:'economy',markup_type:'percent',markup_value:5});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,1050);
+    assert.equal(offer.base_amount,800);
+    assert.equal(offer.seats_left,3);
+    assert.deepEqual(offer.baggage,{check_in:'15 KG'});
+  });
+
+  test('normalizes a Riya fare without inventing absent details', () => {
+    const offer=ltNormalizeOffer('riya',{offer_id:'R-1',fare:{totalFare:720,totalTax:120}},{currency:'AED'});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,720);
+    assert.equal(offer.base_amount,600);
+    assert.equal(offer.airline_name,'');
+    assert.deepEqual(offer.itinerary,[]);
+  });
+});
+
+describe('Education chat-only admission intent safety', () => {
+  test('starts only from explicit application intent, not ordinary admission questions', () => {
+    assert.equal(eduAdmissionWantsStart('Apply for admission'),true);
+    assert.equal(eduAdmissionWantsStart('I want admission'),true);
+    assert.equal(eduAdmissionWantsStart('📚 Choose Course'),true);
+    assert.equal(eduAdmissionWantsStart('What is the admission fee?'),false);
+    assert.equal(eduAdmissionWantsStart('Tell me about your admission process'),false);
+  });
+
+  test('routes advisor choices away from saved form answers', () => {
+    assert.equal(eduAdmissionWantsAdvisor('👤 Talk to Advisor'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Book Consultation'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Habeeb Khan'),false);
+  });
+
+  test('validates normalized contact and education fields', () => {
+    assert.equal(eduNormalizePhone(' +971 (50) 123-4567 '),'+971501234567');
+    assert.equal(eduEmailValid('student@example.com'),true);
+    assert.equal(eduEmailValid('student@example'),false);
+    assert.equal(eduYearValid('Completed in 2024'),true);
+    assert.equal(eduYearValid('1940'),false);
+  });
+
+  test('continues enrollment for the one course already selected even when duration is unset', () => {
+    const courses=[{id:7,name:'PG Diploma in Food Safety',duration:''}];
+    const history=[{role:'assistant',content:'• 📚 PG Diploma in Food Safety\n• ⏱ Duration is not confirmed.\n\nWould you like to know more about its syllabus or eligibility?'}];
+    assert.equal(eduEnrollmentCourseFromChat(courses,'yes',history)?.id,7);
+    assert.equal(eduEnrollmentCourseFromChat(courses,'Enroll Now',history)?.id,7);
+  });
+});
+
+describe('Education Google Drive brochure delivery', () => {
+  const courses=[
+    {id:1,name:'Digital Marketing',short_label:'DM',pdf_url:'https://drive.google.com/file/d/PDF_ONE/view'},
+    {id:2,name:'Graphic Design',short_label:'Design',pdf_url:'https://drive.google.com/file/d/PDF_TWO/view'},
+  ];
+
+  test('recognizes Drive files and Google-native document share links', () => {
+    assert.equal(driveFileId('https://drive.google.com/file/d/FILE_123/view?usp=sharing'),'FILE_123');
+    assert.equal(driveFileId('https://drive.google.com/open?id=FILE_456'),'FILE_456');
+    assert.equal(driveFileId('https://docs.google.com/document/d/DOC_123/edit'),'DOC_123');
+    assert.equal(driveFileId('https://docs.google.com/presentation/d/SLIDE_123/edit'),'SLIDE_123');
+    assert.equal(driveFileId('https://docs.google.com/spreadsheets/d/SHEET_123/edit'),'SHEET_123');
+    assert.equal(driveFileId('https://example.com/file/d/FILE_123/view'),null);
+  });
+
+  test('rejects a Drive folder in the PDF field and accepts a direct file link', () => {
+    assert.match(eduCoursePdfUrlError('https://drive.google.com/drive/folders/FOLDER_123'),/PDF file, not a Drive folder/i);
+    assert.equal(eduCoursePdfUrlError('https://drive.google.com/file/d/PDF_123/view'),'');
+  });
+
+  test('resolves only one verified course and refuses an ambiguous course list', () => {
+    assert.equal(eduResolveCourseForMedia(courses,['Please send the Digital Marketing syllabus'])?.id,1);
+    assert.equal(eduResolveCourseForMedia(courses,['Digital Marketing or Graphic Design'])?.id,undefined);
+    assert.equal(eduResolveCourseForMedia(courses,['Please send a brochure']),null);
+  });
+
+  test('turns multiple verified course names in a reply into a native list source', () => {
+    const items=eduVerifiedChoicesFromReply(courses,[],'Choose Digital Marketing or Graphic Design.');
+    assert.deepEqual(items,[
+      {title:'Digital Marketing',value:'Digital Marketing'},
+      {title:'Graphic Design',value:'Graphic Design'},
+    ]);
+    assert.deepEqual(eduVerifiedChoicesFromReply(courses,[],'Digital Marketing is available.'),[]);
+  });
+
+  test('uploads the actual PDF bytes to Chatwoot with a downloadable filename', async (t) => {
+    const calls=[];
+    t.mock.method(global,'fetch',async (url,options)=>{
+      calls.push({url:String(url),options});
+      if(String(url).includes('drive.google.com/uc')) return new Response(new Blob(['%PDF-1.7'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://drive.google.com/file/d/PDF_ONE/view','', 'Digital-Marketing-brochure.pdf');
+    assert.equal(ok,true);
+    assert.match(calls[0].url,/export=download/);
+    assert.equal(calls[1].options.body.get('attachments[]').name,'Digital-Marketing-brochure.pdf');
+    assert.equal(calls[1].options.body.get('attachments[]').type,'application/pdf');
+  });
+
+  test('exports a shared Google Doc as PDF before attaching it', async (t) => {
+    const urls=[];
+    t.mock.method(global,'fetch',async (url)=>{
+      urls.push(String(url));
+      if(String(url).includes('/export?format=pdf')) return new Response(new Blob(['%PDF'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://docs.google.com/document/d/DOC_123/edit','', 'prospectus.pdf');
+    assert.equal(ok,true);
+    assert.equal(urls[0],'https://docs.google.com/document/d/DOC_123/export?format=pdf');
+  });
+});
 
 describe('Ecom category button and minimal matching', () => {
   const categories=['Mattress','Wooden Bed','Sofa Sets'];
@@ -207,8 +356,8 @@ describe('Healthcare verified-data routing', () => {
       {id:3,name:'Root Canal Treatment',short_label:'Duplicate'},
     ];
     assert.deepEqual(hcServiceChoiceItems(rows), [
-      {title:'Root Canal',value:'Root Canal Treatment'},
-      {title:'Dental Cleaning',value:'Dental Cleaning'},
+      {title:'Root Canal',value:'HC_BOOK_SERVICE:1'},
+      {title:'Dental Cleaning',value:'HC_BOOK_SERVICE:2'},
     ]);
   });
 
@@ -238,7 +387,7 @@ describe('Healthcare verified-data routing', () => {
     const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
     await hcEnsureOperationsSchema({DB});
     await hcEnsureOperationsSchema({DB});
-    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures','booking_sessions']){
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
     }
     assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
@@ -347,17 +496,17 @@ describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #
     assert.equal(engineTruncateButtonTitle('Mattress', 24), 'Mattress');
   });
 
-  test('truncates a long title at a word boundary with an ellipsis', () => {
+  test('truncates a long title at a word boundary without an ellipsis', () => {
     const out = engineTruncateButtonTitle('Semi Medicated Orthopedic Mattress', 24);
     assert.ok(out.length <= 24, `expected <=24 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
-    assert.ok(!out.includes('  '), 'should not leave a double space before the ellipsis');
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
+    assert.ok(!out.includes('  '), 'should not leave a double space');
   });
 
   test('never exceeds the cap even with no good word boundary', () => {
     const out = engineTruncateButtonTitle('Supercalifragilisticexpialidocious', 20);
     assert.ok(out.length <= 20, `expected <=20 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
   });
 });
 
@@ -441,6 +590,12 @@ describe('engineExtractReplyOptions — the OPTIONS: marker parser', () => {
     const { text, options } = engineExtractReplyOptions('We deliver within 3-5 days.');
     assert.equal(text, 'We deliver within 3-5 days.');
     assert.equal(options, null);
+  });
+
+  test('strips legacy square-bracket Education choices and converts them to buttons', () => {
+    const {text,options}=engineExtractReplyOptions('Choose a course.\nReply with: [Browse Courses] [Talk to Advisor] [About Us]');
+    assert.equal(text,'Choose a course.');
+    assert.deepEqual(options,['Browse Courses','Talk to Advisor','About Us']);
   });
 });
 

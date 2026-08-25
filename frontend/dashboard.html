@@ -166,6 +166,42 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .kpi-icon{font-size:20px;margin-bottom:10px;display:block;opacity:.45}
 .kpi-val{font-family:var(--disp);font-size:30px;font-weight:700;color:var(--accent-ink);line-height:1;letter-spacing:-.5px}
 .kpi-lbl{font-size:11.5px;color:var(--muted);margin-top:5px;font-weight:500}
+/* ── BUSINESS AI CHAT WIDGET ── */
+.home-ai-row{padding:14px 32px 18px;background:linear-gradient(135deg,#0A1F38 0%,#123152 55%,#0E4A44 100%);border-top:1px solid rgba(255,255,255,.07)}
+.home-ai-row-inner{max-width:1800px;margin:0 auto}
+.home-ai-bar{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.09);border:1.5px solid rgba(255,255,255,.15);border-radius:14px;padding:10px 14px;transition:border-color .2s,background .2s}
+.home-ai-bar:focus-within{border-color:rgba(61,217,200,.6);background:rgba(255,255,255,.13)}
+.home-ai-icon{font-size:18px;flex:none;opacity:.7}
+.home-ai-input{flex:1;background:none;border:none;outline:none;color:#fff;font-family:var(--body);font-size:14px;min-width:0}
+.home-ai-input::placeholder{color:rgba(255,255,255,.35)}
+.home-ai-submit{flex:none;background:rgba(61,217,200,.2);border:1px solid rgba(61,217,200,.35);border-radius:9px;color:#3DD9C8;font-size:13px;font-weight:600;padding:5px 14px;cursor:pointer;transition:background .15s}
+.home-ai-submit:hover{background:rgba(61,217,200,.35)}
+.home-ai-submit:disabled{opacity:.4;cursor:default}
+.home-ai-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
+.home-ai-chip{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:5px 13px;font-size:12px;color:rgba(255,255,255,.7);cursor:pointer;transition:background .15s,border-color .15s;white-space:nowrap;font-family:var(--body)}
+.home-ai-chip:hover{background:rgba(61,217,200,.18);border-color:rgba(61,217,200,.4);color:#3DD9C8}
+.home-ai-result{margin-top:12px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px 16px}
+.home-ai-result-q{font-size:11.5px;color:rgba(255,255,255,.4);margin-bottom:7px;font-style:italic}
+.home-ai-result-body{font-size:13.5px;color:#fff;line-height:1.55}
+.home-ai-result-body strong{color:#3DD9C8}
+.home-ai-result-body ul{padding-left:16px;margin-top:6px;margin-bottom:0}
+.home-ai-result-body li{margin-bottom:3px}
+.home-ai-result-close{float:right;background:none;border:none;color:rgba(255,255,255,.4);cursor:pointer;font-size:16px;line-height:1;padding:0 0 0 8px}
+.home-ai-result-close:hover{color:#fff}
+/* Briefing card */
+.biz-briefing{background:linear-gradient(135deg,rgba(13,156,147,.08),rgba(30,58,110,.06));border:1px solid rgba(13,156,147,.2);border-radius:16px;padding:16px 20px;margin-bottom:18px}
+.biz-briefing-head{display:flex;align-items:center;gap:8px;font-family:var(--disp);font-size:13.5px;font-weight:700;color:var(--accent-ink);margin-bottom:10px}
+.biz-briefing-head span{font-size:17px}
+.biz-briefing-items{display:flex;gap:24px;flex-wrap:wrap}
+.biz-bi{display:flex;align-items:flex-start;gap:8px;flex:1;min-width:160px}
+.biz-bi-icon{font-size:16px;flex:none;margin-top:1px}
+.biz-bi-body{flex:1}
+.biz-bi-val{font-family:var(--disp);font-size:20px;font-weight:700;color:var(--accent-ink);line-height:1.1}
+.biz-bi-val.warn{color:var(--warn)}
+.biz-bi-val.hot{color:#DC2626}
+.biz-bi-lbl{font-size:11.5px;color:var(--muted);margin-top:2px}
+.biz-bi-action{font-size:11.5px;color:var(--accent);font-weight:600;cursor:pointer;margin-top:3px;display:inline-block}
+.biz-bi-action:hover{text-decoration:underline}
 /* home grid */
 .home-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
 @media(max-width:1100px){.home-grid{grid-template-columns:1fr}}
@@ -271,7 +307,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 #pageChats{overflow:hidden;display:none;flex-direction:column}
 #pageChats:not(.hidden){display:flex}
-#pageEcommerce{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
@@ -923,6 +959,8 @@ const INDUSTRIES = {
     theme:{accent:'#EA580C',accentInk:'#C2410C',accentSoft:'#FFEDD5',bg:'#FFF7ED',line:'#FED7AA'} },
   saas_digital_marketing: { label:'SaaS / Digital Marketing', booked:'Deals Closed', active:'Active Prospects', tags:['Trial Started','Demo Booked','Pricing Sent','Decision Maker','Budget Confirmed','Competitor','Not Interested'],
     theme:{accent:'#4F46E5',accentInk:'#4338CA',accentSoft:'#E0E7FF',bg:'#F5F5FF',line:'#C7D2FE'} },
+  business_services: { label:'Business Services (CSC/Akshaya)', booked:'Services Delivered', active:'Active Requests', tags:['New Request','Processing','Document Pending','Completed','Not Interested'],
+    theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1021,6 +1059,7 @@ const MODULE_PERMISSIONS = [
   {key:'accounting', label:'💰 Accounting'},
   {key:'billing', label:'💳 Billing'},
   {key:'ecommerce', label:'🛒 Ecommerce'},
+  {key:'businessservices', label:'🏢 Business Services'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
   {key:'agency', label:'🏢 Agency / Travel'},
@@ -1119,6 +1158,8 @@ const ROLES = {
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
+    <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
+    <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -1149,6 +1190,32 @@ const ROLES = {
         </div>
       </div>
 
+      <!-- AI Business Chat Bar -->
+      <div class="home-ai-row">
+        <div class="home-ai-row-inner">
+          <div class="home-ai-bar">
+            <span class="home-ai-icon">✨</span>
+            <input class="home-ai-input" id="bizChatInput" type="text" placeholder="Ask anything about your business… e.g. &quot;Which leads need follow-up?&quot;" autocomplete="off" onkeydown="if(event.key==='Enter')bizChatSubmit()">
+            <button class="home-ai-submit" onclick="bizChatSubmit()" id="bizChatBtn">Ask →</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:10px">
+            <div class="home-ai-chips" style="margin-top:0">
+              <button class="home-ai-chip" onclick="bizChatChip('What needs my attention today?')">⚡ Today's priorities</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Show this week\'s new leads')">📋 This week's leads</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Which leads are hot?')">🔥 Hot leads</button>
+              <button class="home-ai-chip" onclick="bizChatChip('What tasks are overdue?')">⏰ Overdue tasks</button>
+              <button class="home-ai-chip" onclick="bizChatChip('How is my bot performing?')">🤖 Bot performance</button>
+              <button class="home-ai-chip" onclick="bizChatChip('Show my conversion rate')">📈 Conversion rate</button>
+            </div>
+            <div id="bizChatUsage" style="font-size:11px;color:rgba(255,255,255,.35);white-space:nowrap;flex-shrink:0"></div>
+          </div>
+          <div id="bizChatResult" class="home-ai-result" style="display:none">
+            <div class="home-ai-result-q" id="bizChatResultQ"></div>
+            <div class="home-ai-result-body" id="bizChatResultBody"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="home-body">
         <!-- Payment / billing-health banners -->
         <div id="homeBillingBanners"></div>
@@ -1156,38 +1223,16 @@ const ROLES = {
         <!-- Getting Started checklist (new/incomplete accounts only) -->
         <div id="onboardingChecklist" style="display:none;margin-bottom:18px"></div>
 
-        <!-- KPI Strip -->
-        <div class="kpi-grid">
-          <div class="kpi-card accent">
-            <div class="kpi-icon">💬</div>
-            <div class="kpi-val" id="tsNew">—</div>
-            <div class="kpi-lbl">New Today</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">👥</div>
-            <div class="kpi-val" id="tsTotal">—</div>
-            <div class="kpi-lbl">Total Leads</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">🔥</div>
-            <div class="kpi-val" id="tsHot">—</div>
-            <div class="kpi-lbl">Hot Leads</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">✅</div>
-            <div class="kpi-val" id="tsConv">—</div>
-            <div class="kpi-lbl">Converted</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">⏰</div>
-            <div class="kpi-val" id="tsReminders">—</div>
-            <div class="kpi-lbl">Follow-ups Due</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-icon">🤖</div>
-            <div class="kpi-val" id="tsBotRate">—</div>
-            <div class="kpi-lbl">Bot Engaged</div>
-          </div>
+        <!-- Morning Briefing Card -->
+        <div id="bizBriefingCard" style="display:none" class="biz-briefing">
+          <div class="biz-briefing-head"><span>☀️</span> <span id="bizBriefingTitle">Your business at a glance</span></div>
+          <div class="biz-briefing-items" id="bizBriefingItems"></div>
+        </div>
+
+        <!-- Hidden KPI elements preserved for JS compatibility -->
+        <div style="display:none">
+          <div id="tsNew"></div><div id="tsTotal"></div><div id="tsHot"></div>
+          <div id="tsConv"></div><div id="tsReminders"></div><div id="tsBotRate"></div>
         </div>
 
         <!-- NBA priority -->
@@ -1667,6 +1712,20 @@ const ROLES = {
       <iframe id="healthcareFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
+    <!-- EDUCATION MODULE (same iframe-embed pattern as Ecommerce above — education.html is its own
+         self-contained page, industry-gated for education. Passed only the client_id (no session
+         token) — its /edu/* Worker routes are client_id-based, same trust model as /ecom/*. -->
+    <div class="page hidden" id="pageEducation">
+      <iframe id="educationFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- BUSINESS SERVICES MODULE (iframe-embed, same pattern as Ecommerce/Education — business-services.html
+         is its own self-contained page, industry-gated for business_services. Passed only the client_id
+         — its /bs/* Worker routes are client_id-based, same trust model as /ecom/*.) -->
+    <div class="page hidden" id="pageBusinessservices">
+      <iframe id="businessServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
          is its own self-contained page, industry-gated for travel. Passed the session token for the
          same reason as B2B/Real Estate: it reads/writes Leads plus its own ta_* NocoDB tables through
@@ -1713,6 +1772,7 @@ const ROLES = {
     <div class="page hidden" id="pageHospitality">
       <div id="hospSubNav" style="background:var(--card);border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:0;overflow-x:auto;flex-shrink:0;position:sticky;top:0;z-index:10">
         <button class="hosp-tab active" data-hosp="dashboard">📊 Dashboard</button>
+        <button class="hosp-tab" data-hosp="properties" id="hospPropertiesTab" style="display:none">🏨 Properties</button>
         <button class="hosp-tab" data-hosp="units">🏠 Units</button>
         <button class="hosp-tab" data-hosp="availability">📅 Availability</button>
         <button class="hosp-tab" data-hosp="bookings">📖 Bookings</button>
@@ -1953,6 +2013,25 @@ const ROLES = {
               </div>
               <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
               <span class="save-msg" id="saveEcomCommunicationStyleMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px" id="eduCommunicationStyleCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🎓 Education Communication Style</div>
+            <div class="s-note">Choose how the assistant speaks with prospective students. This changes wording and discovery order only; course facts, prices and media still come strictly from the configured course catalogue.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Institution communication style</label>
+                <select class="form-input" id="cfgEduCommunicationStyle">
+                  <option value="">Current style (no change)</option>
+                  <option value="higher_education">Higher Education / University</option>
+                  <option value="courses_online">Courses / Online Learning</option>
+                </select>
+              </div>
+              <button class="save-btn" id="saveEduCommunicationStyle">Save Style</button>
+              <span class="save-msg" id="saveEduCommunicationStyleMsg"></span>
             </div>
           </div>
         </div>
@@ -2934,11 +3013,22 @@ const ROLES = {
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
-              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, and other stay-based tourism businesses.</div></div>
+              <div style="flex:1;min-width:180px"><b>🏨 Hospitality</b><div class="s-note" style="margin:2px 0 0">Unit/room types, an availability calendar, and bookings — for houseboats, hotels, resorts, and other stay-based tourism businesses.</div></div>
               <select class="form-input" id="cfgHospitalityEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveHospitalityEnabled">Save</button>
               <span class="save-msg" id="saveHospitalityEnabledMsg"></span>
               <span id="hospitalityModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ Sub-style</b><div class="s-note" style="margin:2px 0 0">Adjusts terminology and WhatsApp keyword matching for your hospitality type.</div></div>
+              <select class="form-input" id="cfgHospitalityStyle" style="max-width:160px">
+                <option value="hotel">Hotel / General</option>
+                <option value="resort">Resort</option>
+                <option value="houseboat">Houseboat</option>
+              </select>
+              <button class="save-btn" id="saveHospitalityStyle">Save</button>
+              <span class="save-msg" id="saveHospitalityStyleMsg"></span>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -3271,6 +3361,8 @@ const ROLES = {
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
+      <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
+      <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
       <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
            hides these icon buttons there) — same functions, just reachable from here instead. -->
@@ -4592,7 +4684,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','us
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
@@ -4630,6 +4722,8 @@ function navigate(page){
   if(page==='hospitality') renderHospitality();
   if(page==='realestate') renderRealEstate();
   if(page==='healthcare') renderHealthcare();
+  if(page==='education') renderEducation();
+  if(page==='businessservices') renderBusinessServices();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -4893,6 +4987,12 @@ function onLiveViewingEvent(msg){
 function renderHome(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}
+  try{renderMorningBriefing(allLeads);}catch(e){}
+  try{
+    const limitKey='lv_biz_chat_'+clientId+'_'+new Date().toISOString().slice(0,10);
+    const used=parseInt(localStorage.getItem(limitKey)||'0',10);
+    bizUpdateUsageBadge(used,10);
+  }catch(e){}
   try{renderNbaStrip(allLeads);}catch(e){}
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
@@ -5228,6 +5328,18 @@ async function kbDrop(e,stage){
 function renderEcommerce(){
   const frame=$id('ecommerceFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
+}
+
+// Same pattern as renderEcommerce — education.html is client_id-only, no session token needed.
+function renderEducation(){
+  const frame=$id('educationFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`education.html?client=${clientId}&embed=1`;
+}
+
+// Same pattern as renderEducation — business-services.html is client_id-only, no session needed.
+function renderBusinessServices(){
+  const frame=$id('businessServicesFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`business-services.html?client=${clientId}&embed=1`;
 }
 
 // SaaS Ops needs the session token — its /saas/* routes are requireSession-gated (billing config,
@@ -5707,7 +5819,7 @@ function applyLeadsViewFilter(leads){
   const cf=$id('leadCategoryFilter')?.value||'';
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
   const pf=$id('leadProductFilter')?.value||'';
-  if(pf) out=out.filter(l=>(l.InterestedProduct||'')===pf);
+  if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
@@ -5900,6 +6012,43 @@ async function bulkSetSource(){
   showToast(`✓ Set source for ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
   clearBulkSelection();
 }
+// Returns the chat-detected brand/product for a lead (ProductCategory preferred, then Brand).
+function leadChatProduct(l){ return l.ProductCategory||l.Brand||''; }
+
+// Renders the BRAND/PRODUCT chip(s) for the card or table view.
+// - Manual (InterestedProduct): purple tag — confirmed interest.
+// - Chat-only (ProductCategory/Brand, no manual): blue "💬 from chat" tag + "→ Set" suggestion button.
+// - Both set and matching: just the purple tag (no noise).
+// - Both set but different: purple tag + small chat suggestion to update.
+function leadBrandChip(l){
+  const manual=l.InterestedProduct||'';
+  const chat=leadChatProduct(l);
+  if(manual){
+    const suggest=chat&&chat!==manual?`<button onclick="event.stopPropagation();confirmProductFromChat(${l.Id},'${escAttr(chat)}')" style="font-size:10px;padding:1px 5px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:3px;cursor:pointer;margin-left:2px" title="Bot detected: ${escAttr(chat)} — click to update">💬 ${esc(chat)}</button>`:'';
+    return `<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(manual)}</span>${suggest}`;
+  }
+  if(chat) return `<span class="tag" style="background:#DBEAFE;color:#1D4ED8" title="Detected from chat">💬 ${esc(chat)}</span><button onclick="event.stopPropagation();confirmProductFromChat(${l.Id},'${escAttr(chat)}')" style="font-size:10px;padding:1px 5px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:3px;cursor:pointer;margin-left:2px" title="Set as Brand/Product">→ Set</button>`;
+  return '';
+}
+
+// Table cell variant — same logic, falls back to '—' rather than empty string.
+function leadBrandCell(l){
+  const chip=leadBrandChip(l);
+  return chip||'—';
+}
+
+// One-click: promote chat-detected value to InterestedProduct and re-render.
+async function confirmProductFromChat(leadId, val){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead||!val) return;
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,InterestedProduct:val});
+    lead.InterestedProduct=val;
+    renderLeadsCurrentView();
+    if(currentLead&&currentLead.Id===leadId){ currentLead.InterestedProduct=val; }
+    showToast('✓ Brand/Product set to: '+val,'ok');
+  }catch(e){ showToast('Failed: '+e.message,'err'); }
+}
+
 async function bulkSetBrand(){
   const input=$id('bulkBrandInput'); const val=(input?.value||'').trim(); if(!val) return;
   for(const id of _bulkSelectedLeadIds){
@@ -5942,7 +6091,7 @@ function renderLeadsList(){
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
   const of=$id('leadOwnerFilter')?.value||'';
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
-  const productSet=[...new Set(allLeads.map(l=>l.InterestedProduct).filter(Boolean))].sort();
+  const productSet=[...new Set(allLeads.flatMap(l=>[l.InterestedProduct,l.ProductCategory,l.Brand].filter(Boolean)))].sort();
   const pf=$id('leadProductFilter')?.value||'';
   $id('leadProductFilter').innerHTML='<option value="">All products/brands</option>'+productSet.map(p=>`<option value="${esc(p)}"${pf===p?' selected':''}>${esc(p)}</option>`).join('');
 
@@ -5970,7 +6119,7 @@ function renderLeadsList(){
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${(tags.length||attemptBadge||l.InterestedProduct)?`<div class="tags-row" style="margin-top:4px">${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:''}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
+        ${(tags.length||attemptBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
@@ -6060,7 +6209,7 @@ function renderLeadsTable(){
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}</td>
       <td>${scoreBadge(l.Score)}</td>
-      <td>${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:'—'}</td>
+      <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
       <td>${esc(qGet('profession'))}</td>
@@ -7995,6 +8144,309 @@ function timeAgo(iso){
   return Math.floor(h/24)+'d ago';
 }
 
+/* ── BUSINESS AI CHAT WIDGET ── */
+
+function renderMorningBriefing(leads){
+  const card=$id('bizBriefingCard');
+  const itemsEl=$id('bizBriefingItems');
+  const titleEl=$id('bizBriefingTitle');
+  if(!card||!itemsEl) return;
+  const today=new Date().toISOString().slice(0,10);
+  const h=new Date().getHours();
+  const prefix=h<12?'Morning briefing':h<17?'Afternoon snapshot':'Evening summary';
+  if(titleEl) titleEl.textContent=prefix;
+
+  const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
+  const hot=leads.filter(l=>l.Score==='Hot').length;
+  const ind=getIndustry();
+  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const convRate=leads.length?Math.round(conv/leads.length*100):0;
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+  const overdue=tasks.filter(t=>t.due.slice(0,10)<today).length;
+  const dueToday=tasks.filter(t=>t.due.slice(0,10)===today).length;
+  const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
+  const botPct=leads.length?Math.round(botCount/leads.length*100):0;
+
+  const items=[];
+
+  if(newToday>0){
+    items.push({icon:'💬',val:String(newToday),cls:'',lbl:'new lead'+(newToday!==1?'s':'')+' today',action:'navigate(\'leads\')',actionLbl:'View leads'});
+  } else {
+    items.push({icon:'💬',val:'0',cls:'',lbl:'new leads today',action:'navigate(\'leads\')',actionLbl:'Add lead'});
+  }
+
+  items.push({icon:'🔥',val:String(hot),cls:hot>0?'hot':'',lbl:'hot lead'+(hot!==1?'s':''),action:'navigate(\'leads\')',actionLbl:'Follow up'});
+
+  if(overdue>0){
+    items.push({icon:'⏰',val:String(overdue),cls:'warn',lbl:'overdue task'+(overdue!==1?'s':''),action:'navigate(\'tasks\')',actionLbl:'View tasks'});
+  } else if(dueToday>0){
+    items.push({icon:'⏰',val:String(dueToday),cls:'',lbl:'task'+(dueToday!==1?'s':'')+' due today',action:'navigate(\'tasks\')',actionLbl:'View tasks'});
+  } else {
+    items.push({icon:'✅',val:'All clear',cls:'',lbl:'no overdue tasks',action:'',actionLbl:''});
+  }
+
+  items.push({icon:'📈',val:convRate+'%',cls:'',lbl:'conversion rate ('+conv+' '+esc(ind.booked||'converted')+')',action:'',actionLbl:''});
+  items.push({icon:'🤖',val:botPct+'%',cls:'',lbl:'leads engaged by bot',action:'',actionLbl:''});
+
+  itemsEl.innerHTML=items.map(it=>`<div class="biz-bi">
+    <div class="biz-bi-icon">${it.icon}</div>
+    <div class="biz-bi-body">
+      <div class="biz-bi-val ${it.cls}">${it.val}</div>
+      <div class="biz-bi-lbl">${it.lbl}</div>
+      ${it.action?`<span class="biz-bi-action" onclick="${it.action}">${it.actionLbl} →</span>`:''}
+    </div>
+  </div>`).join('');
+
+  card.style.display='';
+}
+
+function bizChatChip(q){
+  const inp=$id('bizChatInput');
+  if(inp) inp.value=q;
+  bizChatSubmit();
+}
+
+function bizBuildSummary(leads){
+  const today=new Date().toISOString().slice(0,10);
+  const weekAgo=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+  const ind=getIndustry();
+  const stages={}, sources={}, agents={};
+  for(const l of leads){
+    if(l.Stage) stages[l.Stage]=(stages[l.Stage]||0)+1;
+    if(l.Source) sources[l.Source]=(sources[l.Source]||0)+1;
+    if(l.AgentName||l.Agent) { const a=l.AgentName||l.Agent; agents[a]=(agents[a]||0)+1; }
+  }
+  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+  return {
+    totalLeads:leads.length,
+    newToday:leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length,
+    newThisWeek:leads.filter(l=>l.Date&&l.Date.slice(0,10)>=weekAgo).length,
+    hot:leads.filter(l=>l.Score==='Hot').length,
+    warm:leads.filter(l=>l.Score==='Warm').length,
+    converted:conv,
+    convRate:leads.length?Math.round(conv/leads.length*100):0,
+    botPct:leads.length?Math.round(leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length/leads.length*100):0,
+    tasksOverdue:tasks.filter(t=>t.due.slice(0,10)<today).length,
+    tasksDueToday:tasks.filter(t=>t.due.slice(0,10)===today).length,
+    stages, sources, agents
+  };
+}
+
+function bizShowResult(q, html){
+  const resEl=$id('bizChatResult');
+  const qEl=$id('bizChatResultQ');
+  const bodyEl=$id('bizChatResultBody');
+  if(!resEl||!bodyEl) return;
+  if(qEl) qEl.innerHTML='<button class="home-ai-result-close" onclick="$id(\'bizChatResult\').style.display=\'none\'">✕</button>You asked: <em>'+esc(q)+'</em>';
+  bodyEl.innerHTML=html;
+  resEl.style.display='';
+  resEl.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+async function bizChatSubmit(){
+  const inp=$id('bizChatInput');
+  const q=(inp?.value||'').trim();
+  if(!q) return;
+
+  // Try local pattern matching first (instant, no API)
+  const local=bizChatQuery(q,allLeads);
+  if(local!==null){
+    bizShowResult(q, local);
+    return;
+  }
+
+  // Fallback to AI — check daily limit from localStorage first (optimistic, server enforces)
+  const limitKey='lv_biz_chat_'+clientId+'_'+new Date().toISOString().slice(0,10);
+  const usedLocal=parseInt(localStorage.getItem(limitKey)||'0',10);
+  const LIMIT=10;
+  if(usedLocal>=LIMIT){
+    bizShowResult(q,`<span style="color:#FCA5A5">⚠️ You've used all ${LIMIT} AI chats for today. Resets at midnight.</span>`);
+    return;
+  }
+
+  const btn=$id('bizChatBtn');
+  if(btn){btn.disabled=true;btn.textContent='Thinking…';}
+  bizShowResult(q,'<span style="color:rgba(255,255,255,.5)">✨ Thinking…</span>');
+
+  try{
+    const summary=bizBuildSummary(allLeads);
+    const r=await fetch(WORKER_BASE+'/ai/business-chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+sessionToken},
+      body:JSON.stringify({question:q, summary})
+    });
+    const data=await r.json().catch(()=>({}));
+    if(r.status===429||data.error==='daily_limit_reached'){
+      bizShowResult(q,`<span style="color:#FCA5A5">⚠️ You've used all ${LIMIT} AI chats for today. Resets at midnight.</span>`);
+      bizUpdateUsageBadge(LIMIT,LIMIT);
+      return;
+    }
+    if(!r.ok||data.error){
+      const msg=r.status===404
+        ? 'AI chat is not available yet — the Worker needs to be redeployed. Structured queries (chips above) still work instantly.'
+        : 'Could not get an answer — please try again in a moment.';
+      bizShowResult(q,'<span style="color:#FCA5A5">'+msg+'</span>');
+      return;
+    }
+    // Increment local counter and update badge
+    const newUsed=usedLocal+1;
+    try{localStorage.setItem(limitKey,String(newUsed));}catch(e){}
+    bizUpdateUsageBadge(newUsed,LIMIT);
+    const html=String(data.answer||'').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>');
+    bizShowResult(q, html);
+  }catch(e){
+    bizShowResult(q,'<span style="color:#FCA5A5">Network error — check your connection and try again.</span>');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Ask →';}
+  }
+}
+
+function bizUpdateUsageBadge(used,limit){
+  const el=$id('bizChatUsage');
+  if(!el) return;
+  const remaining=Math.max(0,limit-used);
+  el.textContent=remaining>0?`✨ ${remaining} AI chats left today`:`✨ AI chat limit reached`;
+  el.style.color=remaining<=2?'rgba(252,165,165,.7)':'rgba(255,255,255,.35)';
+}
+
+function bizChatQuery(q,leads){
+  const today=new Date().toISOString().slice(0,10);
+  const ql=q.toLowerCase().trim();
+  const ind=getIndustry();
+  const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
+
+  // Greetings / small talk — answer locally, never hit the API
+  if(/^(hi|hello|hey|hiya|howdy|hola|sup|yo|good\s*(morning|afternoon|evening)|what'?s?\s*up)[!?.]*$/i.test(ql)){
+    const h=new Date().getHours();
+    const greet=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
+    return greet+'! Ask me anything about your business — for example:<ul>'
+      +'<li>"What needs my attention today?"</li>'
+      +'<li>"Which leads are hot?"</li>'
+      +'<li>"Show my conversion rate"</li>'
+      +'<li>"What tasks are overdue?"</li></ul>';
+  }
+
+  // Today's priorities / attention
+  if(/attention|priorit|focus|today.*do|do.*today|what.*need/i.test(ql)){
+    const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
+    const hot=leads.filter(l=>l.Score==='Hot');
+    const overdue=tasks.filter(t=>t.due.slice(0,10)<today);
+    const dueToday=tasks.filter(t=>t.due.slice(0,10)===today);
+    const parts=[];
+    if(overdue.length) parts.push(`<li>⏰ <strong>${overdue.length} overdue task${overdue.length!==1?'s':''}</strong> — <span class="biz-bi-action" onclick="navigate('tasks')">View tasks →</span></li>`);
+    if(hot.length) parts.push(`<li>🔥 <strong>${hot.length} hot lead${hot.length!==1?'s':''}</strong> needing follow-up — <span class="biz-bi-action" onclick="navigate('leads')">View leads →</span></li>`);
+    if(newToday>0) parts.push(`<li>💬 <strong>${newToday} new lead${newToday!==1?'s':''}</strong> came in today</li>`);
+    if(dueToday.length) parts.push(`<li>📌 <strong>${dueToday.length} task${dueToday.length!==1?'s':''}</strong> due today</li>`);
+    if(!parts.length) return '✅ Everything looks good — no urgent items today.';
+    return `Here's what needs your attention:<ul>${parts.join('')}</ul>`;
+  }
+
+  // Hot leads
+  if(/hot\b/i.test(ql)){
+    const hot=leads.filter(l=>l.Score==='Hot');
+    if(!hot.length) return '🔥 No hot leads right now.';
+    const list=hot.slice(0,8).map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong>${l.Phone?' · '+esc(l.Phone):''}${l.Stage?' · '+esc(l.Stage):''}</li>`).join('');
+    return `🔥 <strong>${hot.length} hot lead${hot.length!==1?'s':''}</strong>:<ul>${list}</ul>${hot.length>8?`<em>…and ${hot.length-8} more</em>`:''}`;
+  }
+
+  // This week's leads
+  if(/week/i.test(ql)&&/lead/i.test(ql)){
+    const weekAgo=new Date(Date.now()-7*86400000).toISOString().slice(0,10);
+    const recent=leads.filter(l=>l.Date&&l.Date.slice(0,10)>=weekAgo);
+    if(!recent.length) return '📋 No new leads this week yet.';
+    const list=recent.slice(0,8).map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong> · ${esc(l.Stage||'new')}${l.Date?' · '+l.Date.slice(0,10):''}</li>`).join('');
+    return `📋 <strong>${recent.length} lead${recent.length!==1?'s':''}</strong> this week:<ul>${list}</ul>`;
+  }
+
+  // Today's leads
+  if(/today/i.test(ql)&&/lead/i.test(ql)){
+    const todayLeads=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today);
+    if(!todayLeads.length) return '📋 No new leads today yet.';
+    const list=todayLeads.map(l=>`<li><strong>${esc(l.Name||'Unknown')}</strong> · ${esc(l.Stage||'new')}</li>`).join('');
+    return `📋 <strong>${todayLeads.length} new lead${todayLeads.length!==1?'s':''}</strong> today:<ul>${list}</ul>`;
+  }
+
+  // Overdue tasks
+  if(/overdue/i.test(ql)){
+    const overdue=tasks.filter(t=>t.due.slice(0,10)<today);
+    if(!overdue.length) return '✅ No overdue tasks — you\'re on top of things!';
+    const list=overdue.slice(0,8).map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong> · due ${t.due.slice(0,10)}</li>`).join('');
+    return `⏰ <strong>${overdue.length} overdue task${overdue.length!==1?'s':''}</strong>:<ul>${list}</ul>`;
+  }
+
+  // Tasks due today
+  if(/task/i.test(ql)&&/today/i.test(ql)){
+    const dueToday=tasks.filter(t=>t.due.slice(0,10)===today);
+    if(!dueToday.length) return '✅ No tasks due today.';
+    const list=dueToday.map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong></li>`).join('');
+    return `📌 <strong>${dueToday.length} task${dueToday.length!==1?'s':''}</strong> due today:<ul>${list}</ul>`;
+  }
+
+  // Conversion rate
+  if(/conver/i.test(ql)){
+    const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+    const rate=leads.length?Math.round(conv/leads.length*100):0;
+    return `📈 Conversion rate: <strong>${rate}%</strong> — ${conv} of ${leads.length} lead${leads.length!==1?'s':''} ${esc(ind.booked||'converted')}.`;
+  }
+
+  // Bot performance
+  if(/bot|assistant|automat/i.test(ql)){
+    const botCount=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]').length;
+    const pct=leads.length?Math.round(botCount/leads.length*100):0;
+    let msgCount=0;
+    for(const l of leads){try{const h=JSON.parse(l.ConvHistory||'[]');msgCount+=h.filter(m=>m.role==='assistant').length;}catch(e){}}
+    return `🤖 Bot engaged <strong>${pct}%</strong> of leads (${botCount} of ${leads.length}). Total messages sent: <strong>${msgCount.toLocaleString()}</strong>.`;
+  }
+
+  // Total leads / lead count
+  if(/total|count|how many.*lead/i.test(ql)){
+    const active=leads.filter(l=>!TERMINAL.has(l.Stage)).length;
+    return `👥 You have <strong>${leads.length} total lead${leads.length!==1?'s':''}</strong> — <strong>${active} active</strong>, ${leads.length-active} in terminal stage.`;
+  }
+
+  // Stage breakdown
+  if(/stage|pipeline|breakdown|funnel/i.test(ql)){
+    const counts={};
+    for(const l of leads) counts[l.Stage||'unknown']=(counts[l.Stage||'unknown']||0)+1;
+    const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const list=sorted.map(([s,n])=>`<li><strong>${esc(s)}</strong>: ${n} lead${n!==1?'s':''}</li>`).join('');
+    return `📊 Pipeline breakdown (${leads.length} total):<ul>${list}</ul>`;
+  }
+
+  // Follow-ups
+  if(/follow.?up|reminder/i.test(ql)){
+    const due=tasks.filter(t=>t.due&&t.due.slice(0,10)<=today).sort((a,b)=>a.due.localeCompare(b.due)).slice(0,8);
+    if(!due.length) return '✅ No follow-ups due right now.';
+    const list=due.map(t=>`<li><strong>${esc(t.title||t.leadName||'Task')}</strong> · ${t.due.slice(0,10)<today?'<span style="color:#DC2626">overdue</span>':'today'}</li>`).join('');
+    return `⏰ <strong>${due.length}</strong> follow-up${due.length!==1?'s':''} pending:<ul>${list}</ul>`;
+  }
+
+  // Source breakdown
+  if(/source|where.*lead|lead.*from|channel/i.test(ql)){
+    const counts={};
+    for(const l of leads) if(l.Source){counts[l.Source]=(counts[l.Source]||0)+1;}
+    const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,6);
+    if(!sorted.length) return 'No source data recorded yet.';
+    const top=sorted[0];
+    const list=sorted.map(([s,n])=>`<li><strong>${esc(s)}</strong>: ${n}</li>`).join('');
+    return `📡 Top lead source: <strong>${esc(top[0])}</strong> (${top[1]} leads)<br><ul>${list}</ul>`;
+  }
+
+  // Revenue / accounting
+  if(/revenue|invoice|income|accounting|money|paid/i.test(ql)){
+    return '💳 For accounting data, open the <span class="biz-bi-action" onclick="navigate(\'accounting\')">Accounting module →</span>';
+  }
+
+  // Very short / non-question inputs — guide the user rather than hitting AI
+  if(ql.length<4||/^(ok|yes|no|sure|test|help|thanks|thank\s*you|ty|cool|nice|great)[!?.]*$/i.test(ql)){
+    return 'Try asking something like: "What needs my attention today?", "Which leads are hot?", or "Show my conversion rate."';
+  }
+
+  // No local match — return null so caller falls through to AI
+  return null;
+}
+
 /* ── SETTINGS ── */
 // Multi-user: team_emails is a plain comma-separated CLIENTS field, no dedicated Worker route
 // needed — it's just another field on the existing per-client record, saved via patchClient()
@@ -8390,6 +8842,8 @@ function populateSettings(){
   try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   $id('ecomCommunicationStyleCard').style.display=clientRecord.industry==='ecommerce'?'block':'none';
   $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
+  $id('eduCommunicationStyleCard').style.display=clientRecord.industry==='education'?'block':'none';
+  $id('cfgEduCommunicationStyle').value=ecomBotConfig.edu_communication_style||'';
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
@@ -8582,6 +9036,7 @@ async function applyIndustryChange(ind, extraPatch){
   await patchClient(patch);
   clientRecord.industry=ind;
   if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
+  if($id('eduCommunicationStyleCard')) $id('eduCommunicationStyleCard').style.display=ind==='education'?'block':'none';
   applyTheme(ind);
   updateRecruitTabVisibility();
   updateHospitalityTabVisibility();
@@ -8658,6 +9113,14 @@ async function ensureHospitalityEnabledColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_enabled',title:'hospitality_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+async function ensureHospitalityStyleColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -9349,6 +9812,14 @@ $id('saveEcomCommunicationStyle').addEventListener('click',async()=>{
   if(selected) botConfig.ecom_communication_style=selected;
   else delete botConfig.ecom_communication_style;
   await saveField('saveEcomCommunicationStyle','saveEcomCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveEduCommunicationStyle').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const selected=$id('cfgEduCommunicationStyle').value;
+  if(selected) botConfig.edu_communication_style=selected;
+  else delete botConfig.edu_communication_style;
+  await saveField('saveEduCommunicationStyle','saveEduCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
@@ -15554,6 +16025,7 @@ $id('saveMarketingStudioEnabled').addEventListener('click',async()=>{
 function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
+  const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
   updateHospitalityTabVisibility();
 }
 
@@ -15566,6 +16038,22 @@ $id('saveHospitalityEnabled').addEventListener('click',async()=>{
     await patchClient({hospitality_enabled:val});
     updateHospitalityTabVisibility();
     _renderModuleBadge('hospitalityModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+$id('saveHospitalityStyle').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityStyle'),msg=$id('saveHospitalityStyleMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityStyle').value;
+  try{
+    await ensureHospitalityStyleColumn();
+    await patchClient({hospitality_style:val});
+    clientRecord.hospitality_style=val;
+    _hospLoaded=false; hospProperties=[];
+    const propTab=$id('hospPropertiesTab');
+    if(propTab) propTab.style.display=val==='resort'?'':'none';
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
@@ -15665,10 +16153,11 @@ $id('saveApptEnabled').addEventListener('click',async()=>{
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 });
 
+function isHcAppt(){ return clientRecord?.healthcare_enabled==='Yes'; }
 async function renderAppointments(){
   renderApptLinkBar();
   const el=$id('appointmentsContent');
-  if(!apptTablesReady()){el.innerHTML=renderApptSetupNeeded();document.querySelectorAll('.appt-tab').forEach(t=>t.classList.remove('active'));return;}
+  if(!isHcAppt()&&!apptTablesReady()){el.innerHTML=renderApptSetupNeeded();document.querySelectorAll('.appt-tab').forEach(t=>t.classList.remove('active'));return;}
   if(!_apptLoaded){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';await apptLoad();}
   renderApptSubPage(_apptPage);
 }
@@ -15765,6 +16254,21 @@ async function apptSetupTables(){
 }
 
 async function apptLoad(){
+  if(isHcAppt()){
+    const hdrs=ncAuthHeaders();
+    const [svcRes,aptRes]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{headers:hdrs}).then(r=>r.json()).catch(()=>({list:[]})),
+      fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{headers:hdrs}).then(r=>r.json()).catch(()=>({list:[]})),
+    ]);
+    _apptServices=(svcRes.list||[]).map(s=>({...s,Id:s.id}));
+    _apptBookings=(aptRes.list||[]).map(b=>({
+      ...b,Id:b.id,
+      customer_name:b.patient_name,customer_phone:b.patient_phone,
+      appt_date:b.appointment_date,appt_time:b.start_time
+    }));
+    _apptLoaded=true;
+    return;
+  }
   const [services,bookings]=await Promise.all([
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('services')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
     ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${apptTableId('bookings')}/records?limit=500&sort=-created_at`).catch(()=>({list:[]})),
@@ -15858,6 +16362,7 @@ function renderApptBookings(filter=''){
 }
 
 function openAddAppt(){
+  if(isHcAppt()){ showToast('ℹ️ Create appointments via WhatsApp booking or the Healthcare module'); navigate('healthcare'); return; }
   _editApptId=null;
   $id('apptModalTitle').textContent='New Appointment';
   ['apCustomerName','apCustomerPhone','apNotes'].forEach(id=>$id(id).value='');
@@ -15887,16 +16392,34 @@ async function saveApptFromModal(){
   if(!phone){ msg.textContent='Customer phone is required.'; msg.className='save-msg err'; return; }
   const svcId=$id('apService').value;
   const svc=svcId?_apptServices.find(s=>String(s.Id)===svcId):null;
-  const body={
-    customer_name:$id('apCustomerName').value.trim(), customer_phone:phone,
-    service_id:svcId||'', service_name:svc?.name||'',
-    appt_date:$id('apDate').value||'', appt_time:$id('apTime').value||'',
-    status:$id('apStatus').value, notes:$id('apNotes').value.trim(),
-  };
   const btn=$id('saveApptBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    if(_editApptId) await apptUpdate('bookings',Number(_editApptId),body);
-    else await apptCreate('bookings',{...body,source:'manual',created_at:new Date().toISOString()});
+    if(isHcAppt()){
+      if(!_editApptId){ msg.textContent='New appointments must be created from the Healthcare module or via WhatsApp booking.'; msg.className='save-msg err'; return; }
+      const existing=_apptBookings.find(b=>String(b.Id)===String(_editApptId));
+      const hcBody={
+        id:Number(_editApptId),
+        patient_name:$id('apCustomerName').value.trim()||existing?.patient_name||'',
+        patient_phone:phone,
+        service_id:svcId?Number(svcId):existing?.service_id||0,
+        doctor_id:existing?.doctor_id||0,
+        appointment_date:$id('apDate').value||existing?.appointment_date||'',
+        start_time:$id('apTime').value||existing?.start_time||'',
+        status:$id('apStatus').value,
+        notes:$id('apNotes').value.trim(),
+      };
+      const r=await fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(hcBody)});
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||r.statusText);}
+    } else {
+      const body={
+        customer_name:$id('apCustomerName').value.trim(), customer_phone:phone,
+        service_id:svcId||'', service_name:svc?.name||'',
+        appt_date:$id('apDate').value||'', appt_time:$id('apTime').value||'',
+        status:$id('apStatus').value, notes:$id('apNotes').value.trim(),
+      };
+      if(_editApptId) await apptUpdate('bookings',Number(_editApptId),body);
+      else await apptCreate('bookings',{...body,source:'manual',created_at:new Date().toISOString()});
+    }
     await apptLoad();
     closeModal('modalAppt');
     renderApptSubPage(_apptPage);
@@ -15907,28 +16430,34 @@ async function saveApptFromModal(){
 
 async function deleteAppt(id){
   if(!confirm('Delete this appointment?')) return;
-  await apptDeleteRow('bookings',Number(id));
+  if(isHcAppt()){
+    await fetch(`${CONFIG.WORKER_BASE}/healthcare/appointments`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:Number(id)})});
+  } else {
+    await apptDeleteRow('bookings',Number(id));
+  }
   await apptLoad();
   renderApptSubPage(_apptPage);
 }
 
 function renderApptServices(){
   const el=$id('appointmentsContent');
+  const hc=isHcAppt();
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center">
       <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🧾 Services <span style="color:var(--muted);font-size:13px;font-weight:500">(${_apptServices.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="openAddApptService()">+ New Service</button>
+      ${hc?`<span style="font-size:12px;color:var(--muted)">Managed in</span><button class="btn btn-secondary btn-sm" onclick="navigate('healthcare')">🏥 Healthcare module</button>`:`<button class="btn btn-primary btn-sm" onclick="openAddApptService()">+ New Service</button>`}
     </div>
+    ${hc?'<div class="s-note" style="margin-bottom:12px">These services are synced from your Healthcare module. To add, edit, or remove services go to the Healthcare tab → Services.</div>':''}
     ${_apptServices.length?`<div class="card" style="padding:0;overflow:hidden">${_apptServices.map(s=>`
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="openEditApptService('${s.Id}')">
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)${hc?'':';cursor:pointer'}" ${hc?'':`onclick="openEditApptService('${s.Id}')"`}>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${esc(s.name||'Untitled')}</div>
           <div style="font-size:12px;color:var(--muted)">${s.duration_minutes?s.duration_minutes+' min':'—'}${s.price?' · '+esc(s.currency||'')+' '+s.price:''}</div>
         </div>
         <span style="background:${s.status==='inactive'?'#F1F5F9':'#DCFCE7'};color:${s.status==='inactive'?'#64748B':'#166534'};font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;font-family:var(--disp)">${s.status==='inactive'?'Inactive':'Active'}</span>
-        <button class="btn-ghost" onclick="event.stopPropagation();deleteApptService('${s.Id}')">🗑</button>
+        ${hc?'':`<button class="btn-ghost" onclick="event.stopPropagation();deleteApptService('${s.Id}')">🗑</button>`}
       </div>`).join('')}</div>`
-    :'<div class="empty-state"><div class="ei">🧾</div>No services yet. Add what you offer — e.g. "Initial Consultation, 30 min".</div>'}`;
+    :`<div class="empty-state"><div class="ei">🧾</div>${hc?'No healthcare services found. Add services in the Healthcare module → Services tab.':'No services yet. Add what you offer — e.g. "Initial Consultation, 30 min".'}</div>`}`;
 }
 
 function openAddApptService(){
@@ -15957,12 +16486,19 @@ async function saveApptServiceFromModal(){
   if(!name){ msg.textContent='Name is required.'; msg.className='save-msg err'; return; }
   const body={
     name, duration_minutes:Number($id('asDuration').value)||0, price:Number($id('asPrice').value)||0,
-    currency:$id('asCurrency').value.trim(), description:$id('asDescription').value.trim(), status:$id('asStatus').value,
+    currency:$id('asCurrency').value.trim(), description:$id('asDescription').value.trim()||name, status:$id('asStatus').value,
   };
   const btn=$id('saveApptSvcBtn'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    if(_editApptSvcId) await apptUpdate('services',Number(_editApptSvcId),body);
-    else await apptCreate('services',{...body,created_at:new Date().toISOString()});
+    if(isHcAppt()){
+      const method=_editApptSvcId?'PATCH':'POST';
+      const hcBody=_editApptSvcId?{id:Number(_editApptSvcId),...body}:body;
+      const r=await fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{method,headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(hcBody)});
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||r.statusText);}
+    } else {
+      if(_editApptSvcId) await apptUpdate('services',Number(_editApptSvcId),body);
+      else await apptCreate('services',{...body,created_at:new Date().toISOString()});
+    }
     await apptLoad();
     closeModal('modalApptService');
     renderApptSubPage(_apptPage);
@@ -15973,7 +16509,11 @@ async function saveApptServiceFromModal(){
 
 async function deleteApptService(id){
   if(!confirm('Delete this service?')) return;
-  await apptDeleteRow('services',Number(id));
+  if(isHcAppt()){
+    await fetch(`${CONFIG.WORKER_BASE}/healthcare/services`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:Number(id)})});
+  } else {
+    await apptDeleteRow('services',Number(id));
+  }
   await apptLoad();
   renderApptSubPage(_apptPage);
 }
@@ -16039,12 +16579,16 @@ function renderRecoveryChip(lead){
    (cloudflare-worker/migrations/0009_hospitality.sql) via dedicated /hospitality/* Worker routes —
    unlike Agency/Recruit/Appointments above, no per-client dynamic NocoDB tables here. ── */
 let _hospPage='dashboard', _hospLoaded=false;
-let hospUnits=[], hospBookings=[];
+let hospUnits=[], hospBookings=[], hospProperties=[];
 let _hospEditBookingId=null;
 let _hospCalUnitId=null, _hospCalYear=null, _hospCalMonth=null, _hospCalDays=[];
 
+function _hospIsResort(){ return clientRecord.hospitality_style==='resort'; }
+
 async function renderHospitality(){
   const el=$id('hospContent');
+  const propTab=$id('hospPropertiesTab');
+  if(propTab) propTab.style.display=_hospIsResort()?'':'none';
   if(!_hospLoaded){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
     await hospLoad();
@@ -16053,20 +16597,24 @@ async function renderHospitality(){
 }
 async function hospLoad(){
   try{
-    const [unitsR, bookingsR]=await Promise.all([
+    const fetches=[
       fetch(`${CONFIG.WORKER_BASE}/hospitality/units`,{headers:ncAuthHeaders()}),
       fetch(`${CONFIG.WORKER_BASE}/hospitality/bookings`,{headers:ncAuthHeaders()}),
-    ]);
-    hospUnits=(await unitsR.json()).list||[];
-    hospBookings=(await bookingsR.json()).list||[];
+    ];
+    if(_hospIsResort()) fetches.push(fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{headers:ncAuthHeaders()}));
+    const results=await Promise.all(fetches);
+    hospUnits=(await results[0].json()).list||[];
+    hospBookings=(await results[1].json()).list||[];
+    hospProperties=results[2]?(await results[2].json()).list||[]:[];
     _hospLoaded=true;
-  }catch(e){ hospUnits=[]; hospBookings=[]; }
+  }catch(e){ hospUnits=[]; hospBookings=[]; hospProperties=[]; }
 }
 function renderHospSubPage(page){
   _hospPage=page;
   document.querySelectorAll('.hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.hosp===page));
   switch(page){
     case'dashboard':renderHospDashboard();break;
+    case'properties':renderHospProperties();break;
     case'units':renderHospUnits();break;
     case'availability':renderHospAvailability();break;
     case'bookings':renderHospBookings();break;
@@ -16115,6 +16663,12 @@ async function renderHospDashboard(){
 // Every field — including description and media — is edited in place; there is no Add/Edit
 // popup for units at all. Autosaves per-field on blur/change via the existing PATCH endpoint
 // (which already supports partial single-field updates).
+function hospStyleLabel(){
+  const s=clientRecord.hospitality_style||'hotel';
+  if(s==='resort') return {icon:'🌴',heading:'Units & Villa Types',addLabel:'+ Add Unit',typeLabel:'Villa/Unit Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first villa or unit type.'};
+  if(s==='houseboat') return {icon:'🛶',heading:'Boats & Houseboat Types',addLabel:'+ Add Boat',typeLabel:'Houseboat Type',emptyMsg:'No boats yet. Click "+ Add Boat" to create your first houseboat type.'};
+  return {icon:'🏠',heading:'Units & Room Types',addLabel:'+ Add Unit',typeLabel:'Room Type',emptyMsg:'No units yet. Click "+ Add Unit" to create your first room/unit type.'};
+}
 const HOSP_UNIT_FIELDS=[
   {field:'name', label:'Name', type:'text', width:150, placeholder:'Unit name'},
   {field:'unit_type', label:'Type', type:'text', width:100, placeholder:'Deluxe'},
@@ -16131,8 +16685,10 @@ function hospUnitRow(u){
     const val=u[f.field]==null?'':u[f.field];
     return `<td><input ${f.type==='number'?`type="number"${f.min!=null?` min="${f.min}"`:''}`:'type="text"'} class="form-input hosp-cell" style="width:${f.width}px" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}" data-field="${f.field}" onblur="hospUnitCellChange(${u.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
   }).join('');
+  const propCell=_hospIsResort()?`<td><select class="form-input hosp-cell" style="width:160px" data-field="property_id" onchange="hospUnitCellChange(${u.Id},this)"><option value="">— None —</option>${hospProperties.map(p=>`<option value="${p.Id}"${u.property_id===p.Id?' selected':''}>${esc(p.name)}</option>`).join('')}</select></td>`:'';
   return `<tr data-unit-row="${u.Id}" style="${u.active?'':'opacity:.55'}">
     <td style="text-align:center"><input type="checkbox" ${u.active?'checked':''} data-field="active" onchange="hospUnitCellChange(${u.Id},this)"></td>
+    ${propCell}
     ${cells}
     <td>${hospMediaCellHtml(u)}</td>
     <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospUnit(${u.Id})" title="Delete">🗑</button></td>
@@ -16140,20 +16696,21 @@ function hospUnitRow(u){
 }
 function renderHospUnits(){
   const el=$id('hospContent');
+  const lbl=hospStyleLabel();
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏠 Units &amp; Room Types <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
-      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">+ Add Unit</button>
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">${lbl.icon} ${esc(lbl.heading)} <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospUnits.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="hospAddUnitRow()">${esc(lbl.addLabel)}</button>
     </div>
     ${hospUnits.length?`
     <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
       <thead><tr>
-        <th>Active</th><th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Description</th><th>Photos &amp; Video</th><th></th>
+        <th>Active</th>${_hospIsResort()?'<th>Property</th>':''}<th>Name</th><th>Type</th><th>Currency</th><th>Adults</th><th>Children</th><th>Base Rate</th><th>Weekend Rate</th><th>Amenities</th><th>Description</th><th>${_hospIsResort()?'Photos &amp; Videos (5+2)':'Photos &amp; Video'}</th><th></th>
       </tr></thead>
       <tbody>${hospUnits.map(hospUnitRow).join('')}</tbody>
     </table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Click into any field to edit — it saves automatically when you tab or click away. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>`
-    :'<div class="empty-state"><div class="ei">🏠</div>No units yet. Click "+ Add Unit" to create your first room/unit type.</div>'}`;
+    :`<div class="empty-state"><div class="ei">${lbl.icon}</div>${esc(lbl.emptyMsg)}</div>`}`;
 }
 async function hospAddUnitRow(){
   const body={name:'New unit', unit_type:'', currency:'INR', capacity_adults:2, capacity_children:0, base_rate:0, weekend_rate:null, amenities:'', description:'', active:true};
@@ -16172,6 +16729,7 @@ async function hospUnitCellChange(id, el){
   const u=hospUnits.find(x=>x.Id===id); if(!u) return;
   let value;
   if(field==='active') value=el.checked;
+  else if(field==='property_id') value=el.value?Number(el.value):null;
   else if(field==='capacity_adults') value=parseInt(el.value)||1;
   else if(field==='capacity_children') value=parseInt(el.value)||0;
   else if(field==='base_rate') value=parseFloat(el.value)||0;
@@ -16203,6 +16761,25 @@ const HOSP_MEDIA_SLOTS=[
   {slot:'image3', column:'image_url_3', label:'Photo 3'},
   {slot:'video', column:'video_url', label:'Video'},
 ];
+const HOSP_UNIT_RESORT_MEDIA_SLOTS=[
+  {slot:'image1', column:'image_url_1', label:'Photo 1'},
+  {slot:'image2', column:'image_url_2', label:'Photo 2'},
+  {slot:'image3', column:'image_url_3', label:'Photo 3'},
+  {slot:'image4', column:'image_url_4', label:'Photo 4'},
+  {slot:'image5', column:'image_url_5', label:'Photo 5'},
+  {slot:'video', column:'video_url', label:'Video 1'},
+  {slot:'video2', column:'video_url_2', label:'Video 2'},
+];
+const HOSP_PROPERTY_MEDIA_SLOTS=[
+  {slot:'image1', column:'image_url_1', label:'Photo 1'},
+  {slot:'image2', column:'image_url_2', label:'Photo 2'},
+  {slot:'image3', column:'image_url_3', label:'Photo 3'},
+  {slot:'image4', column:'image_url_4', label:'Photo 4'},
+  {slot:'image5', column:'image_url_5', label:'Photo 5'},
+  {slot:'video1', column:'video_url_1', label:'Video 1'},
+  {slot:'video2', column:'video_url_2', label:'Video 2'},
+];
+function hospUnitMediaSlots(){ return _hospIsResort()?HOSP_UNIT_RESORT_MEDIA_SLOTS:HOSP_MEDIA_SLOTS; }
 // Pulls the file id out of whichever Drive share-link shape was pasted — mirrors worker.js's own
 // driveFileId(), duplicated rather than shared since this app has no build step and every page is
 // already a self-contained file (same reasoning as this file's other small duplicated helpers).
@@ -16219,11 +16796,13 @@ function driveThumbnailUrl(url){
   const id=driveFileId(url);
   return id?`https://drive.google.com/thumbnail?id=${id}&sz=w200`:'';
 }
+function _hospMediaSlotIsVideo(slot){ return slot==='video'||slot==='video1'||slot==='video2'; }
 function hospMediaCellHtml(u){
-  const inner=HOSP_MEDIA_SLOTS.map(s=>{
+  const slots=hospUnitMediaSlots();
+  const inner=slots.map(s=>{
     const url=u[s.column];
     if(url){
-      const preview=s.slot==='video'
+      const preview=_hospMediaSlotIsVideo(s.slot)
         ? `<span style="font-size:18px">🎬</span>`
         : `<img src="${esc(driveThumbnailUrl(url))}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:16px;display:none">🔗</span>`;
       return `<div class="hosp-media-slot-sm" title="${esc(s.label)} — click to open in Drive, or the ✕ to remove" onclick="window.open('${esc(url)}','_blank')">${preview}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemoveUnitMedia(${u.Id},'${s.slot}')">✕</button></div>`;
@@ -16238,11 +16817,12 @@ function hospRerenderMediaCell(unitId){
   if(cell) cell.outerHTML=hospMediaCellHtml(u);
 }
 async function hospSetUnitMediaLink(unitId, slot){
-  const s=HOSP_MEDIA_SLOTS.find(x=>x.slot===slot);
-  const unit=hospUnits.find(u=>u.Id===unitId); if(!unit) return;
+  const slots=hospUnitMediaSlots();
+  const s=slots.find(x=>x.slot===slot);
+  const unit=hospUnits.find(u=>u.Id===unitId); if(!unit||!s) return;
   const current=unit[s.column]||'';
   const url=prompt(`Paste the Google Drive share link for ${s.label}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
-  if(url===null) return; // cancelled
+  if(url===null) return;
   const trimmed=url.trim();
   if(trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
   const prev=unit[s.column];
@@ -16258,13 +16838,137 @@ async function hospSetUnitMediaLink(unitId, slot){
 }
 async function hospRemoveUnitMedia(unitId, slot){
   if(!confirm('Remove this media?')) return;
+  const slots=hospUnitMediaSlots();
+  const s=slots.find(x=>x.slot===slot); if(!s) return;
   try{
     await fetch(`${CONFIG.WORKER_BASE}/hospitality/units/media`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({unit_id:unitId, slot})});
     const unit=hospUnits.find(u=>u.Id===unitId);
-    const col=HOSP_MEDIA_SLOTS.find(s=>s.slot===slot).column;
-    if(unit) unit[col]=null;
+    if(unit) unit[s.column]=null;
     hospRerenderMediaCell(unitId);
   }catch(e){ alert('Failed: '+e.message); }
+}
+
+/* ── Resort properties: inline-edit table, media slots, CRUD ── */
+function hospPropertyMediaCellHtml(p){
+  const inner=HOSP_PROPERTY_MEDIA_SLOTS.map(s=>{
+    const url=p[s.column];
+    if(url){
+      const preview=_hospMediaSlotIsVideo(s.slot)
+        ? `<span style="font-size:18px">🎬</span>`
+        : `<img src="${esc(driveThumbnailUrl(url))}" onerror="this.style.display='none';this.nextElementSibling.style.display=''"><span style="font-size:16px;display:none">🔗</span>`;
+      return `<div class="hosp-media-slot-sm" title="${esc(s.label)} — click to open in Drive, or the ✕ to remove" onclick="window.open('${esc(url)}','_blank')">${preview}<button class="hosp-media-remove-sm" onclick="event.stopPropagation();hospRemovePropertyMedia(${p.Id},'${s.slot}')">✕</button></div>`;
+    }
+    return `<div class="hosp-media-slot-sm" onclick="hospSetPropertyMediaLink(${p.Id},'${s.slot}')" title="Paste a Google Drive link for ${esc(s.label)}">🔗+</div>`;
+  }).join('');
+  return `<div class="hosp-media-inline" data-prop-media-cell="${p.Id}">${inner}</div>`;
+}
+function hospRerenderPropertyMediaCell(propId){
+  const p=hospProperties.find(x=>x.Id===propId); if(!p) return;
+  const cell=document.querySelector(`[data-prop-media-cell="${propId}"]`);
+  if(cell) cell.outerHTML=hospPropertyMediaCellHtml(p);
+}
+async function hospSetPropertyMediaLink(propId, slot){
+  const s=HOSP_PROPERTY_MEDIA_SLOTS.find(x=>x.slot===slot);
+  const prop=hospProperties.find(p=>p.Id===propId); if(!prop||!s) return;
+  const current=prop[s.column]||'';
+  const url=prompt(`Paste the Google Drive share link for ${s.label}.\n\nMake sure it's shared as "Anyone with the link can view" so the bot can send it in chat.`, current);
+  if(url===null) return;
+  const trimmed=url.trim();
+  if(trimmed && !/drive\.google\.com|docs\.google\.com/i.test(trimmed) && !confirm('That doesn\'t look like a Google Drive link — save it anyway?')) return;
+  const prev=prop[s.column];
+  prop[s.column]=trimmed||null;
+  hospRerenderPropertyMediaCell(propId);
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:propId,[s.column]:trimmed})});
+  }catch(e){
+    prop[s.column]=prev;
+    hospRerenderPropertyMediaCell(propId);
+    alert('Failed to save: '+e.message);
+  }
+}
+async function hospRemovePropertyMedia(propId, slot){
+  if(!confirm('Remove this media?')) return;
+  const s=HOSP_PROPERTY_MEDIA_SLOTS.find(x=>x.slot===slot); if(!s) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id:propId,[s.column]:null})});
+    const prop=hospProperties.find(p=>p.Id===propId);
+    if(prop) prop[s.column]=null;
+    hospRerenderPropertyMediaCell(propId);
+  }catch(e){ alert('Failed: '+e.message); }
+}
+const HOSP_PROPERTY_FIELDS=[
+  {field:'name', label:'Name', type:'text', width:160, placeholder:'Property name'},
+  {field:'amenities', label:'Amenities', type:'text', width:200, placeholder:'Pool, Spa, Restaurant…'},
+  {field:'description', label:'Description', type:'text', width:220, placeholder:'Short description'},
+];
+function hospPropertyRow(p){
+  const cells=HOSP_PROPERTY_FIELDS.map(f=>{
+    const val=p[f.field]==null?'':p[f.field];
+    return `<td><input type="text" class="form-input hosp-cell" style="width:${f.width}px" value="${esc(val)}" placeholder="${esc(f.placeholder||'')}" data-field="${f.field}" onblur="hospPropertyCellChange(${p.Id},this)" onkeydown="if(event.key==='Enter')this.blur()"></td>`;
+  }).join('');
+  return `<tr data-prop-row="${p.Id}" style="${p.active?'':'opacity:.55'}">
+    <td style="text-align:center"><input type="checkbox" ${p.active?'checked':''} data-field="active" onchange="hospPropertyCellChange(${p.Id},this)"></td>
+    ${cells}
+    <td>${hospPropertyMediaCellHtml(p)}</td>
+    <td style="text-align:center"><button class="btn-ghost" onclick="deleteHospProperty(${p.Id})" title="Delete">🗑</button></td>
+  </tr>`;
+}
+function renderHospProperties(){
+  const el=$id('hospContent');
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🏨 Resort Properties <span style="color:var(--muted);font-size:13px;font-weight:500">(${hospProperties.length})</span></div>
+      <button class="btn btn-primary btn-sm" onclick="hospAddPropertyRow()">+ Add Property</button>
+    </div>
+    ${hospProperties.length?`
+    <div class="tbl-wrap"><table class="leads-tbl hosp-units-tbl">
+      <thead><tr>
+        <th>Active</th><th>Name</th><th>Amenities</th><th>Description</th><th>Photos &amp; Videos (5+2)</th><th></th>
+      </tr></thead>
+      <tbody>${hospProperties.map(hospPropertyRow).join('')}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Each property holds up to 5 photos and 2 videos. Click a media slot to paste a Google Drive link (shared as "Anyone with the link can view"). Rooms are assigned to a property in the Units tab.</div>`
+    :'<div class="empty-state"><div class="ei">🏨</div>No properties yet. Click "+ Add Property" to create your first resort property.</div>'}`;
+}
+async function hospAddPropertyRow(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:'New property'})});
+    const created=await r.json();
+    hospProperties.push(created);
+    renderHospProperties();
+    const row=document.querySelector(`tr[data-prop-row="${created.Id}"]`);
+    const nameInput=row&&row.querySelector('input[data-field="name"]');
+    if(nameInput){ nameInput.focus(); nameInput.select(); }
+  }catch(e){ alert('Failed to add property: '+e.message); }
+}
+async function hospPropertyCellChange(id, el){
+  const field=el.dataset.field;
+  const p=hospProperties.find(x=>x.Id===id); if(!p) return;
+  let value;
+  if(field==='active') value=el.checked;
+  else value=el.value.trim();
+  if(field==='name'&&!value){ alert('Name is required.'); el.value=p.name; return; }
+  if(el.type!=='checkbox') el.value=value===null?'':value;
+  if(p[field]===value) return;
+  const prev=p[field];
+  p[field]=value;
+  if(field==='active'){ const row=el.closest('tr'); if(row) row.style.opacity=value?'':'.55'; }
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id,[field]:value})});
+  }catch(e){
+    p[field]=prev;
+    alert('Failed to save: '+e.message);
+    renderHospProperties();
+  }
+}
+async function deleteHospProperty(id){
+  if(!confirm('Delete this property? Its rooms will be unlinked but not deleted.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/hospitality/properties`,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({id})});
+    hospProperties=hospProperties.filter(p=>p.Id!==id);
+    hospUnits.forEach(u=>{ if(u.property_id===id) u.property_id=null; });
+    renderHospProperties();
+  }catch(e){ alert('Failed to delete: '+e.message); }
 }
 async function deleteHospUnit(id){
   if(!confirm('Delete this unit? Its blocked dates and rate overrides will be removed too.')) return;
@@ -16652,6 +17356,51 @@ function showUpdateBanner(){
     history.replaceState({},'',location.pathname);
     startAuthentikLogin();
     return;
+  }
+  // Marketing site email form — email collected on leadvyne.com, redirected here with
+  // ?autoSignup=1&email=xxx so the Worker call happens from app.leadvyne.com (already in
+  // ALLOWED_ORIGINS), sidestepping any cross-origin restriction on the landing page.
+  const _autoSignupParams=new URLSearchParams(location.search);
+  if(_autoSignupParams.get('autoSignup')==='1'){
+    const _autoEmail=_autoSignupParams.get('email')||'';
+    history.replaceState({},'',location.pathname);
+    if(_autoEmail){
+      (async()=>{
+        try{
+          const r=await fetch(WORKER_BASE+'/signup',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({email:_autoEmail})
+          });
+          const data=await r.json().catch(()=>({}));
+          if(r.status===409){
+            // Account exists — proceed to normal login
+            startAuthentikLogin(); return;
+          }
+          if(r.ok && !data.error){
+            // Account created — show confirmation, stay on page
+            document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+              +'<svg width="56" height="56" viewBox="0 0 56 56" fill="none"><circle cx="28" cy="28" r="28" fill="#0d9c93"/><path d="M16 28l8 8 16-16" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+              +'<h2 style="margin:0;font-size:22px;color:#1a202c">Check your email</h2>'
+              +'<p style="margin:0;color:#4a5568;max-width:340px">We sent a setup link to <strong>'+_autoEmail+'</strong>. Click it to finish creating your account.</p>'
+              +'<a href="https://leadvyne.com" style="margin-top:8px;font-size:14px;color:#0d9c93">← Back to Leadvyne</a>'
+              +'</div>';
+            return;
+          }
+          // Error — show message with option to go back
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">'+(data.error||'Something went wrong. Please try again.')+'</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }catch(e){
+          document.body.innerHTML='<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:16px;padding:32px;text-align:center">'
+            +'<p style="color:#e53e3e;font-weight:600">Could not connect. Please check your connection and try again.</p>'
+            +'<a href="https://leadvyne.com" style="color:#0d9c93">← Back to Leadvyne</a>'
+            +'</div>';
+        }
+      })();
+      return;
+    }
+    // No email — fall through to normal flow
   }
   // No local session and no explicit signup intent — before leaving the interactive "Secure
   // Login" button up, check whether Authentik itself still has this browser signed in (see
