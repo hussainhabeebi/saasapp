@@ -7113,6 +7113,199 @@ async function handleEcomCategoryMediaServe(env, key){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
+   BUSINESS SERVICES MODULE
+   D1-backed CRUD for service centres (CSC/Akshaya-style). Services behave like Ecom products
+   with fee, turnaround_time, required_docs, appointment_required, service_type, government_url.
+   Categories have up to 3 photos (image_url_1/2/3) — same link-paste model as Ecom categories.
+   Client-id-based auth — same trust model as /ecom/*.
+   business-services.html embeds as an iframe in dashboard.html.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+const BS_CLIENT_READ_FIELDS=['Id','client_name','bot_config'];
+const BS_CLIENT_WRITE_FIELDS=['bot_config'];
+
+let _bsSchemaEnsured=false;
+async function bsEnsureSchema(env){
+  if(_bsSchemaEnsured)return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS bs_categories (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,image_url_1 TEXT,image_url_2 TEXT,image_url_3 TEXT,created_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_categories_client ON bs_categories(client_id)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS bs_services (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,category_id INTEGER,name TEXT NOT NULL,description TEXT,fee TEXT,turnaround_time TEXT,required_docs TEXT,appointment_required INTEGER NOT NULL DEFAULT 0,service_type TEXT,government_url TEXT,image_url_1 TEXT,image_url_2 TEXT,image_url_3 TEXT,pdf_url TEXT,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_services_client ON bs_services(client_id)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_services_category ON bs_services(client_id,category_id)`),
+  ]);
+  _bsSchemaEnsured=true;
+}
+
+async function handleBsClientGet(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
+  const out={};
+  BS_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
+  return json(out);
+}
+
+async function handleBsClientUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const fields={};
+  BS_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
+  const result=await ncPatchVerified(env, clientId, fields);
+  return json(result.data, result.status);
+}
+
+async function handleBsCategoriesList(request, env){
+  await bsEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM bs_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleBsCategoryCreate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,80);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(`INSERT INTO bs_categories (client_id, name, description, created_at) VALUES (?,?,?,?)`)
+    .bind(Number(clientId), name, String(body.description||'').trim().slice(0,500), new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+
+async function findBsCategory(env, id){
+  return await env.DB.prepare(`SELECT * FROM bs_categories WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleBsCategoryUpdate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ const n=String(body.name).trim().slice(0,80); if(!n) return json({error:'name cannot be blank'},400); sets.push('name=?'); vals.push(n); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(body.description?String(body.description).trim().slice(0,500):null); }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE bs_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleBsCategoryDelete(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM bs_services WHERE client_id=? AND category_id=?`).bind(Number(clientId), id).run();
+  await env.DB.prepare(`DELETE FROM bs_categories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+async function handleBsServicesList(request, env){
+  await bsEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const categoryId=url.searchParams.get('category_id');
+  let q=`SELECT s.*, c.name AS category_name FROM bs_services s LEFT JOIN bs_categories c ON c.id=s.category_id WHERE s.client_id=?`;
+  const binds=[Number(clientId)];
+  if(categoryId){ q+=' AND s.category_id=?'; binds.push(Number(categoryId)); }
+  q+=' ORDER BY s.name ASC';
+  const {results}=await env.DB.prepare(q).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleBsServiceCreate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,120);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(
+    `INSERT INTO bs_services (client_id,category_id,name,description,fee,turnaround_time,required_docs,appointment_required,service_type,government_url,image_url_1,image_url_2,image_url_3,pdf_url,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    Number(clientId),
+    body.category_id?Number(body.category_id):null,
+    name,
+    String(body.description||'').trim().slice(0,2000),
+    String(body.fee||'').trim().slice(0,100),
+    String(body.turnaround_time||'').trim().slice(0,200),
+    String(body.required_docs||'').trim().slice(0,2000),
+    body.appointment_required?1:0,
+    String(body.service_type||'').trim().slice(0,80),
+    body.government_url?String(body.government_url).trim().slice(0,500):null,
+    body.image_url_1?String(body.image_url_1).trim().slice(0,500):null,
+    body.image_url_2?String(body.image_url_2).trim().slice(0,500):null,
+    body.image_url_3?String(body.image_url_3).trim().slice(0,500):null,
+    body.pdf_url?String(body.pdf_url).trim().slice(0,500):null,
+    body.status==='inactive'?'inactive':'active',
+    new Date().toISOString()
+  ).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+
+async function findBsService(env, id){
+  return await env.DB.prepare(`SELECT * FROM bs_services WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleBsServiceUpdate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsService(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  const strField=(k,max=500)=>{ if(k in body){ sets.push(`${k}=?`); vals.push(body[k]?String(body[k]).trim().slice(0,max):null); }};
+  if('name' in body){ const n=String(body.name||'').trim().slice(0,120); if(!n) return json({error:'name cannot be blank'},400); sets.push('name=?'); vals.push(n); }
+  if('category_id' in body){ sets.push('category_id=?'); vals.push(body.category_id?Number(body.category_id):null); }
+  strField('description', 2000);
+  strField('fee', 100);
+  strField('turnaround_time', 200);
+  strField('required_docs', 2000);
+  if('appointment_required' in body){ sets.push('appointment_required=?'); vals.push(body.appointment_required?1:0); }
+  strField('service_type', 80);
+  strField('government_url', 500);
+  strField('image_url_1', 500);
+  strField('image_url_2', 500);
+  strField('image_url_3', 500);
+  strField('pdf_url', 500);
+  if('status' in body){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE bs_services SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleBsServiceDelete(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsService(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM bs_services WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
    EDUCATION MODULE (migrations/0060-0065)
    All education data lives in D1 — courses, enrollments, categories, promotions, stories.
    Client-id-based auth (no session token) — same trust model as /ecom/*.
@@ -24369,6 +24562,16 @@ export default {
       else if(url.pathname==='/ecom/testimonials' && request.method==='DELETE'){ res=await handleEcomTestimonialDelete(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
+      else if(url.pathname==='/bs/client' && request.method==='GET'){ res=await handleBsClientGet(request, env); }
+      else if(url.pathname==='/bs/client' && request.method==='PATCH'){ res=await handleBsClientUpdate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='GET'){ res=await handleBsCategoriesList(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='POST'){ res=await handleBsCategoryCreate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='PATCH'){ res=await handleBsCategoryUpdate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='DELETE'){ res=await handleBsCategoryDelete(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='GET'){ res=await handleBsServicesList(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='POST'){ res=await handleBsServiceCreate(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='PATCH'){ res=await handleBsServiceUpdate(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='DELETE'){ res=await handleBsServiceDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
