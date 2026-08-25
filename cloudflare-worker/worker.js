@@ -13268,9 +13268,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // but fall back to classifier when no catalog match. Both are sparse-signal writes.
   const resolvedProductCategory=routing.matchedCategory||productCategory;
   if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
-  // Catalog-matched brand (ecom only; only written when the classifier confidently matched a
-  // catalog brand entry alongside a category — never set from free-text guess alone).
+  // Catalog-matched brand wins (ecom — validated against live catalog). When no catalog match
+  // exists, fall back to the classifier's free-text product_interest so non-ecom clients (B2B,
+  // general) still get their Brand/Product column populated when a customer names a brand.
   if(routing.matchedBrand) body.Brand=routing.matchedBrand;
+  else if(productInterest) body.Brand=productInterest;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
