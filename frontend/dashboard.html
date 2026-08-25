@@ -1888,6 +1888,10 @@ const ROLES = {
         <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📞 Call Tracking</div><div class="s-note">Per-agent call activity — logged from the 📞 Call button on the Leads page (outcome/duration/notes), no separate log to keep in sync.</div></div>
         <div id="callTrackStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
         <div class="card"><div id="callTrackContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+        <div class="card" style="margin-top:14px">
+          <div class="s-head" style="margin-bottom:8px">📝 Recent Call Notes (Last 7 Days)</div>
+          <div id="callTrackNotes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+        </div>
 
         <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📈 Funnel Analytics</div><div class="s-note">Whole-business view of how the funnel itself is performing — stage-by-stage, not per-agent.</div></div>
         <div id="teamFunnelStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
@@ -13563,6 +13567,44 @@ function renderTeamFunnelAnalytics(){
   `;
 }
 
+// Recent call notes — flat, chronological feed of the actual `notes` text logged against calls
+// in the last `days` days, across every lead. Shared by both the Team page and Reports → Team's
+// Call Tracking sections (a plain data function, not a DOM writer, so sharing it doesn't risk the
+// per-page container-id independence the rest of this report deliberately keeps). Parses each
+// entry's `date` (stored via Date#toLocaleString() in saveCall()) back into a real timestamp to
+// filter/sort by recency; an entry whose date fails to parse is dropped rather than guessed into
+// the window.
+function computeRecentCallNotes(days){
+  const cutoff=Date.now()-days*86400000;
+  const out=[];
+  allLeads.forEach(l=>{
+    let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+    calls.forEach(c=>{
+      if(!c.notes || !String(c.notes).trim()) return;
+      const ts=new Date(c.date||'').getTime();
+      if(!ts || isNaN(ts) || ts<cutoff) return;
+      out.push({leadId:l.Id, leadName:l.Name||l.Phone||('Lead #'+l.Id), outcome:c.outcome, notes:c.notes, date:c.date, by:c.by, ts});
+    });
+  });
+  out.sort((a,b)=>b.ts-a.ts);
+  return out;
+}
+function recentCallNotesHtml(days){
+  const notes=computeRecentCallNotes(days);
+  if(!notes.length) return `<div style="color:var(--muted);font-size:13px">No call notes in the last ${days} days.</div>`;
+  const OUTCOME_ICON={Answered:'✅','No Answer':'📵',Voicemail:'📬','Callback Requested':'🔁'};
+  return notes.map(n=>{
+    const agentName=n.by?(getTeamMembers().find(m=>m.email===n.by)?.name||n.by):'—';
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer" onclick="openDetail(${n.leadId})">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-bottom:4px">
+        <div style="font-size:12px;font-weight:700;color:var(--accent-ink)">${esc(n.leadName)} · ${OUTCOME_ICON[n.outcome]||'📞'} ${esc(n.outcome||'')}</div>
+        <div style="font-size:11px;color:var(--muted);white-space:nowrap">${esc(agentName)} · ${esc(n.date||'')}</div>
+      </div>
+      <div style="font-size:13px;white-space:pre-wrap">${esc(n.notes)}</div>
+    </div>`;
+  }).join('');
+}
+
 /* ── CALL TRACKING REPORT ──
    Per-agent call activity — reads CallLog (already on every lead; saveCall() now stamps each
    entry with `by:myEmail`) client-side from allLeads, same computed-not-stored pattern as Team
@@ -13625,6 +13667,9 @@ function renderCallTrackingReport(){
     </div>
     ${totalCalls?'':'<div class="s-note" style="margin-top:10px">No calls logged yet — use the 📞 Call button on the Leads page, or Leads → a lead → + Log Call.</div>'}
   `;
+
+  const notesEl=$id('callTrackNotes');
+  if(notesEl) notesEl.innerHTML=recentCallNotesHtml(7);
 }
 
 function renderTeamPerformance(){
@@ -13978,7 +14023,11 @@ function renderReportsTeamReport(){
 
     <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📞 Call Tracking</div><div class="s-note">Same call data as Team → Call Tracking — logged from the 📞 Call button on the Leads page.</div></div>
     <div id="reportsCallStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
-    <div class="card"><div id="reportsCallTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`;
+    <div class="card"><div id="reportsCallTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+    <div class="card" style="margin-top:14px">
+      <div class="s-head" style="margin-bottom:8px">📝 Recent Call Notes (Last 7 Days)</div>
+      <div id="reportsCallNotes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+    </div>`;
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
   const members=getTeamMembers();
@@ -14068,6 +14117,9 @@ function renderReportsTeamReport(){
       </tr>`).join('')}</tbody>
     </table></div>
     ${totalCalls?'':'<div class="s-note" style="margin-top:10px">No calls logged yet — use the 📞 Call button on the Leads page.</div>'}`;
+
+  const reportsNotesEl=$id('reportsCallNotes');
+  if(reportsNotesEl) reportsNotesEl.innerHTML=recentCallNotesHtml(7);
 }
 
 /* ── Marketing — Meta Ads ROI (unchanged computation, moved here from the old Team → Reports
