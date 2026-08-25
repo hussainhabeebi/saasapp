@@ -7320,6 +7320,7 @@ async function attestEnsureSchema(env){
     client_id TEXT NOT NULL,
     name TEXT NOT NULL,
     service_type TEXT,
+    country TEXT,
     fee REAL,
     currency TEXT DEFAULT 'INR',
     turnaround_time TEXT,
@@ -7330,10 +7331,15 @@ async function attestEnsureSchema(env){
     created_at TEXT DEFAULT(datetime('now'))
   )`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_attest_services_client ON attest_services(client_id)`).run();
+  // Add country column to existing tables that predate this field
+  const {results:cols}=await env.DB.prepare(`PRAGMA table_info(attest_services)`).all();
+  if(cols&&!cols.some(c=>c.name==='country')){
+    await env.DB.prepare(`ALTER TABLE attest_services ADD COLUMN country TEXT`).run();
+  }
   _attestSchemaEnsured=true;
 }
 
-const ATTEST_SERVICE_FIELDS=['name','service_type','fee','currency','turnaround_time','required_docs','description','pdf_url','status'];
+const ATTEST_SERVICE_FIELDS=['name','service_type','country','fee','currency','turnaround_time','required_docs','description','pdf_url','status'];
 
 async function handleAttestServicesList(request, env){
   await attestEnsureSchema(env);
@@ -11247,13 +11253,14 @@ async function engineBuildTravelContext(env, c, clientId){
     }
   }
   const {results:attestSvcs}=await env.DB.prepare(
-    `SELECT name,service_type,fee,currency,turnaround_time,required_docs FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`
+    `SELECT name,service_type,country,fee,currency,turnaround_time,required_docs FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`
   ).bind(clientId).all().catch(()=>({results:[]}));
   if(attestSvcs&&attestSvcs.length){
     lines.push('## Attestation Services');
     attestSvcs.forEach(s=>{
       let line=`- ${s.name}`;
       if(s.service_type) line+=` (${s.service_type})`;
+      if(s.country) line+=` for ${s.country}`;
       if(s.fee) line+=` — ${s.currency||'INR'} ${s.fee}`;
       if(s.turnaround_time) line+=`, turnaround: ${s.turnaround_time}`;
       if(s.required_docs) line+=` — docs: ${String(s.required_docs).slice(0,120)}`;
