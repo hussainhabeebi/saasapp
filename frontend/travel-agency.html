@@ -296,6 +296,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="ta-tab" data-ta="packages">📦 Packages</button>
     <button class="ta-tab" data-ta="itineraries">🗺️ Itineraries</button>
     <button class="ta-tab" data-ta="services">🗂️ Services</button>
+    <button class="ta-tab" data-ta="attestation">📋 Attestation</button>
     <button class="ta-tab" data-ta="visas">🛂 Visa</button>
     <button class="ta-tab" data-ta="groupfares">👥 Group Fare</button>
     <button class="ta-tab" data-ta="specialfares">🎟️ Special Fare</button>
@@ -737,6 +738,51 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   </div>
 </div>
 
+<!-- TA: ATTESTATION SERVICE MODAL -->
+<div class="modal" id="modalAttest" style="width:560px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title" id="attestModalTitle">New Attestation Service</div><button class="icon-btn" onclick="closeModal('modalAttest')">✕</button></div>
+  <div class="modal-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Service Name *</label><input class="form-input" id="attestName" placeholder="e.g. MEA Attestation"></div>
+      <div class="form-group"><label class="form-label">Type</label>
+        <select class="form-input" id="attestType">
+          <option value="mea">MEA</option>
+          <option value="embassy">Embassy</option>
+          <option value="mofa">MOFA</option>
+          <option value="apostille">Apostille</option>
+          <option value="hrd">HRD</option>
+          <option value="state">State Authentication</option>
+          <option value="notary">Notary</option>
+          <option value="coc">Chamber of Commerce</option>
+          <option value="police_clearance">Police Clearance</option>
+          <option value="birth">Birth Certificate</option>
+          <option value="marriage">Marriage Certificate</option>
+          <option value="degree">Degree Certificate</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Status</label>
+        <select class="form-input" id="attestStatus"><option value="active">Active</option><option value="inactive">Inactive</option></select>
+      </div>
+      <div class="form-group"><label class="form-label">Fee</label><input class="form-input" type="number" id="attestFee" placeholder="0"></div>
+      <div class="form-group"><label class="form-label">Currency</label>
+        <select class="form-input" id="attestCurrency"><option>INR</option><option>AED</option><option>SAR</option><option>USD</option><option>EUR</option></select>
+      </div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Turnaround Time</label><input class="form-input" id="attestTAT" placeholder="e.g. 3-5 working days"></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Required Documents (one per line)</label><textarea class="form-input" id="attestDocs" rows="3" placeholder="Original certificate&#10;Passport copy&#10;Application form"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">Description</label><textarea class="form-input" id="attestDesc" rows="2"></textarea></div>
+      <div class="form-group" style="grid-column:1/-1"><label class="form-label">PDF Brochure / Checklist URL (Google Drive link or direct URL)</label><input class="form-input" id="attestPdf" placeholder="https://drive.google.com/file/d/…/view"></div>
+    </div>
+  </div>
+  <div class="modal-footer">
+    <button class="btn btn-primary" id="saveAttestBtn" onclick="saveAttestService()">Save Service</button>
+    <span class="save-msg" id="saveAttestMsg"></span>
+    <button class="btn btn-secondary" onclick="closeModal('modalAttest')">Cancel</button>
+    <button class="btn btn-ghost" style="color:var(--red);margin-left:auto" id="deleteAttestBtn" onclick="deleteAttestService()">Delete</button>
+  </div>
+</div>
+
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const CONFIG = {
@@ -822,6 +868,7 @@ async function init(){
 /* ── TRAVEL AGENCY MODULE ── */
 let _taPage = 'dashboard';
 let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
+let _attestServices = [];
 let _taVisas = [], _taGroupFares = [], _taSpecialFares = [];
 let _taLoaded = false;
 /* ── TA: TABLE IDS & CRUD HELPERS ── */
@@ -1039,17 +1086,19 @@ async function taConfirmImport(){
 
 async function taLoad(){
   if(!taTablesReady())return;
-  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares]=await Promise.all([
+  const [pkgs,bks,cs,its,ug,cars,carbks,visas,gfares,sfares,attestData]=await Promise.all([
     taFetch('packages'),taFetch('bookings'),taFetch('cases'),
     taFetch('itineraries'),taFetch('umrah_groups'),
     taFetch('cars'),taFetch('car_bookings'),
-    taFetch('visas'),taFetch('group_fares'),taFetch('special_fares')
+    taFetch('visas'),taFetch('group_fares'),taFetch('special_fares'),
+    fetch(`${WORKER_BASE}/attest/services?client_id=${clientId}&include_inactive=true`).then(r=>r.json()).catch(()=>({list:[]}))
   ]);
   _taPackages=pkgs; _taBookings=bks; _taCases=cs;
   _taItineraries=its.map(r=>({...r,days:safeJson(r.days)}));
   _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
   _taCars=cars; _taCarBookings=carbks;
   _taVisas=visas; _taGroupFares=gfares; _taSpecialFares=sfares;
+  _attestServices=attestData.list||[];
   _taLoaded=true;
   sendTaBadgeCount();
 }
@@ -1267,6 +1316,7 @@ function renderAgencySubPage(page) {
     case 'packages':    el.innerHTML = renderTaPackages(); break;
     case 'itineraries': el.innerHTML = renderTaItineraries(); if(_itinSubTab==='send') sqFilterLeads(); break;
     case 'services':    el.innerHTML = renderTaServices(); break;
+    case 'attestation': el.innerHTML = renderTaAttestation(); break;
     case 'visas':       el.innerHTML = renderTaVisas(); break;
     case 'groupfares':  el.innerHTML = renderTaGroupFares(); break;
     case 'specialfares':el.innerHTML = renderTaSpecialFares(); break;
@@ -3588,6 +3638,129 @@ const QUOTE_DEFAULT_TERMS=`• This quotation is valid for the period stated abo
 • All prices are exclusive of taxes unless stated otherwise.
 • Payment terms and delivery/service timelines will be confirmed upon order confirmation.
 • This document does not constitute a binding contract until formally accepted by both parties.`;
+
+/* ── TA: ATTESTATION SERVICES ── */
+const ATTEST_TYPE_LABELS={mea:'MEA',embassy:'Embassy',mofa:'MOFA',apostille:'Apostille',hrd:'HRD',state:'State Auth',notary:'Notary',coc:'Chamber of Commerce',police_clearance:'Police Clearance',birth:'Birth Cert',marriage:'Marriage Cert',degree:'Degree Cert',custom:'Custom'};
+
+const ATTEST_DEFAULTS=[
+  {name:'MEA Attestation',service_type:'mea',turnaround_time:'3-5 working days',required_docs:'Original document\nPassport copy\nApplication form',description:'Ministry of External Affairs attestation for use abroad'},
+  {name:'Embassy Attestation',service_type:'embassy',turnaround_time:'5-10 working days',required_docs:'MEA attested document\nPassport copy\nEmbassy fee',description:'Embassy attestation after MEA for country-specific use'},
+  {name:'MOFA Attestation',service_type:'mofa',turnaround_time:'3-7 working days',required_docs:'Embassy attested document\nPassport copy',description:'Ministry of Foreign Affairs attestation (destination country)'},
+  {name:'Apostille',service_type:'apostille',turnaround_time:'3-5 working days',required_docs:'Original document\nPassport copy',description:'Apostille stamp for Hague Convention member countries'},
+  {name:'HRD Attestation',service_type:'hrd',turnaround_time:'5-7 working days',required_docs:'Original degree / mark sheet\nUniversity verification letter',description:'Human Resource Development attestation for education documents'},
+  {name:'State Authentication',service_type:'state',turnaround_time:'2-4 working days',required_docs:'Original document\nIdentity proof',description:'State government / home department authentication'},
+  {name:'Notary Attestation',service_type:'notary',turnaround_time:'1 working day',required_docs:'Original document\nIdentity proof',description:'Notary public attestation — first step in the attestation chain'},
+  {name:'Chamber of Commerce',service_type:'coc',turnaround_time:'1-2 working days',required_docs:'Original commercial document\nCompany registration certificate',description:'Chamber of Commerce attestation for commercial documents'},
+  {name:'Police Clearance Certificate',service_type:'police_clearance',turnaround_time:'7-14 working days',required_docs:'Application form\nPassport copy\nAddress proof\nFee payment receipt',description:'PCC issued by local police for visa / employment abroad'},
+  {name:'Birth Certificate Attestation',service_type:'birth',turnaround_time:'3-5 working days',required_docs:'Original birth certificate\nParent ID proof',description:'Attestation of birth certificate for use abroad'},
+  {name:'Marriage Certificate Attestation',service_type:'marriage',turnaround_time:'3-5 working days',required_docs:'Original marriage certificate\nID proof of both spouses',description:'Attestation of marriage certificate for visa / residency'},
+  {name:'Degree Certificate Attestation',service_type:'degree',turnaround_time:'7-15 working days',required_docs:'Original degree\nMark sheets\nUniversity letter\nID proof',description:'Full attestation chain: HRD + MEA + Embassy attestation'},
+];
+
+function renderTaAttestation(){
+  const active=_attestServices.filter(s=>s.status==='active');
+  const inactive=_attestServices.filter(s=>s.status!=='active');
+  const isEmpty=_attestServices.length===0;
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+    <div style="font-family:var(--disp);font-size:16px;font-weight:700">📋 Attestation Services</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${isEmpty?`<button class="btn btn-secondary btn-sm" onclick="seedAttestDefaults()">🌱 Seed Default Services</button>`:''}
+      <button class="btn btn-primary btn-sm" onclick="openAttestModal()">+ Add Service</button>
+    </div>
+  </div>
+  <div class="ta-card" style="padding:0;overflow:hidden">
+    ${_attestServices.length?`
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:var(--bg);border-bottom:1px solid var(--line)">
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Service</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Type</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Fee</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Turnaround</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">PDF</th>
+        <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Status</th>
+      </tr></thead>
+      <tbody>
+      ${_attestServices.map(s=>`
+        <tr style="border-bottom:1px solid var(--line);cursor:pointer" onclick="openAttestModal('${s.id}')">
+          <td style="padding:10px 14px;font-weight:600">${esc(s.name)}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(ATTEST_TYPE_LABELS[s.service_type]||s.service_type||'—')}</td>
+          <td style="padding:10px 14px;font-family:var(--mono)">${s.fee?esc(s.currency||'INR')+' '+fmtMoney(s.fee):'—'}</td>
+          <td style="padding:10px 14px;color:var(--muted)">${esc(s.turnaround_time||'—')}</td>
+          <td style="padding:10px 14px">${s.pdf_url?`<a href="${escAttr(s.pdf_url)}" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);font-size:12px">📄 View</a>`:'—'}</td>
+          <td style="padding:10px 14px"><span class="stage-pill ${s.status==='active'?'stage-done':'stage-blocked'}">${esc(s.status||'active')}</span></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`:'<div style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No attestation services yet — click <strong>Seed Default Services</strong> to pre-fill common types, or <strong>+ Add Service</strong> to create one.</div>'}
+  </div>
+  <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
+    💡 When a customer asks about a specific service via the bot, its PDF checklist is automatically sent if a <strong>PDF URL</strong> is set.
+  </div>`;
+}
+
+let _editAttestId=null;
+function openAttestModal(id){
+  _editAttestId=id||null;
+  const s=id?(_attestServices.find(x=>String(x.id)===String(id))||{}):{};
+  $id('attestModalTitle').textContent=id?'Edit Service':'New Attestation Service';
+  $id('attestName').value=s.name||'';
+  $id('attestType').value=s.service_type||'mea';
+  $id('attestStatus').value=s.status||'active';
+  $id('attestFee').value=s.fee||'';
+  $id('attestCurrency').value=s.currency||'INR';
+  $id('attestTAT').value=s.turnaround_time||'';
+  $id('attestDocs').value=s.required_docs||'';
+  $id('attestDesc').value=s.description||'';
+  $id('attestPdf').value=s.pdf_url||'';
+  const delBtn=$id('deleteAttestBtn'); if(delBtn) delBtn.style.display=id?'':'none';
+  openModal('modalAttest');
+}
+
+async function saveAttestService(){
+  const btn=$id('saveAttestBtn'),msg=$id('saveAttestMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const body={
+    client_id:clientId,
+    name:$id('attestName').value.trim(),
+    service_type:$id('attestType').value,
+    status:$id('attestStatus').value,
+    fee:parseFloat($id('attestFee').value)||null,
+    currency:$id('attestCurrency').value,
+    turnaround_time:$id('attestTAT').value.trim(),
+    required_docs:$id('attestDocs').value.trim(),
+    description:$id('attestDesc').value.trim(),
+    pdf_url:$id('attestPdf').value.trim(),
+  };
+  if(!body.name){msg.textContent='Service name required';msg.className='save-msg err';btn.disabled=false;return;}
+  try{
+    if(_editAttestId){
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,Id:_editAttestId})}).then(r=>r.json());
+    } else {
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+    }
+    msg.textContent='✓ Saved';
+    setTimeout(async()=>{closeModal('modalAttest');_taLoaded=false;await taLoad();renderAgencySubPage('attestation');},600);
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;}
+}
+
+async function deleteAttestService(){
+  if(!_editAttestId||!confirm('Delete this service?'))return;
+  await fetch(`${WORKER_BASE}/attest/services`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,Id:_editAttestId})});
+  closeModal('modalAttest');_taLoaded=false;await taLoad();renderAgencySubPage('attestation');
+}
+
+async function seedAttestDefaults(){
+  if(!confirm('This will add 12 standard attestation services to your catalog. Continue?'))return;
+  const btn=event.target;btn.disabled=true;btn.textContent='Seeding…';
+  try{
+    for(const s of ATTEST_DEFAULTS){
+      await fetch(`${WORKER_BASE}/attest/services`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:clientId,...s})});
+    }
+    _taLoaded=false;await taLoad();renderAgencySubPage('attestation');
+  }catch(e){alert('Seed failed: '+e.message);}
+  finally{btn.disabled=false;}
+}
 
 /* openModal/closeModal/closeAllModals + the #overlay element (see body) — duplicated from
    dashboard.html because every TA modal (below) uses that bottom-sheet .modal/#overlay
