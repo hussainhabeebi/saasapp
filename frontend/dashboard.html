@@ -1885,6 +1885,10 @@ const ROLES = {
         <div id="teamPerfStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
         <div class="card"><div id="teamPerfContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
 
+        <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📞 Call Tracking</div><div class="s-note">Per-agent call activity — logged from the 📞 Call button on the Leads page (outcome/duration/notes), no separate log to keep in sync.</div></div>
+        <div id="callTrackStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
+        <div class="card"><div id="callTrackContent"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
+
         <div style="margin:24px 0 14px"><div class="card-title" style="margin-bottom:0">📈 Funnel Analytics</div><div class="s-note">Whole-business view of how the funnel itself is performing — stage-by-stage, not per-agent.</div></div>
         <div id="teamFunnelStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
         <div class="card" style="margin-bottom:14px">
@@ -5767,6 +5771,15 @@ function leadNeedsCallback(l){
   return false;
 }
 function callHrefFor(l){ return `tel:+${(l.Phone||'').replace(/[^0-9]/g,'')}`; }
+// "1st call done"/"2nd call done" — derived straight from CallLog's length, no extra column.
+// saveCall() unshifts (newest first), so the array's own length is already the count-so-far.
+function leadCallDoneBadge(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  if(!calls.length) return '';
+  const n=calls.length;
+  const ORDINALS={1:'1st',2:'2nd',3:'3rd',4:'4th',5:'5th'};
+  return `<span class="tag" style="background:#DCFCE7;color:#166534;font-weight:600" title="${n} call(s) logged">📞 ${ORDINALS[n]||n+'th'} call done</span>`;
+}
 
 // "Needs Action Today" priority — never negative-ranks a closed-out lead (won/lost/opted-out
 // never "need action" again), then ranks an overdue reminder highest, a hot buying signal next,
@@ -6113,17 +6126,18 @@ function renderLeadsList(){
     const reconnect=isReactivationCandidate(l);
     const needsCallback=leadNeedsCallback(l);
     const attemptBadge=leadAttemptBadge(l);
+    const callDoneBadge=leadCallDoneBadge(l);
     return `<div class="lead-item" onclick="openDetail(${l.Id})">
       <input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)" style="margin-right:2px;align-self:flex-start;margin-top:14px">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${(tags.length||attemptBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
+        ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-          ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation()">📞 Call</a>`:''}
+          ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation();openCallLog(${l.Id})">📞 Call</a>`:''}
           <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰ Snooze</button>
           <button class="btn btn-secondary btn-sm" onclick="openFollowupForLead(${l.Id})">📅 Follow-up</button>
           <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣 Send</button>
@@ -6203,11 +6217,12 @@ function renderLeadsTable(){
     const reconnect=isReactivationCandidate(l);
     const needsCallback=leadNeedsCallback(l);
     const attemptBadge=leadAttemptBadge(l);
+    const callDoneBadge=leadCallDoneBadge(l);
     return `<tr onclick="openDetail(${l.Id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
-      <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}</td>
+      <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
       <td>${scoreBadge(l.Score)}</td>
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
@@ -6223,7 +6238,7 @@ function renderLeadsTable(){
       <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
         <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
         <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-        ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation()">📞</a>`:''}
+        ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation();openCallLog(${l.Id})">📞</a>`:''}
         <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id})">⏰</button>
         <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣</button>
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
@@ -7400,7 +7415,7 @@ function openDetail(id){
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   const callLink=`tel:+${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   $id('detailActions').innerHTML=`
-    <a class="action-btn" href="${callLink}"><span class="ab-icon">📞</span>Call</a>
+    <a class="action-btn" href="${callLink}" onclick="openCallLog()"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
     <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
     <button class="action-btn" onclick="openPushOrderModal()"><span class="ab-icon">🛒</span>Push to Order</button>
@@ -7757,17 +7772,27 @@ async function toggleReferralReward(leadId, currentlyRewarded){
 
 function renderDetailCalls(lead){
   let calls=[]; try{calls=JSON.parse(lead.CallLog||'[]');}catch(e){}
-  $id('detailCalls').innerHTML=calls.length
-    ?calls.map(c=>`<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}</div></div></div>`).join('')
-    :'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No calls logged.</div>';
+  const badge=leadCallDoneBadge(lead);
+  $id('detailCalls').innerHTML=(badge?`<div style="margin-bottom:8px">${badge}</div>`:'')+(calls.length
+    ?calls.map(c=>{
+        const by=c.by?(getTeamMembers().find(m=>m.email===c.by)?.name||c.by):'';
+        return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}</div></div></div>`;
+      }).join('')
+    :'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No calls logged.</div>');
 }
 
-function openCallLog(){ openModal('modalCall'); }
+// leadId is optional — passed by the Call buttons on the Leads list/table/detail-panel so the
+// modal opens against that row even if it isn't the currently-open detail lead yet; omitted, it
+// falls back to whatever currentLead already is (the pre-existing "+ Log Call" button's case).
+function openCallLog(leadId){
+  if(leadId){ const l=allLeads.find(x=>x.Id===leadId); if(l) currentLead=l; }
+  openModal('modalCall');
+}
 
 async function saveCall(){
   if(!currentLead)return;
   let calls=[]; try{calls=JSON.parse(currentLead.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString()});
+  calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
   renderDetailCalls(currentLead);
   await patchDetailField('CallLog',currentLead.CallLog);
@@ -13538,9 +13563,74 @@ function renderTeamFunnelAnalytics(){
   `;
 }
 
+/* ── CALL TRACKING REPORT ──
+   Per-agent call activity — reads CallLog (already on every lead; saveCall() now stamps each
+   entry with `by:myEmail`) client-side from allLeads, same computed-not-stored pattern as Team
+   Performance/Revenue Forecast below. No new backend route, no new storage. */
+function renderCallTrackingReport(){
+  const el=$id('callTrackContent'); const statsEl=$id('callTrackStats');
+  if(!el) return;
+  const members=getTeamMembers();
+
+  // Parse each lead's CallLog once, oldest-first (saveCall() unshifts newest-first) so a call's
+  // position in the list is its real ordinal — 1st call, 2nd call, etc.
+  const leadCalls=allLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
+  const allCalls=[];
+  leadCalls.forEach(calls=>{ calls.slice().reverse().forEach((c,i)=>allCalls.push({...c, ordinal:i+1})); });
+
+  const totalCalls=allCalls.length;
+  const answered=allCalls.filter(c=>c.outcome==='Answered').length;
+  const firstCallLeads=leadCalls.filter(c=>c.length>=1).length;
+  const secondCallLeads=leadCalls.filter(c=>c.length>=2).length;
+
+  if(statsEl) statsEl.innerHTML=`
+    <div class="stat"><div class="stat-lbl">Total Calls Logged</div><div class="stat-val">${totalCalls}</div></div>
+    <div class="stat accent"><div class="stat-lbl">Answered</div><div class="stat-val">${answered}</div></div>
+    <div class="stat"><div class="stat-lbl">Leads — 1st Call Done</div><div class="stat-val">${firstCallLeads}</div></div>
+    <div class="stat"><div class="stat-lbl">Leads — 2nd+ Call Done</div><div class="stat-val">${secondCallLeads}</div></div>
+  `;
+
+  if(!members.length){
+    el.innerHTML='<div style="color:var(--muted);font-size:13px">No team members yet — add one in Settings → User Management.</div>';
+    return;
+  }
+
+  const rows=members.map(m=>{
+    const mine=allCalls.filter(c=>c.by===m.email);
+    const outcomeCounts={Answered:0,'No Answer':0,Voicemail:0,'Callback Requested':0};
+    mine.forEach(c=>{ if(outcomeCounts[c.outcome]!==undefined) outcomeCounts[c.outcome]++; });
+    const durations=mine.map(c=>Number(c.duration)||0).filter(n=>n>0);
+    const avgDuration=durations.length?Math.round(durations.reduce((s,n)=>s+n,0)/durations.length):0;
+    const first=mine.filter(c=>c.ordinal===1).length;
+    const second=mine.filter(c=>c.ordinal===2).length;
+    return {member:m, total:mine.length, outcomeCounts, avgDuration, first, second};
+  }).sort((a,b)=>b.total-a.total);
+
+  el.innerHTML=`
+    <div style="overflow-x:auto">
+    <table class="leads-tbl" style="width:100%;min-width:820px">
+      <thead><tr>
+        <th>Agent</th><th>Total Calls</th><th>✅ Answered</th><th>📵 No Answer</th><th>📬 Voicemail</th><th>🔁 Callback</th>
+        <th>Avg Duration</th><th>1st Calls</th><th>2nd Calls</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>`<tr>
+          <td><b>${esc(r.member.name)}</b>${r.member.email!==r.member.name?`<div style="font-size:11px;color:var(--muted)">${esc(r.member.email)}</div>`:''}</td>
+          <td>${r.total}</td><td>${r.outcomeCounts.Answered}</td><td>${r.outcomeCounts['No Answer']}</td><td>${r.outcomeCounts.Voicemail}</td><td>${r.outcomeCounts['Callback Requested']}</td>
+          <td>${r.avgDuration?r.avgDuration+' min':'—'}</td>
+          <td>${r.first}</td><td>${r.second}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>
+    ${totalCalls?'':'<div class="s-note" style="margin-top:10px">No calls logged yet — use the 📞 Call button on the Leads page, or Leads → a lead → + Log Call.</div>'}
+  `;
+}
+
 function renderTeamPerformance(){
   const el=$id('teamPerfContent'); const statsEl=$id('teamPerfStats');
   if(!el) return;
+  try{ renderCallTrackingReport(); }catch(e){}
   try{ renderTeamFunnelAnalytics(); }catch(e){}
   try{ renderRevenueForecast(); }catch(e){}
   const members=getTeamMembers();
