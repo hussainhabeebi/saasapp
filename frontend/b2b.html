@@ -149,6 +149,7 @@ tbody tr:hover{background:var(--bg)}
     <button class="tab" data-tab="segments" onclick="showTab('segments')">🎯 Smart Lists</button>
     <button class="tab" data-tab="documents" onclick="showTab('documents')">🧾 Documents (CPQ)</button>
     <button class="tab" data-tab="classify" onclick="showTab('classify')">🏷️ Brand Classification</button>
+    <button class="tab" data-tab="stock" onclick="showTab('stock')">📦 Current Stock</button>
     <button class="tab" data-tab="analytics" onclick="showTab('analytics')">📊 Analytics</button>
   </div>
 
@@ -219,6 +220,49 @@ tbody tr:hover{background:var(--bg)}
             <thead><tr><th>Name</th><th>Phone</th><th>Stage</th><th>Brand</th><th>Country</th></tr></thead>
             <tbody id="classifyTbody"><tr class="loading-row"><td colspan="5"><span class="spinner"></span>Loading…</td></tr></tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CURRENT STOCK -->
+    <div id="tabStock" class="page">
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">📦 Current Stock</div>
+          <div class="card-actions">
+            <span class="save-msg" id="stockSaveMsg"></span>
+            <button class="save-btn" onclick="document.getElementById('stockFileInput').click()">⬆ Upload Excel / CSV</button>
+          </div>
+        </div>
+        <div class="s-hint" style="margin-bottom:16px">Upload your current stock file (.xlsx or .csv). The bot will use this data to answer stock availability questions accurately. Any column headers in your file become searchable fields.</div>
+        <input type="file" id="stockFileInput" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleStockFile(this)">
+
+        <!-- Upload preview (shown after file is selected) -->
+        <div id="stockUploadPreview" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px">
+            <div style="font-family:var(--disp);font-weight:700;font-size:13px" id="stockPreviewMeta"></div>
+            <div style="display:flex;gap:8px">
+              <button class="save-btn sec" onclick="cancelStockUpload()">✕ Cancel</button>
+              <button class="save-btn" onclick="saveStock()" id="stockSaveBtn">💾 Save to Bot</button>
+            </div>
+          </div>
+          <div class="tbl-wrap" style="max-height:300px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm)">
+            <table id="stockPreviewTable"><thead></thead><tbody></tbody></table>
+          </div>
+        </div>
+
+        <!-- Saved stock display -->
+        <div id="stockCurrentWrap">
+          <div id="stockEmpty" class="empty-state" style="display:none"><div class="empty-icon">📦</div>No stock uploaded yet — click <strong>Upload Excel / CSV</strong> to add your first stock file.</div>
+          <div id="stockTableWrap" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+              <div style="font-family:var(--disp);font-size:13px;font-weight:600" id="stockCurrentMeta"></div>
+              <input class="search-input" id="stockSearch" type="text" placeholder="🔍 Search stock…" oninput="renderStockTable()" style="width:180px">
+            </div>
+            <div class="tbl-wrap" style="max-height:450px;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-sm)">
+              <table id="stockCurrentTable"><thead></thead><tbody></tbody></table>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -418,6 +462,7 @@ async function init(){
     // Worker isn't deployed with a DB binding. Caught separately so it can't take down Smart
     // Lists, Analytics, or Brand Classification, none of which depend on it.
     try{ await loadDocuments(); }catch(e){ documentsLoadError=e.message; allDocuments=[]; }
+    try{ await loadStock(); }catch(e){}
     renderOverview();
     renderSegments();
     renderDocumentsTable();
@@ -771,8 +816,103 @@ function renderAnalytics(){
   ).join('')||'<tr><td colspan="4" class="empty-state">No data yet.</td></tr>';
 }
 
+/* ── CURRENT STOCK ── */
+let _stockRows=[];     // currently stored rows (loaded from server)
+let _pendingRows=[];   // parsed rows from the file picker, not yet saved
+let _stockCols=[];     // column headers
+
+async function loadStock(){
+  try{
+    const data=await b2bFetch('/b2b/stock',{method:'GET'});
+    _stockRows=Array.isArray(data.rows)?data.rows:[];
+    _stockCols=_stockRows.length?Object.keys(_stockRows[0]):[];
+    renderStockTable();
+  }catch(e){ /* non-fatal — stock tab still shows upload UI */ }
+}
+
+function renderStockTable(){
+  const q=(document.getElementById('stockSearch')?.value||'').toLowerCase();
+  const empty=document.getElementById('stockEmpty');
+  const wrap=document.getElementById('stockTableWrap');
+  const meta=document.getElementById('stockCurrentMeta');
+  if(!_stockRows.length){ empty.style.display=''; wrap.style.display='none'; return; }
+  empty.style.display='none'; wrap.style.display='';
+  meta.textContent=`${_stockRows.length} rows · ${_stockCols.length} columns`;
+  const rows=q?_stockRows.filter(r=>_stockCols.some(c=>String(r[c]||'').toLowerCase().includes(q))):_stockRows;
+  const tbl=document.getElementById('stockCurrentTable');
+  tbl.querySelector('thead').innerHTML='<tr>'+_stockCols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
+  tbl.querySelector('tbody').innerHTML=rows.slice(0,500).map(r=>'<tr>'+_stockCols.map(c=>`<td>${esc(r[c]??'')}</td>`).join('')+'</tr>').join('')
+    ||(q?'<tr><td colspan="'+_stockCols.length+'" class="empty-state">No matches.</td></tr>':'');
+}
+
+function handleStockFile(input){
+  const file=input.files[0]; if(!file) return;
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(ext==='csv'){
+    const reader=new FileReader();
+    reader.onload=e=>showStockPreview(parseCSV(e.target.result), file.name);
+    reader.readAsText(file);
+  } else if(ext==='xlsx'||ext==='xls'){
+    if(typeof XLSX==='undefined'){ alert('Excel parser still loading — please try again in a moment.'); return; }
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+      showStockPreview(rows, file.name);
+    };
+    reader.readAsArrayBuffer(file);
+  } else { alert('Please upload a .xlsx, .xls, or .csv file.'); }
+  input.value='';
+}
+
+function parseCSV(text){
+  const lines=text.split(/\r?\n/).filter(l=>l.trim());
+  if(!lines.length) return [];
+  const headers=lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
+  return lines.slice(1).map(line=>{
+    const vals=line.match(/(".*?"|[^,]+|(?<=,)(?=,)|(?<=,)$)/g)||[];
+    const obj={};
+    headers.forEach((h,i)=>{ obj[h]=(vals[i]||'').trim().replace(/^"|"$/g,''); });
+    return obj;
+  });
+}
+
+function showStockPreview(rows, filename){
+  _pendingRows=rows;
+  const cols=rows.length?Object.keys(rows[0]):[];
+  const preview=document.getElementById('stockUploadPreview');
+  const meta=document.getElementById('stockPreviewMeta');
+  meta.textContent=`${filename} — ${rows.length} rows, ${cols.length} columns`;
+  const tbl=document.getElementById('stockPreviewTable');
+  tbl.querySelector('thead').innerHTML='<tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
+  tbl.querySelector('tbody').innerHTML=rows.slice(0,10).map(r=>'<tr>'+cols.map(c=>`<td>${esc(r[c]??'')}</td>`).join('')+'</tr>').join('');
+  preview.style.display='';
+}
+
+function cancelStockUpload(){
+  _pendingRows=[];
+  document.getElementById('stockUploadPreview').style.display='none';
+}
+
+async function saveStock(){
+  if(!_pendingRows.length) return;
+  const btn=document.getElementById('stockSaveBtn');
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    await b2bFetch('/b2b/stock',{method:'POST',body:JSON.stringify({rows:_pendingRows})});
+    _stockRows=_pendingRows; _pendingRows=[];
+    _stockCols=_stockRows.length?Object.keys(_stockRows[0]):[];
+    document.getElementById('stockUploadPreview').style.display='none';
+    renderStockTable();
+    showMsg('stockSaveMsg','✓ Stock saved — bot will use this data',3500);
+  }catch(e){ alert('Failed to save: '+e.message); }
+  finally{ btn.disabled=false; btn.textContent='💾 Save to Bot'; }
+}
+
 init();
 </script>
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>
