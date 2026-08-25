@@ -174,7 +174,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .travel-hero::after{content:'✈️';position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:52px;opacity:.12}
 .travel-hero-title{font-family:var(--disp);font-size:20px;font-weight:700;margin-bottom:4px}
 .travel-hero-sub{font-size:12.5px;opacity:.8}
-.travel-stat-row{display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+.travel-stat-row{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:14px}
 .travel-stat{background:rgba(255,255,255,.18);backdrop-filter:blur(4px);border-radius:12px;padding:12px;text-align:center}
 .travel-stat-val{font-size:24px;font-weight:700}
 .travel-stat-lbl{font-size:10px;opacity:.75;margin-top:2px}
@@ -324,7 +324,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="pkgModalTitle">New Package</div><button class="icon-btn" onclick="closeModal('modalPkg')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package Name *</label><input class="form-input" id="pkgName" placeholder="e.g. Dubai 5 Nights City Tour"></div>
         <div class="form-group"><label class="form-label">Type</label><select class="form-input" id="pkgType"><option value="tour">Tour</option><option value="umrah">Umrah</option><option value="hajj">Hajj</option><option value="hotel">Hotel Only</option><option value="visa">Visa Package</option><option value="custom">Custom</option></select></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="pkgDest" placeholder="Dubai, UAE"></div>
@@ -351,7 +351,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="itinModalTitle">New Itinerary</div><button class="icon-btn" onclick="closeModal('modalItin')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Title *</label><input class="form-input" id="itinTitle" placeholder="e.g. Dubai City Tour 5D4N"></div>
         <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="itinDest" placeholder="Dubai, UAE"></div>
         <div class="form-group"><label class="form-label">From Date</label><input class="form-input" type="date" id="itinFrom"></div>
@@ -377,7 +377,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="caseModalTitle">New Service Case</div><button class="icon-btn" onclick="closeModal('modalCase')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="caseClientName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="caseClientPhone" placeholder="971501234567" type="tel"></div>
         <div class="form-group"><label class="form-label">Service Type</label><select class="form-input" id="caseType" onchange="updateCaseStages()"><option value="visa">🛂 Visa</option><option value="attestation">📜 Attestation</option><option value="ticketing">✈️ Ticketing</option><option value="insurance">🛡️ Insurance</option><option value="recruitment">👷 Recruitment</option><option value="forex">💱 Forex</option><option value="passport">📘 Passport</option><option value="emigration">🚢 Emigration</option></select></div>
@@ -401,7 +401,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="visaModalTitle">New Visa</div><button class="icon-btn" onclick="closeModal('modalVisa')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Visa Country *</label><input class="form-input" id="visaCountry" placeholder="e.g. Thailand"></div>
         <div class="form-group"><label class="form-label">Visa Type</label><select class="form-input" id="visaType"><option value="single_entry">Single Entry</option><option value="multiple_entry">Multiple Entry</option><option value="transit">Transit</option></select></div>
         <div class="form-group"><label class="form-label">Duration</label><select class="form-input" id="visaDuration"><option value="10_days">10 Days</option><option value="14_days">14 Days</option><option value="30_days">30 Days</option><option value="60_days">60 Days</option><option value="90_days">90 Days</option><option value="1_year">1 Year</option></select></div>
@@ -427,7 +427,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="groupFareModalTitle">New Group Fare</div><button class="icon-btn" onclick="closeModal('modalGroupFare')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector (From → To) *</label><input class="form-input" id="gfSector" placeholder="e.g. DXB → COK"></div>
         <div class="form-group"><label class="form-label">Airline</label><input class="form-input" id="gfAirline" placeholder="e.g. Air India Express"></div>
         <div class="form-group"><label class="form-label">Flight Number</label><input class="form-input" id="gfFlightNumber" placeholder="e.g. IX 384"></div>
@@ -457,7 +457,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="specialFareModalTitle">New Special Fare</div><button class="icon-btn" onclick="closeModal('modalSpecialFare')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Sector *</label><input class="form-input" id="sfSector" placeholder="e.g. DXB → COK"></div>
         <div class="form-group"><label class="form-label">From</label><input class="form-input" id="sfFrom" placeholder="e.g. Dubai"></div>
         <div class="form-group"><label class="form-label">To</label><input class="form-input" id="sfTo" placeholder="e.g. Kochi"></div>
@@ -513,7 +513,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="umrahModalTitle">New Umrah Group</div><button class="icon-btn" onclick="closeModal('modalUmrah')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Group Name *</label><input class="form-input" id="umrahName" placeholder="e.g. Ramadan 2026 Group"></div>
         <div class="form-group"><label class="form-label">Departure Date</label><input class="form-input" type="date" id="umrahDep"></div>
         <div class="form-group"><label class="form-label">Return Date</label><input class="form-input" type="date" id="umrahRet"></div>
@@ -540,7 +540,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title">Add Pilgrim</div><button class="icon-btn" onclick="closeModal('modalPilgrim')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="pilgrimName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="pilgrimPhone" type="tel" placeholder="971501234567"></div>
         <div class="form-group"><label class="form-label">Passport No.</label><input class="form-input" id="pilgrimPassport" placeholder="K1234567"></div>
@@ -567,7 +567,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <span class="modal-drag"></span>
     <div class="modal-hd"><div class="modal-title" id="bookingModalTitle">New Quote / Booking</div><button class="icon-btn" onclick="closeModal('modalBooking')">✕</button></div>
     <div class="modal-body">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         <div class="form-group"><label class="form-label">Client Name *</label><input class="form-input" id="bookingClientName" placeholder="Full name"></div>
         <div class="form-group"><label class="form-label">Phone</label><input class="form-input" id="bookingClientPhone" type="tel" placeholder="971501234567"></div>
         <div class="form-group" style="grid-column:1/-1"><label class="form-label">Package / Tour Name</label><input class="form-input" id="bookingPackage" placeholder="Dubai 5N Tour"></div>
@@ -593,7 +593,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="modal-close" onclick="closeModal('modalCar')">✕</button>
   </div>
   <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
       <div class="form-group" style="grid-column:1/-1">
         <label class="form-label">Display Name *</label>
         <input class="form-input" id="carName" placeholder="e.g. Toyota Camry 2023">
@@ -673,7 +673,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
     <button class="modal-close" onclick="closeModal('modalCarBooking')">✕</button>
   </div>
   <div class="modal-body" style="overflow-y:auto;flex:1;padding:20px 22px">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
       <div class="form-group">
         <label class="form-label">Customer Name *</label>
         <input class="form-input" id="carBkCustomer" placeholder="Full name">
@@ -743,7 +743,7 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
   <span class="modal-drag"></span>
   <div class="modal-hd"><div class="modal-title" id="attestModalTitle">New Attestation Service</div><button class="icon-btn" onclick="closeModal('modalAttest')">✕</button></div>
   <div class="modal-body">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Service Name *</label><input class="form-input" id="attestName" placeholder="e.g. MEA Attestation"></div>
       <div class="form-group"><label class="form-label">Type</label>
         <select class="form-input" id="attestType">
@@ -1343,13 +1343,13 @@ function renderTaDashboard() {
   const upcomingDeps = [..._taBookings].filter(b => b.departure_date && b.departure_date >= TODAY && b.status !== 'cancelled').sort((a,b) => a.departure_date.localeCompare(b.departure_date)).slice(0,5);
   const revK = totalRevenue >= 1000 ? (totalRevenue/1000).toFixed(1)+'k' : totalRevenue.toFixed(0);
   return `
-  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Packages</div><div class="stat-val">${totalPkg}</div><div class="stat-sub">in catalogue</div></div>
     <div class="stat"><div class="stat-lbl">Active Bookings</div><div class="stat-val">${activeBookings}</div><div class="stat-sub">in progress</div></div>
     <div class="stat"><div class="stat-lbl">Open Cases</div><div class="stat-val">${pendingCases}</div><div class="stat-sub">visa/attest/ticket</div></div>
     <div class="stat"><div class="stat-lbl">Revenue</div><div class="stat-val">${revK}</div><div class="stat-sub">total booked</div></div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">🎫 Recent Bookings</div>
       ${recentBookings.length ? recentBookings.map(b => `
@@ -1378,7 +1378,7 @@ function renderTaDashboard() {
       }).join('') : '<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0">No upcoming departures</div>'}
     </div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">🗂️ Open Service Cases</div>
       ${_taCases.filter(c=>c.status!=='closed').slice(0,5).map(c=>`
@@ -1424,7 +1424,7 @@ function renderTaLeadsByCategory(){
   return `
   <div class="ta-card" style="margin-bottom:14px">
     <div class="ta-card-title">🗂️ Leads by Category</div>
-    <div style="display:grid;gap:12px;grid-template-columns:repeat(${LEAD_CATEGORIES.length},1fr);margin-bottom:14px">
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:14px">
       ${LEAD_CATEGORIES.map(c=>`
         <div class="stat" style="cursor:pointer" onclick="taOpenLeadCategory('${esc(c)}')" title="View ${esc(c)} leads">
           <div class="stat-lbl">${serviceCategoryIcon(c)} ${esc(c)}</div>
@@ -1877,7 +1877,7 @@ function renderItinSendQuote(){
     <div class="ta-card-title">📤 Send Quotation to Leads</div>
     <div style="font-size:12.5px;color:var(--muted);margin-bottom:16px">Pick a package or itinerary, choose how it should read on the PDF, then select any number of leads to send it to.</div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:14px">
       <div class="form-group">
         <label class="form-label">Source</label>
         <select class="form-input" id="sqSource" onchange="sqOnSourceChange()">
@@ -1894,7 +1894,7 @@ function renderItinSendQuote(){
       </div>
     </div>
 
-    <div id="sqPricingGrid" style="display:${_sqFormat==='itinerary_full'?'none':'grid'};grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px">
+    <div id="sqPricingGrid" style="display:${_sqFormat==='itinerary_full'?'none':'grid'};grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px;margin-bottom:16px">
       <div class="form-group"><label class="form-label">Currency</label>
         <select class="form-input" id="sqCurrency">${['AED','USD','EUR','GBP','SAR','QAR','KWD','INR','OMR','BHD'].map(c=>`<option value="${c}"${(selected?.currency||'AED')===c?' selected':''}>${c}</option>`).join('')}</select>
       </div>
@@ -2747,7 +2747,7 @@ function renderTaVisas(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🛂 Visa Catalogue</div>
     <button class="btn btn-primary btn-sm" onclick="openVisaModal()">+ New Visa</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(2,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Visas</div><div class="stat-val">${_taVisas.length}</div></div>
     <div class="stat"><div class="stat-lbl">Active</div><div class="stat-val">${active}</div></div>
   </div>
@@ -2815,7 +2815,7 @@ function renderTaGroupFares(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">👥 Group Fares</div>
     <button class="btn btn-primary btn-sm" onclick="openGroupFareModal()">+ New Group Fare</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:14px">
     ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -2889,7 +2889,7 @@ function renderTaSpecialFares(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎟️ Special Fares</div>
     <button class="btn btn-primary btn-sm" onclick="openSpecialFareModal()">+ New Special Fare</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-bottom:14px">
     ${[['available','Available','#DCFCE7','#166534'],['limited','Limited','#FEF3C7','#92400E'],['closed','Closed','#FEE2E2','#991B1B']].map(([st,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -2976,7 +2976,7 @@ function renderTaUmrah(){
           <button onclick="event.stopPropagation();deleteUmrahGroup('${g.Id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">✕</button>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.makkah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Makkah Hotel</div></div>
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:13px;font-weight:700;margin-bottom:2px">${esc(g.madinah_hotel||'—')}</div><div style="font-size:10px;color:var(--muted)">Madinah Hotel</div></div>
         <div style="text-align:center;background:var(--bg);border-radius:8px;padding:10px"><div style="font-family:var(--disp);font-size:18px;font-weight:700">${g.makkah_nights||0}</div><div style="font-size:10px;color:var(--muted)">Makkah Nights</div></div>
@@ -3067,7 +3067,7 @@ function renderTaBookings(){
     <div style="font-family:var(--disp);font-size:16px;font-weight:700">🎫 Bookings & Quotes</div>
     <button class="btn btn-primary btn-sm" onclick="openBookingModal()">+ New Quote</button>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     ${[['quoted','Quoted','#FEF3C7','#92400E'],['confirmed','Confirmed','#DCFCE7','#166534'],['completed','Completed','var(--accent-soft)','var(--accent-ink)'],['cancelled','Cancelled','#FEE2E2','#991B1B']].map(([s,l,bg,col])=>`
       <div style="background:${bg};border-radius:var(--r-sm);padding:12px 14px">
         <div style="font-size:10px;font-weight:700;color:${col};text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${l}</div>
@@ -3155,7 +3155,7 @@ function renderTaCars(){
       <button class="btn btn-primary btn-sm" onclick="openCarModal()">+ Add Car</button>
     </div>
   </div>
-  <div style="display:grid;gap:10px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Cars</div><div class="stat-val">${_taCars.length}</div></div>
     <div class="stat"><div class="stat-lbl">Available</div><div class="stat-val">${available}</div></div>
     <div class="stat"><div class="stat-lbl">Out Today</div><div class="stat-val">${bookedToday}</div></div>
@@ -3393,13 +3393,13 @@ function renderTaFinance(){
   const pendingPay=_taBookings.filter(b=>b.status!=='cancelled'&&b.status!=='completed'&&parseFloat(b.sell_price)>parseFloat(b.deposit||0));
   return `
   <div style="font-family:var(--disp);font-size:16px;font-weight:700;margin-bottom:14px">💰 Finance</div>
-  <div style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+  <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-bottom:14px">
     <div class="stat accent"><div class="stat-lbl">Total Revenue</div><div class="stat-val">${(totalRev/1000).toFixed(1)}k</div><div class="stat-sub">bookings + cases</div></div>
     <div class="stat"><div class="stat-lbl">Total Cost</div><div class="stat-val">${(totalCost/1000).toFixed(1)}k</div><div class="stat-sub">cost of services</div></div>
     <div class="stat"><div class="stat-lbl">Gross Margin</div><div class="stat-val">${(totalMargin/1000).toFixed(1)}k</div><div class="stat-sub">${marginPct}% margin</div></div>
     <div class="stat"><div class="stat-lbl">Transactions</div><div class="stat-val">${allTxns.length}</div><div class="stat-sub">total records</div></div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">📊 Revenue by Category</div>
       ${Object.entries(byType).map(([t,v])=>`
@@ -3577,7 +3577,7 @@ function renderTravelAnalyticsSection(){
     <div class="ta-card-title">🧳 Trip Types</div>
     <div class="trip-types">${tripTypesHtml}</div>
   </div>
-  <div style="display:grid;gap:14px;grid-template-columns:1fr 1fr">
+  <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
     <div class="ta-card">
       <div class="ta-card-title">📅 Upcoming Trip Inquiries <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">${upcomingCount}</span></div>
       ${upcomingHtml}
@@ -3672,7 +3672,7 @@ function renderTaAttestation(){
   </div>
   <div class="ta-card" style="padding:0;overflow:hidden">
     ${_attestServices.length?`
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="background:var(--bg);border-bottom:1px solid var(--line)">
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Service</th>
         <th style="padding:10px 14px;text-align:left;font-weight:600;color:var(--muted)">Type</th>
@@ -3694,7 +3694,7 @@ function renderTaAttestation(){
           <td style="padding:10px 14px"><span class="stage-pill ${s.status==='active'?'stage-done':'stage-blocked'}">${esc(s.status||'active')}</span></td>
         </tr>`).join('')}
       </tbody>
-    </table>`:'<div style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No attestation services yet — click <strong>Seed Default Services</strong> to pre-fill common types, or <strong>+ Add Service</strong> to create one.</div>'}
+    </table></div>`:'<div style="text-align:center;padding:50px;color:var(--muted);font-size:13px">No attestation services yet — click <strong>Seed Default Services</strong> to pre-fill common types, or <strong>+ Add Service</strong> to create one.</div>'}
   </div>
   <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:0 2px">
     💡 When a customer asks about a specific service via the bot, its PDF checklist is automatically sent if a <strong>PDF URL</strong> is set.
