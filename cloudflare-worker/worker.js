@@ -11406,9 +11406,14 @@ BUTTONS — mandatory after EVERY reply:
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineMemoryBlock(state);
-  // Hospitality: inject the selected unit so the LLM has booking/availability context
+  // Hospitality: inject selected property/unit so LLM has booking/availability context
   const hospSelectedUnit=state.lead?.HospSelectedUnit;
-  if(hospSelectedUnit) sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
+  const hospSelectedProperty=state.lead?.HospSelectedProperty;
+  if(hospSelectedUnit){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
+  } else if(hospSelectedProperty){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer is interested in the *${hospSelectedProperty}* property. Answer questions about that property's rooms, pricing and availability from VERIFIED RESORT DATA above. If they ask about a specific room, list the rooms available under that property.`;
+  }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
@@ -14608,7 +14613,7 @@ async function handleEngineWebhook(request, env, secret){
     // time this lead's message mentions a unit by name, send its photos/video straight into the
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
-    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit});
     // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
     // the hospitality call just above: the first time this lead's message names a project or
     // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
@@ -19745,10 +19750,29 @@ async function hospitalityChatwootText(c, convId, text){
 function hospUnitNameMatch(lower, unitName){
   const name=(unitName||'').trim().toLowerCase();
   if(name.length<4) return false;
+  // Full match: user text contains the complete unit name
   if(lower.includes(name)) return true;
-  // Truncated button tap: strip trailing "..." from customer text, check if unit name starts with it
+  // Partial match: unit name starts with what user typed ("Standard ac" → "Standard AC Room (2 Pax)")
+  if(lower.length>=4 && name.startsWith(lower)) return true;
+  // Truncated button tap: strip trailing "..." from customer text
   if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
   return false;
+}
+
+// Returns 1-based index if the text is a numeric/ordinal selection ("1", "option 2", "2nd", etc.), else null.
+function resortOrdinalFromText(lower){
+  const s=lower.trim();
+  let m;
+  // "1", "2.", "option 1", "option 2", "#1", "no 1", "no. 2"
+  if((m=s.match(/^(?:option|no\.?|#)?\s*([1-9]\d*)\.?$/))){
+    return parseInt(m[1], 10);
+  }
+  // "option one" / "option two" etc.
+  const words={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+  if((m=s.match(/^option\s+([a-z]+)$/)) && words[m[1]]){
+    return words[m[1]];
+  }
+  return null;
 }
 
 // Returns true when a resort client's lead should receive media+description instead of an LLM reply
@@ -19766,6 +19790,8 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
+  // Numeric/ordinal selection ("1", "option 2") — suppress LLM if there are selectable items
+  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length)) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -19880,7 +19906,9 @@ async function handleHospitalityPropertyDelete(request, env){
 // tappable quick-reply buttons. The lead sees the resort overview first; tapping a unit name
 // triggers the specificUnit branch in engineMaybeSendHospitalityMedia which sends that unit's own
 // photos — avoids dumping every room's photo catalog at once on a general enquiry.
-async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
+// showRoomPicker=true (default) for explicit property selection; false for general-enquiry catalog
+// loop where a single property-picker button is sent after all properties instead.
+async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits, showRoomPicker=true){
   // Send property description + amenities as text before the media burst so the lead reads context first.
   const descParts=[];
   if(property.description && String(property.description).trim()) descParts.push(String(property.description).trim());
@@ -19907,16 +19935,19 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(r.ok){ sentAny=true; captionSent=true; }
   }
-  // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
-  // specific unit's photos — instead of sending every room's media upfront at once.
-  // Fall back to all active units if none are linked to this property via property_id.
-  const linkedRooms=(allUnits||[]).filter(u=>u.property_id===property.id);
-  const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
-  if(rooms.length){
-    const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
-    await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which option would you like to know more about? 👇', unitButtons);
+  // After property photos, list this property's rooms as quick-reply buttons so the lead taps to see
+  // a specific room's photos. Uses Number() comparison so property_id matches whether D1 returned it
+  // as int or string. Skipped during general-enquiry catalog loop (showRoomPicker=false) where a
+  // single property-picker is sent after all properties instead.
+  if(showRoomPicker){
+    const linkedRooms=(allUnits||[]).filter(u=>Number(u.property_id)===Number(property.id));
+    const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
+    if(rooms.length){
+      const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
+      await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+    }
   }
-  if(sentAny || rooms.length){
+  if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_property_media_sent (client_id, lead_id, property_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, property.id, new Date().toISOString()).run();
   }
@@ -19935,7 +19966,9 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 //    happens to contain a word like "available".
 // "Once per session" in both modes means once per (lead, unit) ever, not re-sent on every later
 // message that happens to mention the same unit (or ask about availability) again.
-async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText){
+// hospContext = { selectedProperty, selectedUnit } from the lead's stored NocoDB values — passed in
+// by handleEngineWebhook so we don't need an extra NocoDB read here.
+async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -19958,26 +19991,82 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       }
       // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
+
+      // 2b. Numeric/ordinal selection ("1", "option 2") — map to property or room by position.
+      // If the lead already has a property selected (HospSelectedProperty), "1" = Nth room of that
+      // property; otherwise "1" = Nth property (or Nth unit if no properties configured).
+      const ordinalIdx=resortOrdinalFromText(lower);
+      if(ordinalIdx!==null){
+        const selectedPropName=hospContext.selectedProperty;
+        if(selectedPropName && properties && properties.length){
+          const selectedProp=properties.find(p=>p.name===selectedPropName);
+          if(selectedProp){
+            const linkedRooms=units.filter(u=>Number(u.property_id)===Number(selectedProp.id));
+            const roomList=linkedRooms.length?linkedRooms:units;
+            const target=roomList[ordinalIdx-1];
+            if(target){
+              await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
+              try{
+                await ensureLeadsColumns(env, ['HospSelectedUnit']);
+                await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
+              }catch(e){}
+              return;
+            }
+          }
+        }
+        if(properties && properties.length){
+          const target=properties[ordinalIdx-1];
+          if(target){
+            await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, target, units, true);
+            try{
+              await ensureLeadsColumns(env, ['HospSelectedProperty']);
+              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:target.name}});
+            }catch(e){}
+            return;
+          }
+        } else {
+          const target=units[ordinalIdx-1];
+          if(target){
+            await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
+            try{
+              await ensureLeadsColumns(env, ['HospSelectedUnit']);
+              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
+            }catch(e){}
+            return;
+          }
+        }
+      }
+
       if(properties && properties.length){
         const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
-          await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          // Explicit property selection: show property media + room-picker buttons, then save context
+          await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units, true);
+          try{
+            await ensureLeadsColumns(env, ['HospSelectedProperty']);
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:specificProp.name}});
+          }catch(e){}
           return;
         }
-        // 3. General enquiry → send all properties (overview) then offer a property-picker button
+        // 3. General enquiry → send all properties overview (no room-picker per property), then ONE
+        // property-picker button so the lead can dive into a specific property cleanly.
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
         const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
         if(alreadyAny) return;
-        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
-        if(properties.length>=2 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, false);
+        if(properties.length>=1 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
           await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 🏨', properties.map(p=>({title:p.name, value:p.name})));
         }
       } else {
-        // No properties configured — fall back to sending all rooms directly
+        // No properties configured — fall back to sending all rooms directly, then a room-picker
+        // button so the lead can tap a room name to revisit or ask follow-up questions.
         if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
         const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
         if(alreadyAny) return;
         for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
+        if(units.length>=2 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room interests you? 🛏️', units.map(u=>({title:u.name, value:u.name})));
+        }
       }
       return;
     }
