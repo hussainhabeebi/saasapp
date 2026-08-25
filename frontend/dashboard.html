@@ -307,7 +307,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 #pageChats{overflow:hidden;display:none;flex-direction:column}
 #pageChats:not(.hidden){display:flex}
-#pageEcommerce,#pageEducation{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
@@ -959,6 +959,8 @@ const INDUSTRIES = {
     theme:{accent:'#EA580C',accentInk:'#C2410C',accentSoft:'#FFEDD5',bg:'#FFF7ED',line:'#FED7AA'} },
   saas_digital_marketing: { label:'SaaS / Digital Marketing', booked:'Deals Closed', active:'Active Prospects', tags:['Trial Started','Demo Booked','Pricing Sent','Decision Maker','Budget Confirmed','Competitor','Not Interested'],
     theme:{accent:'#4F46E5',accentInk:'#4338CA',accentSoft:'#E0E7FF',bg:'#F5F5FF',line:'#C7D2FE'} },
+  business_services: { label:'Business Services (CSC/Akshaya)', booked:'Services Delivered', active:'Active Requests', tags:['New Request','Processing','Document Pending','Completed','Not Interested'],
+    theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1057,6 +1059,7 @@ const MODULE_PERMISSIONS = [
   {key:'accounting', label:'💰 Accounting'},
   {key:'billing', label:'💳 Billing'},
   {key:'ecommerce', label:'🛒 Ecommerce'},
+  {key:'businessservices', label:'🏢 Business Services'},
   {key:'saasops', label:'🚀 SaaS Ops'},
   {key:'b2b', label:'🤝 B2B'},
   {key:'agency', label:'🏢 Agency / Travel'},
@@ -1156,6 +1159,7 @@ const ROLES = {
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
+    <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
     <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
@@ -1713,6 +1717,13 @@ const ROLES = {
          token) — its /edu/* Worker routes are client_id-based, same trust model as /ecom/*. -->
     <div class="page hidden" id="pageEducation">
       <iframe id="educationFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- BUSINESS SERVICES MODULE (iframe-embed, same pattern as Ecommerce/Education — business-services.html
+         is its own self-contained page, industry-gated for business_services. Passed only the client_id
+         — its /bs/* Worker routes are client_id-based, same trust model as /ecom/*.) -->
+    <div class="page hidden" id="pageBusinessservices">
+      <iframe id="businessServicesFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- TRAVEL AGENCY MODULE (iframe-embed pattern, same as Real Estate/B2B above — travel-agency.html
@@ -3351,6 +3362,7 @@ const ROLES = {
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
+      <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
       <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
            hides these icon buttons there) — same functions, just reachable from here instead. -->
@@ -4711,6 +4723,7 @@ function navigate(page){
   if(page==='realestate') renderRealEstate();
   if(page==='healthcare') renderHealthcare();
   if(page==='education') renderEducation();
+  if(page==='businessservices') renderBusinessServices();
   if(page==='settings') populateSettings();
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
@@ -5321,6 +5334,12 @@ function renderEcommerce(){
 function renderEducation(){
   const frame=$id('educationFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`education.html?client=${clientId}&embed=1`;
+}
+
+// Same pattern as renderEducation — business-services.html is client_id-only, no session needed.
+function renderBusinessServices(){
+  const frame=$id('businessServicesFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`business-services.html?client=${clientId}&embed=1`;
 }
 
 // SaaS Ops needs the session token — its /saas/* routes are requireSession-gated (billing config,
