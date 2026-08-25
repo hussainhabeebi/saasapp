@@ -5819,7 +5819,7 @@ function applyLeadsViewFilter(leads){
   const cf=$id('leadCategoryFilter')?.value||'';
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
   const pf=$id('leadProductFilter')?.value||'';
-  if(pf) out=out.filter(l=>(l.InterestedProduct||'')===pf);
+  if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
@@ -6012,6 +6012,43 @@ async function bulkSetSource(){
   showToast(`✓ Set source for ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
   clearBulkSelection();
 }
+// Returns the chat-detected brand/product for a lead (ProductCategory preferred, then Brand).
+function leadChatProduct(l){ return l.ProductCategory||l.Brand||''; }
+
+// Renders the BRAND/PRODUCT chip(s) for the card or table view.
+// - Manual (InterestedProduct): purple tag — confirmed interest.
+// - Chat-only (ProductCategory/Brand, no manual): blue "💬 from chat" tag + "→ Set" suggestion button.
+// - Both set and matching: just the purple tag (no noise).
+// - Both set but different: purple tag + small chat suggestion to update.
+function leadBrandChip(l){
+  const manual=l.InterestedProduct||'';
+  const chat=leadChatProduct(l);
+  if(manual){
+    const suggest=chat&&chat!==manual?`<button onclick="event.stopPropagation();confirmProductFromChat(${l.Id},'${escAttr(chat)}')" style="font-size:10px;padding:1px 5px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:3px;cursor:pointer;margin-left:2px" title="Bot detected: ${escAttr(chat)} — click to update">💬 ${esc(chat)}</button>`:'';
+    return `<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(manual)}</span>${suggest}`;
+  }
+  if(chat) return `<span class="tag" style="background:#DBEAFE;color:#1D4ED8" title="Detected from chat">💬 ${esc(chat)}</span><button onclick="event.stopPropagation();confirmProductFromChat(${l.Id},'${escAttr(chat)}')" style="font-size:10px;padding:1px 5px;border:1px solid #BFDBFE;background:#EFF6FF;color:#1D4ED8;border-radius:3px;cursor:pointer;margin-left:2px" title="Set as Brand/Product">→ Set</button>`;
+  return '';
+}
+
+// Table cell variant — same logic, falls back to '—' rather than empty string.
+function leadBrandCell(l){
+  const chip=leadBrandChip(l);
+  return chip||'—';
+}
+
+// One-click: promote chat-detected value to InterestedProduct and re-render.
+async function confirmProductFromChat(leadId, val){
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead||!val) return;
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,InterestedProduct:val});
+    lead.InterestedProduct=val;
+    renderLeadsCurrentView();
+    if(currentLead&&currentLead.Id===leadId){ currentLead.InterestedProduct=val; }
+    showToast('✓ Brand/Product set to: '+val,'ok');
+  }catch(e){ showToast('Failed: '+e.message,'err'); }
+}
+
 async function bulkSetBrand(){
   const input=$id('bulkBrandInput'); const val=(input?.value||'').trim(); if(!val) return;
   for(const id of _bulkSelectedLeadIds){
@@ -6054,7 +6091,7 @@ function renderLeadsList(){
   const ownerSet=[...new Set(allLeads.map(l=>l.Owner).filter(Boolean))];
   const of=$id('leadOwnerFilter')?.value||'';
   $id('leadOwnerFilter').innerHTML='<option value="">All owners</option>'+ownerSet.map(o=>`<option value="${o}"${of===o?' selected':''}>${o}</option>`).join('');
-  const productSet=[...new Set(allLeads.map(l=>l.InterestedProduct).filter(Boolean))].sort();
+  const productSet=[...new Set(allLeads.flatMap(l=>[l.InterestedProduct,l.ProductCategory,l.Brand].filter(Boolean)))].sort();
   const pf=$id('leadProductFilter')?.value||'';
   $id('leadProductFilter').innerHTML='<option value="">All products/brands</option>'+productSet.map(p=>`<option value="${esc(p)}"${pf===p?' selected':''}>${esc(p)}</option>`).join('');
 
@@ -6082,7 +6119,7 @@ function renderLeadsList(){
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
-        ${(tags.length||attemptBadge||l.InterestedProduct)?`<div class="tags-row" style="margin-top:4px">${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:''}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
+        ${(tags.length||attemptBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
@@ -6172,7 +6209,7 @@ function renderLeadsTable(){
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}</td>
       <td>${scoreBadge(l.Score)}</td>
-      <td>${l.InterestedProduct?`<span class="tag" style="background:#E0E7FF;color:#3730A3">🏷️ ${esc(l.InterestedProduct)}</span>`:'—'}</td>
+      <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
       <td>${esc(qGet('age'))}</td>
       <td>${esc(qGet('profession'))}</td>
