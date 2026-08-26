@@ -1540,6 +1540,7 @@ const ROLES = {
             </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
             <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
+            <button class="btn btn-secondary btn-sm" id="leadsScopeBtn" onclick="toggleLeadsOwnerScope()" title="Switch between your leads and all leads"></button>
             <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
             <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
             <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
@@ -4738,7 +4739,14 @@ function navigate(page){
   const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
   if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
-  if(page==='leads') setLeadsViewMode(_leadsViewMode);
+  if(page==='leads'){
+    if(!_leadsOwnerScopeInitialized){
+      _leadsOwnerScope=isAccountOwner()?'all':'mine_and_unassigned';
+      _leadsOwnerScopeInitialized=true;
+    }
+    renderLeadsOwnerScopeBtn();
+    setLeadsViewMode(_leadsViewMode);
+  }
   if(page==='team') renderTeamPerformance();
   if(page==='reports') renderReports();
   if(page==='humandeals') renderHumanDeals();
@@ -5612,6 +5620,7 @@ async function markHumanDealSpam(leadId){
 async function markLeadWon(leadId, ev){
   ev?.stopPropagation();
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Marked Won');
   try{
     await applyHumanDealOutcome(leadId, 'Resolved-Won');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -5623,6 +5632,7 @@ async function markLeadWon(leadId, ev){
 async function markLeadSpam(leadId, ev){
   ev?.stopPropagation();
   if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  await claimLeadIfUnowned(leadId,'Marked Spam');
   try{
     await applyHumanDealOutcome(leadId, 'Spam');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -5753,6 +5763,8 @@ function renderHumanDeals(){
 let _leadsFilter={ stages:[], tag:'' };
 let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | a saved view's id
 let _leadsSavedViews=null; // lazy-loaded from clientRecord.lead_saved_views
+let _leadsOwnerScope=null; // 'mine_and_unassigned' | 'all' — set on first navigate to leads
+let _leadsOwnerScopeInitialized=false;
 
 function getLeadSavedViews(){
   if(_leadsSavedViews) return _leadsSavedViews;
@@ -5844,6 +5856,7 @@ function isReactivationCandidate(l){
 
 function applyLeadsViewFilter(leads){
   let out=leads;
+  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||l.Owner===myEmail);
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
 
@@ -6214,6 +6227,23 @@ function setLeadsViewMode(mode){
 function goToPipeline(){ navigate('leads'); setLeadsViewMode('pipeline'); }
 
 let _leadsTableView=false;
+function renderLeadsOwnerScopeBtn(){
+  const btn=$id('leadsScopeBtn');
+  if(!btn) return;
+  if(_leadsOwnerScope==='mine_and_unassigned'){
+    btn.textContent='👤 Mine';
+    btn.title='Showing your leads + unassigned — click to see all';
+  } else {
+    btn.textContent='👥 All';
+    btn.title='Showing all leads — click to show only yours + unassigned';
+  }
+}
+function toggleLeadsOwnerScope(){
+  _leadsOwnerScope=_leadsOwnerScope==='mine_and_unassigned'?'all':'mine_and_unassigned';
+  renderLeadsOwnerScopeBtn();
+  onLeadsFilterChange();
+}
+
 function toggleLeadsView(){
   _leadsTableView=!_leadsTableView;
   const btn=$id('leadsViewBtn');
@@ -6369,6 +6399,7 @@ async function sendLeadsTemplate(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
+    await claimLeadIfUnowned(lead.Id,'Template sent');
     const convId=leadConvId(lead);
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
 
@@ -7713,6 +7744,7 @@ function renderDetailNotes(lead){
 async function addNote(){
   const text=$id('noteInput').value.trim();
   if(!text||!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Note');
   let notes=[]; try{notes=JSON.parse(currentLead.NotesList||'[]');}catch(e){}
   // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
   // format above, ts is the addition. author lets both this panel and the Chats tab show who
@@ -7825,6 +7857,7 @@ function openCallLog(leadId){
 
 async function saveCall(){
   if(!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Call log');
   let calls=[]; try{calls=JSON.parse(currentLead.CallLog||'[]');}catch(e){}
   calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
@@ -7834,8 +7867,30 @@ async function saveCall(){
   $id('callDuration').value=''; $id('callNotes').value='';
 }
 
+// Auto-assign ownership on first touch (Option A — silent, never overrides an existing owner).
+// Patches Owner + appends a system ConvHistory entry so managers can see who picked up the lead
+// and what triggered the assignment.
+async function claimLeadIfUnowned(leadId, activity){
+  if(!myEmail) return;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead||lead.Owner) return;
+  try{
+    let hist=[]; try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity||'action'}`,ts:new Date().toISOString()});
+    const convJson=JSON.stringify(hist.slice(-40));
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Owner:myEmail,ConvHistory:convJson});
+    lead.Owner=myEmail; lead.ConvHistory=convJson;
+    if(currentLead&&currentLead.Id===leadId){
+      currentLead.Owner=myEmail; currentLead.ConvHistory=convJson;
+      $id('detailSub').textContent=(currentLead.Phone||'')+' · '+myEmail+' · '+(currentLead.Stage||'new');
+      $id('detailOwner').innerHTML=teamMemberOptions(myEmail);
+    }
+  }catch(e){}
+}
+
 async function patchDetailField(field,val){
   if(!currentLead)return;
+  if(field==='ReminderDate'&&val) await claimLeadIfUnowned(currentLead.Id,'Reminder set');
   const prevVal=currentLead[field];
   currentLead[field]=val;
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
@@ -11390,6 +11445,7 @@ async function buyAddon(price_id){
 function $id(id){return document.getElementById(id);}
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
 // The bot writes the linked Chatwoot conversation id as "ConversationID" — read that,
@@ -12888,6 +12944,7 @@ async function toggleTaskDone(id){
 async function snoozeReminderLead(leadId){
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Snooze');
   const base=lead.ReminderDate?new Date(lead.ReminderDate):new Date();
   base.setDate(base.getDate()+1);
   const newDate=base.toISOString().slice(0,10);
