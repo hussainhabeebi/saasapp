@@ -101,6 +101,15 @@ index_name = "leadvyne-memory"
 name = "CLIENT_UPDATES"
 class_name = "ClientUpdatesHub"
 
+# Smart Follow-ups — one Durable Object per lead for opted-in clients; self-schedules alarms
+# instead of being swept by the */15 cron, so each step fires at exactly the right time and the
+# ladder correctly resets when the customer replies. Only active for clients who enable
+# "Smart Follow-ups (Beta)" in Campaigns → Follow-up Engine; all others still use the cron sweep.
+# One-time setup: just `wrangler deploy` — the v2 migration below creates the namespace.
+[[durable_objects.bindings]]
+name = "LEAD_AGENT"
+class_name = "LeadFollowupAgent"
+
 [[migrations]]
 tag = "v1"
 # SQLite-backed storage (not the classic `new_classes`) — required to create a Durable Object
@@ -110,6 +119,10 @@ tag = "v1"
 # (webSocketMessage/webSocketClose are no-ops, see worker.js) — the Hibernatable WebSockets API
 # still needs SOME storage backend attached to the namespace, so this is required regardless.
 new_sqlite_classes = ["ClientUpdatesHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["LeadFollowupAgent"]
 
 # Healthcare appointment reliability. API requests publish small ID-only jobs to the primary
 # queue; the consumer retries transient Calendar/WhatsApp failures with exponential delay. After
