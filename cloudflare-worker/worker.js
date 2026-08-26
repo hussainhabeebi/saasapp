@@ -16376,6 +16376,140 @@ async function handleMatriSettingsUpdate(request, env){
   return json({ok:true});
 }
 
+// Extend MATRIMONIAL_SETTINGS_FIELDS with webhook columns so the generic update handler saves them
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'profiles_webhook_token','matches_webhook_token','shortlists_webhook_token','stories_webhook_token',
+  'profiles_col_map','matches_col_map','shortlists_col_map','stories_col_map',
+  'profiles_dedup_key','matches_dedup_key','shortlists_dedup_key','stories_dedup_key'
+);
+
+// Canonical DB columns for each table (used to validate incoming field names from n8n)
+const MATRI_WEBHOOK_COLS={
+  profiles: new Set(MATRIMONIAL_PROFILE_FIELDS),
+  matches:  new Set(MATRIMONIAL_MATCH_FIELDS),
+  shortlists:new Set(MATRIMONIAL_SHORTLIST_FIELDS),
+  stories:  new Set(MATRIMONIAL_STORY_FIELDS),
+};
+const MATRI_WEBHOOK_TABLE={
+  profiles:'matrimonial_profiles', matches:'matrimonial_matches',
+  shortlists:'matrimonial_shortlists', stories:'matrimonial_success_stories',
+};
+const MATRI_TOKEN_COL={
+  profiles:'profiles_webhook_token', matches:'matches_webhook_token',
+  shortlists:'shortlists_webhook_token', stories:'stories_webhook_token',
+};
+const MATRI_MAP_COL={
+  profiles:'profiles_col_map', matches:'matches_col_map',
+  shortlists:'shortlists_col_map', stories:'stories_col_map',
+};
+const MATRI_DEDUP_COL={
+  profiles:'profiles_dedup_key', matches:'matches_dedup_key',
+  shortlists:'shortlists_dedup_key', stories:'stories_dedup_key',
+};
+
+// POST /matrimonial/webhook/:kind — public endpoint called by n8n; authenticated by per-table token.
+// Accepts a JSON array (or a single object) of rows. Each row's keys are mapped through the saved
+// column map (if set) and then validated against the table's canonical field list; unknown keys
+// are silently dropped. If a dedup key is configured and the table has a matching row for this
+// client_id, the row is updated; otherwise it is inserted. Returns a summary of rows processed.
+async function handleMatriWebhook(request, env, kind){
+  const url=new URL(request.url);
+  const token=url.searchParams.get('token')||'';
+  if(!token) return json({error:'token required'}, 401);
+
+  // Look up the client that owns this token
+  const tokenCol=MATRI_TOKEN_COL[kind];
+  if(!tokenCol) return json({error:'Unknown table'}, 404);
+  const settings=await env.DB.prepare(`SELECT * FROM matrimonial_settings WHERE ${tokenCol}=?`).bind(token).first();
+  if(!settings) return json({error:'Invalid token'}, 401);
+  const clientId=String(settings.client_id);
+
+  // Parse body — accept array or single object
+  let rows;
+  try{ const b=await request.json(); rows=Array.isArray(b)?b:[b]; }catch(e){ return json({error:'Invalid JSON body'}, 400); }
+  if(!rows.length) return json({ok:true, rows_received:0, rows_inserted:0, rows_updated:0, rows_skipped:0});
+
+  // Column map: external header → DB column
+  let colMap={};
+  try{ colMap=JSON.parse(settings[MATRI_MAP_COL[kind]]||'{}'); }catch(e){}
+  const dedupKey=settings[MATRI_DEDUP_COL[kind]]||'';
+  const validCols=MATRI_WEBHOOK_COLS[kind];
+  const table=MATRI_WEBHOOK_TABLE[kind];
+  const now=new Date().toISOString();
+
+  let inserted=0,updated=0,skipped=0;
+  for(const raw of rows){
+    // Apply column map then drop unknown keys
+    const row={};
+    for(const [k,v] of Object.entries(raw)){
+      const mapped=colMap[k]||k;
+      if(validCols.has(mapped)) row[mapped]=v;
+    }
+    const cols=Object.keys(row);
+    if(!cols.length){ skipped++; continue; }
+    const vals=cols.map(k=>matriCoerce(k,row[k]));
+
+    try{
+      if(dedupKey && row[dedupKey]!==undefined && String(row[dedupKey]||'').trim()){
+        const existing=await env.DB.prepare(`SELECT id FROM ${table} WHERE client_id=? AND ${dedupKey}=? LIMIT 1`)
+          .bind(clientId, String(row[dedupKey]).trim()).first();
+        if(existing){
+          const sets=cols.map(c=>`${c}=?`); sets.push('updated_at=?'); vals.push(now);
+          await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals, existing.id).run();
+          updated++;
+        }else{
+          await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+            .bind(clientId,...vals,now,now).run();
+          inserted++;
+        }
+      }else{
+        await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+          .bind(clientId,...vals,now,now).run();
+        inserted++;
+      }
+    }catch(e){ skipped++; }
+  }
+
+  // Write sync log
+  await env.DB.prepare(`INSERT INTO matrimonial_webhook_log (client_id,table_name,rows_received,rows_inserted,rows_updated,rows_skipped,status,fired_at) VALUES (?,?,?,?,?,?,'ok',?)`)
+    .bind(clientId, kind, rows.length, inserted, updated, skipped, now).run().catch(()=>{});
+
+  return json({ok:true, rows_received:rows.length, rows_inserted:inserted, rows_updated:updated, rows_skipped:skipped});
+}
+
+// POST /matrimonial/tokens/regenerate — session-gated; re-rolls all four webhook tokens at once.
+// Returns the new tokens so the dashboard can display them immediately.
+async function handleMatriTokensRegenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cid=String(payload.cid);
+  const tokens={
+    profiles_webhook_token: crypto.randomUUID(),
+    matches_webhook_token:  crypto.randomUUID(),
+    shortlists_webhook_token: crypto.randomUUID(),
+    stories_webhook_token:  crypto.randomUUID(),
+  };
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(cid).first();
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_settings SET profiles_webhook_token=?,matches_webhook_token=?,shortlists_webhook_token=?,stories_webhook_token=?,updated_at=? WHERE client_id=?`)
+      .bind(tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,cid).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,profiles_webhook_token,matches_webhook_token,shortlists_webhook_token,stories_webhook_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(cid,tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,now).run();
+  }
+  return json({ok:true, tokens});
+}
+
+// GET /matrimonial/webhook/log — session-gated; last 50 sync events for this client.
+async function handleMatriWebhookLog(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM matrimonial_webhook_log WHERE client_id=? ORDER BY id DESC LIMIT 50`)
+    .bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+
 /* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
    0051_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
    entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
@@ -25236,6 +25370,13 @@ export default {
       else if(url.pathname==='/matrimonial/stories' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_success_stories'); }
       else if(url.pathname==='/matrimonial/settings' && request.method==='GET'){ res=await handleMatriSettingsGet(request,env); }
       else if(url.pathname==='/matrimonial/settings' && request.method==='PATCH'){ res=await handleMatriSettingsUpdate(request,env); }
+      // MATRIMONIAL WEBHOOKS (public, token-authenticated)
+      else if(url.pathname==='/matrimonial/webhook/profiles'   && request.method==='POST'){ res=await handleMatriWebhook(request,env,'profiles'); }
+      else if(url.pathname==='/matrimonial/webhook/matches'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'matches'); }
+      else if(url.pathname==='/matrimonial/webhook/shortlists' && request.method==='POST'){ res=await handleMatriWebhook(request,env,'shortlists'); }
+      else if(url.pathname==='/matrimonial/webhook/stories'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'stories'); }
+      else if(url.pathname==='/matrimonial/tokens/regenerate'  && request.method==='POST'){ res=await handleMatriTokensRegenerate(request,env); }
+      else if(url.pathname==='/matrimonial/webhook/log'        && request.method==='GET') { res=await handleMatriWebhookLog(request,env); }
       else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }
       else if(url.pathname==='/hc/book/doctors' && request.method==='GET'){ res=await handleHcPublicBookDoctors(request,env); }
       else if(url.pathname==='/hc/book/dates' && request.method==='GET'){ res=await handleHcPublicBookDates(request,env); }
