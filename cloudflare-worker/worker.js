@@ -64,8 +64,8 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 const PLAN_TIERS = {
   basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
   standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
-  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled'] },
-  marketing_pro:{ label:'Marketing Pro', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','feat_marketing_studio_enabled'] }
+  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] },
+  marketing_pro:{ label:'Marketing Pro', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','feat_marketing_studio_enabled'] }
 };
 // Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
 // (so dashboard.html can render a modules grid without hardcoding this list twice) and the
@@ -73,7 +73,7 @@ const PLAN_TIERS = {
 const PLAN_GATED_MODULES = {
   ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
   b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
-  feat_marketing_studio_enabled:'Marketing Studio'
+  matrimonial_enabled:'Matrimonial Service', feat_marketing_studio_enabled:'Marketing Studio'
 };
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
@@ -16291,6 +16291,91 @@ async function handleRecruitDelete(request, env, kind){
   return json({ok:true});
 }
 
+/* ── MATRIMONIAL SERVICE MODULE (frontend/matrimonial.html, migrations/0071_matrimonial.sql)
+   Profile management, match tracking, shortlists, success stories.
+   All tables are client_id-scoped; reads/writes go through session auth. ── */
+
+const MATRIMONIAL_PROFILE_FIELDS=['profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id'];
+const MATRIMONIAL_MATCH_FIELDS=['profile_id_1','profile_id_2','match_score','status','interest_sent_by','notes','family_meeting_date','family_meeting_venue','outcome_notes'];
+const MATRIMONIAL_SHORTLIST_FIELDS=['profile_id','shortlisted_profile_id','notes'];
+const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groom_name','wedding_date','testimonial','photo_url','featured'];
+const MATRIMONIAL_SETTINGS_FIELDS=['service_name','membership_plans','horoscope_matching_enabled','auto_suggest_matches','match_criteria_weights','privacy_note','success_story_template'];
+
+function matriCoerce(k,v){
+  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches']);
+  if(intFields.has(k)) return v===null||v===undefined||v===''?null:parseInt(v,10)||0;
+  return v===null||v===undefined?null:String(v).trim().slice(0,2000);
+}
+
+async function handleMatriList(request, env, table, fields, orderBy='id DESC'){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM ${table} WHERE client_id=? ORDER BY ${orderBy}`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriCreate(request, env, table, fields, required){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(required && !String(body[required]||'').trim()) return json({error:`${required} required`}, 400);
+  const now=new Date().toISOString();
+  const cols=fields.filter(k=>body[k]!==undefined);
+  const vals=cols.map(k=>matriCoerce(k,body[k]));
+  const r=await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(Number(payload.cid),...vals,now,now).run();
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handleMatriUpdate(request, env, table, fields){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[],vals=[];
+  for(const k of fields){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?');vals.push(new Date().toISOString());vals.push(id);
+  await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleMatriDelete(request, env, table){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+async function handleMatriSettingsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  return json(row||{});
+}
+async function handleMatriSettingsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(existing){
+    const sets=[],vals=[];
+    for(const k of MATRIMONIAL_SETTINGS_FIELDS){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+    sets.push('updated_at=?');vals.push(now);vals.push(String(payload.cid));
+    if(sets.length>1) await env.DB.prepare(`UPDATE matrimonial_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  }else{
+    const cols=MATRIMONIAL_SETTINGS_FIELDS.filter(k=>body[k]!==undefined);
+    const vals=cols.map(k=>matriCoerce(k,body[k]));
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(String(payload.cid),...vals,now,now).run();
+  }
+  return json({ok:true});
+}
+
 /* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
    0051_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
    entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
@@ -25133,6 +25218,24 @@ export default {
       else if(url.pathname==='/healthcare/settings' && request.method==='PATCH'){ res=await handleHcSettingsUpdate(request, env); }
       else if(url.pathname==='/healthcare/analytics' && request.method==='GET'){ res=await handleHcAnalytics(request, env); }
       else if(url.pathname==='/hc/book' && request.method==='GET'){ res=await handleHcPublicBookPage(request,env); }
+      // MATRIMONIAL MODULE
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS,'full_name'); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_profiles'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS,'profile_id_1'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_matches'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_shortlists',MATRIMONIAL_SHORTLIST_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_shortlists',MATRIMONIAL_SHORTLIST_FIELDS,'profile_id'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_shortlists'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS,'bride_name'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_success_stories'); }
+      else if(url.pathname==='/matrimonial/settings' && request.method==='GET'){ res=await handleMatriSettingsGet(request,env); }
+      else if(url.pathname==='/matrimonial/settings' && request.method==='PATCH'){ res=await handleMatriSettingsUpdate(request,env); }
       else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }
       else if(url.pathname==='/hc/book/doctors' && request.method==='GET'){ res=await handleHcPublicBookDoctors(request,env); }
       else if(url.pathname==='/hc/book/dates' && request.method==='GET'){ res=await handleHcPublicBookDates(request,env); }
