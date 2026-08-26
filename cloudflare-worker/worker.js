@@ -2975,6 +2975,7 @@ async function runClassicFollowupsForAllClients(env){
   }
 }
 async function classicFollowupProcessClient(env, c){
+  if(c.followup_do_enabled==='Yes') return; // handed off to LeadFollowupAgent Durable Objects
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
   // Checked once per client per tick, not per lead — it's the same answer for every lead of this
@@ -14621,6 +14622,18 @@ async function handleEngineWebhook(request, env, secret){
           .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
       }catch(e){}
     }
+    // Smart Follow-ups DO — spawn on new lead creation; notify on customer reply so alarm resets
+    if(resolvedLeadId && c.followup_do_enabled==='Yes' && env.LEAD_AGENT){
+      try{
+        const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
+        const stub=env.LEAD_AGENT.get(doId);
+        if(isNewLead){
+          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1})}).catch(()=>{});
+        } else if(userText){
+          stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+        }
+      }catch(e){}
+    }
     // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
     // message from a lead with an outstanding (unreplied) follow-up send counts as that follow-up
     // having worked, regardless of whether it also happened to change Stage.
@@ -24835,6 +24848,149 @@ async function handleLtCommissions(request,env){
   return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
 }
 
+// ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────
+// Only active for clients who enable followup_do_enabled='Yes' in the Follow-up Engine settings.
+// Each DO self-schedules alarms (setAlarm) timed to the ladder step's hours/days, resets on
+// customer reply, and respects the client's quiet-hours window — replacing the 15-min cron sweep
+// entirely for opted-in clients. The cron skips these clients at its own gate (below).
+export class LeadFollowupAgent{
+  constructor(state, env){ this.state=state; this.env=env; }
+
+  async fetch(request){
+    const url=new URL(request.url);
+    if(url.pathname==='/init')    return this._init(request);
+    if(url.pathname==='/replied') return this._replied();
+    if(url.pathname==='/cancel'){ await this.state.storage.deleteAlarm(); return new Response('ok'); }
+    return new Response('ok');
+  }
+
+  async _init(request){
+    const body=await request.json().catch(()=>({}));
+    const existing=await this.state.storage.get('leadId');
+    if(existing && !body.force) return new Response('ok'); // already running
+    await this.state.storage.put('leadId',  body.leadId);
+    await this.state.storage.put('clientId', body.clientId);
+    await this.state.storage.put('step',     body.step||1);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  async _replied(){
+    await this.state.storage.deleteAlarm();
+    await this.state.storage.put('step', 1);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  async _arm(){
+    const clientId=await this.state.storage.get('clientId');
+    const step=await this.state.storage.get('step');
+    if(!clientId||!step||step>5) return;
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // ladder exhausted or not configured
+    const delayMs=cfg.type==='session'
+      ? (cfg.hours||1)*3600000
+      : (cfg.days||2)*86400000;
+    await this.state.storage.setAlarm(Date.now()+delayMs);
+  }
+
+  async alarm(){
+    const leadId  =await this.state.storage.get('leadId');
+    const clientId=await this.state.storage.get('clientId');
+    let   step    =await this.state.storage.get('step');
+    if(!leadId||!clientId||!step) return;
+
+    // Fetch fresh lead — bail on terminal states
+    const leadR=await ncFetch(this.env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!leadR.ok) return;
+    const lead=await leadR.json().catch(()=>null);
+    if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
+
+    // Fetch client for quiet-hours check
+    const cR=await ncFetch(this.env,`api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(Id,eq,${clientId})`)}&limit=1`);
+    if(!cR.ok) return;
+    const cData=await cR.json().catch(()=>null);
+    const c=cData?.list?.[0];
+    if(!c) return;
+
+    if(!followupWithinQuietHours(c)){
+      await this.state.storage.setAlarm(Date.now()+3600000); // outside window — retry in 1h
+      return;
+    }
+
+    // Fetch step config
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // exhausted
+
+    // Skip unconfigured steps
+    if((cfg.type==='session'&&!cfg.message)||(cfg.type==='template'&&!cfg.template_name)){
+      step++; await this.state.storage.put('step', step); await this._arm(); return;
+    }
+
+    // Skip session steps if 24h WhatsApp window has closed
+    const silentHours=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
+    if(cfg.type==='session'&&silentHours>=24){
+      step++; await this.state.storage.put('step', step); await this._arm(); return;
+    }
+
+    try{
+      await sendFollowupLadderStep(this.env, c, lead, step, cfg);
+      step++; await this.state.storage.put('step', step); await this._arm();
+    }catch(e){
+      console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,e.message);
+      await this.state.storage.setAlarm(Date.now()+1800000); // retry in 30 min
+    }
+  }
+}
+
+// Settings — GET returns current enabled state; PATCH flips it.
+async function handleFollowupSmartGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const c=await findClientById(env, payload.cid);
+  return json({enabled: c?.followup_do_enabled==='Yes'});
+}
+async function handleFollowupSmartPatch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const val=body.enabled===true?'Yes':null;
+  await patchClientFields(env, String(payload.cid), {followup_do_enabled: val});
+  return json({ok:true, enabled: val==='Yes'});
+}
+// One-time migration — spawns a DO for every active lead of this client so they inherit the
+// smart ladder from their current next-unsent step.  Safe to call again; `force:false` means an
+// already-running DO for a lead is not reset.
+async function handleFollowupSmartMigrate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  if(!env.LEAD_AGENT) return json({error:'Smart Follow-ups DO not deployed yet'},501);
+  const clientId=String(payload.cid);
+  const c=await findClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'},404);
+  if(c.followup_do_enabled!=='Yes') return json({error:'Enable Smart Follow-ups first'},400);
+  const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
+  if(!configured?.length) return json({error:'No follow-up steps configured'},400);
+  const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+  if(!leadsR.ok) return json({error:'Failed to fetch leads'},502);
+  const {list:leads=[]}=await leadsR.json().catch(()=>({}));
+  let spawned=0;
+  for(const lead of leads){
+    if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+    const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
+    if(!nextStep) continue;
+    const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
+    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,force:false})}).catch(()=>{});
+    spawned++;
+  }
+  return json({ok:true, spawned});
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -25128,6 +25284,9 @@ export default {
       else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='GET'){ res=await handleFollowupSmartGet(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='PATCH'){ res=await handleFollowupSmartPatch(request, env); }
+      else if(url.pathname==='/followups/smart/migrate' && request.method==='POST'){ res=await handleFollowupSmartMigrate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
