@@ -5612,6 +5612,7 @@ async function markHumanDealSpam(leadId){
 async function markLeadWon(leadId, ev){
   ev?.stopPropagation();
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Marked Won');
   try{
     await applyHumanDealOutcome(leadId, 'Resolved-Won');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -5623,6 +5624,7 @@ async function markLeadWon(leadId, ev){
 async function markLeadSpam(leadId, ev){
   ev?.stopPropagation();
   if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  await claimLeadIfUnowned(leadId,'Marked Spam');
   try{
     await applyHumanDealOutcome(leadId, 'Spam');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -6369,6 +6371,7 @@ async function sendLeadsTemplate(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
+    await claimLeadIfUnowned(lead.Id,'Template sent');
     const convId=leadConvId(lead);
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
 
@@ -7713,6 +7716,7 @@ function renderDetailNotes(lead){
 async function addNote(){
   const text=$id('noteInput').value.trim();
   if(!text||!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Note');
   let notes=[]; try{notes=JSON.parse(currentLead.NotesList||'[]');}catch(e){}
   // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
   // format above, ts is the addition. author lets both this panel and the Chats tab show who
@@ -7825,6 +7829,7 @@ function openCallLog(leadId){
 
 async function saveCall(){
   if(!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Call log');
   let calls=[]; try{calls=JSON.parse(currentLead.CallLog||'[]');}catch(e){}
   calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
@@ -7834,8 +7839,30 @@ async function saveCall(){
   $id('callDuration').value=''; $id('callNotes').value='';
 }
 
+// Auto-assign ownership on first touch (Option A — silent, never overrides an existing owner).
+// Patches Owner + appends a system ConvHistory entry so managers can see who picked up the lead
+// and what triggered the assignment.
+async function claimLeadIfUnowned(leadId, activity){
+  if(!myEmail) return;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead||lead.Owner) return;
+  try{
+    let hist=[]; try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity||'action'}`,ts:new Date().toISOString()});
+    const convJson=JSON.stringify(hist.slice(-40));
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Owner:myEmail,ConvHistory:convJson});
+    lead.Owner=myEmail; lead.ConvHistory=convJson;
+    if(currentLead&&currentLead.Id===leadId){
+      currentLead.Owner=myEmail; currentLead.ConvHistory=convJson;
+      $id('detailSub').textContent=(currentLead.Phone||'')+' · '+myEmail+' · '+(currentLead.Stage||'new');
+      $id('detailOwner').innerHTML=teamMemberOptions(myEmail);
+    }
+  }catch(e){}
+}
+
 async function patchDetailField(field,val){
   if(!currentLead)return;
+  if(field==='ReminderDate'&&val) await claimLeadIfUnowned(currentLead.Id,'Reminder set');
   const prevVal=currentLead[field];
   currentLead[field]=val;
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
@@ -12889,6 +12916,7 @@ async function toggleTaskDone(id){
 async function snoozeReminderLead(leadId){
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Snooze');
   const base=lead.ReminderDate?new Date(lead.ReminderDate):new Date();
   base.setDate(base.getDate()+1);
   const newDate=base.toISOString().slice(0,10);
