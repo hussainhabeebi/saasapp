@@ -961,6 +961,8 @@ const INDUSTRIES = {
     theme:{accent:'#4F46E5',accentInk:'#4338CA',accentSoft:'#E0E7FF',bg:'#F5F5FF',line:'#C7D2FE'} },
   business_services: { label:'Business Services (CSC/Akshaya)', booked:'Services Delivered', active:'Active Requests', tags:['New Request','Processing','Document Pending','Completed','Not Interested'],
     theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
+  matrimonial: { label:'Matrimonial Service', booked:'Matches Made', active:'Active Prospects', tags:['Hot Lead','Profile Sent','Meeting Arranged','Family Consent','Match Confirmed','Not Interested'],
+    theme:{accent:'#BE185D',accentInk:'#9D174D',accentSoft:'#FCE7F3',bg:'#FDF2F8',line:'#FBCFE8'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1031,6 +1033,11 @@ const CROSS_SELL_DEFAULTS = {
     {trigger:'subscribed, deal closed, onboarded', suggestion:'Add-on service', message:'Many of our customers on your plan also add [add-on service, e.g. SEO/ad management] — want a quick overview of how it works?'},
     {trigger:'renewal, renewing, contract ending', suggestion:'Annual plan discount', message:'Since your renewal is coming up, would you like to switch to an annual plan? It comes with a meaningful discount over monthly billing.'},
   ],
+  matrimonial: [
+    {trigger:'profile, shortlisted, interested, biodata', suggestion:'Premium profile upgrade', message:'Would you like to highlight your profile with our Premium badge? It gets 3× more visibility and shows families you\'re serious about finding the right match.'},
+    {trigger:'match, family meet, meeting, horoscope', suggestion:'Compatibility consultation', message:'Congratulations on the match! Would you like to book a compatibility consultation with our expert to guide the next steps?'},
+    {trigger:'engaged, engagement, confirmed, fixed', suggestion:'Wedding planning package', message:'Warmest congratulations on the engagement! We have tie-ups with wedding planners, venues, caterers, and photographers — would you like an introduction?'},
+  ],
 };
 
 // Travel leads are separated into these service-line categories (a *what are they buying*
@@ -1068,6 +1075,7 @@ const MODULE_PERMISSIONS = [
   {key:'hospitality', label:'🏨 Hospitality'},
   {key:'realestate', label:'🏘️ Real Estate'},
   {key:'healthcare', label:'🏥 Healthcare'},
+  {key:'matrimonial', label:'💍 Matrimonial'},
   {key:'broadcast', label:'📢 Campaigns'},
   {key:'settings', label:'⚙️ Settings'},
 ];
@@ -1158,6 +1166,7 @@ const ROLES = {
     <button class="dnTab" data-page="hospitality" id="dnHospitalityTab" style="display:none">🏨 Hospitality</button>
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
+    <button class="dnTab" data-page="matrimonial" id="dnMatrimonialTab" style="display:none">💍 Matrimonial</button>
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
@@ -1710,6 +1719,11 @@ const ROLES = {
          (Departments/Doctors) are session-gated the same way Real Estate's /re/* routes are. -->
     <div class="page hidden" id="pageHealthcare">
       <iframe id="healthcareFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- MATRIMONIAL MODULE (same iframe-embed pattern as Healthcare above) -->
+    <div class="page hidden" id="pageMatrimonial">
+      <iframe id="matrimonialFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- EDUCATION MODULE (same iframe-embed pattern as Ecommerce above — education.html is its own
@@ -3055,6 +3069,14 @@ const ROLES = {
               <span id="healthcareModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>💍 Matrimonial Service</b><div class="s-note" style="margin:2px 0 0">Profile management for brides &amp; grooms, match search &amp; shortlisting, horoscope notes, family meeting tracking, success stories, and membership plans.</div></div>
+              <select class="form-input" id="cfgMatrimonialEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveMatrimonialEnabled">Save</button>
+              <span class="save-msg" id="saveMatrimonialEnabledMsg"></span>
+              <span id="matrimonialModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
             <!-- Marketing Studio (SETUP.md "Marketing Studio module") — a standalone page
                  (marketing-studio.html), not a dashboard tab, so this toggle shows/hides the
                  quick-action buttons that open it (updateMarketingStudioVisibility below) rather
@@ -3369,6 +3391,7 @@ const ROLES = {
       <button class="more-item" data-page="hospitality" id="moreHospitalityTab" style="display:none"><span class="bnIcon">🏨</span><span class="bnLabel">Hospitality</span></button>
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
+      <button class="more-item" data-page="matrimonial" id="moreMatrimonialTab" style="display:none"><span class="bnIcon">💍</span><span class="bnLabel">Matrimonial</span></button>
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
@@ -4730,6 +4753,7 @@ function navigate(page){
   if(page==='hospitality') renderHospitality();
   if(page==='realestate') renderRealEstate();
   if(page==='healthcare') renderHealthcare();
+  if(page==='matrimonial') renderMatrimonial();
   if(page==='education') renderEducation();
   if(page==='businessservices') renderBusinessServices();
   if(page==='settings') populateSettings();
@@ -4798,6 +4822,7 @@ function showApp(){
   updateHospitalityTabVisibility();
   updateRealEstateTabVisibility();
   updateHealthcareTabVisibility();
+  updateMatrimonialTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   updateMarketingStudioVisibility();
@@ -5385,6 +5410,11 @@ function renderRealEstate(){
 function renderHealthcare(){
   const frame=$id('healthcareFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`healthcare.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+function renderMatrimonial(){
+  const frame=$id('matrimonialFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`matrimonial.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 // Home tab widget for the Real Estate module — hits its /re/* Worker routes directly (same
@@ -9059,9 +9089,12 @@ async function applyIndustryChange(ind, extraPatch){
   else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
   if(ind==='healthcare'){patch.healthcare_enabled='Yes';clientRecord.healthcare_enabled='Yes';}
   else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
+  if(ind==='matrimonial'){patch.matrimonial_enabled='Yes';clientRecord.matrimonial_enabled='Yes';}
+  else{patch.matrimonial_enabled='No';clientRecord.matrimonial_enabled='No';}
   await ensureHospitalityEnabledColumn();
   await ensureRealEstateEnabledColumn();
   await ensureHealthcareEnabledColumn();
+  await ensureMatrimonialEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
   if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
@@ -9071,6 +9104,7 @@ async function applyIndustryChange(ind, extraPatch){
   updateHospitalityTabVisibility();
   updateRealEstateTabVisibility();
   updateHealthcareTabVisibility();
+  updateMatrimonialTabVisibility();
   _renderModuleBadge('taModuleStatusBadge',ind==='travel');
   _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
 }
@@ -9180,9 +9214,12 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.real_estate_enabled='No';clientRecord.real_estate_enabled='No';}
     if(ind==='healthcare'){patch.healthcare_enabled='Yes';clientRecord.healthcare_enabled='Yes';}
     else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
+    if(ind==='matrimonial'){patch.matrimonial_enabled='Yes';clientRecord.matrimonial_enabled='Yes';}
+    else{patch.matrimonial_enabled='No';clientRecord.matrimonial_enabled='No';}
     await ensureHospitalityEnabledColumn();
     await ensureRealEstateEnabledColumn();
     await ensureHealthcareEnabledColumn();
+    await ensureMatrimonialEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
@@ -9190,6 +9227,7 @@ $id('saveGeneral').addEventListener('click',async()=>{
     updateHospitalityTabVisibility();
     updateRealEstateTabVisibility();
     updateHealthcareTabVisibility();
+    updateMatrimonialTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -15377,6 +15415,7 @@ function populateModulesPage(){
   initHospitalitySettings();
   initRealEstateSettings();
   initHealthcareSettings();
+  initMatrimonialSettings();
   initMarketingStudioSettings();
   updateFeatureTabVisibility();
 }
@@ -16299,6 +16338,39 @@ $id('saveHealthcareEnabled').addEventListener('click',async()=>{
     await patchClient({healthcare_enabled:val});
     updateHealthcareTabVisibility();
     _renderModuleBadge('healthcareModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+function updateMatrimonialTabVisibility(){
+  const enabled=(clientRecord.matrimonial_enabled==='Yes');
+  [$id('dnMatrimonialTab'),$id('moreMatrimonialTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+async function ensureMatrimonialEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('matrimonial_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'matrimonial_enabled',title:'matrimonial_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+function initMatrimonialSettings(){
+  const sel=$id('cfgMatrimonialEnabled'); if(sel) sel.value=(clientRecord.matrimonial_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('matrimonialModuleStatusBadge',clientRecord.matrimonial_enabled==='Yes');
+  updateMatrimonialTabVisibility();
+}
+
+$id('saveMatrimonialEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveMatrimonialEnabled'),msg=$id('saveMatrimonialEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgMatrimonialEnabled').value;
+  try{
+    await ensureMatrimonialEnabledColumn();
+    await patchClient({matrimonial_enabled:val});
+    updateMatrimonialTabVisibility();
+    _renderModuleBadge('matrimonialModuleStatusBadge',val==='Yes');
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
