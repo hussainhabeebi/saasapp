@@ -145,6 +145,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
+  {test:(p,m)=>p==='/public/chat/message'&&m==='POST', bucket:'public-chat-msg', limit:30, windowSec:60},
+  {test:(p,m)=>p==='/public/chat/config'&&m==='GET', bucket:'public-chat-cfg', limit:60, windowSec:60},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -25032,6 +25034,118 @@ async function handleFollowupSmartMigrate(request, env){
   return json({ok:true, spawned});
 }
 
+// ─── Public Chat Page ─────────────────────────────────────────────────────────
+// Standalone full-page chat at chat.leadvyne.com?t=TOKEN (or any Vercel URL).
+// Each client generates a shareable token from Settings → Chat Page.
+// No auth required for visitors; sessions are keyed by a browser-generated UUID.
+
+async function chatTokenResolveClient(env, token){
+  if(!token) return null;
+  const row=await env.DB.prepare('SELECT client_id FROM chat_tokens WHERE token=?').bind(token).first().catch(()=>null);
+  if(!row) return null;
+  return getClientById(env, String(row.client_id));
+}
+
+// GET /public/chat/config?t=TOKEN → branding + greeting, no secrets returned
+async function handlePublicChatConfig(request, env){
+  const token=(new URL(request.url).searchParams.get('t')||'').trim();
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  return json({
+    client_name: c.client_name||'',
+    greeting:    c.chat_greeting||'Hi! How can I help you today? 👋',
+    brand_color: c.brand_color||'#0D9C93',
+  });
+}
+
+// POST /public/chat/message → {token, session_id, message} → {reply}
+async function handlePublicChatMessage(request, env){
+  const {t: tokenFromQs}=Object.fromEntries(new URL(request.url).searchParams);
+  const body=await request.json().catch(()=>({}));
+  const token=(body.token||tokenFromQs||'').trim();
+  const session_id=(body.session_id||'').trim();
+  const message=String(body.message||'').trim();
+  if(!token||!session_id||!message) return json({error:'token, session_id and message required'},400);
+  if(message.length>2000) return json({error:'Message too long'},400);
+
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'user', message, now).run().catch(()=>{});
+
+  // Recent history for multi-turn context (newest-first → reverse to chronological)
+  const hist=await env.DB.prepare(
+    'SELECT role,content FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at DESC LIMIT 12'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  const turns=(hist.results||[]).reverse();
+
+  // Build a lightweight system prompt from the client's existing knowledge base
+  let sys=`You are a helpful assistant for "${c.client_name||'this business'}". Answer questions naturally and concisely. Keep replies short — 1–3 sentences.`;
+  if(c.main_prompt) sys+='\n\n'+c.main_prompt;
+  if(c.kb_summary&&c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+
+  // Inject prior turns into userText so engineCallLlm (single-turn API) sees the context
+  let userText=message;
+  if(turns.length>1){
+    const ctx=turns.slice(0,-1).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+    userText=`[Conversation so far]\n${ctx}\n\n[New message from customer]\n${message}`;
+  }
+
+  const reply=await engineCallLlm(env, c, sys, userText, 350);
+  const botText=reply||"I'm sorry, I couldn't process that. Please try again.";
+
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'bot', botText, new Date().toISOString()).run().catch(()=>{});
+
+  return json({reply: botText});
+}
+
+// GET /public/chat/history?t=TOKEN&s=SESSION_ID → message history for page reload
+async function handlePublicChatHistory(request, env){
+  const params=new URL(request.url).searchParams;
+  const token=(params.get('t')||'').trim();
+  const session_id=(params.get('s')||'').trim();
+  if(!token||!session_id) return json({messages:[]});
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  const rows=await env.DB.prepare(
+    'SELECT role,content,created_at FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at ASC LIMIT 60'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  return json({messages: rows.results||[]});
+}
+
+// GET /chat-tokens → list tokens for the authenticated client
+async function handleChatTokensList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const rows=await env.DB.prepare('SELECT token,label,created_at FROM chat_tokens WHERE client_id=? ORDER BY created_at DESC')
+    .bind(Number(payload.cid)).all().catch(()=>({results:[]}));
+  return json({tokens: rows.results||[]});
+}
+
+// POST /chat-tokens → {label} → create token
+async function handleChatTokensCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {label}=await request.json().catch(()=>({}));
+  const token=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join('');
+  await env.DB.prepare('INSERT INTO chat_tokens(token,client_id,label,created_at) VALUES(?,?,?,?)')
+    .bind(token, Number(payload.cid), label||'', new Date().toISOString()).run();
+  return json({token, label: label||''});
+}
+
+// DELETE /chat-tokens → {token} → revoke token
+async function handleChatTokensDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {token}=await request.json().catch(()=>({}));
+  if(!token) return json({error:'token required'},400);
+  await env.DB.prepare('DELETE FROM chat_tokens WHERE token=? AND client_id=?').bind(token, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -25299,6 +25413,12 @@ export default {
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
       else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
+      else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
+      else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
+      else if(url.pathname==='/public/chat/history' && request.method==='GET'){  res=await handlePublicChatHistory(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='GET'){   res=await handleChatTokensList(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='POST'){  res=await handleChatTokensCreate(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='DELETE'){ res=await handleChatTokensDelete(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }

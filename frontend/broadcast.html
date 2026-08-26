@@ -608,6 +608,16 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <span id="smartFuMigrateMsg" style="font-size:12.5px;margin-left:10px"></span>
       </div>
     </div>
+    <div class="card" id="chatPageCard">
+      <div class="card-title">🔗 Chat Page</div>
+      <div class="msg info">Generate a shareable link your customers open in their browser — a full-page chat powered by your AI engine and FAQ. Give it to leads via WhatsApp, email signature, or a QR code. Each link is tied to your account and can be revoked at any time.</div>
+      <div id="chatTokensList" style="margin-top:12px"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <input type="text" id="chatTokenLabel" placeholder="Label (e.g. Website Button)" style="flex:1;min-width:120px;max-width:220px">
+        <button class="btn btn-primary" onclick="createChatToken()">+ New Link</button>
+        <span id="chatTokenMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+    </div>
   </div><!-- /view-fuengine -->
 
   <!-- ══════════════════════════════════════
@@ -1721,6 +1731,7 @@ async function loadFollowupEngine(){
   renderFollowupLadderTemplateStep(4,'fuLadderStep4');
   renderFollowupLadderTemplateStep(5,'fuLadderStep5');
   fetchFollowupEngineStats();
+  loadChatTokens();
 }
 async function loadSmartFollowupState(){
   try{
@@ -1756,6 +1767,56 @@ async function migrateSmartFollowups(){
     else msg.textContent=d.error||'Error.';
   }catch(e){ msg.textContent='Network error.'; }
 }
+// ── Chat Page token management ───────────────────────────────────────────────
+const CHAT_PAGE_BASE='https://app.leadvyne.com/chat.html';
+
+async function loadChatTokens(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    renderChatTokens(d.tokens||[]);
+  }catch(e){ $id('chatTokensList').innerHTML='<span style="color:red;font-size:12.5px">Failed to load links.</span>'; }
+}
+
+function renderChatTokens(tokens){
+  const el=$id('chatTokensList');
+  if(!tokens.length){ el.innerHTML='<span style="font-size:12.5px;color:var(--muted)">No links yet — create your first one below.</span>'; return; }
+  el.innerHTML=tokens.map(t=>{
+    const url=`${CHAT_PAGE_BASE}?t=${encodeURIComponent(t.token)}`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:500;flex:1;min-width:80px">${esc(t.label||'Unnamed')}</span>
+      <a href="${url}" target="_blank" style="font-size:12px;color:var(--accent);word-break:break-all;flex:2;min-width:140px">${url.slice(0,60)}…</a>
+      <button class="btn btn-sec" style="font-size:12px;padding:4px 10px" onclick="copyChatLink('${esc(url)}')">Copy</button>
+      <button class="btn" style="font-size:12px;padding:4px 10px;color:#c0392b;border-color:#c0392b;background:transparent" onclick="deleteChatToken('${esc(t.token)}')">Revoke</button>
+    </div>`;
+  }).join('');
+}
+
+async function createChatToken(){
+  const label=$id('chatTokenLabel').value.trim();
+  const msg=$id('chatTokenMsg');
+  msg.textContent='Creating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({label})});
+    const d=await r.json();
+    if(d.token){ $id('chatTokenLabel').value=''; msg.textContent='Link created!'; loadChatTokens(); }
+    else msg.textContent=d.error||'Error.';
+  }catch(e){ msg.textContent='Network error.'; }
+  setTimeout(()=>{ $id('chatTokenMsg').textContent=''; },3000);
+}
+
+async function deleteChatToken(token){
+  if(!confirm('Revoke this chat link? Anyone using it will lose access.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'DELETE',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({token})});
+    loadChatTokens();
+  }catch(e){ alert('Network error.'); }
+}
+
+function copyChatLink(url){
+  navigator.clipboard.writeText(url).then(()=>alert('Link copied!')).catch(()=>prompt('Copy this link:',url));
+}
+
 async function saveFollowupEngine(){
   const msg=$id('fuEngineSaveMsg');
   msg.textContent='Saving…';
