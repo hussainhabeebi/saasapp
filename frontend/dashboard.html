@@ -1540,6 +1540,7 @@ const ROLES = {
             </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
             <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
+            <button class="btn btn-secondary btn-sm" id="leadsScopeBtn" onclick="toggleLeadsOwnerScope()" title="Switch between your leads and all leads"></button>
             <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
             <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
             <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
@@ -4738,7 +4739,14 @@ function navigate(page){
   const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
   if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
-  if(page==='leads') setLeadsViewMode(_leadsViewMode);
+  if(page==='leads'){
+    if(!_leadsOwnerScopeInitialized){
+      _leadsOwnerScope=isAccountOwner()?'all':'mine_and_unassigned';
+      _leadsOwnerScopeInitialized=true;
+    }
+    renderLeadsOwnerScopeBtn();
+    setLeadsViewMode(_leadsViewMode);
+  }
   if(page==='team') renderTeamPerformance();
   if(page==='reports') renderReports();
   if(page==='humandeals') renderHumanDeals();
@@ -5755,6 +5763,8 @@ function renderHumanDeals(){
 let _leadsFilter={ stages:[], tag:'' };
 let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | a saved view's id
 let _leadsSavedViews=null; // lazy-loaded from clientRecord.lead_saved_views
+let _leadsOwnerScope=null; // 'mine_and_unassigned' | 'all' — set on first navigate to leads
+let _leadsOwnerScopeInitialized=false;
 
 function getLeadSavedViews(){
   if(_leadsSavedViews) return _leadsSavedViews;
@@ -5846,6 +5856,7 @@ function isReactivationCandidate(l){
 
 function applyLeadsViewFilter(leads){
   let out=leads;
+  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||l.Owner===myEmail);
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
 
@@ -6216,6 +6227,23 @@ function setLeadsViewMode(mode){
 function goToPipeline(){ navigate('leads'); setLeadsViewMode('pipeline'); }
 
 let _leadsTableView=false;
+function renderLeadsOwnerScopeBtn(){
+  const btn=$id('leadsScopeBtn');
+  if(!btn) return;
+  if(_leadsOwnerScope==='mine_and_unassigned'){
+    btn.textContent='👤 Mine';
+    btn.title='Showing your leads + unassigned — click to see all';
+  } else {
+    btn.textContent='👥 All';
+    btn.title='Showing all leads — click to show only yours + unassigned';
+  }
+}
+function toggleLeadsOwnerScope(){
+  _leadsOwnerScope=_leadsOwnerScope==='mine_and_unassigned'?'all':'mine_and_unassigned';
+  renderLeadsOwnerScopeBtn();
+  onLeadsFilterChange();
+}
+
 function toggleLeadsView(){
   _leadsTableView=!_leadsTableView;
   const btn=$id('leadsViewBtn');
