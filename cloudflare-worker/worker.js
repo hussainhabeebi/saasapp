@@ -24868,9 +24868,15 @@ export class LeadFollowupAgent{
     const body=await request.json().catch(()=>({}));
     const existing=await this.state.storage.get('leadId');
     if(existing && !body.force) return new Response('ok'); // already running
-    await this.state.storage.put('leadId',  body.leadId);
+    await this.state.storage.put('leadId',   body.leadId);
     await this.state.storage.put('clientId', body.clientId);
     await this.state.storage.put('step',     body.step||1);
+    // lastMsgAt anchors all alarm times — step N fires at lastMsgAt + threshold_N, not now + threshold_N.
+    // This matches the cron's own silentHours check and prevents template steps from drifting late
+    // when the init is delayed (e.g. a DO that starts a minute after the lead was created still
+    // fires step 1 at the correct absolute time).
+    await this.state.storage.put('lastMsgAt', body.lastMsgAt||Date.now());
+    await this.state.storage.put('retries', 0);
     await this._arm();
     return new Response('ok');
   }
@@ -24878,71 +24884,106 @@ export class LeadFollowupAgent{
   async _replied(){
     await this.state.storage.deleteAlarm();
     await this.state.storage.put('step', 1);
+    await this.state.storage.put('lastMsgAt', Date.now()); // re-anchor from the reply time
+    await this.state.storage.put('retries', 0);
     await this._arm();
     return new Response('ok');
   }
 
+  // Arms the next alarm at exactly (lastMsgAt + step_threshold), so template steps at 2/4/7 days
+  // fire relative to the customer's last message — not relative to when the previous step was sent.
   async _arm(){
-    const clientId=await this.state.storage.get('clientId');
-    const step=await this.state.storage.get('step');
+    const clientId  =await this.state.storage.get('clientId');
+    const step      =await this.state.storage.get('step');
+    const lastMsgAt =await this.state.storage.get('lastMsgAt')||Date.now();
     if(!clientId||!step||step>5) return;
     const cfg=await this.env.DB.prepare(
       `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
     ).bind(Number(clientId), step).first().catch(()=>null);
-    if(!cfg) return; // ladder exhausted or not configured
-    const delayMs=cfg.type==='session'
+    if(!cfg) return; // ladder exhausted or step not configured
+    const thresholdMs=cfg.type==='session'
       ? (cfg.hours||1)*3600000
       : (cfg.days||2)*86400000;
-    await this.state.storage.setAlarm(Date.now()+delayMs);
+    // fireAt = when this step becomes due relative to the customer's last message
+    const fireAt=Number(lastMsgAt)+thresholdMs;
+    const delay=Math.max(fireAt-Date.now(), 30000); // at least 30s to avoid immediate re-fire
+    await this.state.storage.setAlarm(Date.now()+delay);
   }
 
   async alarm(){
-    const leadId  =await this.state.storage.get('leadId');
-    const clientId=await this.state.storage.get('clientId');
-    let   step    =await this.state.storage.get('step');
+    const leadId   =await this.state.storage.get('leadId');
+    const clientId =await this.state.storage.get('clientId');
+    let   step     =await this.state.storage.get('step');
+    let   retries  =await this.state.storage.get('retries')||0;
     if(!leadId||!clientId||!step) return;
 
     // Fetch fresh lead — bail on terminal states
     const leadR=await ncFetch(this.env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
-    if(!leadR.ok) return;
+    if(!leadR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
     const lead=await leadR.json().catch(()=>null);
     if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
 
-    // Fetch client for quiet-hours check
+    // Fetch client — needed for quiet-hours + WA credentials
     const cR=await ncFetch(this.env,`api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(Id,eq,${clientId})`)}&limit=1`);
-    if(!cR.ok) return;
+    if(!cR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
     const cData=await cR.json().catch(()=>null);
     const c=cData?.list?.[0];
-    if(!c) return;
+    if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
 
     if(!followupWithinQuietHours(c)){
-      await this.state.storage.setAlarm(Date.now()+3600000); // outside window — retry in 1h
+      await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
       return;
     }
 
-    // Fetch step config
     const cfg=await this.env.DB.prepare(
       `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
     ).bind(Number(clientId), step).first().catch(()=>null);
-    if(!cfg) return; // exhausted
+    if(!cfg) return; // ladder exhausted
 
-    // Skip unconfigured steps
+    // Skip steps with no content configured — advance without counting as a retry
     if((cfg.type==='session'&&!cfg.message)||(cfg.type==='template'&&!cfg.template_name)){
-      step++; await this.state.storage.put('step', step); await this._arm(); return;
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
     }
 
-    // Skip session steps if 24h WhatsApp window has closed
     const silentHours=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
+
+    // Session steps are only valid inside WhatsApp's 24h customer-service window
     if(cfg.type==='session'&&silentHours>=24){
-      step++; await this.state.storage.put('step', step); await this._arm(); return;
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+    }
+
+    // Pre-flight checks for template steps — permanent misconfigs should not retry forever
+    if(cfg.type==='template'){
+      if(!lead.Phone){
+        console.warn('[LeadFollowupAgent] lead',leadId,'has no phone — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
+      if(!c.wa_phone_id||!c.wa_token){
+        console.warn('[LeadFollowupAgent] client',clientId,'missing WA credentials — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
     }
 
     try{
       await sendFollowupLadderStep(this.env, c, lead, step, cfg);
-      step++; await this.state.storage.put('step', step); await this._arm();
+      // Step sent — advance and re-anchor lastMsgAt so subsequent steps time correctly
+      step++;
+      await this.state.storage.put('step', step);
+      await this.state.storage.put('retries', 0);
+      // Keep lastMsgAt as the customer's original last-message time so all remaining thresholds
+      // (e.g. 4 days, 7 days) are measured from the same anchor, matching the cron's behaviour.
+      await this._arm();
     }catch(e){
-      console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,e.message);
-      await this.state.storage.setAlarm(Date.now()+1800000); // retry in 30 min
+      retries++;
+      console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,'retry',retries,e.message);
+      if(retries>=3){
+        // 3 failed attempts on the same step — treat as undeliverable and advance
+        console.warn('[LeadFollowupAgent] giving up on step',step,'for lead',leadId,'after 3 retries');
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm();
+      } else {
+        await this.state.storage.put('retries', retries);
+        await this.state.storage.setAlarm(Date.now()+1800000); // retry in 30 min
+      }
     }
   }
 }
