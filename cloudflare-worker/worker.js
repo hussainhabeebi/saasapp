@@ -2996,18 +2996,22 @@ async function classicFollowupProcessClient(env, c){
     if(!leadRows.length) break;
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
-      let nextStep=-1;
-      for(let s=1; s<=5; s++){
-        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
-        if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; }
-      }
-      if(nextStep===-1) continue; // sequence exhausted, or fully sent
-      const stepCfg=steps[nextStep];
-      if(stepCfg.type==='session' && !stepCfg.message) continue;
-      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
+      let nextStep=-1;
+      for(let s=1; s<=5; s++){
+        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
+        if(lead['Follow up '+s]==='Yes') continue; // already sent
+        // session steps are only valid inside WhatsApp's 24h customer-service window; once
+        // that window has closed, skip past them so template steps further down can still fire.
+        if(steps[s].type==='session' && silentHours>=24) continue;
+        nextStep=s; break;
+      }
+      if(nextStep===-1) continue; // sequence exhausted, or all remaining session steps expired
+      const stepCfg=steps[nextStep];
+      if(stepCfg.type==='session' && !stepCfg.message) continue;
+      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
       try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
       catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
