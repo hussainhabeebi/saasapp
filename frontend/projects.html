@@ -761,7 +761,7 @@ let _calYear=new Date().getFullYear(), _calMonth=new Date().getMonth(); // 0-ind
 function projectById(id){ return allProjects.find(p=>String(p.Id)===String(id)); }
 function taskById(id){ return allTasks.find(t=>String(t.Id)===String(id)); }
 function visibleTasks(){
-  let tasks=selectedProjectId==='all' ? allTasks : allTasks.filter(t=>String(t.project_id)===String(selectedProjectId));
+  let tasks=selectedProjectId==='all' ? allTasks : selectedProjectId==='inbox' ? allTasks.filter(t=>!t.project_id) : allTasks.filter(t=>String(t.project_id)===String(selectedProjectId));
   const f=$id('itemTypeFilter')?.value;
   if(f && f!=='all') tasks=tasks.filter(t=>(t.item_type||'task')===f);
   const q=($id('taskSearch')?.value||'').trim().toLowerCase();
@@ -841,8 +841,12 @@ function renderSidebar(){
   const wrap=$id('projList');
   const allCount=allTasks.length;
   const query=String($id('mobileProjectSearch')?.value||'').trim().toLowerCase();
+  const inboxCount=allTasks.filter(t=>!t.project_id).length;
   let html=`<div class="projitem ${selectedProjectId==='all'?'active':''}" onclick="selectProject('all')">
     <span class="projdot" style="background:var(--accent)"></span><span class="projname">All Projects</span><span class="projcount ${allCount?'':'zero'}">${allCount}</span>
+  </div>
+  <div class="projitem ${selectedProjectId==='inbox'?'active':''}" onclick="selectProject('inbox')">
+    <span class="projdot" style="background:#888"></span><span class="projname">📥 Inbox</span><span class="projcount ${inboxCount?'':'zero'}">${inboxCount}</span>
   </div>`;
   const projects=allProjects.filter(p=>p.status!=='archived'&&(!query||String(p.name||'').toLowerCase().includes(query)));
   html+=projects.map(p=>{
@@ -856,8 +860,8 @@ function renderSidebar(){
   }).join('');
   if(query&&!projects.length) html+=`<div class="empty-state" style="padding:32px 12px"><div class="empty-icon">⌕</div>No matching projects.</div>`;
   wrap.innerHTML=html;
-  const selected=selectedProjectId==='all'?null:projectById(selectedProjectId);
-  if($id('mobileProjectTitle')) $id('mobileProjectTitle').textContent=selected?.name||'All Projects';
+  const selected=selectedProjectId==='all'||selectedProjectId==='inbox'?null:projectById(selectedProjectId);
+  if($id('mobileProjectTitle')) $id('mobileProjectTitle').textContent=selected?.name||(selectedProjectId==='inbox'?'📥 Inbox':'All Projects');
   if($id('mobileEditProjectBtn')) $id('mobileEditProjectBtn').disabled=!selected;
   populateProjectSelect();
 }
