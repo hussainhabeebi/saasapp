@@ -11430,6 +11430,11 @@ BUTTONS — mandatory after EVERY reply:
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineMemoryBlock(state);
+  // Inject known contact name so the LLM never asks for something Chatwoot already gave us.
+  // state.name is the WhatsApp/Chatwoot profile name set at turn start; state.lead?.Name is the
+  // same value persisted to the lead row on previous turns. Either is authoritative.
+  const _knownName=state.name||state.lead?.Name;
+  if(_knownName) sys+=`\n\nKnown customer name: ${_knownName} — this is already on file from their WhatsApp profile. Never ask for their name or company name again.`;
   // Hospitality: inject selected property/unit so LLM has booking/availability context
   const hospSelectedUnit=state.lead?.HospSelectedUnit;
   const hospSelectedProperty=state.lead?.HospSelectedProperty;
@@ -11541,12 +11546,13 @@ BUTTONS — mandatory after EVERY reply:
 // One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
 // negligible. Falls back to the plain question on any failure — same "never leave the customer
 // with nothing" principle as engineCallLlm's own fallback.
-async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
+async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang, knownName){
   const lang=replyLang||c.language||'en';
   const services=engineParseJsonField(c.services, []);
   let sys=c.main_prompt||'';
   if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
+  if(knownName) sys+=`\n\nKnown customer name: ${knownName} — already on file from their WhatsApp profile. Do not ask for their name or company name.`;
   sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
   const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
   return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
@@ -13938,7 +13944,7 @@ async function handleEngineWebhook(request, env, secret){
         if(categories.length){
           // New leads get the personalised first-touch intro; returning customers get a simpler prompt
           const intro=isNewLead
-            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang,state.name||state.lead?.Name)
             : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
           // Send each category's image in sequence before presenting the category buttons
           let anySent=false;
@@ -14372,7 +14378,7 @@ async function handleEngineWebhook(request, env, secret){
         // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
         // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
         sentText=isNewLead
-          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
+          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang, state.name||state.lead?.Name)
           : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
         routing.reply=sentText;
         // engineQualQuestionOptions — a client-configured qualifying question can be a genuine
@@ -14837,7 +14843,7 @@ export async function processInstagramWebhookBody(env, body){
         sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify'){
         const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
-        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang,state.name||state.lead?.Name):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify_next'){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
