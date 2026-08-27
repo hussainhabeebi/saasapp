@@ -16741,7 +16741,7 @@ async function handlePmCreate(request, env, kind){
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
-  if(PM_PROJECT_SCOPED.includes(kind)){
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id){
     if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
   }
   if(kind==='time'){

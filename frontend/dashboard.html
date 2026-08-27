@@ -690,6 +690,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .appt-tab.active{color:#0891B2;border-bottom-color:#0891B2}
 .hosp-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .hosp-tab.active{color:#B45309;border-bottom-color:#D97706}
+.rpt-period{font-size:11px;font-weight:500;padding:4px 10px;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--muted);cursor:pointer;transition:all .15s;white-space:nowrap}
+.rpt-period.active,.rpt-period:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 .hosp-day{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1.5px solid var(--line);gap:2px;transition:transform .1s}
 .hosp-day:hover{transform:scale(1.05)}
 .hosp-day.available{background:#F0FDF4;color:#166534;border-color:#BBF7D0}
@@ -1965,6 +1967,24 @@ const ROLES = {
         <button class="hosp-tab" data-reports="saas">📈 SaaS</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
         <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
+      </div>
+      <div id="rptFilterBar" style="background:var(--card);border-bottom:1px solid var(--line);padding:8px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:41px;z-index:9">
+        <div style="display:flex;gap:3px;flex-wrap:wrap">
+          <button class="rpt-period active" data-period="all"   onclick="setRptPeriod('all')">All Time</button>
+          <button class="rpt-period"        data-period="today" onclick="setRptPeriod('today')">Today</button>
+          <button class="rpt-period"        data-period="week"  onclick="setRptPeriod('week')">This Week</button>
+          <button class="rpt-period"        data-period="month" onclick="setRptPeriod('month')">This Month</button>
+          <button class="rpt-period"        data-period="year"  onclick="setRptPeriod('year')">This Year</button>
+        </div>
+        <input type="date" id="rptFrom" style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="setRptCustom()">
+        <span style="font-size:11px;color:var(--muted)">–</span>
+        <input type="date" id="rptTo"   style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="setRptCustom()">
+        <select id="rptMember" style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="renderReports()">
+          <option value="">All Members</option>
+        </select>
+        <div style="flex:1"></div>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportCsv()">📥 CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportPdf()">🖨️ PDF</button>
       </div>
       <div class="page-pad" id="reportsContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
@@ -13148,6 +13168,20 @@ async function saveTaskFromModal(){
   msg.textContent='Saving…'; msg.style.color='var(--muted)';
   try{
     await saveTasksState(state);
+    // Sync new tasks to PM (D1) so they appear in Projects module
+    if(isNew){
+      try{
+        const pmBody={title,status:'todo',priority:'medium'};
+        if($id('taskNotes').value.trim()) pmBody.description=$id('taskNotes').value.trim();
+        if(task.due_date) pmBody.due_date=task.due_date;
+        if(assigneeEmail) pmBody.assignee_email=assigneeEmail;
+        if(category) pmBody.category=category;
+        if(leadId) pmBody.lead_id=leadId;
+        if(task.lead_name) pmBody.lead_name=task.lead_name;
+        if(projectId) pmBody.project_id=Number(projectId);
+        await fetch(`${CONFIG.WORKER_BASE}/pm/tasks`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(pmBody)});
+      }catch(e){ /* non-fatal — task already saved locally */ }
+    }
     if(notify&&assigneeEmail){
       try{
         const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
@@ -13963,7 +13997,91 @@ function renderRevenueForecast(){
    enough server-side to justify a shared preload+cache step the way Hospitality's units/bookings
    share one. */
 let _reportsPage='overview';
-function renderReports(){ renderReportsSubPage(_reportsPage); }
+/* ── Reports filter state ──────────────────────────────────────────────────── */
+let _rptFilters={period:'all',from:'',to:'',member:''};
+
+function setRptPeriod(p){
+  _rptFilters.period=p; _rptFilters.from=''; _rptFilters.to='';
+  $id('rptFrom').value=''; $id('rptTo').value='';
+  document.querySelectorAll('#rptFilterBar .rpt-period').forEach(b=>b.classList.toggle('active',b.dataset.period===p));
+  renderReports();
+}
+function setRptCustom(){
+  _rptFilters.from=$id('rptFrom').value; _rptFilters.to=$id('rptTo').value;
+  if(_rptFilters.from||_rptFilters.to){
+    _rptFilters.period='custom';
+    document.querySelectorAll('#rptFilterBar .rpt-period').forEach(b=>b.classList.remove('active'));
+  }
+  renderReports();
+}
+function rptPopulateMemberFilter(){
+  const sel=$id('rptMember'); if(!sel) return;
+  const members=getTeamMembers(); const cur=sel.value;
+  sel.innerHTML='<option value="">All Members</option>'+members.map(m=>`<option value="${esc(m.email)}"${cur===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+}
+function rptLeads(src){
+  let leads=src||allLeads;
+  const f=_rptFilters;
+  if(f.period!=='all'||f.from||f.to){
+    const now=new Date(); let fromD=null, toD=null;
+    if(f.period==='today'){ fromD=new Date(now.toISOString().slice(0,10)); toD=new Date(now.toISOString().slice(0,10)+'T23:59:59'); }
+    else if(f.period==='week'){ fromD=new Date(now); fromD.setDate(now.getDate()-now.getDay()); fromD=new Date(fromD.toISOString().slice(0,10)); }
+    else if(f.period==='month'){ fromD=new Date(now.getFullYear(),now.getMonth(),1); }
+    else if(f.period==='year'){ fromD=new Date(now.getFullYear(),0,1); }
+    else if(f.period==='custom'){ if(f.from) fromD=new Date(f.from); if(f.to) toD=new Date(f.to+'T23:59:59'); }
+    if(fromD||toD) leads=leads.filter(l=>{ const d=l.Date?new Date(l.Date):null; if(!d) return false; if(fromD&&d<fromD) return false; if(toD&&d>toD) return false; return true; });
+  }
+  const member=$id('rptMember')?.value||'';
+  if(member) leads=leads.filter(l=>l.Owner===member);
+  return leads;
+}
+
+function exportReportCsv(){
+  const tables=[...$id('reportsContent').querySelectorAll('table.leads-tbl')];
+  let csv='';
+  if(tables.length){
+    tables.forEach(t=>{
+      [...t.querySelectorAll('tr')].forEach(row=>{
+        const cells=[...row.querySelectorAll('th,td')];
+        csv+=cells.map(c=>`"${(c.textContent||'').trim().replace(/\n/g,' ').replace(/"/g,'""')}"`).join(',')+'\n';
+      });
+      csv+='\n';
+    });
+  }else{
+    const stats=[...$id('reportsContent').querySelectorAll('.stat')];
+    csv='Metric,Value\n';
+    stats.forEach(s=>{ csv+=`"${(s.querySelector('.stat-lbl')?.textContent||'').trim().replace(/"/g,'""')}","${(s.querySelector('.stat-val')?.textContent||'').trim().replace(/"/g,'""')}"\n`; });
+  }
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`report-${_reportsPage||'overview'}-${TODAY}.csv`; a.click(); URL.revokeObjectURL(a.href);
+}
+function exportReportPdf(){
+  const html=$id('reportsContent').innerHTML;
+  const pw=window.open('','_blank','width=1000,height=750');
+  pw.document.write(`<!DOCTYPE html><html><head><title>${esc((_reportsPage||'report').toUpperCase())} Report — ${new Date().toLocaleDateString()}</title><style>
+    *{box-sizing:border-box}body{font-family:Inter,sans-serif;padding:24px;color:#111;font-size:13px}
+    h2{margin-bottom:20px;color:#0D9C93}
+    table{width:100%;border-collapse:collapse;margin-bottom:18px}
+    th,td{padding:5px 9px;border:1px solid #ddd;text-align:left;font-size:12px}
+    th{background:#f5f7f9;font-weight:600}
+    .stat{display:inline-block;margin:6px;padding:12px 18px;background:#f0f9f8;border-radius:8px;min-width:120px;vertical-align:top}
+    .stat-lbl{font-size:10px;color:#777;margin-bottom:4px}.stat-val{font-size:20px;font-weight:700;color:#0D9C93}
+    .bar-row{display:flex;gap:8px;margin:3px 0;align-items:center;font-size:11px}
+    .bar-bg{flex:1;height:9px;background:#e8ecef;border-radius:4px}
+    .bar-fill{height:100%;background:#0D9C93;border-radius:4px}
+    .card{border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:14px}
+    .s-head{font-weight:600;margin-bottom:6px}.s-note{color:#777;font-size:11px}
+    input,select,button{display:none}@media print{@page{margin:1cm}}
+  </style></head><body>`);
+  pw.document.write(`<h2>${esc((_reportsPage||'Overview'))} Report — ${new Date().toLocaleDateString()}</h2>`);
+  pw.document.write(html);
+  pw.document.write('</body></html>');
+  pw.document.close();
+  pw.onload=()=>pw.print();
+}
+
+function renderReports(){ rptPopulateMemberFilter(); renderReportsSubPage(_reportsPage); }
 function renderReportsSubPage(page){
   _reportsPage=page;
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
@@ -13987,16 +14105,17 @@ document.addEventListener('click', e=>{
 async function renderReportsOverview(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  const baseLeads=rptLeads();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
-  const won=allLeads.filter(isWonLead), lost=allLeads.filter(isLostLead);
+  const won=baseLeads.filter(isWonLead), lost=baseLeads.filter(isLostLead);
   const resolved=won.length+lost.length;
   const winRate=resolved?Math.round(won.length/resolved*100):0;
-  const pipelineValue=allLeads.filter(l=>!isWonLead(l)&&!isLostLead(l)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+  const pipelineValue=baseLeads.filter(l=>!isWonLead(l)&&!isLostLead(l)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
   const wonThisMonth=won.filter(l=>closedMonthKey(l)===new Date().toISOString().slice(0,7)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
 
   const cards=[
-    {label:'Total Leads', value:allLeads.length, tab:'sales'},
+    {label:'Total Leads', value:baseLeads.length, tab:'sales'},
     {label:'Win Rate', value:winRate+'%', tab:'sales'},
     {label:'Pipeline Value', value:fmtMoney(pipelineValue), tab:'sales'},
     {label:'Won This Month', value:fmtMoney(wonThisMonth), tab:'sales'},
@@ -14038,10 +14157,11 @@ function renderReportsSales(){
     </div>`;
 
   const statsEl=$id('reportsSalesStats'), trendEl=$id('reportsSalesTrend'), winEl=$id('reportsSalesWinRate'), stageEl=$id('reportsSalesByStage');
+  const baseLeads=rptLeads();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
-  const active=allLeads.filter(l=>!isWonLead(l)&&!isLostLead(l));
-  const won=allLeads.filter(isWonLead), lost=allLeads.filter(isLostLead);
+  const active=baseLeads.filter(l=>!isWonLead(l)&&!isLostLead(l));
+  const won=baseLeads.filter(isWonLead), lost=baseLeads.filter(isLostLead);
 
   const pipelineValue=active.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
   const weightedForecast=active.reduce((s,l)=>s+((Number(l.DealValue)||0)*(Number(l.WinProbability)||0)/100),0);
@@ -14125,6 +14245,7 @@ function renderReportsTeamReport(){
     </div>`;
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
+  const baseLeads=rptLeads();
   const members=getTeamMembers();
   const state=getTasksState();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
@@ -14132,7 +14253,7 @@ function renderReportsTeamReport(){
   const cutoff30d=Date.now()-30*86400000;
 
   const rows=members.map(m=>{
-    const ownedLeads=allLeads.filter(l=>l.Owner===m.email);
+    const ownedLeads=baseLeads.filter(l=>l.Owner===m.email);
     const won=ownedLeads.filter(isWonLead);
     const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
     const hot=ownedLeads.filter(l=>l.Score==='Hot').length;
@@ -14148,7 +14269,7 @@ function renderReportsTeamReport(){
       tasksTotal:myTasks.length, tasksDone:doneTasks.length, tasksOverdue:overdueTasks.length, taskRate:myTasks.length?Math.round(doneTasks.length/myTasks.length*100):0};
   }).sort((a,b)=>b.won-a.won || b.total-a.total);
 
-  const unassignedLeads=allLeads.filter(l=>!l.Owner).length;
+  const unassignedLeads=baseLeads.filter(l=>!l.Owner).length;
   const totalWon=rows.reduce((s,r)=>s+r.won,0);
   const totalOverdue=rows.reduce((s,r)=>s+r.tasksOverdue,0);
 
@@ -14179,7 +14300,7 @@ function renderReportsTeamReport(){
   // rather than a shared-id refactor, same "avoid regressing the already-live page" convention
   // this function already follows for the leads/tasks table above.
   const callStatsEl=$id('reportsCallStats'), callTableEl=$id('reportsCallTable');
-  const leadCalls=allLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
+  const leadCalls=baseLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
   const allCalls=[];
   leadCalls.forEach(calls=>{ calls.slice().reverse().forEach((c,i)=>allCalls.push({...c, ordinal:i+1})); });
   const totalCalls=allCalls.length;
@@ -14249,7 +14370,8 @@ async function renderReportsMarketing(){
   for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push({key:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'), label:d.toLocaleString('default',{month:'short',year:'2-digit'})}); }
   const curKey=months[months.length-1].key;
 
-  const won=allLeads.filter(isWonLead);
+  const baseLeads=rptLeads();
+  const won=baseLeads.filter(isWonLead);
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
 
@@ -14266,7 +14388,7 @@ async function renderReportsMarketing(){
   notConnEl.style.display=spendConnected?'none':'block';
 
   const rows=months.map(m=>{
-    const leadsThisMonth=allLeads.filter(l=>(l.Date||'').slice(0,7)===m.key).length;
+    const leadsThisMonth=baseLeads.filter(l=>(l.Date||'').slice(0,7)===m.key).length;
     const wonThisMonth=won.filter(l=>closedMonthKey(l)===m.key);
     const revenue=wonThisMonth.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
     const spend=spendByMonth[m.key]||0;
@@ -14333,8 +14455,9 @@ async function renderReportsSource(){
   let costs={};
   try{ costs=JSON.parse(clientRecord?.source_costs||'{}'); }catch(e){}
 
+  const baseLeads=rptLeads();
   const bySource={};
-  allLeads.forEach(l=>{
+  baseLeads.forEach(l=>{
     const src=l.Source||'Unknown';
     if(!bySource[src]) bySource[src]={leads:0,won:0};
     bySource[src].leads++;
@@ -14345,8 +14468,8 @@ async function renderReportsSource(){
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
 
-  const totalLeads=allLeads.length;
-  const totalWon=allLeads.filter(isWonLead).length;
+  const totalLeads=baseLeads.length;
+  const totalWon=baseLeads.filter(isWonLead).length;
   const totalCost=sources.reduce((s,src)=>s+(Number(costs[src])||0),0);
 
   el.innerHTML=`
