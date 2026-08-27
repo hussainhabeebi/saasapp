@@ -13179,8 +13179,9 @@ async function saveTaskFromModal(){
         if(leadId) pmBody.lead_id=leadId;
         if(task.lead_name) pmBody.lead_name=task.lead_name;
         if(projectId) pmBody.project_id=Number(projectId);
-        await fetch(`${CONFIG.WORKER_BASE}/pm/tasks`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(pmBody)});
-      }catch(e){ /* non-fatal — task already saved locally */ }
+        const pmResp=await fetch(`${CONFIG.WORKER_BASE}/pm/tasks`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(pmBody)});
+        if(!pmResp.ok){ const err=await pmResp.json().catch(()=>({})); console.error('pm/tasks sync failed:',pmResp.status,err); }
+      }catch(e){ console.error('pm/tasks sync error:',e); }
     }
     if(notify&&assigneeEmail){
       try{

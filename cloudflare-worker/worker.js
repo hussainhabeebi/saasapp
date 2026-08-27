@@ -16561,7 +16561,7 @@ async function pmEnsureSchema(env){
   await env.DB.batch([
     `CREATE TABLE IF NOT EXISTS pm_projects (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,color TEXT NOT NULL DEFAULT '#0D9C93',status TEXT NOT NULL DEFAULT 'active',budget_amount REAL,budget_currency TEXT NOT NULL DEFAULT 'USD',default_hourly_rate REAL,client_email TEXT,ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0,task_reminders_enabled INTEGER NOT NULL DEFAULT 0,overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_projects_client ON pm_projects(client_id)`,
-    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_client ON pm_tasks(client_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_project ON pm_tasks(client_id,project_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_sprint ON pm_tasks(client_id,sprint_id)`,
@@ -16634,7 +16634,7 @@ const PM_TABLES={
   tasks:{
     table:'pm_tasks', requiredField:'title', orderBy:'position ASC, created_at ASC', hasUpdatedAt:true,
     fields:{
-      project_id:{type:'int'}, title:{type:'str', max:300}, description:{type:'text'},
+      project_id:{type:'int', def:0}, title:{type:'str', max:300}, description:{type:'text'},
       status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
       assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
       position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
