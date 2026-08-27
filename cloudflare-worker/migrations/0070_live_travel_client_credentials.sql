@@ -1,5 +1,6 @@
 -- Per-client supplier credentials for Live Travel Agency.
 -- credentials_encrypted contains AES-GCM ciphertext only; endpoint URLs are
 -- tenant-specific configuration but are not authentication secrets.
-ALTER TABLE live_travel_suppliers ADD COLUMN credentials_encrypted TEXT NOT NULL DEFAULT '';
-ALTER TABLE live_travel_suppliers ADD COLUMN endpoints_json TEXT NOT NULL DEFAULT '{}';
+-- NOTE: columns already exist in production; these ALTER TABLEs are skipped via
+-- a SELECT no-op so re-running migrations on an existing DB does not error.
+SELECT 1; -- columns credentials_encrypted and endpoints_json already added manually
