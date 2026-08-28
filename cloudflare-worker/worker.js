@@ -15496,6 +15496,16 @@ function computeAccountingDocTotals(lineItems, taxPct){
   const taxAmount=subtotal*(pct/100);
   return {subtotal, taxAmount, total:subtotal+taxAmount};
 }
+// GST split: intra-state (supplier state === place of supply) → CGST+SGST (half each);
+// inter-state (or blank supplier state) → IGST (full rate). Returns zeros when gstRatePct=0.
+function computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply){
+  const rate=Number(gstRatePct)||0;
+  if(!rate) return {cgst:0, sgst:0, igst:0, totalGst:0};
+  const gstAmt=subtotal*(rate/100);
+  const intraState=supplierStateCode && placeOfSupply && String(supplierStateCode).trim().toUpperCase()===String(placeOfSupply).trim().toUpperCase();
+  if(intraState){ const half=Math.round(gstAmt*100/2)/100; return {cgst:half, sgst:half, igst:0, totalGst:half+half}; }
+  return {cgst:0, sgst:0, igst:Math.round(gstAmt*100)/100, totalGst:Math.round(gstAmt*100)/100};
+}
 
 // Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
 // `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
@@ -15525,43 +15535,43 @@ async function handleAccountingDocumentCreate(request, env){
   const VALID_TYPES=new Set(['quotation','invoice','receipt']);
   const type=VALID_TYPES.has(body.type)?body.type:'quotation';
   const lineItems=Array.isArray(body.line_items)?body.line_items:[];
-  // No GST — this module never charges tax, so tax_pct/tax_amount are always 0 regardless of what
-  // a caller sends; the columns stay (existing documents from before this rule may still have a
-  // nonzero value) but nothing new can create one.
-  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, 0);
+  const gstRatePct=Number(body.gst_rate_pct)||0;
+  const supplierGstin=body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null;
+  const placeOfSupply=body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null;
+  const supplierStateCode=body.supplier_state_code?String(body.supplier_state_code).trim().toUpperCase():null;
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, gstRatePct);
+  const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
   const fields={
     client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
-    subtotal, tax_pct:0, tax_amount:taxAmount, total,
+    subtotal, tax_pct:gstRatePct, tax_amount:taxAmount, total,
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
-    // customer_name (migration 0035) — a plain label for a walk-in/one-off customer not tied to a
-    // CRM lead, replacing the old ERPNext-only customer picker; erpnext_customer/company/
-    // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
-    // no longer set by the standalone Document modal.
     customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
-    // customer_id (migration 0036) — links to fp_customers, the interconnection point with
-    // Financial Planning; resolved server-side via handleFpCustomerEnsureByName from
-    // customer_name before this insert, so the frontend only ever sends a name and this column is
-    // populated automatically.
     customer_id:body.customer_id?Number(body.customer_id):null,
-    // valid_until/due_date (migration 0037) — type-specific: a Quotation shows "Valid Until", an
-    // Invoice shows "Due Date"; only ever set by the modal matching this document's own type, but
-    // both columns exist on every row for simplicity (unused one just stays NULL).
     valid_until:body.valid_until?String(body.valid_until).slice(0,10):null,
     due_date:body.due_date?String(body.due_date).slice(0,10):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
+    // GST fields (migration 0075)
+    is_tax_invoice:body.is_tax_invoice?1:0,
+    gst_rate_pct:gstRatePct,
+    cgst_amount:cgst, sgst_amount:sgst, igst_amount:igst,
+    supplier_gstin:supplierGstin,
+    recipient_gstin:body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null,
+    place_of_supply:placeOfSupply,
+    supply_type:['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)?body.supply_type:'B2C',
+    reverse_charge:body.reverse_charge?1:0,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, is_tax_invoice, gst_rate_pct, cgst_amount, sgst_amount, igst_amount, supplier_gstin, recipient_gstin, place_of_supply, supply_type, reverse_charge, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.is_tax_invoice, fields.gst_rate_pct, fields.cgst_amount, fields.sgst_amount, fields.igst_amount, fields.supplier_gstin, fields.recipient_gstin, fields.place_of_supply, fields.supply_type, fields.reverse_charge, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -15627,11 +15637,21 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
+  if(body.is_tax_invoice!==undefined){ sets.push('is_tax_invoice=?'); vals.push(body.is_tax_invoice?1:0); }
+  if(body.gst_rate_pct!==undefined){ sets.push('gst_rate_pct=?'); vals.push(Number(body.gst_rate_pct)||0); }
+  if(body.supplier_gstin!==undefined){ sets.push('supplier_gstin=?'); vals.push(body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null); }
+  if(body.recipient_gstin!==undefined){ sets.push('recipient_gstin=?'); vals.push(body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null); }
+  if(body.place_of_supply!==undefined){ sets.push('place_of_supply=?'); vals.push(body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null); }
+  if(body.supply_type!==undefined && ['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)){ sets.push('supply_type=?'); vals.push(body.supply_type); }
+  if(body.reverse_charge!==undefined){ sets.push('reverse_charge=?'); vals.push(body.reverse_charge?1:0); }
   if(Array.isArray(body.line_items)){
-    // No GST — see handleAccountingDocumentCreate's own note; tax is always 0 here too.
-    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, 0);
-    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
-    vals.push(JSON.stringify(body.line_items), subtotal, 0, taxAmount, total);
+    const gstRatePct=body.gst_rate_pct!==undefined?Number(body.gst_rate_pct)||0:Number(existing.gst_rate_pct)||0;
+    const supplierStateCode=body.supplier_state_code||null;
+    const placeOfSupply=body.place_of_supply!==undefined?body.place_of_supply:existing.place_of_supply;
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, gstRatePct);
+    const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?','cgst_amount=?','sgst_amount=?','igst_amount=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, gstRatePct, taxAmount, total, cgst, sgst, igst);
   }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
@@ -17549,11 +17569,13 @@ async function handleFpCustomerCreate(request, env){
     renewal_date:body.renewal_date||null,
     seat_count:body.seat_count!==undefined?(parseInt(body.seat_count,10)||0):null,
     csm_owner:String(body.csm_owner||'').trim().slice(0,140),
+    gstin:body.gstin?String(body.gstin).trim().slice(0,15):null,
+    state_code:body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null,
   };
   const r=await env.DB.prepare(`INSERT INTO fp_customers
-    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner)
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner, gstin, state_code)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner, fields.gstin, fields.state_code)
     .run();
   await fpEnsureConfigRow(env, payload.cid);
   return json(fpCustomerOut({...fields, id:r.meta.last_row_id}));
@@ -17584,6 +17606,8 @@ async function handleFpCustomerUpdate(request, env){
   if(body.renewal_date!==undefined){ sets.push('renewal_date=?'); vals.push(body.renewal_date||null); }
   if(body.seat_count!==undefined){ sets.push('seat_count=?'); vals.push(parseInt(body.seat_count,10)||0); }
   if(body.csm_owner!==undefined){ sets.push('csm_owner=?'); vals.push(String(body.csm_owner).trim().slice(0,140)); }
+  if(body.gstin!==undefined){ sets.push('gstin=?'); vals.push(body.gstin?String(body.gstin).trim().slice(0,15):null); }
+  if(body.state_code!==undefined){ sets.push('state_code=?'); vals.push(body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null); }
   // health_score itself is cron-computed (computeAccountHealthScore) — only a manual override may
   // set it directly here, same "manual write locks out the automatic one" shape as
   // LEADS.WinProbability/WinProbabilityManual.
@@ -17901,7 +17925,7 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
-const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language';
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language, business_gstin, business_state_code, default_gst_rate';
 // Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
 // Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
 // reply was quietly wiping every other field client-side until the next full page load).
@@ -17953,6 +17977,9 @@ async function handleFpConfigUpdate(request, env){
   if(body.reminder_template_name!==undefined){ sets.push('reminder_template_name=?'); vals.push(String(body.reminder_template_name||'').trim()||null); }
   if(body.reminder_template_category!==undefined){ sets.push('reminder_template_category=?'); vals.push(String(body.reminder_template_category||'').trim()||null); }
   if(body.reminder_template_language!==undefined){ sets.push('reminder_template_language=?'); vals.push(String(body.reminder_template_language||'').trim()||null); }
+  if(body.business_gstin!==undefined){ sets.push('business_gstin=?'); vals.push(String(body.business_gstin||'').trim().slice(0,15)||null); }
+  if(body.business_state_code!==undefined){ sets.push('business_state_code=?'); vals.push(String(body.business_state_code||'').trim().slice(0,50).toUpperCase()||null); }
+  if(body.default_gst_rate!==undefined){ sets.push('default_gst_rate=?'); vals.push(body.default_gst_rate===null||body.default_gst_rate===''?0:Math.max(0,Math.min(100,Number(body.default_gst_rate)||0))); }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
