@@ -11364,7 +11364,22 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
     const ecomStyleInstructions={
       fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
-      shopify:'SHOPIFY / GENERAL STORE COMMUNICATION STYLE: Sound clear, friendly and conversion-focused. Guide discovery in this order when applicable: category, customer requirement, then verified matching products. Keep replies compact and make the next action obvious. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      shopify:`SHOPIFY / GENERAL STORE COMMUNICATION STYLE — apply to every reply:
+
+PRODUCT ENQUIRY (customer mentions, asks about, or shares a URL for a specific product):
+• Match the product to VERIFIED ECOM PRODUCT DATA by name, category, key ingredient, or brand — never invent or guess details.
+• Reply with: verified product name, price, availability (in stock / out of stock), and 2–3 key attributes from VERIFIED ECOM PRODUCT DATA.
+• Share the Order Link from the ## Order Link section when the customer is ready to purchase.
+• If the product is absent from VERIFIED ECOM PRODUCT DATA, say it is not in the verified catalog and offer to connect them with the team — never guess.
+
+BROWSING / DISCOVERY (customer is exploring, no specific product mentioned):
+• Guide in this order: category → customer requirement → verified matching products from VERIFIED ECOM PRODUCT DATA.
+• End with OPTIONS: using only verified category or product names — never invent a choice.
+
+REPLY RULES:
+• Sound clear, friendly and conversion-focused.
+• Keep replies compact — one clear answer and one obvious next action.
+• Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
       furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
