@@ -6261,11 +6261,10 @@ function setLeadsViewMode(mode){
   else renderLeadsList();
 }
 
-/* ── LOCATION & PRODUCT SPLITS VIEW ─────────────────────────────────────────────────────────────
-   Groups allLeads by country/city and by detected/confirmed product. "From chat" signals
-   (ProductCategory/Brand set by the conversation engine without a manual InterestedProduct
-   confirmation) are highlighted so reps know which interests came from the lead themselves
-   vs. were manually labelled. Suggestions are generated purely from arithmetic — no LLM calls. */
+/* ── LOCATION & PRODUCT/PROPERTY SPLITS VIEW ────────────────────────────────────────────────────
+   Industry-aware: city/sub-location from chat instead of country; property/unit for hospitality,
+   product/brand for ecom, destination for travel. "From chat" = bot-detected, not manually set.
+   All computed client-side from allLeads — no LLM calls, no new Worker routes. */
 function renderLeadsSplits(){
   const leads=allLeads;
   if(!leads||!leads.length){
@@ -6275,86 +6274,157 @@ function renderLeadsSplits(){
     return;
   }
 
-  // ── helpers ──────────────────────────────────────────────────────────────────
-  function getCityCountry(l){
-    let city='';
-    try{
-      const qa=JSON.parse(l.QualAnswers||'{}');
-      city=Object.entries(qa).find(([k])=>k.toLowerCase()==='city')?.[1]||'';
-    }catch(e){}
-    return { country: l.Country||'Unknown', city: city||'' };
-  }
-  function getProduct(l){ return l.InterestedProduct||l.ProductCategory||l.Brand||''; }
-  function isFromChat(l){ return !l.InterestedProduct&&!!(l.ProductCategory||l.Brand); }
-  function isConfirmed(l){ return !!l.InterestedProduct; }
-  function scoreColor(s){ return s==='Hot'?'#DC2626':s==='Warm'?'#D97706':'#6B7280'; }
-  function badge(s){ return s?`<span style="font-size:10px;font-weight:700;color:${scoreColor(s)};background:${s==='Hot'?'#FEF2F2':s==='Warm'?'#FFFBEB':'#F9FAFB'};padding:1px 6px;border-radius:10px;border:1px solid ${s==='Hot'?'#FECACA':s==='Warm'?'#FDE68A':'#E5E7EB'}">${s}</span>`:''; }
-  function pct(a,b){ return b?Math.round(a/b*100):0; }
+  const industry=clientRecord?.industry||'general';
+  const isHosp=industry==='hospitality';
+  const isEcom=industry==='ecommerce';
+  const isTravel=industry==='travel';
 
-  // ── LOCATION grouping ────────────────────────────────────────────────────────
+  // ── shared helpers ───────────────────────────────────────────────────────────
+  function parseQa(l){ try{return JSON.parse(l.QualAnswers||'{}');}catch(e){return {};} }
+  // Extract city/sub-location from QualAnswers: scan multiple key variants in priority order.
+  // Keys are the literal qualification question text, so we match substring of key lowercased.
+  const LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','sub','place','pincode','pin','region'];
+  function getSubLocation(l){
+    const qa=parseQa(l);
+    const entries=Object.entries(qa);
+    for(const k of LOC_KEYS){
+      const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+      if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim();
+    }
+    return '';
+  }
+  function pct(a,b){ return b?Math.round(a/b*100):0; }
+  function badge(s){
+    const col=s==='Hot'?'#DC2626':s==='Warm'?'#D97706':'#6B7280';
+    const bg=s==='Hot'?'#FEF2F2':s==='Warm'?'#FFFBEB':'#F9FAFB';
+    const border=s==='Hot'?'#FECACA':s==='Warm'?'#FDE68A':'#E5E7EB';
+    return s?`<span style="font-size:10px;font-weight:700;color:${col};background:${bg};padding:1px 6px;border-radius:10px;border:1px solid ${border}">${s}</span>`:'';
+  }
+  function chatBadge(label){ return `<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE">💬 ${label}</span>`; }
+  function confirmedBadge(){ return `<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#E0E7FF;color:#3730A3;border:1px solid #C7D2FE">🏷️ confirmed</span>`; }
+  function barFill(val,max,color){ return `<div class="bar-bg" style="height:6px;background:var(--line);border-radius:3px;margin:4px 0"><div style="height:6px;border-radius:3px;background:${color};width:${pct(val,max)}%"></div></div>`; }
+
+  // ── INDUSTRY-SPECIFIC: primary grouping key ──────────────────────────────────
+  // Returns { key, subKey, fromChat, confirmed } for the "product/property" panel.
+  function getPrimary(l){
+    if(isHosp){
+      // HospSelectedProperty / HospSelectedUnit — both written by the bot engine from chat.
+      const prop=l.HospSelectedProperty||'';
+      const unit=l.HospSelectedUnit||'';
+      return { key:prop||unit||'', subKey:prop&&unit?unit:'', fromChat:!!(prop||unit), confirmed:false };
+    }
+    if(isTravel){
+      const dest=l.Destination||'';
+      const svc=l.ServiceCategory||'';
+      return { key:dest||svc||'', subKey:dest&&svc?svc:'', fromChat:!!dest, confirmed:!!svc };
+    }
+    // Ecom / general: InterestedProduct (confirmed) vs ProductCategory/Brand (from chat)
+    const manual=l.InterestedProduct||'';
+    const chat=l.ProductCategory||l.Brand||'';
+    return { key:manual||chat||'', subKey:'', fromChat:!manual&&!!chat, confirmed:!!manual };
+  }
+  const primaryLabel=isHosp?'Property / Unit':isTravel?'Destination / Service':'Product / Brand';
+  const primaryIcon=isHosp?'🏨':isTravel?'✈️':'📦';
+  const primaryColor=isHosp?'#EA580C':isTravel?'#0369A1':'#8B5CF6';
+
+  // ── LOCATION grouping (city/sub-location from chat) ──────────────────────────
   const locMap={};
   leads.forEach(l=>{
-    const {country,city}=getCityCountry(l);
-    if(!locMap[country]) locMap[country]={total:0,hot:0,warm:0,won:0,fromChatProd:0,cities:{}};
-    const g=locMap[country];
+    const loc=getSubLocation(l)||'(not captured)';
+    if(!locMap[loc]) locMap[loc]={total:0,hot:0,warm:0,won:0,fromChatPrimary:0};
+    const g=locMap[loc];
     g.total++;
     if(l.Score==='Hot') g.hot++;
     if(l.Score==='Warm') g.warm++;
     if(isWonLead(l)) g.won++;
-    if(isFromChat(l)) g.fromChatProd++;
-    if(city){ if(!g.cities[city]) g.cities[city]=0; g.cities[city]++; }
+    if(getPrimary(l).fromChat) g.fromChatPrimary++;
   });
-  const locRows=Object.entries(locMap).sort((a,b)=>b[1].total-a[1].total);
+  const locRows=Object.entries(locMap).sort((a,b)=>{
+    // float "not captured" to bottom
+    if(a[0]==='(not captured)') return 1;
+    if(b[0]==='(not captured)') return -1;
+    return b[1].total-a[1].total;
+  });
+  const locCaptured=locRows.filter(([k])=>k!=='(not captured)');
 
-  // ── PRODUCT grouping ─────────────────────────────────────────────────────────
-  const prodMap={};
+  // ── PRIMARY grouping (product/property/destination) ──────────────────────────
+  const primMap={};
   leads.forEach(l=>{
-    const p=getProduct(l); if(!p) return;
-    const fromChat=isFromChat(l);
-    const confirmed=isConfirmed(l);
-    if(!prodMap[p]) prodMap[p]={total:0,hot:0,warm:0,won:0,fromChat:0,confirmed:0};
-    const g=prodMap[p];
+    const p=getPrimary(l);
+    if(!p.key) return;
+    if(!primMap[p.key]) primMap[p.key]={total:0,hot:0,warm:0,won:0,fromChat:0,confirmed:0,units:{}};
+    const g=primMap[p.key];
     g.total++;
     if(l.Score==='Hot') g.hot++;
     if(l.Score==='Warm') g.warm++;
     if(isWonLead(l)) g.won++;
-    if(fromChat) g.fromChat++;
-    if(confirmed) g.confirmed++;
+    if(p.fromChat) g.fromChat++;
+    if(p.confirmed) g.confirmed++;
+    if(p.subKey){ if(!g.units[p.subKey]) g.units[p.subKey]=0; g.units[p.subKey]++; }
   });
-  const prodRows=Object.entries(prodMap).sort((a,b)=>b[1].total-a[1].total);
+  const primRows=Object.entries(primMap).sort((a,b)=>b[1].total-a[1].total);
+  const noTagged=leads.filter(l=>!getPrimary(l).key).length;
 
-  // ── LOCATION × PRODUCT matrix ────────────────────────────────────────────────
+  // ── MATRIX (location × primary) ──────────────────────────────────────────────
   const matrixMap={};
   leads.forEach(l=>{
-    const {country}=getCityCountry(l);
-    const p=getProduct(l)||'(none)';
-    const k=`${country}|||${p}`;
-    if(!matrixMap[k]) matrixMap[k]={country,product:p,total:0,hot:0,fromChat:0};
+    const loc=getSubLocation(l)||'(not captured)';
+    const p=getPrimary(l).key||'(none)';
+    const k=`${loc}|||${p}`;
+    if(!matrixMap[k]) matrixMap[k]={loc,primary:p,total:0,hot:0,fromChat:0};
     matrixMap[k].total++;
     if(l.Score==='Hot') matrixMap[k].hot++;
-    if(isFromChat(l)) matrixMap[k].fromChat++;
+    if(getPrimary(l).fromChat) matrixMap[k].fromChat++;
   });
-  const matrixRows=Object.values(matrixMap).sort((a,b)=>b.total-a.total).slice(0,20);
+  const matrixRows=Object.values(matrixMap)
+    .filter(r=>r.loc!=='(not captured)'&&r.primary!=='(none)')
+    .sort((a,b)=>b.total-a.total).slice(0,20);
 
   // ── SUGGESTIONS ──────────────────────────────────────────────────────────────
   const suggestions=[];
-  // Top location hotspot
-  if(locRows.length){
-    const [topLoc,tg]=locRows[0];
-    if(tg.hot>0) suggestions.push({icon:'🔥',text:`<strong>${tg.hot} hot lead${tg.hot>1?'s':''}</strong> from <strong>${topLoc}</strong> — consider sending a targeted follow-up template to close them.`,action:`setLeadsViewMode('list');$id('leadProductFilter').value='';onLeadsFilterChange()`});
+
+  // Hot leads by top location
+  if(locCaptured.length){
+    const [topLoc,tg]=locCaptured[0];
+    if(tg.hot>0) suggestions.push({icon:'🔥',text:`<strong>${tg.hot} hot lead${tg.hot>1?'s':''}</strong> from <strong>${esc(topLoc)}</strong> — send a targeted follow-up now.`,action:`setLeadsViewMode('list')`});
   }
-  // Unconfirmed chat products
-  const fromChatOnly=leads.filter(l=>isFromChat(l));
-  if(fromChatOnly.length) suggestions.push({icon:'💬',text:`<strong>${fromChatOnly.length} lead${fromChatOnly.length>1?'s':''}</strong> ha${fromChatOnly.length===1?'s':'ve'} a product detected from chat (💬) but not yet confirmed — review and tap "→ Set" to lock them in.`,action:`setLeadsViewMode('list')`});
-  // Top product with no wins yet
-  const noWin=prodRows.filter(([,g])=>g.total>=3&&g.won===0);
-  if(noWin.length) suggestions.push({icon:'📦',text:`<strong>${noWin[0][0]}</strong> has ${noWin[0][1].total} leads with 0 wins — review objections or update your pitch for this product.`,action:`setLeadsViewMode('list')`});
-  // Hot leads with no owner
+
+  // Sub-location capture rate
+  const withLoc=leads.filter(l=>!!getSubLocation(l));
+  if(withLoc.length<leads.length*0.5&&leads.length>10){
+    const missing=leads.length-withLoc.length;
+    const locQ=isHosp?'city / area':isTravel?'city of origin':'city or area';
+    suggestions.push({icon:'📍',text:`<strong>${missing} lead${missing>1?'s':''}</strong> ha${missing===1?'s':'ve'} no ${locQ} captured from chat. Add a location question to your bot's qualification flow.`});
+  }
+
+  if(isHosp){
+    // Unassigned property interest
+    const noHosp=leads.filter(l=>!l.HospSelectedProperty&&!l.HospSelectedUnit);
+    if(noHosp.length>0&&noHosp.length<leads.length) suggestions.push({icon:'🏨',text:`<strong>${noHosp.length} lead${noHosp.length>1?'s':''}</strong> ha${noHosp.length===1?'sn\'t':'ven\'t'} selected a property or unit yet — follow up to understand their preference.`,action:`setLeadsViewMode('list')`});
+    // Top property with low win rate
+    const lowWin=primRows.filter(([,g])=>g.total>=3&&pct(g.won,g.total)<20);
+    if(lowWin.length) suggestions.push({icon:'⚠️',text:`<strong>${lowWin[0][0]}</strong> has a ${pct(lowWin[0][1].won,lowWin[0][1].total)}% win rate (${lowWin[0][1].won} of ${lowWin[0][1].total}) — check pricing, availability, or your pitch for this property.`,action:`setLeadsViewMode('list')`});
+  } else if(isTravel){
+    const noSvc=leads.filter(l=>!l.Destination&&!l.ServiceCategory);
+    if(noSvc.length>0&&noSvc.length<leads.length) suggestions.push({icon:'✈️',text:`<strong>${noSvc.length} lead${noSvc.length>1?'s':''}</strong> ha${noSvc.length===1?'s':'ve'} no destination or service category — ask them what they're planning.`,action:`setLeadsViewMode('list')`});
+  } else {
+    // Ecom/general: unconfirmed chat products
+    const fromChatOnly=leads.filter(l=>!l.InterestedProduct&&!!(l.ProductCategory||l.Brand));
+    if(fromChatOnly.length) suggestions.push({icon:'💬',text:`<strong>${fromChatOnly.length} lead${fromChatOnly.length>1?'s':''}</strong> ha${fromChatOnly.length===1?'s':'ve'} a product detected from chat but not yet confirmed — tap "→ Set" to lock them in.`,action:`setLeadsViewMode('list')`});
+    // Zero-win products with ≥3 leads
+    const noWin=primRows.filter(([,g])=>g.total>=3&&g.won===0);
+    if(noWin.length) suggestions.push({icon:'📦',text:`<strong>${esc(noWin[0][0])}</strong> has ${noWin[0][1].total} leads with 0 wins — review objections or update your pitch for this product.`,action:`setLeadsViewMode('list')`});
+  }
+
+  // Hot leads with no owner (all industries)
   const hotUnowned=leads.filter(l=>l.Score==='Hot'&&!l.Owner);
   if(hotUnowned.length) suggestions.push({icon:'⚡',text:`<strong>${hotUnowned.length} hot lead${hotUnowned.length>1?'s':''}</strong> ha${hotUnowned.length===1?'s':'ve'} no owner assigned — assign now before they go cold.`,action:`setLeadsViewMode('list')`});
-  // Location with city data richness
-  const withCity=leads.filter(l=>{ try{const qa=JSON.parse(l.QualAnswers||'{}');return !!Object.entries(qa).find(([k])=>k.toLowerCase()==='city')?.[1];}catch(e){return false;} });
-  if(withCity.length<leads.length*0.5&&leads.length>10) suggestions.push({icon:'📍',text:`Only <strong>${withCity.length} of ${leads.length}</strong> leads have a city captured from chat. Add a city question to your bot's qualification flow to improve location targeting.`});
+
+  // Top location × primary combo with hot leads
+  if(matrixRows.length&&matrixRows[0].hot>0){
+    const r=matrixRows[0];
+    suggestions.push({icon:'🎯',text:`Hottest combo: <strong>${esc(r.loc)}</strong> × <strong>${esc(r.primary)}</strong> — ${r.hot} hot lead${r.hot>1?'s':''} waiting.`,action:`setLeadsViewMode('list')`});
+  }
 
   // ── RENDER suggestions ───────────────────────────────────────────────────────
   $id('splitsSuggestions').innerHTML=suggestions.length?`
@@ -6370,98 +6440,97 @@ function renderLeadsSplits(){
       </div>`).join('')}
     </div>`:'';
 
-  // ── RENDER location card ─────────────────────────────────────────────────────
-  const maxLoc=locRows[0]?.[1]?.total||1;
+  // ── RENDER location card (city/sub-location from chat) ───────────────────────
+  const maxLoc=locCaptured[0]?.[1]?.total||1;
+  const locHdr=isHosp?'City / Area from Chat':isTravel?'City of Origin from Chat':'City / Area from Chat';
   $id('splitsLocationCard').innerHTML=`
     <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
-      <span style="font-size:15px;font-weight:700">📍 By Location</span>
-      <span style="font-size:12px;color:var(--muted)">${locRows.length} countr${locRows.length===1?'y':'ies'}</span>
+      <span style="font-size:15px;font-weight:700">📍 By ${locHdr}</span>
+      <span style="font-size:12px;color:var(--muted)">${locCaptured.length} location${locCaptured.length===1?'':'s'} · ${withLoc.length}/${leads.length} leads</span>
     </div>
     <div style="overflow-y:auto;max-height:420px">
-      ${locRows.map(([country,g])=>{
-        const topCities=Object.entries(g.cities).sort((a,b)=>b[1]-a[1]).slice(0,3);
-        const chatPct=pct(g.fromChatProd,g.total);
-        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="$id('leadProductFilter').value='';$id('leadSearch').value='';onLeadsFilterChange();setLeadsViewMode('list')" title="Filter leads from ${country}">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:13px;font-weight:600;flex:1">${country}</span>
-            <span style="font-size:12px;color:var(--muted)">${g.total} lead${g.total>1?'s':''}</span>
-            ${g.hot?badge('Hot'):g.warm?badge('Warm'):''}
+      ${locCaptured.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No city/area data captured yet. The bot stores location answers from your qualification questions here automatically.</div>`:''}
+      ${locRows.map(([loc,g])=>{
+        const uncap=loc==='(not captured)';
+        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line)${uncap?';opacity:.55':'';cursor:pointer"}" ${uncap?'':'onclick="setLeadsViewMode(\'list\')" title="Filter leads from '+loc+'"'}>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+            <span style="font-size:13px;font-weight:${uncap?'400':'600'};flex:1;color:${uncap?'var(--muted)':'inherit'}">${uncap?'<em>not captured</em>':esc(loc)}</span>
+            <span style="font-size:12px;color:var(--muted)">${g.total}</span>
+            ${!uncap&&g.hot?badge('Hot'):!uncap&&g.warm?badge('Warm'):''}
           </div>
-          <div class="bar-bg" style="height:6px;background:var(--line);border-radius:3px;margin-bottom:4px">
-            <div style="height:6px;border-radius:3px;background:var(--accent);width:${pct(g.total,maxLoc)}%"></div>
-          </div>
+          ${!uncap?barFill(g.total,maxLoc,'var(--accent)'):''}
           <div style="display:flex;gap:10px;font-size:11px;color:var(--muted);flex-wrap:wrap">
             ${g.hot?`<span>🔥 ${g.hot} hot</span>`:''}
-            ${g.won?`<span>✅ ${g.won} won</span>`:''}
-            ${g.fromChatProd?`<span title="${chatPct}% of leads from this location have product interest detected from chat">💬 ${g.fromChatProd} chat product${g.fromChatProd>1?'s':''}</span>`:''}
-            ${topCities.length?`<span>🏙 ${topCities.map(([c,n])=>`${c} (${n})`).join(', ')}</span>`:''}
+            ${g.won?`<span>✅ ${g.won} won (${pct(g.won,g.total)}%)</span>`:''}
+            ${g.fromChatPrimary?`<span>💬 ${g.fromChatPrimary} with chat ${isHosp?'property':'product'}</span>`:''}
           </div>
         </div>`;
       }).join('')}
     </div>`;
 
-  // ── RENDER product card ──────────────────────────────────────────────────────
-  const maxProd=prodRows[0]?.[1]?.total||1;
-  const noProduct=leads.filter(l=>!getProduct(l)).length;
+  // ── RENDER primary card (product / property / destination) ───────────────────
+  const maxPrim=primRows[0]?.[1]?.total||1;
   $id('splitsProductCard').innerHTML=`
     <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
-      <span style="font-size:15px;font-weight:700">📦 By Product / Brand</span>
-      <span style="font-size:12px;color:var(--muted)">${prodRows.length} product${prodRows.length===1?'':'s'}${noProduct?` · ${noProduct} untagged`:''}
-      <span title="💬 = detected from conversation · 🏷️ = manually confirmed" style="cursor:help;margin-left:4px">ℹ️</span></span>
+      <span style="font-size:15px;font-weight:700">${primaryIcon} By ${primaryLabel}</span>
+      <span style="font-size:12px;color:var(--muted)">${primRows.length} item${primRows.length===1?'':'s'}${noTagged?` · ${noTagged} untagged`:''}
+        <span title="💬 = detected from chat · 🏷️ = manually confirmed" style="cursor:help;margin-left:4px">ℹ️</span>
+      </span>
     </div>
     <div style="overflow-y:auto;max-height:420px">
-      ${prodRows.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No product/brand data. The bot will tag leads automatically when they mention a product in chat.</div>`:''}
-      ${prodRows.map(([product,g])=>{
-        const chatLbl=g.fromChat&&!g.confirmed?`<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE">💬 from chat</span>`:
-                      g.confirmed&&!g.fromChat?`<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#E0E7FF;color:#3730A3;border:1px solid #C7D2FE">🏷️ confirmed</span>`:
-                      g.confirmed&&g.fromChat?`<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#E0E7FF;color:#3730A3;border:1px solid #C7D2FE">🏷️ confirmed</span><span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE;margin-left:3px">+💬 ${g.fromChat}</span>`:'';
-        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="$id('leadProductFilter').value='${product.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="Filter by ${product}">
-          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
-            <span style="font-size:13px;font-weight:600;flex:1">${esc(product)}</span>
-            ${chatLbl}
+      ${primRows.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No ${primaryLabel.toLowerCase()} data yet. ${isHosp?'The bot tags leads when they pick a property from chat.':isTravel?'Add Destination to your leads to see this split.':'The bot tags leads automatically when they mention a product in chat.'}</div>`:''}
+      ${primRows.map(([key,g])=>{
+        const topUnits=Object.entries(g.units).sort((a,b)=>b[1]-a[1]).slice(0,3);
+        const src=isHosp?(g.fromChat&&!g.confirmed?chatBadge('from chat'):''):
+                  isTravel?(g.fromChat?chatBadge('destination'):(g.confirmed?confirmedBadge():'')):
+                  (g.fromChat&&!g.confirmed?chatBadge('from chat'):g.confirmed&&!g.fromChat?confirmedBadge():g.confirmed&&g.fromChat?confirmedBadge()+`<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE;margin-left:3px">+💬 ${g.fromChat}</span>`:'');
+        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="$id('leadProductFilter').value='${key.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="Filter by ${key}">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:600;flex:1">${esc(key)}</span>
+            ${src}
             <span style="font-size:12px;color:var(--muted)">${g.total}</span>
             ${g.hot?badge('Hot'):''}
           </div>
-          <div class="bar-bg" style="height:6px;background:var(--line);border-radius:3px;margin-bottom:4px">
-            <div style="height:6px;border-radius:3px;background:#8B5CF6;width:${pct(g.total,maxProd)}%"></div>
-          </div>
+          ${barFill(g.total,maxPrim,primaryColor)}
           <div style="display:flex;gap:10px;font-size:11px;color:var(--muted);flex-wrap:wrap">
             ${g.hot?`<span>🔥 ${g.hot} hot</span>`:''}
             ${g.warm?`<span>🌡 ${g.warm} warm</span>`:''}
             ${g.won?`<span>✅ ${g.won} won (${pct(g.won,g.total)}%)</span>`:''}
+            ${topUnits.length?`<span>↳ ${topUnits.map(([u,n])=>`${esc(u)} (${n})`).join(', ')}</span>`:''}
           </div>
         </div>`;
       }).join('')}
     </div>`;
 
   // ── RENDER matrix card ───────────────────────────────────────────────────────
+  const matrixLocHdr=isHosp?'City / Area':isTravel?'City of Origin':'City / Area';
   $id('splitsMatrixCard').innerHTML=`
     <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
-      <span style="font-size:15px;font-weight:700">🔀 Location × Product</span>
-      <span style="font-size:12px;color:var(--muted)">Top combos · click a row to filter</span>
+      <span style="font-size:15px;font-weight:700">🔀 ${matrixLocHdr} × ${primaryLabel}</span>
+      <span style="font-size:12px;color:var(--muted)">Top ${matrixRows.length} combo${matrixRows.length===1?'':'s'} · click a row to filter</span>
     </div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:12.5px">
         <thead>
           <tr style="background:var(--hover)">
-            <th style="text-align:left;padding:8px 16px;color:var(--muted);font-weight:600">Country</th>
-            <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">Product / Brand</th>
+            <th style="text-align:left;padding:8px 16px;color:var(--muted);font-weight:600">${matrixLocHdr}</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">${primaryLabel}</th>
             <th style="text-align:right;padding:8px 12px;color:var(--muted);font-weight:600">Leads</th>
-            <th style="text-align:right;padding:8px 12px;color:var(--muted);font-weight:600">Hot</th>
-            <th style="text-align:right;padding:8px 16px;color:var(--muted);font-weight:600">💬 From Chat</th>
+            <th style="text-align:right;padding:8px 12px;color:var(--muted);font-weight:600">🔥 Hot</th>
+            <th style="text-align:right;padding:8px 16px;color:var(--muted);font-weight:600">💬 Chat</th>
           </tr>
         </thead>
         <tbody>
-          ${matrixRows.map((r,i)=>`<tr style="border-top:1px solid var(--line);cursor:pointer;${i%2===1?'background:var(--hover)':''}" onclick="$id('leadProductFilter').value='${r.product==='(none)'?'':r.product.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="Filter leads from ${r.country} interested in ${r.product}">
-            <td style="padding:8px 16px;font-weight:500">${esc(r.country)}</td>
-            <td style="padding:8px 12px;color:${r.product==='(none)'?'var(--muted)':'inherit'}">${r.product==='(none)'?'<em>no product tagged</em>':esc(r.product)}${r.fromChat?` <span style="font-size:10px;padding:1px 5px;border-radius:8px;background:#DBEAFE;color:#1D4ED8">💬</span>`:''}</td>
+          ${matrixRows.length===0?`<tr><td colspan="5" style="padding:20px;color:var(--muted);text-align:center">No location + ${primaryLabel.toLowerCase()} combinations yet — both need to be captured from chat.</td></tr>`:''}
+          ${matrixRows.map((r,i)=>`<tr style="border-top:1px solid var(--line);cursor:pointer;${i%2===1?'background:var(--hover)':''}" onclick="$id('leadProductFilter').value='${r.primary.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="${r.loc} → ${r.primary}">
+            <td style="padding:8px 16px;font-weight:500">${esc(r.loc)}</td>
+            <td style="padding:8px 12px">${esc(r.primary)}${r.fromChat?` <span style="font-size:10px;padding:1px 5px;border-radius:8px;background:#DBEAFE;color:#1D4ED8">💬</span>`:''}</td>
             <td style="padding:8px 12px;text-align:right;font-weight:600">${r.total}</td>
             <td style="padding:8px 12px;text-align:right;color:#DC2626">${r.hot||'—'}</td>
             <td style="padding:8px 16px;text-align:right;color:#1D4ED8">${r.fromChat||'—'}</td>
           </tr>`).join('')}
         </tbody>
       </table>
-      ${matrixRows.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No location + product combinations yet.</div>`:''}
     </div>`;
 }
 // Convenience for any button elsewhere that used to link straight to the standalone Pipeline tab.
