@@ -108,6 +108,7 @@ tbody tr:hover{background:var(--bg)}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 
 .li-row{display:grid;grid-template-columns:2fr 0.65fr 0.8fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.li-header{display:grid;grid-template-columns:2fr 0.65fr 0.8fr 1fr 1fr auto;gap:8px;margin-bottom:4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:0 2px}
 .li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg);transition:border-color .15s var(--ease)}
 .li-row input:focus{outline:none;border-color:var(--accent);background:#fff}
 
@@ -626,6 +627,7 @@ tbody tr:hover{background:var(--bg)}
     </div>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
+    <div class="li-header"><span>Description</span><span>HSN/SAC</span><span>Qty</span><span>Unit Price</span><span>Total</span><span></span></div>
     <div id="docQuotationLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:6px">+ Add Line Item</button>
     <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
@@ -678,6 +680,7 @@ tbody tr:hover{background:var(--bg)}
     </div>
     <label class="s-lbl">Line Items</label>
     <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
+    <div class="li-header"><span>Description</span><span>HSN/SAC</span><span>Qty</span><span>Unit Price</span><span>Total</span><span></span></div>
     <div id="docInvoiceLineItems"></div>
     <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:6px">+ Add Line Item</button>
     <div id="docInvoiceCrossSell" style="margin-top:10px"></div>
