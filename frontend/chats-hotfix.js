@@ -111,7 +111,7 @@
   };
 
   const baseOpenChat=openChat;
-  openChat=function(id){replyTarget=null;baseOpenChat(id);requestAnimationFrame(enhanceThread);};
+  openChat=async function(id){replyTarget=null;await baseOpenChat(id);requestAnimationFrame(enhanceThread);};
   const baseCloseChat=closeChat;
   closeChat=function(){replyTarget=null;baseCloseChat();};
   const baseSetMode=setMode;
