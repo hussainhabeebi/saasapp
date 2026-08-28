@@ -34,7 +34,7 @@ function openChatsTab(){
     client:String(clientId||''),
     token:String(sessionToken||'')
   });
-  location.href='chats.html?'+qs.toString();
+  window.open('chats.html?'+qs.toString(),'_blank');
 }
 
 // Kept as lightweight compatibility hooks for the dashboard's existing live-notification handler.

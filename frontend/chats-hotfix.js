@@ -32,7 +32,7 @@
   function dashboardUrl(){
     return `dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`;
   }
-  function goDashboardHotfix(){ location.href=dashboardUrl(); }
+  function goDashboardHotfix(){if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else{location.href=dashboardUrl();}}
   window.goDashboardHotfix=goDashboardHotfix;
 
   function makeDashboardButton(){
