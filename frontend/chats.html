@@ -53,12 +53,12 @@ const LEADS_TABLE='mvg6rcw0ia5qqrx';
 const params=new URLSearchParams(location.search);
 const clientId=params.get('client')||'';
 const sessionToken=params.get('token')||'';
-let leads=[],current=null,channel='whatsapp',filter='all',meEmail='',clientRecord={};
+let leads=[],histCache={},current=null,channel='whatsapp',filter='all',meEmail='',clientRecord={};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const headers=extra=>({'Authorization':'Bearer '+sessionToken,...extra});
 const convId=l=>l&&(l.ConversationID||l.conv_id||l.ConversationId||l.chatwoot_conv_id||'');
-const hist=l=>{try{return JSON.parse(l.ConvHistory||'[]')}catch{return[]}};
+const hist=l=>{const k=String(l?.Id||'');if(k&&histCache[k])return histCache[k];try{const p=JSON.parse(l?.ConvHistory||'[]');if(k)histCache[k]=p;return p}catch{return[]}};
 const initials=l=>{const s=(l.Name||l.Phone||'?').trim();return (s[0]||'?').toUpperCase()};
 function toast(t){const e=$('toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.add('hidden'),2300)}
 function ago(v){if(!v)return'';const d=new Date(v),n=new Date(),ms=n-d;if(ms<60000)return'now';if(ms<3600000)return Math.floor(ms/60000)+'m';if(ms<86400000)return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});if(ms<604800000)return d.toLocaleDateString([],{weekday:'short'});return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
@@ -69,10 +69,10 @@ function unread(l){if(!l.LastMsgAt)return false;const r=readMap()[l.Id];return !
 async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:headers({...opts.headers})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
 async function boot(){
  if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
- try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').toLowerCase();await loadLeads();$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000)}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+ try{const[me]=await Promise.all([apiJson(WORKER+'/session/me'),loadLeads()]);clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').toLowerCase();renderContacts();$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000)}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 async function loadLeads(show=true,silent=false){
- try{const url=`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})&limit=2000&sort=-Date`;const d=await apiJson(url);leads=d.list||[];renderContacts();if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){current=fresh;renderThread(false)}}if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
+ try{const url=`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})&limit=200&sort=-LastMsgAt`;const d=await apiJson(url);leads=d.list||[];renderContacts();if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt!==current.LastMsgAt;if(newMsg)delete histCache[String(current.Id)];current=fresh;if(newMsg)renderThread(false);}}if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
 }
 function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderContacts()}
 function setFilter(f){filter=f;renderContacts()}
@@ -100,7 +100,7 @@ async function togglePin(){const next=current.Pinned!=='Yes';try{await apiJson(W
 async function toggleResolve(){const next=current.ConvResolved!=='Yes';try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu();renderThread(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
 function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu();toast('Number copied')}
 function goLead(){location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
-function goBack(){if(history.length>1)history.back();else location.href='dashboard.html'}
+function goBack(){if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
 function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySelectorAll('.bubble').forEach(b=>{b.style.opacity=!q||b.textContent.toLowerCase().includes(q)?'1':'.22'})}
 boot();
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
