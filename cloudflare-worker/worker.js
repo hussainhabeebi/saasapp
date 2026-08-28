@@ -1064,10 +1064,73 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
 }
 
+// Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
+// (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
+async function d1InsertLeadMessage(env, leadId, clientId, msg){
+  if(!msg?.role) return;
+  try{
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(
+      Number(leadId), Number(clientId),
+      msg.role,
+      msg.content||'',
+      (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
+      (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
+      msg.ts||new Date().toISOString()
+    ).run();
+  }catch(e){}
+}
+
+// GET /chat/messages?lead_id=X[&after=ISO] — returns messages from D1.
+// First call for a lead auto-seeds D1 from NocoDB ConvHistory (lazy migration).
+async function handleGetChatMessages(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const u=new URL(request.url);
+  const leadId=u.searchParams.get('lead_id');
+  const after=u.searchParams.get('after')||'';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+
+  // Ownership check
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+
+  // Auto-seed D1 from ConvHistory on first request for this lead
+  const countRow=await env.DB.prepare('SELECT COUNT(*) as n FROM lead_messages WHERE lead_id=?')
+    .bind(Number(leadId)).first().catch(()=>null);
+  if(!countRow||!countRow.n){
+    let history=[];
+    try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    for(const msg of history){
+      await d1InsertLeadMessage(env, leadId, payload.cid, msg);
+    }
+  }
+
+  // Read from D1 — incremental if `after` is provided
+  const rows=after
+    ?await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? AND ts>? ORDER BY ts ASC')
+        .bind(Number(leadId), after).all().catch(()=>({results:[]}))
+    :await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY ts ASC')
+        .bind(Number(leadId)).all().catch(()=>({results:[]}));
+
+  const messages=(rows.results||[]).map(r=>{
+    const m={role:r.role, content:r.content, ts:r.ts};
+    try{const a=JSON.parse(r.attachment||'{}');if(Object.keys(a).length)m.attachment=a;}catch(e){}
+    try{const rt=JSON.parse(r.reply_to||'{}');if(Object.keys(rt).length)m.reply_to=rt;}catch(e){}
+    return m;
+  });
+
+  return json({messages, lead_id:Number(leadId)});
+}
+
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, text}=await request.json().catch(()=>({}));
+  const {conv_id, text, lead_id}=await request.json().catch(()=>({}));
   if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
@@ -1075,6 +1138,13 @@ async function handleChatSend(request, env){
   fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
+  if(lead_id){
+    const ts=new Date().toISOString();
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
+      {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
+  }
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
@@ -12874,6 +12944,9 @@ async function handleNativeFormEndpoint(request, env){
       ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(), Channel:'whatsapp'
     };
     const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+    // Dual-write bot message to D1 lead_messages
+    if(resolvedLeadId) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:sentText, ts:new Date().toISOString()});
     if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
 
     if(flowMeta.convId){
@@ -14629,6 +14702,18 @@ async function handleEngineWebhook(request, env, secret){
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Dual-write new messages to D1 lead_messages for chats.html display
+    if(resolvedLeadId){
+      const userTs=new Date(startMs).toISOString();
+      const botTs=new Date().toISOString();
+      if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'user', content:routing.historyUserText||userText, ts:userTs,
+         ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+      if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'assistant', content:routing.reply, ts:botTs,
+         ...(routing.media?{media:routing.media}:{}),
+         ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
@@ -14792,6 +14877,14 @@ async function persistInstagramTurn(env, c, clientId, state, routing, userText, 
   const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
   if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
+  if(resolvedLeadId){
+    const now=new Date().toISOString();
+    if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'user', content:routing.historyUserText||userText, ts:now});
+    if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:routing.reply, ts:now});
+  }
   if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
   // Verify those identity fields before considering the first inbound turn durable.
@@ -25324,6 +25417,7 @@ export default {
       else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
       else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
+      else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
