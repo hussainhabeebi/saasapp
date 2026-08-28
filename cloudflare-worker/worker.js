@@ -11374,6 +11374,7 @@ PRODUCT ENQUIRY (customer mentions, asks about, or shares a URL for a specific p
 
 BROWSING / DISCOVERY (customer is exploring, no specific product mentioned):
 • Guide in this order: category → customer requirement → verified matching products from VERIFIED ECOM PRODUCT DATA.
+• When presenting OPTIONS that include both matching products and categories, always list matching products first, then related categories — never categories first.
 • End with OPTIONS: using only verified category or product names — never invent a choice.
 
 REPLY RULES:
