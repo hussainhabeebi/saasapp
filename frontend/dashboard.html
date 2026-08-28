@@ -6466,7 +6466,7 @@ function renderLeadsSplits(){
       ${locCaptured.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No city/area data captured yet. The bot stores location answers from your qualification questions here automatically.</div>`:''}
       ${locRows.map(([loc,g])=>{
         const uncap=loc==='(not captured)';
-        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line)${uncap?';opacity:.55':'';cursor:pointer"}" ${uncap?'':'onclick="setLeadsViewMode(\'list\')" title="Filter leads from '+loc+'"'}>
+        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line)${uncap?';opacity:.55':';cursor:pointer'}" ${uncap?'':'onclick="setLeadsViewMode(\'list\')" title="Filter leads from '+loc+'"'}>
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
             <span style="font-size:13px;font-weight:${uncap?'400':'600'};flex:1;color:${uncap?'var(--muted)':'inherit'}">${uncap?'<em>not captured</em>':esc(loc)}</span>
             <span style="font-size:12px;color:var(--muted)">${g.total}</span>
