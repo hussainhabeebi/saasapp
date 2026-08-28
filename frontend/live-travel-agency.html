@@ -80,6 +80,5 @@ async function refresh(redraw=true){data=await api('/live-travel/bootstrap');if(
 async function init(){drawNav();if(!clientId||!sessionToken){$('main').innerHTML='<div class="empty">🔒 Open Live Agency from the existing Travel Agency module.</div>';return}try{await refresh()}catch(e){$('main').innerHTML=`<div class="empty"><h2>Could not open Live Agency</h2><div class="error">${esc(e.message)}</div><button class="btn" onclick="location.reload()">Retry</button></div>`}}
 $('modal').addEventListener('click',e=>{if(e.target===$('modal'))closeModal()});init();
 </script>
-<script src="/live-travel-poomas.js?v=20260823b"></script>
 </body>
 </html>
