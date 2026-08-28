@@ -3230,6 +3230,9 @@ const ROLES = {
             </div>
           </div>
         </div>
+        <!-- Lead Routing — auto-assignment rules for incoming leads. Rendered by
+             renderLeadRoutingSettings(); only visible to the account owner. -->
+        <div class="card" style="margin-bottom:14px" id="leadRoutingCard"></div>
       </div>
     </div>
 
@@ -4778,6 +4781,11 @@ function navigate(page){
       _leadsOwnerScope=isAccountOwner()?'all':'mine_and_unassigned';
       _leadsOwnerScopeInitialized=true;
     }
+    // When routing is active, non-owners are locked to their assigned leads — hide the toggle.
+    if(getLeadRouting().enabled&&!isAccountOwner()){
+      _leadsOwnerScope='mine_and_unassigned';
+      const sb=$id('leadsScopeBtn'); if(sb) sb.style.display='none';
+    }
     renderLeadsOwnerScopeBtn();
     setLeadsViewMode(_leadsViewMode);
   }
@@ -5893,6 +5901,7 @@ function applyLeadsViewFilter(leads){
   if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||l.Owner===myEmail);
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
+  else if(_leadsActiveView==='unmatched') out=out.filter(l=>!l.Owner);
 
   const q=($id('leadSearch')?.value||'').toLowerCase();
   if(q){
@@ -5964,11 +5973,16 @@ function renderLeadsViewTabs(){
   const reconnectCount=allLeads.filter(isReactivationCandidate).length;
   const saved=getLeadSavedViews();
   const tab=(id,label,count)=>`<button class="lv-tab${_leadsActiveView===id?' active':''}" onclick="selectLeadsView('${id}')">${label}${count!==undefined?` (${count})`:''}</button>`;
+  // Unmatched tab — only for account owner when routing is on and round-robin is not catching everything
+  const rt=getLeadRouting();
+  const showUnmatched=isAccountOwner()&&rt.enabled&&!rt.modes?.includes('roundrobin')&&!rt.catchall;
+  const unmatchedCount=showUnmatched?allLeads.filter(l=>!l.Owner).length:0;
   wrap.innerHTML=
     tab('needs_action','🎯 Needs Action',needsActionCount)+
     tab('all','📋 All Leads')+
     saved.map(v=>`<span class="lv-tab${_leadsActiveView===v.id?' active':''}" onclick="selectLeadsView('${v.id}')">⭐ ${esc(v.name)}<span class="lv-x" onclick="event.stopPropagation();deleteLeadsSavedView('${v.id}')" title="Delete this view">✕</span></span>`).join('')+
     tab('reactivate','♻️ Reconnect',reconnectCount)+
+    (showUnmatched?tab('unmatched','⬡ Unmatched',unmatchedCount):'')+
     `<button class="lv-tab" onclick="promptSaveLeadsView()">＋ Save current filters</button>`;
 }
 function selectLeadsView(id){
@@ -8905,6 +8919,118 @@ function isAccountOwner(email){
 }
 function getTeamPermissions(){
   try{ return JSON.parse(clientRecord.team_permissions||'{}'); }catch(e){ return {}; }
+}
+function getLeadRouting(){
+  try{ return JSON.parse(clientRecord.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+/* ── LEAD ROUTING SETTINGS ────────────────────────────────────────────────────────────────────────
+   Owner-only. Stored as clientRecord.lead_routing (JSON). Routing priority (when enabled):
+   1. Product/Property match  2. Location match  3. Round-Robin pool  4. Catch-all / Unmatched. */
+function renderLeadRoutingSettings(){
+  const card=$id('leadRoutingCard'); if(!card||!isAccountOwner()) return;
+  const rt=getLeadRouting();
+  const enabled=!!rt.enabled;
+  const modes=Array.isArray(rt.modes)?rt.modes:[];
+  const rules=rt.rules||{};
+  const catchall=rt.catchall||'';
+  const industry=clientRecord?.industry||'general';
+  const isHosp=industry==='hospitality';
+  const isTravel=industry==='travel';
+
+  const members=getTeamMembers().filter(m=>!isAccountOwner(m.email));
+  const memberOpts=members.map(m=>`<option value="${m.email}"${catchall===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+
+  // Per-user rule rows (visible only when routing is enabled)
+  const ruleRows=members.map(m=>{
+    const r=rules[m.email]||{};
+    const locs=(r.locations||[]).join(', ');
+    const prods=(r.products||[]).join(', ');
+    const props=(r.properties||[]).join(', ');
+    return `<tr style="border-top:1px solid var(--line)">
+      <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(m.name||m.email)}<br><span style="font-size:11px;color:var(--muted)">${esc(m.email)}</span></td>
+      <td style="padding:8px 10px"><label style="display:flex;align-items:center;gap:5px;font-size:13px"><input type="checkbox" data-email="${m.email}" data-field="inPool" ${r.inPool?' checked':''}> In pool</label></td>
+      <td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Dubai, Abu Dhabi…" data-email="${m.email}" data-field="locations" value="${esc(locs)}" title="Comma-separated cities/areas this user handles"></td>
+      ${!isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="${isHosp?'Houseboat A, Villa 2…':'Nike Air Max, Adidas…'}" data-email="${m.email}" data-field="${isHosp?'properties':'products'}" value="${esc(isHosp?props:prods)}" title="Comma-separated ${isHosp?'properties':'products/brands'} this user handles"></td>`:''}
+      ${isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Package, Hotel, Ticket…" data-email="${m.email}" data-field="products" value="${esc(prods)}" title="Comma-separated service categories this user handles"></td>`:''}
+    </tr>`;
+  }).join('');
+
+  card.innerHTML=`
+    <div class="settings-section" style="margin-bottom:0">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div class="s-head" style="margin:0">🔀 Lead Routing</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-left:auto">
+          <input type="checkbox" id="lrEnabled" ${enabled?' checked':''}> Enable auto-assignment
+        </label>
+      </div>
+      <div class="s-note" style="margin-bottom:12px">Auto-assigns new leads to team members in priority order: <strong>Product/Property → Location → Round-Robin → Catch-all</strong>. Leads that match no rule stay Unmatched (visible to you in the "⬡ Unmatched" tab). Non-owners always see only their assigned leads when routing is on.</div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeProduct" ${modes.includes('product')?' checked':''}> ${isHosp?'🏨 Property/Unit match':isTravel?'✈️ Destination match':'📦 Product/Brand match'}</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeLocation" ${modes.includes('location')?' checked':''}> 📍 Location match</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeRR" ${modes.includes('roundrobin')?' checked':''}> 🔄 Round-Robin fallback</label>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:13px;white-space:nowrap">Catch-all (when no rule matches):</span>
+        <select class="form-input" id="lrCatchall" style="flex:0 0 220px;padding:6px 8px">
+          <option value="">— None (leave Unmatched) —</option>
+          ${memberOpts}
+        </select>
+      </div>
+
+      ${members.length?`
+      <div style="overflow-x:auto;margin-bottom:12px">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:500px">
+          <thead><tr style="background:var(--hover)">
+            <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">Team Member</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Round-Robin</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Locations (comma-sep)</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">${isHosp?'Properties':'Products/Brands'}</th>
+          </tr></thead>
+          <tbody>${ruleRows}</tbody>
+        </table>
+      </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="save-btn" onclick="saveLeadRouting()">Save Routing Rules</button>
+        <span class="save-msg" id="lrSaveMsg"></span>
+      </div>
+    </div>`;
+}
+
+async function saveLeadRouting(){
+  const msg=$id('lrSaveMsg');
+  try{
+    const enabled=$id('lrEnabled')?.checked||false;
+    const modes=[];
+    if($id('lrModeProduct')?.checked) modes.push('product');
+    if($id('lrModeLocation')?.checked) modes.push('location');
+    if($id('lrModeRR')?.checked) modes.push('roundrobin');
+    const catchall=$id('lrCatchall')?.value||'';
+
+    // Collect per-user rules from table inputs
+    const rules=getLeadRouting().rules||{}; // preserve existing rrIndex etc.
+    const card=$id('leadRoutingCard');
+    card.querySelectorAll('[data-email]').forEach(inp=>{
+      const email=inp.dataset.email;
+      const field=inp.dataset.field;
+      if(!rules[email]) rules[email]={};
+      if(field==='inPool') rules[email].inPool=inp.checked;
+      else rules[email][field]=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
+    });
+
+    const existing=getLeadRouting();
+    const newRouting={...existing, enabled, modes, catchall, rules};
+    if(msg){msg.textContent='Saving…';msg.className='save-msg';}
+    await patchClient({lead_routing:JSON.stringify(newRouting)});
+    if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}
+    // Re-render so the UI reflects saved state
+    renderLeadRoutingSettings();
+  }catch(e){
+    if(msg){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  }
 }
 // Same "check the meta API, create the column if missing" convention saveTaEnabled() already
 // uses for ta_enabled/ta_table_ids — no migration step, the field just appears the first time
@@ -15894,6 +16020,7 @@ function populateModulesPage(){
 function populateUserManagementPage(){
   if(!clientRecord)return;
   renderTeamMembers();
+  renderLeadRoutingSettings();
 }
 
 /* ── NOTIFICATIONS ── */
