@@ -10619,6 +10619,90 @@ function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
 }
+function engineGetLeadRouting(c){
+  try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+// Location keys the bot may store city/area answers under in QualAnswers — same list as the
+// frontend Splits view so routing and display always agree.
+const ENGINE_LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','place','region'];
+function engineExtractCityFromQual(qualAnswers){
+  const entries=Object.entries(qualAnswers||{});
+  for(const k of ENGINE_LOC_KEYS){
+    const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+    if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim().toLowerCase();
+  }
+  return '';
+}
+
+// 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
+// Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
+// When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
+async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  if(!isNewLead || leadBody.Owner) return; // already assigned or not new
+
+  const routing=engineGetLeadRouting(c);
+
+  if(!routing.enabled){
+    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const ps=String(state.phone||'');
+      for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
+      leadBody.Owner=reps[Math.abs(h)%reps.length];
+    }
+    return;
+  }
+
+  const modes=Array.isArray(routing.modes)?routing.modes:[];
+  const rules=routing.rules||{};
+
+  const get=f=>leadBody[f]||state.lead?.[f]||'';
+
+  // ── Priority 1: Product / Property match ─────────────────────────────────────
+  if(modes.includes('product')){
+    const product=(get('InterestedProduct')||get('ProductCategory')||get('Brand')||
+                   get('HospSelectedProperty')||get('HospSelectedUnit')||
+                   get('Destination')||get('ServiceCategory')).toLowerCase();
+    if(product){
+      const match=Object.entries(rules).find(([,r])=>{
+        const pool=[...(r.products||[]),...(r.properties||[])];
+        return pool.some(p=>String(p).toLowerCase()===product);
+      });
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 2: Location match ───────────────────────────────────────────────
+  if(modes.includes('location')){
+    let qa={};
+    try{ qa=JSON.parse(leadBody.QualAnswers||state.lead?.QualAnswers||'{}'); }catch(e){}
+    const city=engineExtractCityFromQual({...qa,...(state.qualAnswers||{})});
+    if(city){
+      const match=Object.entries(rules).find(([,r])=>
+        (r.locations||[]).some(l=>String(l).toLowerCase()===city)
+      );
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
+  if(modes.includes('roundrobin')){
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    if(pool.length){
+      const idx=Number(routing.rrIndex||0)%pool.length;
+      leadBody.Owner=pool[idx];
+      // Persist the next index so the following lead goes to the next rep
+      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
+      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      return;
+    }
+  }
+
+  // ── Priority 4: Catch-all ────────────────────────────────────────────────────
+  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  // Otherwise: Unmatched — lead stays without an Owner
+}
 
 function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
@@ -13351,14 +13435,8 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
   // first point in this turn a brand-new lead actually has a real id to attribute.
 
-  if(isNewLead && !state.owner){
-    const reps=engineParseSalesReps(c.agents);
-    if(reps.length){
-      let h=0; const phoneStr=String(state.phone||'');
-      for(let i=0;i<phoneStr.length;i++) h=(h*31+phoneStr.charCodeAt(i))|0;
-      body.Owner=reps[Math.abs(h)%reps.length];
-    }
-  }
+  // Owner assignment is handled externally by engineResolveLeadOwner() after this function
+  // returns, so it can be async (round-robin must persist rrIndex via patchClientFields).
 
   if(sentiment) body.Sentiment=sentiment;
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
@@ -14682,6 +14760,7 @@ async function handleEngineWebhook(request, env, secret){
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
     // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
     // failure: the rate limiter a few lines up compares against LastMsgAt, which real production
@@ -14872,6 +14951,7 @@ async function handleInstagramWebhookVerify(request, env){
 async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
   if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
   const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
