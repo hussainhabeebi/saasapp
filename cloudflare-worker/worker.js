@@ -16656,12 +16656,15 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   const setState=async (fields)=>{
     const now=new Date().toISOString();
-    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',...(st||{}),...fields};
+    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,...(st||{}),...fields};
     try{
-      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)')
-        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run();
-      st=m;
-    }catch(e){}
+      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,now).run();
+    }catch(e){
+      // Fallback if migration 0079 not yet applied — persists basic state without filter columns
+      try{ await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)').bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run(); }catch(e2){}
+    }
+    st=m;
   };
 
   const buildWelcome=()=>{
@@ -16725,11 +16728,23 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
     const plH=plans.map(()=>'?').join(',');
     const exH=sentIds.length?sentIds.map(()=>'?').join(','):'0';
+    const cityFilter=st?.city_filter||null;
+    const maxAge=st?.max_age?parseInt(st.max_age):null;
+    let extraWhere='';
+    const extraParams=[];
+    if(cityFilter){
+      extraWhere+=' AND (city LIKE ? OR district LIKE ?)';
+      extraParams.push('%'+cityFilter+'%','%'+cityFilter+'%');
+    }
+    if(maxAge){
+      extraWhere+=' AND (CAST(COALESCE(age,0) AS INTEGER)>0 AND CAST(age AS INTEGER)<=?)';
+      extraParams.push(maxAge);
+    }
     let rows;
     try{
       rows=await env.DB.prepare(
-        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND membership_plan IN (${plH}) AND id NOT IN (${exH}) ORDER BY id ASC LIMIT ?`
-      ).bind(String(clientId),profileType,...plans,...(sentIds.length?sentIds:[]),perMsg+1).all();
+        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND membership_plan IN (${plH}) AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
+      ).bind(String(clientId),profileType,...plans,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
     }catch(e){ rows={results:[]}; }
 
     const all=rows.results||[];
@@ -16770,14 +16785,17 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   // "menu" — always resets to welcome
   if(/^menu$/i.test(text)){
-    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send(buildWelcome());
     return {handled:true,step:'menu'};
   }
 
-  // View profiles keyword (default "1")
-  if(textLower===kwView){
-    await setState({menu_state:'asked_gender',profile_type:null,sent_ids:'[]'});
+  // Natural-language phrase matching — treat as keyword "1" (view profiles)
+  const isViewPhrase=textLower!==kwView&&/\b(show|view|see|browse|find|search)\b.*\bprofiles?\b|\bprofiles?\b$/i.test(text);
+
+  // View profiles keyword (default "1") or natural-language phrase
+  if(textLower===kwView||isViewPhrase){
+    await setState({menu_state:'asked_gender',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send('Do you want *Bride* or *Groom* profiles?\n\nReply *B* for Bride or *G* for Groom');
     return {handled:true,step:'asked_gender'};
   }
@@ -16796,10 +16814,34 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   const menuState=st?.menu_state;
 
   if(menuState==='asked_gender'){
-    if(/^b(ride)?$/i.test(text)) return await sendProfiles('bride');
-    if(/^g(room)?$/i.test(text)) return await sendProfiles('groom');
+    let pType=null;
+    if(/^b(ride)?$/i.test(text)) pType='bride';
+    else if(/^g(room)?$/i.test(text)) pType='groom';
+    if(pType){
+      await setState({menu_state:'asked_city',profile_type:pType,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('Which district or city? (e.g. *Malappuram*, *Kozhikode*)\n\nOr reply *all* to see all locations.');
+      return {handled:true,step:'asked_city'};
+    }
     await send('Please reply *B* for Bride profiles or *G* for Groom profiles.\n\nOr reply *menu* to go back.');
     return {handled:true,step:'asked_gender_reprompt'};
+  }
+
+  if(menuState==='asked_city'){
+    const cityInput=/^all$/i.test(text)?null:text.trim();
+    await setState({menu_state:'asked_age',city_filter:cityInput});
+    await send('Maximum age? (e.g. *25*)\n\nOr reply *any* for no age limit.');
+    return {handled:true,step:'asked_age'};
+  }
+
+  if(menuState==='asked_age'){
+    const ageInput=/^any$/i.test(text)?null:(parseInt(text)||null);
+    await setState({menu_state:'viewing_profiles',max_age:ageInput});
+    const cityLabel=st.city_filter||null;
+    const filterLine=[];
+    if(cityLabel) filterLine.push(`📍 ${cityLabel}`);
+    if(ageInput) filterLine.push(`🎂 Under ${ageInput}`);
+    if(filterLine.length) await send(`Searching *${st.profile_type}* profiles — ${filterLine.join(', ')}…`);
+    return await sendProfiles(st.profile_type||'bride');
   }
 
   if(menuState==='viewing_profiles'&&/^next$/i.test(text)){
