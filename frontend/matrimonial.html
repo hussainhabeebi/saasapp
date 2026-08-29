@@ -137,6 +137,45 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
     <div style="margin-top:14px;display:flex;gap:9px"><button class="btn" onclick="saveSettings()">Save Settings</button><span id="setMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
   </div>
 
+  <!-- WhatsApp Chat Menu Settings -->
+  <div class="card" style="margin-top:0">
+    <div class="title-row">
+      <div class="title">💬 WhatsApp Chat Menu</div>
+      <label class="toggle" style="font-size:13px;gap:8px"><input type="checkbox" id="setChatEnabled"> Enable chat menu bot</label>
+    </div>
+    <p class="hint">When enabled, inbound WhatsApp messages are handled by a keyword-driven menu (View Profiles, List Profile, Talk to Agent) instead of the default AI reply.</p>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field full"><label>Welcome message</label><textarea class="input" id="setChatWelcome" rows="3" placeholder="Welcome to Nikah Kerala 💜&#10;&#10;Please choose an option:"></textarea></div>
+      <div class="field"><label>View profiles keyword (default: 1)</label><input class="input" id="setChatKwView" placeholder="1" maxlength="10"></div>
+      <div class="field"><label>List profile keyword (default: 2)</label><input class="input" id="setChatKwList" placeholder="2" maxlength="10"></div>
+      <div class="field"><label>Talk to agent keyword (default: 3)</label><input class="input" id="setChatKwAgent" placeholder="3" maxlength="10"></div>
+      <div class="field"><label>Profiles per message</label><input class="input" type="number" id="setChatPerMsg" min="1" max="10" placeholder="3"></div>
+      <div class="field"><label>List Profile form URL</label><input class="input" type="url" id="setChatFormUrl" placeholder="https://leadvyne.com/form/nikah-kerala"></div>
+      <div class="field full">
+        <label>Show only plans (uncheck to include all non-free)</label>
+        <div style="display:flex;gap:12px;margin-top:6px">
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanGold" value="gold"> Gold</label>
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanSilver" value="silver"> Silver</label>
+          <label style="display:flex;gap:5px;align-items:center;font-size:13px"><input type="checkbox" id="chatPlanPlatinum" value="platinum"> Platinum</label>
+        </div>
+      </div>
+      <div class="field full">
+        <label>Profile preview fields (shown in each card)</label>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="full_name"> Name</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="age"> Age</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="city"> City</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="district"> District</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="education"> Education</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="occupation"> Occupation</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="religion"> Religion</label>
+          <label style="font-size:13px;display:flex;gap:5px;align-items:center"><input type="checkbox" class="chatPvField" value="plan_label"> Plan</label>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:9px"><button class="btn" onclick="saveChatSettings()">Save Chat Settings</button><span id="chatMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
+  </div>
+
   <!-- Webhook management -->
   <div class="card" style="margin-top:0">
     <div class="title-row">
@@ -384,6 +423,20 @@ function renderSettings(){
   $('dedupMatches').value=settings.matches_dedup_key||'';
   $('dedupShortlists').value=settings.shortlists_dedup_key||'';
   $('dedupStories').value=settings.stories_dedup_key||'';
+  // Chat menu settings
+  $('setChatEnabled').checked=!!settings.chat_enabled;
+  $('setChatWelcome').value=settings.chat_welcome_message||'';
+  $('setChatKwView').value=settings.chat_keyword_view||'1';
+  $('setChatKwList').value=settings.chat_keyword_list||'2';
+  $('setChatKwAgent').value=settings.chat_keyword_agent||'3';
+  $('setChatPerMsg').value=settings.chat_profiles_per_msg||3;
+  $('setChatFormUrl').value=settings.chat_form_url||'';
+  let chatPlans=['gold','silver','platinum'];
+  try{ const p=JSON.parse(settings.chat_plan_filter||'[]');if(p.length)chatPlans=p; }catch(e){}
+  ['chatPlanGold','chatPlanSilver','chatPlanPlatinum'].forEach(id=>{ const el=$(id);if(el)el.checked=chatPlans.includes(el.value); });
+  let chatPvFields=['full_name','age','city','plan_label'];
+  try{ const p=JSON.parse(settings.chat_preview_fields||'[]');if(p.length)chatPvFields=p; }catch(e){}
+  document.querySelectorAll('.chatPvField').forEach(el=>{ el.checked=chatPvFields.includes(el.value); });
 }
 function renderTokenCards(){
   const tc=$('tokenCards');if(!tc)return;
@@ -498,6 +551,37 @@ async function saveSettings(){
     await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify({service_name:sv('setServiceName'),privacy_note:sv('setPrivacyNote'),membership_plans:JSON.stringify(plans),horoscope_matching_enabled:$('setHoroscopeEnabled').checked,auto_suggest_matches:$('setAutoSuggest').checked})});
     msg.textContent='✓ Saved';setTimeout(()=>msg.textContent='',3000);
     await loadAll();
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+
+async function saveChatSettings(){
+  const msg=$('chatMsg');msg.textContent='';
+  const plans=[...document.querySelectorAll('#chatPlanGold,#chatPlanSilver,#chatPlanPlatinum')].filter(el=>el.checked).map(el=>el.value);
+  const pvFields=[...document.querySelectorAll('.chatPvField')].filter(el=>el.checked).map(el=>el.value);
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify({
+      chat_enabled:$('setChatEnabled').checked?1:0,
+      chat_welcome_message:sv('setChatWelcome'),
+      chat_keyword_view:sv('setChatKwView')||'1',
+      chat_keyword_list:sv('setChatKwList')||'2',
+      chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
+      chat_form_url:sv('setChatFormUrl'),
+      chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
+      chat_preview_fields:JSON.stringify(pvFields.length?pvFields:['full_name','age','city','plan_label']),
+    })});
+    Object.assign(settings,{
+      chat_enabled:$('setChatEnabled').checked?1:0,
+      chat_welcome_message:sv('setChatWelcome'),
+      chat_keyword_view:sv('setChatKwView')||'1',
+      chat_keyword_list:sv('setChatKwList')||'2',
+      chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
+      chat_form_url:sv('setChatFormUrl'),
+      chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
+      chat_preview_fields:JSON.stringify(pvFields.length?pvFields:['full_name','age','city','plan_label']),
+    });
+    msg.textContent='✓ Chat settings saved';setTimeout(()=>msg.textContent='',3000);
   }catch(e){msg.textContent='Error: '+e.message;}
 }
 
