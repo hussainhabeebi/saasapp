@@ -16422,7 +16422,7 @@ async function handleMatriWebhook(request, env, kind){
   if(!tokenCol) return json({error:'Unknown table'}, 404);
   const settings=await env.DB.prepare(`SELECT * FROM matrimonial_settings WHERE ${tokenCol}=?`).bind(token).first();
   if(!settings) return json({error:'Invalid token'}, 401);
-  const clientId=String(settings.client_id);
+  const clientId=Number(settings.client_id);
 
   // Parse body — accept array or single object
   let rows;
