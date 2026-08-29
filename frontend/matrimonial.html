@@ -48,6 +48,7 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
   <button class="tab" data-page="matches">Matches</button>
   <button class="tab" data-page="shortlists">Shortlists</button>
   <button class="tab" data-page="stories">Success Stories</button>
+  <button class="tab" data-page="activated">Activated Customers</button>
   <button class="tab" data-page="settings">Settings</button>
 </nav>
 
@@ -124,6 +125,56 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
 </section>
 
 <!-- SETTINGS -->
+<section class="page" id="page-activated">
+  <div class="card">
+    <div class="title-row">
+      <div class="title">💍 Activated Customers</div>
+      <button class="btn" onclick="openAddActivated()">+ Activate Customer</button>
+    </div>
+    <p class="hint">Customers listed here can view profiles via the WhatsApp chat menu. Each customer has their own daily/monthly view limit and profile-type access.</p>
+    <div class="table-wrap" style="margin-top:12px"><table id="activatedTable">
+      <thead><tr><th>Name</th><th>Phone</th><th>Can View</th><th>Daily Limit</th><th>Monthly Limit</th><th>Today</th><th>Month</th><th>Expiry</th><th>Status</th><th>Actions</th></tr></thead>
+      <tbody id="activatedRows"></tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- Activate Customer Modal -->
+<div class="modal" id="modalActivated">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-title">Activate Customer</div>
+    <input type="hidden" id="actId">
+    <div class="form-grid" style="margin-top:12px">
+      <div class="field"><label>WhatsApp Phone *</label><input class="input" id="actPhone" placeholder="9190xxxxxxxx"></div>
+      <div class="field"><label>Name</label><input class="input" id="actName" placeholder="Customer name"></div>
+      <div class="field">
+        <label>Can View</label>
+        <select class="input" id="actCanView">
+          <option value="both">Both (Bride &amp; Groom)</option>
+          <option value="bride">Bride only</option>
+          <option value="groom">Groom only</option>
+        </select>
+      </div>
+      <div class="field"><label>Status</label>
+        <select class="input" id="actStatus">
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+          <option value="expired">Expired</option>
+        </select>
+      </div>
+      <div class="field"><label>Daily limit (profiles)</label><input class="input" type="number" id="actDailyLimit" min="1" value="10"></div>
+      <div class="field"><label>Monthly limit (profiles)</label><input class="input" type="number" id="actMonthlyLimit" min="1" value="50"></div>
+      <div class="field"><label>Expiry date (leave blank = no expiry)</label><input class="input" type="date" id="actExpiry"></div>
+      <div class="field full"><label>Notes</label><textarea class="input" id="actNotes" rows="2" placeholder="Internal notes"></textarea></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn" onclick="saveActivated()">Save</button>
+      <button class="btn sec" onclick="modal('modalActivated',false)">Cancel</button>
+      <span id="actMsg" style="color:var(--ok);font-size:13px;align-self:center"></span>
+    </div>
+  </div>
+</div>
+
 <section class="page" id="page-settings">
   <div class="card">
     <div class="title">Service Settings</div>
@@ -350,16 +401,80 @@ function buildModals(){
 }
 
 // ── LOAD ALL ──────────────────────────────────────────────────────────────────
+let activated=[];
 async function loadAll(){
-  const [p,m,sl,st,se]=await Promise.all([api('/matrimonial/profiles'),api('/matrimonial/matches'),api('/matrimonial/shortlists'),api('/matrimonial/stories'),api('/matrimonial/settings')]);
-  profiles=p.list||[];matches=m.list||[];shortlists=sl.list||[];stories=st.list||[];settings=se;
-  fillSelects();renderAll();updateWebhookBar();
+  const [p,m,sl,st,se,ac]=await Promise.all([api('/matrimonial/profiles'),api('/matrimonial/matches'),api('/matrimonial/shortlists'),api('/matrimonial/stories'),api('/matrimonial/settings'),api('/matrimonial/activated')]);
+  profiles=p.list||[];matches=m.list||[];shortlists=sl.list||[];stories=st.list||[];settings=se;activated=ac.list||[];
+  fillSelects();renderAll();renderActivated();updateWebhookBar();
 }
 function fillSelects(){
   const opts='<option value="">Select profile…</option>'+profiles.map(p=>`<option value="${p.id}">${esc(p.full_name)} (${p.profile_type})</option>`).join('');
   [$('mProfile1'),$('mProfile2'),$('slProfile'),$('slTarget')].forEach(el=>{if(el)el.innerHTML=opts});
 }
 function renderAll(){renderOverview();renderProfiles();renderMatches();renderShortlists();renderStories();}
+function renderActivated(){
+  const tbody=$('activatedRows');if(!tbody)return;
+  if(!activated.length){tbody.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:28px;color:var(--muted)">No activated customers yet. Click "+ Activate Customer" to add one.</td></tr>`;return;}
+  const statusBadge={active:'<span style="color:#16a34a;font-weight:600">Active</span>',suspended:'<span style="color:#ea580c;font-weight:600">Suspended</span>',expired:'<span style="color:#6b7280;font-weight:600">Expired</span>'};
+  const canViewLabel={both:'Both',bride:'Bride only',groom:'Groom only'};
+  tbody.innerHTML=activated.map(a=>`<tr>
+    <td>${esc(a.name||'—')}</td>
+    <td><code>${esc(a.phone)}</code></td>
+    <td>${canViewLabel[a.can_view]||a.can_view}</td>
+    <td>${a.daily_limit??10}</td>
+    <td>${a.monthly_limit??50}</td>
+    <td>${a.views_today??0}</td>
+    <td>${a.views_month??0}</td>
+    <td>${a.expiry_date||'No expiry'}</td>
+    <td>${statusBadge[a.status]||a.status}</td>
+    <td><button class="btn sm sec" onclick="openEditActivated(${a.id})">Edit</button> <button class="btn sm ghost" onclick="deleteActivated(${a.id})" style="color:#ef4444">Del</button></td>
+  </tr>`).join('');
+}
+function openAddActivated(prefillPhone='',prefillName=''){
+  $('actId').value='';
+  $('actPhone').value=prefillPhone;
+  $('actName').value=prefillName;
+  $('actCanView').value='both';
+  $('actStatus').value='active';
+  $('actDailyLimit').value=10;
+  $('actMonthlyLimit').value=50;
+  $('actExpiry').value='';
+  $('actNotes').value='';
+  $('actMsg').textContent='';
+  modal('modalActivated',true);
+}
+function openEditActivated(id){
+  const a=activated.find(x=>x.id===id);if(!a)return;
+  $('actId').value=a.id;
+  $('actPhone').value=a.phone;
+  $('actName').value=a.name||'';
+  $('actCanView').value=a.can_view||'both';
+  $('actStatus').value=a.status||'active';
+  $('actDailyLimit').value=a.daily_limit??10;
+  $('actMonthlyLimit').value=a.monthly_limit??50;
+  $('actExpiry').value=a.expiry_date||'';
+  $('actNotes').value=a.notes||'';
+  $('actMsg').textContent='';
+  modal('modalActivated',true);
+}
+async function saveActivated(){
+  const msg=$('actMsg');msg.textContent='';
+  const id=parseInt($('actId').value)||null;
+  const phone=($('actPhone').value||'').replace(/[^0-9]/g,'');
+  if(!phone){msg.textContent='Phone required';return;}
+  const body={phone,name:$('actName').value.trim()||null,can_view:$('actCanView').value,status:$('actStatus').value,daily_limit:parseInt($('actDailyLimit').value)||10,monthly_limit:parseInt($('actMonthlyLimit').value)||50,expiry_date:$('actExpiry').value||null,notes:$('actNotes').value.trim()||null};
+  if(id) body.id=id;
+  try{
+    await api('/matrimonial/activated',{method:id?'PATCH':'POST',body:JSON.stringify(body)});
+    modal('modalActivated',false);
+    const res=await api('/matrimonial/activated');activated=res.list||[];renderActivated();
+    msg.textContent='';
+  }catch(e){msg.textContent='Error: '+e.message;}
+}
+async function deleteActivated(id){
+  if(!confirm('Remove this customer\'s access?'))return;
+  try{await api('/matrimonial/activated',{method:'DELETE',body:JSON.stringify({id})});activated=activated.filter(a=>a.id!==id);renderActivated();}catch(e){alert(e.message);}
+}
 
 // ── OVERVIEW ──────────────────────────────────────────────────────────────────
 function renderOverview(){
@@ -589,6 +704,23 @@ async function init(){
   if(!clientId||!token){document.body.innerHTML='<div style="text-align:center;padding:60px;color:#be185d">Open Matrimonial from the Leadvyne dashboard.</div>';return}
   buildModals();
   try{await loadAll();}catch(e){alert('Failed to load: '+e.message);}
+  // Handle deep-link params from chats.html: ?tab=activated&phone=91...&name=...
+  const deepTab=P.get('tab')||'';
+  const deepPhone=P.get('phone')||'';
+  const deepName=P.get('name')||'';
+  if(deepTab){
+    const tabBtn=document.querySelector(`.tab[data-page="${deepTab}"]`);
+    if(tabBtn){
+      document.querySelectorAll('.tab,.page').forEach(x=>x.classList.remove('active'));
+      tabBtn.classList.add('active');
+      const pg=$('page-'+deepTab);if(pg)pg.classList.add('active');
+      currentPage=deepTab;
+      if(deepTab==='settings'){renderSettings();loadLog();}
+    }
+  }
+  if(deepPhone&&deepTab==='activated'){
+    openAddActivated(deepPhone,deepName);
+  }
 }
 init();
 </script></body></html>
