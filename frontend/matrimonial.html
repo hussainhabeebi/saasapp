@@ -129,7 +129,10 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
   <div class="card">
     <div class="title-row">
       <div class="title">💍 Activated Customers</div>
-      <button class="btn" onclick="openAddActivated()">+ Activate Customer</button>
+      <div class="actions">
+        <button class="btn sec" onclick="openLeadSearch()">🔗 From Leads</button>
+        <button class="btn" onclick="openAddActivated()">+ Activate Customer</button>
+      </div>
     </div>
     <p class="hint">Customers listed here can view profiles via the WhatsApp chat menu. Each customer has their own daily/monthly view limit and profile-type access.</p>
     <div class="table-wrap" style="margin-top:12px"><table id="activatedTable">
@@ -140,9 +143,9 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
 </section>
 
 <!-- Activate Customer Modal -->
-<div class="modal" id="modalActivated">
-  <div class="modal-box" style="max-width:420px">
-    <div class="modal-title">Activate Customer</div>
+<div class="modal-bg" id="modalActivated" onclick="if(event.target===this)modal('modalActivated',false)">
+  <div class="modal" style="max-width:500px">
+    <h2 id="actModalTitle">Activate Customer</h2>
     <input type="hidden" id="actId">
     <div class="form-grid" style="margin-top:12px">
       <div class="field"><label>WhatsApp Phone *</label><input class="input" id="actPhone" placeholder="9190xxxxxxxx"></div>
@@ -172,6 +175,17 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
       <button class="btn sec" onclick="modal('modalActivated',false)">Cancel</button>
       <span id="actMsg" style="color:var(--ok);font-size:13px;align-self:center"></span>
     </div>
+  </div>
+</div>
+
+<!-- Lead Search Modal -->
+<div class="modal-bg" id="modalLeadSearch" onclick="if(event.target===this)modal('modalLeadSearch',false)">
+  <div class="modal" style="max-width:540px">
+    <h2>🔗 Connect Lead</h2>
+    <p class="hint" style="margin:0 0 12px">Search CRM contacts to activate them for the WhatsApp chat menu.</p>
+    <input class="input" id="leadSearchQ" placeholder="Search by name or phone…" oninput="searchLeads()" autocomplete="off">
+    <div id="leadSearchResults" style="margin-top:12px;max-height:340px;overflow:auto;border-radius:8px;border:1px solid var(--line)"></div>
+    <div style="margin-top:14px"><button class="btn sec" onclick="modal('modalLeadSearch',false)">Close</button></div>
   </div>
 </div>
 
@@ -427,7 +441,7 @@ function renderActivated(){
     <td>${a.views_month??0}</td>
     <td>${a.expiry_date||'No expiry'}</td>
     <td>${statusBadge[a.status]||a.status}</td>
-    <td><button class="btn sm sec" onclick="openEditActivated(${a.id})">Edit</button> <button class="btn sm ghost" onclick="deleteActivated(${a.id})" style="color:#ef4444">Del</button></td>
+    <td style="white-space:nowrap"><button class="btn sm sec" onclick="openEditActivated(${a.id})">Edit</button> <button class="btn sm ghost" title="Open in Chats" onclick="window.open('chats.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(token),'_blank')">💬</button> <button class="btn sm ghost" onclick="deleteActivated(${a.id})" style="color:#ef4444">Del</button></td>
   </tr>`).join('');
 }
 function openAddActivated(prefillPhone='',prefillName=''){
@@ -474,6 +488,52 @@ async function saveActivated(){
 async function deleteActivated(id){
   if(!confirm('Remove this customer\'s access?'))return;
   try{await api('/matrimonial/activated',{method:'DELETE',body:JSON.stringify({id})});activated=activated.filter(a=>a.id!==id);renderActivated();}catch(e){alert(e.message);}
+}
+
+// ── LEAD SEARCH (Connect Lead) ─────────────────────────────────────────────
+const LEADS_TABLE='mvg6rcw0ia5qqrx';
+let _leadTimer=null;
+function openLeadSearch(){
+  $('leadSearchQ').value='';
+  $('leadSearchResults').innerHTML='<div class="hint" style="text-align:center;padding:20px">Type a name or phone to search CRM contacts…</div>';
+  modal('modalLeadSearch',true);
+  setTimeout(()=>$('leadSearchQ').focus(),60);
+}
+function searchLeads(){
+  clearTimeout(_leadTimer);
+  _leadTimer=setTimeout(doLeadSearch,350);
+}
+async function doLeadSearch(){
+  const q=($('leadSearchQ').value||'').trim();
+  const res=$('leadSearchResults');
+  if(!q){res.innerHTML='<div class="hint" style="text-align:center;padding:20px">Type a name or phone to search CRM contacts…</div>';return;}
+  res.innerHTML='<div class="hint" style="text-align:center;padding:14px">Searching…</div>';
+  try{
+    const where=`(ClientId,eq,${clientId})~and((Name,like,%${q}%)~or(Phone,like,%${q}%))`;
+    const d=await api('/nocodb/api/v2/tables/'+LEADS_TABLE+'/records?where='+encodeURIComponent(where)+'&limit=20&sort=-LastMsgAt');
+    const list=d.list||[];
+    if(!list.length){res.innerHTML=`<div class="hint" style="text-align:center;padding:20px">No contacts found for "<b>${esc(q)}</b>"</div>`;return;}
+    res.innerHTML=list.map((l,i)=>{
+      const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+      const alreadyActive=activated.some(a=>a.phone===phone);
+      return `<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)">
+        <div style="flex:1">
+          <b>${esc(l.Name||'—')}</b>
+          <div class="hint">${esc(l.Phone||'—')}</div>
+        </div>
+        ${alreadyActive?'<span class="badge ok">Already active</span>':`<button class="btn sm" data-li="${i}">Activate</button>`}
+      </div>`;
+    }).join('');
+    list.forEach((l,i)=>{
+      const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+      const btn=res.querySelector(`[data-li="${i}"]`);
+      if(btn) btn.onclick=()=>pickLead(phone,l.Name||'');
+    });
+  }catch(e){res.innerHTML=`<div class="hint" style="text-align:center;padding:14px;color:#ef4444">Error: ${esc(e.message)}</div>`;}
+}
+function pickLead(phone,name){
+  modal('modalLeadSearch',false);
+  openAddActivated(phone,name);
 }
 
 // ── OVERVIEW ──────────────────────────────────────────────────────────────────
