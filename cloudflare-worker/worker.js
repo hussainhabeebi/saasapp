@@ -13742,6 +13742,11 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
     }
+    const matriChatTurn=await handleMatrimonialChatMenu(env,c,clientId,convId,phone,state.leadId,userText,isNewLead);
+    if(matriChatTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
+    }
     const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
     // A generic ad CTA/business-information request must be answered from the client's prompt,
@@ -16543,7 +16548,7 @@ const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groo
 const MATRIMONIAL_SETTINGS_FIELDS=['service_name','membership_plans','horoscope_matching_enabled','auto_suggest_matches','match_criteria_weights','privacy_note','success_story_template'];
 
 function matriCoerce(k,v){
-  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches','age']);
+  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches','age','chat_enabled','chat_profiles_per_msg']);
   if(intFields.has(k)) return v===null||v===undefined||v===''?null:parseInt(v,10)||0;
   return v===null||v===undefined?null:String(v).trim().slice(0,2000);
 }
@@ -16623,6 +16628,152 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
   'profiles_col_map','matches_col_map','shortlists_col_map','stories_col_map',
   'profiles_dedup_key','matches_dedup_key','shortlists_dedup_key','stories_dedup_key'
 );
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
+  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent'
+);
+
+// Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
+// paginated profile delivery. Returns {handled:true, step} when it owns the turn, or null to
+// fall through to the normal LLM routing (e.g. when "3" / talk-to-agent is typed, or when
+// no state matches the incoming text).
+async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,userText,isNewLead){
+  let settings;
+  try{ settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first(); }catch(e){ return null; }
+  if(!settings||!settings.chat_enabled) return null;
+
+  const text=String(userText||'').trim();
+  const textLower=text.toLowerCase();
+
+  const kwView  =String(settings.chat_keyword_view  ||'1').trim().toLowerCase();
+  const kwList  =String(settings.chat_keyword_list  ||'2').trim().toLowerCase();
+  const kwAgent =String(settings.chat_keyword_agent ||'3').trim().toLowerCase();
+
+  const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
+
+  let st;
+  try{ st=await env.DB.prepare('SELECT * FROM matrimonial_chat_state WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){ st=null; }
+
+  const setState=async (fields)=>{
+    const now=new Date().toISOString();
+    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',...(st||{}),...fields};
+    try{
+      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)')
+        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run();
+      st=m;
+    }catch(e){}
+  };
+
+  const buildWelcome=()=>{
+    const svc=settings.service_name||'Matrimonial Service';
+    const msg=settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`;
+    const v=settings.chat_keyword_view||'1';
+    const l=settings.chat_keyword_list||'2';
+    const a=settings.chat_keyword_agent||'3';
+    return `${msg}\n\n${v}️⃣  View Profiles\n${l}️⃣  List My Profile\n${a}️⃣  Talk to an Agent`;
+  };
+
+  const sendProfiles=async (profileType)=>{
+    let sentIds=[];
+    try{ sentIds=JSON.parse(st?.sent_ids||'[]'); }catch(e){}
+
+    let plans=['gold','silver','platinum'];
+    try{ const pf=JSON.parse(settings.chat_plan_filter||'[]'); if(pf.length) plans=pf; }catch(e){}
+
+    const perMsg=Math.max(1,parseInt(settings.chat_profiles_per_msg)||3);
+
+    let previewFields=['full_name','age','city','plan_label'];
+    try{ const pf=JSON.parse(settings.chat_preview_fields||'[]'); if(pf.length) previewFields=pf; }catch(e){}
+
+    const plH=plans.map(()=>'?').join(',');
+    const exH=sentIds.length?sentIds.map(()=>'?').join(','):'0';
+    let rows;
+    try{
+      rows=await env.DB.prepare(
+        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND membership_plan IN (${plH}) AND id NOT IN (${exH}) ORDER BY id ASC LIMIT ?`
+      ).bind(String(clientId),profileType,...plans,...(sentIds.length?sentIds:[]),perMsg+1).all();
+    }catch(e){ rows={results:[]}; }
+
+    const all=rows.results||[];
+    const hasMore=all.length>perMsg;
+    const batch=hasMore?all.slice(0,perMsg):all;
+
+    if(!batch.length){
+      await send(sentIds.length
+        ?'🔄 No more profiles at this time.\n\nReply *menu* to go back to the main menu.'
+        :'📭 No profiles are currently available.\n\nReply *menu* to go back to the main menu.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'no_profiles'};
+    }
+
+    const newSentIds=[...sentIds,...batch.map(p=>p.id)];
+    await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:JSON.stringify(newSentIds)});
+
+    const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',plan_label:'Plan',religion:'Religion',height_cm:'Height',annual_income:'Income',marriage_status:'Status'};
+    for(const p of batch){
+      let card='──────────────\n';
+      for(const f of previewFields){
+        let val=p[f];
+        if(f==='plan_label') val=p.plan_label||(p.membership_plan?p.membership_plan.charAt(0).toUpperCase()+p.membership_plan.slice(1):null);
+        if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
+        if(val) card+=`${fLabel[f]||f}: ${val}\n`;
+      }
+      card+='──────────────';
+      await send(card);
+    }
+    await send(hasMore
+      ?`✅ ${batch.length} profile(s) sent.\n\nReply *next* to see more or *menu* for the main menu.`
+      :`✅ ${batch.length} profile(s) sent.\n\nReply *menu* to go back to the main menu.`);
+    return {handled:true,step:'profiles_sent'};
+  };
+
+  // "menu" — always resets to welcome
+  if(/^menu$/i.test(text)){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    await send(buildWelcome());
+    return {handled:true,step:'menu'};
+  }
+
+  // View profiles keyword (default "1")
+  if(textLower===kwView){
+    await setState({menu_state:'asked_gender',profile_type:null,sent_ids:'[]'});
+    await send('Do you want *Bride* or *Groom* profiles?\n\nReply *B* for Bride or *G* for Groom');
+    return {handled:true,step:'asked_gender'};
+  }
+
+  // List profile keyword (default "2")
+  if(textLower===kwList){
+    const formUrl=(settings.chat_form_url||'').trim();
+    await send(formUrl?`📋 Submit your profile here 👇\n\n${formUrl}`:'📋 Please contact us to list your profile.');
+    return {handled:true,step:'list_profile'};
+  }
+
+  // Talk to agent keyword (default "3") — let normal LLM routing handle it
+  if(textLower===kwAgent) return null;
+
+  // State-driven responses
+  const menuState=st?.menu_state;
+
+  if(menuState==='asked_gender'){
+    if(/^b(ride)?$/i.test(text)) return await sendProfiles('bride');
+    if(/^g(room)?$/i.test(text)) return await sendProfiles('groom');
+    await send('Please reply *B* for Bride profiles or *G* for Groom profiles.\n\nOr reply *menu* to go back.');
+    return {handled:true,step:'asked_gender_reprompt'};
+  }
+
+  if(menuState==='viewing_profiles'&&/^next$/i.test(text)){
+    return await sendProfiles(st.profile_type||'bride');
+  }
+
+  // Brand-new lead — show welcome automatically
+  if(isNewLead){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    await send(buildWelcome());
+    return {handled:true,step:'welcome'};
+  }
+
+  return null;
+}
 
 // Canonical DB columns for each table (used to validate incoming field names from n8n)
 const MATRI_WEBHOOK_COLS={
