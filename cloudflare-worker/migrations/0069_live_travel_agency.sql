@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS live_travel_suppliers (
   last_checked_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  credentials_encrypted TEXT,
+  endpoints_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(client_id, supplier)
 );
 CREATE INDEX IF NOT EXISTS idx_live_travel_suppliers_client
