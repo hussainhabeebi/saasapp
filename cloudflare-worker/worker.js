@@ -16295,14 +16295,14 @@ async function handleRecruitDelete(request, env, kind){
    Profile management, match tracking, shortlists, success stories.
    All tables are client_id-scoped; reads/writes go through session auth. ── */
 
-const MATRIMONIAL_PROFILE_FIELDS=['profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id'];
+const MATRIMONIAL_PROFILE_FIELDS=['profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id','age','gender','phone','whatsapp','guardian_phone','marriage_status','required_education','body_type','district','job_place','expected_partner_age','expected_partner_dob','other_conditions','payment_amount','payment_link','whatsapp_filled','plan_label','remarks'];
 const MATRIMONIAL_MATCH_FIELDS=['profile_id_1','profile_id_2','match_score','status','interest_sent_by','notes','family_meeting_date','family_meeting_venue','outcome_notes'];
 const MATRIMONIAL_SHORTLIST_FIELDS=['profile_id','shortlisted_profile_id','notes'];
 const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groom_name','wedding_date','testimonial','photo_url','featured'];
 const MATRIMONIAL_SETTINGS_FIELDS=['service_name','membership_plans','horoscope_matching_enabled','auto_suggest_matches','match_criteria_weights','privacy_note','success_story_template'];
 
 function matriCoerce(k,v){
-  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches']);
+  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches','age']);
   if(intFields.has(k)) return v===null||v===undefined||v===''?null:parseInt(v,10)||0;
   return v===null||v===undefined?null:String(v).trim().slice(0,2000);
 }
