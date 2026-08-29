@@ -16674,6 +16674,44 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   };
 
   const sendProfiles=async (profileType)=>{
+    // Activation gate — check if this phone has been granted profile-view access
+    let activated=null;
+    try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(!activated){
+      await send('⚠️ Your number is not activated for profile viewing.\n\nPlease contact us to get access.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'not_activated'};
+    }
+    if(activated.status!=='active'){
+      await send(`⚠️ Your profile view access has been *${activated.status}*.\n\nPlease contact us for assistance.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_'+activated.status};
+    }
+    const today=new Date().toISOString().slice(0,10);
+    const thisMonth=new Date().toISOString().slice(0,7);
+    if(activated.expiry_date&&activated.expiry_date<today){
+      await env.DB.prepare("UPDATE matrimonial_activated_leads SET status='expired',updated_at=? WHERE id=?").bind(new Date().toISOString(),activated.id).run().catch(()=>{});
+      await send(`⚠️ Your profile view access expired on *${activated.expiry_date}*.\n\nPlease contact us to renew.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_expired'};
+    }
+    const canView=activated.can_view||'both';
+    if(canView!=='both'&&profileType!==canView){
+      await send(`ℹ️ Your access is limited to *${canView}* profiles only. Switching for you.`);
+      profileType=canView;
+    }
+    const vToday=activated.last_daily_reset===today?(activated.views_today||0):0;
+    const vMonth=activated.last_monthly_reset===thisMonth?(activated.views_month||0):0;
+    const dLimit=activated.daily_limit||10, mLimit=activated.monthly_limit||50;
+    if(vToday>=dLimit){
+      await send(`📊 Daily limit reached (${vToday}/${dLimit} profiles viewed today).\n\nCome back tomorrow!`);
+      return {handled:true,step:'daily_limit'};
+    }
+    if(vMonth>=mLimit){
+      await send(`📊 Monthly limit reached (${vMonth}/${mLimit} profiles this month).\n\nYour limit resets next month.`);
+      return {handled:true,step:'monthly_limit'};
+    }
+
     let sentIds=[];
     try{ sentIds=JSON.parse(st?.sent_ids||'[]'); }catch(e){}
 
@@ -16708,6 +16746,9 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
     const newSentIds=[...sentIds,...batch.map(p=>p.id)];
     await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:JSON.stringify(newSentIds)});
+    // Increment view counters
+    await env.DB.prepare('UPDATE matrimonial_activated_leads SET views_today=?,views_month=?,last_daily_reset=?,last_monthly_reset=?,updated_at=? WHERE id=?')
+      .bind(vToday+batch.length,vMonth+batch.length,today,thisMonth,new Date().toISOString(),activated.id).run().catch(()=>{});
 
     const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',plan_label:'Plan',religion:'Religion',height_cm:'Height',annual_income:'Income',marriage_status:'Status'};
     for(const p of batch){
@@ -16798,6 +16839,56 @@ const MATRI_DEDUP_COL={
   profiles:'profiles_dedup_key', matches:'matches_dedup_key',
   shortlists:'shortlists_dedup_key', stories:'stories_dedup_key',
 };
+
+// CRUD for activated leads — customers allowed to view profiles via the WhatsApp chat menu.
+const MATRIMONIAL_ACTIVATED_FIELDS=['phone','name','can_view','daily_limit','monthly_limit','expiry_date','status','notes'];
+async function handleMatriActivatedList(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const {results}=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? ORDER BY id DESC').bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriActivatedCreate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.phone) return json({error:'phone required'},400);
+  const phone=String(body.phone).replace(/[^0-9]/g,'');
+  const now=new Date().toISOString();
+  try{
+    await env.DB.prepare('INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(String(payload.cid),phone,body.name||null,body.can_view||'both',parseInt(body.daily_limit)||10,parseInt(body.monthly_limit)||50,body.expiry_date||null,body.status||'active',body.notes||null,now,now).run();
+  }catch(e){
+    if(String(e.message||e).includes('UNIQUE')) return json({error:'This phone is already activated'},409);
+    throw e;
+  }
+  return json({ok:true});
+}
+async function handleMatriActivatedUpdate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  const now=new Date().toISOString();
+  const sets=[],vals=[];
+  for(const k of MATRIMONIAL_ACTIVATED_FIELDS){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`);
+    vals.push(k==='daily_limit'||k==='monthly_limit'?parseInt(body[k])||0:(body[k]===null?null:String(body[k])));
+  }
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(now); vals.push(String(payload.cid)); vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE matrimonial_activated_leads SET ${sets.join(',')} WHERE client_id=? AND id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleMatriActivatedDelete(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  await env.DB.prepare('DELETE FROM matrimonial_activated_leads WHERE client_id=? AND id=?').bind(String(payload.cid),Number(body.id)).run();
+  return json({ok:true});
+}
 
 // POST /matrimonial/webhook/:kind — public endpoint called by n8n; authenticated by per-table token.
 // Accepts a JSON array (or a single object) of rows. Each row's keys are mapped through the saved
@@ -26075,6 +26166,10 @@ export default {
       else if(url.pathname==='/matrimonial/stories' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_success_stories'); }
       else if(url.pathname==='/matrimonial/settings' && request.method==='GET'){ res=await handleMatriSettingsGet(request,env); }
       else if(url.pathname==='/matrimonial/settings' && request.method==='PATCH'){ res=await handleMatriSettingsUpdate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='GET'){ res=await handleMatriActivatedList(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='POST'){ res=await handleMatriActivatedCreate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='PATCH'){ res=await handleMatriActivatedUpdate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='DELETE'){ res=await handleMatriActivatedDelete(request,env); }
       // MATRIMONIAL WEBHOOKS (public, token-authenticated)
       else if(url.pathname==='/matrimonial/webhook/profiles'   && request.method==='POST'){ res=await handleMatriWebhook(request,env,'profiles'); }
       else if(url.pathname==='/matrimonial/webhook/matches'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'matches'); }
