@@ -592,6 +592,32 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward.</div>
       <div id="fuEngineStats"></div>
     </div>
+    <div class="card" id="smartFollowupCard">
+      <div class="card-title">⚡ Smart Follow-ups <span style="font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:2px 6px;margin-left:6px;vertical-align:middle">Beta</span></div>
+      <div class="msg info">Instead of a 15-minute background sweep, each lead gets its own self-scheduling agent — it fires at exactly the right time, and automatically resets the clock whenever your customer replies. Completely optional; your existing follow-ups keep working until you enable this.</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;font-size:13.5px;cursor:pointer">
+          <input type="checkbox" id="smartFuEnabled" style="width:auto;cursor:pointer" onchange="toggleSmartFollowups(this.checked)">
+          Enable Smart Follow-ups for my account
+        </label>
+        <span id="smartFuMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+      <div id="smartFuMigrateRow" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">Smart Follow-ups is enabled. Run the one-time migration below to bring your existing active leads onto the new system. New leads are handled automatically.</div>
+        <button class="btn btn-sec" onclick="migrateSmartFollowups()">Migrate existing leads</button>
+        <span id="smartFuMigrateMsg" style="font-size:12.5px;margin-left:10px"></span>
+      </div>
+    </div>
+    <div class="card" id="chatPageCard">
+      <div class="card-title">🔗 Chat Page</div>
+      <div class="msg info">Generate a shareable link your customers open in their browser — a full-page chat powered by your AI engine and FAQ. Give it to leads via WhatsApp, email signature, or a QR code. Each link is tied to your account and can be revoked at any time.</div>
+      <div id="chatTokensList" style="margin-top:12px"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <input type="text" id="chatTokenLabel" placeholder="Label (e.g. Website Button)" style="flex:1;min-width:120px;max-width:220px">
+        <button class="btn btn-primary" onclick="createChatToken()">+ New Link</button>
+        <span id="chatTokenMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+    </div>
   </div><!-- /view-fuengine -->
 
   <!-- ══════════════════════════════════════
@@ -1690,6 +1716,7 @@ async function saveFollowupQuietHours(){
 }
 async function loadFollowupEngine(){
   loadFollowupQuietHours();
+  loadSmartFollowupState();
   ['fuLadderSession','fuLadderStep3','fuLadderStep4','fuLadderStep5'].forEach(id=>{ $id(id).innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; });
   try{
     const [ladderR]=await Promise.all([
@@ -1704,7 +1731,92 @@ async function loadFollowupEngine(){
   renderFollowupLadderTemplateStep(4,'fuLadderStep4');
   renderFollowupLadderTemplateStep(5,'fuLadderStep5');
   fetchFollowupEngineStats();
+  loadChatTokens();
 }
+async function loadSmartFollowupState(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    const cb=$id('smartFuEnabled');
+    if(cb) cb.checked=!!d.enabled;
+    const migrateRow=$id('smartFuMigrateRow');
+    if(migrateRow) migrateRow.style.display=d.enabled?'':'none';
+  }catch(e){}
+}
+async function toggleSmartFollowups(enabled){
+  const msg=$id('smartFuMsg');
+  msg.textContent='Saving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart`,{method:'PATCH',headers:ncAuthHeaders(),body:JSON.stringify({enabled})});
+    const d=await r.json();
+    if(d.ok){
+      msg.textContent=enabled?'Enabled — new leads will use Smart Follow-ups.':'Disabled — reverting to standard sweep.';
+      const migrateRow=$id('smartFuMigrateRow');
+      if(migrateRow) migrateRow.style.display=enabled?'':'none';
+    } else { msg.textContent='Error saving.'; }
+  }catch(e){ msg.textContent='Network error.'; }
+  setTimeout(()=>{ const m=$id('smartFuMsg'); if(m) m.textContent=''; },4000);
+}
+async function migrateSmartFollowups(){
+  const msg=$id('smartFuMigrateMsg');
+  msg.textContent='Migrating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart/migrate`,{method:'POST',headers:ncAuthHeaders()});
+    const d=await r.json();
+    if(d.ok) msg.textContent=`Done — ${d.spawned} lead${d.spawned===1?'':'s'} migrated.`;
+    else msg.textContent=d.error||'Error.';
+  }catch(e){ msg.textContent='Network error.'; }
+}
+// ── Chat Page token management ───────────────────────────────────────────────
+const CHAT_PAGE_BASE='https://app.leadvyne.com/chat.html';
+
+async function loadChatTokens(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    renderChatTokens(d.tokens||[]);
+  }catch(e){ $id('chatTokensList').innerHTML='<span style="color:red;font-size:12.5px">Failed to load links.</span>'; }
+}
+
+function renderChatTokens(tokens){
+  const el=$id('chatTokensList');
+  if(!tokens.length){ el.innerHTML='<span style="font-size:12.5px;color:var(--muted)">No links yet — create your first one below.</span>'; return; }
+  el.innerHTML=tokens.map(t=>{
+    const url=`${CHAT_PAGE_BASE}?t=${encodeURIComponent(t.token)}`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:500;flex:1;min-width:80px">${esc(t.label||'Unnamed')}</span>
+      <a href="${url}" target="_blank" style="font-size:12px;color:var(--accent);word-break:break-all;flex:2;min-width:140px">${url.slice(0,60)}…</a>
+      <button class="btn btn-sec" style="font-size:12px;padding:4px 10px" onclick="copyChatLink('${esc(url)}')">Copy</button>
+      <button class="btn" style="font-size:12px;padding:4px 10px;color:#c0392b;border-color:#c0392b;background:transparent" onclick="deleteChatToken('${esc(t.token)}')">Revoke</button>
+    </div>`;
+  }).join('');
+}
+
+async function createChatToken(){
+  const label=$id('chatTokenLabel').value.trim();
+  const msg=$id('chatTokenMsg');
+  msg.textContent='Creating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({label})});
+    const d=await r.json();
+    if(d.token){ $id('chatTokenLabel').value=''; msg.textContent='Link created!'; loadChatTokens(); }
+    else msg.textContent=d.error||'Error.';
+  }catch(e){ msg.textContent='Network error.'; }
+  setTimeout(()=>{ $id('chatTokenMsg').textContent=''; },3000);
+}
+
+async function deleteChatToken(token){
+  if(!confirm('Revoke this chat link? Anyone using it will lose access.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'DELETE',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({token})});
+    loadChatTokens();
+  }catch(e){ alert('Network error.'); }
+}
+
+function copyChatLink(url){
+  navigator.clipboard.writeText(url).then(()=>alert('Link copied!')).catch(()=>prompt('Copy this link:',url));
+}
+
 async function saveFollowupEngine(){
   const msg=$id('fuEngineSaveMsg');
   msg.textContent='Saving…';

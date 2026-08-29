@@ -690,6 +690,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .appt-tab.active{color:#0891B2;border-bottom-color:#0891B2}
 .hosp-tab{font-family:var(--disp);font-size:12px;font-weight:600;padding:11px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap;flex-shrink:0}
 .hosp-tab.active{color:#B45309;border-bottom-color:#D97706}
+.rpt-period{font-size:11px;font-weight:500;padding:4px 10px;border:1px solid var(--line);border-radius:20px;background:var(--bg);color:var(--muted);cursor:pointer;transition:all .15s;white-space:nowrap}
+.rpt-period.active,.rpt-period:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 .hosp-day{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;cursor:pointer;border:1.5px solid var(--line);gap:2px;transition:transform .1s}
 .hosp-day:hover{transform:scale(1.05)}
 .hosp-day.available{background:#F0FDF4;color:#166534;border-color:#BBF7D0}
@@ -1500,6 +1502,7 @@ const ROLES = {
           <button class="btn btn-secondary btn-sm leads-view-btn active" id="leadsViewModeList" onclick="setLeadsViewMode('list')">📇 List</button>
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModePipeline" onclick="setLeadsViewMode('pipeline')">🗂 Pipeline</button>
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModeAnalyst" onclick="setLeadsViewMode('analyst')" title="AI Data Analyst &amp; Business Intelligence">🧠 AI Analyst</button>
+          <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModeSplits" onclick="setLeadsViewMode('splits')" title="Location &amp; Product split — see where leads come from and what they want">📍 Splits</button>
         </div>
       </div>
 
@@ -1540,6 +1543,7 @@ const ROLES = {
             </select>
             <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
             <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
+            <button class="btn btn-secondary btn-sm" id="leadsScopeBtn" onclick="toggleLeadsOwnerScope()" title="Switch between your leads and all leads"></button>
             <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
             <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
             <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
@@ -1591,6 +1595,19 @@ const ROLES = {
           <button class="hosp-tab" data-ai="custom">🛠️ Custom Analysis</button>
         </div>
         <div id="aiContent" class="page-pad"></div>
+      </div>
+
+      <!-- Location & Product Splits view — groups allLeads by Country/city and by detected/confirmed
+           product, surfacing "from chat" signals and generating targeted suggestions. -->
+      <div id="leadsSplitsView" style="display:none">
+        <div class="page-pad">
+          <div id="splitsSuggestions" style="margin-bottom:16px"></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:16px">
+            <div class="card" id="splitsLocationCard" style="padding:0;overflow:hidden"></div>
+            <div class="card" id="splitsProductCard" style="padding:0;overflow:hidden"></div>
+          </div>
+          <div class="card" id="splitsMatrixCard" style="padding:0;overflow:hidden"></div>
+        </div>
       </div>
     </div>
 
@@ -1964,6 +1981,24 @@ const ROLES = {
         <button class="hosp-tab" data-reports="saas">📈 SaaS</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
         <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
+      </div>
+      <div id="rptFilterBar" style="background:var(--card);border-bottom:1px solid var(--line);padding:8px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:41px;z-index:9">
+        <div style="display:flex;gap:3px;flex-wrap:wrap">
+          <button class="rpt-period active" data-period="all"   onclick="setRptPeriod('all')">All Time</button>
+          <button class="rpt-period"        data-period="today" onclick="setRptPeriod('today')">Today</button>
+          <button class="rpt-period"        data-period="week"  onclick="setRptPeriod('week')">This Week</button>
+          <button class="rpt-period"        data-period="month" onclick="setRptPeriod('month')">This Month</button>
+          <button class="rpt-period"        data-period="year"  onclick="setRptPeriod('year')">This Year</button>
+        </div>
+        <input type="date" id="rptFrom" style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="setRptCustom()">
+        <span style="font-size:11px;color:var(--muted)">–</span>
+        <input type="date" id="rptTo"   style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="setRptCustom()">
+        <select id="rptMember" style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="renderReports()">
+          <option value="">All Members</option>
+        </select>
+        <div style="flex:1"></div>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportCsv()">📥 CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportPdf()">🖨️ PDF</button>
       </div>
       <div class="page-pad" id="reportsContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
@@ -3195,6 +3230,9 @@ const ROLES = {
             </div>
           </div>
         </div>
+        <!-- Lead Routing — auto-assignment rules for incoming leads. Rendered by
+             renderLeadRoutingSettings(); only visible to the account owner. -->
+        <div class="card" style="margin-bottom:14px" id="leadRoutingCard"></div>
       </div>
     </div>
 
@@ -4738,7 +4776,19 @@ function navigate(page){
   const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
   if(SETTINGS_GROUP.includes(page)) renderSettingsSubnav(page);
   if(page==='quotation') quoteInit();
-  if(page==='leads') setLeadsViewMode(_leadsViewMode);
+  if(page==='leads'){
+    if(!_leadsOwnerScopeInitialized){
+      _leadsOwnerScope=isAccountOwner()?'all':'mine_and_unassigned';
+      _leadsOwnerScopeInitialized=true;
+    }
+    // When routing is active, non-owners are locked to their assigned leads — hide the toggle.
+    if(getLeadRouting().enabled&&!isAccountOwner()){
+      _leadsOwnerScope='mine_and_unassigned';
+      const sb=$id('leadsScopeBtn'); if(sb) sb.style.display='none';
+    }
+    renderLeadsOwnerScopeBtn();
+    setLeadsViewMode(_leadsViewMode);
+  }
   if(page==='team') renderTeamPerformance();
   if(page==='reports') renderReports();
   if(page==='humandeals') renderHumanDeals();
@@ -5612,6 +5662,7 @@ async function markHumanDealSpam(leadId){
 async function markLeadWon(leadId, ev){
   ev?.stopPropagation();
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Marked Won');
   try{
     await applyHumanDealOutcome(leadId, 'Resolved-Won');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -5623,6 +5674,7 @@ async function markLeadWon(leadId, ev){
 async function markLeadSpam(leadId, ev){
   ev?.stopPropagation();
   if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  await claimLeadIfUnowned(leadId,'Marked Spam');
   try{
     await applyHumanDealOutcome(leadId, 'Spam');
     if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
@@ -5753,6 +5805,8 @@ function renderHumanDeals(){
 let _leadsFilter={ stages:[], tag:'' };
 let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | a saved view's id
 let _leadsSavedViews=null; // lazy-loaded from clientRecord.lead_saved_views
+let _leadsOwnerScope=null; // 'mine_and_unassigned' | 'all' — set on first navigate to leads
+let _leadsOwnerScopeInitialized=false;
 
 function getLeadSavedViews(){
   if(_leadsSavedViews) return _leadsSavedViews;
@@ -5844,8 +5898,10 @@ function isReactivationCandidate(l){
 
 function applyLeadsViewFilter(leads){
   let out=leads;
+  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||l.Owner===myEmail);
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
+  else if(_leadsActiveView==='unmatched') out=out.filter(l=>!l.Owner);
 
   const q=($id('leadSearch')?.value||'').toLowerCase();
   if(q){
@@ -5917,11 +5973,16 @@ function renderLeadsViewTabs(){
   const reconnectCount=allLeads.filter(isReactivationCandidate).length;
   const saved=getLeadSavedViews();
   const tab=(id,label,count)=>`<button class="lv-tab${_leadsActiveView===id?' active':''}" onclick="selectLeadsView('${id}')">${label}${count!==undefined?` (${count})`:''}</button>`;
+  // Unmatched tab — only for account owner when routing is on and round-robin is not catching everything
+  const rt=getLeadRouting();
+  const showUnmatched=isAccountOwner()&&rt.enabled&&!rt.modes?.includes('roundrobin')&&!rt.catchall;
+  const unmatchedCount=showUnmatched?allLeads.filter(l=>!l.Owner).length:0;
   wrap.innerHTML=
     tab('needs_action','🎯 Needs Action',needsActionCount)+
     tab('all','📋 All Leads')+
     saved.map(v=>`<span class="lv-tab${_leadsActiveView===v.id?' active':''}" onclick="selectLeadsView('${v.id}')">⭐ ${esc(v.name)}<span class="lv-x" onclick="event.stopPropagation();deleteLeadsSavedView('${v.id}')" title="Delete this view">✕</span></span>`).join('')+
     tab('reactivate','♻️ Reconnect',reconnectCount)+
+    (showUnmatched?tab('unmatched','⬡ Unmatched',unmatchedCount):'')+
     `<button class="lv-tab" onclick="promptSaveLeadsView()">＋ Save current filters</button>`;
 }
 function selectLeadsView(id){
@@ -6202,18 +6263,311 @@ function setLeadsViewMode(mode){
   $id('leadsViewModeList')?.classList.toggle('active', mode==='list');
   $id('leadsViewModePipeline')?.classList.toggle('active', mode==='pipeline');
   $id('leadsViewModeAnalyst')?.classList.toggle('active', mode==='analyst');
+  $id('leadsViewModeSplits')?.classList.toggle('active', mode==='splits');
   $id('leadsListView').style.display=mode==='list'?'':'none';
   $id('leadsPipelineView').style.display=mode==='pipeline'?'':'none';
   $id('leadsAnalystView').style.display=mode==='analyst'?'':'none';
+  $id('leadsSplitsView').style.display=mode==='splits'?'':'none';
   if(mode==='pipeline') renderKanban();
   else if(mode==='analyst') renderAiAnalyst();
+  else if(mode==='splits') renderLeadsSplits();
   else if(_leadsTableView) renderLeadsTable();
   else renderLeadsList();
+}
+
+/* ── LOCATION & PRODUCT/PROPERTY SPLITS VIEW ────────────────────────────────────────────────────
+   Industry-aware: city/sub-location from chat instead of country; property/unit for hospitality,
+   product/brand for ecom, destination for travel. "From chat" = bot-detected, not manually set.
+   All computed client-side from allLeads — no LLM calls, no new Worker routes. */
+function renderLeadsSplits(){
+  const leads=allLeads;
+  if(!leads||!leads.length){
+    ['splitsSuggestions','splitsLocationCard','splitsProductCard','splitsMatrixCard'].forEach(id=>{
+      const el=$id(id); if(el) el.innerHTML='<div style="padding:20px;color:var(--muted);font-size:13px">No leads loaded yet.</div>';
+    });
+    return;
+  }
+
+  const industry=clientRecord?.industry||'general';
+  const isHosp=industry==='hospitality';
+  const isEcom=industry==='ecommerce';
+  const isTravel=industry==='travel';
+
+  // ── shared helpers ───────────────────────────────────────────────────────────
+  function parseQa(l){ try{return JSON.parse(l.QualAnswers||'{}');}catch(e){return {};} }
+  // Extract city/sub-location from QualAnswers: scan multiple key variants in priority order.
+  // Keys are the literal qualification question text, so we match substring of key lowercased.
+  const LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','sub','place','pincode','pin','region'];
+  function getSubLocation(l){
+    const qa=parseQa(l);
+    const entries=Object.entries(qa);
+    for(const k of LOC_KEYS){
+      const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+      if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim();
+    }
+    return '';
+  }
+  function pct(a,b){ return b?Math.round(a/b*100):0; }
+  function badge(s){
+    const col=s==='Hot'?'#DC2626':s==='Warm'?'#D97706':'#6B7280';
+    const bg=s==='Hot'?'#FEF2F2':s==='Warm'?'#FFFBEB':'#F9FAFB';
+    const border=s==='Hot'?'#FECACA':s==='Warm'?'#FDE68A':'#E5E7EB';
+    return s?`<span style="font-size:10px;font-weight:700;color:${col};background:${bg};padding:1px 6px;border-radius:10px;border:1px solid ${border}">${s}</span>`:'';
+  }
+  function chatBadge(label){ return `<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE">💬 ${label}</span>`; }
+  function confirmedBadge(){ return `<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#E0E7FF;color:#3730A3;border:1px solid #C7D2FE">🏷️ confirmed</span>`; }
+  function barFill(val,max,color){ return `<div class="bar-bg" style="height:6px;background:var(--line);border-radius:3px;margin:4px 0"><div style="height:6px;border-radius:3px;background:${color};width:${pct(val,max)}%"></div></div>`; }
+
+  // ── INDUSTRY-SPECIFIC: primary grouping key ──────────────────────────────────
+  // Returns { key, subKey, fromChat, confirmed } for the "product/property" panel.
+  function getPrimary(l){
+    if(isHosp){
+      // HospSelectedProperty / HospSelectedUnit — both written by the bot engine from chat.
+      const prop=l.HospSelectedProperty||'';
+      const unit=l.HospSelectedUnit||'';
+      return { key:prop||unit||'', subKey:prop&&unit?unit:'', fromChat:!!(prop||unit), confirmed:false };
+    }
+    if(isTravel){
+      const dest=l.Destination||'';
+      const svc=l.ServiceCategory||'';
+      return { key:dest||svc||'', subKey:dest&&svc?svc:'', fromChat:!!dest, confirmed:!!svc };
+    }
+    // Ecom / general: InterestedProduct (confirmed) vs ProductCategory/Brand (from chat)
+    const manual=l.InterestedProduct||'';
+    const chat=l.ProductCategory||l.Brand||'';
+    return { key:manual||chat||'', subKey:'', fromChat:!manual&&!!chat, confirmed:!!manual };
+  }
+  const primaryLabel=isHosp?'Property / Unit':isTravel?'Destination / Service':'Product / Brand';
+  const primaryIcon=isHosp?'🏨':isTravel?'✈️':'📦';
+  const primaryColor=isHosp?'#EA580C':isTravel?'#0369A1':'#8B5CF6';
+
+  // ── LOCATION grouping (city/sub-location from chat) ──────────────────────────
+  const locMap={};
+  leads.forEach(l=>{
+    const loc=getSubLocation(l)||'(not captured)';
+    if(!locMap[loc]) locMap[loc]={total:0,hot:0,warm:0,won:0,fromChatPrimary:0};
+    const g=locMap[loc];
+    g.total++;
+    if(l.Score==='Hot') g.hot++;
+    if(l.Score==='Warm') g.warm++;
+    if(isWonLead(l)) g.won++;
+    if(getPrimary(l).fromChat) g.fromChatPrimary++;
+  });
+  const locRows=Object.entries(locMap).sort((a,b)=>{
+    // float "not captured" to bottom
+    if(a[0]==='(not captured)') return 1;
+    if(b[0]==='(not captured)') return -1;
+    return b[1].total-a[1].total;
+  });
+  const locCaptured=locRows.filter(([k])=>k!=='(not captured)');
+
+  // ── PRIMARY grouping (product/property/destination) ──────────────────────────
+  const primMap={};
+  leads.forEach(l=>{
+    const p=getPrimary(l);
+    if(!p.key) return;
+    if(!primMap[p.key]) primMap[p.key]={total:0,hot:0,warm:0,won:0,fromChat:0,confirmed:0,units:{}};
+    const g=primMap[p.key];
+    g.total++;
+    if(l.Score==='Hot') g.hot++;
+    if(l.Score==='Warm') g.warm++;
+    if(isWonLead(l)) g.won++;
+    if(p.fromChat) g.fromChat++;
+    if(p.confirmed) g.confirmed++;
+    if(p.subKey){ if(!g.units[p.subKey]) g.units[p.subKey]=0; g.units[p.subKey]++; }
+  });
+  const primRows=Object.entries(primMap).sort((a,b)=>b[1].total-a[1].total);
+  const noTagged=leads.filter(l=>!getPrimary(l).key).length;
+
+  // ── MATRIX (location × primary) ──────────────────────────────────────────────
+  const matrixMap={};
+  leads.forEach(l=>{
+    const loc=getSubLocation(l)||'(not captured)';
+    const p=getPrimary(l).key||'(none)';
+    const k=`${loc}|||${p}`;
+    if(!matrixMap[k]) matrixMap[k]={loc,primary:p,total:0,hot:0,fromChat:0};
+    matrixMap[k].total++;
+    if(l.Score==='Hot') matrixMap[k].hot++;
+    if(getPrimary(l).fromChat) matrixMap[k].fromChat++;
+  });
+  const matrixRows=Object.values(matrixMap)
+    .filter(r=>r.loc!=='(not captured)'&&r.primary!=='(none)')
+    .sort((a,b)=>b.total-a.total).slice(0,20);
+
+  // ── SUGGESTIONS ──────────────────────────────────────────────────────────────
+  const suggestions=[];
+
+  // Hot leads by top location
+  if(locCaptured.length){
+    const [topLoc,tg]=locCaptured[0];
+    if(tg.hot>0) suggestions.push({icon:'🔥',text:`<strong>${tg.hot} hot lead${tg.hot>1?'s':''}</strong> from <strong>${esc(topLoc)}</strong> — send a targeted follow-up now.`,action:`setLeadsViewMode('list')`});
+  }
+
+  // Sub-location capture rate
+  const withLoc=leads.filter(l=>!!getSubLocation(l));
+  if(withLoc.length<leads.length*0.5&&leads.length>10){
+    const missing=leads.length-withLoc.length;
+    const locQ=isHosp?'city / area':isTravel?'city of origin':'city or area';
+    suggestions.push({icon:'📍',text:`<strong>${missing} lead${missing>1?'s':''}</strong> ha${missing===1?'s':'ve'} no ${locQ} captured from chat. Add a location question to your bot's qualification flow.`});
+  }
+
+  if(isHosp){
+    // Unassigned property interest
+    const noHosp=leads.filter(l=>!l.HospSelectedProperty&&!l.HospSelectedUnit);
+    if(noHosp.length>0&&noHosp.length<leads.length) suggestions.push({icon:'🏨',text:`<strong>${noHosp.length} lead${noHosp.length>1?'s':''}</strong> ha${noHosp.length===1?'sn\'t':'ven\'t'} selected a property or unit yet — follow up to understand their preference.`,action:`setLeadsViewMode('list')`});
+    // Top property with low win rate
+    const lowWin=primRows.filter(([,g])=>g.total>=3&&pct(g.won,g.total)<20);
+    if(lowWin.length) suggestions.push({icon:'⚠️',text:`<strong>${lowWin[0][0]}</strong> has a ${pct(lowWin[0][1].won,lowWin[0][1].total)}% win rate (${lowWin[0][1].won} of ${lowWin[0][1].total}) — check pricing, availability, or your pitch for this property.`,action:`setLeadsViewMode('list')`});
+  } else if(isTravel){
+    const noSvc=leads.filter(l=>!l.Destination&&!l.ServiceCategory);
+    if(noSvc.length>0&&noSvc.length<leads.length) suggestions.push({icon:'✈️',text:`<strong>${noSvc.length} lead${noSvc.length>1?'s':''}</strong> ha${noSvc.length===1?'s':'ve'} no destination or service category — ask them what they're planning.`,action:`setLeadsViewMode('list')`});
+  } else {
+    // Ecom/general: unconfirmed chat products
+    const fromChatOnly=leads.filter(l=>!l.InterestedProduct&&!!(l.ProductCategory||l.Brand));
+    if(fromChatOnly.length) suggestions.push({icon:'💬',text:`<strong>${fromChatOnly.length} lead${fromChatOnly.length>1?'s':''}</strong> ha${fromChatOnly.length===1?'s':'ve'} a product detected from chat but not yet confirmed — tap "→ Set" to lock them in.`,action:`setLeadsViewMode('list')`});
+    // Zero-win products with ≥3 leads
+    const noWin=primRows.filter(([,g])=>g.total>=3&&g.won===0);
+    if(noWin.length) suggestions.push({icon:'📦',text:`<strong>${esc(noWin[0][0])}</strong> has ${noWin[0][1].total} leads with 0 wins — review objections or update your pitch for this product.`,action:`setLeadsViewMode('list')`});
+  }
+
+  // Hot leads with no owner (all industries)
+  const hotUnowned=leads.filter(l=>l.Score==='Hot'&&!l.Owner);
+  if(hotUnowned.length) suggestions.push({icon:'⚡',text:`<strong>${hotUnowned.length} hot lead${hotUnowned.length>1?'s':''}</strong> ha${hotUnowned.length===1?'s':'ve'} no owner assigned — assign now before they go cold.`,action:`setLeadsViewMode('list')`});
+
+  // Top location × primary combo with hot leads
+  if(matrixRows.length&&matrixRows[0].hot>0){
+    const r=matrixRows[0];
+    suggestions.push({icon:'🎯',text:`Hottest combo: <strong>${esc(r.loc)}</strong> × <strong>${esc(r.primary)}</strong> — ${r.hot} hot lead${r.hot>1?'s':''} waiting.`,action:`setLeadsViewMode('list')`});
+  }
+
+  // ── RENDER suggestions ───────────────────────────────────────────────────────
+  $id('splitsSuggestions').innerHTML=suggestions.length?`
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <span style="font-size:15px;font-weight:700">💡 Suggestions</span>
+      <span style="font-size:12px;color:var(--muted)">${suggestions.length} actionable insight${suggestions.length>1?'s':''}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${suggestions.map(s=>`<div class="card" style="padding:10px 14px;display:flex;align-items:flex-start;gap:10px;border-left:3px solid var(--accent)">
+        <span style="font-size:18px;flex-shrink:0">${s.icon}</span>
+        <span style="font-size:13px;line-height:1.5">${s.text}</span>
+        ${s.action?`<button class="btn btn-secondary btn-sm" style="flex-shrink:0;margin-left:auto" onclick="${s.action}">View →</button>`:''}
+      </div>`).join('')}
+    </div>`:'';
+
+  // ── RENDER location card (city/sub-location from chat) ───────────────────────
+  const maxLoc=locCaptured[0]?.[1]?.total||1;
+  const locHdr=isHosp?'City / Area from Chat':isTravel?'City of Origin from Chat':'City / Area from Chat';
+  $id('splitsLocationCard').innerHTML=`
+    <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
+      <span style="font-size:15px;font-weight:700">📍 By ${locHdr}</span>
+      <span style="font-size:12px;color:var(--muted)">${locCaptured.length} location${locCaptured.length===1?'':'s'} · ${withLoc.length}/${leads.length} leads</span>
+    </div>
+    <div style="overflow-y:auto;max-height:420px">
+      ${locCaptured.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No city/area data captured yet. The bot stores location answers from your qualification questions here automatically.</div>`:''}
+      ${locRows.map(([loc,g])=>{
+        const uncap=loc==='(not captured)';
+        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line)${uncap?';opacity:.55':';cursor:pointer'}" ${uncap?'':'onclick="setLeadsViewMode(\'list\')" title="Filter leads from '+loc+'"'}>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+            <span style="font-size:13px;font-weight:${uncap?'400':'600'};flex:1;color:${uncap?'var(--muted)':'inherit'}">${uncap?'<em>not captured</em>':esc(loc)}</span>
+            <span style="font-size:12px;color:var(--muted)">${g.total}</span>
+            ${!uncap&&g.hot?badge('Hot'):!uncap&&g.warm?badge('Warm'):''}
+          </div>
+          ${!uncap?barFill(g.total,maxLoc,'var(--accent)'):''}
+          <div style="display:flex;gap:10px;font-size:11px;color:var(--muted);flex-wrap:wrap">
+            ${g.hot?`<span>🔥 ${g.hot} hot</span>`:''}
+            ${g.won?`<span>✅ ${g.won} won (${pct(g.won,g.total)}%)</span>`:''}
+            ${g.fromChatPrimary?`<span>💬 ${g.fromChatPrimary} with chat ${isHosp?'property':'product'}</span>`:''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  // ── RENDER primary card (product / property / destination) ───────────────────
+  const maxPrim=primRows[0]?.[1]?.total||1;
+  $id('splitsProductCard').innerHTML=`
+    <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
+      <span style="font-size:15px;font-weight:700">${primaryIcon} By ${primaryLabel}</span>
+      <span style="font-size:12px;color:var(--muted)">${primRows.length} item${primRows.length===1?'':'s'}${noTagged?` · ${noTagged} untagged`:''}
+        <span title="💬 = detected from chat · 🏷️ = manually confirmed" style="cursor:help;margin-left:4px">ℹ️</span>
+      </span>
+    </div>
+    <div style="overflow-y:auto;max-height:420px">
+      ${primRows.length===0?`<div style="padding:20px;color:var(--muted);font-size:13px">No ${primaryLabel.toLowerCase()} data yet. ${isHosp?'The bot tags leads when they pick a property from chat.':isTravel?'Add Destination to your leads to see this split.':'The bot tags leads automatically when they mention a product in chat.'}</div>`:''}
+      ${primRows.map(([key,g])=>{
+        const topUnits=Object.entries(g.units).sort((a,b)=>b[1]-a[1]).slice(0,3);
+        const src=isHosp?(g.fromChat&&!g.confirmed?chatBadge('from chat'):''):
+                  isTravel?(g.fromChat?chatBadge('destination'):(g.confirmed?confirmedBadge():'')):
+                  (g.fromChat&&!g.confirmed?chatBadge('from chat'):g.confirmed&&!g.fromChat?confirmedBadge():g.confirmed&&g.fromChat?confirmedBadge()+`<span style="font-size:10px;padding:1px 6px;border-radius:10px;background:#DBEAFE;color:#1D4ED8;border:1px solid #BFDBFE;margin-left:3px">+💬 ${g.fromChat}</span>`:'');
+        return `<div style="padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer" onclick="$id('leadProductFilter').value='${key.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="Filter by ${key}">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:600;flex:1">${esc(key)}</span>
+            ${src}
+            <span style="font-size:12px;color:var(--muted)">${g.total}</span>
+            ${g.hot?badge('Hot'):''}
+          </div>
+          ${barFill(g.total,maxPrim,primaryColor)}
+          <div style="display:flex;gap:10px;font-size:11px;color:var(--muted);flex-wrap:wrap">
+            ${g.hot?`<span>🔥 ${g.hot} hot</span>`:''}
+            ${g.warm?`<span>🌡 ${g.warm} warm</span>`:''}
+            ${g.won?`<span>✅ ${g.won} won (${pct(g.won,g.total)}%)</span>`:''}
+            ${topUnits.length?`<span>↳ ${topUnits.map(([u,n])=>`${esc(u)} (${n})`).join(', ')}</span>`:''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  // ── RENDER matrix card ───────────────────────────────────────────────────────
+  const matrixLocHdr=isHosp?'City / Area':isTravel?'City of Origin':'City / Area';
+  $id('splitsMatrixCard').innerHTML=`
+    <div style="padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
+      <span style="font-size:15px;font-weight:700">🔀 ${matrixLocHdr} × ${primaryLabel}</span>
+      <span style="font-size:12px;color:var(--muted)">Top ${matrixRows.length} combo${matrixRows.length===1?'':'s'} · click a row to filter</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+        <thead>
+          <tr style="background:var(--hover)">
+            <th style="text-align:left;padding:8px 16px;color:var(--muted);font-weight:600">${matrixLocHdr}</th>
+            <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">${primaryLabel}</th>
+            <th style="text-align:right;padding:8px 12px;color:var(--muted);font-weight:600">Leads</th>
+            <th style="text-align:right;padding:8px 12px;color:var(--muted);font-weight:600">🔥 Hot</th>
+            <th style="text-align:right;padding:8px 16px;color:var(--muted);font-weight:600">💬 Chat</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${matrixRows.length===0?`<tr><td colspan="5" style="padding:20px;color:var(--muted);text-align:center">No location + ${primaryLabel.toLowerCase()} combinations yet — both need to be captured from chat.</td></tr>`:''}
+          ${matrixRows.map((r,i)=>`<tr style="border-top:1px solid var(--line);cursor:pointer;${i%2===1?'background:var(--hover)':''}" onclick="$id('leadProductFilter').value='${r.primary.replace(/'/g,"\\'")}';onLeadsFilterChange();setLeadsViewMode('list')" title="${r.loc} → ${r.primary}">
+            <td style="padding:8px 16px;font-weight:500">${esc(r.loc)}</td>
+            <td style="padding:8px 12px">${esc(r.primary)}${r.fromChat?` <span style="font-size:10px;padding:1px 5px;border-radius:8px;background:#DBEAFE;color:#1D4ED8">💬</span>`:''}</td>
+            <td style="padding:8px 12px;text-align:right;font-weight:600">${r.total}</td>
+            <td style="padding:8px 12px;text-align:right;color:#DC2626">${r.hot||'—'}</td>
+            <td style="padding:8px 16px;text-align:right;color:#1D4ED8">${r.fromChat||'—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
 // Convenience for any button elsewhere that used to link straight to the standalone Pipeline tab.
 function goToPipeline(){ navigate('leads'); setLeadsViewMode('pipeline'); }
 
 let _leadsTableView=false;
+function renderLeadsOwnerScopeBtn(){
+  const btn=$id('leadsScopeBtn');
+  if(!btn) return;
+  if(_leadsOwnerScope==='mine_and_unassigned'){
+    btn.textContent='👤 Mine';
+    btn.title='Showing your leads + unassigned — click to see all';
+  } else {
+    btn.textContent='👥 All';
+    btn.title='Showing all leads — click to show only yours + unassigned';
+  }
+}
+function toggleLeadsOwnerScope(){
+  _leadsOwnerScope=_leadsOwnerScope==='mine_and_unassigned'?'all':'mine_and_unassigned';
+  renderLeadsOwnerScopeBtn();
+  onLeadsFilterChange();
+}
+
 function toggleLeadsView(){
   _leadsTableView=!_leadsTableView;
   const btn=$id('leadsViewBtn');
@@ -6369,6 +6723,7 @@ async function sendLeadsTemplate(){
   let sent=0,failed=0;
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
+    await claimLeadIfUnowned(lead.Id,'Template sent');
     const convId=leadConvId(lead);
     const resolvedVars=vars.map((v,idx)=>idx===0&&personalize?(lead.Name||v):v);
 
@@ -7713,6 +8068,7 @@ function renderDetailNotes(lead){
 async function addNote(){
   const text=$id('noteInput').value.trim();
   if(!text||!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Note');
   let notes=[]; try{notes=JSON.parse(currentLead.NotesList||'[]');}catch(e){}
   // ts (ISO) is what chats.js's merged timeline sorts by — date stays for the existing display
   // format above, ts is the addition. author lets both this panel and the Chats tab show who
@@ -7825,6 +8181,7 @@ function openCallLog(leadId){
 
 async function saveCall(){
   if(!currentLead)return;
+  await claimLeadIfUnowned(currentLead.Id,'Call log');
   let calls=[]; try{calls=JSON.parse(currentLead.CallLog||'[]');}catch(e){}
   calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
@@ -7834,8 +8191,30 @@ async function saveCall(){
   $id('callDuration').value=''; $id('callNotes').value='';
 }
 
+// Auto-assign ownership on first touch (Option A — silent, never overrides an existing owner).
+// Patches Owner + appends a system ConvHistory entry so managers can see who picked up the lead
+// and what triggered the assignment.
+async function claimLeadIfUnowned(leadId, activity){
+  if(!myEmail) return;
+  const lead=allLeads.find(l=>l.Id===leadId);
+  if(!lead||lead.Owner) return;
+  try{
+    let hist=[]; try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity||'action'}`,ts:new Date().toISOString()});
+    const convJson=JSON.stringify(hist.slice(-40));
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Owner:myEmail,ConvHistory:convJson});
+    lead.Owner=myEmail; lead.ConvHistory=convJson;
+    if(currentLead&&currentLead.Id===leadId){
+      currentLead.Owner=myEmail; currentLead.ConvHistory=convJson;
+      $id('detailSub').textContent=(currentLead.Phone||'')+' · '+myEmail+' · '+(currentLead.Stage||'new');
+      $id('detailOwner').innerHTML=teamMemberOptions(myEmail);
+    }
+  }catch(e){}
+}
+
 async function patchDetailField(field,val){
   if(!currentLead)return;
+  if(field==='ReminderDate'&&val) await claimLeadIfUnowned(currentLead.Id,'Reminder set');
   const prevVal=currentLead[field];
   currentLead[field]=val;
   const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
@@ -8540,6 +8919,118 @@ function isAccountOwner(email){
 }
 function getTeamPermissions(){
   try{ return JSON.parse(clientRecord.team_permissions||'{}'); }catch(e){ return {}; }
+}
+function getLeadRouting(){
+  try{ return JSON.parse(clientRecord.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+/* ── LEAD ROUTING SETTINGS ────────────────────────────────────────────────────────────────────────
+   Owner-only. Stored as clientRecord.lead_routing (JSON). Routing priority (when enabled):
+   1. Product/Property match  2. Location match  3. Round-Robin pool  4. Catch-all / Unmatched. */
+function renderLeadRoutingSettings(){
+  const card=$id('leadRoutingCard'); if(!card||!isAccountOwner()) return;
+  const rt=getLeadRouting();
+  const enabled=!!rt.enabled;
+  const modes=Array.isArray(rt.modes)?rt.modes:[];
+  const rules=rt.rules||{};
+  const catchall=rt.catchall||'';
+  const industry=clientRecord?.industry||'general';
+  const isHosp=industry==='hospitality';
+  const isTravel=industry==='travel';
+
+  const members=getTeamMembers().filter(m=>!isAccountOwner(m.email));
+  const memberOpts=members.map(m=>`<option value="${m.email}"${catchall===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+
+  // Per-user rule rows (visible only when routing is enabled)
+  const ruleRows=members.map(m=>{
+    const r=rules[m.email]||{};
+    const locs=(r.locations||[]).join(', ');
+    const prods=(r.products||[]).join(', ');
+    const props=(r.properties||[]).join(', ');
+    return `<tr style="border-top:1px solid var(--line)">
+      <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(m.name||m.email)}<br><span style="font-size:11px;color:var(--muted)">${esc(m.email)}</span></td>
+      <td style="padding:8px 10px"><label style="display:flex;align-items:center;gap:5px;font-size:13px"><input type="checkbox" data-email="${m.email}" data-field="inPool" ${r.inPool?' checked':''}> In pool</label></td>
+      <td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Dubai, Abu Dhabi…" data-email="${m.email}" data-field="locations" value="${esc(locs)}" title="Comma-separated cities/areas this user handles"></td>
+      ${!isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="${isHosp?'Houseboat A, Villa 2…':'Nike Air Max, Adidas…'}" data-email="${m.email}" data-field="${isHosp?'properties':'products'}" value="${esc(isHosp?props:prods)}" title="Comma-separated ${isHosp?'properties':'products/brands'} this user handles"></td>`:''}
+      ${isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Package, Hotel, Ticket…" data-email="${m.email}" data-field="products" value="${esc(prods)}" title="Comma-separated service categories this user handles"></td>`:''}
+    </tr>`;
+  }).join('');
+
+  card.innerHTML=`
+    <div class="settings-section" style="margin-bottom:0">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <div class="s-head" style="margin:0">🔀 Lead Routing</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-left:auto">
+          <input type="checkbox" id="lrEnabled" ${enabled?' checked':''}> Enable auto-assignment
+        </label>
+      </div>
+      <div class="s-note" style="margin-bottom:12px">Auto-assigns new leads to team members in priority order: <strong>Product/Property → Location → Round-Robin → Catch-all</strong>. Leads that match no rule stay Unmatched (visible to you in the "⬡ Unmatched" tab). Non-owners always see only their assigned leads when routing is on.</div>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeProduct" ${modes.includes('product')?' checked':''}> ${isHosp?'🏨 Property/Unit match':isTravel?'✈️ Destination match':'📦 Product/Brand match'}</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeLocation" ${modes.includes('location')?' checked':''}> 📍 Location match</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="lrModeRR" ${modes.includes('roundrobin')?' checked':''}> 🔄 Round-Robin fallback</label>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:13px;white-space:nowrap">Catch-all (when no rule matches):</span>
+        <select class="form-input" id="lrCatchall" style="flex:0 0 220px;padding:6px 8px">
+          <option value="">— None (leave Unmatched) —</option>
+          ${memberOpts}
+        </select>
+      </div>
+
+      ${members.length?`
+      <div style="overflow-x:auto;margin-bottom:12px">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:500px">
+          <thead><tr style="background:var(--hover)">
+            <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">Team Member</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Round-Robin</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Locations (comma-sep)</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">${isHosp?'Properties':'Products/Brands'}</th>
+          </tr></thead>
+          <tbody>${ruleRows}</tbody>
+        </table>
+      </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="save-btn" onclick="saveLeadRouting()">Save Routing Rules</button>
+        <span class="save-msg" id="lrSaveMsg"></span>
+      </div>
+    </div>`;
+}
+
+async function saveLeadRouting(){
+  const msg=$id('lrSaveMsg');
+  try{
+    const enabled=$id('lrEnabled')?.checked||false;
+    const modes=[];
+    if($id('lrModeProduct')?.checked) modes.push('product');
+    if($id('lrModeLocation')?.checked) modes.push('location');
+    if($id('lrModeRR')?.checked) modes.push('roundrobin');
+    const catchall=$id('lrCatchall')?.value||'';
+
+    // Collect per-user rules from table inputs
+    const rules=getLeadRouting().rules||{}; // preserve existing rrIndex etc.
+    const card=$id('leadRoutingCard');
+    card.querySelectorAll('[data-email]').forEach(inp=>{
+      const email=inp.dataset.email;
+      const field=inp.dataset.field;
+      if(!rules[email]) rules[email]={};
+      if(field==='inPool') rules[email].inPool=inp.checked;
+      else rules[email][field]=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
+    });
+
+    const existing=getLeadRouting();
+    const newRouting={...existing, enabled, modes, catchall, rules};
+    if(msg){msg.textContent='Saving…';msg.className='save-msg';}
+    await patchClient({lead_routing:JSON.stringify(newRouting)});
+    if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}
+    // Re-render so the UI reflects saved state
+    renderLeadRoutingSettings();
+  }catch(e){
+    if(msg){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  }
 }
 // Same "check the meta API, create the column if missing" convention saveTaEnabled() already
 // uses for ta_enabled/ta_table_ids — no migration step, the field just appears the first time
@@ -11390,6 +11881,7 @@ async function buyAddon(price_id){
 function $id(id){return document.getElementById(id);}
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
 // The bot writes the linked Chatwoot conversation id as "ConversationID" — read that,
@@ -12888,6 +13380,7 @@ async function toggleTaskDone(id){
 async function snoozeReminderLead(leadId){
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead) return;
+  await claimLeadIfUnowned(leadId,'Snooze');
   const base=lead.ReminderDate?new Date(lead.ReminderDate):new Date();
   base.setDate(base.getDate()+1);
   const newDate=base.toISOString().slice(0,10);
@@ -13091,6 +13584,21 @@ async function saveTaskFromModal(){
   msg.textContent='Saving…'; msg.style.color='var(--muted)';
   try{
     await saveTasksState(state);
+    // Sync new tasks to PM (D1) so they appear in Projects module
+    if(isNew){
+      try{
+        const pmBody={title,status:'todo',priority:'medium'};
+        if($id('taskNotes').value.trim()) pmBody.description=$id('taskNotes').value.trim();
+        if(task.due_date) pmBody.due_date=task.due_date;
+        if(assigneeEmail) pmBody.assignee_email=assigneeEmail;
+        if(category) pmBody.category=category;
+        if(leadId) pmBody.lead_id=leadId;
+        if(task.lead_name) pmBody.lead_name=task.lead_name;
+        if(projectId) pmBody.project_id=Number(projectId);
+        const pmResp=await fetch(`${CONFIG.WORKER_BASE}/pm/tasks`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(pmBody)});
+        if(!pmResp.ok){ const err=await pmResp.json().catch(()=>({})); console.error('pm/tasks sync failed:',pmResp.status,err); }
+      }catch(e){ console.error('pm/tasks sync error:',e); }
+    }
     if(notify&&assigneeEmail){
       try{
         const r=await fetch(`${CONFIG.WORKER_BASE}/tasks/notify`,{
@@ -13906,7 +14414,91 @@ function renderRevenueForecast(){
    enough server-side to justify a shared preload+cache step the way Hospitality's units/bookings
    share one. */
 let _reportsPage='overview';
-function renderReports(){ renderReportsSubPage(_reportsPage); }
+/* ── Reports filter state ──────────────────────────────────────────────────── */
+let _rptFilters={period:'all',from:'',to:'',member:''};
+
+function setRptPeriod(p){
+  _rptFilters.period=p; _rptFilters.from=''; _rptFilters.to='';
+  $id('rptFrom').value=''; $id('rptTo').value='';
+  document.querySelectorAll('#rptFilterBar .rpt-period').forEach(b=>b.classList.toggle('active',b.dataset.period===p));
+  renderReports();
+}
+function setRptCustom(){
+  _rptFilters.from=$id('rptFrom').value; _rptFilters.to=$id('rptTo').value;
+  if(_rptFilters.from||_rptFilters.to){
+    _rptFilters.period='custom';
+    document.querySelectorAll('#rptFilterBar .rpt-period').forEach(b=>b.classList.remove('active'));
+  }
+  renderReports();
+}
+function rptPopulateMemberFilter(){
+  const sel=$id('rptMember'); if(!sel) return;
+  const members=getTeamMembers(); const cur=sel.value;
+  sel.innerHTML='<option value="">All Members</option>'+members.map(m=>`<option value="${esc(m.email)}"${cur===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+}
+function rptLeads(src){
+  let leads=src||allLeads;
+  const f=_rptFilters;
+  if(f.period!=='all'||f.from||f.to){
+    const now=new Date(); let fromD=null, toD=null;
+    if(f.period==='today'){ fromD=new Date(now.toISOString().slice(0,10)); toD=new Date(now.toISOString().slice(0,10)+'T23:59:59'); }
+    else if(f.period==='week'){ fromD=new Date(now); fromD.setDate(now.getDate()-now.getDay()); fromD=new Date(fromD.toISOString().slice(0,10)); }
+    else if(f.period==='month'){ fromD=new Date(now.getFullYear(),now.getMonth(),1); }
+    else if(f.period==='year'){ fromD=new Date(now.getFullYear(),0,1); }
+    else if(f.period==='custom'){ if(f.from) fromD=new Date(f.from); if(f.to) toD=new Date(f.to+'T23:59:59'); }
+    if(fromD||toD) leads=leads.filter(l=>{ const d=l.Date?new Date(l.Date):null; if(!d) return false; if(fromD&&d<fromD) return false; if(toD&&d>toD) return false; return true; });
+  }
+  const member=$id('rptMember')?.value||'';
+  if(member) leads=leads.filter(l=>l.Owner===member);
+  return leads;
+}
+
+function exportReportCsv(){
+  const tables=[...$id('reportsContent').querySelectorAll('table.leads-tbl')];
+  let csv='';
+  if(tables.length){
+    tables.forEach(t=>{
+      [...t.querySelectorAll('tr')].forEach(row=>{
+        const cells=[...row.querySelectorAll('th,td')];
+        csv+=cells.map(c=>`"${(c.textContent||'').trim().replace(/\n/g,' ').replace(/"/g,'""')}"`).join(',')+'\n';
+      });
+      csv+='\n';
+    });
+  }else{
+    const stats=[...$id('reportsContent').querySelectorAll('.stat')];
+    csv='Metric,Value\n';
+    stats.forEach(s=>{ csv+=`"${(s.querySelector('.stat-lbl')?.textContent||'').trim().replace(/"/g,'""')}","${(s.querySelector('.stat-val')?.textContent||'').trim().replace(/"/g,'""')}"\n`; });
+  }
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`report-${_reportsPage||'overview'}-${TODAY}.csv`; a.click(); URL.revokeObjectURL(a.href);
+}
+function exportReportPdf(){
+  const html=$id('reportsContent').innerHTML;
+  const pw=window.open('','_blank','width=1000,height=750');
+  pw.document.write(`<!DOCTYPE html><html><head><title>${esc((_reportsPage||'report').toUpperCase())} Report — ${new Date().toLocaleDateString()}</title><style>
+    *{box-sizing:border-box}body{font-family:Inter,sans-serif;padding:24px;color:#111;font-size:13px}
+    h2{margin-bottom:20px;color:#0D9C93}
+    table{width:100%;border-collapse:collapse;margin-bottom:18px}
+    th,td{padding:5px 9px;border:1px solid #ddd;text-align:left;font-size:12px}
+    th{background:#f5f7f9;font-weight:600}
+    .stat{display:inline-block;margin:6px;padding:12px 18px;background:#f0f9f8;border-radius:8px;min-width:120px;vertical-align:top}
+    .stat-lbl{font-size:10px;color:#777;margin-bottom:4px}.stat-val{font-size:20px;font-weight:700;color:#0D9C93}
+    .bar-row{display:flex;gap:8px;margin:3px 0;align-items:center;font-size:11px}
+    .bar-bg{flex:1;height:9px;background:#e8ecef;border-radius:4px}
+    .bar-fill{height:100%;background:#0D9C93;border-radius:4px}
+    .card{border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:14px}
+    .s-head{font-weight:600;margin-bottom:6px}.s-note{color:#777;font-size:11px}
+    input,select,button{display:none}@media print{@page{margin:1cm}}
+  </style></head><body>`);
+  pw.document.write(`<h2>${esc((_reportsPage||'Overview'))} Report — ${new Date().toLocaleDateString()}</h2>`);
+  pw.document.write(html);
+  pw.document.write('</body></html>');
+  pw.document.close();
+  pw.onload=()=>pw.print();
+}
+
+function renderReports(){ rptPopulateMemberFilter(); renderReportsSubPage(_reportsPage); }
 function renderReportsSubPage(page){
   _reportsPage=page;
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
@@ -13930,16 +14522,17 @@ document.addEventListener('click', e=>{
 async function renderReportsOverview(){
   const el=$id('reportsContent');
   el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
+  const baseLeads=rptLeads();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
-  const won=allLeads.filter(isWonLead), lost=allLeads.filter(isLostLead);
+  const won=baseLeads.filter(isWonLead), lost=baseLeads.filter(isLostLead);
   const resolved=won.length+lost.length;
   const winRate=resolved?Math.round(won.length/resolved*100):0;
-  const pipelineValue=allLeads.filter(l=>!isWonLead(l)&&!isLostLead(l)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
+  const pipelineValue=baseLeads.filter(l=>!isWonLead(l)&&!isLostLead(l)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
   const wonThisMonth=won.filter(l=>closedMonthKey(l)===new Date().toISOString().slice(0,7)).reduce((s,l)=>s+(Number(l.DealValue)||0),0);
 
   const cards=[
-    {label:'Total Leads', value:allLeads.length, tab:'sales'},
+    {label:'Total Leads', value:baseLeads.length, tab:'sales'},
     {label:'Win Rate', value:winRate+'%', tab:'sales'},
     {label:'Pipeline Value', value:fmtMoney(pipelineValue), tab:'sales'},
     {label:'Won This Month', value:fmtMoney(wonThisMonth), tab:'sales'},
@@ -13981,10 +14574,11 @@ function renderReportsSales(){
     </div>`;
 
   const statsEl=$id('reportsSalesStats'), trendEl=$id('reportsSalesTrend'), winEl=$id('reportsSalesWinRate'), stageEl=$id('reportsSalesByStage');
+  const baseLeads=rptLeads();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
-  const active=allLeads.filter(l=>!isWonLead(l)&&!isLostLead(l));
-  const won=allLeads.filter(isWonLead), lost=allLeads.filter(isLostLead);
+  const active=baseLeads.filter(l=>!isWonLead(l)&&!isLostLead(l));
+  const won=baseLeads.filter(isWonLead), lost=baseLeads.filter(isLostLead);
 
   const pipelineValue=active.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
   const weightedForecast=active.reduce((s,l)=>s+((Number(l.DealValue)||0)*(Number(l.WinProbability)||0)/100),0);
@@ -14068,6 +14662,7 @@ function renderReportsTeamReport(){
     </div>`;
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
+  const baseLeads=rptLeads();
   const members=getTeamMembers();
   const state=getTasksState();
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
@@ -14075,7 +14670,7 @@ function renderReportsTeamReport(){
   const cutoff30d=Date.now()-30*86400000;
 
   const rows=members.map(m=>{
-    const ownedLeads=allLeads.filter(l=>l.Owner===m.email);
+    const ownedLeads=baseLeads.filter(l=>l.Owner===m.email);
     const won=ownedLeads.filter(isWonLead);
     const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
     const hot=ownedLeads.filter(l=>l.Score==='Hot').length;
@@ -14091,7 +14686,7 @@ function renderReportsTeamReport(){
       tasksTotal:myTasks.length, tasksDone:doneTasks.length, tasksOverdue:overdueTasks.length, taskRate:myTasks.length?Math.round(doneTasks.length/myTasks.length*100):0};
   }).sort((a,b)=>b.won-a.won || b.total-a.total);
 
-  const unassignedLeads=allLeads.filter(l=>!l.Owner).length;
+  const unassignedLeads=baseLeads.filter(l=>!l.Owner).length;
   const totalWon=rows.reduce((s,r)=>s+r.won,0);
   const totalOverdue=rows.reduce((s,r)=>s+r.tasksOverdue,0);
 
@@ -14122,7 +14717,7 @@ function renderReportsTeamReport(){
   // rather than a shared-id refactor, same "avoid regressing the already-live page" convention
   // this function already follows for the leads/tasks table above.
   const callStatsEl=$id('reportsCallStats'), callTableEl=$id('reportsCallTable');
-  const leadCalls=allLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
+  const leadCalls=baseLeads.map(l=>{ let c=[]; try{c=JSON.parse(l.CallLog||'[]');}catch(e){} return c; });
   const allCalls=[];
   leadCalls.forEach(calls=>{ calls.slice().reverse().forEach((c,i)=>allCalls.push({...c, ordinal:i+1})); });
   const totalCalls=allCalls.length;
@@ -14192,7 +14787,8 @@ async function renderReportsMarketing(){
   for(let i=5;i>=0;i--){ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); months.push({key:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'), label:d.toLocaleString('default',{month:'short',year:'2-digit'})}); }
   const curKey=months[months.length-1].key;
 
-  const won=allLeads.filter(isWonLead);
+  const baseLeads=rptLeads();
+  const won=baseLeads.filter(isWonLead);
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
 
@@ -14209,7 +14805,7 @@ async function renderReportsMarketing(){
   notConnEl.style.display=spendConnected?'none':'block';
 
   const rows=months.map(m=>{
-    const leadsThisMonth=allLeads.filter(l=>(l.Date||'').slice(0,7)===m.key).length;
+    const leadsThisMonth=baseLeads.filter(l=>(l.Date||'').slice(0,7)===m.key).length;
     const wonThisMonth=won.filter(l=>closedMonthKey(l)===m.key);
     const revenue=wonThisMonth.reduce((s,l)=>s+(Number(l.DealValue)||0),0);
     const spend=spendByMonth[m.key]||0;
@@ -14276,8 +14872,9 @@ async function renderReportsSource(){
   let costs={};
   try{ costs=JSON.parse(clientRecord?.source_costs||'{}'); }catch(e){}
 
+  const baseLeads=rptLeads();
   const bySource={};
-  allLeads.forEach(l=>{
+  baseLeads.forEach(l=>{
     const src=l.Source||'Unknown';
     if(!bySource[src]) bySource[src]={leads:0,won:0};
     bySource[src].leads++;
@@ -14288,8 +14885,8 @@ async function renderReportsSource(){
   const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
   const fmtMoney=n=>(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString();
 
-  const totalLeads=allLeads.length;
-  const totalWon=allLeads.filter(isWonLead).length;
+  const totalLeads=baseLeads.length;
+  const totalWon=baseLeads.filter(isWonLead).length;
   const totalCost=sources.reduce((s,src)=>s+(Number(costs[src])||0),0);
 
   el.innerHTML=`
@@ -15423,6 +16020,7 @@ function populateModulesPage(){
 function populateUserManagementPage(){
   if(!clientRecord)return;
   renderTeamMembers();
+  renderLeadRoutingSettings();
 }
 
 /* ── NOTIFICATIONS ── */

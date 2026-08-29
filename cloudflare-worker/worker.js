@@ -145,6 +145,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
+  {test:(p,m)=>p==='/public/chat/message'&&m==='POST', bucket:'public-chat-msg', limit:30, windowSec:60},
+  {test:(p,m)=>p==='/public/chat/config'&&m==='GET', bucket:'public-chat-cfg', limit:60, windowSec:60},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -1062,10 +1064,73 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
 }
 
+// Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
+// (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
+async function d1InsertLeadMessage(env, leadId, clientId, msg){
+  if(!msg?.role) return;
+  try{
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(
+      Number(leadId), Number(clientId),
+      msg.role,
+      msg.content||'',
+      (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
+      (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
+      msg.ts||new Date().toISOString()
+    ).run();
+  }catch(e){}
+}
+
+// GET /chat/messages?lead_id=X[&after=ISO] — returns messages from D1.
+// First call for a lead auto-seeds D1 from NocoDB ConvHistory (lazy migration).
+async function handleGetChatMessages(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const u=new URL(request.url);
+  const leadId=u.searchParams.get('lead_id');
+  const after=u.searchParams.get('after')||'';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+
+  // Ownership check
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+
+  // Auto-seed D1 from ConvHistory on first request for this lead
+  const countRow=await env.DB.prepare('SELECT COUNT(*) as n FROM lead_messages WHERE lead_id=?')
+    .bind(Number(leadId)).first().catch(()=>null);
+  if(!countRow||!countRow.n){
+    let history=[];
+    try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    for(const msg of history){
+      await d1InsertLeadMessage(env, leadId, payload.cid, msg);
+    }
+  }
+
+  // Read from D1 — incremental if `after` is provided
+  const rows=after
+    ?await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? AND ts>? ORDER BY ts ASC')
+        .bind(Number(leadId), after).all().catch(()=>({results:[]}))
+    :await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY ts ASC')
+        .bind(Number(leadId)).all().catch(()=>({results:[]}));
+
+  const messages=(rows.results||[]).map(r=>{
+    const m={role:r.role, content:r.content, ts:r.ts};
+    try{const a=JSON.parse(r.attachment||'{}');if(Object.keys(a).length)m.attachment=a;}catch(e){}
+    try{const rt=JSON.parse(r.reply_to||'{}');if(Object.keys(rt).length)m.reply_to=rt;}catch(e){}
+    return m;
+  });
+
+  return json({messages, lead_id:Number(leadId)});
+}
+
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, text}=await request.json().catch(()=>({}));
+  const {conv_id, text, lead_id}=await request.json().catch(()=>({}));
   if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
@@ -1073,6 +1138,13 @@ async function handleChatSend(request, env){
   fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
+  if(lead_id){
+    const ts=new Date().toISOString();
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
+      {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
+  }
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
@@ -2975,6 +3047,7 @@ async function runClassicFollowupsForAllClients(env){
   }
 }
 async function classicFollowupProcessClient(env, c){
+  if(c.followup_do_enabled==='Yes') return; // handed off to LeadFollowupAgent Durable Objects
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
   // Checked once per client per tick, not per lead — it's the same answer for every lead of this
@@ -2996,18 +3069,22 @@ async function classicFollowupProcessClient(env, c){
     if(!leadRows.length) break;
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
-      let nextStep=-1;
-      for(let s=1; s<=5; s++){
-        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
-        if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; }
-      }
-      if(nextStep===-1) continue; // sequence exhausted, or fully sent
-      const stepCfg=steps[nextStep];
-      if(stepCfg.type==='session' && !stepCfg.message) continue;
-      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
+      let nextStep=-1;
+      for(let s=1; s<=5; s++){
+        if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
+        if(lead['Follow up '+s]==='Yes') continue; // already sent
+        // session steps are only valid inside WhatsApp's 24h customer-service window; once
+        // that window has closed, skip past them so template steps further down can still fire.
+        if(steps[s].type==='session' && silentHours>=24) continue;
+        nextStep=s; break;
+      }
+      if(nextStep===-1) continue; // sequence exhausted, or all remaining session steps expired
+      const stepCfg=steps[nextStep];
+      if(stepCfg.type==='session' && !stepCfg.message) continue;
+      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
       try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
       catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
@@ -10542,6 +10619,90 @@ function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
 }
+function engineGetLeadRouting(c){
+  try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+// Location keys the bot may store city/area answers under in QualAnswers — same list as the
+// frontend Splits view so routing and display always agree.
+const ENGINE_LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','place','region'];
+function engineExtractCityFromQual(qualAnswers){
+  const entries=Object.entries(qualAnswers||{});
+  for(const k of ENGINE_LOC_KEYS){
+    const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+    if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim().toLowerCase();
+  }
+  return '';
+}
+
+// 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
+// Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
+// When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
+async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  if(!isNewLead || leadBody.Owner) return; // already assigned or not new
+
+  const routing=engineGetLeadRouting(c);
+
+  if(!routing.enabled){
+    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const ps=String(state.phone||'');
+      for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
+      leadBody.Owner=reps[Math.abs(h)%reps.length];
+    }
+    return;
+  }
+
+  const modes=Array.isArray(routing.modes)?routing.modes:[];
+  const rules=routing.rules||{};
+
+  const get=f=>leadBody[f]||state.lead?.[f]||'';
+
+  // ── Priority 1: Product / Property match ─────────────────────────────────────
+  if(modes.includes('product')){
+    const product=(get('InterestedProduct')||get('ProductCategory')||get('Brand')||
+                   get('HospSelectedProperty')||get('HospSelectedUnit')||
+                   get('Destination')||get('ServiceCategory')).toLowerCase();
+    if(product){
+      const match=Object.entries(rules).find(([,r])=>{
+        const pool=[...(r.products||[]),...(r.properties||[])];
+        return pool.some(p=>String(p).toLowerCase()===product);
+      });
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 2: Location match ───────────────────────────────────────────────
+  if(modes.includes('location')){
+    let qa={};
+    try{ qa=JSON.parse(leadBody.QualAnswers||state.lead?.QualAnswers||'{}'); }catch(e){}
+    const city=engineExtractCityFromQual({...qa,...(state.qualAnswers||{})});
+    if(city){
+      const match=Object.entries(rules).find(([,r])=>
+        (r.locations||[]).some(l=>String(l).toLowerCase()===city)
+      );
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
+  if(modes.includes('roundrobin')){
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    if(pool.length){
+      const idx=Number(routing.rrIndex||0)%pool.length;
+      leadBody.Owner=pool[idx];
+      // Persist the next index so the following lead goes to the next rep
+      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
+      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      return;
+    }
+  }
+
+  // ── Priority 4: Catch-all ────────────────────────────────────────────────────
+  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  // Otherwise: Unmatched — lead stays without an Owner
+}
 
 function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
@@ -11357,7 +11518,23 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
     const ecomStyleInstructions={
       fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
-      shopify:'SHOPIFY / GENERAL STORE COMMUNICATION STYLE: Sound clear, friendly and conversion-focused. Guide discovery in this order when applicable: category, customer requirement, then verified matching products. Keep replies compact and make the next action obvious. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      shopify:`SHOPIFY / GENERAL STORE COMMUNICATION STYLE — apply to every reply:
+
+PRODUCT ENQUIRY (customer mentions, asks about, or shares a URL for a specific product):
+• Match the product to VERIFIED ECOM PRODUCT DATA by name, category, key ingredient, or brand — never invent or guess details.
+• Reply with: verified product name, price, availability (in stock / out of stock), and 2–3 key attributes from VERIFIED ECOM PRODUCT DATA.
+• Share the Order Link from the ## Order Link section when the customer is ready to purchase.
+• If the product is absent from VERIFIED ECOM PRODUCT DATA, say it is not in the verified catalog and offer to connect them with the team — never guess.
+
+BROWSING / DISCOVERY (customer is exploring, no specific product mentioned):
+• Guide in this order: category → customer requirement → verified matching products from VERIFIED ECOM PRODUCT DATA.
+• When presenting OPTIONS that include both matching products and categories, always list matching products first, then related categories — never categories first.
+• End with OPTIONS: using only verified category or product names — never invent a choice.
+
+REPLY RULES:
+• Sound clear, friendly and conversion-focused.
+• Keep replies compact — one clear answer and one obvious next action.
+• Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
       furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
@@ -11423,6 +11600,11 @@ BUTTONS — mandatory after EVERY reply:
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineMemoryBlock(state);
+  // Inject known contact name so the LLM never asks for something Chatwoot already gave us.
+  // state.name is the WhatsApp/Chatwoot profile name set at turn start; state.lead?.Name is the
+  // same value persisted to the lead row on previous turns. Either is authoritative.
+  const _knownName=state.name||state.lead?.Name;
+  if(_knownName) sys+=`\n\nKnown customer name: ${_knownName} — this is already on file from their WhatsApp profile. Never ask for their name or company name again.`;
   // Hospitality: inject selected property/unit so LLM has booking/availability context
   const hospSelectedUnit=state.lead?.HospSelectedUnit;
   const hospSelectedProperty=state.lead?.HospSelectedProperty;
@@ -11534,12 +11716,13 @@ BUTTONS — mandatory after EVERY reply:
 // One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
 // negligible. Falls back to the plain question on any failure — same "never leave the customer
 // with nothing" principle as engineCallLlm's own fallback.
-async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
+async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang, knownName){
   const lang=replyLang||c.language||'en';
   const services=engineParseJsonField(c.services, []);
   let sys=c.main_prompt||'';
   if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
+  if(knownName) sys+=`\n\nKnown customer name: ${knownName} — already on file from their WhatsApp profile. Do not ask for their name or company name.`;
   sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
   const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
   return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
@@ -12845,6 +13028,9 @@ async function handleNativeFormEndpoint(request, env){
       ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(), Channel:'whatsapp'
     };
     const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+    // Dual-write bot message to D1 lead_messages
+    if(resolvedLeadId) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:sentText, ts:new Date().toISOString()});
     if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
 
     if(flowMeta.convId){
@@ -13249,14 +13435,8 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
   // first point in this turn a brand-new lead actually has a real id to attribute.
 
-  if(isNewLead && !state.owner){
-    const reps=engineParseSalesReps(c.agents);
-    if(reps.length){
-      let h=0; const phoneStr=String(state.phone||'');
-      for(let i=0;i<phoneStr.length;i++) h=(h*31+phoneStr.charCodeAt(i))|0;
-      body.Owner=reps[Math.abs(h)%reps.length];
-    }
-  }
+  // Owner assignment is handled externally by engineResolveLeadOwner() after this function
+  // returns, so it can be async (round-robin must persist rrIndex via patchClientFields).
 
   if(sentiment) body.Sentiment=sentiment;
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
@@ -13385,6 +13565,13 @@ async function handleEngineWebhook(request, env, secret){
   if(!secret) return json({ok:true, skipped:'no-secret'});
   const c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
+  // Attach D1 stock rows so engineBuildFaqSystemPrompt can reference current stock without
+  // an extra NocoDB round trip — just overwrites the (now unused) NocoDB field with the
+  // authoritative D1 value.
+  try{
+    const _sr=await env.DB.prepare('SELECT stock_json FROM b2b_stock WHERE client_id=?').bind(Number(c.Id)).first();
+    if(_sr?.stock_json) c.b2b_stock_json=_sr.stock_json;
+  }catch(e){}
   const clientId=String(c.Id);
   if(c.active==='No'){ await logEngineSkip(env, clientId, null, null, 'client-inactive'); return json({ok:true, skipped:'client-inactive'}); }
   // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
@@ -13924,7 +14111,7 @@ async function handleEngineWebhook(request, env, secret){
         if(categories.length){
           // New leads get the personalised first-touch intro; returning customers get a simpler prompt
           const intro=isNewLead
-            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang,state.name||state.lead?.Name)
             : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
           // Send each category's image in sequence before presenting the category buttons
           let anySent=false;
@@ -14358,7 +14545,7 @@ async function handleEngineWebhook(request, env, secret){
         // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
         // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
         sentText=isNewLead
-          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
+          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang, state.name||state.lead?.Name)
           : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
         routing.reply=sentText;
         // engineQualQuestionOptions — a client-configured qualifying question can be a genuine
@@ -14573,6 +14760,7 @@ async function handleEngineWebhook(request, env, secret){
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
     // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
     // failure: the rate limiter a few lines up compares against LastMsgAt, which real production
@@ -14593,6 +14781,18 @@ async function handleEngineWebhook(request, env, secret){
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Dual-write new messages to D1 lead_messages for chats.html display
+    if(resolvedLeadId){
+      const userTs=new Date(startMs).toISOString();
+      const botTs=new Date().toISOString();
+      if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'user', content:routing.historyUserText||userText, ts:userTs,
+         ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+      if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'assistant', content:routing.reply, ts:botTs,
+         ...(routing.media?{media:routing.media}:{}),
+         ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
@@ -14608,6 +14808,18 @@ async function handleEngineWebhook(request, env, secret){
       try{
         await env.DB.prepare(`INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referred_at, reward_status) VALUES (?,?,?,?, 'Pending')`)
           .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
+      }catch(e){}
+    }
+    // Smart Follow-ups DO — spawn on new lead creation; notify on customer reply so alarm resets
+    if(resolvedLeadId && c.followup_do_enabled==='Yes' && env.LEAD_AGENT){
+      try{
+        const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
+        const stub=env.LEAD_AGENT.get(doId);
+        if(isNewLead){
+          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1})}).catch(()=>{});
+        } else if(userText){
+          stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+        }
       }catch(e){}
     }
     // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
@@ -14739,11 +14951,20 @@ async function handleInstagramWebhookVerify(request, env){
 async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
   if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
   const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
   if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
+  if(resolvedLeadId){
+    const now=new Date().toISOString();
+    if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'user', content:routing.historyUserText||userText, ts:now});
+    if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:routing.reply, ts:now});
+  }
   if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
   // Verify those identity fields before considering the first inbound turn durable.
@@ -14811,7 +15032,7 @@ export async function processInstagramWebhookBody(env, body){
         sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify'){
         const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
-        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang,state.name||state.lead?.Name):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify_next'){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
@@ -15267,7 +15488,6 @@ async function ensureB2bClientFields(env){
     const existing=await existingR.json().catch(()=>({}));
     const names=new Set((existing.list||[]).map(f=>f.title));
     if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
-    if(!names.has('b2b_stock_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_stock_json', uidt:'LongText'}});
     _b2bClientFieldsEnsured=true;
   }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
 }
@@ -15283,11 +15503,10 @@ async function handleB2bInit(request, env){
 async function handleB2bStockGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${payload.cid}`);
-  if(!r.ok) return json({error:'Client not found'}, 404);
-  const c=await r.json().catch(()=>({}));
-  let rows=[]; try{ rows=JSON.parse(c.b2b_stock_json||'[]'); }catch(e){}
-  return json({rows, updated_at:c.b2b_stock_updated_at||null});
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS b2b_stock (client_id INTEGER PRIMARY KEY, stock_json TEXT NOT NULL DEFAULT \'[]\', updated_at TEXT NOT NULL)').run().catch(()=>{});
+  const row=await env.DB.prepare('SELECT stock_json, updated_at FROM b2b_stock WHERE client_id=?').bind(Number(payload.cid)).first().catch(()=>null);
+  let rows=[]; try{ rows=JSON.parse(row?.stock_json||'[]'); }catch(e){}
+  return json({rows, updated_at:row?.updated_at||null});
 }
 
 async function handleB2bStockSave(request, env){
@@ -15296,7 +15515,9 @@ async function handleB2bStockSave(request, env){
   const body=await request.json().catch(()=>({}));
   if(!Array.isArray(body.rows)) return json({error:'rows array required'}, 400);
   const stockJson=JSON.stringify(body.rows.slice(0,5000));
-  await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), b2b_stock_json:stockJson}});
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO b2b_stock (client_id, stock_json, updated_at) VALUES (?,?,?) ON CONFLICT(client_id) DO UPDATE SET stock_json=excluded.stock_json, updated_at=excluded.updated_at')
+    .bind(Number(payload.cid), stockJson, now).run();
   return json({ok:true, saved:body.rows.length});
 }
 
@@ -15448,6 +15669,16 @@ function computeAccountingDocTotals(lineItems, taxPct){
   const taxAmount=subtotal*(pct/100);
   return {subtotal, taxAmount, total:subtotal+taxAmount};
 }
+// GST split: intra-state (supplier state === place of supply) → CGST+SGST (half each);
+// inter-state (or blank supplier state) → IGST (full rate). Returns zeros when gstRatePct=0.
+function computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply){
+  const rate=Number(gstRatePct)||0;
+  if(!rate) return {cgst:0, sgst:0, igst:0, totalGst:0};
+  const gstAmt=subtotal*(rate/100);
+  const intraState=supplierStateCode && placeOfSupply && String(supplierStateCode).trim().toUpperCase()===String(placeOfSupply).trim().toUpperCase();
+  if(intraState){ const half=Math.round(gstAmt*100/2)/100; return {cgst:half, sgst:half, igst:0, totalGst:half+half}; }
+  return {cgst:0, sgst:0, igst:Math.round(gstAmt*100)/100, totalGst:Math.round(gstAmt*100)/100};
+}
 
 // Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
 // `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
@@ -15477,43 +15708,43 @@ async function handleAccountingDocumentCreate(request, env){
   const VALID_TYPES=new Set(['quotation','invoice','receipt']);
   const type=VALID_TYPES.has(body.type)?body.type:'quotation';
   const lineItems=Array.isArray(body.line_items)?body.line_items:[];
-  // No GST — this module never charges tax, so tax_pct/tax_amount are always 0 regardless of what
-  // a caller sends; the columns stay (existing documents from before this rule may still have a
-  // nonzero value) but nothing new can create one.
-  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, 0);
+  const gstRatePct=Number(body.gst_rate_pct)||0;
+  const supplierGstin=body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null;
+  const placeOfSupply=body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null;
+  const supplierStateCode=body.supplier_state_code?String(body.supplier_state_code).trim().toUpperCase():null;
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, gstRatePct);
+  const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
   const fields={
     client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
-    subtotal, tax_pct:0, tax_amount:taxAmount, total,
+    subtotal, tax_pct:gstRatePct, tax_amount:taxAmount, total,
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
-    // customer_name (migration 0035) — a plain label for a walk-in/one-off customer not tied to a
-    // CRM lead, replacing the old ERPNext-only customer picker; erpnext_customer/company/
-    // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
-    // no longer set by the standalone Document modal.
     customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
-    // customer_id (migration 0036) — links to fp_customers, the interconnection point with
-    // Financial Planning; resolved server-side via handleFpCustomerEnsureByName from
-    // customer_name before this insert, so the frontend only ever sends a name and this column is
-    // populated automatically.
     customer_id:body.customer_id?Number(body.customer_id):null,
-    // valid_until/due_date (migration 0037) — type-specific: a Quotation shows "Valid Until", an
-    // Invoice shows "Due Date"; only ever set by the modal matching this document's own type, but
-    // both columns exist on every row for simplicity (unused one just stays NULL).
     valid_until:body.valid_until?String(body.valid_until).slice(0,10):null,
     due_date:body.due_date?String(body.due_date).slice(0,10):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
+    // GST fields (migration 0075)
+    is_tax_invoice:body.is_tax_invoice?1:0,
+    gst_rate_pct:gstRatePct,
+    cgst_amount:cgst, sgst_amount:sgst, igst_amount:igst,
+    supplier_gstin:supplierGstin,
+    recipient_gstin:body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null,
+    place_of_supply:placeOfSupply,
+    supply_type:['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)?body.supply_type:'B2C',
+    reverse_charge:body.reverse_charge?1:0,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, is_tax_invoice, gst_rate_pct, cgst_amount, sgst_amount, igst_amount, supplier_gstin, recipient_gstin, place_of_supply, supply_type, reverse_charge, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.is_tax_invoice, fields.gst_rate_pct, fields.cgst_amount, fields.sgst_amount, fields.igst_amount, fields.supplier_gstin, fields.recipient_gstin, fields.place_of_supply, fields.supply_type, fields.reverse_charge, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -15579,11 +15810,21 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
+  if(body.is_tax_invoice!==undefined){ sets.push('is_tax_invoice=?'); vals.push(body.is_tax_invoice?1:0); }
+  if(body.gst_rate_pct!==undefined){ sets.push('gst_rate_pct=?'); vals.push(Number(body.gst_rate_pct)||0); }
+  if(body.supplier_gstin!==undefined){ sets.push('supplier_gstin=?'); vals.push(body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null); }
+  if(body.recipient_gstin!==undefined){ sets.push('recipient_gstin=?'); vals.push(body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null); }
+  if(body.place_of_supply!==undefined){ sets.push('place_of_supply=?'); vals.push(body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null); }
+  if(body.supply_type!==undefined && ['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)){ sets.push('supply_type=?'); vals.push(body.supply_type); }
+  if(body.reverse_charge!==undefined){ sets.push('reverse_charge=?'); vals.push(body.reverse_charge?1:0); }
   if(Array.isArray(body.line_items)){
-    // No GST — see handleAccountingDocumentCreate's own note; tax is always 0 here too.
-    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, 0);
-    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
-    vals.push(JSON.stringify(body.line_items), subtotal, 0, taxAmount, total);
+    const gstRatePct=body.gst_rate_pct!==undefined?Number(body.gst_rate_pct)||0:Number(existing.gst_rate_pct)||0;
+    const supplierStateCode=body.supplier_state_code||null;
+    const placeOfSupply=body.place_of_supply!==undefined?body.place_of_supply:existing.place_of_supply;
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, gstRatePct);
+    const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?','cgst_amount=?','sgst_amount=?','igst_amount=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, gstRatePct, taxAmount, total, cgst, sgst, igst);
   }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
@@ -16529,7 +16770,7 @@ async function pmEnsureSchema(env){
   await env.DB.batch([
     `CREATE TABLE IF NOT EXISTS pm_projects (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,color TEXT NOT NULL DEFAULT '#0D9C93',status TEXT NOT NULL DEFAULT 'active',budget_amount REAL,budget_currency TEXT NOT NULL DEFAULT 'USD',default_hourly_rate REAL,client_email TEXT,ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0,task_reminders_enabled INTEGER NOT NULL DEFAULT 0,overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_projects_client ON pm_projects(client_id)`,
-    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_client ON pm_tasks(client_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_project ON pm_tasks(client_id,project_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_tasks_sprint ON pm_tasks(client_id,sprint_id)`,
@@ -16602,7 +16843,7 @@ const PM_TABLES={
   tasks:{
     table:'pm_tasks', requiredField:'title', orderBy:'position ASC, created_at ASC', hasUpdatedAt:true,
     fields:{
-      project_id:{type:'int'}, title:{type:'str', max:300}, description:{type:'text'},
+      project_id:{type:'int', def:0}, title:{type:'str', max:300}, description:{type:'text'},
       status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
       assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
       position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
@@ -16715,7 +16956,7 @@ async function handlePmCreate(request, env, kind){
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
-  if(PM_PROJECT_SCOPED.includes(kind)){
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id){
     if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
   }
   if(kind==='time'){
@@ -17501,11 +17742,13 @@ async function handleFpCustomerCreate(request, env){
     renewal_date:body.renewal_date||null,
     seat_count:body.seat_count!==undefined?(parseInt(body.seat_count,10)||0):null,
     csm_owner:String(body.csm_owner||'').trim().slice(0,140),
+    gstin:body.gstin?String(body.gstin).trim().slice(0,15):null,
+    state_code:body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null,
   };
   const r=await env.DB.prepare(`INSERT INTO fp_customers
-    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner)
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner, gstin, state_code)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner, fields.gstin, fields.state_code)
     .run();
   await fpEnsureConfigRow(env, payload.cid);
   return json(fpCustomerOut({...fields, id:r.meta.last_row_id}));
@@ -17536,6 +17779,8 @@ async function handleFpCustomerUpdate(request, env){
   if(body.renewal_date!==undefined){ sets.push('renewal_date=?'); vals.push(body.renewal_date||null); }
   if(body.seat_count!==undefined){ sets.push('seat_count=?'); vals.push(parseInt(body.seat_count,10)||0); }
   if(body.csm_owner!==undefined){ sets.push('csm_owner=?'); vals.push(String(body.csm_owner).trim().slice(0,140)); }
+  if(body.gstin!==undefined){ sets.push('gstin=?'); vals.push(body.gstin?String(body.gstin).trim().slice(0,15):null); }
+  if(body.state_code!==undefined){ sets.push('state_code=?'); vals.push(body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null); }
   // health_score itself is cron-computed (computeAccountHealthScore) — only a manual override may
   // set it directly here, same "manual write locks out the automatic one" shape as
   // LEADS.WinProbability/WinProbabilityManual.
@@ -17853,7 +18098,7 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
-const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language';
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language, business_gstin, business_state_code, default_gst_rate';
 // Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
 // Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
 // reply was quietly wiping every other field client-side until the next full page load).
@@ -17905,6 +18150,9 @@ async function handleFpConfigUpdate(request, env){
   if(body.reminder_template_name!==undefined){ sets.push('reminder_template_name=?'); vals.push(String(body.reminder_template_name||'').trim()||null); }
   if(body.reminder_template_category!==undefined){ sets.push('reminder_template_category=?'); vals.push(String(body.reminder_template_category||'').trim()||null); }
   if(body.reminder_template_language!==undefined){ sets.push('reminder_template_language=?'); vals.push(String(body.reminder_template_language||'').trim()||null); }
+  if(body.business_gstin!==undefined){ sets.push('business_gstin=?'); vals.push(String(body.business_gstin||'').trim().slice(0,15)||null); }
+  if(body.business_state_code!==undefined){ sets.push('business_state_code=?'); vals.push(String(body.business_state_code||'').trim().slice(0,50).toUpperCase()||null); }
+  if(body.default_gst_rate!==undefined){ sets.push('default_gst_rate=?'); vals.push(body.default_gst_rate===null||body.default_gst_rate===''?0:Math.max(0,Math.min(100,Number(body.default_gst_rate)||0))); }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
@@ -24824,6 +25072,302 @@ async function handleLtCommissions(request,env){
   return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
 }
 
+// ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────
+// Only active for clients who enable followup_do_enabled='Yes' in the Follow-up Engine settings.
+// Each DO self-schedules alarms (setAlarm) timed to the ladder step's hours/days, resets on
+// customer reply, and respects the client's quiet-hours window — replacing the 15-min cron sweep
+// entirely for opted-in clients. The cron skips these clients at its own gate (below).
+export class LeadFollowupAgent{
+  constructor(state, env){ this.state=state; this.env=env; }
+
+  async fetch(request){
+    const url=new URL(request.url);
+    if(url.pathname==='/init')    return this._init(request);
+    if(url.pathname==='/replied') return this._replied();
+    if(url.pathname==='/cancel'){ await this.state.storage.deleteAlarm(); return new Response('ok'); }
+    return new Response('ok');
+  }
+
+  async _init(request){
+    const body=await request.json().catch(()=>({}));
+    const existing=await this.state.storage.get('leadId');
+    if(existing && !body.force) return new Response('ok'); // already running
+    await this.state.storage.put('leadId',   body.leadId);
+    await this.state.storage.put('clientId', body.clientId);
+    await this.state.storage.put('step',     body.step||1);
+    // lastMsgAt anchors all alarm times — step N fires at lastMsgAt + threshold_N, not now + threshold_N.
+    // This matches the cron's own silentHours check and prevents template steps from drifting late
+    // when the init is delayed (e.g. a DO that starts a minute after the lead was created still
+    // fires step 1 at the correct absolute time).
+    await this.state.storage.put('lastMsgAt', body.lastMsgAt||Date.now());
+    await this.state.storage.put('retries', 0);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  async _replied(){
+    await this.state.storage.deleteAlarm();
+    await this.state.storage.put('step', 1);
+    await this.state.storage.put('lastMsgAt', Date.now()); // re-anchor from the reply time
+    await this.state.storage.put('retries', 0);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  // Arms the next alarm at exactly (lastMsgAt + step_threshold), so template steps at 2/4/7 days
+  // fire relative to the customer's last message — not relative to when the previous step was sent.
+  async _arm(){
+    const clientId  =await this.state.storage.get('clientId');
+    const step      =await this.state.storage.get('step');
+    const lastMsgAt =await this.state.storage.get('lastMsgAt')||Date.now();
+    if(!clientId||!step||step>5) return;
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // ladder exhausted or step not configured
+    const thresholdMs=cfg.type==='session'
+      ? (cfg.hours||1)*3600000
+      : (cfg.days||2)*86400000;
+    // fireAt = when this step becomes due relative to the customer's last message
+    const fireAt=Number(lastMsgAt)+thresholdMs;
+    const delay=Math.max(fireAt-Date.now(), 30000); // at least 30s to avoid immediate re-fire
+    await this.state.storage.setAlarm(Date.now()+delay);
+  }
+
+  async alarm(){
+    const leadId   =await this.state.storage.get('leadId');
+    const clientId =await this.state.storage.get('clientId');
+    let   step     =await this.state.storage.get('step');
+    let   retries  =await this.state.storage.get('retries')||0;
+    if(!leadId||!clientId||!step) return;
+
+    // Fetch fresh lead — bail on terminal states
+    const leadR=await ncFetch(this.env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!leadR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    const lead=await leadR.json().catch(()=>null);
+    if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
+
+    // Fetch client — needed for quiet-hours + WA credentials
+    const cR=await ncFetch(this.env,`api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(Id,eq,${clientId})`)}&limit=1`);
+    if(!cR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    const cData=await cR.json().catch(()=>null);
+    const c=cData?.list?.[0];
+    if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+
+    if(!followupWithinQuietHours(c)){
+      await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
+      return;
+    }
+
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // ladder exhausted
+
+    // Skip steps with no content configured — advance without counting as a retry
+    if((cfg.type==='session'&&!cfg.message)||(cfg.type==='template'&&!cfg.template_name)){
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+    }
+
+    const silentHours=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
+
+    // Session steps are only valid inside WhatsApp's 24h customer-service window
+    if(cfg.type==='session'&&silentHours>=24){
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+    }
+
+    // Pre-flight checks for template steps — permanent misconfigs should not retry forever
+    if(cfg.type==='template'){
+      if(!lead.Phone){
+        console.warn('[LeadFollowupAgent] lead',leadId,'has no phone — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
+      if(!c.wa_phone_id||!c.wa_token){
+        console.warn('[LeadFollowupAgent] client',clientId,'missing WA credentials — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
+    }
+
+    try{
+      await sendFollowupLadderStep(this.env, c, lead, step, cfg);
+      // Step sent — advance and re-anchor lastMsgAt so subsequent steps time correctly
+      step++;
+      await this.state.storage.put('step', step);
+      await this.state.storage.put('retries', 0);
+      // Keep lastMsgAt as the customer's original last-message time so all remaining thresholds
+      // (e.g. 4 days, 7 days) are measured from the same anchor, matching the cron's behaviour.
+      await this._arm();
+    }catch(e){
+      retries++;
+      console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,'retry',retries,e.message);
+      if(retries>=3){
+        // 3 failed attempts on the same step — treat as undeliverable and advance
+        console.warn('[LeadFollowupAgent] giving up on step',step,'for lead',leadId,'after 3 retries');
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm();
+      } else {
+        await this.state.storage.put('retries', retries);
+        await this.state.storage.setAlarm(Date.now()+1800000); // retry in 30 min
+      }
+    }
+  }
+}
+
+// Settings — GET returns current enabled state; PATCH flips it.
+async function handleFollowupSmartGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const c=await findClientById(env, payload.cid);
+  return json({enabled: c?.followup_do_enabled==='Yes'});
+}
+async function handleFollowupSmartPatch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const val=body.enabled===true?'Yes':null;
+  await patchClientFields(env, String(payload.cid), {followup_do_enabled: val});
+  return json({ok:true, enabled: val==='Yes'});
+}
+// One-time migration — spawns a DO for every active lead of this client so they inherit the
+// smart ladder from their current next-unsent step.  Safe to call again; `force:false` means an
+// already-running DO for a lead is not reset.
+async function handleFollowupSmartMigrate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  if(!env.LEAD_AGENT) return json({error:'Smart Follow-ups DO not deployed yet'},501);
+  const clientId=String(payload.cid);
+  const c=await findClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'},404);
+  if(c.followup_do_enabled!=='Yes') return json({error:'Enable Smart Follow-ups first'},400);
+  const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
+  if(!configured?.length) return json({error:'No follow-up steps configured'},400);
+  const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+  if(!leadsR.ok) return json({error:'Failed to fetch leads'},502);
+  const {list:leads=[]}=await leadsR.json().catch(()=>({}));
+  let spawned=0;
+  for(const lead of leads){
+    if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+    const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
+    if(!nextStep) continue;
+    const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
+    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,force:false})}).catch(()=>{});
+    spawned++;
+  }
+  return json({ok:true, spawned});
+}
+
+// ─── Public Chat Page ─────────────────────────────────────────────────────────
+// Standalone full-page chat at chat.leadvyne.com?t=TOKEN (or any Vercel URL).
+// Each client generates a shareable token from Settings → Chat Page.
+// No auth required for visitors; sessions are keyed by a browser-generated UUID.
+
+async function chatTokenResolveClient(env, token){
+  if(!token) return null;
+  const row=await env.DB.prepare('SELECT client_id FROM chat_tokens WHERE token=?').bind(token).first().catch(()=>null);
+  if(!row) return null;
+  return getClientById(env, String(row.client_id));
+}
+
+// GET /public/chat/config?t=TOKEN → branding + greeting, no secrets returned
+async function handlePublicChatConfig(request, env){
+  const token=(new URL(request.url).searchParams.get('t')||'').trim();
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  return json({
+    client_name: c.client_name||'',
+    greeting:    c.chat_greeting||'Hi! How can I help you today? 👋',
+    brand_color: c.brand_color||'#0D9C93',
+  });
+}
+
+// POST /public/chat/message → {token, session_id, message} → {reply}
+async function handlePublicChatMessage(request, env){
+  const {t: tokenFromQs}=Object.fromEntries(new URL(request.url).searchParams);
+  const body=await request.json().catch(()=>({}));
+  const token=(body.token||tokenFromQs||'').trim();
+  const session_id=(body.session_id||'').trim();
+  const message=String(body.message||'').trim();
+  if(!token||!session_id||!message) return json({error:'token, session_id and message required'},400);
+  if(message.length>2000) return json({error:'Message too long'},400);
+
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'user', message, now).run().catch(()=>{});
+
+  // Recent history for multi-turn context (newest-first → reverse to chronological)
+  const hist=await env.DB.prepare(
+    'SELECT role,content FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at DESC LIMIT 12'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  const turns=(hist.results||[]).reverse();
+
+  // Build a lightweight system prompt from the client's existing knowledge base
+  let sys=`You are a helpful assistant for "${c.client_name||'this business'}". Answer questions naturally and concisely. Keep replies short — 1–3 sentences.`;
+  if(c.main_prompt) sys+='\n\n'+c.main_prompt;
+  if(c.kb_summary&&c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+
+  // Inject prior turns into userText so engineCallLlm (single-turn API) sees the context
+  let userText=message;
+  if(turns.length>1){
+    const ctx=turns.slice(0,-1).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+    userText=`[Conversation so far]\n${ctx}\n\n[New message from customer]\n${message}`;
+  }
+
+  const reply=await engineCallLlm(env, c, sys, userText, 350);
+  const botText=reply||"I'm sorry, I couldn't process that. Please try again.";
+
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'bot', botText, new Date().toISOString()).run().catch(()=>{});
+
+  return json({reply: botText});
+}
+
+// GET /public/chat/history?t=TOKEN&s=SESSION_ID → message history for page reload
+async function handlePublicChatHistory(request, env){
+  const params=new URL(request.url).searchParams;
+  const token=(params.get('t')||'').trim();
+  const session_id=(params.get('s')||'').trim();
+  if(!token||!session_id) return json({messages:[]});
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  const rows=await env.DB.prepare(
+    'SELECT role,content,created_at FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at ASC LIMIT 60'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  return json({messages: rows.results||[]});
+}
+
+// GET /chat-tokens → list tokens for the authenticated client
+async function handleChatTokensList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const rows=await env.DB.prepare('SELECT token,label,created_at FROM chat_tokens WHERE client_id=? ORDER BY created_at DESC')
+    .bind(Number(payload.cid)).all().catch(()=>({results:[]}));
+  return json({tokens: rows.results||[]});
+}
+
+// POST /chat-tokens → {label} → create token
+async function handleChatTokensCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {label}=await request.json().catch(()=>({}));
+  const token=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join('');
+  await env.DB.prepare('INSERT INTO chat_tokens(token,client_id,label,created_at) VALUES(?,?,?,?)')
+    .bind(token, Number(payload.cid), label||'', new Date().toISOString()).run();
+  return json({token, label: label||''});
+}
+
+// DELETE /chat-tokens → {token} → revoke token
+async function handleChatTokensDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {token}=await request.json().catch(()=>({}));
+  if(!token) return json({error:'token required'},400);
+  await env.DB.prepare('DELETE FROM chat_tokens WHERE token=? AND client_id=?').bind(token, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -24953,6 +25497,7 @@ export default {
       else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
       else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
+      else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
@@ -25091,6 +25636,12 @@ export default {
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
       else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
+      else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
+      else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
+      else if(url.pathname==='/public/chat/history' && request.method==='GET'){  res=await handlePublicChatHistory(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='GET'){   res=await handleChatTokensList(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='POST'){  res=await handleChatTokensCreate(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='DELETE'){ res=await handleChatTokensDelete(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }
@@ -25117,6 +25668,9 @@ export default {
       else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='GET'){ res=await handleFollowupSmartGet(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='PATCH'){ res=await handleFollowupSmartPatch(request, env); }
+      else if(url.pathname==='/followups/smart/migrate' && request.method==='POST'){ res=await handleFollowupSmartMigrate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
