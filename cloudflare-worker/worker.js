@@ -10659,6 +10659,15 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
 
   const get=f=>leadBody[f]||state.lead?.[f]||'';
 
+  // ── Priority 0: Channel / Source rule (optional, bypasses all other rules) ───
+  if(routing.channelEnabled && Array.isArray(routing.channelRules) && routing.channelRules.length){
+    const src=(get('Source')||'').toLowerCase().trim();
+    if(src){
+      const match=routing.channelRules.find(r=>String(r.source||'').toLowerCase().trim()===src);
+      if(match?.owner){ leadBody.Owner=match.owner; return; }
+    }
+  }
+
   // ── Priority 1: Product / Property match ─────────────────────────────────────
   if(modes.includes('product')){
     const product=(get('InterestedProduct')||get('ProductCategory')||get('Brand')||

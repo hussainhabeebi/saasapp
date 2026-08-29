@@ -1532,6 +1532,9 @@ const ROLES = {
             </select>
             <!-- Travel leads separation — Ticket/Package/Hotel/Other Services. Only shown for the
                  travel industry (toggled in applyTheme()); see LEAD_CATEGORIES. -->
+            <select class="form-input" id="leadSourceFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px" title="Filter by source / channel">
+              <option value="">All sources</option>
+            </select>
             <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:0 0 140px;padding:9px 10px">
               <option value="">All categories</option>
             </select>
@@ -5923,6 +5926,8 @@ function applyLeadsViewFilter(leads){
   if(cf) out=out.filter(l=>(l.ServiceCategory||'')===cf);
   const pf=$id('leadProductFilter')?.value||'';
   if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
+  const srcf=$id('leadSourceFilter')?.value||'';
+  if(srcf) out=out.filter(l=>(l.Source||'')===srcf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
@@ -5993,6 +5998,7 @@ function selectLeadsView(id){
   if($id('leadMineOnly')) $id('leadMineOnly').checked=!!saved?.mineOnly;
   if($id('leadScoreFilter')) $id('leadScoreFilter').value=saved?.score||'';
   if($id('leadProductFilter')) $id('leadProductFilter').value=saved?.product||'';
+  if($id('leadSourceFilter')) $id('leadSourceFilter').value=saved?.source||'';
   _leadsPage=1;
   renderLeadsCurrentView();
 }
@@ -6002,7 +6008,7 @@ async function promptSaveLeadsView(){
     id:'lv_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name,
     stages:_leadsFilter.stages.slice(), tag:_leadsFilter.tag||'',
     owner:$id('leadOwnerFilter')?.value||'', mineOnly:!!$id('leadMineOnly')?.checked, score:$id('leadScoreFilter')?.value||'',
-    product:$id('leadProductFilter')?.value||'',
+    product:$id('leadProductFilter')?.value||'', source:$id('leadSourceFilter')?.value||'',
   };
   const list=[...getLeadSavedViews(), view];
   try{ await saveLeadSavedViewsList(list); _leadsActiveView=view.id; renderLeadsCurrentView(); showToast('✓ View saved','ok'); }
@@ -6202,6 +6208,9 @@ function renderLeadsList(){
   const productSet=[...new Set(allLeads.flatMap(l=>[l.InterestedProduct,l.ProductCategory,l.Brand].filter(Boolean)))].sort();
   const pf=$id('leadProductFilter')?.value||'';
   $id('leadProductFilter').innerHTML='<option value="">All products/brands</option>'+productSet.map(p=>`<option value="${esc(p)}"${pf===p?' selected':''}>${esc(p)}</option>`).join('');
+  const sourceSet=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
+  const srcf=$id('leadSourceFilter')?.value||'';
+  $id('leadSourceFilter').innerHTML='<option value="">All sources</option>'+sourceSet.map(s=>`<option value="${esc(s)}"${srcf===s?' selected':''}>${esc(s)}</option>`).join('');
 
   const el=$id('leadsList');
   if(!filtered.length){
@@ -8993,12 +9002,48 @@ function renderLeadRoutingSettings(){
         </table>
       </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
 
+      <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
+          <input type="checkbox" id="lrChannelEnabled" ${rt.channelEnabled?' checked':''}> 📢 Route by source / channel <span style="font-weight:400;color:var(--muted);font-size:12px">(optional)</span>
+        </label>
+        <div class="s-note" style="margin-bottom:10px">Assign all leads from a specific source directly to one person — bypasses all other rules. Matched against the lead's <strong>Source</strong> field (e.g. "Whatsapp", "Facebook Ads", "Instagram").</div>
+        <div id="lrChannelRulesBody">${(rt.channelRules||[]).map((r,i)=>`
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${i}">
+            <input class="form-input" style="flex:1;font-size:12px;padding:5px 8px" placeholder="Source name (e.g. Whatsapp)" data-field="channelSource" value="${esc(r.source||'')}">
+            <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
+            <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
+              <option value="">— pick person —</option>
+              ${members.map(m=>`<option value="${m.email}"${r.owner===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
+            </select>
+            <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
+          </div>`).join('')}</div>
+        <button class="btn btn-secondary btn-sm" style="font-size:12px;margin-top:2px" onclick="addChannelRuleRow()">+ Add channel rule</button>
+      </div>
+
       <div style="display:flex;gap:8px;align-items:center">
         <button class="save-btn" onclick="saveLeadRouting()">Save Routing Rules</button>
         <span class="save-msg" id="lrSaveMsg"></span>
       </div>
     </div>`;
 }
+
+function addChannelRuleRow(){
+  const body=$id('lrChannelRulesBody'); if(!body) return;
+  const members=getTeamMembers().filter(m=>!isAccountOwner(m.email));
+  const opts=members.map(m=>`<option value="${m.email}">${esc(m.name||m.email)}</option>`).join('');
+  const idx=body.children.length;
+  body.insertAdjacentHTML('beforeend',`
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${idx}">
+      <input class="form-input" style="flex:1;font-size:12px;padding:5px 8px" placeholder="Source name (e.g. Whatsapp)" data-field="channelSource" value="">
+      <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
+      <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
+        <option value="">— pick person —</option>
+        ${opts}
+      </select>
+      <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
+    </div>`);
+}
+function removeChannelRuleRow(btn){ btn.closest('[data-channel-idx]')?.remove(); }
 
 async function saveLeadRouting(){
   const msg=$id('lrSaveMsg');
@@ -9021,8 +9066,14 @@ async function saveLeadRouting(){
       else rules[email][field]=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
     });
 
+    const channelEnabled=$id('lrChannelEnabled')?.checked||false;
+    const channelRules=[...$id('leadRoutingCard').querySelectorAll('[data-channel-idx]')].map(row=>({
+      source:(row.querySelector('[data-field="channelSource"]')?.value||'').trim(),
+      owner:row.querySelector('[data-field="channelOwner"]')?.value||'',
+    })).filter(r=>r.source&&r.owner);
+
     const existing=getLeadRouting();
-    const newRouting={...existing, enabled, modes, catchall, rules};
+    const newRouting={...existing, enabled, modes, catchall, rules, channelEnabled, channelRules};
     if(msg){msg.textContent='Saving…';msg.className='save-msg';}
     await patchClient({lead_routing:JSON.stringify(newRouting)});
     if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}
