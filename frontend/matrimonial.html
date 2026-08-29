@@ -276,16 +276,26 @@ function buildModals(){
   $('modals').innerHTML=
     box('profileModal','Profile',`<input type="hidden" id="pId"><div class="form-grid">
       ${sel('pType','Profile type *','<option value="bride">Bride</option><option value="groom">Groom</option>')}
-      ${field('pName','Full name *')}${field('pDob','Date of birth','date')}${field('pReligion','Religion')}${field('pCaste','Caste')}${field('pSubCaste','Sub-caste')}
-      ${field('pMother','Mother tongue')}${field('pHeight','Height (cm)','number')}${field('pComplexion','Complexion')}${field('pEducation','Education')}${field('pOccupation','Occupation')}
-      ${field('pIncome','Annual income')}${field('pCity','City')}${field('pState','State')}${field('pCountry','Country')}
+      ${field('pName','Full name *')}${field('pDob','Date of birth','date')}${field('pAge','Age','number')}
+      ${field('pReligion','Religion')}${field('pCaste','Caste')}${field('pSubCaste','Sub-caste')}
+      ${field('pMother','Mother tongue')}${field('pHeight','Height (cm)','number')}${field('pComplexion','Complexion')}
+      ${field('pBodyType','Body type')}${field('pEducation','Education')}${field('pRequiredEd','Required education (partner)')}
+      ${field('pOccupation','Occupation')}${field('pJobPlace','Job place')}${field('pIncome','Annual / Economic status')}
+      ${field('pCity','City')}${field('pDistrict','District')}${field('pState','State')}${field('pCountry','Country')}
+      ${field('pPhone','Phone no.')}${field('pWhatsapp','WhatsApp no.')}${field('pGuardianPhone','Guardian no.')}
+      ${field('pMarriageStatus','Marriage status')}${field('pExpectedAge','Expected partner age')}${field('pExpectedDob','Expected partner DOB')}
+      ${area('pOtherConditions','Other conditions / preferences')}
       ${sel('pFamilyType','Family type','<option value="">—</option><option value="nuclear">Nuclear</option><option value="joint">Joint</option>')}
       ${field('pFatherName','Father name')}${field('pFatherOcc','Father occupation')}${field('pMotherName','Mother name')}${field('pMotherOcc','Mother occupation')}
       ${field('pSiblings','Siblings')}${field('pStar','Horoscope star')}${field('pRashi','Horoscope rashi')}
       ${sel('pManglik','Manglik','<option value="">—</option><option value="yes">Yes</option><option value="no">No</option><option value="partial">Partial</option>')}
       ${area('pHoroscope','Horoscope notes')}${area('pAbout','About')}
       ${field('pPhoto','Photo URL','url','full')}${field('pPhoto2','Photo 2 URL','url','full')}${field('pPhoto3','Photo 3 URL','url','full')}
-      ${field('pBiodata','Biodata PDF URL','url','full')}${sel('pPlan','Membership plan',memPlans)}${field('pExpiry','Membership expiry','date')}${sel('pStatus','Status',status)}</div>`,'saveProfile')+
+      ${field('pBiodata','Biodata PDF URL','url','full')}
+      ${sel('pPlan','Membership plan',memPlans)}${field('pPlanLabel','Plan label (raw)')}${field('pExpiry','Membership expiry','date')}
+      ${field('pPaymentAmount','Payment amount')}${field('pPaymentLink','Payment link','url','full')}
+      ${field('pWhatsappFilled','WhatsApp filled?')}${sel('pStatus','Status',status)}
+      ${area('pRemarks','Remarks')}</div>`,'saveProfile')+
     box('matchModal','Match Record',`<input type="hidden" id="mId"><div class="form-grid">
       ${sel('mProfile1','Profile 1 *','<option value="">Select…</option>')}${sel('mProfile2','Profile 2 *','<option value="">Select…</option>')}
       ${field('mScore','Compatibility score (0–100)','number')}
@@ -329,9 +339,11 @@ function renderProfiles(){
   const q=($('profileSearch').value||'').toLowerCase(),type=$('filterType').value,plan=$('filterPlan').value;
   const rows=profiles.filter(p=>{if(type&&p.profile_type!==type)return false;if(plan&&p.membership_plan!==plan)return false;if(q&&![p.full_name,p.city,p.education,p.occupation].join(' ').toLowerCase().includes(q))return false;return true;});
   $('profileGrid').innerHTML=rows.length?rows.map(p=>`<div class="profile-card" onclick="openProfile(${p.id})">
-    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">${p.photo_url?`<img src="${esc(p.photo_url)}" class="profile-photo" onerror="this.style.display='none'">`:`<div class="profile-photo">${p.profile_type==='bride'?'👰':'🤵'}</div>`}<div><b>${esc(p.full_name)}</b><div class="hint">${p.profile_type==='bride'?'Bride':'Groom'} · ${esc(p.city||'—')}</div></div></div>
-    <div class="hint">${esc(p.religion||'—')} · ${esc(p.caste||'—')}</div>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">${p.photo_url?`<img src="${esc(p.photo_url)}" class="profile-photo" onerror="this.style.display='none'">`:`<div class="profile-photo">${p.profile_type==='bride'?'👰':'🤵'}</div>`}<div><b>${esc(p.full_name)}</b><div class="hint">${p.profile_type==='bride'?'Bride':'Groom'}${p.age?' · '+p.age+' yrs':''} · ${esc(p.city||p.district||'—')}</div></div></div>
+    <div class="hint">${esc(p.religion||'—')}${p.height_cm?' · '+p.height_cm+' cm':''}</div>
     <div class="hint">${esc(p.education||'—')} · ${esc(p.occupation||'—')}</div>
+    ${p.phone||p.whatsapp?`<div class="hint" style="margin-top:4px">📞 ${esc(p.phone||p.whatsapp)}</div>`:''}
+    ${p.marriage_status?`<div class="hint">${esc(p.marriage_status)}</div>`:''}
     <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center">${planBadge(p.membership_plan)}<span class="badge ${p.status==='active'?'ok':p.status==='matched'?'warn':'gray'}">${esc(p.status)}</span></div>
     <div style="margin-top:8px;display:flex;gap:6px"><button class="btn sm sec" onclick="event.stopPropagation();openProfile(${p.id})">Edit</button><button class="btn sm danger" onclick="event.stopPropagation();removeRow('/matrimonial/profiles',${p.id})">Delete</button></div>
   </div>`).join(''):'<div class="empty" style="grid-column:1/-1">No profiles found.</div>';
@@ -442,13 +454,13 @@ async function loadLog(){
 function sv(id){return $(id)?.value?.trim()||''}
 function openProfile(id){
   const p=profiles.find(x=>+x.id===+id)||{};$('pId').value=p.id||'';
-  const map={pType:'profile_type',pName:'full_name',pDob:'date_of_birth',pReligion:'religion',pCaste:'caste',pSubCaste:'sub_caste',pMother:'mother_tongue',pHeight:'height_cm',pComplexion:'complexion',pEducation:'education',pOccupation:'occupation',pIncome:'annual_income',pCity:'city',pState:'state',pCountry:'country',pFamilyType:'family_type',pFatherName:'father_name',pFatherOcc:'father_occupation',pMotherName:'mother_name',pMotherOcc:'mother_occupation',pSiblings:'siblings',pStar:'horoscope_star',pRashi:'horoscope_rashi',pManglik:'manglik',pHoroscope:'horoscope_notes',pAbout:'about',pPhoto:'photo_url',pPhoto2:'photo_url_2',pPhoto3:'photo_url_3',pBiodata:'biodata_pdf_url',pPlan:'membership_plan',pExpiry:'membership_expiry',pStatus:'status'};
+  const map={pType:'profile_type',pName:'full_name',pDob:'date_of_birth',pAge:'age',pReligion:'religion',pCaste:'caste',pSubCaste:'sub_caste',pMother:'mother_tongue',pHeight:'height_cm',pComplexion:'complexion',pBodyType:'body_type',pEducation:'education',pRequiredEd:'required_education',pOccupation:'occupation',pJobPlace:'job_place',pIncome:'annual_income',pCity:'city',pDistrict:'district',pState:'state',pCountry:'country',pPhone:'phone',pWhatsapp:'whatsapp',pGuardianPhone:'guardian_phone',pMarriageStatus:'marriage_status',pExpectedAge:'expected_partner_age',pExpectedDob:'expected_partner_dob',pOtherConditions:'other_conditions',pFamilyType:'family_type',pFatherName:'father_name',pFatherOcc:'father_occupation',pMotherName:'mother_name',pMotherOcc:'mother_occupation',pSiblings:'siblings',pStar:'horoscope_star',pRashi:'horoscope_rashi',pManglik:'manglik',pHoroscope:'horoscope_notes',pAbout:'about',pPhoto:'photo_url',pPhoto2:'photo_url_2',pPhoto3:'photo_url_3',pBiodata:'biodata_pdf_url',pPlan:'membership_plan',pPlanLabel:'plan_label',pExpiry:'membership_expiry',pPaymentAmount:'payment_amount',pPaymentLink:'payment_link',pWhatsappFilled:'whatsapp_filled',pStatus:'status',pRemarks:'remarks'};
   Object.entries(map).forEach(([el,key])=>{const e=$(el);if(e)e.value=p[key]??''});
   if(!id){$('pCountry').value='India';$('pPlan').value='free';$('pStatus').value='active';}
   modal('profileModal');
 }
 async function saveProfile(){
-  const b={id:$('pId').value||undefined,profile_type:sv('pType'),full_name:sv('pName'),date_of_birth:sv('pDob')||null,religion:sv('pReligion'),caste:sv('pCaste'),sub_caste:sv('pSubCaste'),mother_tongue:sv('pMother'),height_cm:+sv('pHeight')||null,complexion:sv('pComplexion'),education:sv('pEducation'),occupation:sv('pOccupation'),annual_income:sv('pIncome'),city:sv('pCity'),state:sv('pState'),country:sv('pCountry'),family_type:sv('pFamilyType'),father_name:sv('pFatherName'),father_occupation:sv('pFatherOcc'),mother_name:sv('pMotherName'),mother_occupation:sv('pMotherOcc'),siblings:sv('pSiblings'),horoscope_star:sv('pStar'),horoscope_rashi:sv('pRashi'),manglik:sv('pManglik'),horoscope_notes:sv('pHoroscope'),about:sv('pAbout'),photo_url:sv('pPhoto'),photo_url_2:sv('pPhoto2'),photo_url_3:sv('pPhoto3'),biodata_pdf_url:sv('pBiodata'),membership_plan:sv('pPlan'),membership_expiry:sv('pExpiry')||null,status:sv('pStatus')};
+  const b={id:$('pId').value||undefined,profile_type:sv('pType'),full_name:sv('pName'),date_of_birth:sv('pDob')||null,age:+sv('pAge')||null,religion:sv('pReligion'),caste:sv('pCaste'),sub_caste:sv('pSubCaste'),mother_tongue:sv('pMother'),height_cm:+sv('pHeight')||null,complexion:sv('pComplexion'),body_type:sv('pBodyType'),education:sv('pEducation'),required_education:sv('pRequiredEd'),occupation:sv('pOccupation'),job_place:sv('pJobPlace'),annual_income:sv('pIncome'),city:sv('pCity'),district:sv('pDistrict'),state:sv('pState'),country:sv('pCountry'),phone:sv('pPhone'),whatsapp:sv('pWhatsapp'),guardian_phone:sv('pGuardianPhone'),marriage_status:sv('pMarriageStatus'),expected_partner_age:sv('pExpectedAge'),expected_partner_dob:sv('pExpectedDob')||null,other_conditions:sv('pOtherConditions'),family_type:sv('pFamilyType'),father_name:sv('pFatherName'),father_occupation:sv('pFatherOcc'),mother_name:sv('pMotherName'),mother_occupation:sv('pMotherOcc'),siblings:sv('pSiblings'),horoscope_star:sv('pStar'),horoscope_rashi:sv('pRashi'),manglik:sv('pManglik'),horoscope_notes:sv('pHoroscope'),about:sv('pAbout'),photo_url:sv('pPhoto'),photo_url_2:sv('pPhoto2'),photo_url_3:sv('pPhoto3'),biodata_pdf_url:sv('pBiodata'),membership_plan:sv('pPlan'),plan_label:sv('pPlanLabel'),membership_expiry:sv('pExpiry')||null,payment_amount:sv('pPaymentAmount'),payment_link:sv('pPaymentLink'),whatsapp_filled:sv('pWhatsappFilled'),status:sv('pStatus'),remarks:sv('pRemarks')};
   if(!b.profile_type||!b.full_name)return alert('Profile type and full name are required');
   await save('/matrimonial/profiles',b,'profileModal');
 }
