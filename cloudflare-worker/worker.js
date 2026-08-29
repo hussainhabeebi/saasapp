@@ -16670,7 +16670,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     const v=settings.chat_keyword_view||'1';
     const l=settings.chat_keyword_list||'2';
     const a=settings.chat_keyword_agent||'3';
-    return `${msg}\n\n${v}️⃣  View Profiles\n${l}️⃣  List My Profile\n${a}️⃣  Talk to an Agent`;
+    return `${msg}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
   const sendProfiles=async (profileType)=>{
