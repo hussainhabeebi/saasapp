@@ -2471,6 +2471,13 @@ const ROLES = {
               <summary style="cursor:pointer;font-weight:600;color:var(--muted)">Already have WhatsApp connected another way? Wire Meta credentials directly</summary>
               <div style="margin-top:10px">
                 <div class="s-note" style="margin-bottom:8px">If your WhatsApp inbox was set up straight in Chatwoot (or another way) instead of through Embedded Signup above, this app still doesn't know your Meta credentials — and Chatwoot itself has no API to create new templates, only to sync ones already approved. Paste your WhatsApp Business Account ID and a Meta System User access token here to wire template create/list/send straight to Meta's Graph API, no Chatwoot or re-signup needed.</div>
+                <div style="margin-bottom:12px;padding:10px 12px;background:var(--bg-soft);border-radius:8px;border:1px solid var(--line)">
+                  <div style="font-weight:600;font-size:13px;margin-bottom:4px">⚡ Auto-detect from Chatwoot</div>
+                  <div style="font-size:12px;color:var(--muted);margin-bottom:8px">If your Chatwoot version exposes inbox credentials (most self-hosted and cloud versions do), we can read them automatically — no copying needed.</div>
+                  <button class="save-btn" id="chAutoDetectBtn" onclick="autoDetectMetaCreds()">Auto-detect Credentials</button>
+                  <span class="save-msg" id="chAutoDetectMsg"></span>
+                </div>
+                <div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">— or paste manually —</div>
                 <label class="form-label">WhatsApp Business Account ID (WABA ID)</label>
                 <input class="form-input" id="chManualWabaId" type="text" placeholder="e.g. 123456789012345" style="margin-bottom:8px">
                 <label class="form-label">System User Access Token</label>
@@ -11506,6 +11513,19 @@ async function saveManualWaCreds(){
     renderChannelsPage();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },4000); }
+}
+
+async function autoDetectMetaCreds(){
+  const btn=$id('chAutoDetectBtn'), msg=$id('chAutoDetectMsg');
+  btn.disabled=true; msg.textContent='Detecting…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/extract-meta-creds`,{method:'POST',headers:ncAuthHeaders()});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    if(d.already_configured){ msg.textContent='✓ Already configured — credentials were already on file.'; msg.className='save-msg'; }
+    else{ msg.textContent='✓ Credentials auto-detected and saved!'; msg.className='save-msg'; renderChannelsPage(); }
+  }catch(e){ msg.textContent='Failed: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },5000); }
 }
 
 // ── Instagram DM (native — no Chatwoot) ── "Instagram API with Instagram Login" authenticates

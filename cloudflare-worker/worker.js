@@ -4000,6 +4000,37 @@ async function handleChannelsWhatsappConnect(request, env){
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
 }
 
+// POST /channels/whatsapp/extract-meta-creds
+// Auto-extracts waba_id / wa_token / wa_phone_id from the Chatwoot inbox config so clients
+// whose WhatsApp was set up directly in Chatwoot (not via Embedded Signup) don't have to copy
+// credentials manually. Chatwoot's inbox show endpoint returns `channel_config` which includes
+// `api_key` (the Meta access token), `phone_number_id`, and `business_account_id`.
+async function handleChannelsExtractMetaCreds(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id)
+    return json({error:'Chatwoot is not fully configured. Make sure the Chatwoot account and WhatsApp inbox are connected first.'}, 400);
+  // Fetch full inbox details — channel_config is returned for admin tokens
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {
+    headers:{api_access_token:c.chatwoot_token}
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||('Chatwoot API '+r.status)}, 502);
+  const cfg=data?.channel_config||data?.provider_config||{};
+  const waba_id=String(cfg.business_account_id||cfg.waba_id||'').trim();
+  const wa_token=String(cfg.api_key||cfg.access_token||'').trim();
+  const wa_phone_id=String(cfg.phone_number_id||data?.phone_number_id||'').trim();
+  if(!wa_token) return json({error:'Could not read Meta credentials from Chatwoot inbox. Your Chatwoot version may not expose channel_config — use the "Wire Meta credentials directly" form below instead.'}, 400);
+  const patch={};
+  if(waba_id && !c.waba_id) patch.waba_id=waba_id;
+  if(wa_token && !c.wa_token) patch.wa_token=wa_token;
+  if(wa_phone_id && !c.wa_phone_id) patch.wa_phone_id=wa_phone_id;
+  if(!Object.keys(patch).length) return json({ok:true, already_configured:true, message:'Meta credentials were already saved — no changes made.'});
+  await patchClientFields(env, payload.cid, patch);
+  return json({ok:true, saved:{waba_id:!!patch.waba_id, wa_token:!!patch.wa_token, wa_phone_id:!!patch.wa_phone_id}});
+}
+
 /* ── Instagram DM module (native — no Chatwoot) ────────────────────────────────────────────
    Deliberately separate from the WhatsApp connect flow above: WhatsApp's inbound webhook,
    normalization and outbound send all go through Chatwoot; Instagram's don't touch Chatwoot at
@@ -25984,6 +26015,7 @@ export default {
       else if(url.pathname==='/referrals/reward' && request.method==='POST'){ res=await handleReferralsReward(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
+      else if(url.pathname==='/channels/whatsapp/extract-meta-creds' && request.method==='POST'){ res=await handleChannelsExtractMetaCreds(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='GET'){ res=await handleChannelsWhatsappProfileGet(request, env); }
