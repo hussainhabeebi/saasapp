@@ -24944,8 +24944,8 @@ async function handleReAnalytics(request, env){
    browser. SerpApi is discovery-only; a fare is bookable only
    after Riya or TripJack returns and subsequently revalidates it.
    ═══════════════════════════════════════════════════════════════════════════ */
-const LT_SUPPLIERS=['serpapi','riya','tripjack'];
-const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack']);
+const LT_SUPPLIERS=['serpapi','riya','tripjack','poomas'];
+const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack','poomas']);
 const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
 let _ltSchemaEnsured=false;
 
@@ -24981,6 +24981,25 @@ function ltSearchParams(body={}){
 
 export function ltNormalizeOffer(supplier,raw,ctx={}){
   const source=String(supplier||'').toLowerCase();
+  if(source==='poomas'){
+    const isBook=Boolean(raw?.isBookable);
+    const total=ltMoney(raw?.displayPrice??raw?.totalFare??0);
+    const checkoutBase=String(ctx.checkout_base||'https://flypoomas.com');
+    const checkoutUrl=isBook?`${checkoutBase}/book?fareId=${encodeURIComponent(String(raw?.id||''))}&supplier=${encodeURIComponent(String(raw?.supplier||''))}&source=leadvyne&client=${encodeURIComponent(String(ctx.client_id||''))}`:null;
+    return {
+      supplier:'poomas',supplier_offer_id:ltText(String(raw?.id||''),300),
+      bookable:isBook,validating:false,validating_supplier:'',
+      airline_code:ltText(raw?.airline||'',12).toUpperCase(),airline_name:ltText(raw?.airlineName||raw?.airline||'Flight',120),
+      flight_numbers:ltText(raw?.flightNumber||'',200),
+      itinerary:raw?.origin?[{origin:raw.origin,destination:raw.destination,departureTime:raw.departureTime,arrivalTime:raw.arrivalTime,duration:raw.duration,stops:raw.stops||0}]:[],
+      baggage:raw?.baggage||{},fare_rules:raw?.fareRules||{},
+      cabin:ltText(String(raw?.cabinClass||'economy').toLowerCase(),40),seats_left:Number.isFinite(Number(raw?.seatsLeft))?Number(raw.seatsLeft):null,
+      currency:ltText(raw?.currency||ctx.currency||'AED',3).toUpperCase(),
+      base_amount:ltMoney(raw?.baseFare||0),tax_amount:ltMoney(raw?.taxes||0),markup_amount:0,total_amount:total,
+      checkout_url:checkoutUrl,
+      raw:{...raw,_checkout_url:checkoutUrl,_poomas_supplier:String(raw?.supplier||'')},
+    };
+  }
   const price=ltMoney(raw?.total_amount??raw?.totalPrice??raw?.total_price??raw?.price?.total??raw?.price??raw?.fare?.totalFare??raw?.fare?.total_amount);
   const tax=ltMoney(raw?.tax_amount??raw?.taxes??raw?.price?.tax??raw?.fare?.totalTax);
   const segments=raw?.itinerary||raw?.segments||raw?.flights||raw?.journeys||[];
@@ -24996,7 +25015,8 @@ export function ltNormalizeOffer(supplier,raw,ctx={}){
     airline_code:ltText(airlineCode,12).toUpperCase(),airline_name:ltText(airline,120),flight_numbers:ltText(Array.isArray(numbers)?numbers.join(', '):numbers,200),
     itinerary:Array.isArray(segments)?segments:[],baggage:raw?.baggage||raw?.baggage_info||{},fare_rules:raw?.fare_rules||raw?.fareRules||{},
     cabin:ltText(raw?.cabin||ctx.cabin||'economy',40),seats_left:Number.isFinite(Number(raw?.seats_left??raw?.seats))?Number(raw?.seats_left??raw?.seats):null,
-    currency:ltText(raw?.currency||raw?.price?.currency||ctx.currency||'AED',3).toUpperCase(),base_amount:base,tax_amount:tax,markup_amount:markup,total_amount:ltMoney(price+markup),raw
+    currency:ltText(raw?.currency||raw?.price?.currency||ctx.currency||'AED',3).toUpperCase(),base_amount:base,tax_amount:tax,markup_amount:markup,total_amount:ltMoney(price+markup),
+    checkout_url:null,raw,
   };
 }
 
@@ -25041,6 +25061,7 @@ function ltSupplierConfigured(config){
   const supplier=config?.supplier,credentials=config?.credentials||{},endpoints=config?.endpoints||{};
   if(supplier==='serpapi')return !!credentials.api_key;
   if(supplier==='riya'||supplier==='tripjack')return !!(credentials.api_key&&endpoints.search);
+  if(supplier==='poomas')return true; // uses platform-level integration key; no per-client credentials needed
   return false;
 }
 function ltSupplierPublic(config){
@@ -25063,16 +25084,26 @@ async function ltFetchJson(url,options={},timeoutMs=25000){
 }
 function ltExtractOffers(supplier,data){
   if(supplier==='serpapi')return [...(data?.best_flights||[]),...(data?.other_flights||[])];
+  if(supplier==='poomas')return Array.isArray(data?.fares)?data.fares:Array.isArray(data?.data?.fares)?data.data.fares:[];
   for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
   return Array.isArray(data)?data:[];
 }
-async function ltSupplierSearch(config,input){
+async function ltSupplierSearch(config,input,env=null){
   const supplier=config.supplier;
   if(!ltSupplierConfigured(config)) throw new Error('Client credentials or search endpoint are not configured.');
   if(supplier==='serpapi'){
     const q=new URLSearchParams({engine:'google_flights',api_key:config.credentials.api_key,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
     if(input.return_date)q.set('return_date',input.return_date);
     return ltFetchJson(`${config.endpoints.search||'https://serpapi.com/search.json'}?${q}`);
+  }
+  if(supplier==='poomas'){
+    if(!env?.POOMAS_INTEGRATION_KEY)throw new Error('POOMAS integration key is not configured on this deployment.');
+    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(config.client_id).first();
+    const apiBase=(poomasRow?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+    const currency=['AED','INR','USD','SAR','EUR','GBP'].includes(input.currency)?input.currency:'AED';
+    const payload={origin:input.origin,destination:input.destination,departureDate:input.departure_date,adults:input.adults,children:input.children,infants:input.infants,cabinClass:input.cabin.toUpperCase(),tripType:input.trip_type==='round_trip'?'ROUNDTRIP':'ONEWAY',currency};
+    if(input.return_date)payload.returnDate=input.return_date;
+    return ltFetchJson(`${apiBase}/api/integrations/v1/flights/search`,{method:'POST',headers:{'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(payload)});
   }
   return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
 }
@@ -25092,11 +25123,11 @@ async function ltEnsureSchema(env){
     `CREATE INDEX IF NOT EXISTS idx_live_travel_suppliers_client ON live_travel_suppliers(client_id,enabled,priority)`,
     `CREATE TABLE IF NOT EXISTS live_travel_searches (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_ref TEXT NOT NULL,lead_id TEXT NOT NULL DEFAULT '',trip_type TEXT NOT NULL DEFAULT 'round_trip',origin TEXT NOT NULL,destination TEXT NOT NULL,departure_date TEXT NOT NULL,return_date TEXT,adults INTEGER NOT NULL DEFAULT 1,children INTEGER NOT NULL DEFAULT 0,infants INTEGER NOT NULL DEFAULT 0,cabin TEXT NOT NULL DEFAULT 'economy',currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'searching',supplier_errors_json TEXT NOT NULL DEFAULT '{}',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,expires_at TEXT NOT NULL,UNIQUE(client_id,search_ref))`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_searches_client ON live_travel_searches(client_id,created_at)`,
-    `CREATE TABLE IF NOT EXISTS live_travel_offers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_id INTEGER NOT NULL,offer_ref TEXT NOT NULL,supplier TEXT NOT NULL,supplier_offer_id TEXT NOT NULL DEFAULT '',bookable INTEGER NOT NULL DEFAULT 0,validating INTEGER NOT NULL DEFAULT 0,validating_supplier TEXT NOT NULL DEFAULT '',airline_code TEXT NOT NULL DEFAULT '',airline_name TEXT NOT NULL DEFAULT '',flight_numbers TEXT NOT NULL DEFAULT '',itinerary_json TEXT NOT NULL DEFAULT '[]',baggage_json TEXT NOT NULL DEFAULT '{}',fare_rules_json TEXT NOT NULL DEFAULT '{}',cabin TEXT NOT NULL DEFAULT 'economy',seats_left INTEGER,currency TEXT NOT NULL DEFAULT 'AED',base_amount REAL NOT NULL DEFAULT 0,tax_amount REAL NOT NULL DEFAULT 0,markup_amount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,last_validated_at TEXT,expires_at TEXT NOT NULL,raw_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,UNIQUE(client_id,offer_ref))`,
+    `CREATE TABLE IF NOT EXISTS live_travel_offers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_id INTEGER NOT NULL,offer_ref TEXT NOT NULL,supplier TEXT NOT NULL,supplier_offer_id TEXT NOT NULL DEFAULT '',bookable INTEGER NOT NULL DEFAULT 0,validating INTEGER NOT NULL DEFAULT 0,validating_supplier TEXT NOT NULL DEFAULT '',airline_code TEXT NOT NULL DEFAULT '',airline_name TEXT NOT NULL DEFAULT '',flight_numbers TEXT NOT NULL DEFAULT '',itinerary_json TEXT NOT NULL DEFAULT '[]',baggage_json TEXT NOT NULL DEFAULT '{}',fare_rules_json TEXT NOT NULL DEFAULT '{}',cabin TEXT NOT NULL DEFAULT 'economy',seats_left INTEGER,currency TEXT NOT NULL DEFAULT 'AED',base_amount REAL NOT NULL DEFAULT 0,tax_amount REAL NOT NULL DEFAULT 0,markup_amount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,last_validated_at TEXT,expires_at TEXT NOT NULL,raw_json TEXT NOT NULL DEFAULT '{}',checkout_url TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,offer_ref))`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_offers_search ON live_travel_offers(client_id,search_id,total_amount)`,
     `CREATE TABLE IF NOT EXISTS live_travel_quotes (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,quote_ref TEXT NOT NULL,search_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',customer_name TEXT NOT NULL DEFAULT '',customer_phone TEXT NOT NULL DEFAULT '',customer_email TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'draft',currency TEXT NOT NULL DEFAULT 'AED',subtotal REAL NOT NULL DEFAULT 0,service_fee REAL NOT NULL DEFAULT 0,discount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',valid_until TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,quote_ref))`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_quotes_client ON live_travel_quotes(client_id,status,updated_at)`,
-    `CREATE TABLE IF NOT EXISTS live_travel_bookings (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_ref TEXT NOT NULL,quote_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',supplier TEXT NOT NULL DEFAULT '',supplier_booking_id TEXT NOT NULL DEFAULT '',pnr TEXT NOT NULL DEFAULT '',ticket_numbers_json TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'draft',payment_status TEXT NOT NULL DEFAULT 'unpaid',currency TEXT NOT NULL DEFAULT 'AED',total_amount REAL NOT NULL DEFAULT 0,amount_paid REAL NOT NULL DEFAULT 0,balance_due REAL NOT NULL DEFAULT 0,hold_expires_at TEXT,last_synced_at TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,booking_ref))`,
+    `CREATE TABLE IF NOT EXISTS live_travel_bookings (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_ref TEXT NOT NULL,quote_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',supplier TEXT NOT NULL DEFAULT '',supplier_booking_id TEXT NOT NULL DEFAULT '',pnr TEXT NOT NULL DEFAULT '',ticket_numbers_json TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'draft',payment_status TEXT NOT NULL DEFAULT 'unpaid',currency TEXT NOT NULL DEFAULT 'AED',total_amount REAL NOT NULL DEFAULT 0,amount_paid REAL NOT NULL DEFAULT 0,balance_due REAL NOT NULL DEFAULT 0,hold_ref TEXT NOT NULL DEFAULT '',hold_expires_at TEXT,last_synced_at TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,booking_ref))`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_bookings_client ON live_travel_bookings(client_id,status,updated_at)`,
     `CREATE TABLE IF NOT EXISTS live_travel_passengers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,passenger_type TEXT NOT NULL DEFAULT 'adult',title TEXT NOT NULL DEFAULT '',first_name TEXT NOT NULL,last_name TEXT NOT NULL,date_of_birth TEXT,gender TEXT NOT NULL DEFAULT '',nationality TEXT NOT NULL DEFAULT '',passport_number TEXT NOT NULL DEFAULT '',passport_expiry TEXT,issuing_country TEXT NOT NULL DEFAULT '',frequent_flyer_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_live_travel_passengers_booking ON live_travel_passengers(client_id,booking_id)`,
@@ -25112,6 +25143,12 @@ async function ltEnsureSchema(env){
     `CREATE INDEX IF NOT EXISTS idx_live_travel_audit_client ON live_travel_audit_log(client_id,created_at)`,
   ];
   await env.DB.batch(stmts.map(s=>env.DB.prepare(s)));
+  // Idempotent column additions for existing deployments (ignore errors if columns already exist)
+  await Promise.allSettled([
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN hold_ref TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN checkout_url TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_poomas_settings (client_id INTEGER PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 0,api_base TEXT NOT NULL DEFAULT 'https://api.flypoomas.com',checkout_base TEXT NOT NULL DEFAULT 'https://flypoomas.com',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`).run(),
+  ]);
   _ltSchemaEnsured=true;
 }
 
@@ -25129,18 +25166,23 @@ async function handleLtBootstrap(request,env){
     env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(auth.cid).all(),
     env.DB.prepare(`SELECT c.*,b.booking_ref,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 200`).bind(auth.cid).all()
   ]);
-  const supplierList=await Promise.all((suppliers.results||[]).map(async s=>ltSupplierPublic(await ltSupplierRuntime(env,s))));
-  return json({suppliers:supplierList,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
+  const [supplierList,poomasRow]=await Promise.all([
+    Promise.all((suppliers.results||[]).map(async s=>ltSupplierPublic(await ltSupplierRuntime(env,s)))),
+    env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first(),
+  ]);
+  const poomasSettings={enabled:Boolean(poomasRow?.enabled),api_base:poomasRow?.api_base||'https://api.flypoomas.com',checkout_base:poomasRow?.checkout_base||'https://flypoomas.com'};
+  return json({suppliers:supplierList,poomas_settings:poomasSettings,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,hold:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
 }
 async function handleLtSuppliersUpdate(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
   if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
   const [,old]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first()]);
-  const previous=await ltSupplierRuntime(env,old),credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:['api_key'];
-  const credentials=body.clear_credentials?{}:{...(previous.credentials||{})};
+  const previous=await ltSupplierRuntime(env,old);
+  const credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:supplier==='poomas'?[]:['api_key'];
+  const credentials=supplier==='poomas'?{}:body.clear_credentials?{}:{...(previous.credentials||{})};
   for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
-  const endpointKeys=supplier==='serpapi'?['search']:['search','revalidate','book','ticket','sync','cancel'],endpoints={...(previous.endpoints||{})};
+  const endpointKeys=supplier==='serpapi'?['search']:supplier==='poomas'?[]:['search','revalidate','book','ticket','sync','cancel'],endpoints=supplier==='poomas'?{}:{...(previous.endpoints||{})};
   for(const key of endpointKeys)if(body.endpoints?.[key]!==undefined)endpoints[key]=ltText(body.endpoints[key],1000);
   if(supplier==='serpapi'&&!endpoints.search)endpoints.search='https://serpapi.com/search.json';
   const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
@@ -25167,21 +25209,26 @@ async function handleLtSearch(request,env){
   const [,{results:settings}]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all()]);
   if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
   const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
+  // Fetch POOMAS settings once if poomas is in the enabled supplier list
+  const poomasEnabled=(settings||[]).some(s=>s.supplier==='poomas');
+  const poomasRow=poomasEnabled?await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first():null;
   const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
     .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
   const searchId=insert.meta.last_row_id, errors={}, offers=[];
   const settled=await Promise.all((settings||[]).map(async setting=>{
-    try{const runtime=await ltSupplierRuntime(env,setting);return {setting,data:await ltSupplierSearch(runtime,input)};}catch(e){return {setting,error:String(e?.message||e)};}
+    try{const runtime=await ltSupplierRuntime(env,setting);runtime.client_id=auth.cid;return {setting,data:await ltSupplierSearch(runtime,input,env)};}catch(e){return {setting,error:String(e?.message||e)};}
   }));
   for(const result of settled){
     const supplier=result.setting.supplier;
     if(result.error){errors[supplier]=result.error;continue;}
+    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value};
+    if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;}
     for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
-      const normalized=ltNormalizeOffer(supplier,raw,{...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value});
+      const normalized=ltNormalizeOffer(supplier,raw,ctx);
       if(!normalized.total_amount)continue;
       const offerRef=ltRef('OF');
-      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),now).run();
+      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,checkout_url,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),normalized.checkout_url||'',now).run();
       offers.push(ltRow({id:saved.meta.last_row_id,search_id:searchId,offer_ref:offerRef,...normalized,expires_at:expires,created_at:now}));
     }
   }
@@ -25258,8 +25305,8 @@ async function handleLtBookings(request,env){
   }
   const body=await request.json().catch(()=>({})), quote=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(Number(body.quote_id),auth.cid).first();
   if(!quote)return json({error:'Quote not found'},404);
-  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer is required.'},409);
-  if(!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer, or a bookable POOMAS offer, is required.'},409);
+  if(offer.supplier!=='poomas'&&!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
   const now=ltNow(),ref=ltRef('BK');
   const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?, ?,?)`)
     .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now).run();
@@ -25276,12 +25323,48 @@ async function handleLtBookings(request,env){
 async function handleLtBookingAction(request,env,action){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
-  const allowed={book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
+  const allowed={hold:['draft'],book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
   if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
+  const now=ltNow();
+  // POOMAS bookings use external checkout flow; hold calls POOMAS API, book returns checkout URL
+  if(booking.supplier==='poomas'){
+    if(action==='hold'){
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on this deployment.'},503);
+      const offer=await ltOfferById(env,auth.cid,booking.offer_id);
+      const raw=ltJson(offer?.raw_json,{});
+      const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+      const apiBase=(poomasRow?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+      const holdPayload={fareId:String(raw._poomas_fare_id||raw.id||booking.supplier_booking_id||''),supplier:String(raw._poomas_supplier||''),passengers:body.passengers||[]};
+      let holdData; try{holdData=await ltFetchJson(`${apiBase}/api/integrations/v1/flights/hold`,{method:'POST',headers:{'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(holdPayload)});}catch(e){return json({error:e.message},502);}
+      const holdRef=ltText(holdData?.holdId||holdData?.hold_id||holdData?.id||'',120);
+      const holdExpires=holdData?.expiresAt||holdData?.holdExpiry||holdData?.hold_expires_at||null;
+      await env.DB.prepare(`UPDATE live_travel_bookings SET status='on_hold',hold_ref=?,hold_expires_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(holdRef,holdExpires,now,booking.id,auth.cid).run();
+      await ltAudit(env,auth.cid,'booking',booking.booking_ref,'hold',auth.email,{hold_ref:holdRef,hold_expires_at:holdExpires});
+      return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+    }
+    if(action==='book'){
+      // Return the POOMAS checkout URL; the agent redirects the customer there
+      const checkoutUrl=booking.checkout_url||(await ltOfferById(env,auth.cid,booking.offer_id))?.checkout_url||'';
+      return json({booking:ltRow(booking),checkout_url:checkoutUrl,action:'redirect_to_poomas_checkout'});
+    }
+    if(action==='sync'){
+      // Sync booking status from POOMAS using booking_id or hold_ref
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on this deployment.'},503);
+      const lookupId=booking.supplier_booking_id||booking.hold_ref;
+      if(!lookupId)return json({error:'No POOMAS booking ID or hold reference to sync.'},409);
+      let syncData; try{syncData=await ltFetchJson(`https://api.flypoomas.com/api/integrations/v1/bookings/${encodeURIComponent(lookupId)}`,{headers:{'X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas'}});}catch(e){return json({error:e.message},502);}
+      const status=ltText(syncData?.status||booking.status,30),pnr=ltText(syncData?.pnr||booking.pnr,40),supplierId=ltText(syncData?.bookingId||syncData?.booking_id||booking.supplier_booking_id,120);
+      await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,now,now,booking.id,auth.cid).run();
+      await ltAudit(env,auth.cid,'booking',booking.booking_ref,'sync',auth.email,{status,pnr});
+      return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+    }
+    if(action==='cancel')return json({error:'To cancel a POOMAS booking, submit a service request or contact POOMAS support.'},409);
+    return json({error:`Action ${action} is not supported for POOMAS bookings.`},409);
+  }
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,booking.supplier).first();
   let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
   const statuses={book:'confirmed',ticket:'ticketed',cancel:'cancelled',sync:ltText(data.status||booking.status,30)};
-  const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]),now=ltNow();
+  const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]);
   await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,ticket_numbers_json=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,JSON.stringify(tickets),now,now,booking.id,auth.cid).run();
   await ltAudit(env,auth.cid,'booking',booking.booking_ref,action,auth.email,{status,pnr});
   return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
@@ -25394,6 +25477,23 @@ async function handleLtCommissions(request,env){
   await env.DB.prepare(`UPDATE live_travel_commissions SET status=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltNow(),old.id,auth.cid).run();
   await ltAudit(env,auth.cid,'commission',old.id,'updated',auth.email,{status});
   return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+
+async function handleLtPoomasSettings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await ltEnsureSchema(env);
+  if(request.method==='GET'){
+    const row=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+    return json({enabled:Boolean(row?.enabled),api_base:row?.api_base||'https://api.flypoomas.com',checkout_base:row?.checkout_base||'https://flypoomas.com'});
+  }
+  const body=await request.json().catch(()=>({}));
+  const apiBase=String(body.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+  const checkoutBase=String(body.checkout_base||'https://flypoomas.com').replace(/\/$/,'');
+  if(!apiBase.startsWith('https://')||!checkoutBase.startsWith('https://'))return json({error:'POOMAS endpoints must use HTTPS'},400);
+  const now=ltNow();
+  await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(auth.cid,body.enabled?1:0,apiBase,checkoutBase,now,now).run();
+  await ltAudit(env,auth.cid,'poomas_settings','config','updated',auth.email,{enabled:!!body.enabled});
+  return json({enabled:Boolean(body.enabled),api_base:apiBase,checkout_base:checkoutBase});
 }
 
 // ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────
@@ -25812,8 +25912,9 @@ export default {
       else if(url.pathname==='/live-travel/bookings' && ['GET','POST'].includes(request.method)){ res=await handleLtBookings(request, env); }
       else if(url.pathname.startsWith('/live-travel/bookings/') && request.method==='POST'){
         const action=url.pathname.slice('/live-travel/bookings/'.length);
-        res=['book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
+        res=['hold','book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
       }
+      else if(url.pathname==='/live-travel/poomas/settings' && ['GET','PATCH'].includes(request.method)){ res=await handleLtPoomasSettings(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
