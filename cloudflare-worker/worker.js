@@ -4404,6 +4404,58 @@ async function handleChannelsChatwootSso(request, env){
   return json({ok:true, sso:true, url:data.url});
 }
 
+async function ensureInboxAssignmentsTable(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_inbox_assignments (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,assigned_email TEXT NOT NULL DEFAULT '',chatwoot_user_id INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
+}
+
+// GET /channels/agents — list Chatwoot agents for this account (for the assignment picker)
+async function handleChannelsAgents(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'No Chatwoot account connected.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/agents`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'Failed to load agents: HTTP '+r.status}, 502);
+  const agents=(Array.isArray(data)?data:(data?.payload||[])).map(a=>({id:a.id, name:a.name, email:a.email, role:a.role||'agent'}));
+  return json({ok:true, agents});
+}
+
+// GET /channels/inbox-assignments — list all inbox→agent assignments for this client
+async function handleChannelsInboxAssignmentsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureInboxAssignmentsTable(env);
+  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
+  return json({ok:true, assignments:rows.results||[]});
+}
+
+// PUT /channels/inbox-assignment — set or clear exclusive agent for a specific inbox
+async function handleChannelsInboxAssignmentPut(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'No Chatwoot account connected.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=Number(body.inbox_id||0);
+  if(!inboxId) return json({error:'inbox_id is required'}, 400);
+  const clear=body.clear===true||body.chatwoot_user_id===null||body.chatwoot_user_id===0;
+  await ensureInboxAssignmentsTable(env);
+  const now=new Date().toISOString();
+  if(clear){
+    await env.DB.prepare(`DELETE FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=?`).bind(payload.cid, inboxId).run();
+  } else {
+    const agentId=Number(body.chatwoot_user_id||0);
+    const email=String(body.assigned_email||'').trim().toLowerCase();
+    if(!agentId) return json({error:'chatwoot_user_id is required'}, 400);
+    await env.DB.prepare(`INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,updated_at=excluded.updated_at`).bind(payload.cid,inboxId,email,agentId,now,now).run();
+    // Best-effort: auto-assign open conversations on this inbox to the agent in Chatwoot
+    fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
+      .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
+  }
+  return json({ok:true, inbox_id:inboxId, cleared:clear});
+}
+
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
    A one-click OAuth connect that lets this Worker read a client's Shopify store directly —
    order/fulfillment webhooks trigger WhatsApp notifications straight from here, and checkout
@@ -26138,6 +26190,9 @@ export default {
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='GET'){ res=await handleChannelsWhatsappProfileGet(request, env); }
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='POST'){ res=await handleChannelsWhatsappProfilePicture(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
+      else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
+      else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
+      else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
