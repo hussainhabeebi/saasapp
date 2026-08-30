@@ -15366,7 +15366,15 @@ async function handleApptPublicServices(request, env){
     if(doctorId){
       const linked=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
       svcs=linked.results||[];
-      if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+      if(!svcs.length){
+        // Fall back to department-based filtering using the doctor's department_id
+        const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(doctorId,Number(c.Id)).first().catch(()=>null);
+        if(doc?.department_id){
+          const dept=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s WHERE s.client_id=? AND s.status='active' AND s.department_id=? ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doc.department_id).all().catch(()=>({results:[]}));
+          svcs=dept.results||[];
+        }
+        if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+      }
     }else{
       svcs=await hcListActiveServices(env, c.Id);
     }
@@ -15393,8 +15401,16 @@ async function handleApptPublicDoctors(request, env){
     const linked=await env.DB.prepare(`SELECT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
     rows=linked.results||[];
     if(!rows.length){
-      const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
-      rows=all.results||[];
+      // Fall back to department-based filtering using the service's department_id
+      const svc=await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(serviceId,Number(c.Id)).first().catch(()=>null);
+      if(svc?.department_id){
+        const dept=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id=? ORDER BY name LIMIT 50`).bind(Number(c.Id),svc.department_id).all().catch(()=>({results:[]}));
+        rows=dept.results||[];
+      }
+      if(!rows.length){
+        const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+        rows=all.results||[];
+      }
     }
   }else{
     const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
