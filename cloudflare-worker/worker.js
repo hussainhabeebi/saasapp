@@ -111,7 +111,7 @@ function corsHeaders(origin, env){
   if(origin && allowed.includes(origin)){
     headers['Access-Control-Allow-Origin']=origin;
     headers['Access-Control-Allow-Headers']='Content-Type, Authorization';
-    headers['Access-Control-Allow-Methods']='GET, POST, PATCH, DELETE, OPTIONS';
+    headers['Access-Control-Allow-Methods']='GET, POST, PUT, PATCH, DELETE, OPTIONS';
   }
   return headers;
 }
