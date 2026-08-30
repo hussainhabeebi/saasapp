@@ -4439,7 +4439,7 @@ async function handleChannelsInboxAssignmentPut(request, env){
   const body=await request.json().catch(()=>({}));
   const inboxId=Number(body.inbox_id||0);
   if(!inboxId) return json({error:'inbox_id is required'}, 400);
-  const clear=body.clear===true||body.chatwoot_user_id===null||body.chatwoot_user_id===0;
+  const clear=body.clear===true||body.chatwoot_user_id===null;
   await ensureInboxAssignmentsTable(env);
   const now=new Date().toISOString();
   if(clear){
@@ -4447,10 +4447,10 @@ async function handleChannelsInboxAssignmentPut(request, env){
   } else {
     const agentId=Number(body.chatwoot_user_id||0);
     const email=String(body.assigned_email||'').trim().toLowerCase();
-    if(!agentId) return json({error:'chatwoot_user_id is required'}, 400);
+    if(!email) return json({error:'assigned_email is required'}, 400);
     await env.DB.prepare(`INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,updated_at=excluded.updated_at`).bind(payload.cid,inboxId,email,agentId,now,now).run();
-    // Best-effort: auto-assign open conversations on this inbox to the agent in Chatwoot
-    fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
+    // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
+    if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
       .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
   }
   return json({ok:true, inbox_id:inboxId, cleared:clear});
@@ -10742,13 +10742,14 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
 
   const get=f=>leadBody[f]||state.lead?.[f]||'';
 
-  // ── Priority 0: Channel / Source rule (optional, bypasses all other rules) ───
-  if(routing.channelEnabled && Array.isArray(routing.channelRules) && routing.channelRules.length){
-    const src=(get('Source')||'').toLowerCase().trim();
-    if(src){
-      const match=routing.channelRules.find(r=>String(r.source||'').toLowerCase().trim()===src);
-      if(match?.owner){ leadBody.Owner=match.owner; return; }
-    }
+  // ── Priority 0: Channel inbox assignment (bypasses all other rules) ─────────
+  if(state.inboxId && env.DB){
+    try{
+      const asgn=await env.DB.prepare(
+        `SELECT assigned_email FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND assigned_email!=''`
+      ).bind(Number(clientId), Number(state.inboxId)).first();
+      if(asgn?.assigned_email){ leadBody.Owner=asgn.assigned_email; return; }
+    }catch(e){}
   }
 
   // ── Priority 1: Product / Property match ─────────────────────────────────────
@@ -10814,7 +10815,7 @@ function engineParseChatwootPayload(body){
   const text=(body.content||body.message?.content||'').trim();
   if(!phone) return null;
   if(mediaType==='text' && !text) return null;
-  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+  return {convId:conv?.id||null, inboxId:conv?.inbox_id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
 }
 // Diagnostic-only twin of the null branches above — recomputes just enough to say *which* check
 // dropped a payload, without touching engineParseChatwootPayload's return contract or behavior at
@@ -13725,7 +13726,7 @@ async function handleEngineWebhook(request, env, secret){
     if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
-    state.phone=phone; state.name=name; state.convId=convId;
+    state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and
