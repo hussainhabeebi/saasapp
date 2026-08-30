@@ -9024,61 +9024,12 @@ function renderLeadRoutingSettings(){
         </table>
       </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
 
-      <div style="border-top:1px solid var(--line);margin:14px 0 10px;padding-top:12px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
-          <input type="checkbox" id="lrChannelEnabled" ${rt.channelEnabled?' checked':''}> 📢 Route by source / channel <span style="font-weight:400;color:var(--muted);font-size:12px">(optional)</span>
-        </label>
-        <div class="s-note" style="margin-bottom:10px">Assign all leads from a specific source directly to one person — bypasses all other rules. Matched against the lead's <strong>Source</strong> field (e.g. "Whatsapp", "Facebook Ads", "Instagram").</div>
-        <div id="lrChannelRulesBody">${(()=>{
-          const chSrcs=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
-          return (rt.channelRules||[]).map((r,i)=>{
-            const srcOpts=[...new Set([...chSrcs,...(r.source?[r.source]:[])])].sort();
-            return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${i}">
-              <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelSource">
-                <option value="">— pick source —</option>
-                ${srcOpts.map(s=>`<option value="${esc(s)}"${r.source===s?' selected':''}>${esc(s)}</option>`).join('')}
-              </select>
-              <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
-              <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
-                <option value="">— pick person —</option>
-                ${members.map(m=>`<option value="${m.email}"${r.owner===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
-              </select>
-              <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
-            </div>`;
-          }).join('');
-        })()}</div>
-        <button class="btn btn-secondary btn-sm" style="font-size:12px;margin-top:2px" onclick="addChannelRuleRow()">+ Add channel rule</button>
-      </div>
-
       <div style="display:flex;gap:8px;align-items:center">
         <button class="save-btn" onclick="saveLeadRouting()">Save Routing Rules</button>
         <span class="save-msg" id="lrSaveMsg"></span>
       </div>
     </div>`;
 }
-
-function addChannelRuleRow(){
-  const body=$id('lrChannelRulesBody'); if(!body) return;
-  const members=getTeamMembers().filter(m=>!isAccountOwner(m.email));
-  const memberOpts=members.map(m=>`<option value="${m.email}">${esc(m.name||m.email)}</option>`).join('');
-  const chSrcs=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
-  const srcOpts=chSrcs.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
-  const idx=body.children.length;
-  body.insertAdjacentHTML('beforeend',`
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${idx}">
-      <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelSource">
-        <option value="">— pick source —</option>
-        ${srcOpts}
-      </select>
-      <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
-      <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
-        <option value="">— pick person —</option>
-        ${memberOpts}
-      </select>
-      <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
-    </div>`);
-}
-function removeChannelRuleRow(btn){ btn.closest('[data-channel-idx]')?.remove(); }
 
 async function saveLeadRouting(){
   const msg=$id('lrSaveMsg');
@@ -9101,14 +9052,8 @@ async function saveLeadRouting(){
       else rules[email][field]=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
     });
 
-    const channelEnabled=$id('lrChannelEnabled')?.checked||false;
-    const channelRules=[...$id('leadRoutingCard').querySelectorAll('[data-channel-idx]')].map(row=>({
-      source:(row.querySelector('[data-field="channelSource"]')?.value||'').trim(),
-      owner:row.querySelector('[data-field="channelOwner"]')?.value||'',
-    })).filter(r=>r.source&&r.owner);
-
     const existing=getLeadRouting();
-    const newRouting={...existing, enabled, modes, catchall, rules, channelEnabled, channelRules};
+    const newRouting={...existing, enabled, modes, catchall, rules};
     if(msg){msg.textContent='Saving…';msg.className='save-msg';}
     await patchClient({lead_routing:JSON.stringify(newRouting)});
     if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}
@@ -10876,43 +10821,33 @@ async function chWorkerPut(path,body){const r=await fetch(`${CONFIG.WORKER_BASE}
 
 let _chAgents=[], _chAssignments={};
 async function chLoadAndRenderInboxList(list){
+  let assignments={};
   try{
-    const [agR, asR]=await Promise.all([chWorkerGet('/channels/agents'), chWorkerGet('/channels/inbox-assignments')]);
-    _chAgents=(agR.agents||[]);
-    _chAssignments={};
-    for(const a of (asR.assignments||[])) _chAssignments[a.inbox_id]=a;
-  }catch(e){ _chAgents=[]; _chAssignments={}; }
+    const asR=await chWorkerGet('/channels/inbox-assignments');
+    for(const a of (asR.assignments||[])) assignments[a.inbox_id]=a;
+  }catch(e){}
+  _chAssignments=assignments;
+  const members=getTeamMembers();
+  const memberOpts='<option value="">— Unassigned —</option>'+members.map(m=>`<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`).join('');
   $id('chConnectedList').innerHTML=list.map(ib=>{
-    const asgn=_chAssignments[ib.id];
-    const asgnLabel=asgn?`<span style="color:#16a34a;font-size:12px;font-weight:600">→ ${esc(asgn.assigned_email||('Agent #'+asgn.chatwoot_user_id))}</span>`:'<span style="color:var(--muted);font-size:12px">Unassigned</span>';
-    return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
-      `<span style="flex:1">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted)">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
-      asgnLabel+
-      `<button class="save-btn" style="padding:4px 10px;font-size:12px" onclick="chOpenAssignModal(${ib.id},${JSON.stringify(esc(ib.name))})">Assign user</button>`+
-      (asgn?`<button class="save-btn" style="padding:4px 8px;font-size:12px;background:#fee2e2;color:#b91c1c" onclick="chClearAssignment(${ib.id})">✕</button>`:'')
-      +`</div>`;
+    const cur=assignments[ib.id]?.assigned_email||'';
+    const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===cur?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
+      `<span style="flex:1">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted);font-size:12px">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
+      `<select style="font-size:12px;padding:4px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value)">`+
+      `<option value="">— Unassigned —</option>${opts}</select>`+
+      `</div>`;
   }).join('');
 }
 
-function chOpenAssignModal(inboxId, inboxName){
-  if(!_chAgents.length){alert('No Chatwoot agents found. Add team members first.');return;}
-  $id('chAssignDesc').textContent=`Exclusively assign "${inboxName}" to a team member. Open conversations on this channel will be auto-assigned to them in Chatwoot.`;
-  const sel=$id('chAssignAgentSel');
-  sel.innerHTML=_chAgents.map(a=>`<option value="${a.id}" data-email="${esc(a.email)}">${esc(a.name)} (${esc(a.email)})</option>`).join('');
-  const cur=_chAssignments[inboxId];
-  if(cur){for(const o of sel.options)if(Number(o.value)===Number(cur.chatwoot_user_id)){o.selected=true;break;}}
-  $id('chAssignSaveBtn').onclick=()=>chSaveAssignment(inboxId);
-  openModal('modalChAssign');
-}
-
-async function chSaveAssignment(inboxId){
-  const sel=$id('chAssignAgentSel');if(!sel)return;
-  const agentId=Number(sel.value);
-  const email=sel.options[sel.selectedIndex]?.dataset?.email||'';
+async function chSaveInboxAssignmentInline(inboxId, email){
   try{
-    await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,chatwoot_user_id:agentId,assigned_email:email});
-    closeModal('modalChAssign');await loadChannelsStatus();
-  }catch(e){alert('Failed to save assignment: '+e.message);}
+    if(email){
+      await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,assigned_email:email,chatwoot_user_id:0});
+    } else {
+      await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
+    }
+  }catch(e){alert('Failed to save assignment: '+e.message);await loadChannelsStatus();}
 }
 
 async function chClearAssignment(inboxId){
