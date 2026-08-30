@@ -25885,13 +25885,14 @@ async function handleInternalChatMessage(request, env){
   const now=new Date().toISOString();
 
   // Fetch live business snapshot in parallel
+  const leadsWhere=encodeURIComponent(`(ClientId,eq,${cid})`);
   const [leadsR, tasksR, followupsR]=await Promise.all([
-    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${cid})&limit=200&fields=Id,Name,Stage,Score,CreatedAt,LastMsgAt,ConvResolved`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
+    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${leadsWhere}&limit=200&fields=Id,Name,Stage,Score,CreatedAt,LastMsgAt,ConvResolved`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
     env.DB.prepare('SELECT id,title,status,due_date,project_id FROM pm_tasks WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
     env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 50').bind(cid).all().catch(()=>({results:[]})),
   ]);
 
-  const leads=(leadsR.list||leadsR.data||leadsR.pageInfo?.items||[]);
+  const leads=Array.isArray(leadsR.list)?leadsR.list:[];
   const tasks=tasksR.results||[];
   const followups=followupsR.results||[];
 
@@ -25907,12 +25908,19 @@ async function handleInternalChatMessage(request, env){
   const openTasks=tasks.filter(t=>t.status!=='done');
   const overdueTasks=openTasks.filter(t=>t.due_date&&t.due_date<now.slice(0,10));
 
+  // Hot leads = highest Score, not resolved
+  const hotLeads=leads.filter(l=>l.ConvResolved!=='Yes').sort((a,b)=>(Number(b.Score)||0)-(Number(a.Score)||0)).slice(0,5);
+  const hotLeadsList=hotLeads.length?hotLeads.map(l=>`${l.Name||'Unknown'} (stage: ${l.Stage||'?'}, score: ${l.Score||0})`).join('; '):'none';
+  const recentLeads=leads.slice().sort((a,b)=>String(b.CreatedAt||'').localeCompare(String(a.CreatedAt||''))).slice(0,5).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'})`).join(', ')||'none';
+
   const snapshot=`## Live Business Snapshot (as of ${now.slice(0,10)})
 
 ### Leads
 - Total: ${leads.length}
 - New this week: ${newThisWeek}
 - By stage: ${stageSummary}
+- Hot leads (highest score, not resolved): ${hotLeadsList}
+- Most recent leads: ${recentLeads}
 
 ### Tasks
 - Open tasks: ${openTasks.length}
