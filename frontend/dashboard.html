@@ -9014,16 +9014,24 @@ function renderLeadRoutingSettings(){
           <input type="checkbox" id="lrChannelEnabled" ${rt.channelEnabled?' checked':''}> 📢 Route by source / channel <span style="font-weight:400;color:var(--muted);font-size:12px">(optional)</span>
         </label>
         <div class="s-note" style="margin-bottom:10px">Assign all leads from a specific source directly to one person — bypasses all other rules. Matched against the lead's <strong>Source</strong> field (e.g. "Whatsapp", "Facebook Ads", "Instagram").</div>
-        <div id="lrChannelRulesBody">${(rt.channelRules||[]).map((r,i)=>`
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${i}">
-            <input class="form-input" style="flex:1;font-size:12px;padding:5px 8px" placeholder="Source name (e.g. Whatsapp)" data-field="channelSource" value="${esc(r.source||'')}">
-            <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
-            <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
-              <option value="">— pick person —</option>
-              ${members.map(m=>`<option value="${m.email}"${r.owner===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
-            </select>
-            <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
-          </div>`).join('')}</div>
+        <div id="lrChannelRulesBody">${(()=>{
+          const chSrcs=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
+          return (rt.channelRules||[]).map((r,i)=>{
+            const srcOpts=[...new Set([...chSrcs,...(r.source?[r.source]:[])])].sort();
+            return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${i}">
+              <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelSource">
+                <option value="">— pick source —</option>
+                ${srcOpts.map(s=>`<option value="${esc(s)}"${r.source===s?' selected':''}>${esc(s)}</option>`).join('')}
+              </select>
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
+              <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
+                <option value="">— pick person —</option>
+                ${members.map(m=>`<option value="${m.email}"${r.owner===m.email?' selected':''}>${esc(m.name||m.email)}</option>`).join('')}
+              </select>
+              <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
+            </div>`;
+          }).join('');
+        })()}</div>
         <button class="btn btn-secondary btn-sm" style="font-size:12px;margin-top:2px" onclick="addChannelRuleRow()">+ Add channel rule</button>
       </div>
 
@@ -9037,15 +9045,20 @@ function renderLeadRoutingSettings(){
 function addChannelRuleRow(){
   const body=$id('lrChannelRulesBody'); if(!body) return;
   const members=getTeamMembers().filter(m=>!isAccountOwner(m.email));
-  const opts=members.map(m=>`<option value="${m.email}">${esc(m.name||m.email)}</option>`).join('');
+  const memberOpts=members.map(m=>`<option value="${m.email}">${esc(m.name||m.email)}</option>`).join('');
+  const chSrcs=[...new Set(allLeads.map(l=>l.Source).filter(Boolean))].sort();
+  const srcOpts=chSrcs.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
   const idx=body.children.length;
   body.insertAdjacentHTML('beforeend',`
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px" data-channel-idx="${idx}">
-      <input class="form-input" style="flex:1;font-size:12px;padding:5px 8px" placeholder="Source name (e.g. Whatsapp)" data-field="channelSource" value="">
+      <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelSource">
+        <option value="">— pick source —</option>
+        ${srcOpts}
+      </select>
       <span style="font-size:12px;color:var(--muted);white-space:nowrap">→ assign to</span>
       <select class="form-input" style="flex:1;font-size:12px;padding:5px 8px" data-field="channelOwner">
         <option value="">— pick person —</option>
-        ${opts}
+        ${memberOpts}
       </select>
       <button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="removeChannelRuleRow(this)">×</button>
     </div>`);
