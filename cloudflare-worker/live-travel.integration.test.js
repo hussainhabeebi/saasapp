@@ -33,8 +33,9 @@ test('Live Travel authenticated D1 workflow remains tenant scoped and operationa
 
   let r=await call(env,session,'/live-travel/bootstrap');
   assert.equal(r.status,200);
-  assert.deepEqual(r.data.suppliers.map(s=>s.supplier),['serpapi','riya','tripjack']);
-  assert.equal(r.data.suppliers.every(s=>s.credentials_configured===false),true);
+  assert.deepEqual(r.data.suppliers.map(s=>s.supplier),['serpapi','riya','tripjack','poomas']);
+  assert.equal(r.data.suppliers.filter(s=>s.supplier!=='poomas').every(s=>s.credentials_configured===false),true);
+  assert.equal(r.data.suppliers.find(s=>s.supplier==='poomas')?.credentials_configured,true);
 
   r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'tripjack',enabled:true,mode:'sandbox',markup_type:'percent',markup_value:5,priority:10,credentials:{api_key:'tenant-tripjack-key'},endpoints:{search:'https://sandbox.tripjack.test/search',revalidate:'https://sandbox.tripjack.test/revalidate'}});
   assert.equal(r.status,200);
