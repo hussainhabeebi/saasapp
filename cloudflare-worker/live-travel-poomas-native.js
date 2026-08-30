@@ -97,7 +97,7 @@ export async function handleNativePoomas(req,env,ctx,legacy){
   if(req.method==='OPTIONS')return new Response(null,{status:204,headers:{
     'Access-Control-Allow-Origin':origin,
     'Access-Control-Allow-Headers':'Authorization, Content-Type',
-    'Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS'
+    'Access-Control-Allow-Methods':'GET, POST, PUT, PATCH, DELETE, OPTIONS'
   }});
 
   const auth=await authenticate(req,env,ctx,legacy);
@@ -110,7 +110,7 @@ export async function handleNativePoomas(req,env,ctx,legacy){
       return json({enabled:Boolean(row?.enabled),api_base:row?.api_base||POOMAS_API,checkout_base:row?.checkout_base||POOMAS_WEB},200,origin);
     }
 
-    if(path==='/live-travel/poomas/settings'&&req.method==='PUT'){
+    if(path==='/live-travel/poomas/settings'&&(req.method==='PUT'||req.method==='PATCH')){
       const body=await req.json().catch(()=>({}));
       const apiBase=String(body.api_base||POOMAS_API).replace(/\/$/,'');
       const checkoutBase=String(body.checkout_base||POOMAS_WEB).replace(/\/$/,'');
