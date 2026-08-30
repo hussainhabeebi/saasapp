@@ -2021,6 +2021,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
 
@@ -2436,6 +2437,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
@@ -2594,6 +2596,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
@@ -2934,6 +2937,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
@@ -3039,6 +3043,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
 
@@ -3199,6 +3204,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
 
@@ -3263,6 +3269,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">🪵 Conversation Logs</div>
@@ -3282,6 +3289,44 @@ const ROLES = {
       </div>
     </div>
 
+    <!-- CHAT PAGE TOKENS -->
+    <div class="page hidden" id="pageChatpage">
+      <div class="page-pad">
+        <!-- SETTINGS SUB-NAV -->
+        <div class="card" style="margin-bottom:14px;padding:10px 14px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
+          </div>
+        </div>
+        <div class="card-title" style="margin-bottom:6px">💬 Chat Page</div>
+        <div class="s-note" style="margin-bottom:14px">Share <strong>chat.leadvyne.com?t=TOKEN</strong> with any customer — they land on a branded chat page powered by your bot. Each token is a separate shareable link. Revoke one anytime without affecting others.</div>
+
+        <!-- Create new token -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">New Chat Link</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+              <input type="text" class="form-input" id="chatpageLabelInput" placeholder="Label (e.g. Main Website, Dubai Office)" style="max-width:280px">
+              <button class="save-btn" id="chatpageCreateBtn" onclick="chatpageCreateToken()">Generate Link</button>
+              <span class="save-msg" id="chatpageCreateMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Token list -->
+        <div class="card">
+          <div id="chatpageTokenList"><div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- BILLING -->
     <div class="page hidden" id="pageBilling">
       <div class="page-pad">
@@ -3294,6 +3339,7 @@ const ROLES = {
             <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
             <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
             <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
+            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
           </div>
         </div>
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
@@ -4772,7 +4818,7 @@ function toggleDarkMode(){
 initDarkMode();
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','chatpage']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
@@ -4835,6 +4881,7 @@ function navigate(page){
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
   if(page==='logs') logsInit();
+  if(page==='chatpage') renderChatPage();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
@@ -10961,6 +11008,65 @@ function voiceInit(){
 // Settings → Logs — merged skipped/replied/errored WhatsApp-turn timeline, see GET /engine/logs
 // (worker.js) for how the two source tables (D1 engine_event_log + NocoDB ENGINE_ANALYTICS_TABLE)
 // get combined server-side.
+// ── Chat Page token management ──
+const CHAT_BASE='https://chat.leadvyne.com';
+async function renderChatPage(){
+  const el=$id('chatpageTokenList');
+  if(!el) return;
+  el.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Loading…</div>';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{headers:ncAuthHeaders()});
+    const d=await r.json().catch(()=>({}));
+    const tokens=d.tokens||[];
+    if(!tokens.length){
+      el.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">No chat links yet — generate one above.</div>';
+      return;
+    }
+    el.innerHTML=tokens.map(t=>{
+      const link=`${CHAT_BASE}?t=${t.token}`;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px;margin-bottom:2px">${t.label||'<em>Unlabelled</em>'}</div>
+          <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${link}</div>
+        </div>
+        <button class="save-btn" onclick="chatpageCopyLink('${link}',this)" style="flex-shrink:0">Copy Link</button>
+        <button class="save-btn" onclick="window.open('${link}','_blank')" style="flex-shrink:0">Preview</button>
+        <button class="save-btn" onclick="chatpageDeleteToken('${t.token}')" style="flex-shrink:0;opacity:.7">Revoke</button>
+      </div>`;
+    }).join('');
+  }catch(e){el.innerHTML='<div style="color:var(--danger);padding:16px;font-size:13px">Failed to load: '+e.message+'</div>';}
+}
+
+async function chatpageCreateToken(){
+  const btn=$id('chatpageCreateBtn'), msg=$id('chatpageCreateMsg');
+  const label=($id('chatpageLabelInput')?.value||'').trim();
+  btn.disabled=true; msg.textContent='Creating…'; msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({label})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    msg.textContent='✓ Created!'; msg.className='save-msg';
+    if($id('chatpageLabelInput')) $id('chatpageLabelInput').value='';
+    await renderChatPage();
+  }catch(e){msg.textContent='Error: '+e.message; msg.className='save-msg err';}
+  finally{btn.disabled=false; setTimeout(()=>{msg.textContent=''; msg.className='save-msg';},4000);}
+}
+
+async function chatpageDeleteToken(token){
+  if(!confirm('Revoke this chat link? Anyone with the link will lose access.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'DELETE',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({token})});
+    renderChatPage();
+  }catch(e){alert('Failed to revoke: '+e.message);}
+}
+
+function chatpageCopyLink(link, btn){
+  navigator.clipboard.writeText(link).then(()=>{
+    const orig=btn.textContent; btn.textContent='Copied!';
+    setTimeout(()=>{btn.textContent=orig;},2000);
+  }).catch(()=>prompt('Copy this link:',link));
+}
+
 async function logsInit(){
   const el=$id('logsContent');
   if(!el) return;
