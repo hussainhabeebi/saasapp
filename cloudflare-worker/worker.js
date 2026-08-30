@@ -25861,6 +25861,100 @@ async function handleChatTokensDelete(request, env){
   return json({ok:true});
 }
 
+// ── Internal AI assistant ──────────────────────────────────────────────────────
+// GET /internal-chat/history → last 40 turns for the authenticated client
+async function handleInternalChatHistory(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const rows=await env.DB.prepare(
+    'SELECT role,content,created_at FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 40'
+  ).bind(Number(payload.cid)).all().catch(()=>({results:[]}));
+  return json({messages:(rows.results||[]).reverse()});
+}
+
+// POST /internal-chat/message → {message} → {reply}
+async function handleInternalChatMessage(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {message}=await request.json().catch(()=>({}));
+  if(!message||!String(message).trim()) return json({error:'message required'},400);
+  const userText=String(message).trim().slice(0,2000);
+  const cid=Number(payload.cid);
+  const c=await getClientById(env, String(cid));
+  if(!c) return json({error:'Client not found'},404);
+  const now=new Date().toISOString();
+
+  // Fetch live business snapshot in parallel
+  const [leadsR, tasksR, followupsR]=await Promise.all([
+    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${cid})&limit=200&fields=Id,Name,Stage,Score,CreatedAt,LastMsgAt,ConvResolved`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
+    env.DB.prepare('SELECT id,title,status,due_date,project_id FROM pm_tasks WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
+    env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 50').bind(cid).all().catch(()=>({results:[]})),
+  ]);
+
+  const leads=(leadsR.list||leadsR.data||leadsR.pageInfo?.items||[]);
+  const tasks=tasksR.results||[];
+  const followups=followupsR.results||[];
+
+  // Summarise leads by stage
+  const stageMap={};
+  let newThisWeek=0;
+  const weekAgo=new Date(Date.now()-7*864e5).toISOString();
+  leads.forEach(l=>{
+    const s=l.Stage||'Unknown'; stageMap[s]=(stageMap[s]||0)+1;
+    if(l.CreatedAt&&l.CreatedAt>weekAgo) newThisWeek++;
+  });
+  const stageSummary=Object.entries(stageMap).map(([s,n])=>`${s}: ${n}`).join(', ')||'none';
+  const openTasks=tasks.filter(t=>t.status!=='done');
+  const overdueTasks=openTasks.filter(t=>t.due_date&&t.due_date<now.slice(0,10));
+
+  const snapshot=`## Live Business Snapshot (as of ${now.slice(0,10)})
+
+### Leads
+- Total: ${leads.length}
+- New this week: ${newThisWeek}
+- By stage: ${stageSummary}
+
+### Tasks
+- Open tasks: ${openTasks.length}
+- Overdue: ${overdueTasks.length}${overdueTasks.length?'\n- Overdue list: '+overdueTasks.map(t=>t.title||'(untitled)').slice(0,5).join(', '):''}
+
+### Follow-up Pipeline
+- Active follow-up entries: ${followups.length}`;
+
+  // Recent conversation for multi-turn context
+  const hist=await env.DB.prepare(
+    'SELECT role,content FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 10'
+  ).bind(cid).all().catch(()=>({results:[]}));
+  const prior=(hist.results||[]).reverse();
+
+  const sys=`You are an AI business assistant for "${c.client_name||'this business'}". You have access to a real-time snapshot of the business data below. Answer questions concisely and accurately. When asked for numbers, use the snapshot. Suggest next actions when relevant. Today is ${now.slice(0,10)}.
+
+${snapshot}`;
+
+  let ctx='';
+  if(prior.length){
+    ctx='[Prior conversation]\n'+prior.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('\n')+'\n\n[New question]\n';
+  }
+
+  // Save user message
+  await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
+
+  const reply=await engineCallLlm(env, c, sys, ctx+userText, 500);
+  const botText=reply||"I couldn't retrieve an answer right now. Please try again.";
+
+  await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',botText,new Date().toISOString()).run().catch(()=>{});
+
+  return json({reply:botText});
+}
+
+// DELETE /internal-chat/history → clear chat history for the authenticated client
+async function handleInternalChatClear(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  await env.DB.prepare('DELETE FROM internal_chat WHERE client_id=?').bind(Number(payload.cid)).run().catch(()=>{});
+  return json({ok:true});
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
@@ -26136,6 +26230,9 @@ export default {
       else if(url.pathname==='/chat-tokens' && request.method==='GET'){   res=await handleChatTokensList(request, env); }
       else if(url.pathname==='/chat-tokens' && request.method==='POST'){  res=await handleChatTokensCreate(request, env); }
       else if(url.pathname==='/chat-tokens' && request.method==='DELETE'){ res=await handleChatTokensDelete(request, env); }
+      else if(url.pathname==='/internal-chat/history' && request.method==='GET'){  res=await handleInternalChatHistory(request, env); }
+      else if(url.pathname==='/internal-chat/message' && request.method==='POST'){ res=await handleInternalChatMessage(request, env); }
+      else if(url.pathname==='/internal-chat/history' && request.method==='DELETE'){ res=await handleInternalChatClear(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }
