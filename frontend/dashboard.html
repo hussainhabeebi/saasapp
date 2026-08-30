@@ -3456,6 +3456,21 @@ const ROLES = {
 <!-- OVERLAY -->
 <div id="overlay" onclick="closeAllModals()"></div>
 
+<!-- Channel inbox assignment modal -->
+<div class="modal" id="modalChAssign" style="width:420px">
+  <span class="modal-drag"></span>
+  <div class="modal-hd"><div class="modal-title">Assign channel to user</div><button class="icon-btn" onclick="closeModal('modalChAssign')">✕</button></div>
+  <div class="modal-body">
+    <p id="chAssignDesc" style="margin:0 0 14px;font-size:13px;color:var(--muted)"></p>
+    <label class="form-label">Team member</label>
+    <select class="form-input" id="chAssignAgentSel"></select>
+  </div>
+  <div style="display:flex;gap:8px;padding:14px 22px 18px">
+    <button class="btn btn-primary" id="chAssignSaveBtn" onclick="">Save assignment</button>
+    <button class="btn btn-secondary" onclick="closeModal('modalChAssign')">Cancel</button>
+  </div>
+</div>
+
 <!-- Close modal for removing a lead from Human Deals — Won and Spam are now one-click buttons
      directly on the card (see humanDealCard), so this only covers the remaining, less common
      outcomes. Opened via the card's ✕ icon. -->
@@ -10845,12 +10860,66 @@ function renderChannelsPage(){
 
   $id('chConnectedSection').style.display=hasAccount?'block':'none';
   const list=status.inboxes||[];
-  $id('chConnectedList').innerHTML=list.length
-    ? list.map(ib=>`<div style="padding:4px 0">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted)">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></div>`).join('')
-    : '<div style="color:var(--muted)">No inboxes yet.</div>';
+  if(list.length){
+    // Load assignments in parallel, then render
+    chLoadAndRenderInboxList(list);
+  } else {
+    $id('chConnectedList').innerHTML='<div style="color:var(--muted)">No inboxes yet.</div>';
+  }
 
   $id('chWaProfilePicSection').style.display=hasWa?'block':'none';
   if(hasWa && !_waProfilePicLoaded){ _waProfilePicLoaded=true; loadWaProfilePicture(); }
+}
+
+async function chWorkerGet(path){const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{headers:ncAuthHeaders()});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d;}
+async function chWorkerPut(path,body){const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d;}
+
+let _chAgents=[], _chAssignments={};
+async function chLoadAndRenderInboxList(list){
+  try{
+    const [agR, asR]=await Promise.all([chWorkerGet('/channels/agents'), chWorkerGet('/channels/inbox-assignments')]);
+    _chAgents=(agR.agents||[]);
+    _chAssignments={};
+    for(const a of (asR.assignments||[])) _chAssignments[a.inbox_id]=a;
+  }catch(e){ _chAgents=[]; _chAssignments={}; }
+  $id('chConnectedList').innerHTML=list.map(ib=>{
+    const asgn=_chAssignments[ib.id];
+    const asgnLabel=asgn?`<span style="color:#16a34a;font-size:12px;font-weight:600">→ ${esc(asgn.assigned_email||('Agent #'+asgn.chatwoot_user_id))}</span>`:'<span style="color:var(--muted);font-size:12px">Unassigned</span>';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
+      `<span style="flex:1">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted)">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
+      asgnLabel+
+      `<button class="save-btn" style="padding:4px 10px;font-size:12px" onclick="chOpenAssignModal(${ib.id},${JSON.stringify(esc(ib.name))})">Assign user</button>`+
+      (asgn?`<button class="save-btn" style="padding:4px 8px;font-size:12px;background:#fee2e2;color:#b91c1c" onclick="chClearAssignment(${ib.id})">✕</button>`:'')
+      +`</div>`;
+  }).join('');
+}
+
+function chOpenAssignModal(inboxId, inboxName){
+  if(!_chAgents.length){alert('No Chatwoot agents found. Add team members first.');return;}
+  $id('chAssignDesc').textContent=`Exclusively assign "${inboxName}" to a team member. Open conversations on this channel will be auto-assigned to them in Chatwoot.`;
+  const sel=$id('chAssignAgentSel');
+  sel.innerHTML=_chAgents.map(a=>`<option value="${a.id}" data-email="${esc(a.email)}">${esc(a.name)} (${esc(a.email)})</option>`).join('');
+  const cur=_chAssignments[inboxId];
+  if(cur){for(const o of sel.options)if(Number(o.value)===Number(cur.chatwoot_user_id)){o.selected=true;break;}}
+  $id('chAssignSaveBtn').onclick=()=>chSaveAssignment(inboxId);
+  openModal('modalChAssign');
+}
+
+async function chSaveAssignment(inboxId){
+  const sel=$id('chAssignAgentSel');if(!sel)return;
+  const agentId=Number(sel.value);
+  const email=sel.options[sel.selectedIndex]?.dataset?.email||'';
+  try{
+    await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,chatwoot_user_id:agentId,assigned_email:email});
+    closeModal('modalChAssign');await loadChannelsStatus();
+  }catch(e){alert('Failed to save assignment: '+e.message);}
+}
+
+async function chClearAssignment(inboxId){
+  try{
+    await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
+    await loadChannelsStatus();
+  }catch(e){alert('Failed to clear assignment: '+e.message);}
 }
 
 function channelsInit(){
