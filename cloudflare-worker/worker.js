@@ -26147,8 +26147,19 @@ async function handleInternalChatMessage(request, env){
   // Live, tenant-scoped sources. Leads are paginated from NocoDB; tasks/projects come from D1.
   // Keep these queries independent so one unavailable module never blanks the other two.
   const [leads, taskResult, followupResult]=await Promise.all([
-    reportFetchAllLeads(env, cid, 'Id,Name,Phone,Stage,Score,Date,LastMsgAt,Owner,Tags,DealValue,DealCurrency,ClosedAt,Source').catch(()=>[]),
-    env.DB.prepare(`SELECT t.id,t.title,t.status,t.priority,t.due_date,t.assignee_email,t.lead_id,t.lead_name,t.created_at,t.done_at,p.name AS project_name
+    (async()=>{
+      const rows=[];
+      for(let offset=0;offset<2000;offset+=200){
+        const r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${cid})`)}&limit=200&offset=${offset}&sort=-Date`);
+        if(!r.ok) break;
+        const data=await r.json().catch(()=>({}));
+        const list=Array.isArray(data.list)?data.list:[];
+        rows.push(...list);
+        if(list.length<200) break;
+      }
+      return rows;
+    })().catch(()=>[]),
+    env.DB.prepare(`SELECT t.id,t.title,t.status,t.priority,t.due_date,t.assignee_email,t.project_id,t.created_at,p.name AS project_name
       FROM pm_tasks t LEFT JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
       WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 500`).bind(cid).all().catch(()=>({results:[]})),
     env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
@@ -26250,6 +26261,43 @@ ${openTasks.length?openTasks.slice(0,30).map(taskLine).join('\n'):'none'}
 
 ### Follow-up Pipeline
 - Active/recent follow-up entries: ${followups.length}`;
+
+  // Deterministic answers for the dashboard's core data questions. These bypass the LLM so
+  // a model can never claim data is unavailable when the live snapshot already contains it.
+  const q=userText.toLowerCase();
+  let directReply='';
+  const explicitHot=activeLeads.filter(l=>String(l.Score||'').toLowerCase()==='hot');
+  const thisWeekLeads=leads.filter(l=>leadDate(l)>=weekAgo);
+  const lastWeekLeads=leads.filter(l=>{ const d=leadDate(l); return d>=twoWeeksAgo&&d<weekAgo; });
+  if(/(staff|team).*(performance|perform|report|workload)|performance.*(staff|team)/i.test(q)){
+    directReply=teamRows.length
+      ? 'Team performance:\n'+teamRows.map(r=>`• ${r.name}: ${r.leads} leads, ${r.won} won (${r.conversion}%), ${currency} ${r.revenue} revenue; ${r.completed}/${r.tasks} tasks completed, ${r.overdue} overdue.`).join('\n')
+      : 'No team members or assigned staff activity was found for this account.';
+  } else if(/hot\s*leads?|leads?.*hot/i.test(q)){
+    directReply=explicitHot.length
+      ? `Hot leads (${explicitHot.length}):\n`+explicitHot.slice(0,20).map(l=>'• '+leadLine(l)).join('\n')
+      : 'There are currently no leads whose Score is marked Hot.';
+  } else if(/last\s*week.*leads?|leads?.*last\s*week/i.test(q)){
+    directReply=lastWeekLeads.length
+      ? `Leads added in the previous 7-day period (${lastWeekLeads.length}):\n`+lastWeekLeads.slice(0,25).map(l=>'• '+leadLine(l)).join('\n')
+      : 'No leads were added in the previous 7-day period.';
+  } else if(/(new|this\s*week).*leads?|leads?.*(new|this\s*week)/i.test(q)){
+    directReply=thisWeekLeads.length
+      ? `New leads in the last 7 days (${thisWeekLeads.length}):\n`+thisWeekLeads.slice(0,25).map(l=>'• '+leadLine(l)).join('\n')
+      : 'No leads were added in the last 7 days.';
+  } else if(/overdue.*tasks?|tasks?.*overdue/i.test(q)){
+    directReply=overdueTasks.length
+      ? `Overdue tasks (${overdueTasks.length}):\n`+overdueTasks.slice(0,25).map(t=>'• '+taskLine(t)).join('\n')
+      : 'There are currently no overdue tasks.';
+  } else if(/(open|pending|today).*tasks?|tasks?.*(open|pending|today)/i.test(q)){
+    directReply=`Tasks: ${openTasks.length} open, ${dueTodayTasks.length} due today, ${overdueTasks.length} overdue, and ${doneTasks.length} completed.`
+      +(openTasks.length?'\n'+openTasks.slice(0,20).map(t=>'• '+taskLine(t)).join('\n'):'');
+  }
+  if(directReply){
+    await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
+    await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',directReply,new Date().toISOString()).run().catch(()=>{});
+    return json({reply:directReply, grounded:true, counts:{leads:leads.length,tasks:tasks.length,team:teamRows.length}});
+  }
 
   const hist=await env.DB.prepare(
     'SELECT role,content FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 10'
