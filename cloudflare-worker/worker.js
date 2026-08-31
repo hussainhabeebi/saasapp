@@ -25993,7 +25993,7 @@ async function handleFollowupSmartMigrate(request, env){
   const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
   if(!configured?.length) return json({error:'No follow-up steps configured'},400);
   const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
-  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,LastMsgAt,Date,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
   if(!leadsR.ok) return json({error:'Failed to fetch leads'},502);
   const {list:leads=[]}=await leadsR.json().catch(()=>({}));
   let spawned=0;
@@ -26002,7 +26002,7 @@ async function handleFollowupSmartMigrate(request, env){
     const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
     if(!nextStep) continue;
     const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
-    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,force:false})}).catch(()=>{});
+    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,lastMsgAt:new Date(lead.LastMsgAt||lead.Date||Date.now()).getTime(),force:true})}).catch(()=>{});
     spawned++;
   }
   return json({ok:true, spawned});
