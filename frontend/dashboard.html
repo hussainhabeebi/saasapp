@@ -11413,6 +11413,47 @@ async function bizaiInit(){
   }
 }
 
+function bizaiSnapshot(){
+  const today=new Date().toISOString().slice(0,10);
+  const weekAgo=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+  const twoWeeksAgo=new Date(Date.now()-14*864e5).toISOString().slice(0,10);
+  const monthAgo=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+  const leads=allLeads||[];
+  const stages={}, byOwner={};
+  leads.forEach(l=>{
+    if(l.Stage) stages[l.Stage]=(stages[l.Stage]||0)+1;
+    const o=l.Owner||'Unassigned'; byOwner[o]=(byOwner[o]||0)+1;
+  });
+  const open=leads.filter(l=>l.ConvResolved!=='Yes');
+  const hotLeads=leads.filter(l=>l.Score==='Hot'&&l.ConvResolved!=='Yes')
+    .sort((a,b)=>String(b.LastMsgAt||'').localeCompare(String(a.LastMsgAt||'')))
+    .slice(0,8).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'}, last msg: ${(l.LastMsgAt||'').slice(0,10)||'never'})`);
+  const recentLeads=leads.slice().sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||'')))
+    .slice(0,8).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'}, ${(l.Date||'').slice(0,10)||'no date'})`);
+  const allTasks=computeAllTasks();
+  const manualTasks=allTasks.filter(t=>t._type==='manual'&&t.status!=='done');
+  const overdue=allTasks.filter(t=>t.status!=='done'&&t.due&&t.due.slice(0,10)<today);
+  const taskByAssignee={};
+  allTasks.forEach(t=>{ const a=t.assignedTo||t.assigned_to||'Unassigned'; taskByAssignee[a]=(taskByAssignee[a]||0)+1; });
+  return {
+    totalLeads:leads.length, openLeads:open.length,
+    newToday:leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length,
+    newThisWeek:leads.filter(l=>l.Date&&l.Date.slice(0,10)>=weekAgo).length,
+    newLastWeek:leads.filter(l=>l.Date&&l.Date.slice(0,10)>=twoWeeksAgo&&l.Date.slice(0,10)<weekAgo).length,
+    newThisMonth:leads.filter(l=>l.Date&&l.Date.slice(0,10)>=monthAgo).length,
+    hot:leads.filter(l=>l.Score==='Hot').length,
+    warm:leads.filter(l=>l.Score==='Warm').length,
+    cold:leads.filter(l=>l.Score==='Cold'||!l.Score).length,
+    stages, byOwner,
+    hotLeadsList:hotLeads.join('; ')||'none',
+    recentLeads:recentLeads.join(', ')||'none',
+    openTasks:manualTasks.length,
+    overdueTasks:overdue.length,
+    overdueList:overdue.slice(0,8).map(t=>t.title||'(untitled)').join(', '),
+    taskByAssignee,
+  };
+}
+
 async function bizaiSend(){
   if(_bizaiBusy) return;
   const inp=$id('bizaiInp'), btn=$id('bizaiSendBtn');
@@ -11422,7 +11463,8 @@ async function bizaiSend(){
   bizaiBubble('user',text);
   bizaiTyping();
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/internal-chat/message`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({message:text})});
+    const snapshot=bizaiSnapshot();
+    const r=await fetch(`${CONFIG.WORKER_BASE}/internal-chat/message`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({message:text,snapshot})});
     const d=await r.json().catch(()=>({}));
     document.getElementById('bizaiTyping')?.remove();
     bizaiBubble('assistant',d.reply||"I couldn't get an answer right now. Please try again.");
