@@ -25887,8 +25887,8 @@ async function handleInternalChatMessage(request, env){
   // Fetch live business snapshot in parallel
   const leadsWhere=encodeURIComponent(`(ClientId,eq,${cid})`);
   const [leadsR, tasksR, followupsR]=await Promise.all([
-    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${leadsWhere}&limit=200&fields=Id,Name,Stage,Score,CreatedAt,LastMsgAt,ConvResolved`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
-    env.DB.prepare('SELECT id,title,status,due_date,project_id FROM pm_tasks WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
+    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${leadsWhere}&limit=500&fields=${encodeURIComponent('Id,Name,Stage,Score,Date,LastMsgAt,ConvResolved,Owner,Tags')}`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
+    env.DB.prepare('SELECT id,title,status,due_date,assigned_to,project_id FROM pm_tasks WHERE client_id=? ORDER BY created_at DESC LIMIT 200').bind(cid).all().catch(()=>({results:[]})),
     env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 50').bind(cid).all().catch(()=>({results:[]})),
   ]);
 
@@ -25896,35 +25896,65 @@ async function handleInternalChatMessage(request, env){
   const tasks=tasksR.results||[];
   const followups=followupsR.results||[];
 
+  // Date ranges
+  const weekAgo=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
+  const monthAgo=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+  const twoWeeksAgo=new Date(Date.now()-14*864e5).toISOString().slice(0,10);
+
   // Summarise leads by stage
   const stageMap={};
-  let newThisWeek=0;
-  const weekAgo=new Date(Date.now()-7*864e5).toISOString();
+  let newThisWeek=0, newLastWeek=0, newThisMonth=0;
   leads.forEach(l=>{
     const s=l.Stage||'Unknown'; stageMap[s]=(stageMap[s]||0)+1;
-    if(l.CreatedAt&&l.CreatedAt>weekAgo) newThisWeek++;
+    const d=(l.Date||l.CreatedAt||'').slice(0,10);
+    if(d>=weekAgo) newThisWeek++;
+    else if(d>=twoWeeksAgo) newLastWeek++;
+    if(d>=monthAgo) newThisMonth++;
   });
   const stageSummary=Object.entries(stageMap).map(([s,n])=>`${s}: ${n}`).join(', ')||'none';
+
+  // Staff performance — leads by owner
+  const ownerMap={};
+  leads.forEach(l=>{ const o=l.Owner||'Unassigned'; ownerMap[o]=(ownerMap[o]||0)+1; });
+  const staffSummary=Object.entries(ownerMap).sort((a,b)=>b[1]-a[1]).map(([o,n])=>`${o}: ${n} leads`).join(', ')||'no owner data';
+
+  // Tasks
   const openTasks=tasks.filter(t=>t.status!=='done');
   const overdueTasks=openTasks.filter(t=>t.due_date&&t.due_date<now.slice(0,10));
+  const taskByAssignee={};
+  tasks.forEach(t=>{ const a=t.assigned_to||'Unassigned'; taskByAssignee[a]=(taskByAssignee[a]||0)+1; });
+  const taskStaffSummary=Object.entries(taskByAssignee).sort((a,b)=>b[1]-a[1]).map(([a,n])=>`${a}: ${n} tasks`).join(', ')||'none';
 
-  // Hot leads = highest Score, not resolved
-  const hotLeads=leads.filter(l=>l.ConvResolved!=='Yes').sort((a,b)=>(Number(b.Score)||0)-(Number(a.Score)||0)).slice(0,5);
-  const hotLeadsList=hotLeads.length?hotLeads.map(l=>`${l.Name||'Unknown'} (stage: ${l.Stage||'?'}, score: ${l.Score||0})`).join('; '):'none';
-  const recentLeads=leads.slice().sort((a,b)=>String(b.CreatedAt||'').localeCompare(String(a.CreatedAt||''))).slice(0,5).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'})`).join(', ')||'none';
+  // Hot leads = most recently active (LastMsgAt) among open ones; fall back to highest score
+  const openLeads=leads.filter(l=>l.ConvResolved!=='Yes');
+  const hotLeads=openLeads.slice().sort((a,b)=>{
+    const scoreDiff=(Number(b.Score)||0)-(Number(a.Score)||0);
+    if(scoreDiff!==0) return scoreDiff;
+    return String(b.LastMsgAt||'').localeCompare(String(a.LastMsgAt||''));
+  }).slice(0,8);
+  const hotLeadsList=hotLeads.length?hotLeads.map(l=>`${l.Name||'Unknown'} (stage: ${l.Stage||'?'}, score: ${l.Score||0}, last msg: ${(l.LastMsgAt||'').slice(0,10)||'never'})`).join('; '):'none';
+  const recentLeads=leads.slice().sort((a,b)=>String(b.Date||b.CreatedAt||'').localeCompare(String(a.Date||a.CreatedAt||''))).slice(0,8).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'}, ${(l.Date||'').slice(0,10)||'no date'})`).join(', ')||'none';
 
   const snapshot=`## Live Business Snapshot (as of ${now.slice(0,10)})
 
 ### Leads
-- Total: ${leads.length}
-- New this week: ${newThisWeek}
+- Total leads: ${leads.length}
+- Open (not resolved): ${openLeads.length}
+- New this week (last 7 days): ${newThisWeek}
+- New last week (7–14 days ago): ${newLastWeek}
+- New this month (last 30 days): ${newThisMonth}
 - By stage: ${stageSummary}
-- Hot leads (highest score, not resolved): ${hotLeadsList}
-- Most recent leads: ${recentLeads}
+- Hot / active leads: ${hotLeadsList}
+- Most recently added leads: ${recentLeads}
+
+### Staff Performance (leads owned)
+- ${staffSummary}
 
 ### Tasks
+- Total tasks: ${tasks.length}
 - Open tasks: ${openTasks.length}
-- Overdue: ${overdueTasks.length}${overdueTasks.length?'\n- Overdue list: '+overdueTasks.map(t=>t.title||'(untitled)').slice(0,5).join(', '):''}
+- Overdue: ${overdueTasks.length}${overdueTasks.length?'\n- Overdue list: '+overdueTasks.map(t=>t.title||'(untitled)').slice(0,8).join(', '):''}
+- Tasks by team member: ${taskStaffSummary}
 
 ### Follow-up Pipeline
 - Active follow-up entries: ${followups.length}`;
