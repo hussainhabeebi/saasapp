@@ -2671,8 +2671,11 @@ async function handleBroadcastTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const url=new URL(request.url);
+  const inboxId=Number(url.searchParams.get('inbox_id')||0)||Number(c.chatwoot_inbox_id)||0;
+  if(!inboxId) return json({error:'No WhatsApp inbox configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
   return json({ok:true, templates:data?.message_templates||[], last_updated:data?.message_templates_last_updated||null});
@@ -2685,8 +2688,11 @@ async function handleBroadcastTemplatesSync(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/sync_templates`, {
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=Number(body.inbox_id||0)||Number(c.chatwoot_inbox_id)||0;
+  if(!inboxId) return json({error:'No WhatsApp inbox configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}/sync_templates`, {
     method:'POST', headers:{api_access_token:c.chatwoot_token}
   });
   const data=await r.json().catch(()=>({}));
