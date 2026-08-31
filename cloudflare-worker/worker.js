@@ -2874,9 +2874,9 @@ async function handleBroadcastSendTemplate(request, env){
 const FOLLOWUP_LADDER_STEP_SHAPE=[
   {step:1, type:'session', defaultHours:1},
   {step:2, type:'session', defaultHours:6},
-  {step:3, type:'template', days:2},
-  {step:4, type:'template', days:4},
-  {step:5, type:'template', days:7},
+  {step:3, type:'template', defaultHours:25},
+  {step:4, type:'template', defaultHours:72},
+  {step:5, type:'template', defaultHours:168},
 ];
 function followupLadderDefaultStep(step, legacyHours, legacyMessages){
   const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
@@ -2887,7 +2887,7 @@ function followupLadderDefaultStep(step, legacyHours, legacyMessages){
       message:legacyMessages[legacyIdx]||'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
       template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
   }
-  return {step, type:'template', hours:null, days:shape.days,
+  return {step, type:'template', hours:shape.defaultHours, days:null,
     message:'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
     template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
 }
@@ -2940,9 +2940,9 @@ async function handleFollowupLadderSave(request, env){
     } else {
       await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, days=excluded.days, template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
           template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
-        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '', '',
+        .bind(Number(payload.cid), shape.step, 'template', shape.defaultHours, null, '', '',
           String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
           String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20), String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
           now)
@@ -3163,7 +3163,11 @@ async function classicFollowupProcessClient(env, c){
   const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
   // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
   // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
-  const thresholdHours=step=>steps[step].type==='session'?(steps[step].hours||24):((steps[step].days||0)*24);
+  const thresholdHours=step=>{
+    const cfg=steps[step];
+    if(cfg.type==='session') return cfg.hours||24;
+    return FOLLOWUP_LADDER_STEP_SHAPE.find(shape=>shape.step===step)?.defaultHours||((cfg.days||0)*24);
+  };
   await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
@@ -25872,9 +25876,10 @@ export class LeadFollowupAgent{
       `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
     ).bind(Number(clientId), step).first().catch(()=>null);
     if(!cfg) return; // ladder exhausted or step not configured
-    const thresholdMs=cfg.type==='session'
-      ? (cfg.hours||1)*3600000
-      : (cfg.days||2)*86400000;
+    const thresholdHours=cfg.type==='session'
+      ? (cfg.hours||1)
+      : (FOLLOWUP_LADDER_STEP_SHAPE.find(shape=>shape.step===step)?.defaultHours||((cfg.days||2)*24));
+    const thresholdMs=thresholdHours*3600000;
     // fireAt = when this step becomes due relative to the customer's last message
     const fireAt=Number(lastMsgAt)+thresholdMs;
     const delay=Math.max(fireAt-Date.now(), 30000); // at least 30s to avoid immediate re-fire
