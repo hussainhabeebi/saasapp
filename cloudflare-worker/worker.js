@@ -351,8 +351,27 @@ export function mergeMetaChannelCredential(c, credential){
   return list;
 }
 export function metaCredentialFromInbox(data, inboxId){
-  const cfg=data?.channel_config||data?.provider_config||data?.channel?.provider_config||{};
-  return {inbox_id:String(inboxId||data?.id||''),waba_id:String(cfg.business_account_id||cfg.waba_id||'').trim(),wa_token:String(cfg.api_key||cfg.access_token||'').trim(),wa_phone_id:String(cfg.phone_number_id||data?.phone_number_id||'').trim(),display_phone:String(data?.phone_number||data?.name||'').trim()};
+  // Chatwoot versions/proxies differ here: inbox-show is normally a flat object, while some
+  // installations wrap it in payload/data and some expose the WhatsApp config below channel.
+  const inbox=data?.payload?.id?data.payload:(data?.data?.payload?.id?data.data.payload:(data?.data?.id?data.data:data));
+  const channel=inbox?.channel||inbox?.channel_config||{};
+  const cfg=inbox?.provider_config||channel?.provider_config||channel?.channel_config||inbox?.channel_config||{};
+  return {inbox_id:String(inboxId||inbox?.id||''),waba_id:String(cfg.business_account_id||cfg.waba_id||inbox?.business_account_id||'').trim(),wa_token:String(cfg.api_key||cfg.access_token||cfg.token||'').trim(),wa_phone_id:String(cfg.phone_number_id||inbox?.phone_number_id||'').trim(),display_phone:String(inbox?.phone_number||inbox?.name||'').trim()};
+}
+async function resolveOrDetectMetaCredentials(env,c,clientId,selector={}){
+  const existing=resolveMetaCredentials(c,selector);
+  if(existing?.wa_token&&existing.wa_phone_id&&existing.waba_id) return existing;
+  const inboxId=String(selector.inbox_id||c?.chatwoot_inbox_id||'');
+  if(!inboxId||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return existing;
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`,{headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return existing;
+    const credential=metaCredentialFromInbox(await r.json().catch(()=>({})),inboxId);
+    if(!credential.wa_token||(!credential.wa_phone_id&&!credential.waba_id)) return existing;
+    await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+    await patchClientFields(env,clientId,{[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))});
+    return credential;
+  }catch(e){ return existing; }
 }
 async function findOtherClientByField(env, field, value, excludeId){
   if(!value) return null;
@@ -1270,7 +1289,7 @@ async function handleWaTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  const creds=resolveMetaCredentials(c,{inbox_id:new URL(request.url).searchParams.get('inbox_id')});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id:new URL(request.url).searchParams.get('inbox_id')});
   if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
   const data=await r.json();
@@ -1284,7 +1303,7 @@ async function handleWaTemplatesCreate(request, env){
   const {name, category, language, body, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  const creds=resolveMetaCredentials(c,{inbox_id});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
     method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
@@ -1306,7 +1325,7 @@ async function handleWaSend(request, env){
   const textBody=typeof text==='string'?text:(text&&typeof text==='object'&&typeof text.body==='string'?text.body:null);
   if(!textBody) return json({error:'text must be a non-empty string'}, 400);
   const c=await getClientById(env, payload.cid);
-  const creds=resolveMetaCredentials(c,{inbox_id});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp phone / token not configured for the selected channel.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
@@ -1326,7 +1345,7 @@ async function handleWaSendTemplate(request, env){
   const {phone, template_name, language, components, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
   const c=await getClientById(env, payload.cid);
-  const creds=resolveMetaCredentials(c,{inbox_id});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API credentials were not detected for the selected channel.'}, 400);
   const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
     method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
@@ -2753,7 +2772,7 @@ async function handleBroadcastTemplatesCreate(request, env){
   const {name, category, language, body, header, footer, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  const creds=resolveMetaCredentials(c,{inbox_id});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.waba_id||!creds?.wa_token) return json({error:'Creating a template requires Meta credentials for the selected WhatsApp channel. Use Detect credentials beside that channel in Settings → Channels.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});

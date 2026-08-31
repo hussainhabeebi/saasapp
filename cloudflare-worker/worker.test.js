@@ -133,6 +133,8 @@ describe('per-channel Meta credential resolution',()=>{
     const summary=metaCredentialSummary({meta_channel_credentials:JSON.stringify([credential])});
     assert.deepEqual(summary,[{inbox_id:'9',configured:true,has_phone_id:true,has_waba_id:true}]);
     assert.equal(JSON.stringify(summary).includes('top-secret'),false);
+    const wrapped=metaCredentialFromInbox({data:{payload:{id:12,phone_number:'+971500000000',channel:{provider_config:{business_account_id:'w2',phone_number_id:'p2',api_key:'another-secret'}}}}});
+    assert.deepEqual(wrapped,{inbox_id:'12',waba_id:'w2',wa_token:'another-secret',wa_phone_id:'p2',display_phone:'+971500000000'});
   });
 
   test('safe client payload never exposes global or per-channel tokens',()=>{
