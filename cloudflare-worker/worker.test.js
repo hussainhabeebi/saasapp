@@ -76,7 +76,10 @@ import {
 describe('Live Travel ticketing in chat',()=>{
   test('recognizes a live fare request but does not hijack PNR/status questions',()=>{
     assert.equal(ltChatFlightIntent('I need a flight from Dubai to Kochi next Friday'),true);
+    assert.equal(ltChatFlightIntent('ticket rate Dubai to Kochi'),true);
+    assert.equal(ltChatFlightIntent('check tickets from DXB to COK on 2026-09-20'),true);
     assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
+    assert.equal(ltChatFlightIntent('Please update my support ticket'),false);
     assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
   });
 

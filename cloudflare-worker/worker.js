@@ -11620,7 +11620,10 @@ async function engineBuildTravelContext(env, c, clientId){
 export function ltChatFlightIntent(text){
   const value=String(text||'').toLowerCase();
   if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
-  return /\b(?:flight|air\s*ticket|airfare|fare|fly|flying)\b/.test(value)&&/\b(?:search|find|book|booking|need|want|price|cost|available|availability|from|to|on)\b/.test(value);
+  const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying)\b/.test(value);
+  const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
+  const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
+  return (explicitFlight&&shopping)||travelTicket;
 }
 
 export function ltNormalizeChatFlightRequest(raw={}){
@@ -11644,8 +11647,12 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Use null for missing facts and never invent a date or destination.`;
   let raw=null;
-  const generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
-  if(generated){ try{ raw=JSON.parse(generated); }catch(e){} }
+  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
+  if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
+  if(generated){
+    try{ raw=JSON.parse(generated); }
+    catch(e){ try{ const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0]; if(objectText) raw=JSON.parse(objectText); }catch(e2){} }
+  }
   // Deterministic fallback supports the concise format shown in the bot's clarification prompt.
   if(!raw){
     const m=String(userText||'').toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
@@ -11672,7 +11679,8 @@ export function ltFormatChatOffers(offers){
 async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[]){
   const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
   const continuing=/I can check live ticket prices for you/i.test(lastAssistant);
-  if(c.industry!=='travel'||(!ltChatFlightIntent(userText)&&!continuing)) return null;
+  const liveAgencyEnabled=c.industry==='travel'||c.ta_enabled==='Yes';
+  if(!liveAgencyEnabled||(!ltChatFlightIntent(userText)&&!continuing)) return null;
   await ltEnsureSchema(env);
   await ltSeedSuppliers(env,clientId);
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
