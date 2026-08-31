@@ -112,6 +112,8 @@ export async function handleNativePoomas(req,env,ctx,legacy){
 
     if(path==='/live-travel/poomas/settings'&&(req.method==='PUT'||req.method==='PATCH')){
       const body=await req.json().catch(()=>({}));
+      const existing=await setting(env,auth.clientId);
+      const enabled=body.enabled===undefined?Boolean(existing?.enabled):Boolean(body.enabled);
       const apiBase=String(body.api_base||POOMAS_API).replace(/\/$/,'');
       const checkoutBase=String(body.checkout_base||POOMAS_WEB).replace(/\/$/,'');
       if(!apiBase.startsWith('https://')||!checkoutBase.startsWith('https://'))return json({error:'POOMAS endpoints must use HTTPS'},400,origin);
@@ -120,8 +122,8 @@ export async function handleNativePoomas(req,env,ctx,legacy){
       await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at)
         VALUES (?,?,?,?,?,?)
         ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`)
-        .bind(auth.clientId,body.enabled?1:0,apiBase,checkoutBase,now,now).run();
-      return json({ok:true,enabled:Boolean(body.enabled),api_base:apiBase,checkout_base:checkoutBase},200,origin);
+        .bind(auth.clientId,enabled?1:0,apiBase,checkoutBase,now,now).run();
+      return json({ok:true,enabled,api_base:apiBase,checkout_base:checkoutBase},200,origin);
     }
 
     if(path==='/live-travel/poomas/search'&&req.method==='POST'){

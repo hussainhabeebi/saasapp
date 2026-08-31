@@ -11617,6 +11617,83 @@ async function engineBuildTravelContext(env, c, clientId){
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
+export function ltChatFlightIntent(text){
+  const value=String(text||'').toLowerCase();
+  if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
+  return /\b(?:flight|air\s*ticket|airfare|fare|fly|flying)\b/.test(value)&&/\b(?:search|find|book|booking|need|want|price|cost|available|availability|from|to|on)\b/.test(value);
+}
+
+export function ltNormalizeChatFlightRequest(raw={}){
+  const code=v=>String(v||'').trim().toUpperCase().match(/^[A-Z]{3}$/)?.[0]||'';
+  const date=v=>String(v||'').trim().match(/^\d{4}-\d{2}-\d{2}$/)?.[0]||'';
+  const clamp=(v,min,max,def)=>Math.max(min,Math.min(max,Number.parseInt(v,10)||def));
+  const trip_type=String(raw.trip_type||'one_way').toLowerCase()==='round_trip'?'round_trip':'one_way';
+  const out={origin:code(raw.origin),destination:code(raw.destination),departure_date:date(raw.departure_date),return_date:date(raw.return_date),trip_type,
+    adults:clamp(raw.adults,1,9,1),children:clamp(raw.children,0,9,0),infants:clamp(raw.infants,0,9,0),
+    cabin:['economy','premium_economy','business','first'].includes(String(raw.cabin||'').toLowerCase())?String(raw.cabin).toLowerCase():'economy',
+    currency:['AED','INR','USD','SAR','EUR','GBP'].includes(String(raw.currency||'').toUpperCase())?String(raw.currency).toUpperCase():'AED'};
+  const missing=[];
+  if(!out.origin) missing.push('origin airport code');
+  if(!out.destination) missing.push('destination airport code');
+  if(!out.departure_date) missing.push('departure date');
+  if(out.trip_type==='round_trip'&&!out.return_date) missing.push('return date');
+  return {...out,missing};
+}
+
+async function engineExtractChatFlightRequest(env,c,userText,history=[]){
+  const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
+  const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Use null for missing facts and never invent a date or destination.`;
+  let raw=null;
+  const generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
+  if(generated){ try{ raw=JSON.parse(generated); }catch(e){} }
+  // Deterministic fallback supports the concise format shown in the bot's clarification prompt.
+  if(!raw){
+    const m=String(userText||'').toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
+    const dates=String(userText||'').match(/\b\d{4}-\d{2}-\d{2}\b/g)||[];
+    raw={origin:m?.[1],destination:m?.[2],departure_date:dates[0],return_date:dates[1],trip_type:dates[1]?'round_trip':'one_way'};
+  }
+  return ltNormalizeChatFlightRequest(raw);
+}
+
+export function ltFormatChatOffers(offers){
+  const top=(offers||[]).filter(o=>Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,5);
+  if(!top.length) return 'I checked the live ticketing system, but no fares were returned for that route and date. Please try another date or nearby airport.';
+  const lines=['Here are the best live flight fares I found:'];
+  top.forEach((o,i)=>{
+    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}`;
+    if(o.seats_left!=null) line+=` · ${o.seats_left} seat(s) left`;
+    if(o.checkout_url) line+=`\nBook: ${o.checkout_url}`;
+    lines.push(line);
+  });
+  lines.push('Live fares can change until checkout is completed.');
+  return lines.join('\n\n');
+}
+
+async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[]){
+  const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
+  const continuing=/I can check live ticket prices for you/i.test(lastAssistant);
+  if(c.industry!=='travel'||(!ltChatFlightIntent(userText)&&!continuing)) return null;
+  await ltEnsureSchema(env);
+  await ltSeedSuppliers(env,clientId);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+  if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
+  const input=await engineExtractChatFlightRequest(env,c,userText,history);
+  if(input.missing.length){
+    return {handled:true,reply:`I can check live ticket prices for you. Please send: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
+  }
+  try{
+    const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
+    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
+    const data=await ltSupplierSearch(runtime,input,env);
+    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
+    const offers=ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx));
+    return {handled:true,reply:ltFormatChatOffers(offers)};
+  }catch(e){
+    await reportOpsError(env,'Live ticketing chat search',e,{clientId});
+    return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
+  }
+}
+
 // Builds verified resort property + room data for injection into the LLM system prompt so
 // follow-up questions are answered from real D1 records — no hallucinated prices or names.
 async function engineBuildResortContext(env, clientId){
@@ -13967,6 +14044,7 @@ async function handleEngineWebhook(request, env, secret){
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
+    const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory);
 
     let sentText=null;
     let orderHandledInline=false;
@@ -13985,7 +14063,12 @@ async function handleEngineWebhook(request, env, secret){
     // touching that cascade at all. isOptOut/isResub are still honored (engineRouteFlow itself
     // already short-circuits those unconditionally, above its own cascade) and an explicit human
     // ask still wins, so neither is checked again here.
-    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
+    if(liveTicketingTurn?.handled && !routing.isOptOut && !routing.isResub && !(routing.route==='human'&&routing.humanReason==='explicit')){
+      sentText=await engineLocalizeReply(env,c,liveTicketingTurn.reply,replyLang);
+      routing.route='travel_live_ticketing'; routing.reply=sentText; routing.next=state.stage;
+      await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+      orderHandledInline=true;
+    } else if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
@@ -25652,10 +25735,16 @@ async function handleLtPoomasSettings(request,env){
   const apiBase=String(body.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
   const checkoutBase=String(body.checkout_base||'https://flypoomas.com').replace(/\/$/,'');
   if(!apiBase.startsWith('https://')||!checkoutBase.startsWith('https://'))return json({error:'POOMAS endpoints must use HTTPS'},400);
+  const existing=await env.DB.prepare(`SELECT enabled FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+  const enabled=ltPoomasEnabledAfterSettingsSave(body,existing);
   const now=ltNow();
-  await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(auth.cid,body.enabled?1:0,apiBase,checkoutBase,now,now).run();
-  await ltAudit(env,auth.cid,'poomas_settings','config','updated',auth.email,{enabled:!!body.enabled});
-  return json({enabled:Boolean(body.enabled),api_base:apiBase,checkout_base:checkoutBase});
+  await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(auth.cid,enabled?1:0,apiBase,checkoutBase,now,now).run();
+  await ltAudit(env,auth.cid,'poomas_settings','config','updated',auth.email,{enabled});
+  return json({enabled,api_base:apiBase,checkout_base:checkoutBase});
+}
+
+export function ltPoomasEnabledAfterSettingsSave(body={},existing=null){
+  return body.enabled===undefined?Boolean(existing?.enabled):Boolean(body.enabled);
 }
 
 // ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────

@@ -71,8 +71,9 @@ export default {async fetch(req,env){
       const b=await req.json().catch(()=>({})),now=new Date().toISOString(),apiBase=String(b.api_base||POOMAS_API).replace(/\/$/,''),checkoutBase=String(b.checkout_base||POOMAS_WEB).replace(/\/$/,'');
       if(!apiBase.startsWith('https://')||!checkoutBase.startsWith('https://'))return json({error:'POOMAS endpoints must use HTTPS'},400,origin);
       await ensureDb(env);
-      await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(a.clientId,b.enabled?1:0,apiBase,checkoutBase,now,now).run();
-      return json({ok:true,enabled:Boolean(b.enabled),api_base:apiBase,checkout_base:checkoutBase},200,origin);
+      const existing=await setting(env,a.clientId),enabled=b.enabled===undefined?Boolean(existing?.enabled):Boolean(b.enabled);
+      await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(a.clientId,enabled?1:0,apiBase,checkoutBase,now,now).run();
+      return json({ok:true,enabled,api_base:apiBase,checkout_base:checkoutBase},200,origin);
     }
     // POST /search — search flights via POOMAS v1 integration API
     if(u.pathname==='/search'&&req.method==='POST'){

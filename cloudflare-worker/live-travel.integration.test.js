@@ -37,6 +37,13 @@ test('Live Travel authenticated D1 workflow remains tenant scoped and operationa
   assert.equal(r.data.suppliers.filter(s=>s.supplier!=='poomas').every(s=>s.credentials_configured===false),true);
   assert.equal(r.data.suppliers.find(s=>s.supplier==='poomas')?.credentials_configured,true);
 
+  r=await call(env,session,'/live-travel/poomas/settings','PATCH',{enabled:true,api_base:'https://api.flypoomas.com',checkout_base:'https://flypoomas.com'});
+  assert.equal(r.status,200);
+  assert.equal(r.data.enabled,true);
+  r=await call(env,session,'/live-travel/poomas/settings','PATCH',{api_base:'https://api.flypoomas.com',checkout_base:'https://checkout.flypoomas.com'});
+  assert.equal(r.status,200);
+  assert.equal(r.data.enabled,true,'editing POOMAS URLs must not silently disable live ticketing');
+
   r=await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'tripjack',enabled:true,mode:'sandbox',markup_type:'percent',markup_value:5,priority:10,credentials:{api_key:'tenant-tripjack-key'},endpoints:{search:'https://sandbox.tripjack.test/search',revalidate:'https://sandbox.tripjack.test/revalidate'}});
   assert.equal(r.status,200);
   assert.equal(r.data.enabled,1);
