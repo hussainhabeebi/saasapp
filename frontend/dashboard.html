@@ -2486,6 +2486,8 @@ const ROLES = {
             </div>
             <div id="chWaDone" style="display:none">
               <div class="s-note">✅ WhatsApp connected — phone number ID <span id="chWaPhoneDisplay"></span></div>
+              <button class="save-btn" style="margin-top:8px" onclick="connectWhatsApp()">Add another WhatsApp number</button>
+              <span class="save-msg" id="chConnectWaMoreMsg"></span>
             </div>
             <details style="margin-top:12px">
               <summary style="cursor:pointer;font-weight:600;color:var(--muted)">Already have WhatsApp connected another way? Wire Meta credentials directly</summary>
@@ -10851,7 +10853,7 @@ function renderChannelsPage(){
   // Manually-wired Meta credentials (waba_id/wa_token, no phone number required) also count as
   // "connected" for the purposes of this page — they're enough for template create/list/send even
   // without a Chatwoot WhatsApp inbox or an Embedded Signup phone number.
-  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id) || !!status.has_whatsapp || !!(clientRecord.waba_id && clientRecord.wa_token);
+  const hasWa=!!(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id) || !!status.has_whatsapp || !!(clientRecord.waba_id && clientRecord.wa_token_connected);
 
   $id('chAccountPending').style.display=hasAccount?'none':'block';
   $id('chAccountDone').style.display=hasAccount?'block':'none';
@@ -10865,7 +10867,7 @@ function renderChannelsPage(){
   $id('chWaDone').style.display=hasWa?'block':'none';
   if(hasWa) $id('chWaPhoneDisplay').textContent=clientRecord.wa_phone_id||('WABA '+(clientRecord.waba_id||''));
   $id('chManualWabaId').value=clientRecord.waba_id||'';
-  $id('chManualWaToken').value=clientRecord.wa_token||'';
+  $id('chManualWaToken').value='';
   $id('chManualWaPhoneId').value=clientRecord.wa_phone_id||'';
 
   $id('chOtherSection').style.display=hasAccount?'block':'none';
@@ -10901,6 +10903,7 @@ async function chLoadAndRenderInboxList(list){
     const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===cur?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
       `<span style="flex:1">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted);font-size:12px">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
+      `${ib.channel_type==='Channel::Whatsapp'?`<button class="save-btn" style="font-size:11px;padding:5px 9px" onclick="autoDetectMetaCreds(${ib.id},this)">${ib.meta_credentials?.configured?'Re-detect credentials':'Detect credentials'}</button><span class="save-msg" id="chDetectMsg${ib.id}">${ib.meta_credentials?.configured?'✓ Detected':''}</span>`:''}`+
       `<select style="font-size:12px;padding:4px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value)">`+
       `<option value="">— Unassigned —</option>${opts}</select>`+
       `</div>`;
@@ -11507,7 +11510,7 @@ async function saveShopifyTemplates(){
 
 function renderWaStatus(){
   const el=$id('intWaStatus');
-  if(clientRecord?.wa_phone_id && clientRecord?.wa_token){
+  if(clientRecord?.wa_phone_id && clientRecord?.wa_token_connected){
     el.innerHTML=`✅ Connected — phone number ID <b>${esc(clientRecord.wa_phone_id)}</b>`;
   }else{
     el.innerHTML=`Not connected. <a href="#" onclick="navigate('channels');return false" style="color:inherit;text-decoration:underline;font-weight:600">Connect it in Channels</a>.`;
@@ -11671,11 +11674,8 @@ async function createChatwootAccount(){
 }
 
 function connectWhatsApp(msgElId, context){
-  msgElId=msgElId||'chConnectWaMsg';
+  msgElId=msgElId||((_channelsStatus?.has_whatsapp)?'chConnectWaMoreMsg':'chConnectWaMsg');
   const msg=$id(msgElId);
-  if(_channelsStatus?.has_whatsapp || (clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
-    msg.textContent='WhatsApp is already connected for this client.'; return;
-  }
   if(!window.FB){ msg.textContent='Facebook SDK still loading — try again in a moment.'; return; }
   msg.textContent='';
   _waSignupData.msgElId=msgElId;
@@ -11697,7 +11697,7 @@ async function completeWaConnect(code, waba_id, phone_number_id, msgElId, contex
     const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/connect`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({code, waba_id, phone_number_id})});
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id, waba_id:data.waba_id, wa_phone_id:data.wa_phone_id});
+    if(!clientRecord.chatwoot_inbox_id) Object.assign(clientRecord,{chatwoot_inbox_id:data.chatwoot_inbox_id,waba_id:data.waba_id,wa_phone_id:data.wa_phone_id});
     if(context==='welcome'){
       msg.textContent='✅ WhatsApp connected!';
       setTimeout(()=>{ closeModal('modalWelcomeSetup'); renderOnboardingChecklist(); }, 1200);
@@ -11724,24 +11724,25 @@ async function saveManualWaCreds(){
   if(!waba_id||!wa_token){ msg.textContent='WABA ID and access token are required.'; msg.className='save-msg err'; return; }
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    const fields={waba_id, wa_token};
-    if(wa_phone_id) fields.wa_phone_id=wa_phone_id;
-    await patchClient(fields);
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/manual-meta-creds`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({waba_id,wa_token,wa_phone_id})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{waba_id:d.waba_id,wa_phone_id:d.wa_phone_id||clientRecord.wa_phone_id,wa_token_connected:true});
     msg.textContent='✓ Saved — templates can now be created directly via Meta';
     renderChannelsPage();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },4000); }
 }
 
-async function autoDetectMetaCreds(){
-  const btn=$id('chAutoDetectBtn'), msg=$id('chAutoDetectMsg');
+async function autoDetectMetaCreds(inboxId, clickedButton){
+  const btn=clickedButton||$id('chAutoDetectBtn'), msg=inboxId?$id('chDetectMsg'+inboxId):$id('chAutoDetectMsg');
   btn.disabled=true; msg.textContent='Detecting…'; msg.className='save-msg';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/extract-meta-creds`,{method:'POST',headers:ncAuthHeaders()});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/extract-meta-creds`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(inboxId?{inbox_id:inboxId}:{})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
     if(d.already_configured){ msg.textContent='✓ Already configured — credentials were already on file.'; msg.className='save-msg'; }
-    else{ msg.textContent='✓ Credentials auto-detected and saved!'; msg.className='save-msg'; renderChannelsPage(); }
+    else{ msg.textContent='✓ Credentials auto-detected and saved!'; msg.className='save-msg'; await loadChannelsStatus(); }
   }catch(e){ msg.textContent='Failed: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },5000); }
 }
@@ -16402,7 +16403,7 @@ async function checkReminders(){
 function renderWaReply(lead){
   const bar=$id('waReplyBar');
   if(!bar)return;
-  if(!clientRecord?.wa_phone_id||!clientRecord?.wa_token){bar.style.display='none';return;}
+  if(!clientRecord?.wa_phone_id||!clientRecord?.wa_token_connected){bar.style.display='none';return;}
   let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
   const lastInbound=hist.filter(m=>m.role==='user'||m.direction==='in').slice(-1)[0];
   const ts=lastInbound?.ts||lead.LastMsgAt||lead.UpdatedAt||'';

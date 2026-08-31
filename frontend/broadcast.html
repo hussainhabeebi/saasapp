@@ -1534,12 +1534,14 @@ async function sendTemplateBroadcast(){
     // fallback". handleWaSendTemplate (Worker) wants Meta's own components/parameters shape, not
     // Chatwoot's flat processed_params map.
     if(!convId){
-      if(clientRecord?.wa_phone_id && lead.Phone){
+      const selectedInbox=_connectedInboxes.find(ib=>String(ib.id)===String(_selectedInboxId));
+      const canDirectSend=!!(selectedInbox?.meta_credentials?.has_phone_id||(!_selectedInboxId&&clientRecord?.wa_phone_id));
+      if(canDirectSend && lead.Phone){
         try{
           const components=resolvedVars.length?[{type:'body',parameters:resolvedVars.map(v=>({type:'text',text:v||''}))}]:[];
           const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send-template`,{
             method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
-            body:JSON.stringify({phone:lead.Phone, template_name:selectedTemplate.name, language:selectedTemplate.language||selectedTemplate.language_code||'en', components})
+            body:JSON.stringify({phone:lead.Phone, template_name:selectedTemplate.name, language:selectedTemplate.language||selectedTemplate.language_code||'en', components,...(_selectedInboxId?{inbox_id:_selectedInboxId}:{})})
           });
           const data=await r.json().catch(()=>({}));
           if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
@@ -1551,7 +1553,7 @@ async function sendTemplateBroadcast(){
         }
       }else{
         failed++;
-        appendLog('tpl', clientRecord?.wa_phone_id
+        appendLog('tpl', canDirectSend
           ? `⚠️ ${lead.Name||'lead'} — no conversation ID and no phone number on file`
           : `⚠️ ${lead.Name||lead.Phone} — no conversation ID (connect WhatsApp Business API in Settings → Channels to reach cold leads like this)`);
       }

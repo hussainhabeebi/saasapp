@@ -61,7 +61,53 @@ import {
   ltNormalizeOffer,
   ltEncryptCredentials,
   ltDecryptCredentials,
+  parseMetaChannelCredentials,
+  mergeMetaChannelCredential,
+  resolveMetaCredentials,
+  metaCredentialFromInbox,
+  metaCredentialSummary,
+  safeClient,
 } from './worker.js';
+
+describe('per-channel Meta credential resolution',()=>{
+  const stored={meta_channel_credentials:JSON.stringify([
+    {inbox_id:'11',waba_id:'waba-a',wa_phone_id:'phone-a',wa_token:'secret-a'},
+    {inbox_id:'22',waba_id:'waba-b',wa_phone_id:'phone-b',wa_token:'secret-b'}
+  ])};
+
+  test('resolves the credential belonging to the selected inbox',()=>{
+    assert.equal(resolveMetaCredentials(stored,{inbox_id:22}).wa_token,'secret-b');
+    assert.equal(resolveMetaCredentials(stored,{inbox_id:11}).wa_phone_id,'phone-a');
+  });
+
+  test('preserves the legacy single-channel fallback',()=>{
+    const legacy={chatwoot_inbox_id:'7',waba_id:'old-waba',wa_phone_id:'old-phone',wa_token:'old-secret'};
+    assert.equal(resolveMetaCredentials(legacy,{}).wa_token,'old-secret');
+    assert.equal(resolveMetaCredentials(legacy,{inbox_id:'8'}),null);
+  });
+
+  test('merges by inbox without overwriting another number',()=>{
+    const merged=mergeMetaChannelCredential(stored,{inbox_id:'22',wa_token:'rotated',waba_id:'waba-b',wa_phone_id:'phone-b'});
+    assert.equal(merged.length,2);
+    assert.equal(merged.find(x=>x.inbox_id==='11').wa_token,'secret-a');
+    assert.equal(merged.find(x=>x.inbox_id==='22').wa_token,'rotated');
+  });
+
+  test('extracts common Chatwoot config shapes and exposes only boolean status',()=>{
+    const credential=metaCredentialFromInbox({channel_config:{business_account_id:'w',phone_number_id:'p',api_key:'top-secret'}},9);
+    assert.deepEqual(credential,{inbox_id:'9',waba_id:'w',wa_token:'top-secret',wa_phone_id:'p',display_phone:''});
+    const summary=metaCredentialSummary({meta_channel_credentials:JSON.stringify([credential])});
+    assert.deepEqual(summary,[{inbox_id:'9',configured:true,has_phone_id:true,has_waba_id:true}]);
+    assert.equal(JSON.stringify(summary).includes('top-secret'),false);
+  });
+
+  test('safe client payload never exposes global or per-channel tokens',()=>{
+    const safe=safeClient({...stored,wa_token:'legacy-secret',client_name:'Example'});
+    assert.equal(safe.meta_channel_credentials,undefined);
+    assert.equal(safe.wa_token,undefined);
+    assert.equal(safe.wa_token_connected,true);
+  });
+});
 
 describe('Live Travel supplier normalization and booking safety', () => {
   test('encrypts client supplier credentials and rejects a different tenant key', async () => {

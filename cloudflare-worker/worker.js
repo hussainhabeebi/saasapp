@@ -316,6 +316,44 @@ async function patchClientFields(env, clientId, fields){
   if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
   return r.json().catch(()=>({}));
 }
+
+// Meta credentials are scoped to a Chatwoot WhatsApp inbox. Keep this JSON server-side: it
+// contains live access tokens and must never be returned by safeClient or /channels/status.
+const META_CHANNEL_CREDENTIALS_FIELD='meta_channel_credentials';
+export function parseMetaChannelCredentials(c){
+  try{
+    const list=JSON.parse(c?.[META_CHANNEL_CREDENTIALS_FIELD]||'[]');
+    return Array.isArray(list)?list.filter(x=>x&&x.inbox_id):[];
+  }catch(e){ return []; }
+}
+export function metaCredentialSummary(c){
+  return parseMetaChannelCredentials(c).map(x=>({inbox_id:String(x.inbox_id),configured:!!(x.wa_token&&(x.wa_phone_id||x.waba_id)),has_phone_id:!!x.wa_phone_id,has_waba_id:!!x.waba_id}));
+}
+export function resolveMetaCredentials(c, selector={}){
+  const list=parseMetaChannelCredentials(c);
+  const inboxId=String(selector.inbox_id||'');
+  const phoneId=String(selector.wa_phone_id||selector.phone_number_id||'');
+  let found=inboxId?list.find(x=>String(x.inbox_id)===inboxId)||null:null;
+  if(!found&&phoneId) found=list.find(x=>String(x.wa_phone_id)===phoneId)||null;
+  if(!found&&!inboxId&&!phoneId&&list.length===1) found=list[0];
+  if(found) return found;
+  // Backward compatibility for accounts created before per-channel storage existed.
+  const legacyInbox=String(c?.chatwoot_inbox_id||'');
+  if(c?.wa_token&&(c.wa_phone_id||c.waba_id)&&(!inboxId||inboxId===legacyInbox)) return {inbox_id:legacyInbox,waba_id:c.waba_id,wa_phone_id:c.wa_phone_id,wa_token:c.wa_token,legacy:true};
+  return null;
+}
+export function mergeMetaChannelCredential(c, credential){
+  const list=parseMetaChannelCredentials(c);
+  const key=String(credential.inbox_id||'');
+  const idx=list.findIndex(x=>String(x.inbox_id)===key);
+  const next={...(idx>=0?list[idx]:{}),...credential,inbox_id:key};
+  if(idx>=0) list[idx]=next; else list.push(next);
+  return list;
+}
+export function metaCredentialFromInbox(data, inboxId){
+  const cfg=data?.channel_config||data?.provider_config||data?.channel?.provider_config||{};
+  return {inbox_id:String(inboxId||data?.id||''),waba_id:String(cfg.business_account_id||cfg.waba_id||'').trim(),wa_token:String(cfg.api_key||cfg.access_token||'').trim(),wa_phone_id:String(cfg.phone_number_id||data?.phone_number_id||'').trim(),display_phone:String(data?.phone_number||data?.name||'').trim()};
+}
 async function findOtherClientByField(env, field, value, excludeId){
   if(!value) return null;
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(${field},eq,${encodeURIComponent(value)})&limit=5`);
@@ -380,9 +418,9 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // resend_api_key, smtp_pass and shopify_access_token are live send-capable credentials too, and
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
-function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
+export function safeClient(rec){
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -994,6 +1032,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // handler, which is also the only place a client-side bypass (calling this endpoint directly)
   // would show up, so the check has to live here rather than only in the Settings UI.
   if(isClientPatch && parsedBody){
+    if(META_CHANNEL_CREDENTIALS_FIELD in parsedBody) return json({error:'Per-channel credentials are managed by the secure channel connection flow.'},403);
     // plan_tier is billing-controlled — never something a client's own session can set, no matter
     // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
     // client-writable) because this one has no legitimate client-side writer at all.
@@ -1231,8 +1270,9 @@ async function handleWaTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+  const creds=resolveMetaCredentials(c,{inbox_id:new URL(request.url).searchParams.get('inbox_id')});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
   const data=await r.json();
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json(data);
@@ -1241,12 +1281,13 @@ async function handleWaTemplatesGet(request, env){
 async function handleWaTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body}=await request.json().catch(()=>({}));
+  const {name, category, language, body, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=resolveMetaCredentials(c,{inbox_id});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components:[{type:'BODY', text:body}]})
   });
   const data=await r.json();
@@ -1257,7 +1298,7 @@ async function handleWaTemplatesCreate(request, env){
 async function handleWaSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {phone, text}=await request.json().catch(()=>({}));
+  const {phone, text, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!text) return json({error:'phone and text required'}, 400);
   // Meta rejects a non-string text.body with a cryptic JSON-schema error instead of a clear one —
   // catch it here so a caller that (accidentally) sends {"text":{"body":"..."}} instead of a plain
@@ -1265,9 +1306,10 @@ async function handleWaSend(request, env){
   const textBody=typeof text==='string'?text:(text&&typeof text==='object'&&typeof text.body==='string'?text.body:null);
   if(!textBody) return json({error:'text must be a non-empty string'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=resolveMetaCredentials(c,{inbox_id});
+  if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp phone / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:textBody}})
   });
   const data=await r.json();
@@ -1281,12 +1323,13 @@ async function handleWaSend(request, env){
 async function handleWaSendTemplate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {phone, template_name, language, components}=await request.json().catch(()=>({}));
+  const {phone, template_name, language, components, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp Business API is not connected for this account — connect it from Settings → Channels.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=resolveMetaCredentials(c,{inbox_id});
+  if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API credentials were not detected for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'template', template:{name:template_name, language:{code:language||'en'}, components:components||[]}})
   });
   const data=await r.json().catch(()=>({}));
@@ -2707,15 +2750,16 @@ async function handleBroadcastTemplatesSync(request, env){
 async function handleBroadcastTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
+  const {name, category, language, body, header, footer, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API — Chatwoot can only sync templates that already exist on Meta, not create new ones. Go to Settings → Channels and either run "Connect WhatsApp" (Embedded Signup), or, if WhatsApp is already connected another way, open "Wire Meta credentials directly" and paste your WABA ID + System User access token. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
+  const creds=resolveMetaCredentials(c,{inbox_id});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'Creating a template requires Meta credentials for the selected WhatsApp channel. Use Detect credentials beside that channel in Settings → Channels.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components})
   });
   const data=await r.json().catch(()=>({}));
@@ -3957,8 +4001,6 @@ async function handleChannelsWhatsappConnect(request, env){
   if(!code||!waba_id||!phone_number_id) return json({error:'code, waba_id and phone_number_id are required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
-  if(c.chatwoot_inbox_id && c.wa_phone_id) return json({error:'WhatsApp is already connected for this client.'}, 400);
-
   const collision=await findOtherClientByField(env, 'waba_id', waba_id, payload.cid) || await findOtherClientByField(env, 'wa_phone_id', phone_number_id, payload.cid);
   if(collision) return json({error:'This WhatsApp Business Account / number is already connected to a different client.'}, 409);
 
@@ -4002,7 +4044,13 @@ async function handleChannelsWhatsappConnect(request, env){
   // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
   // what the public storefront's "Order on WhatsApp" links use, so they open the exact same
   // WhatsApp thread this bot/inbox replies from instead of a different, unrelated number.
-  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
+  await ensureClientColumns(env, [META_CHANNEL_CREDENTIALS_FIELD]);
+  const credential={inbox_id:String(inbox.id),waba_id,wa_token,wa_phone_id:phone_number_id,display_phone:phone_number};
+  const patch={[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))};
+  // Keep legacy fields pinned to the first connection so old callers and single-channel accounts
+  // behave exactly as before. New callers select from the per-inbox map.
+  if(!c.chatwoot_inbox_id) Object.assign(patch,{chatwoot_inbox_id:String(inbox.id),waba_id,wa_token,wa_phone_id:phone_number_id,wa_display_phone:phone_number});
+  await patchClientFields(env, payload.cid, patch);
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
 }
 
@@ -4015,26 +4063,35 @@ async function handleChannelsExtractMetaCreds(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id)
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token)
     return json({error:'Chatwoot is not fully configured. Make sure the Chatwoot account and WhatsApp inbox are connected first.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=String(body.inbox_id||c.chatwoot_inbox_id||'');
+  if(!inboxId) return json({error:'Select a WhatsApp channel first.'},400);
   // Fetch full inbox details — channel_config is returned for admin tokens
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`, {
     headers:{api_access_token:c.chatwoot_token}
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.message||('Chatwoot API '+r.status)}, 502);
-  const cfg=data?.channel_config||data?.provider_config||{};
-  const waba_id=String(cfg.business_account_id||cfg.waba_id||'').trim();
-  const wa_token=String(cfg.api_key||cfg.access_token||'').trim();
-  const wa_phone_id=String(cfg.phone_number_id||data?.phone_number_id||'').trim();
-  if(!wa_token) return json({error:'Could not read Meta credentials from Chatwoot inbox. Your Chatwoot version may not expose channel_config — use the "Wire Meta credentials directly" form below instead.'}, 400);
-  const patch={};
-  if(waba_id && !c.waba_id) patch.waba_id=waba_id;
-  if(wa_token && !c.wa_token) patch.wa_token=wa_token;
-  if(wa_phone_id && !c.wa_phone_id) patch.wa_phone_id=wa_phone_id;
-  if(!Object.keys(patch).length) return json({ok:true, already_configured:true, message:'Meta credentials were already saved — no changes made.'});
+  const credential=metaCredentialFromInbox(data,inboxId);
+  if(!credential.wa_token) return json({error:'Could not read Meta credentials from this Chatwoot inbox. Your Chatwoot version may not expose channel_config — use the manual credential form instead.'}, 400);
+  await ensureClientColumns(env, [META_CHANNEL_CREDENTIALS_FIELD]);
+  const existing=resolveMetaCredentials(c,{inbox_id:inboxId});
+  const patch={[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))};
+  if(!c.wa_token) Object.assign(patch,{waba_id:credential.waba_id,wa_token:credential.wa_token,wa_phone_id:credential.wa_phone_id,chatwoot_inbox_id:inboxId});
   await patchClientFields(env, payload.cid, patch);
-  return json({ok:true, saved:{waba_id:!!patch.waba_id, wa_token:!!patch.wa_token, wa_phone_id:!!patch.wa_phone_id}});
+  return json({ok:true,inbox_id:inboxId,already_configured:!!existing,saved:{waba_id:!!credential.waba_id,wa_token:!!credential.wa_token,wa_phone_id:!!credential.wa_phone_id}});
+}
+
+async function handleChannelsManualMetaCreds(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const waba_id=String(body.waba_id||'').trim(),wa_token=String(body.wa_token||'').trim(),wa_phone_id=String(body.wa_phone_id||'').trim();
+  if(!waba_id||!wa_token) return json({error:'WABA ID and access token are required.'},400);
+  await patchClientFields(env,payload.cid,{waba_id,wa_token,...(wa_phone_id?{wa_phone_id}:{})});
+  return json({ok:true,waba_id,wa_phone_id,wa_token_connected:true});
 }
 
 /* ── Instagram DM module (native — no Chatwoot) ────────────────────────────────────────────
@@ -4298,7 +4355,37 @@ async function handleChannelsStatus(request, env){
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:'Failed to load inboxes from Chatwoot: HTTP '+r.status}, 502);
-  const inboxes=(data?.payload||data?.data?.payload||[]).map(ib=>({id:ib.id, name:ib.name, channel_type:ib.channel_type}));
+  let credentialState=c;
+  const rawInboxes=data?.payload||data?.data?.payload||[];
+  const whatsapp=rawInboxes.filter(ib=>ib.channel_type==='Channel::Whatsapp');
+  // Automatic, best-effort detection for every connected number. A Chatwoot version that hides
+  // provider_config simply leaves that channel unconfigured and the per-channel button explains
+  // how to retry; failures never break the Channels page.
+  if(whatsapp.length){
+    const detected=await Promise.all(whatsapp.map(async ib=>{
+      try{
+        const ir=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${ib.id}`,{headers:{api_access_token:c.chatwoot_token}});
+        if(!ir.ok) return null;
+        const credential=metaCredentialFromInbox(await ir.json().catch(()=>({})),ib.id);
+        return credential.wa_token?credential:null;
+      }catch(e){ return null; }
+    }));
+    const found=detected.filter(Boolean);
+    if(found.length){
+      let merged=parseMetaChannelCredentials(c);
+      for(const credential of found) merged=mergeMetaChannelCredential({[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(merged)},credential);
+      const encoded=JSON.stringify(merged);
+      if(encoded!==JSON.stringify(parseMetaChannelCredentials(c))){
+        try{
+          await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+          await patchClientFields(env,payload.cid,{[META_CHANNEL_CREDENTIALS_FIELD]:encoded});
+          credentialState={...c,[META_CHANNEL_CREDENTIALS_FIELD]:encoded};
+        }catch(e){ /* status remains usable; never log credential material */ }
+      }
+    }
+  }
+  const summaries=Object.fromEntries(metaCredentialSummary(credentialState).map(x=>[String(x.inbox_id),x]));
+  const inboxes=rawInboxes.map(ib=>({id:ib.id,name:ib.name,channel_type:ib.channel_type,...(ib.channel_type==='Channel::Whatsapp'?{meta_credentials:summaries[String(ib.id)]||{configured:false,has_phone_id:false,has_waba_id:false}}:{})}));
   const has_whatsapp=inboxes.some(ib=>ib.channel_type==='Channel::Whatsapp');
   return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
 }
@@ -26327,6 +26414,7 @@ export default {
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
       else if(url.pathname==='/channels/whatsapp/extract-meta-creds' && request.method==='POST'){ res=await handleChannelsExtractMetaCreds(request, env); }
+      else if(url.pathname==='/channels/whatsapp/manual-meta-creds' && request.method==='POST'){ res=await handleChannelsManualMetaCreds(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='GET'){ res=await handleChannelsWhatsappProfileGet(request, env); }
