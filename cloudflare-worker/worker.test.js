@@ -67,7 +67,38 @@ import {
   metaCredentialFromInbox,
   metaCredentialSummary,
   safeClient,
+  ltChatFlightIntent,
+  ltNormalizeChatFlightRequest,
+  ltFormatChatOffers,
+  ltPoomasEnabledAfterSettingsSave,
 } from './worker.js';
+
+describe('Live Travel ticketing in chat',()=>{
+  test('recognizes a live fare request but does not hijack PNR/status questions',()=>{
+    assert.equal(ltChatFlightIntent('I need a flight from Dubai to Kochi next Friday'),true);
+    assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
+    assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+  });
+
+  test('normalizes safe search defaults and reports required missing fields',()=>{
+    assert.deepEqual(ltNormalizeChatFlightRequest({origin:'dxb',destination:'cok',departure_date:'2026-09-20',adults:'2'}),{
+      origin:'DXB',destination:'COK',departure_date:'2026-09-20',return_date:'',trip_type:'one_way',adults:2,children:0,infants:0,cabin:'economy',currency:'AED',missing:[]
+    });
+    assert.deepEqual(ltNormalizeChatFlightRequest({origin:'Dubai',destination:'COK'}).missing,['origin airport code','departure date']);
+  });
+
+  test('formats only verified offer fields and checkout links for chat',()=>{
+    const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,checkout_url:'https://flypoomas.com/book?fareId=1'}]);
+    assert.match(text,/Example Air · EA101 — AED 425\.50/);
+    assert.match(text,/3 seat\(s\) left/);
+    assert.match(text,/https:\/\/flypoomas\.com\/book\?fareId=1/);
+  });
+
+  test('saving only POOMAS URLs preserves the existing enabled flag',()=>{
+    assert.equal(ltPoomasEnabledAfterSettingsSave({api_base:'https://api.flypoomas.com'},{enabled:1}),true);
+    assert.equal(ltPoomasEnabledAfterSettingsSave({enabled:false},{enabled:1}),false);
+  });
+});
 
 describe('per-channel Meta credential resolution',()=>{
   const stored={meta_channel_credentials:JSON.stringify([
