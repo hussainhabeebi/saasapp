@@ -439,6 +439,11 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <span class="step-num">1</span> Select WhatsApp Template
         <button class="btn btn-sec btn-sm" onclick="refreshTemplates()" style="margin-left:auto">↻ Refresh</button>
       </div>
+      <div class="inbox-selector-row" id="metaInboxRow" style="display:none">
+        <label>📲 Active WhatsApp number</label>
+        <select id="metaInboxSelect" onchange="metaInboxChanged()"></select>
+        <span style="font-size:11px;color:var(--accent-ink)">Templates and broadcasts use this number.</span>
+      </div>
       <div id="tplLoading" class="msg info">Loading templates from Meta…</div>
       <div id="tplError" class="msg error hidden"></div>
       <div id="tplGrid" class="tpl-grid hidden"></div>
@@ -978,19 +983,29 @@ function showTab(tab){
 
 // ── CONNECTED INBOXES ──
 async function loadConnectedInboxes(){
+  const previousId=String(_selectedInboxId||'');
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/channels/status`,{headers:ncAuthHeaders()});
     const data=await r.json().catch(()=>({}));
     // Only WhatsApp inboxes are relevant for campaign sends
     _connectedInboxes=(data.inboxes||[]).filter(ib=>(ib.channel_type||'').includes('Whatsapp')||(ib.channel_type||'').includes('whatsapp'));
   }catch(e){ _connectedInboxes=[]; }
-  // Default to client's primary inbox_id if stored
-  _selectedInboxId=_connectedInboxes.length?_connectedInboxes[0].id:null;
+  // Preserve the user's current choice; otherwise select the account's configured primary number
+  // before falling back to the first WhatsApp inbox returned by Chatwoot.
+  const primaryId=String(clientRecord?.chatwoot_inbox_id||'');
+  const preferred=_connectedInboxes.find(ib=>String(ib.id)===previousId)
+    ||_connectedInboxes.find(ib=>String(ib.id)===primaryId)
+    ||_connectedInboxes[0];
+  _selectedInboxId=preferred?.id||null;
   renderInboxSelectors();
 }
 
 function inboxOptions(selectedId){
-  return _connectedInboxes.map(ib=>`<option value="${ib.id}"${ib.id===selectedId?' selected':''}>${esc(ib.name)}</option>`).join('');
+  return _connectedInboxes.map(ib=>{
+    const number=ib.phone_number||ib.meta_credentials?.display_phone||'';
+    const label=`${ib.name}${number?' — '+number:''}${String(ib.id)===String(clientRecord?.chatwoot_inbox_id||'')?' (Primary)':''}`;
+    return `<option value="${ib.id}"${String(ib.id)===String(selectedId)?' selected':''}>${esc(label)}</option>`;
+  }).join('');
 }
 
 function renderInboxSelectors(){
@@ -1013,7 +1028,7 @@ function renderInboxSelectors(){
 
 function getSelectedInboxId(selectId){ return Number($id(selectId)?.value||0)||_selectedInboxId; }
 function dmInboxChanged(){ _selectedInboxId=getSelectedInboxId('dmInboxSelect'); syncInboxSelects(); }
-function metaInboxChanged(){ _selectedInboxId=getSelectedInboxId('metaInboxSelect'); syncInboxSelects(); }
+function metaInboxChanged(){ _selectedInboxId=getSelectedInboxId('metaInboxSelect'); syncInboxSelects(); loadTemplates(); }
 function tplCreateInboxChanged(){ _selectedInboxId=getSelectedInboxId('createTplInboxSelect'); syncInboxSelects(); }
 function tplListInboxChanged(){ _selectedInboxId=getSelectedInboxId('listTplInboxSelect'); syncInboxSelects(); loadTemplates(); }
 function syncInboxSelects(){
@@ -1024,7 +1039,7 @@ function syncInboxSelects(){
 }
 function updateListTplPill(){
   const pill=$id('listTplInboxPill'); if(!pill) return;
-  const ib=_connectedInboxes.find(i=>i.id===_selectedInboxId);
+  const ib=_connectedInboxes.find(i=>String(i.id)===String(_selectedInboxId));
   pill.innerHTML=ib?`<span class="inbox-pill">📲 ${esc(ib.name)}</span>`:'';
 }
 

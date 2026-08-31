@@ -327,7 +327,7 @@ export function parseMetaChannelCredentials(c){
   }catch(e){ return []; }
 }
 export function metaCredentialSummary(c){
-  return parseMetaChannelCredentials(c).map(x=>({inbox_id:String(x.inbox_id),configured:!!(x.wa_token&&(x.wa_phone_id||x.waba_id)),has_phone_id:!!x.wa_phone_id,has_waba_id:!!x.waba_id}));
+  return parseMetaChannelCredentials(c).map(x=>({inbox_id:String(x.inbox_id),configured:!!(x.wa_token&&(x.wa_phone_id||x.waba_id)),has_phone_id:!!x.wa_phone_id,has_waba_id:!!x.waba_id,display_phone:String(x.display_phone||'')}));
 }
 export function resolveMetaCredentials(c, selector={}){
   const list=parseMetaChannelCredentials(c);
@@ -4404,7 +4404,7 @@ async function handleChannelsStatus(request, env){
     }
   }
   const summaries=Object.fromEntries(metaCredentialSummary(credentialState).map(x=>[String(x.inbox_id),x]));
-  const inboxes=rawInboxes.map(ib=>({id:ib.id,name:ib.name,channel_type:ib.channel_type,...(ib.channel_type==='Channel::Whatsapp'?{meta_credentials:summaries[String(ib.id)]||{configured:false,has_phone_id:false,has_waba_id:false}}:{})}));
+  const inboxes=rawInboxes.map(ib=>({id:ib.id,name:ib.name,channel_type:ib.channel_type,...(ib.channel_type==='Channel::Whatsapp'?{phone_number:summaries[String(ib.id)]?.display_phone||ib.phone_number||'',meta_credentials:summaries[String(ib.id)]||{configured:false,has_phone_id:false,has_waba_id:false,display_phone:''}}:{})}));
   const has_whatsapp=inboxes.some(ib=>ib.channel_type==='Channel::Whatsapp');
   return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
 }
