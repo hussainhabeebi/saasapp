@@ -26142,105 +26142,131 @@ async function handleInternalChatMessage(request, env){
   const c=await getClientById(env, String(cid));
   if(!c) return json({error:'Client not found'},404);
   const now=new Date().toISOString();
+  const today=now.slice(0,10);
 
-  // Fetch live business snapshot in parallel
-  const leadsWhere=encodeURIComponent(`(ClientId,eq,${cid})`);
-  const [leadsR, tasksR, followupsR]=await Promise.all([
-    ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${leadsWhere}&limit=500&fields=${encodeURIComponent('Id,Name,Stage,Score,Date,LastMsgAt,ConvResolved,Owner,Tags')}`).then(r=>r.ok?r.json().catch(()=>({})):{}).catch(()=>({})),
-    env.DB.prepare('SELECT id,title,status,due_date,assigned_to,project_id FROM pm_tasks WHERE client_id=? ORDER BY created_at DESC LIMIT 200').bind(cid).all().catch(()=>({results:[]})),
-    env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 50').bind(cid).all().catch(()=>({results:[]})),
+  // Live, tenant-scoped sources. Leads are paginated from NocoDB; tasks/projects come from D1.
+  // Keep these queries independent so one unavailable module never blanks the other two.
+  const [leads, taskResult, followupResult]=await Promise.all([
+    reportFetchAllLeads(env, cid, 'Id,Name,Phone,Stage,Score,Date,LastMsgAt,Owner,Tags,DealValue,DealCurrency,ClosedAt,Source').catch(()=>[]),
+    env.DB.prepare(`SELECT t.id,t.title,t.status,t.priority,t.due_date,t.assignee_email,t.lead_id,t.lead_name,t.created_at,t.done_at,p.name AS project_name
+      FROM pm_tasks t LEFT JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+      WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 500`).bind(cid).all().catch(()=>({results:[]})),
+    env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
   ]);
+  const tasks=taskResult.results||[];
+  const followups=followupResult.results||[];
 
-  const leads=Array.isArray(leadsR.list)?leadsR.list:[];
-  const tasks=tasksR.results||[];
-  const followups=followupsR.results||[];
+  const dayMs=864e5;
+  const weekAgo=new Date(Date.now()-7*dayMs).toISOString().slice(0,10);
+  const twoWeeksAgo=new Date(Date.now()-14*dayMs).toISOString().slice(0,10);
+  const monthAgo=new Date(Date.now()-30*dayMs).toISOString().slice(0,10);
+  const leadDate=l=>String(l.Date||'').slice(0,10);
+  const won=l=>reportIsWonLead(l);
+  const lost=l=>reportIsLostLead(l);
+  const active=l=>!won(l)&&!lost(l);
 
-  // Date ranges
-  const weekAgo=new Date(Date.now()-7*864e5).toISOString().slice(0,10);
-  const monthAgo=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
-  const twoWeeksAgo=new Date(Date.now()-14*864e5).toISOString().slice(0,10);
-
-  // Summarise leads by stage
   const stageMap={};
-  let newThisWeek=0, newLastWeek=0, newThisMonth=0;
-  leads.forEach(l=>{
-    const s=l.Stage||'Unknown'; stageMap[s]=(stageMap[s]||0)+1;
-    const d=(l.Date||l.CreatedAt||'').slice(0,10);
+  let newThisWeek=0,newLastWeek=0,newThisMonth=0;
+  for(const l of leads){
+    const stage=l.Stage||'Unknown';
+    stageMap[stage]=(stageMap[stage]||0)+1;
+    const d=leadDate(l);
     if(d>=weekAgo) newThisWeek++;
     else if(d>=twoWeeksAgo) newLastWeek++;
     if(d>=monthAgo) newThisMonth++;
-  });
-  const stageSummary=Object.entries(stageMap).map(([s,n])=>`${s}: ${n}`).join(', ')||'none';
+  }
+  const stageSummary=Object.entries(stageMap).sort((a,b)=>b[1]-a[1]).map(([s,n])=>`${s}: ${n}`).join(', ')||'none';
+  const wonLeads=leads.filter(won), lostLeads=leads.filter(lost), activeLeads=leads.filter(active);
+  const currency=c.deal_currency||leads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const totalRevenue=wonLeads.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+  const conversionRate=leads.length?Math.round(wonLeads.length/leads.length*1000)/10:0;
 
-  // Staff performance — leads by owner
-  const ownerMap={};
-  leads.forEach(l=>{ const o=l.Owner||'Unassigned'; ownerMap[o]=(ownerMap[o]||0)+1; });
-  const staffSummary=Object.entries(ownerMap).sort((a,b)=>b[1]-a[1]).map(([o,n])=>`${o}: ${n} leads`).join(', ')||'no owner data';
+  const scoreRank={Hot:3,Warm:2,Cold:1};
+  const hotLeads=activeLeads.slice().sort((a,b)=>{
+    const scoreDiff=(scoreRank[b.Score]||Number(b.Score)||0)-(scoreRank[a.Score]||Number(a.Score)||0);
+    return scoreDiff||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||''));
+  }).slice(0,12);
+  const leadLine=l=>`${l.Name||l.Phone||'Unknown'} [ID ${l.Id}] — ${l.Stage||'Unknown'}, ${l.Score||'no score'}, owner: ${l.Owner||'Unassigned'}, last activity: ${String(l.LastMsgAt||l.Date||'never').slice(0,16)}`;
+  const recentLeads=leads.slice().sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,12);
 
-  // Tasks
   const openTasks=tasks.filter(t=>t.status!=='done');
-  const overdueTasks=openTasks.filter(t=>t.due_date&&t.due_date<now.slice(0,10));
-  const taskByAssignee={};
-  tasks.forEach(t=>{ const a=t.assigned_to||'Unassigned'; taskByAssignee[a]=(taskByAssignee[a]||0)+1; });
-  const taskStaffSummary=Object.entries(taskByAssignee).sort((a,b)=>b[1]-a[1]).map(([a,n])=>`${a}: ${n} tasks`).join(', ')||'none';
+  const doneTasks=tasks.filter(t=>t.status==='done');
+  const overdueTasks=openTasks.filter(t=>t.due_date&&String(t.due_date).slice(0,10)<today);
+  const dueTodayTasks=openTasks.filter(t=>t.due_date&&String(t.due_date).slice(0,10)===today);
+  const taskLine=t=>`${t.title||'(untitled)'} [ID ${t.id}] — ${t.status}, ${t.priority||'medium'} priority, due: ${t.due_date||'none'}, assignee: ${t.assignee_email||'Unassigned'}, project: ${t.project_name||'General'}`;
 
-  // Hot leads = most recently active (LastMsgAt) among open ones; fall back to highest score
-  const openLeads=leads.filter(l=>l.ConvResolved!=='Yes');
-  const hotLeads=openLeads.slice().sort((a,b)=>{
-    const scoreDiff=(Number(b.Score)||0)-(Number(a.Score)||0);
-    if(scoreDiff!==0) return scoreDiff;
-    return String(b.LastMsgAt||'').localeCompare(String(a.LastMsgAt||''));
-  }).slice(0,8);
-  const hotLeadsList=hotLeads.length?hotLeads.map(l=>`${l.Name||'Unknown'} (stage: ${l.Stage||'?'}, score: ${l.Score||0}, last msg: ${(l.LastMsgAt||'').slice(0,10)||'never'})`).join('; '):'none';
-  const recentLeads=leads.slice().sort((a,b)=>String(b.Date||b.CreatedAt||'').localeCompare(String(a.Date||a.CreatedAt||''))).slice(0,8).map(l=>`${l.Name||'Unknown'} (${l.Stage||'?'}, ${(l.Date||'').slice(0,10)||'no date'})`).join(', ')||'none';
+  let teamNames={}; try{ teamNames=JSON.parse(c.team_names||'{}'); }catch(e){}
+  const ownerEmail=String(c.authentik_email||'').trim();
+  const configuredMembers=[ownerEmail,...String(c.team_emails||'').split(',').map(x=>x.trim()).filter(Boolean)];
+  const observedMembers=[...leads.map(l=>l.Owner),...tasks.map(t=>t.assignee_email)].filter(Boolean);
+  const memberEmails=[...new Set([...configuredMembers,...observedMembers].map(x=>String(x).trim()).filter(Boolean))];
+  const teamRows=memberEmails.map(email=>{
+    const norm=email.toLowerCase();
+    const mine=leads.filter(l=>String(l.Owner||'').toLowerCase()===norm);
+    const mineWon=mine.filter(won);
+    const mineTasks=tasks.filter(t=>String(t.assignee_email||'').toLowerCase()===norm);
+    const mineOpen=mineTasks.filter(t=>t.status!=='done');
+    const mineOverdue=mineOpen.filter(t=>t.due_date&&String(t.due_date).slice(0,10)<today);
+    const revenue=mineWon.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+    return {
+      email,
+      name:norm===ownerEmail.toLowerCase()?(c.client_name||email):(teamNames[email]||teamNames[norm]||email),
+      leads:mine.length,
+      won:mineWon.length,
+      conversion:mine.length?Math.round(mineWon.length/mine.length*1000)/10:0,
+      revenue,
+      tasks:mineTasks.length,
+      completed:mineTasks.filter(t=>t.status==='done').length,
+      open:mineOpen.length,
+      overdue:mineOverdue.length,
+    };
+  }).sort((a,b)=>b.won-a.won||b.revenue-a.revenue||b.leads-a.leads);
+  const teamSummary=teamRows.length?teamRows.map(r=>`${r.name} (${r.email}): ${r.leads} leads, ${r.won} won, ${r.conversion}% conversion, ${currency} ${r.revenue} revenue, ${r.completed}/${r.tasks} tasks completed, ${r.open} open, ${r.overdue} overdue`).join('\n- '):'No configured or assigned team members';
 
-  const snapshot=`## Live Business Snapshot (as of ${now.slice(0,10)})
+  const snapshot=`## Live Business Data (tenant ${cid}, generated ${now})
 
 ### Leads
-- Total leads: ${leads.length}
-- Open (not resolved): ${openLeads.length}
-- New this week (last 7 days): ${newThisWeek}
-- New last week (7–14 days ago): ${newLastWeek}
-- New this month (last 30 days): ${newThisMonth}
+- Total: ${leads.length}; Active: ${activeLeads.length}; Won: ${wonLeads.length}; Lost: ${lostLeads.length}
+- Conversion rate: ${conversionRate}%
+- Won revenue: ${currency} ${totalRevenue}
+- New last 7 days: ${newThisWeek}; previous 7 days: ${newLastWeek}; last 30 days: ${newThisMonth}
 - By stage: ${stageSummary}
-- Hot / active leads: ${hotLeadsList}
-- Most recently added leads: ${recentLeads}
-
-### Staff Performance (leads owned)
-- ${staffSummary}
+- Priority active leads:
+${hotLeads.length?hotLeads.map(leadLine).join('\n'):'none'}
+- Recently added:
+${recentLeads.length?recentLeads.map(leadLine).join('\n'):'none'}
 
 ### Tasks
-- Total tasks: ${tasks.length}
-- Open tasks: ${openTasks.length}
-- Overdue: ${overdueTasks.length}${overdueTasks.length?'\n- Overdue list: '+overdueTasks.map(t=>t.title||'(untitled)').slice(0,8).join(', '):''}
-- Tasks by team member: ${taskStaffSummary}
+- Total: ${tasks.length}; Open: ${openTasks.length}; Completed: ${doneTasks.length}; Due today: ${dueTodayTasks.length}; Overdue: ${overdueTasks.length}
+- Overdue tasks:
+${overdueTasks.length?overdueTasks.slice(0,20).map(taskLine).join('\n'):'none'}
+- Due today:
+${dueTodayTasks.length?dueTodayTasks.slice(0,20).map(taskLine).join('\n'):'none'}
+- Other open tasks:
+${openTasks.length?openTasks.slice(0,30).map(taskLine).join('\n'):'none'}
+
+### Team Performance
+- ${teamSummary}
 
 ### Follow-up Pipeline
-- Active follow-up entries: ${followups.length}`;
+- Active/recent follow-up entries: ${followups.length}`;
 
-  // Recent conversation for multi-turn context
   const hist=await env.DB.prepare(
     'SELECT role,content FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 10'
   ).bind(cid).all().catch(()=>({results:[]}));
   const prior=(hist.results||[]).reverse();
 
-  const sys=`You are an AI business assistant for "${c.client_name||'this business'}". You have access to a real-time snapshot of the business data below. Answer questions concisely and accurately. When asked for numbers, use the snapshot. Suggest next actions when relevant. Today is ${now.slice(0,10)}.
+  const sys=`You are the internal AI business assistant for "${c.client_name||'this business'}". Answer using ONLY the tenant-scoped live data below. Never invent names, counts, dates, owners, tasks, performance or revenue. If the requested detail is not present, say exactly what is unavailable. Understand natural questions about leads, individual lead status, tasks, overdue work, team workload, conversions, revenue, pipeline stages and comparisons between team members. For lists, use short bullets. For performance questions, explain both output and workload; do not rank someone with zero assigned data as poor. Today is ${today}.
 
 ${snapshot}`;
 
   let ctx='';
-  if(prior.length){
-    ctx='[Prior conversation]\n'+prior.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('\n')+'\n\n[New question]\n';
-  }
+  if(prior.length) ctx='[Prior conversation]\n'+prior.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('\n')+'\n\n[New question]\n';
 
-  // Save user message
   await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
-
-  const reply=await engineCallLlm(env, c, sys, ctx+userText, 500);
+  const reply=await engineCallLlm(env,c,sys,ctx+userText,900);
   const botText=reply||"I couldn't retrieve an answer right now. Please try again.";
-
   await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',botText,new Date().toISOString()).run().catch(()=>{});
-
   return json({reply:botText});
 }
 
