@@ -2496,10 +2496,12 @@ const ROLES = {
                 <div style="margin-bottom:12px;padding:10px 12px;background:var(--bg-soft);border-radius:8px;border:1px solid var(--line)">
                   <div style="font-weight:600;font-size:13px;margin-bottom:4px">⚡ Auto-detect from Chatwoot</div>
                   <div style="font-size:12px;color:var(--muted);margin-bottom:8px">If your Chatwoot version exposes inbox credentials (most self-hosted and cloud versions do), we can read them automatically — no copying needed.</div>
-                  <button class="save-btn" id="chAutoDetectBtn" onclick="autoDetectMetaCreds()">Auto-detect Credentials</button>
+                  <button class="save-btn" id="chAutoDetectBtn" onclick="autoDetectMetaCreds(Number($id('chManualInboxId').value)||null,this)">Auto-detect Selected Number</button>
                   <span class="save-msg" id="chAutoDetectMsg"></span>
                 </div>
                 <div style="font-size:11px;color:var(--muted);text-align:center;margin-bottom:8px">— or paste manually —</div>
+                <label class="form-label">WhatsApp Inbox / Number</label>
+                <select class="form-input" id="chManualInboxId" style="margin-bottom:8px"></select>
                 <label class="form-label">WhatsApp Business Account ID (WABA ID)</label>
                 <input class="form-input" id="chManualWabaId" type="text" placeholder="e.g. 123456789012345" style="margin-bottom:8px">
                 <label class="form-label">System User Access Token</label>
@@ -10869,6 +10871,11 @@ function renderChannelsPage(){
   $id('chManualWabaId').value=clientRecord.waba_id||'';
   $id('chManualWaToken').value='';
   $id('chManualWaPhoneId').value=clientRecord.wa_phone_id||'';
+  const manualInbox=$id('chManualInboxId');
+  if(manualInbox){
+    const whatsapp=(status.inboxes||[]).filter(ib=>ib.channel_type==='Channel::Whatsapp');
+    manualInbox.innerHTML=whatsapp.map(ib=>`<option value="${esc(ib.id)}"${String(ib.id)===String(clientRecord.chatwoot_inbox_id||'')?' selected':''}>${esc(ib.name)}${ib.phone_number?' — '+esc(ib.phone_number):''}</option>`).join('');
+  }
 
   $id('chOtherSection').style.display=hasAccount?'block':'none';
 
@@ -11720,11 +11727,12 @@ async function saveManualWaCreds(){
   const waba_id=$id('chManualWabaId').value.trim();
   const wa_token=$id('chManualWaToken').value.trim();
   const wa_phone_id=$id('chManualWaPhoneId').value.trim();
+  const inbox_id=$id('chManualInboxId')?.value||'';
   const btn=$id('chManualWaSaveBtn'), msg=$id('chManualWaMsg');
   if(!waba_id||!wa_token){ msg.textContent='WABA ID and access token are required.'; msg.className='save-msg err'; return; }
   btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/manual-meta-creds`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({waba_id,wa_token,wa_phone_id})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/whatsapp/manual-meta-creds`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({waba_id,wa_token,wa_phone_id,inbox_id})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
     Object.assign(clientRecord,{waba_id:d.waba_id,wa_phone_id:d.wa_phone_id||clientRecord.wa_phone_id,wa_token_connected:true});

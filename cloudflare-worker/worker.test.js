@@ -66,6 +66,7 @@ import {
   resolveMetaCredentials,
   metaCredentialFromInbox,
   metaCredentialSummary,
+  matchMetaPhoneNumber,
   safeClient,
   ltChatFlightIntent,
   ltNormalizeChatFlightRequest,
@@ -135,6 +136,12 @@ describe('per-channel Meta credential resolution',()=>{
     assert.equal(JSON.stringify(summary).includes('top-secret'),false);
     const wrapped=metaCredentialFromInbox({data:{payload:{id:12,phone_number:'+971500000000',channel:{provider_config:{business_account_id:'w2',phone_number_id:'p2',api_key:'another-secret'}}}}});
     assert.deepEqual(wrapped,{inbox_id:'12',waba_id:'w2',wa_token:'another-secret',wa_phone_id:'p2',display_phone:'+971500000000'});
+  });
+
+  test('matches a selected Chatwoot number to exactly one accessible Meta number',()=>{
+    const rows=[{id:'p1',display_phone_number:'+971 50 111 2222'},{id:'p2',display_phone_number:'+91 94969 71950'}];
+    assert.equal(matchMetaPhoneNumber('+91 94969-71950',rows)?.id,'p2');
+    assert.equal(matchMetaPhoneNumber('+1 555 123 4567',[{id:'a',display_phone_number:'+1 555 123 4567'},{id:'b',display_phone_number:'+1 555 123 4567'}]),null);
   });
 
   test('safe client payload never exposes global or per-channel tokens',()=>{

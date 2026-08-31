@@ -358,6 +358,42 @@ export function metaCredentialFromInbox(data, inboxId){
   const cfg=inbox?.provider_config||channel?.provider_config||channel?.channel_config||inbox?.channel_config||{};
   return {inbox_id:String(inboxId||inbox?.id||''),waba_id:String(cfg.business_account_id||cfg.waba_id||inbox?.business_account_id||'').trim(),wa_token:String(cfg.api_key||cfg.access_token||cfg.token||'').trim(),wa_phone_id:String(cfg.phone_number_id||inbox?.phone_number_id||'').trim(),display_phone:String(inbox?.phone_number||inbox?.name||'').trim()};
 }
+function metaPhoneDigits(value){ return String(value||'').replace(/\D/g,'').replace(/^00/,''); }
+export function matchMetaPhoneNumber(displayPhone,rows=[]){
+  const wanted=metaPhoneDigits(displayPhone);
+  if(!wanted) return null;
+  const exact=rows.filter(x=>metaPhoneDigits(x?.display_phone_number)===wanted);
+  if(exact.length===1) return exact[0];
+  // Formatting/country-prefix differences are common in Chatwoot. Use a long suffix only when
+  // it identifies exactly one accessible Meta number, so we never associate an ambiguous inbox.
+  const suffix=wanted.slice(-10);
+  const near=suffix.length>=8?rows.filter(x=>metaPhoneDigits(x?.display_phone_number).endsWith(suffix)||wanted.endsWith(metaPhoneDigits(x?.display_phone_number).slice(-10))):[];
+  return near.length===1?near[0]:null;
+}
+async function detectMetaCredentialFromAccessibleAccounts(env,c,inboxCredential){
+  if(!inboxCredential?.display_phone) return null;
+  const stored=parseMetaChannelCredentials(c);
+  const tokens=[inboxCredential.wa_token,...stored.map(x=>x.wa_token),c?.wa_token].filter((x,i,a)=>x&&a.indexOf(x)===i);
+  for(const token of tokens){
+    const wabaIds=new Set([inboxCredential.waba_id,...stored.map(x=>x.waba_id),c?.waba_id].filter(Boolean).map(String));
+    if(env.META_APP_ID&&env.META_APP_SECRET){
+      try{
+        const debugR=await fetch('https://graph.facebook.com/v18.0/debug_token',{method:'POST',headers:{Authorization:`Bearer ${env.META_APP_ID}|${env.META_APP_SECRET}`,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({input_token:token})});
+        const debug=await debugR.json().catch(()=>({}));
+        for(const scope of (debug?.data?.granular_scopes||[])) if(String(scope?.scope||'').includes('whatsapp_business')) for(const id of (scope.target_ids||[])) wabaIds.add(String(id));
+      }catch(e){}
+    }
+    for(const wabaId of wabaIds){
+      try{
+        const phoneR=await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(wabaId)}/phone_numbers?fields=id,display_phone_number&limit=100`,{headers:{Authorization:`Bearer ${token}`}});
+        if(!phoneR.ok) continue;
+        const match=matchMetaPhoneNumber(inboxCredential.display_phone,(await phoneR.json().catch(()=>({})))?.data||[]);
+        if(match?.id) return {...inboxCredential,waba_id:wabaId,wa_phone_id:String(match.id),wa_token:token,display_phone:match.display_phone_number||inboxCredential.display_phone};
+      }catch(e){}
+    }
+  }
+  return null;
+}
 async function resolveOrDetectMetaCredentials(env,c,clientId,selector={}){
   const existing=resolveMetaCredentials(c,selector);
   if(existing?.wa_token&&existing.wa_phone_id&&existing.waba_id) return existing;
@@ -366,7 +402,8 @@ async function resolveOrDetectMetaCredentials(env,c,clientId,selector={}){
   try{
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`,{headers:{api_access_token:c.chatwoot_token}});
     if(!r.ok) return existing;
-    const credential=metaCredentialFromInbox(await r.json().catch(()=>({})),inboxId);
+    let credential=metaCredentialFromInbox(await r.json().catch(()=>({})),inboxId);
+    if(!credential.wa_token||!credential.wa_phone_id||!credential.waba_id) credential=await detectMetaCredentialFromAccessibleAccounts(env,c,{...credential,...(existing||{}),display_phone:credential.display_phone||existing?.display_phone||''})||credential;
     if(!credential.wa_token||(!credential.wa_phone_id&&!credential.waba_id)) return existing;
     await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
     await patchClientFields(env,clientId,{[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))});
@@ -4093,8 +4130,9 @@ async function handleChannelsExtractMetaCreds(request, env){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.message||('Chatwoot API '+r.status)}, 502);
-  const credential=metaCredentialFromInbox(data,inboxId);
-  if(!credential.wa_token) return json({error:'Could not read Meta credentials from this Chatwoot inbox. Your Chatwoot version may not expose channel_config — use the manual credential form instead.'}, 400);
+  let credential=metaCredentialFromInbox(data,inboxId);
+  if(!credential.wa_token||!credential.wa_phone_id||!credential.waba_id) credential=await detectMetaCredentialFromAccessibleAccounts(env,c,credential)||credential;
+  if(!credential.wa_token||!credential.waba_id||!credential.wa_phone_id) return json({error:'Could not match this Chatwoot number to an accessible Meta WhatsApp account. Reconnect this number through Meta or save its credentials manually.'}, 400);
   await ensureClientColumns(env, [META_CHANNEL_CREDENTIALS_FIELD]);
   const existing=resolveMetaCredentials(c,{inbox_id:inboxId});
   const patch={[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))};
@@ -4107,10 +4145,17 @@ async function handleChannelsManualMetaCreds(request,env){
   const payload=await requireSession(request,env);
   if(!payload) return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({}));
-  const waba_id=String(body.waba_id||'').trim(),wa_token=String(body.wa_token||'').trim(),wa_phone_id=String(body.wa_phone_id||'').trim();
+  const waba_id=String(body.waba_id||'').trim(),wa_token=String(body.wa_token||'').trim(),wa_phone_id=String(body.wa_phone_id||'').trim(),inbox_id=String(body.inbox_id||'').trim();
   if(!waba_id||!wa_token) return json({error:'WABA ID and access token are required.'},400);
-  await patchClientFields(env,payload.cid,{waba_id,wa_token,...(wa_phone_id?{wa_phone_id}:{})});
-  return json({ok:true,waba_id,wa_phone_id,wa_token_connected:true});
+  const c=await getClientById(env,payload.cid);
+  const patch={};
+  if(inbox_id){
+    await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+    patch[META_CHANNEL_CREDENTIALS_FIELD]=JSON.stringify(mergeMetaChannelCredential(c,{inbox_id,waba_id,wa_token,wa_phone_id}));
+  }
+  if(!inbox_id||!c?.wa_token) Object.assign(patch,{waba_id,wa_token,...(wa_phone_id?{wa_phone_id}:{}),...(inbox_id?{chatwoot_inbox_id:inbox_id}:{})});
+  await patchClientFields(env,payload.cid,patch);
+  return json({ok:true,inbox_id,waba_id,wa_phone_id,wa_token_connected:true});
 }
 
 /* ── Instagram DM module (native — no Chatwoot) ────────────────────────────────────────────
