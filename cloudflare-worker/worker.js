@@ -11825,7 +11825,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers){
   await ltEnsureChatCheckoutSchema(env);
   const top=(offers||[]).filter(o=>o.bookable&&o.supplier_offer_id&&Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,5);
   if(!top.length)return;
-  const safe=top.map(o=>({fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||'').toUpperCase(),sessionId:o.raw?.sessionId||o.raw?.session_id||o.raw?.raw?.sessionId||'',airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'}));
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||'').toUpperCase(),sessionId:o.raw?.sessionId||o.raw?.session_id||o.raw?.raw?.sessionId||'',airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
   const now=new Date(),expires=new Date(now.getTime()+30*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
     VALUES (?,?,'select',?,NULL,NULL,?,?)
@@ -11864,11 +11864,18 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
   const input=String(text||'').trim();
   if(/^(cancel|stop|restart)$/i.test(input)){await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();return send('Booking collection cancelled.');}
   if(row.step==='select'){
-    const idx=Number(input)-1,offers=ltJson(row.offers_json,[]);
+    const words={first:0,one:0,second:1,two:1,third:2,three:2,fourth:3,four:3,fifth:4,five:4};
+    const word=Object.keys(words).find(k=>new RegExp(`\\b${k}\\b`,'i').test(input));
+    const number=input.match(/\b([1-5])\b/),idx=number?Number(number[1])-1:(word!=null?words[word]:-1),offers=ltJson(row.offers_json,[]);
     if(!Number.isInteger(idx)||idx<0||idx>=offers.length)return null;
     const selected=offers[idx];
+    if(!selected.fareId)return send('This fare cannot be booked because POOMAS did not return its booking ID. Please run the fare search again.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='passport',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
-    return send(`You selected ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''} — ${selected.currency} ${Number(selected.total).toFixed(2)}.\n\nPlease upload a clear photo of the passenger's passport identity page. I will extract only the booking fields and ask you to confirm them before creating the checkout link.`);
+    const duration=selected.duration?`${Math.floor(selected.duration/60)}h ${selected.duration%60}m`:'Not provided';
+    const cabinBag=selected.baggage?.cabin||selected.baggage?.cabinBaggage||'Not provided',checkedBag=selected.baggage?.checked||selected.baggage?.checkedBaggage||'Not provided';
+    const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'Not provided';
+    const arrive=selected.arrivalTime?new Date(selected.arrivalTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'Not provided';
+    return send(`Selected flight details:\n\nAirline: ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\nRoute: ${selected.origin||'—'} → ${selected.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${duration}\nStops: ${selected.stops===0?'Direct':selected.stops}\nCabin: ${String(selected.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}${selected.seatsLeft!=null?`\nSeats left: ${selected.seatsLeft}`:''}\n\nPlease upload a clear photo of the passenger's passport identity page. I will extract the booking fields and ask you to confirm them before creating the prefilled checkout link.`);
   }
   if(row.step==='passport'){
     if(mediaType!=='image'||!mediaUrl)return send('Please upload a clear photo of the passport identity page.');
@@ -25876,7 +25883,7 @@ export function ltNormalizeOffer(supplier,raw,ctx={}){
     const fareId=ltOfferFareId(raw);
     const total=ltMoney(raw?.displayPrice??raw?.totalFare??0);
     const checkoutBase=String(ctx.checkout_base||'https://flypoomas.com');
-    const checkoutUrl=isBook?`${checkoutBase}/book?fareId=${encodeURIComponent(fareId)}&supplier=${encodeURIComponent(String(raw?.supplier||''))}&source=leadvyne&client=${encodeURIComponent(String(ctx.client_id||''))}`:null;
+    const checkoutUrl=isBook&&fareId?`${checkoutBase}/book?fareId=${encodeURIComponent(fareId)}&supplier=${encodeURIComponent(String(raw?.supplier||''))}&source=leadvyne&client=${encodeURIComponent(String(ctx.client_id||''))}`:null;
     return {
       supplier:'poomas',supplier_offer_id:fareId,
       bookable:isBook,validating:false,validating_supplier:'',
