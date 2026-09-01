@@ -11822,7 +11822,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers){
 }
 function ltMaskPassport(v){const s=String(v||'');return s.length>4?'•'.repeat(Math.min(6,s.length-4))+s.slice(-4):s;}
 function ltJsonFromModel(text){
-  try{return JSON.parse(String(text||'').replace(/^\\s*```(?:json)?/i,'').replace(/```\\s*$/,'').trim())}catch{return null}
+  try{return JSON.parse(String(text||'').replace(/^\s*```(?:json)?/i,'').replace(/```\s*$/,'').trim())}catch{return null}
 }
 async function ltExtractPassport(env,mediaUrl){
   if(!env.GEMINI_API_KEY||!mediaUrl)return null;
@@ -11842,7 +11842,7 @@ async function ltExtractPassport(env,mediaUrl){
 function ltCheckoutFragment(data){
   const bytes=new TextEncoder().encode(JSON.stringify(data));
   let raw=''; for(const b of bytes)raw+=String.fromCharCode(b);
-  return btoa(raw).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');
+  return btoa(raw).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,mediaUrl){
   await ltEnsureChatCheckoutSchema(env);
@@ -11856,31 +11856,31 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     if(!Number.isInteger(idx)||idx<0||idx>=offers.length)return null;
     const selected=offers[idx];
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='passport',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
-    return send(`You selected ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''} — ${selected.currency} ${Number(selected.total).toFixed(2)}.\\n\\nPlease upload a clear photo of the passenger's passport identity page. I will extract only the booking fields and ask you to confirm them before creating the checkout link.`);
+    return send(`You selected ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''} — ${selected.currency} ${Number(selected.total).toFixed(2)}.\n\nPlease upload a clear photo of the passenger's passport identity page. I will extract only the booking fields and ask you to confirm them before creating the checkout link.`);
   }
   if(row.step==='passport'){
     if(mediaType!=='image'||!mediaUrl)return send('Please upload a clear photo of the passport identity page.');
     const p=await ltExtractPassport(env,mediaUrl);
     if(!p)return send('I could not read all required passport fields safely. Please send a clearer, uncropped passport identity-page photo.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='confirm',passenger_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(p),new Date().toISOString(),Number(clientId),String(phone)).run();
-    return send(`Please confirm these passenger details:\\n\\nName: ${p.firstName} ${p.lastName}\\nDate of birth: ${p.dob}\\nGender: ${p.gender}\\nNationality: ${p.nationality}\\nPassport: ${ltMaskPassport(p.passportNumber)}\\nPassport expiry: ${p.passportExpiry}\\n\\nReply YES only if these exactly match the passport, or CANCEL to stop.`);
+    return send(`Please confirm these passenger details:\n\nName: ${p.firstName} ${p.lastName}\nDate of birth: ${p.dob}\nGender: ${p.gender}\nNationality: ${p.nationality}\nPassport: ${ltMaskPassport(p.passportNumber)}\nPassport expiry: ${p.passportExpiry}\n\nReply YES only if these exactly match the passport, or CANCEL to stop.`);
   }
   if(row.step==='confirm'){
     if(!/^(yes|y|confirm|correct)$/i.test(input))return send('Please reply YES if every detail is correct, or CANCEL to stop and resend the passport.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='contact',updated_at=? WHERE client_id=? AND phone=?`).bind(new Date().toISOString(),Number(clientId),String(phone)).run();
-    return send('Please send the contact email and mobile number in one message.\\nExample: name@example.com, +971501234567');
+    return send('Please send the contact email and mobile number in one message.\nExample: name@example.com, +971501234567');
   }
   if(row.step==='contact'){
-    const email=(input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i)||[])[0]||'';
-    const nums=(input.match(/\\+?\\d[\\d\\s()-]{7,}\\d/g)||[]).map(x=>x.replace(/[^\\d+]/g,''));
+    const email=(input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[])[0]||'';
+    const nums=(input.match(/\+?\d[\d\s()-]{7,}\d/g)||[]).map(x=>x.replace(/[^\d+]/g,''));
     const mobile=nums[0]||'';
-    if(!email||mobile.replace(/\\D/g,'').length<8)return send('Please send both a valid email and mobile number.\\nExample: name@example.com, +971501234567');
+    if(!email||mobile.replace(/\D/g,'').length<8)return send('Please send both a valid email and mobile number.\nExample: name@example.com, +971501234567');
     const offer=ltJson(row.selected_offer_json,{}),passenger=ltJson(row.passenger_json,{});
     const prefill=ltCheckoutFragment({passengers:[{type:'ADULT',...passenger}],email,mobile});
-    const base=String(offer.checkoutBase||'https://flypoomas.com').replace(/\\/$/,'');
+    const base=String(offer.checkoutBase||'https://flypoomas.com').replace(/\/$/,'');
     const url=`${base}/book?fareId=${encodeURIComponent(offer.fareId||'')}&supplier=${encodeURIComponent(offer.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}#prefill=${prefill}`;
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
-    return send(`Your passenger and contact details are ready. Review them on POOMAS before payment:\\n\\n${url}\\n\\nFor security, payment details are entered only on the POOMAS checkout page.`);
+    return send(`Your passenger and contact details are ready. Review them on POOMAS before payment:\n\n${url}\n\nFor security, payment details are entered only on the POOMAS checkout page.`);
   }
   return null;
 }
