@@ -17037,7 +17037,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     return `${msg}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
-  const sendProfiles=async (profileType)=>{
+  const sendProfiles=async (profileType,profileRef=null)=>{
     // Activation gate — check if this phone has been granted profile-view access
     let activated=null;
     try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
@@ -17101,6 +17101,10 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
       extraWhere+=' AND (CAST(COALESCE(age,0) AS INTEGER)>0 AND CAST(age AS INTEGER)<=?)';
       extraParams.push(maxAge);
     }
+    if(profileRef){
+      extraWhere+=' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,\'\'))=LOWER(?))';
+      extraParams.push(String(profileRef),String(profileRef));
+    }
     let rows;
     try{
       rows=await env.DB.prepare(
@@ -17158,6 +17162,38 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send(buildWelcome());
     return {handled:true,step:'menu'};
+  }
+
+  // Direct serial/profile-number lookup. The visible profile serial is the saved
+  // row ID; lead_id is also accepted when imports use their own reference.
+  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile(?:\s*(?:id|no|number))?|#)\s*[:#-]?\s*([a-z0-9_-]+)/i);
+  if(serialMatch){
+    const ref=serialMatch[1];
+    let exact=null;
+    try{ exact=await env.DB.prepare("SELECT profile_type FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1").bind(String(clientId),String(ref),String(ref)).first(); }catch(e){}
+    if(exact){
+      await setState({menu_state:'viewing_profiles',profile_type:exact.profile_type,sent_ids:'[]',city_filter:null,max_age:null});
+      await send(`Searching profile *${ref}*…`);
+      return await sendProfiles(exact.profile_type,ref);
+    }
+    await send(`📭 No active Matrimony Profile found for serial/reference *${ref}*.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  // A complete natural-language request should search immediately instead of
+  // asking again for gender, city, or age already provided by the customer.
+  const directType=/\bbrides?\b/i.test(text)?'bride':(/\bgrooms?\b/i.test(text)?'groom':null);
+  if(directType&&/\b(show|view|see|browse|find|search|give|send)\b/i.test(text)){
+    const directAge=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const directCity=text.match(/\b(?:in|from)\s+([a-z][a-z .'-]{1,40}?)(?=\s+(?:under|below|max(?:imum)?|up\s*to)\b|[,.!?]|$)/i);
+    const age=directAge?parseInt(directAge[1],10):null;
+    const city=directCity?directCity[1].trim():null;
+    await setState({menu_state:'viewing_profiles',profile_type:directType,sent_ids:'[]',city_filter:city,max_age:age});
+    const filters=[];
+    if(city) filters.push(`📍 ${city}`);
+    if(age) filters.push(`🎂 Under ${age}`);
+    await send(`Searching *${directType}* profiles${filters.length?' — '+filters.join(', '):''}…`);
+    return await sendProfiles(directType);
   }
 
   // Natural-language phrase matching — treat as keyword "1" (view profiles)
