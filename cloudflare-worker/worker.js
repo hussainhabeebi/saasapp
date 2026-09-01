@@ -17153,9 +17153,9 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let activated=null;
     try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
     if(!activated){
-      await send(`⚠️ Your number is not activated for profile viewing.\n\nReply *${kwSubscribe}* to get a *Free Subscription* and start browsing profiles instantly! 🎁`);
-      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
-      return {handled:true,step:'not_activated'};
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('⚠️ Your number is not yet activated for profile viewing.\n\n🎁 *Get a Free Subscription instantly — no payment needed!*\n\nWhat is your *name*? (We\'ll activate your account right away)');
+      return {handled:true,step:'not_activated_auto_subscribe'};
     }
     if(activated.status!=='active'){
       await send(`⚠️ Your profile view access has been *${activated.status}*.\n\nPlease contact us for assistance.`);
