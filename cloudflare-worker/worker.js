@@ -17282,7 +17282,8 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   // "Profile number" without a number starts the serial-number lookup flow.
   const asksForProfileNumber=/\b(?:profile|serial)\s*(?:id|no|number)\b/i.test(text);
-  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile\s*(?:id|no|number)|#)\s*[:#-]?\s*["']?([a-z0-9_-]+)["']?/i)||text.match(/\b(?:looking\s+for|find|show\s+me)\s+(?:profile\s*)?["']?#?(\d+)["']?/i);
+  // Matches: "serial 001", "profile id 5", "profile number 209", "profile 209", "#209", "show me profile 5"
+  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile\s*(?:id|no|number)?|#)\s*[:#-]?\s*["']?([a-z0-9_-]+)["']?/i)||text.match(/\b(?:looking\s+for|find|show\s+me)\s+(?:profile\s*)?["']?#?(\d+)["']?/i);
   if(asksForProfileNumber&&!serialMatch){
     await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send('Please type the *profile serial number*.');
@@ -17401,6 +17402,14 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   }
 
   if(menuState==='asked_city'){
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nWhich district or city? (or reply *all*)`);
+      return {handled:true,step:'serial_not_found_city'};
+    }
     const cityInput=/^all$/i.test(text)?null:text.trim();
     await setState({menu_state:'asked_age',city_filter:cityInput});
     await send('Maximum age? (e.g. *25*)\n\nOr reply *any* for no age limit.');
@@ -17408,7 +17417,15 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   }
 
   if(menuState==='asked_age'){
-    const ageInput=/^any$/i.test(text)?null:(parseInt(text)||null);
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nMaximum age? (or reply *any*)`);
+      return {handled:true,step:'serial_not_found_age'};
+    }
+    const ageInput=/^(?:any|no\s*(?:age\s*)?limit)$/i.test(text)?null:(parseInt(text)||null);
     await setState({menu_state:'viewing_profiles',max_age:ageInput});
     const cityLabel=st.city_filter||null;
     const filterLine=[];
