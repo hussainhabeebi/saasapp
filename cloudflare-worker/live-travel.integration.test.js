@@ -12,7 +12,7 @@ class D1Statement {
   async all(){return {results:this.db.prepare(this.sql).all(...this.args)};}
 }
 class D1Database {
-  constructor(){this.db=new DatabaseSync(':memory:');this.db.exec(readFileSync(new URL('./migrations/0069_live_travel_agency.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0070_live_travel_client_credentials.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0074_live_travel_credentials_reapply.sql',import.meta.url),'utf8'));}
+  constructor(){this.db=new DatabaseSync(':memory:');this.db.exec(readFileSync(new URL('./migrations/0069_live_travel_agency.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0070_live_travel_client_credentials.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0074_live_travel_credentials_reapply.sql',import.meta.url),'utf8'));this.db.exec(readFileSync(new URL('./migrations/0080_live_travel_poomas.sql',import.meta.url),'utf8'));}
   prepare(sql){return new D1Statement(this.db,sql);}
   async batch(statements){return Promise.all(statements.map(statement=>statement.run()));}
 }
