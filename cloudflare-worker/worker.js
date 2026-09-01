@@ -25806,7 +25806,7 @@ async function ltFetchJson(url,options={},timeoutMs=25000){
   try{
     const r=await fetch(url,{...options,signal:ctl.signal});
     const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data?.error?.message||data?.message||`HTTP ${r.status}`);
+    if(!r.ok) throw new Error((typeof data?.error==='string'?data.error:data?.error?.message)||data?.message||`HTTP ${r.status}`);
     return data;
   }finally{clearTimeout(timer);}
 }
@@ -25825,13 +25825,17 @@ async function ltSupplierSearch(config,input,env=null){
     return ltFetchJson(`${config.endpoints.search||'https://serpapi.com/search.json'}?${q}`);
   }
   if(supplier==='poomas'){
-    if(!env?.POOMAS_INTEGRATION_KEY)throw new Error('POOMAS integration key is not configured on this deployment.');
+    // Official POOMAS platform API contract: POST /api/search with X-API-Key.
+    // Keep POOMAS_INTEGRATION_KEY as a temporary fallback so existing deployments
+    // can migrate their secret name without downtime.
+    const apiKey=env?.POOMAS_API_KEY||env?.POOMAS_INTEGRATION_KEY;
+    if(!apiKey)throw new Error('POOMAS_API_KEY is not configured on this deployment.');
     const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(config.client_id).first();
     const apiBase=(poomasRow?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
-    const currency=['AED','INR','USD','SAR','EUR','GBP'].includes(input.currency)?input.currency:'AED';
+    const currency=['AED','INR','USD'].includes(input.currency)?input.currency:'AED';
     const payload={origin:input.origin,destination:input.destination,departureDate:input.departure_date,adults:input.adults,children:input.children,infants:input.infants,cabinClass:input.cabin.toUpperCase(),tripType:input.trip_type==='round_trip'?'ROUNDTRIP':'ONEWAY',currency};
     if(input.return_date)payload.returnDate=input.return_date;
-    return ltFetchJson(`${apiBase}/api/integrations/v1/flights/search`,{method:'POST',headers:{'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(payload)});
+    return ltFetchJson(`${apiBase}/api/search`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':apiKey,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(payload)});
   }
   return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
 }
