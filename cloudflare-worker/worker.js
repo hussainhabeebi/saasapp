@@ -17164,20 +17164,85 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     return {handled:true,step:'menu'};
   }
 
-  // Direct serial/profile-number lookup. The visible profile serial is the saved
-  // row ID; lead_id is also accepted when imports use their own reference.
+  const findProfileBySerial=async (ref)=>{
+    try{
+      return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
+        .bind(String(clientId),String(ref),String(ref)).first();
+    }catch(e){ return null; }
+  };
+  const askProfileConfirmation=async (profile)=>{
+    await setState({menu_state:'awaiting_profile_confirmation',profile_type:profile.profile_type,sent_ids:JSON.stringify([profile.id]),city_filter:null,max_age:null});
+    const place=profile.city||profile.district||profile.state||'—';
+    await send(`Please confirm this is the profile you mean:\n\nName: *${profile.full_name||'—'}*\nPlace: *${place}*\nFather's name: *${profile.father_name||'—'}*\n\nIs this the correct person? Reply *Yes* or *No*.`);
+    return {handled:true,step:'profile_confirmation'};
+  };
+
+  // "Profile number" without a number starts the serial-number lookup flow.
+  const asksForProfileNumber=/\b(?:profile|serial)\s*(?:id|no|number)\b/i.test(text);
   const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile(?:\s*(?:id|no|number))?|#)\s*[:#-]?\s*([a-z0-9_-]+)/i);
+  if(asksForProfileNumber&&!serialMatch){
+    await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('Please type the *profile serial number*.');
+    return {handled:true,step:'asked_profile_serial'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_serial'){
+    const ref=text.replace(/^#\s*/,'').trim();
+    const exact=ref?await findProfileBySerial(ref):null;
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref||text}*.\n\nPlease check the number and type it again.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  // A serial supplied in the first message goes straight to identity confirmation.
   if(serialMatch){
     const ref=serialMatch[1];
-    let exact=null;
-    try{ exact=await env.DB.prepare("SELECT profile_type FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1").bind(String(clientId),String(ref),String(ref)).first(); }catch(e){}
-    if(exact){
-      await setState({menu_state:'viewing_profiles',profile_type:exact.profile_type,sent_ids:'[]',city_filter:null,max_age:null});
-      await send(`Searching profile *${ref}*…`);
-      return await sendProfiles(exact.profile_type,ref);
-    }
-    await send(`📭 No active Matrimony Profile found for serial/reference *${ref}*.`);
+    const exact=await findProfileBySerial(ref);
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref}*.`);
     return {handled:true,step:'serial_not_found'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_confirmation'){
+    let pendingIds=[];
+    try{ pendingIds=JSON.parse(st.sent_ids||'[]'); }catch(e){}
+    const yes=/^(?:y|yes|ok|okay|correct|confirm|അതെ|ഓക്കെ|ശരി)[.!\s]*$/i.test(text);
+    const no=/^(?:n|no|wrong|not this|അല്ല)[.!\s]*$/i.test(text);
+    if(no){
+      await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]'});
+      await send('Okay. Please type the correct *profile serial number*.');
+      return {handled:true,step:'profile_rejected'};
+    }
+    if(!yes){
+      await send('Please reply *Yes* if this is the correct person, or *No* to enter another serial number.');
+      return {handled:true,step:'profile_confirmation_reprompt'};
+    }
+
+    const profileId=parseInt(pendingIds[0],10);
+    let profile=null,access=null;
+    try{
+      profile=await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND id=? AND status='active'").bind(String(clientId),profileId).first();
+      access=await env.DB.prepare("SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?").bind(String(clientId),String(phone)).first();
+    }catch(e){}
+    const today=new Date().toISOString().slice(0,10);
+    const permitted=access&&access.status==='active'&&(!access.expiry_date||access.expiry_date>=today)&&(access.can_view==='both'||access.can_view===profile?.profile_type);
+    if(!permitted){
+      await send('⚠️ Your number is not activated to receive this profile’s contact details. Please contact our team for access.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'contact_access_denied'};
+    }
+    if(!profile){
+      await send('📭 This profile is no longer available.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'profile_unavailable'};
+    }
+    const contacts=[];
+    if(profile.phone) contacts.push(`Personal number: *${profile.phone}*`);
+    if(profile.guardian_phone) contacts.push(`Guardian number: *${profile.guardian_phone}*`);
+    if(profile.whatsapp) contacts.push(`WhatsApp number: *${profile.whatsapp}*`);
+    await send(contacts.length?`✅ Contact details for *${profile.full_name}*:\n\n${contacts.join('\n')}`:'ℹ️ No contact numbers are saved for this profile.');
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    return {handled:true,step:'profile_contacts_sent'};
   }
 
   // A complete natural-language request should search immediately instead of
