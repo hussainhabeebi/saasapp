@@ -693,20 +693,52 @@ async function provisionNewClientRecord(env, email){
   if(!rec||!rec.Id) return {error:'Account created but could not be read back — try logging in again.', status:502};
   return {rec};
 }
-// Best-effort notification to the external n8n onboarding webhook, in case it does anything
-// beyond creating the CLIENTS row that isn't visible from this repo (SETUP.md "Conversation
-// Engine" — most industries no longer need the per-client bot workflow it used to provision, but
-// this stays a safety net until that's confirmed dead for every client). Bounded by
-// fetchWithTimeout so a slow/dead webhook can never hold up the login response the row and
-// session_token already exist regardless. Its own passcode is a Worker secret
-// (ONBOARD_WEBHOOK_PASSCODE), never sent to or stored in the browser.
+// Dual-path onboarding: runs both the legacy n8n webhook and the new inline path in parallel.
+// Both are best-effort — a failure in either never blocks the signup response.
+// Set DISABLE_N8N_ONBOARD=true to stop the n8n call once the inline path is confirmed sufficient.
 async function notifyOnboardWebhook(env, rec, email){
+  await Promise.allSettled([
+    notifyOnboardN8n(env, rec, email),
+    runInlineOnboarding(env, rec, email),
+  ]);
+}
+
+// OLD PATH — legacy n8n webhook. Kept as a safety net for anything n8n does that isn't visible
+// from this repo. Set DISABLE_N8N_ONBOARD=true to disable once inline path is confirmed complete.
+async function notifyOnboardN8n(env, rec, email){
+  if(env.DISABLE_N8N_ONBOARD==='true') return;
   try{
     await fetchWithTimeout('https://apps.leadvyne.com/webhook/leadvyne-onboard', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({passcode:env.ONBOARD_WEBHOOK_PASSCODE||'', client_name:rec.client_name, authentik_email:email, language:'en', industry:'general'}),
     }, 8000);
-  }catch(e){ /* best-effort — the account already exists and has a session regardless */ }
+  }catch(e){ /* best-effort */ }
+}
+
+// NEW PATH — inline onboarding logic, runs directly in the Worker without any n8n dependency.
+// Covers: welcome email (Resend) + ops Slack alert. Grows to replace n8n entirely over time.
+async function runInlineOnboarding(env, rec, email){
+  try{
+    // 1. Ops Slack alert — notify the team that a new client signed up.
+    if(env.OPS_ALERT_WEBHOOK_URL){
+      await fetch(env.OPS_ALERT_WEBHOOK_URL, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({text:`New signup: *${rec.client_name||email}* (${email}) — client_id ${rec.Id}`}),
+      }).catch(()=>{});
+    }
+    // 2. Welcome email via Resend — only if key is configured.
+    if(env.RESEND_API_KEY){
+      const from=env.RESEND_FROM_EMAIL||'Leadvyne <team@leadvyne.com>';
+      const loginUrl=(env.APP_BASE_URL||'https://app.leadvyne.com').replace(/\/$/,'');
+      const bodyHtml=`<p>Hi ${esc(rec.client_name||'there')},</p>
+<p>Your Leadvyne account is ready. Sign in to get started.</p>`;
+      await fetch('https://api.resend.com/emails',{
+        method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+        body:JSON.stringify({from, to:[email], subject:'Welcome to Leadvyne — your account is ready',
+          html:renderBillingEmailHtml({heading:'Welcome to Leadvyne',bodyHtml,ctaLabel:'Open Dashboard',ctaUrl:loginUrl})})
+      }).catch(()=>{});
+    }
+  }catch(e){ /* best-effort */ }
 }
 // /session/exchange now provisions a brand-new account inline (see handleSessionExchange), so
 // this route is no longer on the primary login path — dashboard.html doesn't call it anymore.
