@@ -8060,10 +8060,10 @@ async function eduAdmissionPrompt(env,c,clientId,convId,app,extra){
       text='✅ *Step 8 of 8 · Confirm Application*\n\n• 👤 '+(app.full_name||'—')+'\n• 📘 '+(course?.name||'—')+'\n• 🎓 '+(app.qualification||'—')+'\n• 🖥️ '+(app.study_mode||'—')+'\n• 💳 '+(app.payment_option||'—');
       options=eduAdmissionOptions([['✅ Submit Application','Submit Application'],['✏️ Edit Details','Edit Details'],['❓ Ask a Question','Ask another question']]); break;
     }
-    if(extra) text=extra+'\n\n'+text;
-    await eduAdmissionSend(env,c,clientId,convId,text,options);
-    return {handled:true,step:app.current_step};
   }
+  if(extra) text=extra+'\n\n'+text;
+  await eduAdmissionSend(env,c,clientId,convId,text,options);
+  return {handled:true,step:app.current_step};
 }
 async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
   const now=new Date().toISOString();
