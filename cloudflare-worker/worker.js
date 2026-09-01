@@ -11905,9 +11905,9 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
 }
 
 export function ltFormatChatOffers(offers){
-  const top=(offers||[]).filter(o=>o.bookable&&o.supplier_offer_id&&Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
-  if(!top.length) return 'I checked the live ticketing system, but no directly bookable fares were returned for that route and date. Please try another date or nearby airport.';
-  const lines=['Here are the 3 best bookable live flight options:'];
+  const top=(offers||[]).filter(o=>Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+  if(!top.length) return 'I checked the live ticketing system, but no fares were returned for that route and date. Please try another date or nearby airport.';
+  const lines=['Here are the 3 best live flight options:'];
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
     const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
@@ -11915,9 +11915,10 @@ export function ltFormatChatOffers(offers){
     const arrive=leg.arrivalTime?new Date(leg.arrivalTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'Not provided';
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
-    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}\nRoute: ${leg.origin||'—'} → ${leg.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${durationText}\nStops: ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)}\nCabin: ${String(o.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}\nFare: ${o.currency} ${Number(o.total_amount).toFixed(2)}`;
-    if(o.seats_left!=null)line+=`\nSeats left: ${o.seats_left}`;
-    line+=`\nReply ${i+1} or “book ${i===0?'first':i===1?'second':'third'}” to select this fare.`;
+    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}\nRoute: ${leg.origin||'—'} → ${leg.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${durationText}\nStops: ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)}\nCabin: ${String(o.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}`;
+    if(o.seats_left!=null)line+=`\n${o.seats_left} seat(s) left`;
+    if(o.bookable&&o.supplier_offer_id)line+=`\nReply ${i+1} or “book ${i===0?'first':i===1?'second':'third'}” to select this fare.`;
+    else if(o.checkout_url)line+=`\nBook: ${o.checkout_url}`;
     lines.push(line);
   });
   lines.push('Live fares can change until checkout is completed.');
