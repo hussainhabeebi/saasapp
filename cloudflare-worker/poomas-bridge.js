@@ -88,6 +88,22 @@ export default {async fetch(req,env){
       if(!r.ok)throw new Error(d.error||d.message||`POOMAS search failed (${r.status})`);
       return json({provider:'poomas',offers:(d.fares||d.data?.fares||[]).map(f=>normalizePoomasFare(f,s,a.clientId)),usedSuppliers:d.usedSuppliers||[],supplierErrors:d.supplierErrors||{}},200,origin);
     }
+    // POST /checkout-session — exchange passenger PII for a short-lived opaque Poomas link
+    if(u.pathname==='/checkout-session'&&req.method==='POST'){
+      const s=await enabledSetting(env,a.clientId);
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on Leadvyne'},503,origin);
+      const b=await req.json().catch(()=>({}));
+      const fareId=String(b.fare_id||b.fareId||'').trim();
+      const supplier=String(b.poomas_supplier||b.supplier||'').trim().toUpperCase();
+      const passengers=Array.isArray(b.passengers)?b.passengers:[];
+      const contact=b.contact||{email:b.contact_email||b.email,mobile:b.contact_phone||b.mobile||b.phone};
+      if(!fareId||!supplier)return json({error:'fareId and supplier are required'},400,origin);
+      if(!passengers.length)return json({error:'At least one passenger is required'},400,origin);
+      const r=await fetch(`${s.api_base||POOMAS_API}/api/integrations/checkout-sessions`,{method:'POST',headers:integrationHeaders(env),body:JSON.stringify({fareId,supplier,passengers,contact,source:'leadvyne',clientId:a.clientId})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok)return json({error:d.error||d.message||`POOMAS checkout session failed (${r.status})`},r.status,origin);
+      return json({provider:'poomas',...d},201,origin);
+    }
     // POST /hold — hold a POOMAS fare
     if(u.pathname==='/hold'&&req.method==='POST'){
       const s=await enabledSetting(env,a.clientId);
