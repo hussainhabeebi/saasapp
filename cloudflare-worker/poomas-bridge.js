@@ -36,6 +36,13 @@ async function ensureDb(env){await env.DB.prepare(`CREATE TABLE IF NOT EXISTS li
 async function setting(env,cid){await ensureDb(env);return await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(cid).first();}
 async function enabledSetting(env,cid){const s=await setting(env,cid);if(!s||!s.enabled)throw new Error('POOMAS API is not enabled for this client.');return s;}
 function integrationHeaders(env){return {'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY||'','x-tenant-slug':'poomas','X-Channel':'LEADVYNE'};}
+function exactRouteFare(f,origin,destination){
+  const fareOrigin=String(f?.origin||f?.from||f?.departureAirport||f?.segments?.[0]?.origin||'').trim().toUpperCase();
+  const segments=Array.isArray(f?.segments)?f.segments:[];
+  const lastSegment=segments.length?segments[segments.length-1]:null;
+  const fareDestination=String(f?.destination||f?.to||f?.arrivalAirport||lastSegment?.destination||'').trim().toUpperCase();
+  return fareOrigin===String(origin||'').trim().toUpperCase()&&fareDestination===String(destination||'').trim().toUpperCase();
+}
 function normalizePoomasFare(f,s,clientId){
   const total=Number(f.displayPrice??f.totalFare??0);
   const isBook=Boolean(f.isBookable);
@@ -86,7 +93,8 @@ export default {async fetch(req,env){
       const r=await fetch(`${s.api_base||POOMAS_API}/api/integrations/v1/flights/search`,{method:'POST',headers:integrationHeaders(env),body:JSON.stringify(payload)});
       const d=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(d.error||d.message||`POOMAS search failed (${r.status})`);
-      return json({provider:'poomas',offers:(d.fares||d.data?.fares||[]).map(f=>normalizePoomasFare(f,s,a.clientId)),usedSuppliers:d.usedSuppliers||[],supplierErrors:d.supplierErrors||{}},200,origin);
+      const allFares=d.fares||d.data?.fares||[],exactFares=allFares.filter(f=>exactRouteFare(f,payload.origin,payload.destination));
+      return json({provider:'poomas',offers:exactFares.map(f=>normalizePoomasFare(f,s,a.clientId)),usedSuppliers:d.usedSuppliers||[],supplierErrors:d.supplierErrors||{},exactRouteOnly:true,rejectedRouteMismatches:allFares.length-exactFares.length},200,origin);
     }
     // POST /checkout-session — exchange passenger PII for a short-lived opaque Poomas link
     if(u.pathname==='/checkout-session'&&req.method==='POST'){
