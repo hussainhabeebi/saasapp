@@ -8705,6 +8705,11 @@ function escapeRegexLiteral(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, 
 // "it's a deal", "on sale of my old car") in favor of phrases that only really come up when
 // someone's asking a shop about a promotion.
 const ECOM_PROMO_KEYWORD_RE=/\b(promo\s*code|promocode|coupon\s*code|discount\s*code|any\s+offers?|any\s+discounts?|any\s+promo|current\s+offers?|ongoing\s+offers?|special\s+offers?)\b/i;
+// Explicit re-send requests that bypass the 5-hour tier gate and deliver only
+// what the customer asked for (primary image OR Shopify link), without
+// advancing the progressive-disclosure counter.
+const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photo|image|pic|picture)|send\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|show\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|photo\s+again|image\s+again|pic\s+again)\b/i;
+const ECOM_RESEND_LINK_RE=/\b(re[-\s]?send\s*(the\s+)?(link|url)|send\s*(me\s+)?(the\s+)?(link|url|product\s*link|shopify\s*link)|link\s+again|url\s+again)\b/i;
 
 /* ── PROMOTIONS & OFFERS engine hook (migrations/0045_ecom_promotions.sql) ──────────────────
    Two ways a customer's message triggers a reply:
@@ -8804,8 +8809,8 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
    it). Previously gated on the customer's wording matching ECOM_PRODUCT_DETAILS_KEYWORD_RE
    ("more details", "full description", etc.) with no dedup at all; per explicit product
    direction this now sends whenever any product is confidently matched (same trigger as the
-   photo), capped to once per (lead, product, calendar day) by the caller passing the same
-   engineClaimProductImageForToday claim (sendProductImage) the photo/media bundle already uses.
+   photo), capped to once per 5-hour window by the caller's engineClaimProductSend tier-1
+   claim (sendProductImage===true) that the photo/media bundle already uses.
    Called right before engineMaybeSendProductMedia at each order-detection branch in
    handleEngineWebhook, so the customer sees description → extra images → audio → video,
    in that order, as one bundle. */
@@ -9319,29 +9324,85 @@ async function ecomDetectMentionedCategories(env, clientId, replyText){
 // Drive-fetch path. Best-effort: a missing/unshared Drive link for any of the three just skips that
 // one send, never blocks or fails the product reply that already went out above it.
 //
-// Per-day-per-product dedup (migrations/0055_ecom_product_image_sent.sql) — observed real
-// complaint: a customer asking about the same product several times in one day (re-confirming
-// size, coming back to it later, etc.) got the full photo/extra-angle/audio/video/PDF bundle
-// resent every single time, which reads as spammy on WhatsApp. engineClaimProductImageForToday
-// below is called once per turn, right before deciding whether to attach the inline photo AND
-// before calling engineMaybeSendProductMedia — both are gated by the same claim so the whole
-// bundle is either sent together (first ask that day) or skipped together (a repeat ask), leaving
-// the text answer itself unaffected either way. The `sent_date` column (not "ever", unlike
-// ecom_testimonial_sent's identical shape) means the SAME product photo/media happily sends again
-// tomorrow — only same-day repeats are being avoided. `leadId` is `state.leadId`, the lead as
-// loaded at the START of this turn (before this turn's own upsert) — a brand-new lead has no id
-// yet at that point, so this always returns true (send) for a lead's very first-ever message,
-// since there is nothing to have already sent. INSERT OR IGNORE + checking meta.changes (rather
-// than a separate SELECT-then-INSERT) is the same atomic single-write claim idiom already used for
-// inbound-message dedup above (engine_processed_messages) — one D1 round trip, not two.
-async function engineClaimProductImageForToday(env, clientId, leadId, productId){
-  if(!leadId || !productId) return true;
+// Progressive-disclosure tier tracker (migrations/0084_ecom_product_image_sent_send_count.sql).
+// Replaces the old per-calendar-day binary claim with a 5-hour rolling window and a send_count
+// that drives three tiers for Shopify products:
+//   tier 1 (first ask in window)  — full bundle: primary image + description + all media
+//   tier 2 (second ask in window) — 1 random extra angle + description + Shopify link
+//   tier 3+ (third+ ask in window)— 1 random extra angle + audio + Shopify link
+// Non-Shopify products continue to use tier 1 vs. Furniture random-image fallback as before.
+// Window resets after 5 hours so the same product can cycle through tiers again the next
+// conversation window without being permanently gated.
+// Returns the new send_count (1, 2, 3…); fail-open returns 1 so media always sends on error.
+async function engineClaimProductSend(env, clientId, leadId, productId){
+  if(!leadId || !productId) return 1;
   try{
-    const today=new Date().toISOString().slice(0,10);
-    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(clientId), leadId, productId, today, new Date().toISOString()).run();
-    return !!ins?.meta?.changes;
-  }catch(e){ await reportOpsError(env, 'engineClaimProductImageForToday', e, {clientId, leadId, productId}); return true; }
+    const now=new Date().toISOString();
+    const today=now.slice(0,10);
+    const fiveHoursAgo=new Date(Date.now()-5*60*60*1000).toISOString();
+    const existing=await env.DB.prepare(
+      `SELECT id, sent_at, send_count FROM ecom_product_image_sent WHERE lead_id=? AND product_id=? ORDER BY sent_at DESC LIMIT 1`
+    ).bind(leadId, productId).first();
+    if(!existing){
+      // First ever send for this lead+product
+      await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at, send_count) VALUES (?,?,?,?,?,1)`)
+        .bind(Number(clientId), leadId, productId, today, now).run();
+      return 1;
+    }
+    if(existing.sent_at < fiveHoursAgo){
+      // Window expired — reset counter on the existing row (avoids a new row duplicating the index)
+      await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, sent_date=?, send_count=1 WHERE id=?`)
+        .bind(now, today, existing.id).run();
+      return 1;
+    }
+    // Within 5-hour window — advance to next tier
+    const next=(existing.send_count||1)+1;
+    await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, send_count=? WHERE id=?`)
+      .bind(now, next, existing.id).run();
+    return next;
+  }catch(e){ await reportOpsError(env, 'engineClaimProductSend', e, {clientId, leadId, productId}); return 1; }
+}
+
+// Shopify tier 2 follow-up: 1 random extra angle image, then optionally full description and
+// the Shopify product URL as separate messages. opts.withDescription controls whether to re-send
+// the description (skip when the main reply already includes it inline). opts.withLink controls
+// whether to append the Shopify URL (skip when the main reply text already contains it).
+async function engineSendShopifyTier2(env, c, clientId, convId, product, opts={}){
+  const {withDescription=true, withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(withDescription && product.description){
+      const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
+      await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
+    }
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier2', e, {clientId, convId}); }
+}
+
+// Shopify tier 3 follow-up: 1 random extra angle image + audio note + optionally the Shopify URL.
+async function engineSendShopifyTier3(env, c, clientId, convId, product, opts={}){
+  const {withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier3', e, {clientId, convId}); }
 }
 
 // Furniture & Home Appliances same-day repeat: pick 2 random images from the product's pool
@@ -14550,16 +14611,27 @@ async function handleEngineWebhook(request, env, secret){
         // to filter on, not just the classifier's free-text product_interest string.
         if(detection.category) routing.matchedCategory=detection.category;
         if(detection.brand) routing.matchedBrand=detection.brand;
-        // Claimed once per turn, shared by every branch below that might send this product's
-        // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
-        // why this is gated per (lead, product, calendar day) rather than resent on every repeat
-        // question. For Furniture & Home Appliances the day restriction is lifted: a same-day
-        // repeat sends 2 random product images instead of the full bundle (sendRandomImages path).
-        let sendProductImage=false, sendRandomImages=false;
+        // Claimed once per turn via engineClaimProductSend — 5-hour rolling window, send_count
+        // advances through tiers 1→2→3. Shopify products (shopify_product_url set) get progressive
+        // disclosure on repeat asks; non-Shopify furniture gets random-angle fallback as before.
+        // Explicit re-send keywords (ECOM_RESEND_IMAGE_RE / ECOM_RESEND_LINK_RE) bypass the tier
+        // counter entirely and deliver only what was asked, leaving send_count unchanged.
+        const isShopify=!!(product?.shopify_product_url||'').trim();
+        let sendProductImage=false, sendOnlyPrimaryImage=false, sendRandomImages=false, shopifyTier=0, forceResendLink=false;
         if(product){
-          const claimed=await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id);
-          if(claimed) sendProductImage=true;
-          else if(botConfig.ecom_communication_style==='furniture_appliances') sendRandomImages=true;
+          const wantsImage=ECOM_RESEND_IMAGE_RE.test(userText||'');
+          const wantsLink=ECOM_RESEND_LINK_RE.test(userText||'');
+          if(wantsImage){
+            sendOnlyPrimaryImage=true;
+          } else if(wantsLink && isShopify){
+            forceResendLink=true;
+          } else {
+            const tier=await engineClaimProductSend(env, clientId, state.leadId, product.Id);
+            if(tier===1){ sendProductImage=true; }
+            else if(isShopify && tier===2){ shopifyTier=2; }
+            else if(isShopify && tier>=3){ shopifyTier=3; }
+            else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
+          }
         }
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
@@ -14570,13 +14642,14 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.next='order_collect_items';
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          const _attach1=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach1 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach1?product.image_url:null});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
           // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
@@ -14593,13 +14666,14 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.route='human';
           routing.humanReason='order_handoff';
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          const _attach2=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach2 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach2?product.image_url:null});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           await engineSendHandoverLabel(c, convId);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
@@ -14608,13 +14682,14 @@ async function handleEngineWebhook(request, env, secret){
           if(link){
             sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
             routing.reply=sentText;
-            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            const _attach3=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach3 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach3?product.image_url:null});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -14625,13 +14700,14 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             routing.next='order_collect_items';
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            const _attach4=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach4 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach4?product.image_url:null});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product && !orderHandledInline){
@@ -14647,10 +14723,14 @@ async function handleEngineWebhook(request, env, secret){
           if(product.description) productLines.push(String(product.description));
           sentText=productLines.join('\n\n');
           routing.reply=sentText;
-          if(sendProductImage&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
+          const _attach5=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach5&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attach5?product.image_url:null});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env,c,clientId,convId,`🛍️ Here's the product link:\n${_fl}`); }
           const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
@@ -14678,11 +14758,16 @@ async function handleEngineWebhook(request, env, secret){
           // gated by sendProductImage though — that direction was about link-presence never
           // suppressing the photo, not about resending the same photo every time the same product
           // comes up again the same day.
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Primary image is attached above; additional images, audio, video and PDF follow.
+          const _attach6=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach6 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null});
+          // Primary image above; additional media follows. Description + link are already in sentText
+          // for this enquiry branch, so Shopify tiers skip both (withDescription:false, withLink:false).
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:false, withLink:false});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:false});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           else{
             routing.route='human';
