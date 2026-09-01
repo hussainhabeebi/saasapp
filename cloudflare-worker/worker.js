@@ -16914,13 +16914,23 @@ function matriCoerce(k,v){
   return v===null||v===undefined?null:String(v).trim().slice(0,2000);
 }
 
+let matrimonialSerialSchemaReady=false;
+async function ensureMatrimonialSerialSchema(env){
+  if(matrimonialSerialSchemaReady) return;
+  try{ await env.DB.prepare('ALTER TABLE matrimonial_profiles ADD COLUMN serial_number TEXT').run(); }catch(e){}
+  try{ await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_matri_profiles_serial ON matrimonial_profiles(client_id, serial_number)').run(); }catch(e){}
+  matrimonialSerialSchemaReady=true;
+}
+
 async function handleMatriList(request, env, table, fields, orderBy='id DESC'){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {results}=await env.DB.prepare(`SELECT * FROM ${table} WHERE client_id=? ORDER BY ${orderBy}`).bind(Number(payload.cid)).all();
   return json({list:results||[]});
 }
 async function handleMatriCreate(request, env, table, fields, required){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
@@ -16933,6 +16943,7 @@ async function handleMatriCreate(request, env, table, fields, required){
   return json(row);
 }
 async function handleMatriUpdate(request, env, table, fields){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
@@ -16999,6 +17010,7 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
 // fall through to the normal LLM routing (e.g. when "3" / talk-to-agent is typed, or when
 // no state matches the incoming text).
 async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,userText,isNewLead){
+  await ensureMatrimonialSerialSchema(env);
   let settings;
   try{ settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first(); }catch(e){ return null; }
   if(!settings||!settings.chat_enabled) return null;
@@ -17422,6 +17434,7 @@ async function handleMatriActivatedDelete(request,env){
 // are silently dropped. If a dedup key is configured and the table has a matching row for this
 // client_id, the row is updated; otherwise it is inserted. Returns a summary of rows processed.
 async function handleMatriWebhook(request, env, kind){
+  if(kind==='profiles') await ensureMatrimonialSerialSchema(env);
   const url=new URL(request.url);
   const token=url.searchParams.get('token')||'';
   if(!token) return json({error:'token required'}, 401);
