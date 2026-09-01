@@ -35,6 +35,7 @@ import {
   pmHandleQueueBatch,
   ProjectTaskWorkflow,
   engineParseInstagramEvents,
+  engineParseChatwootPayload,
   engineSendInstagramReply,
   subscribeInstagramWebhooks,
   verifyWebhookSignature,
@@ -71,10 +72,22 @@ import {
   ltChatFlightIntent,
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
+  ltExactRouteOffers,
   ltPoomasEnabledAfterSettingsSave,
 } from './worker.js';
 
 describe('Live Travel ticketing in chat',()=>{
+  test('accepts a captionless passport PDF as an actionable document',()=>{
+    const parsed=engineParseChatwootPayload({
+      message_type:'incoming',
+      content:'',
+      conversation:{id:10,inbox_id:2,meta:{sender:{phone_number:'+971500000000',name:'Traveller'}}},
+      attachments:[{file_type:'file',file_name:'passport.pdf',data_url:'https://media.example/passport'}],
+    });
+    assert.equal(parsed?.mediaType,'document');
+    assert.equal(parsed?.mediaUrl,'https://media.example/passport');
+  });
+
   test('recognizes a live fare request but does not hijack PNR/status questions',()=>{
     assert.equal(ltChatFlightIntent('I need a flight from Dubai to Kochi next Friday'),true);
     assert.equal(ltChatFlightIntent('ticket rate Dubai to Kochi'),true);
@@ -96,6 +109,15 @@ describe('Live Travel ticketing in chat',()=>{
     assert.match(text,/Example Air · EA101 — AED 425\.50/);
     assert.match(text,/3 seat\(s\) left/);
     assert.match(text,/https:\/\/flypoomas\.com\/book\?fareId=1/);
+  });
+
+  test('keeps only fares matching the exact requested route',()=>{
+    const offers=[
+      {itinerary:[{origin:'CCJ',destination:'MCT'}]},
+      {itinerary:[{origin:'CCJ',destination:'DOH'}]},
+      {itinerary:[{origin:'CCJ',destination:'BOM'},{origin:'BOM',destination:'SHJ'}]},
+    ];
+    assert.deepEqual(ltExactRouteOffers(offers,'CCJ','SHJ'),[offers[2]]);
   });
 
   test('saving only POOMAS URLs preserves the existing enabled flag',()=>{
