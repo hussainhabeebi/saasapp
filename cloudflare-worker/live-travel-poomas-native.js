@@ -63,6 +63,13 @@ async function enabledSetting(env,cid){
   return row;
 }
 
+function exactRouteFare(f,origin,destination){
+  const fareOrigin=String(f?.origin||f?.from||f?.departureAirport||f?.segments?.[0]?.origin||'').trim().toUpperCase();
+  const segments=Array.isArray(f?.segments)?f.segments:[];
+  const lastSegment=segments.length?segments[segments.length-1]:null;
+  const fareDestination=String(f?.destination||f?.to||f?.arrivalAirport||lastSegment?.destination||'').trim().toUpperCase();
+  return fareOrigin===String(origin||'').trim().toUpperCase()&&fareDestination===String(destination||'').trim().toUpperCase();
+}
 function normalizePoomasFare(f,s,cid){
   const total=Number(f.displayPrice??f.totalFare??0);
   const supplier=String(f.supplier||'').toUpperCase();
@@ -151,7 +158,28 @@ export async function handleNativePoomas(req,env,ctx,legacy){
       });
       const result=await response.json().catch(()=>({}));
       if(!response.ok)throw new Error(result.error||`POOMAS search failed (${response.status})`);
-      return json({provider:'poomas',offers:(result.fares||[]).map(f=>normalizePoomasFare(f,s,auth.clientId)),usedSuppliers:result.usedSuppliers||[],supplierErrors:result.supplierErrors||{}},200,origin);
+      const allFares=result.fares||[],exactFares=allFares.filter(f=>exactRouteFare(f,payload.origin,payload.destination));
+      return json({provider:'poomas',offers:exactFares.map(f=>normalizePoomasFare(f,s,auth.clientId)),usedSuppliers:result.usedSuppliers||[],supplierErrors:result.supplierErrors||{},exactRouteOnly:true,rejectedRouteMismatches:allFares.length-exactFares.length},200,origin);
+    }
+
+    if(path==='/live-travel/poomas/checkout-session'&&req.method==='POST'){
+      const s=await enabledSetting(env,auth.clientId);
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS_INTEGRATION_KEY is not configured on leadvyne-api-proxy'},503,origin);
+      const b=await req.json().catch(()=>({}));
+      const fareId=String(b.fare_id||b.fareId||'').trim();
+      const supplier=String(b.poomas_supplier||b.supplier||'').trim().toUpperCase();
+      const passengers=Array.isArray(b.passengers)?b.passengers:[];
+      const contact=b.contact||{email:b.contact_email||b.email,mobile:b.contact_phone||b.mobile||b.phone};
+      if(!fareId||!supplier)return json({error:'fareId and supplier are required'},400,origin);
+      if(!passengers.length)return json({error:'At least one passenger is required'},400,origin);
+      const response=await fetch(`${s.api_base||POOMAS_API}/api/integrations/checkout-sessions`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},
+        body:JSON.stringify({fareId,supplier,passengers,contact,source:'leadvyne',clientId:auth.clientId})
+      });
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok)return json({error:result.error||result.message||`POOMAS checkout session failed (${response.status})`},response.status,origin);
+      return json({provider:'poomas',...result},201,origin);
     }
 
     if(path==='/live-travel/poomas/pnr'&&req.method==='POST'){
