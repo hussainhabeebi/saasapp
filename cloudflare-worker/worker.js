@@ -9762,6 +9762,7 @@ export async function hcEnsureOperationsSchema(env){
   if(cached) return cached;
   const pending=(async()=>{
     for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
+    await env.DB.prepare(`ALTER TABLE healthcare_services ADD COLUMN service_type TEXT NOT NULL DEFAULT ''`).run().catch(()=>{});
   })();
   hcOperationsSchemaReady.set(env.DB,pending);
   try{ await pending; }
@@ -24652,6 +24653,7 @@ const hcServicesCrud=reCrud('healthcare_services', [
   {key:'short_label', type:'text', maxLen:80}, {key:'aliases', type:'text', maxLen:1000},
   {key:'description', type:'text', required:true, maxLen:4000}, {key:'price', type:'number'},
   {key:'currency', type:'text', maxLen:20}, {key:'duration_minutes', type:'number'},
+  {key:'service_type', type:'text', maxLen:50},
   {key:'preparation', type:'text', maxLen:2000}, {key:'booking_url', type:'text', maxLen:1000},
   {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
   {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
