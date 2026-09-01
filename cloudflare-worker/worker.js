@@ -17521,8 +17521,11 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     return {handled:true,step:'listing_asked_type'};
   }
 
-  // Free subscription keyword (default "4")
-  if(textLower===kwSubscribe){
+  // Natural-language phrase matching — treat as keyword "4" (free subscription)
+  const isSubscribePhrase=textLower!==kwSubscribe&&/\b(free\s*sub(?:scription)?|free\s*plan|free\s*access|free\s*(?:now|today)|subscribe\s*free|get\s*free|start\s*free|activate\s*free|free\s*register|free\s*membership)\b/i.test(text);
+
+  // Free subscription keyword (default "4") or natural-language phrase
+  if(textLower===kwSubscribe||isSubscribePhrase){
     let existing=null;
     try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
     if(existing&&existing.status==='active'){
