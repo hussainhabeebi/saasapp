@@ -17153,7 +17153,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let activated=null;
     try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
     if(!activated){
-      await send('⚠️ Your number is not activated for profile viewing.\n\nPlease contact us to get access.');
+      await send(`⚠️ Your number is not activated for profile viewing.\n\nReply *${kwSubscribe}* to get a *Free Subscription* and start browsing profiles instantly! 🎁`);
       await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
       return {handled:true,step:'not_activated'};
     }
