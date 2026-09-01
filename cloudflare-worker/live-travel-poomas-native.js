@@ -143,9 +143,10 @@ export async function handleNativePoomas(req,env,ctx,legacy){
         currency
       };
       if(payload.tripType==='ROUNDTRIP')payload.returnDate=b.return_date||b.returnDate;
+      if(!(env.POOMAS_API_KEY||env.POOMAS_INTEGRATION_KEY))return json({error:'POOMAS_API_KEY is not configured on leadvyne-api-proxy'},503,origin);
       const response=await fetch(`${s.api_base||POOMAS_API}/api/search`,{
         method:'POST',
-        headers:{'Content-Type':'application/json','x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},
+        headers:{'Content-Type':'application/json','X-API-Key':env.POOMAS_API_KEY||env.POOMAS_INTEGRATION_KEY||'','x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},
         body:JSON.stringify(payload)
       });
       const result=await response.json().catch(()=>({}));
