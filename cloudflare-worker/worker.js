@@ -17127,11 +17127,16 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   const buildWelcome=()=>{
     const svc=settings.service_name||'Matrimonial Service';
-    const msg=settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`;
     const v=settings.chat_keyword_view||'1';
     const l=settings.chat_keyword_list||'2';
     const a=settings.chat_keyword_agent||'3';
-    return `${msg}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+    let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
+    // Strip any menu option lines the admin may have saved inside the welcome message
+    // to prevent the options block from appearing twice.
+    const lines=intro.split('\n');
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a); });
+    if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
   const sendProfiles=async (profileType,profileRef=null)=>{
@@ -17240,6 +17245,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])].filter(f=>f!=='plan_label'&&f!=='membership_plan');
     for(const p of batch){
       let card='──────────────\n';
+      if(p.serial_number) card+=`#️⃣ *${p.serial_number}*\n`;
       for(const f of cardFields){
         let val=p[f];
         if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
@@ -17249,8 +17255,8 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
       await send(card);
     }
     await send(hasMore
-      ?`✅ ${batch.length} profile(s) sent.\n\nReply *next* to see more or *menu* for the main menu.`
-      :`✅ ${batch.length} profile(s) sent.\n\nReply *menu* to go back to the main menu.`);
+      ?`✅ ${batch.length} profile(s) sent.\n\nReply *next* to see more.\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* for the main menu.`
+      :`✅ ${batch.length} profile(s) sent.\n\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* to go back to the main menu.`);
     return {handled:true,step:'profiles_sent'};
   };
 
@@ -17426,6 +17432,12 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
       await setState({max_age:requestedAge,sent_ids:'[]'});
       await send(requestedAge?`Searching *${st.profile_type||'bride'}* profiles — 🎂 Under ${requestedAge}…`:`Searching *${st.profile_type||'bride'}* profiles — any age…`);
       return await sendProfiles(st.profile_type||'bride');
+    }
+    // Plain serial number typed while browsing — look it up directly.
+    const plainRef=text.replace(/^#\s*/,'').trim();
+    if(plainRef&&!/^\d{1,2}$/.test(plainRef)){
+      const bySerial=await findProfileBySerial(plainRef);
+      if(bySerial) return await askProfileConfirmation(bySerial);
     }
   }
 
