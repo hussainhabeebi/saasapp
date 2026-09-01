@@ -11893,6 +11893,7 @@ export function ltFormatChatOffers(offers){
     let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}`;
     if(o.seats_left!=null) line+=` · ${o.seats_left} seat(s) left`;
     if(o.bookable&&o.supplier_offer_id) line+=`\nReply ${i+1} to select this fare and upload the passenger passport.`;
+    else if(o.checkout_url) line+=`\nBook: ${o.checkout_url}`;
     lines.push(line);
   });
   lines.push('Live fares can change until checkout is completed.');
