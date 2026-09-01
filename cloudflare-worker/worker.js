@@ -11034,6 +11034,7 @@ function engineParseChatwootPayload(body){
     mediaUrl=a.data_url||a.file_url||'';
     if((a.file_type||'').includes('audio')) mediaType='voice';
     else if((a.file_type||'').includes('image')) mediaType='image';
+    else if(mediaUrl) mediaType='document';
   }
   const text=(body.content||body.message?.content||'').trim();
   if(!phone) return null;
@@ -11878,7 +11879,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     return send(`Selected flight details:\n\nAirline: ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\nRoute: ${selected.origin||'—'} → ${selected.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${duration}\nStops: ${selected.stops===0?'Direct':selected.stops}\nCabin: ${String(selected.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}${selected.seatsLeft!=null?`\nSeats left: ${selected.seatsLeft}`:''}\n\nPlease upload a clear photo of the passenger's passport identity page. I will extract the booking fields and ask you to confirm them before creating the prefilled checkout link.`);
   }
   if(row.step==='passport'){
-    if(mediaType!=='image'||!mediaUrl)return send('Please upload a clear photo of the passport identity page.');
+    if((mediaType!=='image'&&mediaType!=='document')||!mediaUrl)return send('Please upload a clear photo of the passport identity page.');
     const p=await ltExtractPassport(env,mediaUrl);
     if(!p)return send('I could not read all required passport fields safely. Please send a clearer, uncropped passport identity-page photo.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='confirm',passenger_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(p),new Date().toISOString(),Number(clientId),String(phone)).run();
