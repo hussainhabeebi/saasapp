@@ -4003,6 +4003,8 @@ async function handleChannelsWhatsappConnect(request, env){
   // what the public storefront's "Order on WhatsApp" links use, so they open the exact same
   // WhatsApp thread this bot/inbox replies from instead of a different, unrelated number.
   await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
+  // Also cache per-inbox so multi-inbox clients have credentials per channel
+  await upsertChannelMetaCreds(env, payload.cid, inbox.id, {waba_id, wa_phone_id:phone_number_id, wa_token, wa_display_phone:phone_number}).catch(()=>{});
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
 }
 
@@ -4414,6 +4416,16 @@ async function ensureInboxAssignmentsTable(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_inbox_assignments (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,assigned_email TEXT NOT NULL DEFAULT '',chatwoot_user_id INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
 }
 
+async function ensureChannelMetaCredsTable(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_meta_creds (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,waba_id TEXT NOT NULL DEFAULT '',wa_phone_id TEXT NOT NULL DEFAULT '',wa_token TEXT NOT NULL DEFAULT '',wa_display_phone TEXT NOT NULL DEFAULT '',detected_at TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
+}
+
+async function upsertChannelMetaCreds(env, clientId, inboxId, {waba_id='',wa_phone_id='',wa_token='',wa_display_phone=''}={}){
+  await ensureChannelMetaCredsTable(env);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO channel_meta_creds (client_id,inbox_id,waba_id,wa_phone_id,wa_token,wa_display_phone,detected_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET waba_id=excluded.waba_id,wa_phone_id=excluded.wa_phone_id,wa_token=excluded.wa_token,wa_display_phone=excluded.wa_display_phone,detected_at=excluded.detected_at`).bind(Number(clientId),Number(inboxId),String(waba_id),String(wa_phone_id),String(wa_token),String(wa_display_phone),now).run();
+}
+
 // GET /channels/agents — list Chatwoot agents for this account (for the assignment picker)
 async function handleChannelsAgents(request, env){
   const payload=await requireSession(request, env);
@@ -4460,6 +4472,47 @@ async function handleChannelsInboxAssignmentPut(request, env){
       .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
   }
   return json({ok:true, inbox_id:inboxId, cleared:clear});
+}
+
+// GET /channels/inbox-meta-creds — return all per-inbox Meta credential rows for this client
+async function handleChannelsInboxMetaCredsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureChannelMetaCredsTable(env);
+  const rows=await env.DB.prepare(`SELECT inbox_id,waba_id,wa_phone_id,wa_display_phone FROM channel_meta_creds WHERE client_id=?`).bind(payload.cid).all();
+  return json({ok:true, creds:rows.results||[]});
+}
+
+// POST /channels/whatsapp/detect-inbox-creds — detect & store Meta creds for a specific inbox
+// Reads channel_config from Chatwoot's inbox show endpoint (admin-token required) so clients
+// who set up WhatsApp directly in Chatwoot don't have to copy credentials manually.
+async function handleChannelsDetectInboxCreds(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token)
+    return json({error:'Chatwoot is not fully configured.'}, 400);
+  const {inbox_id}=await request.json().catch(()=>({}));
+  if(!inbox_id) return json({error:'inbox_id is required'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inbox_id}`, {
+    headers:{api_access_token:c.chatwoot_token}
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||('Chatwoot API '+r.status)}, 502);
+  const cfg=data?.channel_config||data?.provider_config||{};
+  const waba_id=String(cfg.business_account_id||cfg.waba_id||'').trim();
+  const wa_token=String(cfg.api_key||cfg.access_token||'').trim();
+  const wa_phone_id=String(cfg.phone_number_id||data?.phone_number_id||'').trim();
+  const wa_display_phone=String(data?.phone_number||cfg.phone_number||'').trim();
+  if(!wa_token&&!wa_phone_id) return json({error:'Could not read Meta credentials from this Chatwoot inbox. Your Chatwoot version may not expose channel_config — use the manual credentials form instead.'}, 400);
+  await upsertChannelMetaCreds(env, payload.cid, Number(inbox_id), {waba_id, wa_phone_id, wa_token, wa_display_phone});
+  // Also propagate to client global fields if not yet set (first-time or legacy clients)
+  const patch={};
+  if(waba_id && !c.waba_id) patch.waba_id=waba_id;
+  if(wa_token && !c.wa_token) patch.wa_token=wa_token;
+  if(wa_phone_id && !c.wa_phone_id) patch.wa_phone_id=wa_phone_id;
+  if(Object.keys(patch).length) await patchClientFields(env, payload.cid, patch).catch(()=>{});
+  return json({ok:true, inbox_id:Number(inbox_id), waba_id, wa_phone_id, wa_display_phone});
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
@@ -26200,6 +26253,8 @@ export default {
       else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
+      else if(url.pathname==='/channels/inbox-meta-creds' && request.method==='GET'){ res=await handleChannelsInboxMetaCredsGet(request, env); }
+      else if(url.pathname==='/channels/whatsapp/detect-inbox-creds' && request.method==='POST'){ res=await handleChannelsDetectInboxCreds(request, env); }
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }

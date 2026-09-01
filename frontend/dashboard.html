@@ -10818,26 +10818,57 @@ function renderChannelsPage(){
 
 async function chWorkerGet(path){const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{headers:ncAuthHeaders()});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d;}
 async function chWorkerPut(path,body){const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d;}
+async function chWorkerPost(path,body){const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d;}
 
-let _chAgents=[], _chAssignments={};
+let _chAgents=[], _chAssignments={}, _chMetaCreds={};
 async function chLoadAndRenderInboxList(list){
   let assignments={};
+  let metaCreds={};
   try{
-    const asR=await chWorkerGet('/channels/inbox-assignments');
+    const [asR, mcR]=await Promise.all([
+      chWorkerGet('/channels/inbox-assignments'),
+      chWorkerGet('/channels/inbox-meta-creds')
+    ]);
     for(const a of (asR.assignments||[])) assignments[a.inbox_id]=a;
+    for(const m of (mcR.creds||[])) metaCreds[m.inbox_id]=m;
   }catch(e){}
   _chAssignments=assignments;
+  _chMetaCreds=metaCreds;
   const members=getTeamMembers();
-  const memberOpts='<option value="">— Unassigned —</option>'+members.map(m=>`<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`).join('');
   $id('chConnectedList').innerHTML=list.map(ib=>{
     const cur=assignments[ib.id]?.assigned_email||'';
     const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===cur?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
-    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
-      `<span style="flex:1">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted);font-size:12px">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
+    const isWa=(ib.channel_type||'').toLowerCase().includes('whatsapp');
+    const mc=metaCreds[ib.id];
+    let credsBadge='';
+    if(isWa){
+      if(mc?.wa_phone_id){
+        const phone=mc.wa_display_phone||mc.wa_phone_id;
+        credsBadge=`<span style="font-size:11px;background:#dcfce7;color:#166534;padding:2px 7px;border-radius:10px;white-space:nowrap" title="WABA: ${esc(mc.waba_id||'')} · Phone ID: ${esc(mc.wa_phone_id)}">✓ ${esc(phone)}</span>`;
+      } else {
+        credsBadge=`<button style="font-size:11px;padding:3px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;cursor:pointer;background:var(--card,#fff)" onclick="chDetectInboxCreds(${ib.id},this)">Detect credentials</button>`;
+      }
+    }
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border,#e5e7eb);flex-wrap:wrap">`+
+      `<span style="flex:1;min-width:120px">${CHANNEL_ICONS[ib.channel_type]||'📥'} ${esc(ib.name)} <span style="color:var(--muted);font-size:12px">(${esc((ib.channel_type||'').replace('Channel::',''))})</span></span>`+
+      (credsBadge?`<span>${credsBadge}</span>`:'')+
       `<select style="font-size:12px;padding:4px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value)">`+
       `<option value="">— Unassigned —</option>${opts}</select>`+
       `</div>`;
   }).join('');
+}
+
+async function chDetectInboxCreds(inboxId, btn){
+  const origText=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='Detecting…'; }
+  try{
+    const d=await chWorkerPost('/channels/whatsapp/detect-inbox-creds',{inbox_id:inboxId});
+    // Re-render the list to show the detected phone badge
+    await loadChannelsStatus();
+  }catch(e){
+    alert('Could not detect credentials: '+e.message);
+    if(btn){ btn.disabled=false; btn.textContent=origText; }
+  }
 }
 
 async function chSaveInboxAssignmentInline(inboxId, email){
