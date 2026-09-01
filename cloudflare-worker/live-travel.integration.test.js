@@ -93,3 +93,32 @@ test('Live Travel authenticated D1 workflow remains tenant scoped and operationa
   r=await call(env,otherTenant,`/live-travel/bookings?id=${bookingId}`);
   assert.equal(r.status,404);
 });
+
+
+test('POOMAS search rejects fares outside the exact requested route',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'test-key',ALLOWED_ORIGINS:'https://app.leadvyne.com'},session=await token(env.SESSION_SIGNING_KEY);
+  let r=await call(env,session,'/live-travel/poomas/settings','PATCH',{enabled:true,api_base:'https://api.flypoomas.com',checkout_base:'https://flypoomas.com'});
+  assert.equal(r.status,200);
+
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async(url)=>{
+    assert.equal(String(url),'https://api.flypoomas.com/api/search');
+    return new Response(JSON.stringify({fares:[
+      {id:'wrong-mct',supplier:'DUFFEL',isBookable:true,origin:'CCJ',destination:'MCT',displayPrice:250},
+      {id:'wrong-doh',supplier:'DUFFEL',isBookable:true,origin:'CCJ',destination:'DOH',displayPrice:250},
+      {id:'exact-shj',supplier:'DUFFEL',isBookable:true,origin:'CCJ',destination:'SHJ',displayPrice:300}
+    ]}),{status:200,headers:{'Content-Type':'application/json'}});
+  };
+  try{
+    r=await call(env,session,'/live-travel/poomas/search','POST',{origin:'CCJ',destination:'SHJ',departureDate:'2026-09-15',adults:1});
+  }finally{
+    globalThis.fetch=originalFetch;
+  }
+
+  assert.equal(r.status,200);
+  assert.equal(r.data.exactRouteOnly,true);
+  assert.equal(r.data.rejectedRouteMismatches,2);
+  assert.equal(r.data.offers.length,1);
+  assert.equal(r.data.offers[0].itinerary[0].origin,'CCJ');
+  assert.equal(r.data.offers[0].itinerary[0].destination,'SHJ');
+});
