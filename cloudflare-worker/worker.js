@@ -11753,7 +11753,12 @@ export function ltChatFlightIntent(text){
   const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying)\b/.test(value);
   const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
   const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
-  return (explicitFlight&&shopping)||travelTicket;
+  // Compact structured searches such as "DXB to COK on 2026-09-20, 1 adult,
+  // economy" are already complete flight requests even when the customer omits
+  // the words flight/ticket/fare. Route them to POOMAS, never to the generic LLM.
+  const compactIataRoute=/\b[A-Z]{3}\s+(?:TO|[-→])\s+[A-Z]{3}\b/i.test(String(text||''));
+  const hasTravelDetail=/\b\d{4}-\d{2}-\d{2}\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
+  return (explicitFlight&&shopping)||travelTicket||(compactIataRoute&&hasTravelDetail);
 }
 
 export function ltNormalizeChatFlightRequest(raw={}){
