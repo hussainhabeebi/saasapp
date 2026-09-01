@@ -17082,7 +17082,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let plans=['gold','silver','platinum'];
     try{ const pf=JSON.parse(settings.chat_plan_filter||'[]'); if(pf.length) plans=pf; }catch(e){}
 
-    const perMsg=Math.max(1,parseInt(settings.chat_profiles_per_msg)||3);
+    const perMsg=Math.max(2,parseInt(settings.chat_profiles_per_msg)||3);
 
     let previewFields=['full_name','age','city','plan_label'];
     try{ const pf=JSON.parse(settings.chat_preview_fields||'[]'); if(pf.length) previewFields=pf; }catch(e){}
@@ -17104,8 +17104,15 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let rows;
     try{
       rows=await env.DB.prepare(
-        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND membership_plan IN (${plH}) AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
-      ).bind(String(clientId),profileType,...plans,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
+        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND (LOWER(COALESCE(membership_plan,'')) IN (${plH}) OR LOWER(COALESCE(plan_label,'')) IN (${plH})) AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
+      ).bind(String(clientId),profileType,...plans,...plans,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
+      // Sheet imports may store the paid plan in plan_label, or omit plan data.
+      // Fall back to every active listed profile instead of reporting a false empty result.
+      if(!(rows.results||[]).length){
+        rows=await env.DB.prepare(
+          `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
+        ).bind(String(clientId),profileType,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
+      }
     }catch(e){ rows={results:[]}; }
 
     const all=rows.results||[];
@@ -17116,7 +17123,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
       await send(sentIds.length
         ?'🔄 No more profiles at this time.\n\nReply *menu* to go back to the main menu.'
         :'📭 No profiles are currently available.\n\nReply *menu* to go back to the main menu.');
-      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:'[]'});
       return {handled:true,step:'no_profiles'};
     }
 
@@ -17126,10 +17133,13 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     await env.DB.prepare('UPDATE matrimonial_activated_leads SET views_today=?,views_month=?,last_daily_reset=?,last_monthly_reset=?,updated_at=? WHERE id=?')
       .bind(vToday+batch.length,vMonth+batch.length,today,thisMonth,new Date().toISOString(),activated.id).run().catch(()=>{});
 
-    const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',plan_label:'Plan',religion:'Religion',height_cm:'Height',annual_income:'Income',marriage_status:'Status'};
+    const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',job_place:'Job place',plan_label:'Plan',religion:'Religion',caste:'Caste',mother_tongue:'Mother tongue',height_cm:'Height',annual_income:'Income',marriage_status:'Marital status',about:'About'};
+    // Show useful fields exactly as saved in Matrimony Profiles. Admin-selected preview
+    // fields are appended and de-duplicated; private contact/payment fields stay hidden.
+    const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])];
     for(const p of batch){
       let card='──────────────\n';
-      for(const f of previewFields){
+      for(const f of cardFields){
         let val=p[f];
         if(f==='plan_label') val=p.plan_label||(p.membership_plan?p.membership_plan.charAt(0).toUpperCase()+p.membership_plan.slice(1):null);
         if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
@@ -17207,6 +17217,19 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   if(menuState==='viewing_profiles'&&/^next$/i.test(text)){
     return await sendProfiles(st.profile_type||'bride');
+  }
+
+  // Refine a previous search naturally and query saved profiles immediately.
+  if(menuState==='viewing_profiles'){
+    const ageMatch=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const bareAge=textLower.match(/^\s*(\d{2})\s*$/);
+    const wantsAnyAge=/^(?:any|any age|no age limit)$/i.test(text);
+    const requestedAge=wantsAnyAge?null:parseInt((ageMatch||bareAge||[])[1],10)||null;
+    if(wantsAnyAge||requestedAge){
+      await setState({max_age:requestedAge,sent_ids:'[]'});
+      await send(requestedAge?`Searching *${st.profile_type||'bride'}* profiles — 🎂 Under ${requestedAge}…`:`Searching *${st.profile_type||'bride'}* profiles — any age…`);
+      return await sendProfiles(st.profile_type||'bride');
+    }
   }
 
   // Brand-new lead — show welcome automatically
