@@ -11757,7 +11757,7 @@ export function ltChatFlightIntent(text){
   // economy" are already complete flight requests even when the customer omits
   // the words flight/ticket/fare. Route them to POOMAS, never to the generic LLM.
   const compactIataRoute=/\b[A-Z]{3}\s+(?:TO|[-→])\s+[A-Z]{3}\b/i.test(String(text||''));
-  const hasTravelDetail=/\b\d{4}-\d{2}-\d{2}\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
+  const hasTravelDetail=/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
   return (explicitFlight&&shopping)||travelTicket||(compactIataRoute&&hasTravelDetail);
 }
 
@@ -11778,25 +11778,37 @@ export function ltNormalizeChatFlightRequest(raw={}){
   return {...out,missing};
 }
 
+function ltParseConversationalFlightDate(value,now=new Date()){
+  const text=String(value||'').trim();
+  const valid=(y,m,d)=>{const dt=new Date(Date.UTC(y,m-1,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d?dt:null};
+  const iso=(dt)=>dt?.toISOString().slice(0,10)||'';
+  let m=text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+  if(m)return iso(valid(Number(m[1]),Number(m[2]),Number(m[3])));
+  m=text.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
+  if(m){let y=m[3]?Number(m[3]):now.getUTCFullYear();if(y<100)y+=2000;let dt=valid(y,Number(m[2]),Number(m[1]));if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,Number(m[2]),Number(m[1]));return iso(dt);}
+  const months={jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,sept:9,september:9,oct:10,october:10,nov:11,november:11,dec:12,december:12};
+  m=text.match(/\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(20\d{2}))?\b/)||text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})(?:[,\s]+(20\d{2}))?\b/);
+  if(m){const monthFirst=/^[A-Za-z]/.test(m[1]),month=months[String(monthFirst?m[1]:m[2]).toLowerCase()],day=Number(monthFirst?m[2]:m[1]);if(!month)return '';let y=Number(m[3]||now.getUTCFullYear()),dt=valid(y,month,day);if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,month,day);return iso(dt);}
+  return '';
+}
+
 async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
-  const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Use null for missing facts and never invent a date or destination.`;
+  const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
   let raw=null;
   let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
   if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
-  if(generated){
-    try{ raw=JSON.parse(generated); }
-    catch(e){ try{ const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0]; if(objectText) raw=JSON.parse(objectText); }catch(e2){} }
-  }
-  // Deterministic fallback supports the concise format shown in the bot's clarification prompt.
-  if(!raw){
-    const m=String(userText||'').toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
-    const dates=String(userText||'').match(/\b\d{4}-\d{2}-\d{2}\b/g)||[];
-    raw={origin:m?.[1],destination:m?.[2],departure_date:dates[0],return_date:dates[1],trip_type:dates[1]?'round_trip':'one_way'};
-  }
+  if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
+  raw=raw&&typeof raw==='object'?raw:{};
+  const customerHistory=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).join('\n');
+  const combined=`${customerHistory}\n${userText||''}`;
+  const route=combined.toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
+  const latestDate=ltParseConversationalFlightDate(userText),historicDate=ltParseConversationalFlightDate(customerHistory);
+  if(!raw.origin&&route)raw.origin=route[1];if(!raw.destination&&route)raw.destination=route[2];
+  if(latestDate)raw.departure_date=latestDate;else if(!raw.departure_date&&historicDate)raw.departure_date=historicDate;
+  if(!raw.trip_type)raw.trip_type=raw.return_date?'round_trip':'one_way';
   return ltNormalizeChatFlightRequest(raw);
 }
-
 
 async function ltEnsureChatCheckoutSchema(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_checkout_state (
