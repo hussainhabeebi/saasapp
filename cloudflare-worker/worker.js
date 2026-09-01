@@ -16902,7 +16902,7 @@ async function handleRecruitDelete(request, env, kind){
    Profile management, match tracking, shortlists, success stories.
    All tables are client_id-scoped; reads/writes go through session auth. ── */
 
-const MATRIMONIAL_PROFILE_FIELDS=['profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id','age','gender','phone','whatsapp','guardian_phone','marriage_status','required_education','body_type','district','job_place','expected_partner_age','expected_partner_dob','other_conditions','payment_amount','payment_link','whatsapp_filled','plan_label','remarks'];
+const MATRIMONIAL_PROFILE_FIELDS=['serial_number','profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id','age','gender','phone','whatsapp','guardian_phone','marriage_status','required_education','body_type','district','job_place','expected_partner_age','expected_partner_dob','other_conditions','payment_amount','payment_link','whatsapp_filled','plan_label','remarks'];
 const MATRIMONIAL_MATCH_FIELDS=['profile_id_1','profile_id_2','match_score','status','interest_sent_by','notes','family_meeting_date','family_meeting_venue','outcome_notes'];
 const MATRIMONIAL_SHORTLIST_FIELDS=['profile_id','shortlisted_profile_id','notes'];
 const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groom_name','wedding_date','testimonial','photo_url','featured'];
@@ -17166,8 +17166,8 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   const findProfileBySerial=async (ref)=>{
     try{
-      return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
-        .bind(String(clientId),String(ref),String(ref)).first();
+      return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (LOWER(COALESCE(serial_number,''))=LOWER(?) OR CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
+        .bind(String(clientId),String(ref),String(ref),String(ref)).first();
     }catch(e){ return null; }
   };
   const askProfileConfirmation=async (profile)=>{
@@ -17179,7 +17179,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   // "Profile number" without a number starts the serial-number lookup flow.
   const asksForProfileNumber=/\b(?:profile|serial)\s*(?:id|no|number)\b/i.test(text);
-  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile(?:\s*(?:id|no|number))?|#)\s*[:#-]?\s*([a-z0-9_-]+)/i);
+  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile\s*(?:id|no|number)|#)\s*[:#-]?\s*["']?([a-z0-9_-]+)["']?/i)||text.match(/\b(?:looking\s+for|find|show\s+me)\s+(?:profile\s*)?["']?#?(\d+)["']?/i);
   if(asksForProfileNumber&&!serialMatch){
     await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send('Please type the *profile serial number*.');
