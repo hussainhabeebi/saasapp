@@ -17087,7 +17087,8 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
 );
 MATRIMONIAL_SETTINGS_FIELDS.push(
   'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
-  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent'
+  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
+  'chat_keyword_subscribe'
 );
 
 // Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
@@ -17103,9 +17104,10 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   const text=String(userText||'').trim();
   const textLower=text.toLowerCase();
 
-  const kwView  =String(settings.chat_keyword_view  ||'1').trim().toLowerCase();
-  const kwList  =String(settings.chat_keyword_list  ||'2').trim().toLowerCase();
-  const kwAgent =String(settings.chat_keyword_agent ||'3').trim().toLowerCase();
+  const kwView      =String(settings.chat_keyword_view      ||'1').trim().toLowerCase();
+  const kwList      =String(settings.chat_keyword_list      ||'2').trim().toLowerCase();
+  const kwAgent     =String(settings.chat_keyword_agent     ||'3').trim().toLowerCase();
+  const kwSubscribe =String(settings.chat_keyword_subscribe ||'4').trim().toLowerCase();
 
   const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
 
@@ -17136,13 +17138,14 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     const v=settings.chat_keyword_view||'1';
     const l=settings.chat_keyword_list||'2';
     const a=settings.chat_keyword_agent||'3';
+    const s=settings.chat_keyword_subscribe||'4';
     let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
     // Strip any menu option lines the admin may have saved inside the welcome message
     // to prevent the options block from appearing twice.
     const lines=intro.split('\n');
-    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a); });
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s); });
     if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
-    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
   const sendProfiles=async (profileType,profileRef=null)=>{
@@ -17372,6 +17375,37 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     }
   }
 
+  // ── FREE SUBSCRIPTION FLOW ───────────────────────────────────────────────────
+  // subscribe_asked_name: bot asked for customer's name before activating.
+  if(menuStateEarly==='subscribe_asked_name'){
+    const name=text.trim();
+    const now=new Date().toISOString();
+    const displayName=name.length>=2?name:String(phone);
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing){
+      if(existing.status==='active'){
+        await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+        await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+        return {handled:true,step:'subscribe_already_active'};
+      }
+      // Reactivate suspended/expired record
+      try{
+        await env.DB.prepare("UPDATE matrimonial_activated_leads SET name=?,status='active',daily_limit=10,monthly_limit=10,can_view='both',expiry_date=NULL,views_today=0,views_month=0,updated_at=? WHERE id=?")
+          .bind(displayName,now,existing.id).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeReactivate',e,{clientId,phone}); }
+    } else {
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),String(phone),displayName,'both',10,10,'active','free subscription via WhatsApp',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeInsert',e,{clientId,phone}); }
+    }
+    await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`🎉 *You're now subscribed!*\n\nHi *${displayName}*, your free subscription is active.\n\n📊 *Your plan:*\n• 10 profile views per day\n• Access to all profiles\n• No expiry\n\nReply *1* to start browsing profiles now!\nReply *menu* for the main menu.`);
+    return {handled:true,step:'subscribe_activated'};
+  }
+
   const findProfileBySerial=async (ref)=>{
     try{
       return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (LOWER(COALESCE(serial_number,''))=LOWER(?) OR CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
@@ -17485,6 +17519,19 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     await setState({menu_state:'listing_asked_type',listing_data:'{}',sent_ids:'[]',city_filter:null,max_age:null});
     await send('📋 *List Your Profile*\n\nAre you registering as a *Bride* or *Groom*?\n\nReply *B* for Bride or *G* for Groom\n\n_(Reply *menu* anytime to go back)_');
     return {handled:true,step:'listing_asked_type'};
+  }
+
+  // Free subscription keyword (default "4")
+  if(textLower===kwSubscribe){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      await send('✅ You already have an active free subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+      return {handled:true,step:'subscribe_already_active'};
+    }
+    await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'subscribe_asked_name'};
   }
 
   // Talk to agent keyword (default "3") — let normal LLM routing handle it
