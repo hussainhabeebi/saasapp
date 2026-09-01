@@ -17135,13 +17135,12 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
     const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',job_place:'Job place',plan_label:'Plan',religion:'Religion',caste:'Caste',mother_tongue:'Mother tongue',height_cm:'Height',annual_income:'Income',marriage_status:'Marital status',about:'About'};
     // Show useful fields exactly as saved in Matrimony Profiles. Admin-selected preview
-    // fields are appended and de-duplicated; private contact/payment fields stay hidden.
-    const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])];
+    // fields are appended and de-duplicated; plan, private contact, and payment fields stay hidden.
+    const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])].filter(f=>f!=='plan_label'&&f!=='membership_plan');
     for(const p of batch){
       let card='──────────────\n';
       for(const f of cardFields){
         let val=p[f];
-        if(f==='plan_label') val=p.plan_label||(p.membership_plan?p.membership_plan.charAt(0).toUpperCase()+p.membership_plan.slice(1):null);
         if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
         if(val) card+=`${fLabel[f]||f}: ${val}\n`;
       }
