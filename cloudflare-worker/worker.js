@@ -11912,19 +11912,68 @@ export function ltFormatChatOffers(offers){
   return lines.join('\n\n');
 }
 
+async function ltEnsureChatSearchDraftSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_search_state (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, draft_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone)
+  )`).run();
+}
+async function ltLoadChatSearchDraft(env,clientId,phone){
+  if(!phone)return null;
+  await ltEnsureChatSearchDraftSchema(env);
+  const row=await env.DB.prepare(`SELECT draft_json FROM live_travel_chat_search_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.draft_json,null):null;
+}
+async function ltSaveChatSearchDraft(env,clientId,phone,draft){
+  if(!phone)return;
+  await ltEnsureChatSearchDraftSchema(env);
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
+  await env.DB.prepare(`INSERT INTO live_travel_chat_search_state (client_id,phone,draft_json,expires_at,updated_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET draft_json=excluded.draft_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(draft||{}),expires,now.toISOString()).run();
+}
+async function ltClearChatSearchDraft(env,clientId,phone){
+  if(phone)await env.DB.prepare(`DELETE FROM live_travel_chat_search_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+}
+function ltMergeChatFlightDraft(draft,input,userText){
+  const old=draft||{},next={...old},text=String(userText||'');
+  const route=text.toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
+  if(route){next.origin=route[1];next.destination=route[2]}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
+  const date=ltParseConversationalFlightDate(text);next.departure_date=date||old.departure_date||input.departure_date;
+  const adult=text.match(/\b(\d+)\s*adults?\b/i),child=text.match(/\b(\d+)\s*(?:children|child)\b/i),infant=text.match(/\b(\d+)\s*infants?\b/i);
+  next.adults=adult?Number(adult[1]):(old.adults??input.adults??1);
+  next.children=child?Number(child[1]):(old.children??input.children??0);
+  next.infants=infant?Number(infant[1]):(old.infants??input.infants??0);
+  const cabin=text.match(/\b(premium[ _-]?economy|economy|business|first)\b/i);
+  next.cabin=cabin?cabin[1].toLowerCase().replace(/[ -]/g,'_'):(old.cabin||input.cabin||'economy');
+  const currency=text.match(/\b(AED|INR|USD|SAR|EUR|GBP)\b/i);next.currency=currency?currency[1].toUpperCase():(old.currency||input.currency||'AED');
+  next.trip_type=old.trip_type||input.trip_type||'one_way';next.return_date=old.return_date||input.return_date||'';
+  return ltNormalizeChatFlightRequest(next);
+}
+
 async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
-  const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
-  const continuing=/I can check live ticket prices for you/i.test(lastAssistant);
   const liveAgencyEnabled=c.industry==='travel'||c.ta_enabled==='Yes';
-  if(!liveAgencyEnabled||(!ltChatFlightIntent(userText)&&!continuing)) return null;
+  if(!liveAgencyEnabled)return null;
+  const draft=await ltLoadChatSearchDraft(env,clientId,phone);
+  const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
+  const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
+  if(!ltChatFlightIntent(userText)&&!continuing)return null;
+  if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
+    await ltClearChatSearchDraft(env,clientId,phone);
+    return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
+  }
   await ltEnsureSchema(env);
   await ltSeedSuppliers(env,clientId);
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
   if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
-  const input=await engineExtractChatFlightRequest(env,c,userText,history);
+  const extracted=await engineExtractChatFlightRequest(env,c,userText,history);
+  const input=ltMergeChatFlightDraft(draft,extracted,userText);
   if(input.missing.length){
-    return {handled:true,reply:`I can check live ticket prices for you. Please send: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
+    await ltSaveChatSearchDraft(env,clientId,phone,input);
+    const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
+    return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
   }
+  await ltSaveChatSearchDraft(env,clientId,phone,input);
   try{
     const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
     const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
@@ -11932,6 +11981,7 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
     const offers=ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx));
     await ltSaveChatOffers(env,clientId,phone,offers);
+    await ltClearChatSearchDraft(env,clientId,phone);
     return {handled:true,reply:ltFormatChatOffers(offers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
