@@ -17087,7 +17087,8 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
 );
 MATRIMONIAL_SETTINGS_FIELDS.push(
   'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
-  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent'
+  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
+  'chat_keyword_subscribe'
 );
 
 // Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
@@ -17103,9 +17104,10 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   const text=String(userText||'').trim();
   const textLower=text.toLowerCase();
 
-  const kwView  =String(settings.chat_keyword_view  ||'1').trim().toLowerCase();
-  const kwList  =String(settings.chat_keyword_list  ||'2').trim().toLowerCase();
-  const kwAgent =String(settings.chat_keyword_agent ||'3').trim().toLowerCase();
+  const kwView      =String(settings.chat_keyword_view      ||'1').trim().toLowerCase();
+  const kwList      =String(settings.chat_keyword_list      ||'2').trim().toLowerCase();
+  const kwAgent     =String(settings.chat_keyword_agent     ||'3').trim().toLowerCase();
+  const kwSubscribe =String(settings.chat_keyword_subscribe ||'4').trim().toLowerCase();
 
   const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
 
@@ -17114,13 +17116,19 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   const setState=async (fields)=>{
     const now=new Date().toISOString();
-    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,...(st||{}),...fields};
+    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null,...(st||{}),...fields};
     try{
-      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,now).run();
+      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,listing_data,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,m.listing_data||null,now).run();
     }catch(e){
-      // Fallback if migration 0079 not yet applied — persists basic state without filter columns
-      try{ await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)').bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run(); }catch(e2){}
+      // Fallback if migration 0085 not yet applied — persists state without listing_data column
+      try{
+        await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+          .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,now).run();
+      }catch(e2){
+        // Fallback if migration 0079 not yet applied — persists basic state without filter columns
+        try{ await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)').bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run(); }catch(e3){}
+      }
     }
     st=m;
   };
@@ -17130,13 +17138,14 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     const v=settings.chat_keyword_view||'1';
     const l=settings.chat_keyword_list||'2';
     const a=settings.chat_keyword_agent||'3';
+    const s=settings.chat_keyword_subscribe||'4';
     let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
     // Strip any menu option lines the admin may have saved inside the welcome message
     // to prevent the options block from appearing twice.
     const lines=intro.split('\n');
-    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a); });
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s); });
     if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
-    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
   const sendProfiles=async (profileType,profileRef=null)=>{
@@ -17262,9 +17271,139 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
 
   // "menu" — always resets to welcome
   if(/^menu$/i.test(text)){
-    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null});
     await send(buildWelcome());
     return {handled:true,step:'menu'};
+  }
+
+  // ── CONVERSATIONAL PROFILE LISTING FLOW ──────────────────────────────────────
+  // Handles each step of the "List My Profile" registration (menu option "2").
+  // State is stored as listing_data JSON in matrimonial_chat_state.
+  // Completes by inserting a pending/free profile into matrimonial_profiles.
+  const menuStateEarly=st?.menu_state;
+  if(menuStateEarly&&menuStateEarly.startsWith('listing_')){
+    let ld={};
+    try{ ld=JSON.parse(st?.listing_data||'{}'); }catch(e){}
+
+    if(menuStateEarly==='listing_asked_type'){
+      let pType=null;
+      if(/^b(ride)?$/i.test(text)) pType='bride';
+      else if(/^g(room)?$/i.test(text)) pType='groom';
+      if(!pType){
+        await send('Please reply *B* for Bride or *G* for Groom.');
+        return {handled:true,step:'listing_asked_type_reprompt'};
+      }
+      ld.profile_type=pType;
+      await setState({menu_state:'listing_asked_name',listing_data:JSON.stringify(ld)});
+      await send('What is your *full name*?');
+      return {handled:true,step:'listing_asked_name'};
+    }
+
+    if(menuStateEarly==='listing_asked_name'){
+      const name=text.trim();
+      if(name.length<2){
+        await send('Please enter your full name.');
+        return {handled:true,step:'listing_asked_name_reprompt'};
+      }
+      ld.full_name=name;
+      await setState({menu_state:'listing_asked_age',listing_data:JSON.stringify(ld)});
+      await send(`Thanks, *${name}*! 😊\n\nHow old are you? (e.g. *25*)`);
+      return {handled:true,step:'listing_asked_age'};
+    }
+
+    if(menuStateEarly==='listing_asked_age'){
+      const age=parseInt(text,10);
+      if(!age||age<18||age>80){
+        await send('Please enter a valid age between 18 and 80.');
+        return {handled:true,step:'listing_asked_age_reprompt'};
+      }
+      ld.age=String(age);
+      await setState({menu_state:'listing_asked_city',listing_data:JSON.stringify(ld)});
+      await send('Which *city or district* are you from?');
+      return {handled:true,step:'listing_asked_city'};
+    }
+
+    if(menuStateEarly==='listing_asked_city'){
+      const city=text.trim();
+      if(city.length<2){
+        await send('Please enter your city or district name.');
+        return {handled:true,step:'listing_asked_city_reprompt'};
+      }
+      ld.city=city;
+      await setState({menu_state:'listing_asked_education',listing_data:JSON.stringify(ld)});
+      await send('What is your *highest education*? (e.g. B.Tech, MBA, HSC, SSLC)');
+      return {handled:true,step:'listing_asked_education'};
+    }
+
+    if(menuStateEarly==='listing_asked_education'){
+      const edu=text.trim();
+      if(edu.length<2){
+        await send('Please enter your education qualification.');
+        return {handled:true,step:'listing_asked_education_reprompt'};
+      }
+      ld.education=edu;
+      await setState({menu_state:'listing_asked_occupation',listing_data:JSON.stringify(ld)});
+      await send('What is your *occupation*? (e.g. Software Engineer, Teacher, Business, Doctor)');
+      return {handled:true,step:'listing_asked_occupation'};
+    }
+
+    if(menuStateEarly==='listing_asked_occupation'){
+      const occ=text.trim();
+      if(occ.length<2){
+        await send('Please enter your occupation.');
+        return {handled:true,step:'listing_asked_occupation_reprompt'};
+      }
+      ld.occupation=occ;
+      await setState({menu_state:'listing_asked_phone',listing_data:JSON.stringify(ld)});
+      await send(`What *contact number* should we list for you?\n\nReply *same* to use your WhatsApp number (*${phone}*), or type a different number.`);
+      return {handled:true,step:'listing_asked_phone'};
+    }
+
+    if(menuStateEarly==='listing_asked_phone'){
+      const contactPhone=/^same$/i.test(text)?String(phone):text.replace(/[^\d+]/g,'').trim()||text.trim();
+      ld.phone=contactPhone;
+      const now=new Date().toISOString();
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_profiles (client_id,profile_type,full_name,age,city,education,occupation,phone,whatsapp,membership_plan,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),ld.profile_type||'',ld.full_name||'',ld.age||null,ld.city||'',ld.education||'',ld.occupation||'',contactPhone,String(phone),'free','pending',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriListingFlowInsert',e,{clientId,phone}); }
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      const typeLabel=ld.profile_type==='bride'?'Bride 👰':'Groom 🤵';
+      await send(`✅ Your profile has been submitted!\n\n📋 *Summary:*\n• Type: ${typeLabel}\n• Name: ${ld.full_name}\n• Age: ${ld.age}\n• City: ${ld.city}\n• Education: ${ld.education}\n• Occupation: ${ld.occupation}\n• Contact: ${contactPhone}\n\n💜 Our team will review and activate your profile shortly.\n\nReply *menu* to go back to the main menu.`);
+      return {handled:true,step:'listing_submitted'};
+    }
+  }
+
+  // ── FREE SUBSCRIPTION FLOW ───────────────────────────────────────────────────
+  // subscribe_asked_name: bot asked for customer's name before activating.
+  if(menuStateEarly==='subscribe_asked_name'){
+    const name=text.trim();
+    const now=new Date().toISOString();
+    const displayName=name.length>=2?name:String(phone);
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing){
+      if(existing.status==='active'){
+        await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+        await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+        return {handled:true,step:'subscribe_already_active'};
+      }
+      // Reactivate suspended/expired record
+      try{
+        await env.DB.prepare("UPDATE matrimonial_activated_leads SET name=?,status='active',daily_limit=10,monthly_limit=10,can_view='both',expiry_date=NULL,views_today=0,views_month=0,updated_at=? WHERE id=?")
+          .bind(displayName,now,existing.id).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeReactivate',e,{clientId,phone}); }
+    } else {
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),String(phone),displayName,'both',10,10,'active','free subscription via WhatsApp',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeInsert',e,{clientId,phone}); }
+    }
+    await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`🎉 *You're now subscribed!*\n\nHi *${displayName}*, your free subscription is active.\n\n📊 *Your plan:*\n• 10 profile views per day\n• Access to all profiles\n• No expiry\n\nReply *1* to start browsing profiles now!\nReply *menu* for the main menu.`);
+    return {handled:true,step:'subscribe_activated'};
   }
 
   const findProfileBySerial=async (ref)=>{
@@ -17375,11 +17514,24 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     return {handled:true,step:'asked_gender'};
   }
 
-  // List profile keyword (default "2")
+  // List profile keyword (default "2") — start conversational registration flow
   if(textLower===kwList){
-    const formUrl=(settings.chat_form_url||'').trim();
-    await send(formUrl?`📋 Submit your profile here 👇\n\n${formUrl}`:'📋 Please contact us to list your profile.');
-    return {handled:true,step:'list_profile'};
+    await setState({menu_state:'listing_asked_type',listing_data:'{}',sent_ids:'[]',city_filter:null,max_age:null});
+    await send('📋 *List Your Profile*\n\nAre you registering as a *Bride* or *Groom*?\n\nReply *B* for Bride or *G* for Groom\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'listing_asked_type'};
+  }
+
+  // Free subscription keyword (default "4")
+  if(textLower===kwSubscribe){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      await send('✅ You already have an active free subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+      return {handled:true,step:'subscribe_already_active'};
+    }
+    await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'subscribe_asked_name'};
   }
 
   // Talk to agent keyword (default "3") — let normal LLM routing handle it
