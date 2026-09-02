@@ -7914,8 +7914,6 @@ function openDetail(id){
   $id('detailActions').innerHTML=`
     <a class="action-btn" href="${callLink}" onclick="openCallLog()"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
-    <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
-    <button class="action-btn" onclick="openPushOrderModal()"><span class="ab-icon">🛒</span>Push to Order</button>
     <button class="action-btn" onclick="openTaskModal(null,currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
