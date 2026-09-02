@@ -4928,6 +4928,14 @@ function closeMoreSheet(){
 function openProjectsTool(){
   window.open(`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}`, '_blank');
 }
+// Opens projects.html with the task modal pre-filled for this lead, so the task lands
+// directly in D1 (the same store projects.html reads from) rather than only in manual_tasks.
+function pushLeadToProjects(lead){
+  if(!lead) return;
+  const title=encodeURIComponent(`Follow up with ${lead.Name||lead.Phone||'lead'}`);
+  const url=`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&new_task=1&lead_id=${lead.Id}&lead_name=${encodeURIComponent(lead.Name||lead.Phone||'')}&title=${title}`;
+  window.open(url,'_blank');
+}
 
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
@@ -6749,7 +6757,7 @@ function renderLeadsTable(){
 // button's convention of looking the lead up by Id inside the target function.
 function openFollowupForLead(leadId){
   const lead=allLeads.find(l=>l.Id===leadId);
-  if(lead) openTaskModal(null, lead);
+  if(lead) pushLeadToProjects(lead);
 }
 
 /* ── LEADS: SEND TEMPLATE MODAL ──
@@ -7914,9 +7922,7 @@ function openDetail(id){
   $id('detailActions').innerHTML=`
     <a class="action-btn" href="${callLink}" onclick="openCallLog()"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
-    <button class="action-btn" onclick="openEditLead(currentLead)"><span class="ab-icon">✏️</span>Edit</button>
-    <button class="action-btn" onclick="openPushOrderModal()"><span class="ab-icon">🛒</span>Push to Order</button>
-    <button class="action-btn" onclick="openTaskModal(null,currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
+    <button class="action-btn" onclick="pushLeadToProjects(currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
     ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}

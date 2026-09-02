@@ -798,12 +798,28 @@ async function boot(){
     renderStats();
     renderView();
     handleGcalReturnParam();
+    handleNewTaskParam();
   }catch(e){
     document.body.innerHTML=`<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>${esc(e.message||'Session expired')} — reopen Projects from your Leadvyne dashboard.</div>`;
   }
 }
 // Landed back here from handleGcalOauthCallback (worker.js) via the return_to it was given —
 // same ?gcal=connected/error query-string contract dashboard.html's own boot already handles.
+// When opened from dashboard "Push to Task" button, auto-open the task modal
+// pre-filled with the lead's name and ID so the task goes straight into D1.
+function handleNewTaskParam(){
+  const leadId=params.get('lead_id');
+  const leadName=params.get('lead_name');
+  const title=params.get('title');
+  if(!params.get('new_task')) return;
+  const cleanUrl=new URL(location.href);
+  ['new_task','lead_id','lead_name','title'].forEach(k=>cleanUrl.searchParams.delete(k));
+  history.replaceState({},'',(cleanUrl.pathname+cleanUrl.search).replace(/\?$/,''));
+  openTaskModal();
+  if(leadId) setLinkedLead(leadId, leadName||('Lead #'+leadId));
+  if(title) $id('tmTitle').value=decodeURIComponent(title);
+}
+
 function handleGcalReturnParam(){
   const gcalParam=params.get('gcal');
   if(!gcalParam) return;
