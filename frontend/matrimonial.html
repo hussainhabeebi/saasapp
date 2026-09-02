@@ -2,9 +2,19 @@
 :root{--bg:#fdf2f8;--card:#fff;--ink:#3b0764;--muted:#7e3a6e;--a:#be185d;--a2:#9d174d;--soft:#fce7f3;--line:#fbcfe8;--bad:#b91c1c;--ok:#047857;--r:14px}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px Inter,sans-serif}button,input,select,textarea{font:inherit}
 header{height:58px;padding:0 20px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:20}
 .brand{font:700 17px "Space Grotesk"}.brand span{color:var(--a)}.chip,.badge{display:inline-block;border-radius:20px;padding:4px 9px;background:var(--soft);color:var(--a2);font-size:11px;font-weight:700}.badge.gray{background:#f1f5f9;color:#475569}.badge.ok{background:#d1fae5;color:var(--ok)}.badge.warn{background:#fef3c7;color:#92400e}.badge.danger{background:#fee2e2;color:var(--bad)}.back{margin-left:auto}
-.tabs{display:flex;overflow:auto;background:#fff;border-bottom:1px solid var(--line);padding:0 16px;position:sticky;top:58px;z-index:19}.tab{white-space:nowrap;border:0;border-bottom:3px solid transparent;background:none;padding:12px 13px;color:var(--muted);font:600 13px "Space Grotesk";cursor:pointer}.tab.active{color:var(--a2);border-color:var(--a)}
+/* App layout */
+#app{display:flex;height:calc(100vh - 58px)}
+#sidebar{width:56px;background:#18072e;flex-shrink:0;display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:3px;position:sticky;top:58px;height:calc(100vh - 58px);overflow:hidden;z-index:19}
+#content{flex:1;overflow:auto;min-width:0}
+.nav-btn{width:40px;height:40px;border:0;background:none;border-radius:10px;cursor:pointer;color:#a78bca;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;position:relative;flex-shrink:0}
+.nav-btn:hover{background:#2d0f52;color:#e879f9}
+.nav-btn.active{background:linear-gradient(135deg,#be185d,#9d174d);color:#fff;box-shadow:0 2px 10px #be185d60}
+.nav-tip{position:absolute;left:calc(100% + 12px);top:50%;transform:translateY(-50%);background:#18072e;color:#f0abfc;font:600 11.5px Inter,sans-serif;padding:5px 10px;border-radius:7px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:200;border:1px solid #4c1d95;box-shadow:0 4px 12px #00000040}
+.nav-btn:hover .nav-tip{opacity:1}
+.nav-spacer{flex:1}
+.nav-sep{width:32px;height:1px;background:#2d0f52;margin:4px 0;flex-shrink:0}
 /* Webhook bar */
-#webhookBar{background:#fff7fd;border-bottom:1px solid var(--line);padding:0;overflow:hidden;transition:max-height .25s;max-height:0;position:sticky;top:101px;z-index:18}
+#webhookBar{background:#fff7fd;border-bottom:1px solid var(--line);padding:0;overflow:hidden;transition:max-height .25s;max-height:0;z-index:18}
 #webhookBar.open{max-height:380px}
 .wh-inner{padding:12px 20px 14px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
 .wh-section{flex:1;min-width:220px}
@@ -15,7 +25,7 @@ header{height:58px;padding:0 20px;background:#fff;border-bottom:1px solid var(--
 .wh-cols{margin-top:8px}
 .col-pill{display:inline-block;background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:11px;margin:2px 2px 2px 0;font-family:monospace;color:var(--a2)}
 .wh-log{margin-top:8px;font-size:11.5px;color:var(--muted)}
-.wh-toggle{display:flex;align-items:center;gap:6px;padding:6px 20px 0;cursor:pointer;font-size:12px;font-weight:600;color:var(--a);background:#fff7fd;border-bottom:1px solid var(--line);position:sticky;top:101px;z-index:19;border-top:1px solid var(--line)}
+.wh-toggle{display:flex;align-items:center;gap:6px;padding:6px 20px 0;cursor:pointer;font-size:12px;font-weight:600;color:var(--a);background:#fff7fd;border-bottom:1px solid var(--line);border-top:1px solid var(--line)}
 .wh-toggle svg{transition:transform .2s}
 #webhookBar.open ~ .wh-toggle svg{transform:rotate(180deg)}
 main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{display:block}
@@ -36,21 +46,35 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
 .toggle{display:flex!important;align-items:center;gap:8px;text-transform:none!important;font-size:13px!important}.toggle input{width:18px;height:18px}
 .log-row-ok{color:var(--ok)}.log-row-err{color:var(--bad)}
 @media(max-width:800px){.grid2,.grid3{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}main{padding:12px}.search{width:100%}.wh-inner{gap:12px}}
+@media(max-width:640px){
+  #app{flex-direction:column-reverse;height:auto}
+  #content{height:calc(100vh - 58px - 56px);overflow:auto}
+  #sidebar{width:100%;height:56px;flex-direction:row;justify-content:space-around;top:auto;bottom:0;position:fixed;z-index:30;padding:0 4px;gap:0;border-top:1px solid #2d0f52}
+  .nav-spacer,.nav-sep{display:none}
+  .nav-btn{flex-direction:column;width:auto;flex:1;height:52px;border-radius:0;gap:2px}
+  .nav-tip{position:static;transform:none;opacity:1;background:none;border:0;box-shadow:none;color:inherit;font-size:9px;font-weight:700;padding:0;letter-spacing:.02em}
+  .nav-btn:hover .nav-tip{opacity:1}
+  body{padding-bottom:0}
+}
 </style></head><body>
 <header>
-  <span class="brand">Leadvyne<span>.</span></span>
   <span class="chip">💍 Matrimonial</span>
+  <span id="hdrServiceName" style="color:var(--muted);font:600 14px 'Space Grotesk';flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
   <button class="btn ghost back" onclick="location.href='dashboard.html?client='+clientId">← CRM</button>
 </header>
-<nav class="tabs">
-  <button class="tab active" data-page="overview">Overview</button>
-  <button class="tab" data-page="profiles">Profiles</button>
-  <button class="tab" data-page="matches">Matches</button>
-  <button class="tab" data-page="shortlists">Shortlists</button>
-  <button class="tab" data-page="stories">Success Stories</button>
-  <button class="tab" data-page="activated">Activated Customers</button>
-  <button class="tab" data-page="settings">Settings</button>
+<div id="app">
+<nav id="sidebar">
+  <button class="nav-btn active" data-page="overview"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="nav-tip">Overview</span></button>
+  <button class="nav-btn" data-page="profiles"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M16 3.13a4 4 0 010 7.75M21 21v-2a4 4 0 00-3-3.87"/></svg><span class="nav-tip">Profiles</span></button>
+  <button class="nav-btn" data-page="matches"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg><span class="nav-tip">Matches</span></button>
+  <button class="nav-btn" data-page="shortlists"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg><span class="nav-tip">Shortlists</span></button>
+  <button class="nav-btn" data-page="stories"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg><span class="nav-tip">Success Stories</span></button>
+  <div class="nav-spacer"></div>
+  <div class="nav-sep"></div>
+  <button class="nav-btn" data-page="activated"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg><span class="nav-tip">Activated Customers</span></button>
+  <button class="nav-btn" data-page="settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg><span class="nav-tip">Settings</span></button>
 </nav>
+<div id="content">
 
 <!-- Webhook bar (slides open below tabs) -->
 <div id="webhookBar">
@@ -278,6 +302,8 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
 </section>
 
 </main>
+</div><!-- #content -->
+</div><!-- #app -->
 <div id="modals"></div>
 <script>
 const API='https://leadvyne-api-proxy.leadvyne.workers.dev',P=new URLSearchParams(location.search),clientId=P.get('client')||'';
@@ -298,11 +324,13 @@ const TABLE_COLS={
 async function api(path,o={}){const r=await fetch(API+path,{...o,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(o.headers||{})}}),d=await r.json().catch(()=>({}));if(!r.ok||d.error)throw new Error(d.error||'HTTP '+r.status);return d}
 function modal(id,on=true){$(id).classList.toggle('on',on)}
 
-// TAB SWITCHING — update webhook bar on every tab change
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('.tab,.page').forEach(x=>x.classList.remove('active'));
+// TAB SWITCHING — sidebar nav buttons + mobile bottom bar
+document.querySelectorAll('.nav-btn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.nav-btn,.page').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');$('page-'+b.dataset.page).classList.add('active');
   currentPage=b.dataset.page;
+  // Scroll content area back to top on tab change
+  const c=$('content'); if(c) c.scrollTop=0;
   updateWebhookBar();
   if(b.dataset.page==='settings'){renderSettings();loadLog();}
 });
@@ -420,6 +448,7 @@ async function loadAll(){
   const [p,m,sl,st,se,ac]=await Promise.all([api('/matrimonial/profiles'),api('/matrimonial/matches'),api('/matrimonial/shortlists'),api('/matrimonial/stories'),api('/matrimonial/settings'),api('/matrimonial/activated')]);
   profiles=p.list||[];matches=m.list||[];shortlists=sl.list||[];stories=st.list||[];settings=se;activated=ac.list||[];
   fillSelects();renderAll();renderActivated();updateWebhookBar();
+  const hn=$('hdrServiceName'); if(hn&&settings.service_name) hn.textContent=settings.service_name;
 }
 function fillSelects(){
   const opts='<option value="">Select profile…</option>'+profiles.map(p=>`<option value="${p.id}">${esc(p.full_name)} (${p.profile_type})</option>`).join('');
