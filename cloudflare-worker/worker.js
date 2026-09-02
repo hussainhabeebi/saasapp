@@ -3194,10 +3194,24 @@ async function classicFollowupProcessClient(env, c){
       if(nextStep===-1) continue; // sequence exhausted, or all remaining session steps expired
       const stepCfg=steps[nextStep];
       if(stepCfg.type==='session' && !stepCfg.message) continue;
-      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
+      if(stepCfg.type==='template' && !stepCfg.template_name){
+        // Template step has no template name configured — log once per tick so the dashboard can surface it.
+        console.warn('[classic-followups] step',nextStep,'for lead',lead.Id,'has no template_name configured');
+        continue;
+      }
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
       try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
-      catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
+      catch(e){
+        console.error('[classic-followups] send failed for lead', lead.Id, 'step', nextStep, e.message);
+        if(stepCfg.type==='template'){
+          // Write to followup_send_failures so the dashboard can show WHY the after-24h template send
+          // failed (expired token, unapproved template, missing WA credentials, etc.) instead of silently swallowing it.
+          const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
+          env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
+            .bind(Number(c.Id), Number(lead.Id), nextStep, String(e.message).slice(0,500), errCode?Number(errCode):null, 'cron', new Date().toISOString())
+            .run().catch(()=>{});
+        }
+      }
       await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
     }
     if(leadRows.length<200) break;
@@ -15434,7 +15448,7 @@ async function handleEngineWebhook(request, env, secret){
         const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
         const stub=env.LEAD_AGENT.get(doId);
         if(isNewLead){
-          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1})}).catch(()=>{});
+          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1,lastMsgAt:startMs})}).catch(()=>{});
         } else if(userText){
           stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
         }
@@ -26512,6 +26526,12 @@ export class LeadFollowupAgent{
 
     // Skip steps with no content configured — advance without counting as a retry
     if((cfg.type==='session'&&!cfg.message)||(cfg.type==='template'&&!cfg.template_name)){
+      if(cfg.type==='template'){
+        console.warn('[LeadFollowupAgent] step',step,'for lead',leadId,'has no template_name — skipping');
+        this.env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, source, failed_at) VALUES (?,?,?,?,?,?)`)
+          .bind(Number(clientId), Number(leadId), step, 'No template_name configured for this step', 'do', new Date().toISOString())
+          .run().catch(()=>{});
+      }
       step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
     }
 
@@ -26546,6 +26566,10 @@ export class LeadFollowupAgent{
     }catch(e){
       retries++;
       console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,'retry',retries,e.message);
+      const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
+      this.env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
+        .bind(Number(clientId), Number(leadId), step, String(e.message).slice(0,500), errCode?Number(errCode):null, 'do', new Date().toISOString())
+        .run().catch(()=>{});
       if(retries>=3){
         // 3 failed attempts on the same step — treat as undeliverable and advance
         console.warn('[LeadFollowupAgent] giving up on step',step,'for lead',leadId,'after 3 retries');
@@ -26600,6 +26624,18 @@ async function handleFollowupSmartMigrate(request, env){
     spawned++;
   }
   return json({ok:true, spawned});
+}
+// Returns the most recent template send failures for this client so the Follow-up Engine UI can
+// surface actionable errors (expired token, unapproved template, etc.) instead of silently hiding them.
+async function handleFollowupFailuresGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const url=new URL(request.url);
+  const limit=Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit')||'50')));
+  const {results}=await env.DB.prepare(
+    `SELECT id, lead_id, step, error_message, error_code, source, failed_at FROM followup_send_failures WHERE client_id=? ORDER BY failed_at DESC LIMIT ?`
+  ).bind(Number(payload.cid), limit).all().catch(()=>({results:[]}));
+  return json({failures: results||[]});
 }
 
 // ─── Public Chat Page ─────────────────────────────────────────────────────────
@@ -27227,6 +27263,7 @@ export default {
       else if(url.pathname==='/followups/smart' && request.method==='GET'){ res=await handleFollowupSmartGet(request, env); }
       else if(url.pathname==='/followups/smart' && request.method==='PATCH'){ res=await handleFollowupSmartPatch(request, env); }
       else if(url.pathname==='/followups/smart/migrate' && request.method==='POST'){ res=await handleFollowupSmartMigrate(request, env); }
+      else if(url.pathname==='/followups/failures' && request.method==='GET'){ res=await handleFollowupFailuresGet(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
