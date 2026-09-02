@@ -17222,6 +17222,7 @@ async function handleMatriCreate(request, env, table, fields, required){
   const vals=cols.map(k=>matriCoerce(k,body[k]));
   const r=await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(Number(payload.cid),...vals,now,now).run();
   const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
   return json(row);
 }
 async function handleMatriUpdate(request, env, table, fields){
@@ -17238,6 +17239,7 @@ async function handleMatriUpdate(request, env, table, fields){
   if(!sets.length) return json({ok:true});
   sets.push('updated_at=?');vals.push(new Date().toISOString());vals.push(id);
   await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
   return json({ok:true});
 }
 async function handleMatriDelete(request, env, table){
@@ -17249,6 +17251,7 @@ async function handleMatriDelete(request, env, table){
   const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
   if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
   return json({ok:true});
 }
 async function handleMatriSettingsGet(request, env){
@@ -17287,6 +17290,24 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
   'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
   'chat_keyword_subscribe'
 );
+
+// ── Matrimonial profile KV cache helpers ─────────────────────────────────────
+// Cache key: matri_profiles:{clientId} — stores all active profiles as a JSON array (TTL 7200 s).
+// All write paths (create/update/delete/webhook/chat-listing) call matriProfilesCacheInvalidate so
+// sendProfiles always sees fresh data on the next request after any change.
+// Every function is a no-op when env.MATRI_CACHE is absent (binding not yet configured).
+async function matriProfilesCacheGet(env,clientId){
+  if(!env.MATRI_CACHE) return null;
+  try{ const v=await env.MATRI_CACHE.get(`matri_profiles:${clientId}`); return v?JSON.parse(v):null; }catch(e){ return null; }
+}
+async function matriProfilesCacheSet(env,clientId,profiles){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.put(`matri_profiles:${clientId}`,JSON.stringify(profiles),{expirationTtl:7200}); }catch(e){}
+}
+async function matriProfilesCacheInvalidate(env,clientId){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.delete(`matri_profiles:${clientId}`); }catch(e){}
+}
 
 // Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
 // paginated profile delivery. Returns {handled:true, step} when it owns the turn, or null to
@@ -17395,36 +17416,33 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let previewFields=['full_name','age','city','plan_label'];
     try{ const pf=JSON.parse(settings.chat_preview_fields||'[]'); if(pf.length) previewFields=pf; }catch(e){}
 
-    const plH=plans.map(()=>'?').join(',');
-    const exH=sentIds.length?sentIds.map(()=>'?').join(','):'0';
     const cityFilter=st?.city_filter||null;
     const maxAge=st?.max_age?parseInt(st.max_age):null;
-    let extraWhere='';
-    const extraParams=[];
-    if(cityFilter){
-      extraWhere+=' AND (city LIKE ? OR district LIKE ?)';
-      extraParams.push('%'+cityFilter+'%','%'+cityFilter+'%');
-    }
-    if(maxAge){
-      extraWhere+=' AND (CAST(COALESCE(age,0) AS INTEGER)>0 AND CAST(age AS INTEGER)<=?)';
-      extraParams.push(maxAge);
-    }
-    if(profileRef){
-      extraWhere+=' AND (CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,\'\'))=LOWER(?))';
-      extraParams.push(String(profileRef),String(profileRef));
-    }
     let rows;
     try{
-      rows=await env.DB.prepare(
-        `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND (LOWER(COALESCE(membership_plan,'')) IN (${plH}) OR LOWER(COALESCE(plan_label,'')) IN (${plH})) AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
-      ).bind(String(clientId),profileType,...plans,...plans,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
-      // Sheet imports may store the paid plan in plan_label, or omit plan data.
-      // Fall back to every active listed profile instead of reporting a false empty result.
-      if(!(rows.results||[]).length){
-        rows=await env.DB.prepare(
-          `SELECT * FROM matrimonial_profiles WHERE client_id=? AND profile_type=? AND status='active' AND id NOT IN (${exH})${extraWhere} ORDER BY id ASC LIMIT ?`
-        ).bind(String(clientId),profileType,...(sentIds.length?sentIds:[]),...extraParams,perMsg+1).all();
+      // KV-first: cache holds all active profiles for this client; JS filtering keeps a single cache
+      // key per client so any write path only needs to delete one entry to keep data in sync.
+      let allProfiles=await matriProfilesCacheGet(env,clientId);
+      if(!allProfiles){
+        const d1=await env.DB.prepare(
+          `SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' ORDER BY id ASC`
+        ).bind(String(clientId)).all();
+        allProfiles=d1.results||[];
+        await matriProfilesCacheSet(env,clientId,allProfiles);
       }
+      // Type + already-sent filter
+      let filtered=allProfiles.filter(p=>p.profile_type===profileType&&!sentIds.includes(p.id));
+      // Plan filter — fall back to all when nothing matches (mirrors original two-query fallback)
+      const planSet=new Set(plans);
+      const planFiltered=filtered.filter(p=>planSet.has(String(p.membership_plan||'').toLowerCase())||planSet.has(String(p.plan_label||'').toLowerCase()));
+      if(planFiltered.length) filtered=planFiltered;
+      // City filter
+      if(cityFilter){ const cf=cityFilter.toLowerCase(); filtered=filtered.filter(p=>String(p.city||'').toLowerCase().includes(cf)||String(p.district||'').toLowerCase().includes(cf)); }
+      // Max-age filter
+      if(maxAge) filtered=filtered.filter(p=>{ const a=parseInt(p.age||0); return a>0&&a<=maxAge; });
+      // Profile-ref filter
+      if(profileRef){ const ref=String(profileRef); filtered=filtered.filter(p=>String(p.id)===ref||String(p.lead_id||'').toLowerCase()===ref.toLowerCase()); }
+      rows={results:filtered.slice(0,perMsg+1)};
     }catch(e){ rows={results:[]}; }
 
     const all=rows.results||[];
@@ -17565,6 +17583,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
           `INSERT INTO matrimonial_profiles (client_id,profile_type,full_name,age,city,education,occupation,phone,whatsapp,membership_plan,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
         ).bind(String(clientId),ld.profile_type||'',ld.full_name||'',ld.age||null,ld.city||'',ld.education||'',ld.occupation||'',contactPhone,String(phone),'free','pending',now,now).run();
       }catch(e){ await reportOpsError(env,'matriListingFlowInsert',e,{clientId,phone}); }
+      await matriProfilesCacheInvalidate(env,clientId);
       await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
       const typeLabel=ld.profile_type==='bride'?'Bride 👰':'Groom 🤵';
       await send(`✅ Your profile has been submitted!\n\n📋 *Summary:*\n• Type: ${typeLabel}\n• Name: ${ld.full_name}\n• Age: ${ld.age}\n• City: ${ld.city}\n• Education: ${ld.education}\n• Occupation: ${ld.occupation}\n• Contact: ${contactPhone}\n\n💜 Our team will review and activate your profile shortly.\n\nReply *menu* to go back to the main menu.`);
@@ -17961,6 +17980,8 @@ async function handleMatriWebhook(request, env, kind){
   // Write sync log
   await env.DB.prepare(`INSERT INTO matrimonial_webhook_log (client_id,table_name,rows_received,rows_inserted,rows_updated,rows_skipped,status,fired_at) VALUES (?,?,?,?,?,?,'ok',?)`)
     .bind(clientId, kind, rows.length, inserted, updated, skipped, now).run().catch(()=>{});
+
+  if(kind==='profiles'&&(inserted||updated)) await matriProfilesCacheInvalidate(env,clientId);
 
   return json({ok:true, rows_received:rows.length, rows_inserted:inserted, rows_updated:updated, rows_skipped:skipped});
 }

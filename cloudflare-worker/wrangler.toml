@@ -45,6 +45,16 @@ binding = "DB"
 database_name = "leadvyne-d1"
 database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
 
+# KV — per-client matrimonial profile read cache; reduces D1 load for the WhatsApp chat menu's
+# paginated profile delivery. Keys are `matri_profiles:{clientId}` (TTL 7200 s); invalidated on
+# every profile create/update/delete and webhook import. Falls back to D1 silently if the binding
+# is absent or the namespace ID has not been filled in. One-time setup:
+#   1. wrangler kv:namespace create leadvyne-matri-cache
+#   2. Paste the returned id below over the placeholder.
+[[kv_namespaces]]
+binding = "MATRI_CACHE"
+id = "PLACEHOLDER_REPLACE_WITH_WRANGLER_KV_NAMESPACE_ID"
+
 # R2 — object storage for the Hospitality module's unit photos/video (SETUP.md "Hospitality
 # module"). Everything else this app stores is either NocoDB rows or small D1 text/JSON — this is
 # the first real binary media this Worker holds, hence a bucket rather than a database column
