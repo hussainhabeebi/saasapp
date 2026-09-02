@@ -638,7 +638,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .leads-view-tabs .lv-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .leads-view-tabs .lv-tab .lv-x{opacity:.7;margin-left:2px}
 .leads-view-tabs .lv-tab .lv-x:hover{opacity:1}
-.li-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.li-actions{display:flex;gap:6px;flex-wrap:nowrap;margin-top:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px}
+.li-actions::-webkit-scrollbar{display:none}
 .momentum-link{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .momentum-link:hover{opacity:.8}
 .task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -6337,12 +6338,12 @@ function renderLeadsList(){
         <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
-          <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
-          <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-          ${callBtnHTML(l,'📞 Call')}
-          <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰ Snooze</button>
-          <button class="btn btn-secondary btn-sm" onclick="openFollowupForLead(${l.Id})">📅 Follow-up</button>
-          <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣 Send</button>
+          <button class="btn btn-sm" title="Mark Won" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅</button>
+          <button class="btn btn-secondary btn-sm" title="Mark Spam" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫</button>
+          ${callBtnHTML(l,leadCallCount(l))}
+          <button class="btn btn-secondary btn-sm" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
+          <button class="btn btn-secondary btn-sm" title="Follow-up task" onclick="openFollowupForLead(${l.Id})">📅</button>
+          <button class="btn btn-secondary btn-sm" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
         </div>`:''}
         ${reconnect?`<div class="li-actions" onclick="event.stopPropagation()"><button class="btn btn-sm" style="background:#0D9C93;color:#fff" onclick="reactivateLead(${l.Id},event)">♻️ Reactivate</button></div>`:''}
       </div>
@@ -8322,6 +8323,12 @@ async function saveCall(){
 }
 
 /* ── CALL BUTTON INTELLIGENCE ─────────────────────────────────────────────── */
+
+// Returns call count label: "📞" if never called, "📞 2" if 2 calls logged
+function leadCallCount(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  return calls.length?`📞 ${calls.length}`:'📞';
+}
 
 // Returns CSS class for call button color based on call history
 function callStateFor(l){
