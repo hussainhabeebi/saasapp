@@ -493,6 +493,33 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .call-body{flex:1}
 .call-meta{font-size:11px;color:var(--muted);margin-top:2px;font-family:var(--mono)}
 
+/* call button intelligence */
+.call-btn-wrap{position:relative;display:inline-flex;align-items:center;gap:0}
+.call-state-fresh{background:#059669!important;color:#fff!important}
+.call-state-callback{background:#D97706!important;color:#fff!important}
+.call-state-answered{background:#6B7280!important;color:#fff!important}
+.call-state-danger{background:#DC2626!important;color:#fff!important}
+.call-caret{padding:2px 5px!important;min-width:18px!important;border-left:1px solid rgba(255,255,255,.3)!important;border-radius:0 6px 6px 0!important}
+.call-main{border-radius:6px 0 0 6px!important}
+.call-channel-drop{position:absolute;top:calc(100% + 4px);left:0;z-index:9999;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 6px 20px rgba(0,0,0,.15);min-width:170px;padding:4px 0;display:none}
+.call-channel-drop.open{display:block}
+.call-channel-drop a,.call-channel-drop button{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;font-size:12px;background:none;border:none;cursor:pointer;color:var(--ink);text-decoration:none;white-space:nowrap;font-family:inherit}
+.call-channel-drop a:hover,.call-channel-drop button:hover{background:var(--hover)}
+.outcome-chips{display:flex;gap:5px;flex-wrap:wrap;padding:4px 0 2px}
+.outcome-chip{padding:4px 9px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1.5px solid transparent;transition:all .12s;white-space:nowrap}
+.outcome-chip:hover{transform:scale(1.06);opacity:.9}
+.call-timer-badge{font-size:10px;font-family:var(--mono);background:#1E3A5F;color:#fff;border-radius:6px;padding:1px 6px;margin-left:3px;vertical-align:middle}
+/* power dialer overlay */
+#powerDialer{position:fixed;inset:0;z-index:5000;background:#0F2C4C;color:#fff;display:none;flex-direction:column;align-items:center;justify-content:center;padding:16px}
+.pd-card{background:#1E3A5F;border-radius:20px;padding:28px 36px;text-align:center;width:min(480px,100%)}
+.pd-name{font-size:26px;font-weight:700;margin-bottom:4px}
+.pd-phone{font-size:17px;font-family:var(--mono);margin-bottom:4px;opacity:.8}
+.pd-stage{font-size:13px;opacity:.55;margin-bottom:20px}
+.pd-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.pd-close{position:absolute;top:16px;right:16px;background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
+.pd-progress{position:absolute;top:16px;left:16px;font-size:13px;opacity:.55}
+.pd-timer{font-size:38px;font-family:var(--mono);font-weight:700;margin-bottom:6px;color:#4ADE80;display:none}
+
 /* note item */
 .note-item{background:#FFFDF0;border-left:3px solid var(--yellow);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:11px 13px;margin-bottom:8px;font-size:13px;line-height:1.6}
 .note-meta{font-size:10px;color:var(--muted);margin-top:4px;font-family:var(--mono)}
@@ -1474,6 +1501,7 @@ const ROLES = {
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModePipeline" onclick="setLeadsViewMode('pipeline')">🗂 Pipeline</button>
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModeAnalyst" onclick="setLeadsViewMode('analyst')" title="AI Data Analyst &amp; Business Intelligence">🧠 AI Analyst</button>
           <button class="btn btn-secondary btn-sm leads-view-btn" id="leadsViewModeSplits" onclick="setLeadsViewMode('splits')" title="Location &amp; Product split — see where leads come from and what they want">📍 Splits</button>
+          <button class="btn btn-sm" style="background:#0F2C4C;color:#fff;margin-left:auto" onclick="buildPowerDialerQueue()" title="Power dial all callback leads">📞 Power Dial</button>
         </div>
       </div>
 
@@ -6149,6 +6177,7 @@ function renderBulkBar(){
     <input class="form-input" id="bulkBrandInput" list="fBrandList" placeholder="Set brand…" style="max-width:140px" onkeydown="if(event.key==='Enter')bulkSetBrand()">
     <button class="btn btn-secondary btn-sm" onclick="bulkSetBrand()">Brand</button>
     <button class="btn btn-primary btn-sm" onclick="openSendTemplateModal([..._bulkSelectedLeadIds])">📣 Send Template</button>
+    <button class="btn btn-sm" style="background:#0F2C4C;color:#fff" onclick="buildPowerDialerQueue([..._bulkSelectedLeadIds])">📞 Power Dial</button>
     <span style="flex:1"></span>
     <button class="btn btn-secondary btn-sm" onclick="clearBulkSelection()">Clear</button>`;
 }
@@ -6310,7 +6339,7 @@ function renderLeadsList(){
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
           <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-          ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation();openCallLog(${l.Id})">📞 Call</a>`:''}
+          ${callBtnHTML(l,'📞 Call')}
           <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰ Snooze</button>
           <button class="btn btn-secondary btn-sm" onclick="openFollowupForLead(${l.Id})">📅 Follow-up</button>
           <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣 Send</button>
@@ -6704,7 +6733,7 @@ function renderLeadsTable(){
       <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
         <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
         <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
-        ${needsCallback?`<a class="btn btn-sm" style="background:#0F2C4C;color:#fff" href="${callHrefFor(l)}" onclick="event.stopPropagation();openCallLog(${l.Id})">📞</a>`:''}
+        ${callBtnHTML(l,'📞')}
         <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id})">⏰</button>
         <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣</button>
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
@@ -8255,19 +8284,325 @@ function renderDetailCalls(lead){
 function openCallLog(leadId){
   if(leadId){ const l=allLeads.find(x=>x.Id===leadId); if(l) currentLead=l; }
   openModal('modalCall');
+  // pre-fill stage-keyed notes template if textarea is empty
+  const notes=$id('callNotes');
+  if(notes&&!notes.value&&currentLead){
+    const tpl=callNotesTemplate(currentLead.Stage||'');
+    if(tpl) notes.value=tpl;
+  }
+  // auto-fill duration from timer if call was in progress
+  if(currentLead){
+    const elapsed=callTimerElapsed(currentLead.Id);
+    if(elapsed>0){
+      const dur=$id('callDuration');
+      if(dur&&!dur.value) dur.value=elapsed;
+    }
+  }
 }
 
 async function saveCall(){
   if(!currentLead)return;
   await claimLeadIfUnowned(currentLead.Id,'Call log');
   let calls=[]; try{calls=JSON.parse(currentLead.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome:$id('callOutcome').value,duration:$id('callDuration').value,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
+  // auto-fill duration from timer if field empty
+  let dur=$id('callDuration').value;
+  if(!dur&&currentLead){ const elapsed=callTimerElapsed(currentLead.Id); if(elapsed>0) dur=elapsed; }
+  const outcome=$id('callOutcome').value;
+  const leadId=currentLead.Id;
+  calls.unshift({outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
   renderDetailCalls(currentLead);
   await patchDetailField('CallLog',currentLead.CallLog);
   closeModal('modalCall');
   $id('callDuration').value=''; $id('callNotes').value='';
+  // post-call automation
+  if(outcome==='No Answer') { autoWaFollowUp(leadId); }
+  if(outcome==='Callback Requested') { scheduleCallback(leadId); }
+  stopCallTimer(); // reset timer state
 }
+
+/* ── CALL BUTTON INTELLIGENCE ─────────────────────────────────────────────── */
+
+// Returns CSS class for call button color based on call history
+function callStateFor(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  if(!calls.length) return 'call-state-fresh';
+  const noAnsCount=calls.filter(c=>/no answer/i.test(c.outcome||'')).length;
+  if(noAnsCount>=3) return 'call-state-danger';
+  const last=calls[0];
+  if(/no answer|callback/i.test(last.outcome||'')) return 'call-state-callback';
+  return 'call-state-answered';
+}
+
+// Returns HTML for the smart split call button with channel dropdown
+function callBtnHTML(l, label){
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  const tel=`tel:+${phone}`;
+  const wa=`https://wa.me/${phone}`;
+  const skype=`skype:+${phone}?call`;
+  const sc=callStateFor(l);
+  const lbl=label||'📞';
+  const inProgress=_callInProgress&&_callInProgress[l.Id];
+  const timerBadge=inProgress?`<span class="call-timer-badge" id="ct-${l.Id}">…</span>`:'';
+  return `<span class="call-btn-wrap">
+    <a class="btn btn-sm ${sc} call-main" href="${tel}" onclick="event.stopPropagation();startCallTimer(${l.Id})">${lbl}${timerBadge}</a><button class="btn btn-sm ${sc} call-caret" onclick="event.stopPropagation();toggleCallDrop(${l.Id})">▾</button>
+    <div class="call-channel-drop" id="ccd-${l.Id}">
+      <a href="${tel}" onclick="event.stopPropagation();startCallTimer(${l.Id});toggleCallDrop(${l.Id},false)">📞 Phone Call</a>
+      <a href="${wa}" target="_blank" onclick="event.stopPropagation();toggleCallDrop(${l.Id},false)">💬 WhatsApp</a>
+      <a href="${skype}" onclick="event.stopPropagation();toggleCallDrop(${l.Id},false)">🔵 Skype</a>
+      <button onclick="event.stopPropagation();copyPhone(${l.Id});toggleCallDrop(${l.Id},false)">📋 Copy Phone</button>
+      <button onclick="event.stopPropagation();showInlineOutcomeChips(${l.Id});toggleCallDrop(${l.Id},false)">📝 Log Outcome</button>
+    </div>
+  </span>`;
+}
+
+function toggleCallDrop(id, force){
+  const drop=$id(`ccd-${id}`);
+  if(!drop) return;
+  const isOpen=drop.classList.contains('open');
+  // close all open dropdowns first
+  document.querySelectorAll('.call-channel-drop.open').forEach(d=>d.classList.remove('open'));
+  if(typeof force==='boolean') { if(force) drop.classList.add('open'); }
+  else if(!isOpen) drop.classList.add('open');
+  // close on outside click
+  if(drop.classList.contains('open')){
+    setTimeout(()=>document.addEventListener('click',()=>{
+      document.querySelectorAll('.call-channel-drop.open').forEach(d=>d.classList.remove('open'));
+    },{once:true}),0);
+  }
+}
+
+// Copy phone number to clipboard
+function copyPhone(leadId){
+  const l=allLeads.find(x=>x.Id===leadId); if(!l) return;
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  navigator.clipboard?.writeText(phone).then(()=>showToast('📋 Phone copied','ok')).catch(()=>showToast(phone,'ok'));
+}
+
+/* ── CALL TIMER ───────────────────────────────────────────────────────────── */
+
+let _callInProgress={}; // leadId → {start: timestamp}
+let _callTimerIntervals={}; // leadId → intervalId
+
+function startCallTimer(leadId){
+  const now=Date.now();
+  _callInProgress[leadId]={start:now};
+  sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress));
+  // live badge update
+  if(_callTimerIntervals[leadId]) clearInterval(_callTimerIntervals[leadId]);
+  _callTimerIntervals[leadId]=setInterval(()=>{
+    const badge=$id(`ct-${leadId}`);
+    if(!badge){clearInterval(_callTimerIntervals[leadId]);return;}
+    const secs=Math.floor((Date.now()-now)/1000);
+    badge.textContent=fmtSecs(secs);
+  },1000);
+  // auto open call log modal on next page-visible event
+  openCallLog(leadId);
+}
+
+function stopCallTimer(){
+  // called from saveCall; clear state for current lead
+  if(currentLead){
+    delete _callInProgress[currentLead.Id];
+    if(_callTimerIntervals[currentLead.Id]) clearInterval(_callTimerIntervals[currentLead.Id]);
+    delete _callTimerIntervals[currentLead.Id];
+    sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress));
+  }
+}
+
+function callTimerElapsed(leadId){
+  const entry=_callInProgress[leadId]; if(!entry) return 0;
+  return Math.round((Date.now()-entry.start)/60000);
+}
+
+function fmtSecs(s){ return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0'); }
+
+/* ── INLINE OUTCOME CHIPS ─────────────────────────────────────────────────── */
+
+function showInlineOutcomeChips(leadId){
+  // find the li-actions or nearest action container for this lead
+  const row=document.querySelector(`[data-id="${leadId}"]`)?.closest('.lead-item');
+  let target=row?.querySelector('.li-actions');
+  if(!target && row) target=row;
+  if(!target){ openCallLog(leadId); return; }
+  // remove old chips
+  row.querySelectorAll('.outcome-chips').forEach(e=>e.remove());
+  const chips=document.createElement('div');
+  chips.className='outcome-chips';
+  chips.onclick=e=>e.stopPropagation();
+  const elapsed=callTimerElapsed(leadId);
+  [['✅','Answered','#059669'],['📵','No Answer','#D97706'],['📬','Voicemail','#6B7280'],['🔁','Callback','#7C3AED']].forEach(([emoji,outcome,color])=>{
+    const b=document.createElement('button');
+    b.className='outcome-chip';
+    b.style.cssText=`background:${color};color:#fff`;
+    b.textContent=`${emoji} ${outcome}`;
+    b.onclick=(e)=>{e.stopPropagation();saveInlineOutcome(leadId,outcome,elapsed);chips.remove();};
+    chips.appendChild(b);
+  });
+  const logBtn=document.createElement('button');
+  logBtn.className='outcome-chip';
+  logBtn.style.cssText='background:var(--card);color:var(--ink);border-color:var(--line)';
+  logBtn.textContent='📝 Full Log';
+  logBtn.onclick=(e)=>{e.stopPropagation();chips.remove();openCallLog(leadId);};
+  chips.appendChild(logBtn);
+  target.appendChild(chips);
+}
+
+async function saveInlineOutcome(leadId, outcome, durationMins){
+  const l=allLeads.find(x=>x.Id===leadId); if(!l) return;
+  const prevLead=currentLead;
+  currentLead=l;
+  await claimLeadIfUnowned(leadId,'Call outcome');
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  calls.unshift({outcome,duration:durationMins||'',notes:'',date:new Date().toLocaleString(),by:myEmail});
+  l.CallLog=JSON.stringify(calls);
+  if(currentLead===l) renderDetailCalls(l);
+  await patchDetailField('CallLog',l.CallLog);
+  currentLead=prevLead;
+  // post-call automation
+  if(outcome==='No Answer') autoWaFollowUp(leadId);
+  if(outcome==='Callback Requested') scheduleCallback(leadId);
+  delete _callInProgress[leadId];
+  if(_callTimerIntervals[leadId]){clearInterval(_callTimerIntervals[leadId]);delete _callTimerIntervals[leadId];}
+  sessionStorage.setItem('lv_call_progress',JSON.stringify(_callInProgress));
+  showToast(`📞 ${outcome} logged`,'ok');
+  renderLeadsCurrentView();
+}
+
+/* ── POST-CALL AUTOMATION ─────────────────────────────────────────────────── */
+
+// Auto WhatsApp follow-up after No Answer — fires existing /wa/send endpoint
+async function autoWaFollowUp(leadId){
+  const l=allLeads.find(x=>x.Id===leadId); if(!l||!l.Phone) return;
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  if(!phone) return;
+  const name=(l.Name||'there').split(' ')[0];
+  const msg=`Hi ${name}, we tried reaching you just now but couldn't connect. We'll try again soon — or feel free to call us back anytime! 😊`;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,message:msg})});
+    showToast('💬 WhatsApp follow-up sent','ok');
+  }catch(e){ console.warn('auto WA follow-up failed',e); }
+}
+
+// Schedule a callback in 2 hours → writes ReminderDate
+async function scheduleCallback(leadId){
+  const l=allLeads.find(x=>x.Id===leadId); if(!l) return;
+  const in2h=new Date(Date.now()+2*3600000).toISOString().slice(0,16);
+  const prevLead=currentLead; currentLead=l;
+  await patchDetailField('ReminderDate',in2h);
+  currentLead=prevLead;
+  showToast('⏰ Callback reminder set (2h)','ok');
+}
+
+// Stage-keyed notes templates to pre-fill call log textarea
+function callNotesTemplate(stage){
+  const t={
+    'new':'Introduced Leadvyne. Lead interested? Notes: ',
+    'contacted':'Follow-up call. Previous discussion: . Update: ',
+    'qualified':'Qualifying call — budget/timeline/decision maker: ',
+    'proposal':'Proposal discussed. Objections: . Next steps: ',
+    'negotiation':'Negotiation call — sticking points: . Agreed: ',
+    'won':'Post-sale call. Onboarding notes: ',
+    'lost':'Re-engagement attempt. Reason for loss: . Open to retry? '
+  };
+  const s=(stage||'').toLowerCase();
+  return t[s]||'';
+}
+
+/* ── POWER DIALER ─────────────────────────────────────────────────────────── */
+
+let _pdQueue=[], _pdIdx=0, _pdTimerInterval=null, _pdCallStart=null;
+
+function buildPowerDialerQueue(leadIds){
+  _pdQueue=[];
+  const ids=leadIds&&leadIds.length?leadIds:[...allLeads].filter(l=>leadNeedsCallback(l)).map(l=>l.Id);
+  ids.forEach(id=>{const l=allLeads.find(x=>x.Id===id);if(l)_pdQueue.push(l);});
+  if(!_pdQueue.length){showToast('No callback leads found','err');return;}
+  _pdIdx=0;
+  openPowerDialer();
+}
+
+function openPowerDialer(){
+  const pd=$id('powerDialer'); if(!pd) return;
+  pd.style.display='flex';
+  pdRenderCurrent();
+}
+
+function exitPowerDialer(){
+  const pd=$id('powerDialer'); if(pd) pd.style.display='none';
+  if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
+  _pdCallStart=null;
+}
+
+function pdRenderCurrent(){
+  if(!_pdQueue.length){exitPowerDialer();showToast('Queue done!','ok');return;}
+  const l=_pdQueue[Math.min(_pdIdx,_pdQueue.length-1)];
+  $id('pdProgress').textContent=`${_pdIdx+1} / ${_pdQueue.length}`;
+  $id('pdName').textContent=l.Name||'Unknown';
+  $id('pdPhone').textContent=l.Phone||'—';
+  $id('pdStage').textContent=l.Stage||'new';
+  $id('pdNoteInput').value='';
+  const timer=$id('pdTimer'); if(timer){timer.style.display='none';timer.textContent='0:00';}
+  if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
+  _pdCallStart=null;
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  const btn=$id('pdCallBtn'); if(btn) btn.href=`tel:+${phone}`;
+}
+
+function pdStartCall(e){
+  _pdCallStart=Date.now();
+  const timer=$id('pdTimer'); if(timer) timer.style.display='block';
+  if(_pdTimerInterval) clearInterval(_pdTimerInterval);
+  _pdTimerInterval=setInterval(()=>{
+    const t=$id('pdTimer'); if(!t) return;
+    t.textContent=fmtSecs(Math.floor((Date.now()-_pdCallStart)/1000));
+  },1000);
+}
+
+async function pdLogOutcome(outcome){
+  if(_pdIdx>=_pdQueue.length) return;
+  const l=_pdQueue[_pdIdx];
+  const durationMins=_pdCallStart?Math.round((Date.now()-_pdCallStart)/60000):0;
+  const notes=($id('pdNoteInput')?.value||'').trim();
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),by:myEmail});
+  l.CallLog=JSON.stringify(calls);
+  const prevLead=currentLead; currentLead=l;
+  await patchDetailField('CallLog',l.CallLog);
+  currentLead=prevLead;
+  if(outcome==='No Answer') autoWaFollowUp(l.Id);
+  if(outcome==='Callback Requested') scheduleCallback(l.Id);
+  showToast(`📞 ${outcome} — ${l.Name||'Lead'}`,'ok');
+  pdNext();
+}
+
+function pdNext(){
+  _pdIdx++;
+  if(_pdIdx>=_pdQueue.length){exitPowerDialer();showToast('✅ Queue complete!','ok');renderLeadsCurrentView();return;}
+  pdRenderCurrent();
+}
+
+function pdPrev(){
+  if(_pdIdx>0){_pdIdx--;pdRenderCurrent();}
+}
+
+/* ── PAGE VISIBILITY: MOBILE AUTO-RETURN ─────────────────────────────────── */
+// When user returns to browser after a phone call, show inline outcome chips
+// for any lead that had startCallTimer() called but not yet logged.
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) return;
+  // reload in-progress from sessionStorage (handles app-kill/resume)
+  try{
+    const saved=JSON.parse(sessionStorage.getItem('lv_call_progress')||'{}');
+    Object.assign(_callInProgress,saved);
+  }catch(e){}
+  const ids=Object.keys(_callInProgress).map(Number).filter(Boolean);
+  if(!ids.length) return;
+  // navigate to leads page if not already there
+  if(typeof navigate==='function' && $id('pageLeads')?.classList.contains('hidden')) navigate('leads');
+  // show chips after a short delay to let the page render
+  setTimeout(()=>ids.forEach(id=>showInlineOutcomeChips(id)),400);
+});
 
 // Auto-assign ownership on first touch (Option A — silent, never overrides an existing owner).
 // Patches Owner + appends a system ConvHistory entry so managers can see who picked up the lead
@@ -18561,5 +18896,31 @@ function showUpdateBanner(){
   if(!sessionStorage.getItem('lv_no_silent_auth')) trySilentAuthentikLogin();
 })();
 </script>
+
+<!-- POWER DIALER OVERLAY -->
+<div id="powerDialer">
+  <button class="pd-close" onclick="exitPowerDialer()">✕ Exit</button>
+  <div class="pd-progress" id="pdProgress"></div>
+  <div class="pd-card">
+    <div class="pd-timer" id="pdTimer">0:00</div>
+    <div class="pd-name" id="pdName">—</div>
+    <div class="pd-phone" id="pdPhone">—</div>
+    <div class="pd-stage" id="pdStage">—</div>
+    <div class="pd-actions">
+      <a id="pdCallBtn" class="btn btn-sm" style="background:#4ADE80;color:#0F2C4C;font-size:15px;padding:11px 22px;font-weight:700" href="#" onclick="pdStartCall(event)">📞 Call</a>
+      <button class="btn btn-sm" style="background:#059669;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Answered')">✅ Answered</button>
+      <button class="btn btn-sm" style="background:#D97706;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('No Answer')">📵 No Ans</button>
+      <button class="btn btn-sm" style="background:#6B7280;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Voicemail')">📬 VM</button>
+      <button class="btn btn-sm" style="background:#7C3AED;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Callback Requested')">🔁 CB</button>
+    </div>
+    <div style="margin-top:14px">
+      <textarea id="pdNoteInput" class="form-input" rows="2" placeholder="Quick notes (optional)…" style="font-size:12px;width:100%;box-sizing:border-box"></textarea>
+    </div>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:10px">
+    <button class="btn btn-secondary btn-sm" onclick="pdPrev()">← Prev</button>
+    <button class="btn btn-secondary btn-sm" onclick="pdNext()">Next →</button>
+  </div>
+</div>
 </body>
 </html>
