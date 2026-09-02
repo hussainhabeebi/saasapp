@@ -53,7 +53,7 @@ database_id = "eeb0ce10-dd0d-4e5a-92c1-d9ebe485ea52"
 #   2. Paste the returned id below over the placeholder.
 [[kv_namespaces]]
 binding = "MATRI_CACHE"
-id = "PLACEHOLDER_REPLACE_WITH_WRANGLER_KV_NAMESPACE_ID"
+id = "d0b6a1710e024964a0938bdb7c58a053"
 
 # R2 — object storage for the Hospitality module's unit photos/video (SETUP.md "Hospitality
 # module"). Everything else this app stores is either NocoDB rows or small D1 text/JSON — this is
