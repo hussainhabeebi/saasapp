@@ -11855,6 +11855,17 @@ async function ltExtractPassport(env,mediaUrl){
     return clean.firstName&&clean.lastName&&clean.dob&&clean.gender&&clean.nationality&&clean.passportNumber&&clean.passportExpiry?clean:null;
   }catch{return null}
 }
+async function ltSendCheckoutCtaButton(env,c,clientId,convId,phone,url){
+  const destination=String(phone||'').replace(/\D/g,'');
+  const bodyText='Your booking details are ready. Tap Book Now to complete payment securely on POOMAS.';
+  if(c.wa_phone_id&&c.wa_token&&destination){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:'cta_url',body:{text:bodyText},action:{name:'cta_url',parameters:{display_text:'Book Now',url}}}})});
+      if(r.ok)return;
+    }catch(e){}
+  }
+  await engineSendChatwootReply(env,c,clientId,convId,`Open secure checkout:\n${url}`);
+}
 function ltCheckoutFragment(data){
   const bytes=new TextEncoder().encode(JSON.stringify(data));
   let raw=''; for(const b of bytes)raw+=String.fromCharCode(b);
@@ -11906,7 +11917,8 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     const base=String(offer.checkoutBase||'https://flypoomas.com').replace(/\/$/,'');
     const url=`${base}/book?fareId=${encodeURIComponent(offer.fareId||'')}&supplier=${encodeURIComponent(offer.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}#prefill=${prefill}`;
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
-    return send(`Your passenger and contact details are ready. Review them on POOMAS before payment:\n\n${url}\n\nFor security, payment details are entered only on the POOMAS checkout page.`);
+    await ltSendCheckoutCtaButton(env,c,clientId,convId,phone,url);
+    return {handled:true,step:row.step};
   }
   return null;
 }
