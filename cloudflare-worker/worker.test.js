@@ -72,6 +72,7 @@ import {
   ltChatFlightIntent,
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
+  ltBookableChatOffers,
   ltExactRouteOffers,
   ltBookButtons,
   ltCheckoutCtaPayload,
@@ -98,10 +99,23 @@ describe('Live Travel ticketing in chat',()=>{
   });
 
   test('formats only verified offer fields and checkout links for chat',()=>{
-    const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,checkout_url:'https://flypoomas.com/book?fareId=1'}]);
+    const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
     assert.match(text,/Example Air · EA101 — AED 425\.50/);
     assert.match(text,/3 seat\(s\) left/);
-    assert.match(text,/https:\/\/flypoomas\.com\/book\?fareId=1/);
+    assert.match(text,/Bags: 7 KG cabin · 15 KG check-in/);
+    assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
+  });
+
+  test('displayed options and booking buttons use the same validated fare list',()=>{
+    const oldOrInvalid={airline_name:'Invalid Cheap Fare',total_amount:100,bookable:true,supplier_offer_id:''};
+    const option1={airline_name:'Bookable One',total_amount:250,bookable:true,supplier_offer_id:'fare-1'};
+    const option2={airline_name:'Bookable Two',total_amount:300,bookable:true,supplier_offer_id:'fare-2'};
+    const prepared=ltBookableChatOffers([oldOrInvalid,option2,option1]);
+    assert.deepEqual(prepared,[option1,option2]);
+    assert.deepEqual(ltBookButtons(prepared),[
+      {title:'Book Option 1',value:'book first'},
+      {title:'Book Option 2',value:'book second'}
+    ]);
   });
 
   test('saving only POOMAS URLs preserves the existing enabled flag',()=>{

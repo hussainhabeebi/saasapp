@@ -11883,11 +11883,19 @@ async function ltEnsureChatCheckoutSchema(env){
 function ltOfferFareId(raw){
   return ltText(String(raw?.id||raw?.fareId||raw?.fare_id||raw?.offerId||raw?.offer_id||raw?.raw?.id||raw?.raw?.fareId||''),300);
 }
+export function ltBookableChatOffers(offers){
+  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+}
 async function ltSaveChatOffers(env,clientId,phone,offers){
   if(!phone)return;
   await ltEnsureChatCheckoutSchema(env);
-  const top=(offers||[]).filter(o=>o.bookable&&o.supplier_offer_id&&Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
-  if(!top.length)return;
+  const top=ltBookableChatOffers(offers);
+  // Never leave a previous search selectable when the latest POOMAS response has no
+  // bookable fare IDs. That stale row caused "Book Option 2" to open an older flight.
+  if(!top.length){
+    await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+    return;
+  }
   const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),sessionId:o.raw?.sessionId||o.raw?.session_id||o.raw?.raw?.sessionId||'',airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
   const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
@@ -11976,23 +11984,23 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
 }
 
 export function ltFormatChatOffers(offers){
-  const top=(offers||[]).filter(o=>Number(o.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
-  if(!top.length) return 'I checked the live ticketing system, but no fares were returned for that route and date. Please try another date or nearby airport.';
-  const lines=['Here are the 3 best live flight options:'];
+  const top=ltBookableChatOffers(offers);
+  if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
+  const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
+  const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
+  const lines=[`${top.length} live flight${top.length===1?'':'s'} · ${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?' · '+dateLabel:''} · ${String(top[0].cabin||'economy').replace('_',' ')}`];
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
     const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
-    const depart=leg.departureTime?new Date(leg.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'Not provided';
-    const arrive=leg.arrivalTime?new Date(leg.arrivalTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'Not provided';
+    const time=v=>v?new Date(v).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
-    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}\nRoute: ${leg.origin||'—'} → ${leg.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${durationText}\nStops: ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)}\nCabin: ${String(o.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}`;
+    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}\n${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\nBags: ${cabinBag} cabin · ${checkedBag} check-in`;
     if(o.seats_left!=null)line+=`\n${o.seats_left} seat(s) left`;
-    if(o.bookable&&o.supplier_offer_id)line+=`\nAvailable to book.`;
-    else if(o.checkout_url)line+=`\nBook: ${o.checkout_url}`;
     lines.push(line);
   });
-  lines.push('Live fares can change until checkout is completed.');
+  lines.push('Choose an option below. Fare may change at checkout.');
   return lines.join('\n\n');
 }
 
@@ -12074,9 +12082,10 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const data=await ltSupplierSearch(runtime,input,env);
     const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
     const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
-    await ltSaveChatOffers(env,clientId,phone,offers);
+    const bookingOffers=ltBookableChatOffers(offers);
+    await ltSaveChatOffers(env,clientId,phone,bookingOffers);
     await ltClearChatSearchDraft(env,clientId,phone);
-    return {handled:true,reply:ltFormatChatOffers(offers),buttons:ltBookButtons(offers)};
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers),buttons:ltBookButtons(bookingOffers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
     return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
