@@ -49,6 +49,7 @@ import {
   ecomFashionOrderItems,
   eduAdmissionWantsStart,
   eduAdmissionWantsAdvisor,
+  eduResolveAdmissionCourse,
   eduNormalizePhone,
   eduEmailValid,
   eduYearValid,
@@ -207,6 +208,26 @@ describe('Education chat-only admission intent safety', () => {
     assert.equal(eduAdmissionWantsAdvisor('👤 Talk to Advisor'),true);
     assert.equal(eduAdmissionWantsAdvisor('Book Consultation'),true);
     assert.equal(eduAdmissionWantsAdvisor('Habeeb Khan'),false);
+  });
+
+  test('resolves the truncated WhatsApp title for a long verified course', () => {
+    const courses=[
+      {id:11,name:'B.Voc in Oil & Gas Safety Management',short_label:''},
+      {id:12,name:'Diploma in Logistics and Supply Chain',short_label:''},
+    ];
+    const visibleTitle='📘 B.Voc in Oil & Gas S';
+    assert.equal(visibleTitle,'📘 B.Voc in Oil & Gas S');
+    assert.equal(eduResolveAdmissionCourse(courses,visibleTitle)?.id,11);
+    assert.equal(eduResolveAdmissionCourse(courses,courses[0].name)?.id,11);
+  });
+
+  test('does not guess when two long course titles truncate identically', () => {
+    const courses=[
+      {id:21,name:'Advanced Petroleum Engineering One',short_label:''},
+      {id:22,name:'Advanced Petroleum Engineering Two',short_label:''},
+    ];
+    const visibleTitle=engineTruncateButtonTitle(`📘 ${courses[0].name}`,24);
+    assert.equal(eduResolveAdmissionCourse(courses,visibleTitle),null);
   });
 
   test('validates normalized contact and education fields', () => {

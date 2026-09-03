@@ -7981,6 +7981,38 @@ export function eduAdmissionWantsStart(v){
 }
 export function eduAdmissionWantsAdvisor(v){ return EDU_ADMISSION_ADVISOR_RE.test(String(v||'').trim()); }
 
+function eduAdmissionCourseKey(value){
+  return String(value||'').trim().toLowerCase().normalize('NFC').replace(/\s+/g,' ');
+}
+
+// WhatsApp echoes the visible list-row title, not reliably the longer `value` stored by
+// Chatwoot. Course rows are capped at 24 characters, so a tap on a long course such as
+// "B.Voc in Oil & Gas Safety Management" can arrive as only "📘 B.Voc in Oil & Gas S".
+// Resolve against both database labels and the exact 20/24-character titles we send. Return
+// null when two courses collapse to the same visible title rather than selecting the wrong one.
+export function eduResolveAdmissionCourse(courses,userText){
+  const wanted=eduAdmissionCourseKey(userText);
+  if(!wanted) return null;
+  const matches=(courses||[]).filter(function(course){
+    const label=String(course.short_label||course.name||'').trim();
+    const renderedKey=eduAdmissionCourseKey(label?`📘 ${label}`:'');
+    const candidates=[course.name,course.short_label,label?`📘 ${label}`:''];
+    if(label){
+      candidates.push(engineTruncateButtonTitle(`📘 ${label}`,20));
+      candidates.push(engineTruncateButtonTitle(`📘 ${label}`,24));
+      // Older Chatwoot/Meta sends hard-cut the title instead of using our word-boundary
+      // truncation. Keep accepting those already-delivered rows while clients roll forward.
+      candidates.push(`📘 ${label}`.slice(0,20).trimEnd());
+      candidates.push(`📘 ${label}`.slice(0,24).trimEnd());
+    }
+    return candidates.some(function(candidate){return eduAdmissionCourseKey(candidate)===wanted;})
+      // Meta counts the leading emoji differently across payload paths, producing either a
+      // 23- or 24-code-unit echo. Accept only an emoji-prefixed, unique rendered-title prefix.
+      || (wanted.startsWith('📘 ')&&wanted.length>=20&&renderedKey.startsWith(wanted));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
 // A short affirmative after one specific course's details should continue into enrollment rather
 // than ask about the same missing duration again. Explicit Enroll/Apply taps use the same resolver,
 // so the student is not forced to choose the course a second time.
@@ -8146,8 +8178,7 @@ async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,u
   if(app.current_step==='welcome') return await eduAdmissionPrompt(env,c,clientId,convId,app);
   if(app.current_step==='course'){
     const courses=await eduAdmissionCourses(env,clientId);
-    const wanted=clean.toLowerCase().replace(/^📘\s*/,'');
-    const course=courses.find(function(x){return [x.name,x.short_label].filter(Boolean).some(function(v){return String(v).toLowerCase()===wanted;});});
+    const course=eduResolveAdmissionCourse(courses,clean);
     if(!course) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please select one of the verified courses.');
     await eduAdmissionPatch(env,app,{course_id:Number(course.id),current_step:'full_name'},'course_selected');
     return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+course.name+' selected.');
