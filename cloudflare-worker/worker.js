@@ -9807,7 +9807,7 @@ export async function hcEnsureOperationsSchema(env){
   if(cached) return cached;
   const pending=(async()=>{
     for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
-    await env.DB.prepare(`ALTER TABLE healthcare_services ADD COLUMN service_type TEXT NOT NULL DEFAULT ''`).run().catch(()=>{});
+    // service_type column added by migration 0081_healthcare_service_type.sql
   })();
   hcOperationsSchemaReady.set(env.DB,pending);
   try{ await pending; }
@@ -17230,7 +17230,7 @@ function matriCoerce(k,v){
 let matrimonialSerialSchemaReady=false;
 async function ensureMatrimonialSerialSchema(env){
   if(matrimonialSerialSchemaReady) return;
-  try{ await env.DB.prepare('ALTER TABLE matrimonial_profiles ADD COLUMN serial_number TEXT').run(); }catch(e){}
+  // serial_number column added by migration 0083_matrimonial_serial_number.sql
   try{ await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_matri_profiles_serial ON matrimonial_profiles(client_id, serial_number)').run(); }catch(e){}
   matrimonialSerialSchemaReady=true;
 }
@@ -18286,45 +18286,8 @@ async function pmEnsureSchema(env){
     `CREATE INDEX IF NOT EXISTS idx_pm_automations_client ON pm_automations(client_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_automations_project ON pm_automations(client_id,project_id)`,
   ].map(s=>env.DB.prepare(s)));
-  // For clients whose pm_tasks/pm_projects were created by the base migration (0050) and are
-  // missing phase-2/3 columns, add those columns now. ALTER TABLE ADD COLUMN has no IF NOT EXISTS
-  // so we check PRAGMA table_info first and only add what's actually missing.
-  const [taskCols,projCols]=await Promise.all([
-    env.DB.prepare('PRAGMA table_info(pm_tasks)').all(),
-    env.DB.prepare('PRAGMA table_info(pm_projects)').all(),
-  ]);
-  const tc=new Set((taskCols.results||[]).map(r=>r.name));
-  const pc=new Set((projCols.results||[]).map(r=>r.name));
-  const taskAlters=[
-    ['item_type',`ALTER TABLE pm_tasks ADD COLUMN item_type TEXT NOT NULL DEFAULT 'task'`],
-    ['severity',`ALTER TABLE pm_tasks ADD COLUMN severity TEXT`],
-    ['story_points',`ALTER TABLE pm_tasks ADD COLUMN story_points INTEGER`],
-    ['sprint_id',`ALTER TABLE pm_tasks ADD COLUMN sprint_id INTEGER`],
-    ['link_url',`ALTER TABLE pm_tasks ADD COLUMN link_url TEXT`],
-    ['link_label',`ALTER TABLE pm_tasks ADD COLUMN link_label TEXT`],
-    ['done_at',`ALTER TABLE pm_tasks ADD COLUMN done_at TEXT`],
-    ['lead_id',`ALTER TABLE pm_tasks ADD COLUMN lead_id INTEGER`],
-    ['lead_name',`ALTER TABLE pm_tasks ADD COLUMN lead_name TEXT`],
-    ['category',`ALTER TABLE pm_tasks ADD COLUMN category TEXT`],
-    ['channel',`ALTER TABLE pm_tasks ADD COLUMN channel TEXT`],
-    ['mode',`ALTER TABLE pm_tasks ADD COLUMN mode TEXT`],
-    ['followup_step',`ALTER TABLE pm_tasks ADD COLUMN followup_step INTEGER`],
-    ['notify_customer',`ALTER TABLE pm_tasks ADD COLUMN notify_customer INTEGER NOT NULL DEFAULT 0`],
-    ['ai_created',`ALTER TABLE pm_tasks ADD COLUMN ai_created INTEGER NOT NULL DEFAULT 0`],
-    ['auto_generated',`ALTER TABLE pm_tasks ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0`],
-    ['gcal_event_id',`ALTER TABLE pm_tasks ADD COLUMN gcal_event_id TEXT`],
-  ].filter(([col])=>!tc.has(col));
-  const projAlters=[
-    ['budget_amount',`ALTER TABLE pm_projects ADD COLUMN budget_amount REAL`],
-    ['budget_currency',`ALTER TABLE pm_projects ADD COLUMN budget_currency TEXT NOT NULL DEFAULT 'USD'`],
-    ['default_hourly_rate',`ALTER TABLE pm_projects ADD COLUMN default_hourly_rate REAL`],
-    ['client_email',`ALTER TABLE pm_projects ADD COLUMN client_email TEXT`],
-    ['ai_auto_stage_enabled',`ALTER TABLE pm_projects ADD COLUMN ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0`],
-    ['task_reminders_enabled',`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`],
-    ['overdue_escalation_enabled',`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`],
-  ].filter(([col])=>!pc.has(col));
-  const allAlters=[...taskAlters,...projAlters];
-  if(allAlters.length) await env.DB.batch(allAlters.map(([,sql])=>env.DB.prepare(sql)));
+  // Phase-2/3 columns for pm_tasks and pm_projects are added by migrations
+  // 0051_pm_phase2.sql, 0052_pm_merge_legacy_tasks.sql, and 0058_project_automation.sql.
   _pmSchemaEnsured=true;
 }
 const PM_TABLES={
@@ -18409,10 +18372,7 @@ export async function pmEnsureAutomationSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
   const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
   const pending=(async()=>{
-    const info=await env.DB.prepare(`PRAGMA table_info(pm_projects)`).all();
-    const columns=new Set((info?.results||[]).map(x=>x.name));
-    if(!columns.has('task_reminders_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`).run();
-    if(!columns.has('overdue_escalation_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    // task_reminders_enabled + overdue_escalation_enabled added by migration 0058_project_automation.sql
     for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
   })();
   pmAutomationSchemaReady.set(env.DB,pending);
