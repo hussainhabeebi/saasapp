@@ -11988,7 +11988,8 @@ export function ltFormatChatOffers(offers){
   if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
   const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
   const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
-  const lines=[`${top.length} live flight${top.length===1?'':'s'} · ${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?' · '+dateLabel:''} · ${String(top[0].cabin||'economy').replace('_',' ')}`];
+  const cabin=String(top[0].cabin||'economy').replace('_',' ');
+  const lines=[`✈️ *${top.length} Live Flight Option${top.length===1?'':'s'}*\n📍 ${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?`\n📅 ${dateLabel}  •  💺 ${cabin}`:''}`];
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
     const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
@@ -11996,11 +11997,12 @@ export function ltFormatChatOffers(offers){
     const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
-    let line=`${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''} — ${o.currency} ${Number(o.total_amount).toFixed(2)}\n${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\nBags: ${cabinBag} cabin · ${checkedBag} check-in`;
-    if(o.seats_left!=null)line+=`\n${o.seats_left} seat(s) left`;
+    const optionIcons=['1️⃣','2️⃣','3️⃣'];
+    let line=`${optionIcons[i]||`${i+1}.`} *${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n🕒 ${depart} → ${arrive}  •  ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'}  •  ${durationText}\n🧳 Cabin ${cabinBag}  •  Check-in ${checkedBag}\n💰 *${o.currency} ${Number(o.total_amount).toFixed(2)}*`;
+    if(o.seats_left!=null)line+=`  •  💺 ${o.seats_left} left`;
     lines.push(line);
   });
-  lines.push('Choose an option below. Fare may change at checkout.');
+  lines.push('👇 Select a flight below\n_Fares may change until checkout._');
   return lines.join('\n\n');
 }
 
