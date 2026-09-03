@@ -100,9 +100,12 @@ describe('Live Travel ticketing in chat',()=>{
 
   test('formats only verified offer fields and checkout links for chat',()=>{
     const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
-    assert.match(text,/Example Air · EA101 — AED 425\.50/);
-    assert.match(text,/3 seat\(s\) left/);
-    assert.match(text,/Bags: 7 KG cabin · 15 KG check-in/);
+    assert.match(text,/✈️ \*1 Live Flight Option\*/);
+    assert.match(text,/📍 DXB → CCJ/);
+    assert.match(text,/1️⃣ \*Example Air · EA101\*/);
+    assert.match(text,/💰 \*AED 425\.50\*/);
+    assert.match(text,/💺 3 left/);
+    assert.match(text,/🧳 Cabin 7 KG  •  Check-in 15 KG/);
     assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
   });
 
