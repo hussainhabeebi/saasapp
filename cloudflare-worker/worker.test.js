@@ -76,6 +76,7 @@ import {
   ltBookButtons,
   ltCheckoutCtaPayload,
   ltLiveAgencyEnabled,
+  ltParseFlightRoute,
   ltPoomasEnabledAfterSettingsSave,
 } from './worker.js';
 
@@ -134,6 +135,13 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltLiveAgencyEnabled({industry:'live-travel'}),true);
     assert.equal(ltLiveAgencyEnabled({industry:'healthcare',ta_enabled:'Yes'}),true);
     assert.equal(ltLiveAgencyEnabled({industry:'healthcare'}),false);
+  });
+
+  test('converts natural GCC and Kerala city routes without depending on customer memory',()=>{
+    assert.deepEqual(ltParseFlightRoute('Dubai to Calicut 20/10/2026'),{origin:'DXB',destination:'CCJ'});
+    assert.deepEqual(ltParseFlightRoute('flight from Sharjah to Kochi tomorrow'),{origin:'SHJ',destination:'COK'});
+    assert.deepEqual(ltParseFlightRoute('AUH to CNN'),{origin:'AUH',destination:'CNN'});
+    assert.equal(ltParseFlightRoute('Dubai flight price'),null);
   });
 });
 
