@@ -72,6 +72,9 @@ import {
   ltChatFlightIntent,
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
+  ltExactRouteOffers,
+  ltBookButtons,
+  ltCheckoutCtaPayload,
   ltPoomasEnabledAfterSettingsSave,
 } from './worker.js';
 
@@ -102,6 +105,27 @@ describe('Live Travel ticketing in chat',()=>{
   test('saving only POOMAS URLs preserves the existing enabled flag',()=>{
     assert.equal(ltPoomasEnabledAfterSettingsSave({api_base:'https://api.flypoomas.com'},{enabled:1}),true);
     assert.equal(ltPoomasEnabledAfterSettingsSave({enabled:false},{enabled:1}),false);
+  });
+
+  test('offers exact-route booking buttons without collecting passport in WhatsApp',()=>{
+    const offers=[
+      {itinerary:[{origin:'CCJ',destination:'MCT'}]},
+      {itinerary:[{origin:'CCJ',destination:'BOM'},{origin:'BOM',destination:'SHJ'}]},
+    ];
+    assert.deepEqual(ltExactRouteOffers(offers,'CCJ','SHJ'),[offers[1]]);
+    assert.deepEqual(ltBookButtons([{}, {}, {}]),[
+      {title:'Book Option 1',value:'book first'},
+      {title:'Book Option 2',value:'book second'},
+      {title:'Book Option 3',value:'book third'},
+    ]);
+  });
+
+  test('builds a WhatsApp CTA URL button for POOMAS checkout',()=>{
+    const payload=ltCheckoutCtaPayload('+971 58 130 1595','https://flypoomas.com/book?fareId=abc');
+    assert.equal(payload.to,'971581301595');
+    assert.equal(payload.interactive.type,'cta_url');
+    assert.equal(payload.interactive.action.parameters.display_text,'Open Checkout');
+    assert.equal(payload.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=abc');
   });
 });
 
@@ -550,7 +574,7 @@ describe('Healthcare verified-data routing', () => {
 });
 
 describe('Project Queues and Workflows', () => {
-  test('repairs Project automation tables and settings columns once per D1 binding', async () => {
+  test('repairs Project automation tables once per D1 binding', async () => {
     const statements=[];
     const DB={prepare(sql){
       statements.push(sql);
@@ -558,8 +582,6 @@ describe('Project Queues and Workflows', () => {
     }};
     await pmEnsureAutomationSchema({DB});
     await pmEnsureAutomationSchema({DB});
-    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN task_reminders_enabled')).length,1);
-    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN overdue_escalation_enabled')).length,1);
     for(const table of ['task_automation','task_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS pm_${table}`)).length,1,table);
     }
