@@ -11879,7 +11879,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers){
     .bind(Number(clientId),String(phone),JSON.stringify(safe),expires,now.toISOString()).run();
 }
 export function ltCheckoutCtaPayload(phone,url){
-  return {messaging_product:'whatsapp',to:String(phone||'').replace(/\D/g,''),type:'interactive',interactive:{type:'cta_url',body:{text:'Your selected flight is ready. Complete passenger and passport details securely on POOMAS.'},action:{name:'cta_url',parameters:{display_text:'Open Checkout',url:String(url)}}}};
+  return {messaging_product:'whatsapp',to:String(phone||'').replace(/\D/g,''),type:'interactive',interactive:{type:'cta_url',body:{text:'Your selected flight is ready. Complete passenger and passport details securely on POOMAS.'},action:{name:'cta_url',parameters:{display_text:'Book Now',url:String(url)}}}};
 }
 async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId){
   const creds=resolveMetaCredentials(c,{inbox_id:inboxId});
@@ -11938,6 +11938,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     const url=`${base}/book?fareId=${encodeURIComponent(selected.fareId||'')}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
     const details=`Selected flight:\n\nAirline: ${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\nRoute: ${selected.origin||'—'} → ${selected.destination||'—'}\nDeparture: ${depart}\nArrival: ${arrive}\nDuration: ${duration}\nStops: ${selected.stops===0?'Direct':selected.stops}\nCabin: ${String(selected.cabin||'economy').replace('_',' ')}\nCabin baggage: ${cabinBag}\nChecked baggage: ${checkedBag}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}${selected.seatsLeft!=null?`\nSeats left: ${selected.seatsLeft}`:''}`;
     await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nPassenger and passport details are completed securely on POOMAS. What would you like to do next?`,[
+      {title:'Book Now',value:'book now'},
       {title:'New Search',value:'new search'},
       {title:'Continue Previous',value:'continue previous'}
     ]);
@@ -12022,8 +12023,13 @@ function ltMergeChatFlightDraft(draft,input,userText){
   return ltNormalizeChatFlightRequest(next);
 }
 
+export function ltLiveAgencyEnabled(c={}){
+  const industry=String(c.industry||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
+  return industry==='travel'||industry==='travel_agency'||industry==='live_travel'||industry.includes('travel')||String(c.ta_enabled||'').toLowerCase()==='yes';
+}
+
 async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
-  const liveAgencyEnabled=c.industry==='travel'||c.ta_enabled==='Yes';
+  const liveAgencyEnabled=ltLiveAgencyEnabled(c);
   if(!liveAgencyEnabled)return null;
   const draft=await ltLoadChatSearchDraft(env,clientId,phone);
   const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';

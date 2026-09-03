@@ -75,6 +75,7 @@ import {
   ltExactRouteOffers,
   ltBookButtons,
   ltCheckoutCtaPayload,
+  ltLiveAgencyEnabled,
   ltPoomasEnabledAfterSettingsSave,
 } from './worker.js';
 
@@ -124,8 +125,15 @@ describe('Live Travel ticketing in chat',()=>{
     const payload=ltCheckoutCtaPayload('+971 58 130 1595','https://flypoomas.com/book?fareId=abc');
     assert.equal(payload.to,'971581301595');
     assert.equal(payload.interactive.type,'cta_url');
-    assert.equal(payload.interactive.action.parameters.display_text,'Open Checkout');
+    assert.equal(payload.interactive.action.parameters.display_text,'Book Now');
     assert.equal(payload.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=abc');
+  });
+
+  test('recognizes every stored travel-industry label used by live agencies',()=>{
+    assert.equal(ltLiveAgencyEnabled({industry:'Travel Agency'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'live-travel'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'healthcare',ta_enabled:'Yes'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'healthcare'}),false);
   });
 });
 
