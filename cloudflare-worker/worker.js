@@ -9807,7 +9807,7 @@ export async function hcEnsureOperationsSchema(env){
   if(cached) return cached;
   const pending=(async()=>{
     for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
-    await env.DB.prepare(`ALTER TABLE healthcare_services ADD COLUMN service_type TEXT NOT NULL DEFAULT ''`).run().catch(()=>{});
+    // service_type column added by migration 0081_healthcare_service_type.sql
   })();
   hcOperationsSchemaReady.set(env.DB,pending);
   try{ await pending; }
@@ -17230,7 +17230,7 @@ function matriCoerce(k,v){
 let matrimonialSerialSchemaReady=false;
 async function ensureMatrimonialSerialSchema(env){
   if(matrimonialSerialSchemaReady) return;
-  try{ await env.DB.prepare('ALTER TABLE matrimonial_profiles ADD COLUMN serial_number TEXT').run(); }catch(e){}
+  // serial_number column added by migration 0083_matrimonial_serial_number.sql
   try{ await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_matri_profiles_serial ON matrimonial_profiles(client_id, serial_number)').run(); }catch(e){}
   matrimonialSerialSchemaReady=true;
 }
@@ -17319,7 +17319,10 @@ MATRIMONIAL_SETTINGS_FIELDS.push(
 MATRIMONIAL_SETTINGS_FIELDS.push(
   'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
   'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
-  'chat_keyword_subscribe'
+  'chat_keyword_subscribe','chat_keyword_plans'
+);
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'paid_plans','razorpay_key_id','razorpay_key_secret','razorpay_webhook_secret'
 );
 
 // ── Matrimonial profile KV cache helpers ─────────────────────────────────────
@@ -17357,6 +17360,7 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
   const kwList      =String(settings.chat_keyword_list      ||'2').trim().toLowerCase();
   const kwAgent     =String(settings.chat_keyword_agent     ||'3').trim().toLowerCase();
   const kwSubscribe =String(settings.chat_keyword_subscribe ||'4').trim().toLowerCase();
+  const kwPlans    =String(settings.chat_keyword_plans    ||'5').trim().toLowerCase();
 
   const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
 
@@ -17388,13 +17392,17 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     const l=settings.chat_keyword_list||'2';
     const a=settings.chat_keyword_agent||'3';
     const s=settings.chat_keyword_subscribe||'4';
+    const p=settings.chat_keyword_plans||'5';
     let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
     // Strip any menu option lines the admin may have saved inside the welcome message
     // to prevent the options block from appearing twice.
     const lines=intro.split('\n');
-    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s); });
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s)||t.startsWith(p); });
     if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
-    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+    let hasPaidPlans=false;
+    try{ hasPaidPlans=(JSON.parse(settings.paid_plans||'[]')||[]).length>0&&!!settings.razorpay_key_id; }catch(e){}
+    const plansLine=hasPaidPlans?`\n${p}️⃣  Paid Plans – Premium subscription options`:'';
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views${plansLine}\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
   };
 
   const sendProfiles=async (profileType,profileRef=null)=>{
@@ -17622,6 +17630,95 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     }
   }
 
+  // ── PAID PLANS FLOW ──────────────────────────────────────────────────────────
+  // subscribe_plans_menu: bot showed list of paid plans, waiting for selection.
+  if(menuStateEarly==='subscribe_plans_menu'){
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const paidPlans=ld.plans||[];
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'plans_menu_cancelled'};
+    }
+    const choice=parseInt(text,10);
+    if(choice===0){
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_from_plans'};
+    }
+    const plan=paidPlans[choice-1];
+    if(!plan){
+      await send(`Please reply with a plan number (0 to ${paidPlans.length}).\n\n_(Reply *menu* to go back)_`);
+      return {handled:true,step:'subscribe_plans_menu_invalid'};
+    }
+    await setState({menu_state:'subscribe_plan_asked_name',listing_data:JSON.stringify({plan_key:plan.key,plan_label:plan.label,plan_price:plan.price}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *${plan.label} Plan* selected — ₹${plan.price}\n\nPlease enter your *name* to generate the payment link.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plan_asked_name'};
+  }
+
+  // subscribe_plan_asked_name: collected plan selection, now asking for customer's name.
+  if(menuStateEarly==='subscribe_plan_asked_name'){
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'subscribe_plan_name_cancelled'};
+    }
+    const name=text.trim();
+    if(name.length<2){
+      await send('Please enter your full name to continue.');
+      return {handled:true,step:'subscribe_plan_name_short'};
+    }
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const planKey=ld.plan_key;
+    if(!planKey||!settings.razorpay_key_id||!settings.razorpay_key_secret){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Payment is not configured. Please contact our team to subscribe.');
+      return {handled:true,step:'subscribe_plan_razorpay_missing'};
+    }
+    let plans=[];
+    try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    const plan=plans.find(p=>p.key===planKey);
+    if(!plan){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Plan not found. Please contact our team.');
+      return {handled:true,step:'subscribe_plan_not_found'};
+    }
+    try{
+      const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+      const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+        body:JSON.stringify({
+          amount:Math.round(plan.price*100),
+          currency:'INR',
+          description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+          customer:{name:name.slice(0,50),contact:String(phone)},
+          notes:{plan_key:planKey,phone:String(phone),client_id:String(clientId)},
+          expire_by:Math.floor(Date.now()/1000)+86400,
+          reminder_enable:false,
+        })
+      });
+      if(!r.ok){
+        const re=await r.json().catch(()=>({}));
+        await setState({menu_state:'menu',listing_data:null});
+        await send(`⚠️ Could not generate payment link. Please try again or contact our team.${re?.error?.description?'\n\n'+re.error.description:''}`);
+        return {handled:true,step:'subscribe_plan_link_error'};
+      }
+      const data=await r.json();
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      const expiryLine=plan.expiry_days?`\n• Validity: ${plan.expiry_days} days`:'';
+      const viewsLine=`\n• ${plan.daily_limit||50} profile views/day`;
+      await send(`✅ Hi *${name}*! Your payment link is ready.\n\n💎 *${plan.label} Plan* — ₹${plan.price}${viewsLine}${expiryLine}\n\n🔗 *Click to pay securely:*\n${data.short_url}\n\n⏳ Link expires in 24 hours. Once payment is confirmed, your account will be activated automatically!\n\n_(Reply *menu* for main menu)_`);
+      return {handled:true,step:'subscribe_plan_link_sent'};
+    }catch(e){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Network error. Please try again later or contact our team.');
+      return {handled:true,step:'subscribe_plan_link_exception'};
+    }
+  }
+
   // ── FREE SUBSCRIPTION FLOW ───────────────────────────────────────────────────
   // subscribe_asked_name: bot asked for customer's name before activating.
   if(menuStateEarly==='subscribe_asked_name'){
@@ -17776,12 +17873,35 @@ async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,user
     let existing=null;
     try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
     if(existing&&existing.status==='active'){
-      await send('✅ You already have an active free subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+      await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
       return {handled:true,step:'subscribe_already_active'};
     }
     await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
     await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
     return {handled:true,step:'subscribe_asked_name'};
+  }
+
+  // Paid plans keyword (default "5")
+  if(textLower===kwPlans){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status,plan_type FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      const planLabel=(existing.plan_type&&existing.plan_type!=='free')?existing.plan_type:'free';
+      await send(`✅ You already have an active *${planLabel}* subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.`);
+      return {handled:true,step:'plans_already_active'};
+    }
+    let paidPlans=[];
+    try{ paidPlans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    if(!paidPlans.length||!settings.razorpay_key_id){
+      // No paid plans configured — fall through to free subscribe
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_plans_fallback'};
+    }
+    const lines=paidPlans.map((p,i)=>`${i+1}. 💎 *${p.label}* — ₹${p.price}${p.expiry_days?` / ${p.expiry_days} days`:''}  (${p.daily_limit||50} views/day)`).join('\n');
+    await setState({menu_state:'subscribe_plans_menu',listing_data:JSON.stringify({plans:paidPlans}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *Subscription Plans*\n\n${lines}\n\n0. 🎁 Free – 10 views/day (no payment)\n\nReply with the plan number to subscribe.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plans_menu'};
   }
 
   // Talk to agent keyword (default "3") — let normal LLM routing handle it
@@ -17895,7 +18015,7 @@ const MATRI_DEDUP_COL={
 };
 
 // CRUD for activated leads — customers allowed to view profiles via the WhatsApp chat menu.
-const MATRIMONIAL_ACTIVATED_FIELDS=['phone','name','can_view','daily_limit','monthly_limit','expiry_date','status','notes'];
+const MATRIMONIAL_ACTIVATED_FIELDS=['phone','name','can_view','daily_limit','monthly_limit','expiry_date','status','notes','plan_type'];
 async function handleMatriActivatedList(request,env){
   const payload=await requireSession(request,env);
   if(!payload) return json({error:'Invalid or expired session'},401);
@@ -17942,6 +18062,85 @@ async function handleMatriActivatedDelete(request,env){
   if(!body.id) return json({error:'id required'},400);
   await env.DB.prepare('DELETE FROM matrimonial_activated_leads WHERE client_id=? AND id=?').bind(String(payload.cid),Number(body.id)).run();
   return json({ok:true});
+}
+
+// POST /matrimonial/razorpay/create-link — session-gated; creates a Razorpay Payment Link for a given
+// phone and plan. Used by the dashboard to manually generate a payment link for a customer.
+async function handleMatriCreatePaymentLink(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const {phone,plan_key,name}=body;
+  if(!phone||!plan_key) return json({error:'phone and plan_key required'},400);
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(!settings?.razorpay_key_id||!settings?.razorpay_key_secret) return json({error:'Razorpay not configured — add key_id and key_secret in Settings'},400);
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===plan_key);
+  if(!plan) return json({error:'Plan not found'},400);
+  const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+  const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+    body:JSON.stringify({
+      amount:Math.round(plan.price*100),
+      currency:'INR',
+      description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+      customer:{name:(name||String(phone)).slice(0,50),contact:String(phone)},
+      notes:{plan_key,phone:String(phone),client_id:String(payload.cid)},
+      expire_by:Math.floor(Date.now()/1000)+86400,
+      reminder_enable:false,
+    })
+  });
+  if(!r.ok){
+    const e=await r.json().catch(()=>({}));
+    return json({error:e?.error?.description||'Razorpay error'},502);
+  }
+  const data=await r.json();
+  return json({payment_url:data.short_url,payment_link_id:data.id});
+}
+
+// POST /matrimonial/razorpay/webhook — public endpoint called by Razorpay on payment events.
+// Reads client_id from payment notes, verifies HMAC-SHA256 signature, and on payment_link.paid
+// activates the customer's account with the plan limits and expiry.
+async function handleMatriPaymentWebhook(request,env){
+  const rawBody=await request.text();
+  const sig=request.headers.get('X-Razorpay-Signature')||'';
+  let evt;
+  try{ evt=JSON.parse(rawBody); }catch(e){ return new Response('bad json',{status:400}); }
+  const plNotes=evt?.payload?.payment_link?.entity?.notes||{};
+  const pyNotes=evt?.payload?.payment?.entity?.notes||{};
+  const notes={...pyNotes,...plNotes};
+  const clientId=notes.client_id;
+  if(!clientId) return new Response('no client_id in notes',{status:400});
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first().catch(()=>null);
+  if(!settings?.razorpay_webhook_secret) return new Response('webhook_secret not configured',{status:400});
+  // Verify HMAC-SHA256
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey('raw',enc.encode(settings.razorpay_webhook_secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const mac=await crypto.subtle.sign('HMAC',key,enc.encode(rawBody));
+  const expected=Array.from(new Uint8Array(mac)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected!==sig) return new Response('invalid signature',{status:400});
+  if(evt.event!=='payment_link.paid') return new Response('ok',{status:200});
+  const planKey=notes.plan_key;
+  const phone=notes.phone;
+  const paymentId=evt?.payload?.payment?.entity?.id||evt?.payload?.payment_link?.entity?.id||'';
+  if(!planKey||!phone) return new Response('missing plan_key or phone in notes',{status:400});
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===planKey);
+  if(!plan) return new Response('unknown plan',{status:400});
+  const now=new Date().toISOString();
+  const expiryDate=plan.expiry_days?new Date(Date.now()+plan.expiry_days*86400000).toISOString().slice(0,10):null;
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first().catch(()=>null);
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_activated_leads SET status='active',plan_type=?,daily_limit=?,monthly_limit=?,can_view=?,expiry_date=?,razorpay_payment_id=?,views_today=0,views_month=0,updated_at=? WHERE id=?`)
+      .bind(planKey,plan.daily_limit||50,plan.monthly_limit||500,plan.can_view||'both',expiryDate,paymentId,now,existing.id).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,plan_type,razorpay_payment_id,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(String(clientId),String(phone),String(phone),plan.can_view||'both',plan.daily_limit||50,plan.monthly_limit||500,expiryDate,'active',planKey,paymentId,`${plan.label} plan via Razorpay`,now,now).run();
+  }
+  return new Response('ok',{status:200});
 }
 
 // POST /matrimonial/webhook/:kind — public endpoint called by n8n; authenticated by per-table token.
@@ -18087,45 +18286,8 @@ async function pmEnsureSchema(env){
     `CREATE INDEX IF NOT EXISTS idx_pm_automations_client ON pm_automations(client_id)`,
     `CREATE INDEX IF NOT EXISTS idx_pm_automations_project ON pm_automations(client_id,project_id)`,
   ].map(s=>env.DB.prepare(s)));
-  // For clients whose pm_tasks/pm_projects were created by the base migration (0050) and are
-  // missing phase-2/3 columns, add those columns now. ALTER TABLE ADD COLUMN has no IF NOT EXISTS
-  // so we check PRAGMA table_info first and only add what's actually missing.
-  const [taskCols,projCols]=await Promise.all([
-    env.DB.prepare('PRAGMA table_info(pm_tasks)').all(),
-    env.DB.prepare('PRAGMA table_info(pm_projects)').all(),
-  ]);
-  const tc=new Set((taskCols.results||[]).map(r=>r.name));
-  const pc=new Set((projCols.results||[]).map(r=>r.name));
-  const taskAlters=[
-    ['item_type',`ALTER TABLE pm_tasks ADD COLUMN item_type TEXT NOT NULL DEFAULT 'task'`],
-    ['severity',`ALTER TABLE pm_tasks ADD COLUMN severity TEXT`],
-    ['story_points',`ALTER TABLE pm_tasks ADD COLUMN story_points INTEGER`],
-    ['sprint_id',`ALTER TABLE pm_tasks ADD COLUMN sprint_id INTEGER`],
-    ['link_url',`ALTER TABLE pm_tasks ADD COLUMN link_url TEXT`],
-    ['link_label',`ALTER TABLE pm_tasks ADD COLUMN link_label TEXT`],
-    ['done_at',`ALTER TABLE pm_tasks ADD COLUMN done_at TEXT`],
-    ['lead_id',`ALTER TABLE pm_tasks ADD COLUMN lead_id INTEGER`],
-    ['lead_name',`ALTER TABLE pm_tasks ADD COLUMN lead_name TEXT`],
-    ['category',`ALTER TABLE pm_tasks ADD COLUMN category TEXT`],
-    ['channel',`ALTER TABLE pm_tasks ADD COLUMN channel TEXT`],
-    ['mode',`ALTER TABLE pm_tasks ADD COLUMN mode TEXT`],
-    ['followup_step',`ALTER TABLE pm_tasks ADD COLUMN followup_step INTEGER`],
-    ['notify_customer',`ALTER TABLE pm_tasks ADD COLUMN notify_customer INTEGER NOT NULL DEFAULT 0`],
-    ['ai_created',`ALTER TABLE pm_tasks ADD COLUMN ai_created INTEGER NOT NULL DEFAULT 0`],
-    ['auto_generated',`ALTER TABLE pm_tasks ADD COLUMN auto_generated INTEGER NOT NULL DEFAULT 0`],
-    ['gcal_event_id',`ALTER TABLE pm_tasks ADD COLUMN gcal_event_id TEXT`],
-  ].filter(([col])=>!tc.has(col));
-  const projAlters=[
-    ['budget_amount',`ALTER TABLE pm_projects ADD COLUMN budget_amount REAL`],
-    ['budget_currency',`ALTER TABLE pm_projects ADD COLUMN budget_currency TEXT NOT NULL DEFAULT 'USD'`],
-    ['default_hourly_rate',`ALTER TABLE pm_projects ADD COLUMN default_hourly_rate REAL`],
-    ['client_email',`ALTER TABLE pm_projects ADD COLUMN client_email TEXT`],
-    ['ai_auto_stage_enabled',`ALTER TABLE pm_projects ADD COLUMN ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0`],
-    ['task_reminders_enabled',`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`],
-    ['overdue_escalation_enabled',`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`],
-  ].filter(([col])=>!pc.has(col));
-  const allAlters=[...taskAlters,...projAlters];
-  if(allAlters.length) await env.DB.batch(allAlters.map(([,sql])=>env.DB.prepare(sql)));
+  // Phase-2/3 columns for pm_tasks and pm_projects are added by migrations
+  // 0051_pm_phase2.sql, 0052_pm_merge_legacy_tasks.sql, and 0058_project_automation.sql.
   _pmSchemaEnsured=true;
 }
 const PM_TABLES={
@@ -18210,10 +18372,7 @@ export async function pmEnsureAutomationSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
   const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
   const pending=(async()=>{
-    const info=await env.DB.prepare(`PRAGMA table_info(pm_projects)`).all();
-    const columns=new Set((info?.results||[]).map(x=>x.name));
-    if(!columns.has('task_reminders_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`).run();
-    if(!columns.has('overdue_escalation_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    // task_reminders_enabled + overdue_escalation_enabled added by migration 0058_project_automation.sql
     for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
   })();
   pmAutomationSchemaReady.set(env.DB,pending);
@@ -27578,11 +27737,13 @@ export default {
       else if(url.pathname==='/matrimonial/activated' && request.method==='POST'){ res=await handleMatriActivatedCreate(request,env); }
       else if(url.pathname==='/matrimonial/activated' && request.method==='PATCH'){ res=await handleMatriActivatedUpdate(request,env); }
       else if(url.pathname==='/matrimonial/activated' && request.method==='DELETE'){ res=await handleMatriActivatedDelete(request,env); }
+      else if(url.pathname==='/matrimonial/razorpay/create-link' && request.method==='POST'){ res=await handleMatriCreatePaymentLink(request,env); }
       // MATRIMONIAL WEBHOOKS (public, token-authenticated)
       else if(url.pathname==='/matrimonial/webhook/profiles'   && request.method==='POST'){ res=await handleMatriWebhook(request,env,'profiles'); }
       else if(url.pathname==='/matrimonial/webhook/matches'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'matches'); }
       else if(url.pathname==='/matrimonial/webhook/shortlists' && request.method==='POST'){ res=await handleMatriWebhook(request,env,'shortlists'); }
       else if(url.pathname==='/matrimonial/webhook/stories'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'stories'); }
+      else if(url.pathname==='/matrimonial/razorpay/webhook'   && request.method==='POST'){ res=await handleMatriPaymentWebhook(request,env); }
       else if(url.pathname==='/matrimonial/tokens/regenerate'  && request.method==='POST'){ res=await handleMatriTokensRegenerate(request,env); }
       else if(url.pathname==='/matrimonial/webhook/log'        && request.method==='GET') { res=await handleMatriWebhookLog(request,env); }
       else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }

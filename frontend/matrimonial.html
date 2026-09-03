@@ -160,7 +160,7 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
     </div>
     <p class="hint">Customers listed here can view profiles via the WhatsApp chat menu. Each customer has their own daily/monthly view limit and profile-type access.</p>
     <div class="table-wrap" style="margin-top:12px"><table id="activatedTable">
-      <thead><tr><th>Name</th><th>Phone</th><th>Can View</th><th>Daily Limit</th><th>Monthly Limit</th><th>Today</th><th>Month</th><th>Expiry</th><th>Status</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Phone</th><th>Plan</th><th>Can View</th><th>Daily Limit</th><th>Monthly Limit</th><th>Today</th><th>Month</th><th>Expiry</th><th>Status</th><th>Actions</th></tr></thead>
       <tbody id="activatedRows"></tbody>
     </table></div>
   </div>
@@ -238,6 +238,8 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
       <div class="field"><label>View profiles keyword (default: 1)</label><input class="input" id="setChatKwView" placeholder="1" maxlength="10"></div>
       <div class="field"><label>List profile keyword (default: 2)</label><input class="input" id="setChatKwList" placeholder="2" maxlength="10"></div>
       <div class="field"><label>Talk to agent keyword (default: 3)</label><input class="input" id="setChatKwAgent" placeholder="3" maxlength="10"></div>
+      <div class="field"><label>Free subscribe keyword (default: 4)</label><input class="input" id="setChatKwSubscribe" placeholder="4" maxlength="10"></div>
+      <div class="field"><label>Paid plans keyword (default: 5)</label><input class="input" id="setChatKwPlans" placeholder="5" maxlength="10"></div>
       <div class="field"><label>Profiles per message</label><input class="input" type="number" id="setChatPerMsg" min="1" max="10" placeholder="3"></div>
       <div class="field"><label>List Profile form URL</label><input class="input" type="url" id="setChatFormUrl" placeholder="https://leadvyne.com/form/nikah-kerala"></div>
       <div class="field full">
@@ -263,6 +265,31 @@ main{max-width:1400px;margin:auto;padding:20px}.page{display:none}.page.active{d
       </div>
     </div>
     <div style="margin-top:14px;display:flex;gap:9px"><button class="btn" onclick="saveChatSettings()">Save Chat Settings</button><span id="chatMsg" style="color:var(--ok);font-size:13px;align-self:center"></span></div>
+  </div>
+
+  <!-- Razorpay Paid Plans -->
+  <div class="card" style="margin-top:0">
+    <div class="title">💳 Razorpay Paid Plans</div>
+    <p class="hint">Configure paid subscription plans. Customers can select a plan via WhatsApp (keyword 5) and pay through a Razorpay link. When payment is confirmed, their account is activated automatically via the Razorpay webhook.</p>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field"><label>Razorpay Key ID (live key_...)</label><input class="input" id="setRzpKeyId" placeholder="rzp_live_..."></div>
+      <div class="field"><label>Razorpay Key Secret</label><input class="input" type="password" id="setRzpKeySecret" placeholder="••••••••••••••••"></div>
+      <div class="field full"><label>Webhook Secret (from Razorpay dashboard → Webhooks)</label><input class="input" type="password" id="setRzpWebhookSecret" placeholder="••••••••••••••••"></div>
+      <div class="field full">
+        <label>Paid Plans (JSON array)</label>
+        <textarea class="input" id="setRzpPlans" rows="6" placeholder='[{"key":"silver","label":"Silver","price":299,"daily_limit":50,"monthly_limit":500,"can_view":"both","expiry_days":30},{"key":"gold","label":"Gold","price":499,"daily_limit":100,"monthly_limit":1000,"can_view":"both","expiry_days":30}]'></textarea>
+        <div class="hint" style="margin-top:4px">Each plan: <code>key</code> (unique slug), <code>label</code>, <code>price</code> (₹), <code>daily_limit</code>, <code>monthly_limit</code>, <code>can_view</code> (both/bride/groom), <code>expiry_days</code> (0 = no expiry)</div>
+      </div>
+      <div class="field full">
+        <label>Razorpay Webhook URL (add this in Razorpay Dashboard → Webhooks)</label>
+        <div class="wh-url" id="rzpWebhookUrl" style="font-size:11px;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent).then(()=>this.style.color='var(--ok)').catch(()=>{})"></div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
+      <button class="btn" onclick="saveRazorpaySettings()">Save Razorpay Settings</button>
+      <button class="btn sec" id="btnTestPayLink" onclick="testCreatePaymentLink()">🔗 Test Payment Link</button>
+      <span id="rzpMsg" style="color:var(--ok);font-size:13px;align-self:center"></span>
+    </div>
   </div>
 
   <!-- Webhook management -->
@@ -457,12 +484,14 @@ function fillSelects(){
 function renderAll(){renderOverview();renderProfiles();renderMatches();renderShortlists();renderStories();}
 function renderActivated(){
   const tbody=$('activatedRows');if(!tbody)return;
-  if(!activated.length){tbody.innerHTML=`<tr><td colspan="10" style="text-align:center;padding:28px;color:var(--muted)">No activated customers yet. Click "+ Activate Customer" to add one.</td></tr>`;return;}
+  if(!activated.length){tbody.innerHTML=`<tr><td colspan="11" style="text-align:center;padding:28px;color:var(--muted)">No activated customers yet. Click "+ Activate Customer" to add one.</td></tr>`;return;}
   const statusBadge={active:'<span style="color:#16a34a;font-weight:600">Active</span>',suspended:'<span style="color:#ea580c;font-weight:600">Suspended</span>',expired:'<span style="color:#6b7280;font-weight:600">Expired</span>'};
   const canViewLabel={both:'Both',bride:'Bride only',groom:'Groom only'};
+  const planBadgeAct=pt=>{if(!pt||pt==='free')return '<span style="background:#e0e7ff;color:#3730a3;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">Free</span>';const colors={silver:'background:#f3f4f6;color:#374151',gold:'background:#fef3c7;color:#92400e',platinum:'background:#ede9fe;color:#5b21b6'};const c=colors[pt.toLowerCase()]||'background:#e0f2fe;color:#0369a1';return `<span style="${c};border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">${esc(pt.charAt(0).toUpperCase()+pt.slice(1))}</span>`;};
   tbody.innerHTML=activated.map(a=>`<tr>
     <td>${esc(a.name||'—')}</td>
     <td><code>${esc(a.phone)}</code></td>
+    <td>${planBadgeAct(a.plan_type)}</td>
     <td>${canViewLabel[a.can_view]||a.can_view}</td>
     <td>${a.daily_limit??10}</td>
     <td>${a.monthly_limit??50}</td>
@@ -633,8 +662,16 @@ function renderSettings(){
   $('setChatKwView').value=settings.chat_keyword_view||'1';
   $('setChatKwList').value=settings.chat_keyword_list||'2';
   $('setChatKwAgent').value=settings.chat_keyword_agent||'3';
+  $('setChatKwSubscribe').value=settings.chat_keyword_subscribe||'4';
+  $('setChatKwPlans').value=settings.chat_keyword_plans||'5';
   $('setChatPerMsg').value=settings.chat_profiles_per_msg||3;
   $('setChatFormUrl').value=settings.chat_form_url||'';
+  // Razorpay settings
+  $('setRzpKeyId').value=settings.razorpay_key_id||'';
+  $('setRzpKeySecret').value=settings.razorpay_key_secret?'••••••••••••••••':'';
+  $('setRzpWebhookSecret').value=settings.razorpay_webhook_secret?'••••••••••••••••':'';
+  try{$('setRzpPlans').value=settings.paid_plans?JSON.stringify(JSON.parse(settings.paid_plans),null,2):'';}catch(e){$('setRzpPlans').value=settings.paid_plans||'';}
+  const rzpWh=$('rzpWebhookUrl');if(rzpWh){rzpWh.textContent=`${API}/matrimonial/razorpay/webhook`;}
   let chatPlans=['gold','silver','platinum'];
   try{ const p=JSON.parse(settings.chat_plan_filter||'[]');if(p.length)chatPlans=p; }catch(e){}
   ['chatPlanGold','chatPlanSilver','chatPlanPlatinum'].forEach(id=>{ const el=$(id);if(el)el.checked=chatPlans.includes(el.value); });
@@ -769,6 +806,8 @@ async function saveChatSettings(){
       chat_keyword_view:sv('setChatKwView')||'1',
       chat_keyword_list:sv('setChatKwList')||'2',
       chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_keyword_subscribe:sv('setChatKwSubscribe')||'4',
+      chat_keyword_plans:sv('setChatKwPlans')||'5',
       chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
       chat_form_url:sv('setChatFormUrl'),
       chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
@@ -780,6 +819,8 @@ async function saveChatSettings(){
       chat_keyword_view:sv('setChatKwView')||'1',
       chat_keyword_list:sv('setChatKwList')||'2',
       chat_keyword_agent:sv('setChatKwAgent')||'3',
+      chat_keyword_subscribe:sv('setChatKwSubscribe')||'4',
+      chat_keyword_plans:sv('setChatKwPlans')||'5',
       chat_profiles_per_msg:parseInt($('setChatPerMsg').value)||3,
       chat_form_url:sv('setChatFormUrl'),
       chat_plan_filter:JSON.stringify(plans.length?plans:['gold','silver','platinum']),
@@ -787,6 +828,39 @@ async function saveChatSettings(){
     });
     msg.textContent='✓ Chat settings saved';setTimeout(()=>msg.textContent='',3000);
   }catch(e){msg.textContent='Error: '+e.message;}
+}
+
+async function saveRazorpaySettings(){
+  const msg=$('rzpMsg');msg.textContent='';
+  let paid_plans=null;
+  const raw=$('setRzpPlans').value.trim();
+  if(raw){try{paid_plans=JSON.stringify(JSON.parse(raw));}catch(e){msg.textContent='Paid plans must be valid JSON array';msg.style.color='var(--err)';return;}}
+  const patch={paid_plans};
+  const keyId=sv('setRzpKeyId');
+  if(keyId&&!keyId.startsWith('•')) patch.razorpay_key_id=keyId;
+  const keySec=$('setRzpKeySecret').value.trim();
+  if(keySec&&!keySec.startsWith('•')) patch.razorpay_key_secret=keySec;
+  const whSec=$('setRzpWebhookSecret').value.trim();
+  if(whSec&&!whSec.startsWith('•')) patch.razorpay_webhook_secret=whSec;
+  try{
+    await api('/matrimonial/settings',{method:'PATCH',body:JSON.stringify(patch)});
+    Object.assign(settings,patch);
+    msg.style.color='var(--ok)';msg.textContent='✓ Razorpay settings saved';setTimeout(()=>msg.textContent='',3000);
+  }catch(e){msg.style.color='var(--err)';msg.textContent='Error: '+e.message;}
+}
+
+async function testCreatePaymentLink(){
+  const msg=$('rzpMsg');msg.textContent='';msg.style.color='var(--ok)';
+  let plans=[];try{plans=JSON.parse(settings.paid_plans||'[]');}catch(e){}
+  if(!plans.length){msg.style.color='var(--err)';msg.textContent='Save at least one paid plan first';return;}
+  const phone=prompt('Customer phone (e.g. 919876543210)');if(!phone)return;
+  const planKey=prompt(`Plan key (${plans.map(p=>p.key).join(', ')})`);if(!planKey)return;
+  const name=prompt('Customer name (optional)','Test Customer');
+  try{
+    const r=await api('/matrimonial/razorpay/create-link',{method:'POST',body:JSON.stringify({phone:phone.replace(/[^0-9]/g,''),plan_key:planKey,name:name||phone})});
+    if(r.payment_url){window.open(r.payment_url,'_blank');msg.textContent='✓ Payment link created — opened in new tab';}
+    else{msg.style.color='var(--err)';msg.textContent=r.error||'Error';}
+  }catch(e){msg.style.color='var(--err)';msg.textContent='Error: '+e.message;}
 }
 
 async function init(){
