@@ -11838,6 +11838,24 @@ function ltParseConversationalFlightDate(value,now=new Date()){
   return '';
 }
 
+const LT_AIRPORT_ALIASES=[
+  ['DXB',/\b(?:dubai|dxb)\b/i],['AUH',/\b(?:abu\s*dhabi|auh)\b/i],['SHJ',/\b(?:sharjah|shj)\b/i],
+  ['CCJ',/\b(?:calicut|kozhikode|ccj)\b/i],['COK',/\b(?:kochi|cochin|ernakulam|cok)\b/i],['CNN',/\b(?:kannur|cnn)\b/i],['TRV',/\b(?:trivandrum|thiruvananthapuram|trv)\b/i],
+  ['BOM',/\b(?:mumbai|bombay|bom)\b/i],['DEL',/\b(?:new\s*delhi|delhi|del)\b/i],['MAA',/\b(?:chennai|madras|maa)\b/i],['HYD',/\b(?:hyderabad|hyd)\b/i],['BLR',/\b(?:bangalore|bengaluru|blr)\b/i],
+  ['DOH',/\b(?:doha|doh)\b/i],['MCT',/\b(?:muscat|mct)\b/i],['RUH',/\b(?:riyadh|ruh)\b/i],['JED',/\b(?:jeddah|jed)\b/i],['DMM',/\b(?:dammam|dmm)\b/i]
+];
+function ltAirportCodeFromText(value){
+  const text=String(value||'');
+  for(const [code,pattern] of LT_AIRPORT_ALIASES)if(pattern.test(text))return code;
+  return text.match(/\b[A-Z]{3}\b/)?.[0]||'';
+}
+export function ltParseFlightRoute(value){
+  const text=String(value||'').trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
+  if(parts.length<2)return null;
+  const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
+  return origin&&destination&&origin!==destination?{origin,destination}:null;
+}
+
 async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
@@ -11847,10 +11865,9 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
   raw=raw&&typeof raw==='object'?raw:{};
   const customerHistory=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).join('\n');
-  const combined=`${customerHistory}\n${userText||''}`;
-  const route=combined.toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
+  const route=ltParseFlightRoute(userText)||ltParseFlightRoute(customerHistory);
   const latestDate=ltParseConversationalFlightDate(userText),historicDate=ltParseConversationalFlightDate(customerHistory);
-  if(!raw.origin&&route)raw.origin=route[1];if(!raw.destination&&route)raw.destination=route[2];
+  if(!raw.origin&&route)raw.origin=route.origin;if(!raw.destination&&route)raw.destination=route.destination;
   if(latestDate)raw.departure_date=latestDate;else if(!raw.departure_date&&historicDate)raw.departure_date=historicDate;
   if(!raw.trip_type)raw.trip_type=raw.return_date?'round_trip':'one_way';
   return ltNormalizeChatFlightRequest(raw);
@@ -12009,8 +12026,8 @@ async function ltClearChatSearchDraft(env,clientId,phone){
 }
 function ltMergeChatFlightDraft(draft,input,userText){
   const old=draft||{},next={...old},text=String(userText||'');
-  const route=text.toUpperCase().match(/\b([A-Z]{3})\s+(?:TO|[-→])\s*([A-Z]{3})\b/);
-  if(route){next.origin=route[1];next.destination=route[2]}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
+  const route=ltParseFlightRoute(text);
+  if(route){next.origin=route.origin;next.destination=route.destination}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
   const date=ltParseConversationalFlightDate(text);next.departure_date=date||old.departure_date||input.departure_date;
   const adult=text.match(/\b(\d+)\s*adults?\b/i),child=text.match(/\b(\d+)\s*(?:children|child)\b/i),infant=text.match(/\b(\d+)\s*infants?\b/i);
   next.adults=adult?Number(adult[1]):(old.adults??input.adults??1);
