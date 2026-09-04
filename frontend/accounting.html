@@ -145,6 +145,36 @@ tbody tr:hover{background:var(--bg)}
 .toggle-row input[type=checkbox]{width:36px;height:20px}
 .sortable{cursor:pointer;user-select:none}
 .sortable:hover{color:var(--accent-ink)}
+
+/* ── Invoice / Quotation Drawer (replaces centred modal) ── */
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);backdrop-filter:blur(2px);z-index:100}
+.drawer-overlay.active{display:block;animation:overlayin .15s var(--ease)}
+.drawer-panel{position:fixed;top:0;right:0;width:min(520px,100vw);height:100%;background:var(--card);box-shadow:-4px 0 32px rgba(0,0,0,.18);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+.drawer-overlay.active .drawer-panel{transform:translateX(0)}
+.drawer-head{padding:18px 24px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.drawer-head-title{font-family:var(--disp);font-size:17px;font-weight:700;color:var(--ink)}
+.drawer-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);padding:4px 8px;border-radius:6px;line-height:1;transition:background .15s var(--ease)}
+.drawer-close:hover{background:var(--line);color:var(--ink)}
+.drawer-body{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+.drawer-foot{padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;background:var(--card);gap:12px}
+.drawer-foot-total{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--ink);flex:1;min-width:0}
+.drawer-sec-hd{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+/* ── Card-style line items ── */
+.li-row.li-card{display:block!important;margin-bottom:0;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:12px;transition:border-color .15s var(--ease)}
+.li-row.li-card:focus-within{border-color:var(--accent)}
+.li-row.li-card>.li-name{width:100%;display:block;margin-bottom:8px;background:var(--card);box-sizing:border-box}
+.li-card-nums{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end}
+.li-card-field{display:flex;flex-direction:column;gap:3px}
+.li-card-lbl{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.li-card-nums .li-qty,.li-card-nums .li-price{background:var(--card);width:100%;box-sizing:border-box}
+.li-card-total-wrap{display:flex;flex-direction:column;gap:3px}
+.li-total{font-family:var(--mono,monospace);font-size:13px;font-weight:600;color:var(--ink);padding:7px 8px;text-align:right;white-space:nowrap;background:var(--card);border:1.5px solid var(--line);border-radius:8px;min-height:36px;display:flex;align-items:center;justify-content:flex-end;box-sizing:border-box}
+.li-card-del{background:none;border:1.5px solid var(--line);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:13px;transition:all .15s var(--ease);flex-shrink:0;font-family:inherit}
+.li-card-del:hover{background:#fef2f2;border-color:#fca5a5;color:#dc2626}
+.li-hsn-wrap{margin-top:6px;display:none}
+.li-hsn-wrap.show{display:block}
+.li-hsn{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:12px;background:var(--card);box-sizing:border-box;transition:border-color .15s var(--ease)}
+.li-hsn:focus{outline:none;border-color:var(--accent);background:#fff}
 </style>
 </head>
 <body>
@@ -609,104 +639,126 @@ tbody tr:hover{background:var(--bg)}
 
 <datalist id="fpCustomersDatalist"></datalist>
 
-<!-- ── QUOTATION MODAL — its own window, separate from the Invoice modal below: a quotation is a
-     price offer that expires (Valid Until), not a payment demand. ── -->
-<div class="modal-overlay" id="quotationModal">
-  <div class="modal-card">
-    <div class="modal-title">🧾 New Quotation</div>
-    <input type="hidden" id="docQuotationId">
-    <div class="modal-grid">
-      <div><label class="s-lbl">Title</label><input class="s-input" id="docQuotationTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
-      <div><label class="s-lbl">Lead (CRM, optional)</label>
-        <input class="s-input" id="docQuotationLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('quotation')">
-        <select class="s-input" id="docQuotationLeadId" style="margin-top:6px"><option value="">— None —</option></select>
-      </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docQuotationCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docQuotationCurrency" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Valid Until (optional)</label><input class="s-input" id="docQuotationValidUntil" type="date"></div>
+<!-- ── QUOTATION DRAWER ── -->
+<div class="drawer-overlay" id="quotationModal" onclick="if(event.target===this)closeDocTypeModal('quotation')">
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <span class="drawer-head-title">🧾 New Quotation</span>
+      <button class="drawer-close" type="button" onclick="closeDocTypeModal('quotation')">✕</button>
     </div>
-    <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
-    <div class="li-header"><span>Description</span><span>HSN/SAC</span><span>Qty</span><span>Unit Price</span><span>Total</span><span></span></div>
-    <div id="docQuotationLineItems"></div>
-    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:6px">+ Add Line Item</button>
-    <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
-         Cross-Sell & Upsell rules (clientRecord.cross_sell_rules, same field, read-only here).
-         Click adds the suggestion as its own line item. -->
-    <div id="docQuotationCrossSell" style="margin-top:10px"></div>
-    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docQuotationTotalPreview">Total: —</div>
-    <!-- GST Details -->
-    <details style="margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:12px">
-      <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ GST Details (for Tax Invoice)</summary>
-      <div class="modal-grid" style="margin-top:10px">
-        <div class="toggle-row" style="grid-column:1/-1"><input type="checkbox" id="docQuotationIsTaxInvoice" onchange="updateDocTypeTotalPreview('quotation')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
-        <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docQuotationGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('quotation')"></div>
-        <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docQuotationRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
-        <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docQuotationPlaceOfSupply" onchange="updateDocTypeTotalPreview('quotation')"><option value="">— Select State —</option></select></div>
-        <div><label class="s-lbl">Supply Type</label>
-          <select class="s-input" id="docQuotationSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+    <div class="drawer-body">
+      <input type="hidden" id="docQuotationId">
+      <div>
+        <div><label class="s-lbl">Title</label><input class="s-input" id="docQuotationTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><label class="s-lbl">Currency</label><input class="s-input" id="docQuotationCurrency" placeholder="e.g. AED" value="AED"></div>
+          <div><label class="s-lbl">Valid Until</label><input class="s-input" id="docQuotationValidUntil" type="date"></div>
         </div>
-        <div class="toggle-row"><input type="checkbox" id="docQuotationReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        <div style="margin-top:10px"><label class="s-lbl">Customer Name</label><input class="s-input" id="docQuotationCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+        <details style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:600">🔍 Link to CRM lead (optional)</summary>
+          <div style="margin-top:8px">
+            <input class="s-input" id="docQuotationLeadSearch" placeholder="Search leads by name or phone…" oninput="renderDocTypeLeadPicker('quotation')">
+            <select class="s-input" id="docQuotationLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+          </div>
+        </details>
       </div>
-    </details>
-    <div style="margin-top:14px">
-      <label class="s-lbl">Notes</label>
-      <textarea class="s-input" id="docQuotationNotes" rows="2" style="resize:vertical"></textarea>
+      <div>
+        <div class="drawer-sec-hd">Line Items</div>
+        <div class="s-hint" style="margin-bottom:8px">Type a product or service — no catalog setup needed.</div>
+        <div class="li-cards" id="docQuotationLineItems"></div>
+        <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:8px;width:100%">+ Add Line Item</button>
+        <div id="docQuotationCrossSell" style="margin-top:8px"></div>
+      </div>
+      <details style="border:1px solid var(--line);border-radius:8px;padding:12px">
+        <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ Tax / GST Details</summary>
+        <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+          <div class="toggle-row"><input type="checkbox" id="docQuotationIsTaxInvoice" onchange="toggleDocTypeHsnFields('quotation')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docQuotationGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('quotation')"></div>
+            <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docQuotationRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+            <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docQuotationPlaceOfSupply" onchange="updateDocTypeTotalPreview('quotation')"><option value="">— Select State —</option></select></div>
+            <div><label class="s-lbl">Supply Type</label>
+              <select class="s-input" id="docQuotationSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+            </div>
+          </div>
+          <div class="toggle-row"><input type="checkbox" id="docQuotationReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        </div>
+      </details>
+      <div>
+        <label class="s-lbl">Notes</label>
+        <textarea class="s-input" id="docQuotationNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+      <div class="s-hint">Logo, T&amp;C, Payment Method and footer details are shared with the Quote/Invoice page on a lead — edit there and every document here picks them up.</div>
     </div>
-    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
-    <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeDocTypeModal('quotation')">Cancel</button>
-      <button class="save-btn" onclick="saveDocType('quotation')">Save Quotation</button>
+    <div class="drawer-foot">
+      <div class="drawer-foot-total" id="docQuotationTotalPreview">Total: —</div>
+      <div style="display:flex;gap:10px;flex-shrink:0">
+        <button class="save-btn sec" type="button" onclick="closeDocTypeModal('quotation')">Cancel</button>
+        <button class="save-btn" type="button" onclick="saveDocType('quotation')">Save Quotation</button>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- ── INVOICE MODAL — its own window: a payment demand with a Due Date, not an expiring offer.
-     Marking it Paid (status dropdown on the Documents table) automatically records the income
-     (a linked Receipt) and the collection — see worker.js fpRecordInvoicePaidSideEffects. ── -->
-<div class="modal-overlay" id="invoiceModal">
-  <div class="modal-card">
-    <div class="modal-title">📄 New Invoice</div>
-    <input type="hidden" id="docInvoiceId">
-    <div class="modal-grid">
-      <div><label class="s-lbl">Title</label><input class="s-input" id="docInvoiceTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
-      <div><label class="s-lbl">Lead (CRM, optional)</label>
-        <input class="s-input" id="docInvoiceLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('invoice')">
-        <select class="s-input" id="docInvoiceLeadId" style="margin-top:6px"><option value="">— None —</option></select>
-      </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docInvoiceCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docInvoiceCurrency" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="docInvoiceDueDate" type="date"></div>
+<!-- ── INVOICE DRAWER — marking it Paid auto-records income + collection (fpRecordInvoicePaidSideEffects) ── -->
+<div class="drawer-overlay" id="invoiceModal" onclick="if(event.target===this)closeDocTypeModal('invoice')">
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <span class="drawer-head-title">📄 New Invoice</span>
+      <button class="drawer-close" type="button" onclick="closeDocTypeModal('invoice')">✕</button>
     </div>
-    <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
-    <div class="li-header"><span>Description</span><span>HSN/SAC</span><span>Qty</span><span>Unit Price</span><span>Total</span><span></span></div>
-    <div id="docInvoiceLineItems"></div>
-    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:6px">+ Add Line Item</button>
-    <div id="docInvoiceCrossSell" style="margin-top:10px"></div>
-    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docInvoiceTotalPreview">Total: —</div>
-    <!-- GST Details -->
-    <details style="margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:12px">
-      <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ GST Details (for Tax Invoice)</summary>
-      <div class="modal-grid" style="margin-top:10px">
-        <div class="toggle-row" style="grid-column:1/-1"><input type="checkbox" id="docInvoiceIsTaxInvoice" onchange="updateDocTypeTotalPreview('invoice')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
-        <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docInvoiceGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('invoice')"></div>
-        <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docInvoiceRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
-        <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docInvoicePlaceOfSupply" onchange="updateDocTypeTotalPreview('invoice')"><option value="">— Select State —</option></select></div>
-        <div><label class="s-lbl">Supply Type</label>
-          <select class="s-input" id="docInvoiceSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+    <div class="drawer-body">
+      <input type="hidden" id="docInvoiceId">
+      <div>
+        <div><label class="s-lbl">Title</label><input class="s-input" id="docInvoiceTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><label class="s-lbl">Currency</label><input class="s-input" id="docInvoiceCurrency" placeholder="e.g. AED" value="AED"></div>
+          <div><label class="s-lbl">Due Date</label><input class="s-input" id="docInvoiceDueDate" type="date"></div>
         </div>
-        <div class="toggle-row"><input type="checkbox" id="docInvoiceReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        <div style="margin-top:10px"><label class="s-lbl">Customer Name</label><input class="s-input" id="docInvoiceCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+        <details style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:600">🔍 Link to CRM lead (optional)</summary>
+          <div style="margin-top:8px">
+            <input class="s-input" id="docInvoiceLeadSearch" placeholder="Search leads by name or phone…" oninput="renderDocTypeLeadPicker('invoice')">
+            <select class="s-input" id="docInvoiceLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+          </div>
+        </details>
       </div>
-    </details>
-    <div style="margin-top:14px">
-      <label class="s-lbl">Notes</label>
-      <textarea class="s-input" id="docInvoiceNotes" rows="2" style="resize:vertical"></textarea>
+      <div>
+        <div class="drawer-sec-hd">Line Items</div>
+        <div class="s-hint" style="margin-bottom:8px">Type a product or service — no catalog setup needed.</div>
+        <div class="li-cards" id="docInvoiceLineItems"></div>
+        <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:8px;width:100%">+ Add Line Item</button>
+        <div id="docInvoiceCrossSell" style="margin-top:8px"></div>
+      </div>
+      <details style="border:1px solid var(--line);border-radius:8px;padding:12px">
+        <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ Tax / GST Details</summary>
+        <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+          <div class="toggle-row"><input type="checkbox" id="docInvoiceIsTaxInvoice" onchange="toggleDocTypeHsnFields('invoice')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docInvoiceGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('invoice')"></div>
+            <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docInvoiceRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+            <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docInvoicePlaceOfSupply" onchange="updateDocTypeTotalPreview('invoice')"><option value="">— Select State —</option></select></div>
+            <div><label class="s-lbl">Supply Type</label>
+              <select class="s-input" id="docInvoiceSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+            </div>
+          </div>
+          <div class="toggle-row"><input type="checkbox" id="docInvoiceReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        </div>
+      </details>
+      <div>
+        <label class="s-lbl">Notes</label>
+        <textarea class="s-input" id="docInvoiceNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+      <div class="s-hint">Logo, T&amp;C, Payment Method and footer details are shared with the Quote/Invoice page on a lead — edit there and every document here picks them up.</div>
     </div>
-    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
-    <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeDocTypeModal('invoice')">Cancel</button>
-      <button class="save-btn" onclick="saveDocType('invoice')">Save Invoice</button>
+    <div class="drawer-foot">
+      <div class="drawer-foot-total" id="docInvoiceTotalPreview">Total: —</div>
+      <div style="display:flex;gap:10px;flex-shrink:0">
+        <button class="save-btn sec" type="button" onclick="closeDocTypeModal('invoice')">Cancel</button>
+        <button class="save-btn" type="button" onclick="saveDocType('invoice')">Save Invoice</button>
+      </div>
     </div>
   </div>
 </div>
@@ -1935,6 +1987,12 @@ function openDocTypeModal(type, prefill){
   updateDocTypeTotalPreview(type);
 }
 function closeDocTypeModal(type){ document.getElementById(type+'Modal').classList.remove('active'); }
+function toggleDocTypeHsnFields(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const isTax=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
+  document.querySelectorAll(`#${cfg.prefix}LineItems .li-hsn-wrap`).forEach(el=>el.classList.toggle('show',isTax));
+  updateDocTypeTotalPreview(type);
+}
 function renderDocTypeLeadPicker(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   const p=cfg.prefix;
@@ -1948,14 +2006,20 @@ function renderDocTypeLeadPicker(type){
 function addDocLineItemRow(type, li){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   li=li||{name:'',qty:1,price:0,hsn_code:''};
-  const row=document.createElement('div'); row.className='li-row';
+  const isTax=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
+  const row=document.createElement('div');
+  row.className='li-row li-card';
   row.innerHTML=`
     <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
-    <input class="li-hsn" placeholder="HSN/SAC" value="${escAttr(li.hsn_code||'')}">
-    <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
-    <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
-    <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
-    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTypeTotalPreview('${type}')">✕</button>`;
+    <div class="li-hsn-wrap${isTax?' show':''}">
+      <input class="li-hsn" placeholder="HSN/SAC code" value="${escAttr(li.hsn_code||'')}">
+    </div>
+    <div class="li-card-nums">
+      <div class="li-card-field"><span class="li-card-lbl">Qty</span><input class="li-qty" type="number" placeholder="1" value="${esc(li.qty)}"></div>
+      <div class="li-card-field"><span class="li-card-lbl">Unit Price</span><input class="li-price" type="number" placeholder="0.00" value="${esc(li.price)}"></div>
+      <div class="li-card-total-wrap"><span class="li-card-lbl">Total</span><div class="li-total"></div></div>
+      <button class="li-card-del" type="button" onclick="this.closest('.li-row').remove();updateDocTypeTotalPreview('${type}')">✕</button>
+    </div>`;
   document.getElementById(cfg.prefix+'LineItems').appendChild(row);
   row.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>updateDocTypeTotalPreview(type)));
   updateDocTypeTotalPreview(type);
@@ -2012,17 +2076,20 @@ function updateDocTypeTotalPreview(type){
     const price=Number(row.querySelector('.li-price').value)||0;
     const total=qty*price;
     subtotal+=total;
-    row.querySelector('.li-total').textContent=total.toLocaleString();
+    const totalEl=row.querySelector('.li-total');
+    if(totalEl) totalEl.textContent=total.toLocaleString();
   });
   const cur=document.getElementById(cfg.prefix+'Currency').value||'';
+  const isTaxInvoice=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
   const gstRateEl=document.getElementById(cfg.prefix+'GstRate');
   const posEl=document.getElementById(cfg.prefix+'PlaceOfSupply');
-  const gstRate=gstRateEl?Number(gstRateEl.value)||0:0;
+  const gstRate=isTaxInvoice&&gstRateEl?Number(gstRateEl.value)||0:0;
   const pos=posEl?posEl.value:'';
   const supplierState=fpConfig?.business_state_code||'';
   const {cgst,sgst,igst,total}=computeGstFrontend(subtotal,gstRate,supplierState,pos);
-  let preview=`Subtotal: ${fmtMoney(subtotal,cur)}`;
+  let preview;
   if(gstRate>0){
+    preview=`Subtotal: ${fmtMoney(subtotal,cur)}`;
     if(cgst||sgst) preview+=` | CGST: ${fmtMoney(cgst,cur)} | SGST: ${fmtMoney(sgst,cur)}`;
     else preview+=` | IGST: ${fmtMoney(igst,cur)}`;
     preview+=` | Total: ${fmtMoney(total,cur)}`;

@@ -27017,7 +27017,8 @@ async function handleInternalChatHistory(request, env){
 async function handleInternalChatMessage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Unauthorized'},401);
-  const {message}=await request.json().catch(()=>({}));
+  const body=await request.json().catch(()=>({}));
+  const message=body.message;
   if(!message||!String(message).trim()) return json({error:'message required'},400);
   const userText=String(message).trim().slice(0,2000);
   const cid=Number(payload.cid);
