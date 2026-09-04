@@ -8554,7 +8554,8 @@ function pdRenderCurrent(){
   $id('pdName').textContent=l.Name||'Unknown';
   $id('pdPhone').textContent=l.Phone||'—';
   $id('pdStage').textContent=l.Stage||'new';
-  $id('pdNoteInput').value='';
+  const tpl=callNotesTemplate(l.Stage||'');
+  $id('pdNoteInput').value=tpl||'';
   const timer=$id('pdTimer'); if(timer){timer.style.display='none';timer.textContent='0:00';}
   if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
   _pdCallStart=null;
@@ -8564,6 +8565,10 @@ function pdRenderCurrent(){
 
 function pdStartCall(e){
   _pdCallStart=Date.now();
+  // Persist so we can recover duration if the tab is killed while on the phone
+  if(_pdIdx<_pdQueue.length){
+    try{sessionStorage.setItem('lv_pd_call',JSON.stringify({leadId:_pdQueue[_pdIdx].Id,ts:_pdCallStart}));}catch(e){}
+  }
   const timer=$id('pdTimer'); if(timer) timer.style.display='block';
   if(_pdTimerInterval) clearInterval(_pdTimerInterval);
   _pdTimerInterval=setInterval(()=>{
@@ -8575,16 +8580,30 @@ function pdStartCall(e){
 async function pdLogOutcome(outcome){
   if(_pdIdx>=_pdQueue.length) return;
   const l=_pdQueue[_pdIdx];
+  // Restore callStart from sessionStorage if memory state was lost (tab kill/resume)
+  if(!_pdCallStart){
+    try{const s=JSON.parse(sessionStorage.getItem('lv_pd_call')||'{}');if(s.leadId===l.Id&&s.ts)_pdCallStart=s.ts;}catch(e){}
+  }
   const durationMins=_pdCallStart?Math.round((Date.now()-_pdCallStart)/60000):0;
   const notes=($id('pdNoteInput')?.value||'').trim();
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
   calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),by:myEmail});
   l.CallLog=JSON.stringify(calls);
-  const prevLead=currentLead; currentLead=l;
-  await patchDetailField('CallLog',l.CallLog);
-  currentLead=prevLead;
-  if(outcome==='No Answer') autoWaFollowUp(l.Id);
-  if(outcome==='Callback Requested') scheduleCallback(l.Id);
+  // Update allLeads in-memory so list view reflects the change
+  const memIdx=allLeads.findIndex(x=>x.Id===l.Id);
+  if(memIdx>=0) allLeads[memIdx].CallLog=l.CallLog;
+  // Direct NocoDB patch — no currentLead dependency, safe from detail-panel state
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,CallLog:l.CallLog});
+  }catch(e){showToast('Save failed — check connection','err');return;}
+  sessionStorage.removeItem('lv_pd_call');
+  if(outcome==='No Answer'){const prev=currentLead;currentLead=l;autoWaFollowUp(l.Id);currentLead=prev;}
+  if(outcome==='Callback Requested'){
+    const cbLead=l; const cb=new Date(Date.now()+2*60*60*1000).toISOString();
+    cbLead.ReminderDate=cb;
+    if(memIdx>=0) allLeads[memIdx].ReminderDate=cb;
+    ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:cbLead.Id,ReminderDate:cb});
+  }
   showToast(`📞 ${outcome} — ${l.Name||'Lead'}`,'ok');
   pdNext();
 }
@@ -8604,6 +8623,25 @@ function pdPrev(){
 // for any lead that had startCallTimer() called but not yet logged.
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden) return;
+  // If power dialer is open, restore its timer and leave it alone
+  const pd=$id('powerDialer');
+  if(pd&&pd.style.display==='flex'){
+    if(!_pdCallStart){
+      try{
+        const s=JSON.parse(sessionStorage.getItem('lv_pd_call')||'{}');
+        if(s.ts){
+          _pdCallStart=s.ts;
+          const timer=$id('pdTimer'); if(timer) timer.style.display='block';
+          if(_pdTimerInterval) clearInterval(_pdTimerInterval);
+          _pdTimerInterval=setInterval(()=>{
+            const t=$id('pdTimer'); if(!t) return;
+            t.textContent=fmtSecs(Math.floor((Date.now()-_pdCallStart)/1000));
+          },1000);
+        }
+      }catch(e){}
+    }
+    return; // don't show inline chips or navigate while dialer is open
+  }
   // reload in-progress from sessionStorage (handles app-kill/resume)
   try{
     const saved=JSON.parse(sessionStorage.getItem('lv_call_progress')||'{}');
