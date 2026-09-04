@@ -175,6 +175,25 @@ tbody tr:hover{background:var(--bg)}
 .li-hsn-wrap.show{display:block}
 .li-hsn{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:12px;background:var(--card);box-sizing:border-box;transition:border-color .15s var(--ease)}
 .li-hsn:focus{outline:none;border-color:var(--accent);background:#fff}
+
+/* ── Document cards (replaces dense table in Documents tab) ── */
+.doc-cards{display:flex;flex-direction:column;gap:10px}
+.doc-card{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:16px 18px;display:flex;align-items:flex-start;gap:14px;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}
+.doc-card:hover{border-color:var(--ls);box-shadow:var(--shadow-md)}
+.doc-card-icon{font-size:24px;flex-shrink:0;margin-top:2px}
+.doc-card-main{flex:1;min-width:0}
+.doc-card-top{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:5px}
+.doc-card-title{font-family:var(--disp);font-size:14px;font-weight:600;color:var(--ink);flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-card-meta{font-size:12px;color:var(--muted);margin-bottom:10px}
+.doc-card-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.doc-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;padding-left:8px}
+.doc-card-total{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink);white-space:nowrap}
+.doc-type-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.05em;flex-shrink:0}
+.doc-type-badge.invoice{background:var(--accent-soft);color:var(--accent-ink)}
+.doc-type-badge.quotation{background:#DBEAFE;color:#1E3A8A}
+.doc-type-badge.receipt{background:#EDE9FE;color:#5B21B6}
+.doc-status-sel{font-size:11px;padding:4px 7px;border:1.5px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:var(--body);cursor:pointer;transition:border-color .15s var(--ease)}
+.doc-status-sel:focus{outline:none;border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -215,12 +234,7 @@ tbody tr:hover{background:var(--bg)}
             <button class="save-btn" onclick="openDocTypeModal('invoice')">+ New Invoice</button>
           </div>
         </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Title</th><th>Type</th><th>Customer</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
-          </table>
-        </div>
+        <div id="documentsGrid"><div class="empty-state"><span class="spinner"></span> Loading…</div></div>
       </div>
     </div>
 
@@ -2103,23 +2117,24 @@ function updateDocTypeTotalPreview(type){
 async function saveDocType(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   const p=cfg.prefix;
+  const docId=Number(document.getElementById(p+'Id').value)||0;
   const title=document.getElementById(p+'Title').value.trim();
   if(!title){ alert('Please give this document a title.'); return; }
   const lineItems=collectDocLineItems(type);
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
   const leadId=document.getElementById(p+'LeadId').value||null;
   const customerName=document.getElementById(p+'CustomerName').value.trim()||null;
+  const isTaxInvoice=document.getElementById(p+'IsTaxInvoice')?.checked||false;
   const gstRateEl=document.getElementById(p+'GstRate');
-  const gstRate=gstRateEl?Number(gstRateEl.value)||0:0;
-  const body={
+  const gstRate=isTaxInvoice&&gstRateEl?Number(gstRateEl.value)||0:0;
+  const fields={
     type, title, lead_id:leadId,
     customer_name:customerName,
-    customer_id:(!leadId && customerName)?await ensureFpCustomerByName(customerName):null,
     currency:document.getElementById(p+'Currency').value.trim(),
     notes:document.getElementById(p+'Notes').value.trim(),
     [cfg.dateKey]:document.getElementById(cfg.dateField).value||null,
     line_items:lineItems,
-    is_tax_invoice:document.getElementById(p+'IsTaxInvoice')?.checked?1:0,
+    is_tax_invoice:isTaxInvoice?1:0,
     gst_rate_pct:gstRate,
     supplier_gstin:fpConfig?.business_gstin||null,
     supplier_state_code:fpConfig?.business_state_code||null,
@@ -2129,8 +2144,20 @@ async function saveDocType(type){
     reverse_charge:document.getElementById(p+'ReverseCharge')?.checked?1:0,
   };
   try{
-    const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(body)});
-    allDocuments.unshift(created);
+    if(docId){
+      await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id:docId,...fields})});
+      const idx=allDocuments.findIndex(d=>d.Id===docId);
+      if(idx>-1){
+        const subtotal=lineItems.reduce((s,li)=>s+(Number(li.qty)||0)*(Number(li.price)||0),0);
+        allDocuments[idx]={...allDocuments[idx],...fields,Id:docId,line_items_json:JSON.stringify(lineItems),subtotal,total:subtotal};
+      }
+    } else {
+      fields.customer_id=(!leadId&&customerName)?await ensureFpCustomerByName(customerName):null;
+      const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(fields)});
+      allDocuments.unshift(created);
+    }
+    const titleEl=document.querySelector(`#${type}Modal .drawer-head-title`);
+    if(titleEl) titleEl.textContent=type==='invoice'?'📄 New Invoice':'🧾 New Quotation';
     closeDocTypeModal(type);
     renderDocumentsTable();
   }catch(e){ alert('Failed to save: '+e.message); }
@@ -2153,36 +2180,85 @@ async function setDocumentStatus(id, status){
   }catch(e){ alert('Failed to update status: '+e.message); }
 }
 
+const DOC_TYPE_ICON={quotation:'🧾',invoice:'📄',receipt:'🪙'};
+const DOC_CONVERT_LABEL={invoice:'→ Invoice',receipt:'→ Receipt'};
 function renderDocumentsTable(){
   const q=(document.getElementById('docSearch').value||'').toLowerCase();
   const typeFilter=document.getElementById('docFilterType').value;
-  const tbody=document.getElementById('documentsTbody');
+  const grid=document.getElementById('documentsGrid');
   if(documentsLoadError){
-    tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    grid.innerHTML=`<div class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied — see SETUP.md "Accounting module".</div>`;
     return;
   }
   const rows=allDocuments.filter(d=>(!q||(d.title||'').toLowerCase().includes(q))&&(!typeFilter||d.type===typeFilter));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No documents yet — create a quotation above, then convert it to an invoice and receipt as the deal progresses.</td></tr>'; return; }
-  const convertTo={quotation:'invoice', invoice:'receipt'};
-  tbody.innerHTML=rows.map(d=>{
+  if(!rows.length){
+    grid.innerHTML='<div class="empty-state"><div class="empty-icon">📋</div>No documents yet — create a quotation or invoice to get started.</div>';
+    return;
+  }
+  const convertTo={quotation:'invoice',invoice:'receipt'};
+  grid.innerHTML='<div class="doc-cards">'+rows.map(d=>{
     const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
-    const customerLabel=lead?(lead.Name||lead.Phone):(d.customer_name||'—');
+    const customer=lead?(lead.Name||lead.Phone):(d.customer_name||'');
     const nextType=convertTo[d.type];
     const status=d.status||'draft';
-    return `<tr>
-      <td>${esc(d.title||'')}</td>
-      <td>${DOC_TYPE_LABEL[d.type]||esc(d.type)}</td>
-      <td>${esc(customerLabel)}</td>
-      <td>${fmtMoney(d.total,d.currency)}</td>
-      <td><select class="s-input" style="width:auto;font-size:12px;padding:4px 6px" onchange="setDocumentStatus(${d.Id},this.value)">${DOC_STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s.toUpperCase()}</option>`).join('')}</select></td>
-      <td class="row-actions">
-        <button class="icon-btn" title="Download PDF" onclick="downloadDocumentPdf(${d.Id})">⬇️</button>
-        <button class="icon-btn" title="Send by email" onclick="openEmailModal(${d.Id})">📧</button>
-        ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
-        <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
-      </td>
-    </tr>`;
-  }).join('');
+    const canEdit=status==='draft'&&d.type!=='receipt';
+    const meta=[
+      customer&&`👤 ${esc(customer)}`,
+      d.due_date&&`📅 Due ${String(d.due_date).slice(0,10)}`,
+      d.valid_until&&`📅 Until ${String(d.valid_until).slice(0,10)}`,
+    ].filter(Boolean).join(' · ');
+    return `<div class="doc-card">
+      <div class="doc-card-icon">${DOC_TYPE_ICON[d.type]||'📄'}</div>
+      <div class="doc-card-main">
+        <div class="doc-card-top">
+          <span class="doc-card-title">${esc(d.title||'Untitled')}</span>
+          <span class="doc-type-badge ${d.type}">${d.type.toUpperCase()}</span>
+          <span class="badge ${status}">${status.toUpperCase()}</span>
+        </div>
+        ${meta?`<div class="doc-card-meta">${meta}</div>`:''}
+        <div class="doc-card-actions">
+          ${canEdit?`<button class="icon-btn" onclick="openDocTypeEdit('${d.type}',${d.Id})">✏️ Edit</button>`:''}
+          <button class="icon-btn" onclick="downloadDocumentPdf(${d.Id})">⬇️ PDF</button>
+          <button class="icon-btn" onclick="openEmailModal(${d.Id})">📧</button>
+          ${nextType?`<button class="icon-btn" onclick="convertDocument(${d.Id},'${nextType}')">${DOC_CONVERT_LABEL[nextType]}</button>`:''}
+          <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
+        </div>
+      </div>
+      <div class="doc-card-right">
+        <div class="doc-card-total">${fmtMoney(d.total,d.currency)}</div>
+        <select class="doc-status-sel" onchange="setDocumentStatus(${d.Id},this.value)">${DOC_STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}</select>
+      </div>
+    </div>`;
+  }).join('')+'</div>';
+}
+
+function openDocTypeEdit(type, id){
+  const doc=allDocuments.find(d=>d.Id===id);
+  if(!doc) return;
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  let lineItems=[];
+  try{ lineItems=JSON.parse(doc.line_items_json||'[]'); }catch(e){}
+  const prefill={
+    title:doc.title||'',
+    currency:doc.currency||'',
+    notes:doc.notes||'',
+    customer_name:doc.customer_name||'',
+    lead_id:doc.lead_id||null,
+    line_items:lineItems.length?lineItems:[{name:'',qty:1,price:0}],
+    [cfg.dateKey]:doc[cfg.dateKey]||'',
+  };
+  openDocTypeModal(type, prefill);
+  const p=cfg.prefix;
+  document.getElementById(p+'Id').value=id;
+  if(document.getElementById(p+'IsTaxInvoice')) document.getElementById(p+'IsTaxInvoice').checked=!!doc.is_tax_invoice;
+  if(document.getElementById(p+'GstRate')) document.getElementById(p+'GstRate').value=doc.gst_rate_pct||'';
+  if(document.getElementById(p+'RecipientGstin')) document.getElementById(p+'RecipientGstin').value=doc.recipient_gstin||'';
+  if(document.getElementById(p+'PlaceOfSupply')) renderStateOptions(p+'PlaceOfSupply', doc.place_of_supply||'');
+  if(document.getElementById(p+'SupplyType')) document.getElementById(p+'SupplyType').value=doc.supply_type||'B2C';
+  if(document.getElementById(p+'ReverseCharge')) document.getElementById(p+'ReverseCharge').checked=!!doc.reverse_charge;
+  toggleDocTypeHsnFields(type);
+  const titleEl=document.querySelector(`#${type}Modal .drawer-head-title`);
+  if(titleEl) titleEl.textContent=`✏️ Edit ${type==='invoice'?'Invoice':'Quotation'}`;
 }
 
 /* ── EXPENSE ENTRY (migrations/0028_accounting_expenses.sql) — same open/save/sync/submit shape
