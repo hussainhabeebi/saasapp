@@ -5049,6 +5049,7 @@ async function loadAll(silent=false, force=false){
       if(list&&list.length){
         allLeads=list;
         renderHome();
+        pdTryRestore(); // restore power dialer if Android killed the tab during a call
         if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
         // If cache is fresh enough, skip network fetch — unless force is set (a live-update event
         // just told us something genuinely changed, so a 5-minute-old cache isn't good enough here
@@ -5064,6 +5065,7 @@ async function loadAll(silent=false, force=false){
     allLeads=data.list||[];
     sessionStorage.setItem(_CACHE_KEY(),JSON.stringify({ts:Date.now(),list:allLeads}));
     renderHome();
+    pdTryRestore(); // restore power dialer if Android killed the tab during a call
     $id('hUpdated').textContent='Updated '+new Date().toLocaleTimeString();
   }catch(e){console.error(e);}
 }
@@ -8526,45 +8528,70 @@ function callNotesTemplate(stage){
 
 let _pdQueue=[], _pdIdx=0, _pdTimerInterval=null, _pdCallStart=null;
 
+/* ── POWER DIALER ─────────────────────────────────────────────────────────── */
+// Full sessionStorage persistence so the dialer survives Android tab-kill/resume.
+const _PD_SS = 'lv_pd_state';
+
+function _pdSaveState(){
+  if(!_pdQueue.length) return;
+  try{
+    sessionStorage.setItem(_PD_SS, JSON.stringify({
+      queueIds: _pdQueue.map(l=>l.Id),
+      idx: _pdIdx,
+      callStart: _pdCallStart||null
+    }));
+  }catch(e){}
+}
+
+function _pdClearState(){
+  try{ sessionStorage.removeItem(_PD_SS); }catch(e){}
+}
+
+// Called after allLeads loads — silently re-opens the dialer if it was
+// interrupted by an Android tab kill while a call was in progress.
+function pdTryRestore(){
+  try{
+    const raw=sessionStorage.getItem(_PD_SS); if(!raw) return;
+    const s=JSON.parse(raw);
+    if(!s.queueIds||!s.queueIds.length) return;
+    const queue=s.queueIds.map(id=>allLeads.find(l=>l.Id===id)).filter(Boolean);
+    if(!queue.length){_pdClearState();return;}
+    _pdQueue=queue;
+    _pdIdx=Math.min(s.idx||0,queue.length-1);
+    _pdCallStart=s.callStart||null;
+    openPowerDialer(true); // true = restoring, don't reset timer/notes
+  }catch(e){}
+}
+
 function buildPowerDialerQueue(leadIds){
   _pdQueue=[];
   const ids=leadIds&&leadIds.length?leadIds:[...allLeads].filter(l=>leadNeedsCallback(l)).map(l=>l.Id);
   ids.forEach(id=>{const l=allLeads.find(x=>x.Id===id);if(l)_pdQueue.push(l);});
   if(!_pdQueue.length){showToast('No callback leads found','err');return;}
   _pdIdx=0;
+  _pdCallStart=null;
   openPowerDialer();
 }
 
-function openPowerDialer(){
+function openPowerDialer(restoring){
   const pd=$id('powerDialer'); if(!pd) return;
   pd.style.display='flex';
-  pdRenderCurrent();
+  pdRenderCurrent(restoring);
 }
 
 function exitPowerDialer(){
   const pd=$id('powerDialer'); if(pd) pd.style.display='none';
   if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
   _pdCallStart=null;
+  _pdClearState();
 }
 
-function pdRenderCurrent(){
-  if(!_pdQueue.length){exitPowerDialer();showToast('Queue done!','ok');return;}
-  const l=_pdQueue[Math.min(_pdIdx,_pdQueue.length-1)];
-  $id('pdProgress').textContent=`${_pdIdx+1} / ${_pdQueue.length}`;
-  $id('pdName').textContent=l.Name||'Unknown';
-  $id('pdPhone').textContent=l.Phone||'—';
-  $id('pdStage').textContent=l.Stage||'new';
-  $id('pdNoteInput').value='';
-  const timer=$id('pdTimer'); if(timer){timer.style.display='none';timer.textContent='0:00';}
-  if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
-  _pdCallStart=null;
-  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
-  const btn=$id('pdCallBtn'); if(btn) btn.href=`tel:+${phone}`;
-}
-
-function pdStartCall(e){
-  _pdCallStart=Date.now();
-  const timer=$id('pdTimer'); if(timer) timer.style.display='block';
+function _pdStartTimer(){
+  const timer=$id('pdTimer');
+  if(timer){
+    timer.style.display='block';
+    timer.textContent=fmtSecs(Math.floor((Date.now()-(_pdCallStart||Date.now()))/1000));
+  }
   if(_pdTimerInterval) clearInterval(_pdTimerInterval);
   _pdTimerInterval=setInterval(()=>{
     const t=$id('pdTimer'); if(!t) return;
@@ -8572,38 +8599,113 @@ function pdStartCall(e){
   },1000);
 }
 
+function pdRenderCurrent(restoring){
+  if(!_pdQueue.length){exitPowerDialer();showToast('Queue done!','ok');return;}
+  const l=_pdQueue[Math.min(_pdIdx,_pdQueue.length-1)];
+  $id('pdProgress').textContent=`${_pdIdx+1} / ${_pdQueue.length}`;
+  $id('pdName').textContent=l.Name||'Unknown';
+  $id('pdPhone').textContent=l.Phone||'—';
+  $id('pdStage').textContent=l.Stage||'new';
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  // Use a data-phone attribute + onclick to avoid Android <a href=tel:> quirks
+  const btn=$id('pdCallBtn');
+  if(btn){ btn.dataset.phone=phone; btn.href=`tel:+${phone}`; }
+  if(!restoring){
+    // Only reset notes and timer when moving to a new lead
+    const tpl=callNotesTemplate(l.Stage||'');
+    $id('pdNoteInput').value=tpl||'';
+    const timer=$id('pdTimer'); if(timer){timer.style.display='none';timer.textContent='0:00';}
+    if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
+    _pdCallStart=null;
+  } else if(_pdCallStart){
+    // Resuming after Android kill — restart the timer display
+    _pdStartTimer();
+  }
+}
+
+function pdStartCall(e){
+  _pdCallStart=Date.now();
+  _pdSaveState(); // full queue + idx + callStart persisted for Android tab-kill recovery
+  _pdStartTimer();
+  // Use window.location for the tel: call to avoid <a> quirks on some Android builds
+  const btn=$id('pdCallBtn');
+  const phone=btn?.dataset.phone||btn?.href?.replace('tel:+','');
+  if(phone){
+    // Small delay so the timer renders before the browser switches to phone app
+    setTimeout(()=>{ window.location.href=`tel:+${phone}`; },100);
+    if(e) e.preventDefault();
+  }
+}
+
 async function pdLogOutcome(outcome){
   if(_pdIdx>=_pdQueue.length) return;
   const l=_pdQueue[_pdIdx];
+  // Restore callStart from sessionStorage if memory was lost during Android tab kill
+  if(!_pdCallStart){
+    try{
+      const s=JSON.parse(sessionStorage.getItem(_PD_SS)||'{}');
+      if(s.callStart) _pdCallStart=s.callStart;
+    }catch(e){}
+  }
   const durationMins=_pdCallStart?Math.round((Date.now()-_pdCallStart)/60000):0;
   const notes=($id('pdNoteInput')?.value||'').trim();
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
   calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),by:myEmail});
   l.CallLog=JSON.stringify(calls);
-  const prevLead=currentLead; currentLead=l;
-  await patchDetailField('CallLog',l.CallLog);
-  currentLead=prevLead;
-  if(outcome==='No Answer') autoWaFollowUp(l.Id);
-  if(outcome==='Callback Requested') scheduleCallback(l.Id);
+  const memIdx=allLeads.findIndex(x=>x.Id===l.Id);
+  if(memIdx>=0) allLeads[memIdx].CallLog=l.CallLog;
+  try{
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,CallLog:l.CallLog});
+  }catch(e){showToast('Save failed — check connection','err');return;}
+  if(outcome==='No Answer'){const prev=currentLead;currentLead=l;autoWaFollowUp(l.Id);currentLead=prev;}
+  if(outcome==='Callback Requested'){
+    const cb=new Date(Date.now()+2*60*60*1000).toISOString();
+    l.ReminderDate=cb;
+    if(memIdx>=0) allLeads[memIdx].ReminderDate=cb;
+    ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,ReminderDate:cb});
+  }
   showToast(`📞 ${outcome} — ${l.Name||'Lead'}`,'ok');
   pdNext();
 }
 
 function pdNext(){
   _pdIdx++;
+  _pdSaveState(); // keep sessionStorage in sync as we advance
   if(_pdIdx>=_pdQueue.length){exitPowerDialer();showToast('✅ Queue complete!','ok');renderLeadsCurrentView();return;}
   pdRenderCurrent();
 }
 
 function pdPrev(){
-  if(_pdIdx>0){_pdIdx--;pdRenderCurrent();}
+  if(_pdIdx>0){_pdIdx--;_pdSaveState();pdRenderCurrent();}
 }
+
+// BFCache restore (Android Chrome restores tab from memory without a full reload)
+window.addEventListener('pageshow',(e)=>{
+  if(!e.persisted) return;
+  const pd=$id('powerDialer');
+  if(pd&&pd.style.display==='flex'&&_pdCallStart&&!_pdTimerInterval){
+    _pdStartTimer();
+  }
+});
 
 /* ── PAGE VISIBILITY: MOBILE AUTO-RETURN ─────────────────────────────────── */
 // When user returns to browser after a phone call, show inline outcome chips
 // for any lead that had startCallTimer() called but not yet logged.
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden) return;
+  // If power dialer is open, restore its timer (in case it was paused) and leave it alone
+  const pd=$id('powerDialer');
+  if(pd&&pd.style.display==='flex'){
+    if(_pdCallStart&&!_pdTimerInterval) _pdStartTimer();
+    else if(!_pdCallStart){
+      // Try to recover callStart from sessionStorage (tab was not killed but timer was lost)
+      try{
+        const s=JSON.parse(sessionStorage.getItem(_PD_SS)||'{}');
+        if(s.callStart){_pdCallStart=s.callStart;_pdStartTimer();}
+      }catch(e){}
+    }
+    return; // don't show inline chips or navigate while dialer is open
+  }
   // reload in-progress from sessionStorage (handles app-kill/resume)
   try{
     const saved=JSON.parse(sessionStorage.getItem('lv_call_progress')||'{}');
