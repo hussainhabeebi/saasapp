@@ -14234,8 +14234,10 @@ async function handleEngineLogsList(request, env){
 // this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
 // ── Support Tickets ──────────────────────────────────────────────────────────────────────────────
 // Won/converted leads bypass the AI pipeline entirely and are handled as after-sales support.
-// A new customer message opens a ticket; subsequent messages on the same open ticket are appended
-// silently (no reply). Resolving a ticket via the dashboard API triggers a WA template to the customer.
+// A new customer message opens a ticket (replied to with a ref number) and creates a pm_tasks row
+// in the client's "Support" project. Subsequent messages on the same open ticket are appended
+// silently and recorded in lead_messages/NocoDB. Resolving a ticket syncs the pm_task to 'done'
+// and fires a WhatsApp template to the customer.
 
 async function supportTicketFindOpen(env, clientId, phone){
   return env.DB.prepare(
@@ -14243,7 +14245,19 @@ async function supportTicketFindOpen(env, clientId, phone){
   ).bind(clientId, phone).first();
 }
 
+async function pmFindOrCreateSupportProject(env, clientId){
+  const existing=await env.DB.prepare(`SELECT id FROM pm_projects WHERE client_id=? AND name=?`).bind(Number(clientId),'Support').first();
+  if(existing) return existing.id;
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(Number(clientId),'Support','After-sales support tickets from won/converted customers.','#7C3AED','active',now).run();
+  return r.meta.last_row_id;
+}
+
 async function supportTicketCreate(env, clientId, lead, message, convId){
+  const now=new Date().toISOString();
+  // Insert ticket row
   const result=await env.DB.prepare(
     `INSERT INTO support_tickets (client_id, lead_id, phone, customer_name, source_message, messages, conv_id)
      VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
@@ -14257,15 +14271,34 @@ async function supportTicketCreate(env, clientId, lead, message, convId){
     convId||null
   ).first();
   const refNumber=`TKT-${String(result.id).padStart(4,'0')}`;
-  await env.DB.prepare(`UPDATE support_tickets SET ref_number=? WHERE id=?`).bind(refNumber, result.id).run();
+  // Create a task in the Support project
+  const projectId=await pmFindOrCreateSupportProject(env, clientId);
+  const taskResult=await env.DB.prepare(
+    `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, auto_generated, lead_id, lead_name, created_at, updated_at)
+     VALUES (?,?,?,?,'todo','medium','',null,0,'Support','','',null,1,?,?,?,?) RETURNING id`
+  ).bind(Number(clientId), projectId, `🎫 ${refNumber} — ${lead?.Name||lead?.Phone||'Customer'}`, message||'', String(lead?.Id||''), lead?.Name||lead?.Phone||'', now, now).first().catch(()=>null);
+  const taskId=taskResult?.id||null;
+  // Persist ref_number and task_id
+  await env.DB.prepare(`UPDATE support_tickets SET ref_number=?, task_id=? WHERE id=?`).bind(refNumber, taskId, result.id).run();
+  // Record customer message in lead_messages and update NocoDB LastMsgAt
+  if(lead?.Id){
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), LastMsgAt:now}}).catch(()=>{});
+  }
   return {id:result.id, ref_number:refNumber};
 }
 
-async function supportTicketAppendMessage(env, ticketId, message){
+async function supportTicketAppendMessage(env, ticketId, leadId, clientId, message){
   const row=await env.DB.prepare(`SELECT messages FROM support_tickets WHERE id=?`).bind(ticketId).first();
   const msgs=JSON.parse(row?.messages||'[]');
+  const now=new Date().toISOString();
   msgs.push({text:message||'', ts:Date.now()});
   await env.DB.prepare(`UPDATE support_tickets SET messages=?, updated_at=unixepoch() WHERE id=?`).bind(JSON.stringify(msgs), ticketId).run();
+  // Record in lead_messages and update NocoDB LastMsgAt
+  if(leadId){
+    await d1InsertLeadMessage(env, leadId, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:now}}).catch(()=>{});
+  }
 }
 
 async function sendSupportTicketResolvedTemplate(env, c, ticket){
@@ -14329,6 +14362,15 @@ async function handleSupportTicketsUpdate(request, env){
   vals.push(ticketId, clientId);
 
   await env.DB.prepare(`UPDATE support_tickets SET ${fields.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+
+  // Sync pm_tasks status so the Projects board reflects the ticket state
+  if(status && ticket.task_id){
+    const taskStatus={open:'todo',in_progress:'in_progress',resolved:'done',closed:'done'}[status];
+    if(taskStatus){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=? WHERE id=? AND client_id=?`).bind(taskStatus, now, ticket.task_id, Number(clientId)).run();
+    }
+  }
 
   if(status==='resolved'){
     const c=await getClientById(env, clientId);
@@ -14461,7 +14503,7 @@ async function handleEngineWebhook(request, env, secret){
     if(state.stage==='won'||state.stage==='converted'){
       const openTicket=await supportTicketFindOpen(env, clientId, phone);
       if(openTicket){
-        await supportTicketAppendMessage(env, openTicket.id, text||'');
+        await supportTicketAppendMessage(env, openTicket.id, openTicket.lead_id, clientId, text||'');
       } else {
         const ticket=await supportTicketCreate(env, clientId, state.lead||{Phone:phone,Name:name}, text||'', convId);
         await engineDeliverReply(env, c, clientId, convId,
