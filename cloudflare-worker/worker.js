@@ -11909,7 +11909,8 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
   let raw=null;
-  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
+  let generated=await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'})
+    ||await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
   if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
   if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
   raw=raw&&typeof raw==='object'?raw:{};
@@ -20315,12 +20316,13 @@ function fpAiNormalizeParsedExpense(parsed, defaultCurrency){
   };
 }
 async function fpAiParseExpenseText(env, text, defaultCurrency){
-  if(!env.GEMINI_API_KEY || !text) return null;
+  if((!env.AI && !env.GEMINI_API_KEY) || !text) return null;
   const today=new Date().toISOString().slice(0,10);
   const system=`You convert a small business owner's plain description of a purchase or expense into one structured bookkeeping record. They are not an accountant — never use accounting jargon back at them. Today's date is ${today}. Default currency is ${defaultCurrency} unless the text clearly states another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"who was paid, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. Resolve relative dates ("yesterday", "last Friday") against today's date. If you cannot tell the amount at all, set amount to 0.`;
-  const raw=await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
+  const raw=await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, caller:'fp-expense-parse'})
+    || await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
   if(!raw) return null;
-  try{ return fpAiNormalizeParsedExpense(JSON.parse(raw), defaultCurrency); }catch(e){ return null; }
+  try{ return fpAiNormalizeParsedExpense(JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]), defaultCurrency); }catch(e){ return null; }
 }
 async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency){
   if(!env.GEMINI_API_KEY || !base64) return null;
