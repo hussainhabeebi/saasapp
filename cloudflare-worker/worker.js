@@ -14232,6 +14232,113 @@ async function handleEngineLogsList(request, env){
 
 // Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
 // this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
+// ── Support Tickets ──────────────────────────────────────────────────────────────────────────────
+// Won/converted leads bypass the AI pipeline entirely and are handled as after-sales support.
+// A new customer message opens a ticket; subsequent messages on the same open ticket are appended
+// silently (no reply). Resolving a ticket via the dashboard API triggers a WA template to the customer.
+
+async function supportTicketFindOpen(env, clientId, phone){
+  return env.DB.prepare(
+    `SELECT * FROM support_tickets WHERE client_id=? AND phone=? AND status IN ('open','in_progress') ORDER BY created_at DESC LIMIT 1`
+  ).bind(clientId, phone).first();
+}
+
+async function supportTicketCreate(env, clientId, lead, message, convId){
+  const result=await env.DB.prepare(
+    `INSERT INTO support_tickets (client_id, lead_id, phone, customer_name, source_message, messages, conv_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(
+    clientId,
+    String(lead?.Id||''),
+    lead?.Phone||'',
+    lead?.Name||'',
+    message||'',
+    JSON.stringify([{text:message||'', ts:Date.now()}]),
+    convId||null
+  ).first();
+  const refNumber=`TKT-${String(result.id).padStart(4,'0')}`;
+  await env.DB.prepare(`UPDATE support_tickets SET ref_number=? WHERE id=?`).bind(refNumber, result.id).run();
+  return {id:result.id, ref_number:refNumber};
+}
+
+async function supportTicketAppendMessage(env, ticketId, message){
+  const row=await env.DB.prepare(`SELECT messages FROM support_tickets WHERE id=?`).bind(ticketId).first();
+  const msgs=JSON.parse(row?.messages||'[]');
+  msgs.push({text:message||'', ts:Date.now()});
+  await env.DB.prepare(`UPDATE support_tickets SET messages=?, updated_at=unixepoch() WHERE id=?`).bind(JSON.stringify(msgs), ticketId).run();
+}
+
+async function sendSupportTicketResolvedTemplate(env, c, ticket){
+  const templateName=c.support_resolved_template_name||'ticket_resolved';
+  const langCode=c.support_resolved_template_lang||'en_US';
+  if(!c.wa_phone_id||!c.wa_token) return;
+  await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+    method:'POST',
+    headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({
+      messaging_product:'whatsapp',
+      to:ticket.phone,
+      type:'template',
+      template:{
+        name:templateName,
+        language:{code:langCode},
+        components:[{
+          type:'body',
+          parameters:[
+            {type:'text', text:ticket.customer_name||'there'},
+            {type:'text', text:ticket.ref_number}
+          ]
+        }]
+      }
+    })
+  });
+}
+
+async function handleSupportTicketsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const status=url.searchParams.get('status')||null;
+  const {results}=status
+    ? await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? AND status=? ORDER BY created_at DESC LIMIT 200`).bind(clientId, status).all()
+    : await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(clientId).all();
+  return json({ok:true, tickets:results||[]});
+}
+
+async function handleSupportTicketsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const ticketId=url.searchParams.get('id');
+  if(!ticketId) return json({error:'missing id'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const {status, assigned_to}=body;
+  if(!status && assigned_to===undefined) return json({error:'nothing to update'}, 400);
+
+  const ticket=await env.DB.prepare(`SELECT * FROM support_tickets WHERE id=? AND client_id=?`).bind(ticketId, clientId).first();
+  if(!ticket) return json({error:'not found'}, 404);
+
+  const fields=[];
+  const vals=[];
+  if(status){fields.push('status=?'); vals.push(status);}
+  if(assigned_to!==undefined){fields.push('assigned_to=?'); vals.push(assigned_to);}
+  fields.push('updated_at=unixepoch()');
+  if(status==='resolved'||status==='closed'){fields.push('resolved_at=unixepoch()');}
+  vals.push(ticketId, clientId);
+
+  await env.DB.prepare(`UPDATE support_tickets SET ${fields.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+
+  if(status==='resolved'){
+    const c=await getClientById(env, clientId);
+    if(c) await sendSupportTicketResolvedTemplate(env, c, ticket).catch(()=>{});
+  }
+
+  return json({ok:true});
+}
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 // configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
 // signature header, no secret field in its own UI. `secret` is this route's equivalent: a random
 // 192-bit per-client token baked into the URL path itself (`/engine/webhook/<secret>`, same
@@ -14348,6 +14455,21 @@ async function handleEngineWebhook(request, env, secret){
       return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
     }
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
+
+    // After-sales support: won/converted leads never enter the AI pipeline.
+    // Open ticket → append message silently (no reply). No open ticket → create one and confirm.
+    if(state.stage==='won'||state.stage==='converted'){
+      const openTicket=await supportTicketFindOpen(env, clientId, phone);
+      if(openTicket){
+        await supportTicketAppendMessage(env, openTicket.id, text||'');
+      } else {
+        const ticket=await supportTicketCreate(env, clientId, state.lead||{Phone:phone,Name:name}, text||'', convId);
+        await engineDeliverReply(env, c, clientId, convId,
+          `Hi ${name||'there'}, your support request has been received.\nTicket Ref: #${ticket.ref_number}\nWe\'ll get back to you shortly.`
+        );
+      }
+      return json({ok:true, handled:'support-ticket'});
+    }
 
     const botConfig=engineParseJsonField(c.bot_config, {});
     const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
@@ -27506,6 +27628,8 @@ export default {
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
+      else if(url.pathname==='/support/tickets' && request.method==='GET'){ res=await handleSupportTicketsList(request, env); }
+      else if(url.pathname==='/support/tickets' && request.method==='PATCH'){ res=await handleSupportTicketsUpdate(request, env); }
       else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
       else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
       else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
