@@ -20378,11 +20378,23 @@ async function handleFpAiForecast(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const clientId=Number(payload.cid);
+  const currentPeriod=new Date().toISOString().slice(0,7);
   const data=await fpAiComputeForecastData(env, clientId);
-  if(!env.GEMINI_API_KEY) return json({forecast:null, data, error:'AI features are not configured for this deployment yet.'});
+  // Return cached forecast when it was generated this calendar month — same pattern as fpAiGetOrRefreshSnapshot
+  const row=await env.DB.prepare(`SELECT ai_forecast_text, ai_forecast_period FROM fp_config WHERE client_id=?`).bind(clientId).first().catch(()=>null);
+  if(row?.ai_forecast_text && row.ai_forecast_period===currentPeriod){
+    return json({forecast:row.ai_forecast_text, data, cached:true});
+  }
+  if(!env.GEMINI_API_KEY) return json({forecast:row?.ai_forecast_text||null, data, error:'AI features are not configured for this deployment yet.'});
   const system=`You are a friendly bookkeeping assistant writing a short cash-flow outlook for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, jargon-free (say "money still to come in" not "receivables", "bills still to pay" not "payables"), 2-4 short sentences, mention the money expected in before month end, what's still due to go out for fixed costs, and the rough net position that leaves. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const forecast=await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200});
-  return json({forecast, data});
+  const forecast=await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'});
+  if(forecast){
+    const now=new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_forecast_text, ai_forecast_period, updated_at) VALUES (?,1,1,?,?,?)
+      ON CONFLICT(client_id) DO UPDATE SET ai_forecast_text=excluded.ai_forecast_text, ai_forecast_period=excluded.ai_forecast_period, updated_at=excluded.updated_at`)
+      .bind(clientId, forecast, currentPeriod, now).run().catch(()=>{});
+  }
+  return json({forecast, data, cached:false});
 }
 
 // ── AI-drafted invoice chase reminders — a friendlier, tone-matched replacement for the fixed
@@ -23057,54 +23069,6 @@ async function marketingContentSyncGcal(env, clientId, postId){
 
 // "Generate a week" — one topic fans out into a week of DRAFT post ideas (title + caption +
 // hashtags, one per day), scheduled but with no image yet. Deliberately drafts only: no fal.ai
-// image cost is spent until each idea is individually approved later (a separate increment), so
-// generating a whole week costs one shared Gemini call, not N paid image generations up front.
-// Same shared-key, heuristic-fallback pattern as handleMarketingSuggestCaption above — no
-// client-supplied key needed (this is text, not the paid fal.ai image path).
-async function handleContentGenerateWeek(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const topic=(body.topic||'').trim().slice(0,300);
-  if(!topic) return json({error:'topic required'}, 400);
-  const days=Math.min(14, Math.max(1, Number(body.days)||7));
-  const startDate=body.start_date&&/^\d{4}-\d{2}-\d{2}$/.test(body.start_date) ? body.start_date : new Date(Date.now()+86400000).toISOString().slice(0,10);
-
-  const raw=await engineGeminiGenerate(env,
-    `You are a social media content planner. Given a topic/theme, propose exactly ${days} distinct Instagram post ideas spread across ${days} consecutive days (one per day, in order). Reply with ONLY compact JSON: {"posts":[{"title":"...", "caption":"...", "hashtags":["...","..."]}, ...]} with exactly ${days} items in that array, in day order. title: a short internal label (not shown to followers), max 60 chars. caption: 1-3 sentences, no hashtags inside it, matching the topic's tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.`,
-    topic, {json:true, maxOutputTokens:200*days});
-  let ideas=null;
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(Array.isArray(parsed?.posts) && parsed.posts.length) ideas=parsed.posts;
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  if(!ideas){
-    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
-    ideas=Array.from({length:days}, (_,i)=>({title:`${topic} — day ${i+1}`, caption:`${topic} (day ${i+1} of ${days}).`, hashtags:['smallbusiness','instagram']}));
-  }
-  ideas=ideas.slice(0,days);
-
-  const c=await getClientById(env, payload.cid);
-  const now=new Date().toISOString();
-  const created=[];
-  for(let i=0;i<ideas.length;i++){
-    const idea=ideas[i]||{};
-    const date=new Date(new Date(startDate+'T00:00:00Z').getTime()+i*86400000).toISOString().slice(0,10);
-    const title=String(idea.title||`${topic} — day ${i+1}`).trim().slice(0,120);
-    const hashtags=(Array.isArray(idea.hashtags)?idea.hashtags:[]).map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8);
-    const caption=[String(idea.caption||'').trim(), hashtags.length?hashtags.map(h=>'#'+h).join(' '):''].filter(Boolean).join('\n\n').slice(0,2200);
-    const scheduledAt=`${date}T10:00`;
-    const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), title, caption, 'instagram', 'scheduled', scheduledAt, now, now).run();
-    const id=result.meta.last_row_id;
-    if(c?.gcal_refresh_token&&c?.gcal_calendar_id) await marketingContentSyncGcal(env, payload.cid, id);
-    const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-    created.push(marketingSerializeContentPost(env,row));
-  }
-  return json({ok:true, source:raw?'ai':'heuristic', list:created});
-}
 
 // "Turn a customer into a post" — source a testimonial/case-study draft straight from a closed
 // deal record (a Leads row whose Stage is 'won'/'converted', same literal values Human Deals'
@@ -28090,8 +28054,7 @@ export default {
       else if(url.pathname==='/marketing/content/posts' && request.method==='POST'){ res=await handleContentPostCreate(request, env); }
       else if(url.pathname==='/marketing/content/posts' && request.method==='PATCH'){ res=await handleContentPostUpdate(request, env); }
       else if(url.pathname==='/marketing/content/posts' && request.method==='DELETE'){ res=await handleContentPostDelete(request, env); }
-      else if(url.pathname==='/marketing/content/generate-week' && request.method==='POST'){ res=await handleContentGenerateWeek(request, env); }
-      else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
+else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
       else if(url.pathname==='/marketing/content/from-customer' && request.method==='POST'){ res=await handleContentFromCustomer(request, env); }
       else if(url.pathname==='/marketing/images/prompt-templates' && request.method==='GET'){ res=await handleMarketingImagePromptTemplates(request, env); }
       else if(url.pathname==='/marketing/images/usage' && request.method==='GET'){ res=await handleMarketingImageUsage(request, env); }
