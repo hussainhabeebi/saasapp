@@ -206,5 +206,11 @@ STRIPE_PLAN_PRICE_IDS = "price_1U2XJAJWa5B2ayZg2jScv4AN,price_1U2XTJJWa5B2ayZga4
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
 MARKETING_DEFAULT_MINUTES_LIMIT = "30"
 
+# Workers AI — used for low-stakes structured inference (classify, extract-options, fp-snapshot,
+# fp-forecast) to reduce Gemini API cost. No setup needed beyond wrangler deploy; the binding is
+# provisioned automatically when [ai] is present in this file.
+[ai]
+binding = "AI"
+
 # Secrets are configured in Cloudflare dashboard / wrangler secret put.
 # POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
