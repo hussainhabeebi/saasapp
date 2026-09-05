@@ -27,16 +27,18 @@ const { synthesizeWithPiper, supportsLanguage: piperSupportsLanguage, PIPER_VOIC
 const { pcmToOggOpus } = require('./lib/pcmToOgg');
 const { uploadOutput } = require('./lib/storage');
 const { MODEL_PATH } = require('./lib/segmentation');
+const { createLiveSemaphore } = require('./lib/liveSemaphore');
 
 // Bumped by hand alongside worker.js's MARKETING_BUILD_TAG (kept in sync manually, no shared
 // source — these are two separately-deployed services). Same reasoning: repeated real confusion
 // from Coolify restart-vs-rebuild ambiguity means "curl /health and eyeball the build tag" needs
 // to be a fast, no-guessing check, not something re-derived from scratch every time.
-const BUILD_TAG = '2026-07-27-autosave-fonts';
+const BUILD_TAG = '2026-09-05-fast-voice-hedge';
 
 const env = process.env;
 const PORT = env.PORT || 8787;
 const ASSETS_ROOT = env.ASSETS_ROOT || path.join(__dirname, 'assets');
+const ai4bharatLiveSemaphore = createLiveSemaphore(2);
 
 if (!env.RENDER_WEBHOOK_SECRET) {
   console.error('RENDER_WEBHOOK_SECRET is not set — see .env.example. Refusing to start.');
@@ -67,6 +69,10 @@ app.get('/health', (_req, res) => {
     rvm_model_present: fs.existsSync(MODEL_PATH),
     piper_available: fs.existsSync(piperBin),
     piper_voices: Object.keys(PIPER_VOICE_MAP).filter(lang => piperSupportsLanguage(lang)),
+    ai4bharat_tts_active: ai4bharatLiveSemaphore.active,
+    ai4bharat_tts_limit: ai4bharatLiveSemaphore.limit,
+    ai4bharat_tts_enabled: Boolean(env.AI4BHARAT_TTS_ENABLED),
+    ai4bharat_tts_timeout_ms: Math.max(5000, Number(env.AI4BHARAT_TTS_TIMEOUT_MS || 20000)),
   });
 });
 
@@ -293,6 +299,10 @@ app.post('/synthesize-voice-reply', async (req, res) => {
   const { text, language } = req.body || {};
   if (!text || !language) return res.status(400).json({ error: 'text and language required' });
   if (!ai4bharatTtsSupportsLanguage(language)) return res.status(400).json({ error: `Unsupported language for AI4Bharat TTS: ${language}` });
+  if (!ai4bharatLiveSemaphore.tryAcquire()) {
+    res.set('Retry-After', '1');
+    return res.status(429).json({ error: 'AI4Bharat TTS is busy; use the configured fallback provider.' });
+  }
   try {
     const audioBuf = await synthesizeWithAi4Bharat(text, language);
     res.set('Content-Type', 'audio/ogg');
@@ -300,6 +310,8 @@ app.post('/synthesize-voice-reply', async (req, res) => {
   } catch (err) {
     console.error('synthesize-voice-reply failed:', err.stderr || err.message || err);
     res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  } finally {
+    ai4bharatLiveSemaphore.release();
   }
 });
 

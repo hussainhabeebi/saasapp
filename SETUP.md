@@ -70,8 +70,9 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
-| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
-| voice_tts_provider | Single line (blank/`sarvam`/`ai4bharat`, default blank = Auto) — Settings → Voice → 🔧 TTS Provider (testing) dropdown. Overrides which TTS engine `engineTtsWithFallback` (worker.js) and `ttsWithFallback` (backend/recovery.js) use for this client: blank is normal production behavior (Sarvam primary, AI4Bharat standby on failure); `ai4bharat` forces the standby directly; `sarvam` skips the standby. A testing/debug knob, not a production feature — see "Voice-to-voice replies" below. |
+| sarvam_api_key | Single line, secret — optional client-level Sarvam credential in Settings → Voice. Never returned by `safeClient`; when blank, live voice replies use the Worker-level `SARVAM_API_KEY`. |
+| voice_reply_enabled | Legacy field, no longer used for live voice-to-voice replies. Incoming voice notes now automatically receive cache → Sarvam → text fallback. |
+| voice_tts_provider | Legacy/testing field retained for non-live paths only. It is no longer shown in client Voice settings or read by live voice-to-voice delivery. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -8390,3 +8391,29 @@ npx wrangler deploy
 
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
+
+## Live Travel Agency
+
+`frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy
+`travel-agency.html` remains on its existing NocoDB tables and only links to the new page. Apply
+the D1 migration before opening Live Agency:
+
+```bash
+cd cloudflare-worker
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+```
+
+Configure one platform encryption key as a Worker secret. This key encrypts/decrypts tenant-owned
+supplier credentials but is not itself a Riya, TripJack or SerpApi credential:
+
+```bash
+npx wrangler secret put LIVE_TRAVEL_CREDENTIALS_KEY
+```
+
+Each client enters its own API keys, supplier account identifiers and certified endpoint URLs from
+**Live Agency → Suppliers**. The Worker encrypts those values before writing them to that client's
+D1 row and never returns saved credentials to the browser. Blank credential fields preserve the
+saved value; **Clear credentials** removes them. Keep Riya and TripJack in sandbox until supplier
+UAT/certification passes. SerpApi Google Flights is always non-bookable comparison data; only a
+revalidated Riya or TripJack offer can become a booking. Never point staging at production
+credentials or the production D1 database.

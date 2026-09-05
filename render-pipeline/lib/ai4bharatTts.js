@@ -28,11 +28,15 @@ function supportsLanguage(language) {
 }
 
 function runSynthesizeScript(text, language, outputPath) {
+  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 20000));
   return new Promise((resolve, reject) => {
     execFile(
       'python3',
       [path.join(__dirname, '..', 'tts', 'synthesize_ai4bharat.py'), text, language, outputPath],
-      { maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 },
+      // Live WhatsApp replies cannot wait for the old five-minute subprocess timeout. The Worker
+      // hedges to Sarvam after 1.5s; this server-side ceiling protects the VPS even if the client
+      // disconnects while Python is still running.
+      { maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, killSignal: 'SIGKILL' },
       (err, stdout, stderr) => {
         if (err) return reject(new Error((stderr || err.message || '').slice(-1000)));
         resolve(stdout);

@@ -107,7 +107,8 @@ tbody tr:hover{background:var(--bg)}
 .modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 
-.li-row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.li-row{display:grid;grid-template-columns:2fr 0.65fr 0.8fr 1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.li-header{display:grid;grid-template-columns:2fr 0.65fr 0.8fr 1fr 1fr auto;gap:8px;margin-bottom:4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:0 2px}
 .li-row input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;background:var(--bg);transition:border-color .15s var(--ease)}
 .li-row input:focus{outline:none;border-color:var(--accent);background:#fff}
 
@@ -144,6 +145,55 @@ tbody tr:hover{background:var(--bg)}
 .toggle-row input[type=checkbox]{width:36px;height:20px}
 .sortable{cursor:pointer;user-select:none}
 .sortable:hover{color:var(--accent-ink)}
+
+/* ── Invoice / Quotation Drawer (replaces centred modal) ── */
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(36,26,12,.45);backdrop-filter:blur(2px);z-index:100}
+.drawer-overlay.active{display:block;animation:overlayin .15s var(--ease)}
+.drawer-panel{position:fixed;top:0;right:0;width:min(520px,100vw);height:100%;background:var(--card);box-shadow:-4px 0 32px rgba(0,0,0,.18);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+.drawer-overlay.active .drawer-panel{transform:translateX(0)}
+.drawer-head{padding:18px 24px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.drawer-head-title{font-family:var(--disp);font-size:17px;font-weight:700;color:var(--ink)}
+.drawer-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);padding:4px 8px;border-radius:6px;line-height:1;transition:background .15s var(--ease)}
+.drawer-close:hover{background:var(--line);color:var(--ink)}
+.drawer-body{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px}
+.drawer-foot{padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;background:var(--card);gap:12px}
+.drawer-foot-total{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--ink);flex:1;min-width:0}
+.drawer-sec-hd{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+/* ── Card-style line items ── */
+.li-row.li-card{display:block!important;margin-bottom:0;background:var(--bg);border:1.5px solid var(--line);border-radius:10px;padding:12px;transition:border-color .15s var(--ease)}
+.li-row.li-card:focus-within{border-color:var(--accent)}
+.li-row.li-card>.li-name{width:100%;display:block;margin-bottom:8px;background:var(--card);box-sizing:border-box}
+.li-card-nums{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end}
+.li-card-field{display:flex;flex-direction:column;gap:3px}
+.li-card-lbl{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.li-card-nums .li-qty,.li-card-nums .li-price{background:var(--card);width:100%;box-sizing:border-box}
+.li-card-total-wrap{display:flex;flex-direction:column;gap:3px}
+.li-total{font-family:var(--mono,monospace);font-size:13px;font-weight:600;color:var(--ink);padding:7px 8px;text-align:right;white-space:nowrap;background:var(--card);border:1.5px solid var(--line);border-radius:8px;min-height:36px;display:flex;align-items:center;justify-content:flex-end;box-sizing:border-box}
+.li-card-del{background:none;border:1.5px solid var(--line);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:13px;transition:all .15s var(--ease);flex-shrink:0;font-family:inherit}
+.li-card-del:hover{background:#fef2f2;border-color:#fca5a5;color:#dc2626}
+.li-hsn-wrap{margin-top:6px;display:none}
+.li-hsn-wrap.show{display:block}
+.li-hsn{width:100%;border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:12px;background:var(--card);box-sizing:border-box;transition:border-color .15s var(--ease)}
+.li-hsn:focus{outline:none;border-color:var(--accent);background:#fff}
+
+/* ── Document cards (replaces dense table in Documents tab) ── */
+.doc-cards{display:flex;flex-direction:column;gap:10px}
+.doc-card{background:var(--card);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:16px 18px;display:flex;align-items:flex-start;gap:14px;transition:border-color .15s var(--ease),box-shadow .15s var(--ease)}
+.doc-card:hover{border-color:var(--ls);box-shadow:var(--shadow-md)}
+.doc-card-icon{font-size:24px;flex-shrink:0;margin-top:2px}
+.doc-card-main{flex:1;min-width:0}
+.doc-card-top{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:5px}
+.doc-card-title{font-family:var(--disp);font-size:14px;font-weight:600;color:var(--ink);flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-card-meta{font-size:12px;color:var(--muted);margin-bottom:10px}
+.doc-card-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.doc-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;padding-left:8px}
+.doc-card-total{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink);white-space:nowrap}
+.doc-type-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.05em;flex-shrink:0}
+.doc-type-badge.invoice{background:var(--accent-soft);color:var(--accent-ink)}
+.doc-type-badge.quotation{background:#DBEAFE;color:#1E3A8A}
+.doc-type-badge.receipt{background:#EDE9FE;color:#5B21B6}
+.doc-status-sel{font-size:11px;padding:4px 7px;border:1.5px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:var(--body);cursor:pointer;transition:border-color .15s var(--ease)}
+.doc-status-sel:focus{outline:none;border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -184,12 +234,7 @@ tbody tr:hover{background:var(--bg)}
             <button class="save-btn" onclick="openDocTypeModal('invoice')">+ New Invoice</button>
           </div>
         </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Title</th><th>Type</th><th>Customer</th><th>Total</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody id="documentsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
-          </table>
-        </div>
+        <div id="documentsGrid"><div class="empty-state"><span class="spinner"></span> Loading…</div></div>
       </div>
     </div>
 
@@ -426,6 +471,15 @@ tbody tr:hover{background:var(--bg)}
           <div class="card-title" style="margin-top:14px">Tax Set-Aside Estimate (optional)</div>
           <div class="s-hint" style="margin-bottom:10px">Shows a rough "set aside ~X" nudge on the Dashboard whenever you're in profit for the month — a simple estimate, not tax or filing advice.</div>
           <div style="max-width:220px"><label class="s-lbl">Set aside this % of profit</label><input class="s-input" id="fpCfgTaxReservePct" type="number" min="0" max="100" placeholder="e.g. 15"></div>
+          <div class="card-title" style="margin-top:14px">🏛️ GST Configuration (India)</div>
+          <div class="s-hint" style="margin-bottom:10px">Required for generating GST-compliant Tax Invoices. Business GSTIN and State Code are printed on all Tax Invoices as the supplier details.</div>
+          <div class="modal-grid" style="margin-bottom:0">
+            <div><label class="s-lbl">Business GSTIN</label><input class="s-input" id="fpCfgBusinessGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+            <div><label class="s-lbl">Business State (Place of Supply default)</label>
+              <select class="s-input" id="fpCfgBusinessStateCode"><option value="">— Select State —</option></select>
+            </div>
+            <div><label class="s-lbl">Default GST Rate (%)</label><input class="s-input" id="fpCfgDefaultGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18"></div>
+          </div>
           <div class="card-title" style="margin-top:14px">Razorpay (optional)</div>
           <div class="s-hint" style="margin-bottom:14px">Connect Razorpay to auto-record collections from webhook events (payment.captured / payment_link.paid). Pass <code>fp_customer_id</code> (and optionally <code>fp_expected_due_id</code>) in the payment's Notes so the webhook knows which customer to credit.</div>
           <div class="modal-grid" style="margin-bottom:0">
@@ -599,74 +653,126 @@ tbody tr:hover{background:var(--bg)}
 
 <datalist id="fpCustomersDatalist"></datalist>
 
-<!-- ── QUOTATION MODAL — its own window, separate from the Invoice modal below: a quotation is a
-     price offer that expires (Valid Until), not a payment demand. ── -->
-<div class="modal-overlay" id="quotationModal">
-  <div class="modal-card">
-    <div class="modal-title">🧾 New Quotation</div>
-    <input type="hidden" id="docQuotationId">
-    <div class="modal-grid">
-      <div><label class="s-lbl">Title</label><input class="s-input" id="docQuotationTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
-      <div><label class="s-lbl">Lead (CRM, optional)</label>
-        <input class="s-input" id="docQuotationLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('quotation')">
-        <select class="s-input" id="docQuotationLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+<!-- ── QUOTATION DRAWER ── -->
+<div class="drawer-overlay" id="quotationModal" onclick="if(event.target===this)closeDocTypeModal('quotation')">
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <span class="drawer-head-title">🧾 New Quotation</span>
+      <button class="drawer-close" type="button" onclick="closeDocTypeModal('quotation')">✕</button>
+    </div>
+    <div class="drawer-body">
+      <input type="hidden" id="docQuotationId">
+      <div>
+        <div><label class="s-lbl">Title</label><input class="s-input" id="docQuotationTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><label class="s-lbl">Currency</label><input class="s-input" id="docQuotationCurrency" placeholder="e.g. AED" value="AED"></div>
+          <div><label class="s-lbl">Valid Until</label><input class="s-input" id="docQuotationValidUntil" type="date"></div>
+        </div>
+        <div style="margin-top:10px"><label class="s-lbl">Customer Name</label><input class="s-input" id="docQuotationCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+        <details style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:600">🔍 Link to CRM lead (optional)</summary>
+          <div style="margin-top:8px">
+            <input class="s-input" id="docQuotationLeadSearch" placeholder="Search leads by name or phone…" oninput="renderDocTypeLeadPicker('quotation')">
+            <select class="s-input" id="docQuotationLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+          </div>
+        </details>
       </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docQuotationCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docQuotationCurrency" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Valid Until (optional)</label><input class="s-input" id="docQuotationValidUntil" type="date"></div>
+      <div>
+        <div class="drawer-sec-hd">Line Items</div>
+        <div class="s-hint" style="margin-bottom:8px">Type a product or service — no catalog setup needed.</div>
+        <div class="li-cards" id="docQuotationLineItems"></div>
+        <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:8px;width:100%">+ Add Line Item</button>
+        <div id="docQuotationCrossSell" style="margin-top:8px"></div>
+      </div>
+      <details style="border:1px solid var(--line);border-radius:8px;padding:12px">
+        <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ Tax / GST Details</summary>
+        <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+          <div class="toggle-row"><input type="checkbox" id="docQuotationIsTaxInvoice" onchange="toggleDocTypeHsnFields('quotation')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docQuotationGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('quotation')"></div>
+            <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docQuotationRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+            <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docQuotationPlaceOfSupply" onchange="updateDocTypeTotalPreview('quotation')"><option value="">— Select State —</option></select></div>
+            <div><label class="s-lbl">Supply Type</label>
+              <select class="s-input" id="docQuotationSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+            </div>
+          </div>
+          <div class="toggle-row"><input type="checkbox" id="docQuotationReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        </div>
+      </details>
+      <div>
+        <label class="s-lbl">Notes</label>
+        <textarea class="s-input" id="docQuotationNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+      <div class="s-hint">Logo, T&amp;C, Payment Method and footer details are shared with the Quote/Invoice page on a lead — edit there and every document here picks them up.</div>
     </div>
-    <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
-    <div id="docQuotationLineItems"></div>
-    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('quotation')" style="margin-top:6px">+ Add Line Item</button>
-    <!-- Suggested add-ons — matches current line-item names against dashboard.html's Settings →
-         Cross-Sell & Upsell rules (clientRecord.cross_sell_rules, same field, read-only here).
-         Click adds the suggestion as its own line item. -->
-    <div id="docQuotationCrossSell" style="margin-top:10px"></div>
-    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docQuotationTotalPreview">Total: —</div>
-    <div style="margin-top:14px">
-      <label class="s-lbl">Notes</label>
-      <textarea class="s-input" id="docQuotationNotes" rows="2" style="resize:vertical"></textarea>
-    </div>
-    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
-    <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeDocTypeModal('quotation')">Cancel</button>
-      <button class="save-btn" onclick="saveDocType('quotation')">Save Quotation</button>
+    <div class="drawer-foot">
+      <div class="drawer-foot-total" id="docQuotationTotalPreview">Total: —</div>
+      <div style="display:flex;gap:10px;flex-shrink:0">
+        <button class="save-btn sec" type="button" onclick="closeDocTypeModal('quotation')">Cancel</button>
+        <button class="save-btn" type="button" onclick="saveDocType('quotation')">Save Quotation</button>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- ── INVOICE MODAL — its own window: a payment demand with a Due Date, not an expiring offer.
-     Marking it Paid (status dropdown on the Documents table) automatically records the income
-     (a linked Receipt) and the collection — see worker.js fpRecordInvoicePaidSideEffects. ── -->
-<div class="modal-overlay" id="invoiceModal">
-  <div class="modal-card">
-    <div class="modal-title">📄 New Invoice</div>
-    <input type="hidden" id="docInvoiceId">
-    <div class="modal-grid">
-      <div><label class="s-lbl">Title</label><input class="s-input" id="docInvoiceTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
-      <div><label class="s-lbl">Lead (CRM, optional)</label>
-        <input class="s-input" id="docInvoiceLeadSearch" placeholder="🔍 Search leads…" oninput="renderDocTypeLeadPicker('invoice')">
-        <select class="s-input" id="docInvoiceLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+<!-- ── INVOICE DRAWER — marking it Paid auto-records income + collection (fpRecordInvoicePaidSideEffects) ── -->
+<div class="drawer-overlay" id="invoiceModal" onclick="if(event.target===this)closeDocTypeModal('invoice')">
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <span class="drawer-head-title">📄 New Invoice</span>
+      <button class="drawer-close" type="button" onclick="closeDocTypeModal('invoice')">✕</button>
+    </div>
+    <div class="drawer-body">
+      <input type="hidden" id="docInvoiceId">
+      <div>
+        <div><label class="s-lbl">Title</label><input class="s-input" id="docInvoiceTitle" placeholder="e.g. Website redesign — Acme Corp"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><label class="s-lbl">Currency</label><input class="s-input" id="docInvoiceCurrency" placeholder="e.g. AED" value="AED"></div>
+          <div><label class="s-lbl">Due Date</label><input class="s-input" id="docInvoiceDueDate" type="date"></div>
+        </div>
+        <div style="margin-top:10px"><label class="s-lbl">Customer Name</label><input class="s-input" id="docInvoiceCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
+        <details style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);font-weight:600">🔍 Link to CRM lead (optional)</summary>
+          <div style="margin-top:8px">
+            <input class="s-input" id="docInvoiceLeadSearch" placeholder="Search leads by name or phone…" oninput="renderDocTypeLeadPicker('invoice')">
+            <select class="s-input" id="docInvoiceLeadId" style="margin-top:6px"><option value="">— None —</option></select>
+          </div>
+        </details>
       </div>
-      <div><label class="s-lbl">Customer Name (if no lead)</label><input class="s-input" id="docInvoiceCustomerName" list="fpCustomersDatalist" placeholder="e.g. Acme Corp / walk-in customer"></div>
-      <div><label class="s-lbl">Currency</label><input class="s-input" id="docInvoiceCurrency" placeholder="e.g. AED" value="AED"></div>
-      <div><label class="s-lbl">Due Date (optional)</label><input class="s-input" id="docInvoiceDueDate" type="date"></div>
+      <div>
+        <div class="drawer-sec-hd">Line Items</div>
+        <div class="s-hint" style="margin-bottom:8px">Type a product or service — no catalog setup needed.</div>
+        <div class="li-cards" id="docInvoiceLineItems"></div>
+        <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:8px;width:100%">+ Add Line Item</button>
+        <div id="docInvoiceCrossSell" style="margin-top:8px"></div>
+      </div>
+      <details style="border:1px solid var(--line);border-radius:8px;padding:12px">
+        <summary style="font-weight:600;cursor:pointer;font-size:13px">🏛️ Tax / GST Details</summary>
+        <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">
+          <div class="toggle-row"><input type="checkbox" id="docInvoiceIsTaxInvoice" onchange="toggleDocTypeHsnFields('invoice')"><label class="s-lbl" style="margin:0">Issue as Tax Invoice</label></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><label class="s-lbl">GST Rate (%)</label><input class="s-input" id="docInvoiceGstRate" type="number" min="0" max="100" step="0.5" placeholder="e.g. 18" oninput="updateDocTypeTotalPreview('invoice')"></div>
+            <div><label class="s-lbl">Recipient GSTIN</label><input class="s-input" id="docInvoiceRecipientGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+            <div><label class="s-lbl">Place of Supply</label><select class="s-input" id="docInvoicePlaceOfSupply" onchange="updateDocTypeTotalPreview('invoice')"><option value="">— Select State —</option></select></div>
+            <div><label class="s-lbl">Supply Type</label>
+              <select class="s-input" id="docInvoiceSupplyType"><option value="B2C">B2C</option><option value="B2B">B2B</option><option value="B2CL">B2C Large</option><option value="EXPORT">Export</option></select>
+            </div>
+          </div>
+          <div class="toggle-row"><input type="checkbox" id="docInvoiceReverseCharge"><label class="s-lbl" style="margin:0">Reverse Charge</label></div>
+        </div>
+      </details>
+      <div>
+        <label class="s-lbl">Notes</label>
+        <textarea class="s-input" id="docInvoiceNotes" rows="2" style="resize:vertical"></textarea>
+      </div>
+      <div class="s-hint">Logo, T&amp;C, Payment Method and footer details are shared with the Quote/Invoice page on a lead — edit there and every document here picks them up.</div>
     </div>
-    <label class="s-lbl">Line Items</label>
-    <div class="s-hint" style="margin-bottom:6px">Type a product or service and its price — no separate catalog to set up first.</div>
-    <div id="docInvoiceLineItems"></div>
-    <button class="save-btn sec" type="button" onclick="addDocLineItemRow('invoice')" style="margin-top:6px">+ Add Line Item</button>
-    <div id="docInvoiceCrossSell" style="margin-top:10px"></div>
-    <div style="text-align:right;margin-top:14px;font-family:var(--disp);font-weight:700;font-size:16px" id="docInvoiceTotalPreview">Total: —</div>
-    <div style="margin-top:14px">
-      <label class="s-lbl">Notes</label>
-      <textarea class="s-input" id="docInvoiceNotes" rows="2" style="resize:vertical"></textarea>
-    </div>
-    <div class="s-hint" style="margin-top:10px">Logo, Terms &amp; Conditions, Payment Method, Footer Address and Accent Color on the generated PDF are shared with the Quotation feature — edit them from a lead's <b>Quote</b>/<b>Invoice</b> page (Human Deals) and every document here picks them up too.</div>
-    <div class="modal-actions">
-      <button class="save-btn sec" onclick="closeDocTypeModal('invoice')">Cancel</button>
-      <button class="save-btn" onclick="saveDocType('invoice')">Save Invoice</button>
+    <div class="drawer-foot">
+      <div class="drawer-foot-total" id="docInvoiceTotalPreview">Total: —</div>
+      <div style="display:flex;gap:10px;flex-shrink:0">
+        <button class="save-btn sec" type="button" onclick="closeDocTypeModal('invoice')">Cancel</button>
+        <button class="save-btn" type="button" onclick="saveDocType('invoice')">Save Invoice</button>
+      </div>
     </div>
   </div>
 </div>
@@ -783,6 +889,8 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Renewal Date</label><input class="s-input" id="fpCustRenewalDate" type="date"></div>
       <div><label class="s-lbl">Seats</label><input class="s-input" id="fpCustSeatCount" type="number" min="0"></div>
       <div><label class="s-lbl">CSM Owner</label><input class="s-input" id="fpCustCsmOwner"></div>
+      <div><label class="s-lbl">GSTIN (optional)</label><input class="s-input" id="fpCustGstin" placeholder="e.g. 29ABCDE1234F1Z5" maxlength="15"></div>
+      <div><label class="s-lbl">State</label><select class="s-input" id="fpCustStateCode"><option value="">— Select State —</option></select></div>
       <div><label class="s-lbl">Health Score <span style="font-weight:400;color:var(--muted)">(auto-computed daily unless overridden)</span></label>
         <div style="display:flex;gap:8px;align-items:center">
           <input class="s-input" id="fpCustHealthScore" type="number" min="0" max="100" disabled style="flex:1">
@@ -951,6 +1059,56 @@ function esc(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace
 function escAttr(str){ return esc(str).replace(/"/g,'&quot;'); }
 function fmtMoney(n,cur){ return `${cur||''} ${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`.trim(); }
 
+// ── GST helpers ──
+const INDIA_STATES=[
+  ['01','Jammu & Kashmir'],['02','Himachal Pradesh'],['03','Punjab'],['04','Chandigarh'],['05','Uttarakhand'],
+  ['06','Haryana'],['07','Delhi'],['08','Rajasthan'],['09','Uttar Pradesh'],['10','Bihar'],
+  ['11','Sikkim'],['12','Arunachal Pradesh'],['13','Nagaland'],['14','Manipur'],['15','Mizoram'],
+  ['16','Tripura'],['17','Meghalaya'],['18','Assam'],['19','West Bengal'],['20','Jharkhand'],
+  ['21','Odisha'],['22','Chhattisgarh'],['23','Madhya Pradesh'],['24','Gujarat'],['26','Dadra & Nagar Haveli and Daman & Diu'],
+  ['27','Maharashtra'],['28','Andhra Pradesh (old)'],['29','Karnataka'],['30','Goa'],['31','Lakshadweep'],
+  ['32','Kerala'],['33','Tamil Nadu'],['34','Puducherry'],['35','Andaman & Nicobar Islands'],['36','Telangana'],
+  ['37','Andhra Pradesh'],['38','Ladakh'],['97','Other Territory'],['99','Centre Jurisdiction'],
+];
+function renderStateOptions(selectId, selectedVal){
+  const el=document.getElementById(selectId); if(!el) return;
+  el.innerHTML='<option value="">— Select State —</option>'+INDIA_STATES.map(([code,name])=>`<option value="${code}" ${selectedVal===code?'selected':''}>${code} — ${name}</option>`).join('');
+}
+function computeGstFrontend(subtotal, gstRatePct, supplierStateCode, placeOfSupply){
+  const rate=Number(gstRatePct)||0;
+  if(!rate) return {cgst:0, sgst:0, igst:0, total:subtotal};
+  const gstAmt=subtotal*(rate/100);
+  const intra=supplierStateCode&&placeOfSupply&&String(supplierStateCode)===String(placeOfSupply);
+  if(intra){ const half=Math.round(gstAmt*100/2)/100; return {cgst:half,sgst:half,igst:0,total:subtotal+half+half}; }
+  const igst=Math.round(gstAmt*100)/100;
+  return {cgst:0,sgst:0,igst,total:subtotal+igst};
+}
+function getFinancialYear(date){
+  const d=date?new Date(date):new Date();
+  const y=d.getFullYear(), m=d.getMonth();
+  const start=m>=3?y:y-1;
+  return `FY${String(start).slice(-2)}-${String(start+1).slice(-2)}`;
+}
+// Indian number system words for amounts on Tax Invoices
+const _inrOnes=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+const _inrTens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+function _inrChunk(n){
+  if(n<20) return _inrOnes[n];
+  if(n<100) return (_inrTens[Math.floor(n/10)]+(_inrOnes[n%10]?' '+_inrOnes[n%10]:'')).trim();
+  return (_inrOnes[Math.floor(n/100)]+' Hundred'+(_inrChunk(n%100)?' '+_inrChunk(n%100):'')).trim();
+}
+function inrWords(amount){
+  const n=Math.round(Math.abs(amount));
+  if(n===0) return 'Zero';
+  const cr=Math.floor(n/10000000), lk=Math.floor((n%10000000)/100000), th=Math.floor((n%100000)/1000), rem=n%1000;
+  const parts=[];
+  if(cr) parts.push(_inrChunk(cr)+' Crore');
+  if(lk) parts.push(_inrChunk(lk)+' Lakh');
+  if(th) parts.push(_inrChunk(th)+' Thousand');
+  if(rem) parts.push(_inrChunk(rem));
+  return parts.join(' ')+(amount<0?' (Negative)':'');
+}
+
 function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
 async function ncGet(url){ const r=await fetch(url,{headers:ncAuthHeaders()}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
 async function ncPatch(url,body){ const r=await fetch(url,{method:'PATCH',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
@@ -1000,6 +1158,8 @@ async function init(){
     populateFpCustomerDatalist();
     populateFpSupplierDatalist();
     initReportDateDefaults();
+    // Populate all state-code dropdowns (GST) from the shared INDIA_STATES constant.
+    ['fpCfgBusinessStateCode','docQuotationPlaceOfSupply','docInvoicePlaceOfSupply','fpCustStateCode'].forEach(id=>renderStateOptions(id,''));
     // SaaS Ops now lives in its own standalone top-level tab (frontend/saas-ops.html) — nothing
     // to load here anymore.
   }catch(e){
@@ -1283,6 +1443,8 @@ function openFpCustomerModal(id){
   document.getElementById('fpCustRenewalDate').value=c?.renewal_date||'';
   document.getElementById('fpCustSeatCount').value=c?.seat_count??'';
   document.getElementById('fpCustCsmOwner').value=c?.csm_owner||'';
+  document.getElementById('fpCustGstin').value=c?.gstin||'';
+  renderStateOptions('fpCustStateCode', c?.state_code||'');
   document.getElementById('fpCustHealthScore').value=c?.health_score??'';
   document.getElementById('fpCustHealthScore').disabled=true;
   document.getElementById('fpCustHealthScoreManual').checked=c?.health_score_manual==='Yes';
@@ -1310,6 +1472,8 @@ async function saveFpCustomer(){
     renewal_date:document.getElementById('fpCustRenewalDate').value,
     seat_count:document.getElementById('fpCustSeatCount').value?Number(document.getElementById('fpCustSeatCount').value):undefined,
     csm_owner:document.getElementById('fpCustCsmOwner').value.trim(),
+    gstin:document.getElementById('fpCustGstin').value.trim()||null,
+    state_code:document.getElementById('fpCustStateCode').value||null,
     health_score_manual:document.getElementById('fpCustHealthScoreManual').checked?'Yes':'No',
   };
   if(document.getElementById('fpCustHealthScoreManual').checked) body.health_score=Number(document.getElementById('fpCustHealthScore').value)||0;
@@ -1661,6 +1825,9 @@ function renderFpConfigForm(){
   document.getElementById('fpCfgRzpKeyId').value=fpConfig.razorpay_key_id||'';
   document.getElementById('fpCfgRzpKeySecret').value=fpConfig.razorpay_key_secret||'';
   document.getElementById('fpCfgRzpWebhookSecret').value=fpConfig.razorpay_webhook_secret||'';
+  document.getElementById('fpCfgBusinessGstin').value=fpConfig.business_gstin||'';
+  renderStateOptions('fpCfgBusinessStateCode', fpConfig.business_state_code||'');
+  document.getElementById('fpCfgDefaultGstRate').value=fpConfig.default_gst_rate||'';
 }
 async function saveFpConfig(){
   const msg=document.getElementById('fpCfgSaveMsg');
@@ -1680,6 +1847,9 @@ async function saveFpConfig(){
     admin_phone_numbers:document.getElementById('fpCfgAdminPhones').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean),
     tax_reserve_pct:taxPct===''?null:Number(taxPct),
     razorpay_key_id:document.getElementById('fpCfgRzpKeyId').value.trim(),
+    business_gstin:document.getElementById('fpCfgBusinessGstin').value.trim(),
+    business_state_code:document.getElementById('fpCfgBusinessStateCode').value,
+    default_gst_rate:document.getElementById('fpCfgDefaultGstRate').value===''?0:Number(document.getElementById('fpCfgDefaultGstRate').value),
   };
   const keySecret=document.getElementById('fpCfgRzpKeySecret').value.trim();
   const webhookSecret=document.getElementById('fpCfgRzpWebhookSecret').value.trim();
@@ -1820,10 +1990,23 @@ function openDocTypeModal(type, prefill){
   renderDocTypeLeadPicker(type);
   if(prefill?.lead_id) document.getElementById(p+'LeadId').value=prefill.lead_id;
   document.getElementById(p+'CustomerName').value=prefill?.customer_name||'';
+  // Pre-fill GST fields from config defaults
+  if(document.getElementById(p+'IsTaxInvoice')) document.getElementById(p+'IsTaxInvoice').checked=false;
+  if(document.getElementById(p+'GstRate')) document.getElementById(p+'GstRate').value=fpConfig?.default_gst_rate||'';
+  if(document.getElementById(p+'RecipientGstin')) document.getElementById(p+'RecipientGstin').value='';
+  if(document.getElementById(p+'PlaceOfSupply')) renderStateOptions(p+'PlaceOfSupply','');
+  if(document.getElementById(p+'SupplyType')) document.getElementById(p+'SupplyType').value='B2C';
+  if(document.getElementById(p+'ReverseCharge')) document.getElementById(p+'ReverseCharge').checked=false;
   document.getElementById(type+'Modal').classList.add('active');
   updateDocTypeTotalPreview(type);
 }
 function closeDocTypeModal(type){ document.getElementById(type+'Modal').classList.remove('active'); }
+function toggleDocTypeHsnFields(type){
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  const isTax=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
+  document.querySelectorAll(`#${cfg.prefix}LineItems .li-hsn-wrap`).forEach(el=>el.classList.toggle('show',isTax));
+  updateDocTypeTotalPreview(type);
+}
 function renderDocTypeLeadPicker(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   const p=cfg.prefix;
@@ -1836,14 +2019,21 @@ function renderDocTypeLeadPicker(type){
 }
 function addDocLineItemRow(type, li){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
-  li=li||{name:'',qty:1,price:0};
-  const row=document.createElement('div'); row.className='li-row';
+  li=li||{name:'',qty:1,price:0,hsn_code:''};
+  const isTax=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
+  const row=document.createElement('div');
+  row.className='li-row li-card';
   row.innerHTML=`
     <input class="li-name" placeholder="Product / description" value="${escAttr(li.name)}">
-    <input class="li-qty" type="number" placeholder="Qty" value="${esc(li.qty)}">
-    <input class="li-price" type="number" placeholder="Price" value="${esc(li.price)}">
-    <span class="li-total" style="font-family:var(--mono);font-size:13px;text-align:right"></span>
-    <button class="icon-btn danger" type="button" onclick="this.parentElement.remove();updateDocTypeTotalPreview('${type}')">✕</button>`;
+    <div class="li-hsn-wrap${isTax?' show':''}">
+      <input class="li-hsn" placeholder="HSN/SAC code" value="${escAttr(li.hsn_code||'')}">
+    </div>
+    <div class="li-card-nums">
+      <div class="li-card-field"><span class="li-card-lbl">Qty</span><input class="li-qty" type="number" placeholder="1" value="${esc(li.qty)}"></div>
+      <div class="li-card-field"><span class="li-card-lbl">Unit Price</span><input class="li-price" type="number" placeholder="0.00" value="${esc(li.price)}"></div>
+      <div class="li-card-total-wrap"><span class="li-card-lbl">Total</span><div class="li-total"></div></div>
+      <button class="li-card-del" type="button" onclick="this.closest('.li-row').remove();updateDocTypeTotalPreview('${type}')">✕</button>
+    </div>`;
   document.getElementById(cfg.prefix+'LineItems').appendChild(row);
   row.querySelectorAll('input').forEach(el=>el.addEventListener('input',()=>updateDocTypeTotalPreview(type)));
   updateDocTypeTotalPreview(type);
@@ -1886,11 +2076,11 @@ function collectDocLineItems(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return [];
   return [...document.querySelectorAll(`#${cfg.prefix}LineItems .li-row`)].map(row=>({
     name:row.querySelector('.li-name').value.trim(),
+    hsn_code:(row.querySelector('.li-hsn')?.value||'').trim(),
     qty:Number(row.querySelector('.li-qty').value)||0,
     price:Number(row.querySelector('.li-price').value)||0
   })).filter(li=>li.name);
 }
-// No GST — this module never charges tax, so the total is always just the line items' subtotal.
 function updateDocTypeTotalPreview(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   const items=[...document.querySelectorAll(`#${cfg.prefix}LineItems .li-row`)];
@@ -1900,36 +2090,74 @@ function updateDocTypeTotalPreview(type){
     const price=Number(row.querySelector('.li-price').value)||0;
     const total=qty*price;
     subtotal+=total;
-    row.querySelector('.li-total').textContent=total.toLocaleString();
+    const totalEl=row.querySelector('.li-total');
+    if(totalEl) totalEl.textContent=total.toLocaleString();
   });
   const cur=document.getElementById(cfg.prefix+'Currency').value||'';
-  document.getElementById(cfg.prefix+'TotalPreview').textContent=`Total: ${fmtMoney(subtotal,cur)}`;
+  const isTaxInvoice=document.getElementById(cfg.prefix+'IsTaxInvoice')?.checked||false;
+  const gstRateEl=document.getElementById(cfg.prefix+'GstRate');
+  const posEl=document.getElementById(cfg.prefix+'PlaceOfSupply');
+  const gstRate=isTaxInvoice&&gstRateEl?Number(gstRateEl.value)||0:0;
+  const pos=posEl?posEl.value:'';
+  const supplierState=fpConfig?.business_state_code||'';
+  const {cgst,sgst,igst,total}=computeGstFrontend(subtotal,gstRate,supplierState,pos);
+  let preview;
+  if(gstRate>0){
+    preview=`Subtotal: ${fmtMoney(subtotal,cur)}`;
+    if(cgst||sgst) preview+=` | CGST: ${fmtMoney(cgst,cur)} | SGST: ${fmtMoney(sgst,cur)}`;
+    else preview+=` | IGST: ${fmtMoney(igst,cur)}`;
+    preview+=` | Total: ${fmtMoney(total,cur)}`;
+  } else {
+    preview=`Total: ${fmtMoney(subtotal,cur)}`;
+  }
+  document.getElementById(cfg.prefix+'TotalPreview').textContent=preview;
   renderDocTypeCrossSell(type);
 }
 
 async function saveDocType(type){
   const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
   const p=cfg.prefix;
+  const docId=Number(document.getElementById(p+'Id').value)||0;
   const title=document.getElementById(p+'Title').value.trim();
   if(!title){ alert('Please give this document a title.'); return; }
   const lineItems=collectDocLineItems(type);
   if(!lineItems.length){ alert('Add at least one line item.'); return; }
   const leadId=document.getElementById(p+'LeadId').value||null;
   const customerName=document.getElementById(p+'CustomerName').value.trim()||null;
-  const body={
+  const isTaxInvoice=document.getElementById(p+'IsTaxInvoice')?.checked||false;
+  const gstRateEl=document.getElementById(p+'GstRate');
+  const gstRate=isTaxInvoice&&gstRateEl?Number(gstRateEl.value)||0:0;
+  const fields={
     type, title, lead_id:leadId,
     customer_name:customerName,
-    // Links this document's typed customer to fp_customers (Financial Planning), so it shows up
-    // there too — only when there's no CRM lead already doing that job.
-    customer_id:(!leadId && customerName)?await ensureFpCustomerByName(customerName):null,
     currency:document.getElementById(p+'Currency').value.trim(),
     notes:document.getElementById(p+'Notes').value.trim(),
     [cfg.dateKey]:document.getElementById(cfg.dateField).value||null,
-    line_items:lineItems
+    line_items:lineItems,
+    is_tax_invoice:isTaxInvoice?1:0,
+    gst_rate_pct:gstRate,
+    supplier_gstin:fpConfig?.business_gstin||null,
+    supplier_state_code:fpConfig?.business_state_code||null,
+    recipient_gstin:document.getElementById(p+'RecipientGstin')?.value.trim()||null,
+    place_of_supply:document.getElementById(p+'PlaceOfSupply')?.value||null,
+    supply_type:document.getElementById(p+'SupplyType')?.value||'B2C',
+    reverse_charge:document.getElementById(p+'ReverseCharge')?.checked?1:0,
   };
   try{
-    const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(body)});
-    allDocuments.unshift(created);
+    if(docId){
+      await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id:docId,...fields})});
+      const idx=allDocuments.findIndex(d=>d.Id===docId);
+      if(idx>-1){
+        const subtotal=lineItems.reduce((s,li)=>s+(Number(li.qty)||0)*(Number(li.price)||0),0);
+        allDocuments[idx]={...allDocuments[idx],...fields,Id:docId,line_items_json:JSON.stringify(lineItems),subtotal,total:subtotal};
+      }
+    } else {
+      fields.customer_id=(!leadId&&customerName)?await ensureFpCustomerByName(customerName):null;
+      const created=await acctFetch('/accounting/documents',{method:'POST',body:JSON.stringify(fields)});
+      allDocuments.unshift(created);
+    }
+    const titleEl=document.querySelector(`#${type}Modal .drawer-head-title`);
+    if(titleEl) titleEl.textContent=type==='invoice'?'📄 New Invoice':'🧾 New Quotation';
     closeDocTypeModal(type);
     renderDocumentsTable();
   }catch(e){ alert('Failed to save: '+e.message); }
@@ -1952,36 +2180,85 @@ async function setDocumentStatus(id, status){
   }catch(e){ alert('Failed to update status: '+e.message); }
 }
 
+const DOC_TYPE_ICON={quotation:'🧾',invoice:'📄',receipt:'🪙'};
+const DOC_CONVERT_LABEL={invoice:'→ Invoice',receipt:'→ Receipt'};
 function renderDocumentsTable(){
   const q=(document.getElementById('docSearch').value||'').toLowerCase();
   const typeFilter=document.getElementById('docFilterType').value;
-  const tbody=document.getElementById('documentsTbody');
+  const grid=document.getElementById('documentsGrid');
   if(documentsLoadError){
-    tbody.innerHTML=`<tr><td colspan="6" class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied and the Worker is deployed with its <code>DB</code> binding — see SETUP.md "Accounting module".</td></tr>`;
+    grid.innerHTML=`<div class="empty-state"><div class="empty-icon">⚠️</div>Couldn't load documents (${esc(documentsLoadError)}).<br>Make sure the D1 migration has been applied — see SETUP.md "Accounting module".</div>`;
     return;
   }
   const rows=allDocuments.filter(d=>(!q||(d.title||'').toLowerCase().includes(q))&&(!typeFilter||d.type===typeFilter));
-  if(!rows.length){ tbody.innerHTML='<tr><td colspan="6" class="empty-state">No documents yet — create a quotation above, then convert it to an invoice and receipt as the deal progresses.</td></tr>'; return; }
-  const convertTo={quotation:'invoice', invoice:'receipt'};
-  tbody.innerHTML=rows.map(d=>{
+  if(!rows.length){
+    grid.innerHTML='<div class="empty-state"><div class="empty-icon">📋</div>No documents yet — create a quotation or invoice to get started.</div>';
+    return;
+  }
+  const convertTo={quotation:'invoice',invoice:'receipt'};
+  grid.innerHTML='<div class="doc-cards">'+rows.map(d=>{
     const lead=allLeads.find(l=>String(l.Id)===String(d.lead_id));
-    const customerLabel=lead?(lead.Name||lead.Phone):(d.customer_name||'—');
+    const customer=lead?(lead.Name||lead.Phone):(d.customer_name||'');
     const nextType=convertTo[d.type];
     const status=d.status||'draft';
-    return `<tr>
-      <td>${esc(d.title||'')}</td>
-      <td>${DOC_TYPE_LABEL[d.type]||esc(d.type)}</td>
-      <td>${esc(customerLabel)}</td>
-      <td>${fmtMoney(d.total,d.currency)}</td>
-      <td><select class="s-input" style="width:auto;font-size:12px;padding:4px 6px" onchange="setDocumentStatus(${d.Id},this.value)">${DOC_STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s.toUpperCase()}</option>`).join('')}</select></td>
-      <td class="row-actions">
-        <button class="icon-btn" title="Download PDF" onclick="downloadDocumentPdf(${d.Id})">⬇️</button>
-        <button class="icon-btn" title="Send by email" onclick="openEmailModal(${d.Id})">📧</button>
-        ${nextType?`<button class="icon-btn" title="Convert to ${nextType}" onclick="convertDocument(${d.Id},'${nextType}')">→ ${DOC_TYPE_LABEL[nextType]}</button>`:''}
-        <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
-      </td>
-    </tr>`;
-  }).join('');
+    const canEdit=status==='draft'&&d.type!=='receipt';
+    const meta=[
+      customer&&`👤 ${esc(customer)}`,
+      d.due_date&&`📅 Due ${String(d.due_date).slice(0,10)}`,
+      d.valid_until&&`📅 Until ${String(d.valid_until).slice(0,10)}`,
+    ].filter(Boolean).join(' · ');
+    return `<div class="doc-card">
+      <div class="doc-card-icon">${DOC_TYPE_ICON[d.type]||'📄'}</div>
+      <div class="doc-card-main">
+        <div class="doc-card-top">
+          <span class="doc-card-title">${esc(d.title||'Untitled')}</span>
+          <span class="doc-type-badge ${d.type}">${d.type.toUpperCase()}</span>
+          <span class="badge ${status}">${status.toUpperCase()}</span>
+        </div>
+        ${meta?`<div class="doc-card-meta">${meta}</div>`:''}
+        <div class="doc-card-actions">
+          ${canEdit?`<button class="icon-btn" onclick="openDocTypeEdit('${d.type}',${d.Id})">✏️ Edit</button>`:''}
+          <button class="icon-btn" onclick="downloadDocumentPdf(${d.Id})">⬇️ PDF</button>
+          <button class="icon-btn" onclick="openEmailModal(${d.Id})">📧</button>
+          ${nextType?`<button class="icon-btn" onclick="convertDocument(${d.Id},'${nextType}')">${DOC_CONVERT_LABEL[nextType]}</button>`:''}
+          <button class="icon-btn danger" onclick="deleteDocument(${d.Id})">🗑</button>
+        </div>
+      </div>
+      <div class="doc-card-right">
+        <div class="doc-card-total">${fmtMoney(d.total,d.currency)}</div>
+        <select class="doc-status-sel" onchange="setDocumentStatus(${d.Id},this.value)">${DOC_STATUS_OPTIONS.map(s=>`<option value="${s}" ${s===status?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}</select>
+      </div>
+    </div>`;
+  }).join('')+'</div>';
+}
+
+function openDocTypeEdit(type, id){
+  const doc=allDocuments.find(d=>d.Id===id);
+  if(!doc) return;
+  const cfg=DOC_TYPE_CFG[type]; if(!cfg) return;
+  let lineItems=[];
+  try{ lineItems=JSON.parse(doc.line_items_json||'[]'); }catch(e){}
+  const prefill={
+    title:doc.title||'',
+    currency:doc.currency||'',
+    notes:doc.notes||'',
+    customer_name:doc.customer_name||'',
+    lead_id:doc.lead_id||null,
+    line_items:lineItems.length?lineItems:[{name:'',qty:1,price:0}],
+    [cfg.dateKey]:doc[cfg.dateKey]||'',
+  };
+  openDocTypeModal(type, prefill);
+  const p=cfg.prefix;
+  document.getElementById(p+'Id').value=id;
+  if(document.getElementById(p+'IsTaxInvoice')) document.getElementById(p+'IsTaxInvoice').checked=!!doc.is_tax_invoice;
+  if(document.getElementById(p+'GstRate')) document.getElementById(p+'GstRate').value=doc.gst_rate_pct||'';
+  if(document.getElementById(p+'RecipientGstin')) document.getElementById(p+'RecipientGstin').value=doc.recipient_gstin||'';
+  if(document.getElementById(p+'PlaceOfSupply')) renderStateOptions(p+'PlaceOfSupply', doc.place_of_supply||'');
+  if(document.getElementById(p+'SupplyType')) document.getElementById(p+'SupplyType').value=doc.supply_type||'B2C';
+  if(document.getElementById(p+'ReverseCharge')) document.getElementById(p+'ReverseCharge').checked=!!doc.reverse_charge;
+  toggleDocTypeHsnFields(type);
+  const titleEl=document.querySelector(`#${type}Modal .drawer-head-title`);
+  if(titleEl) titleEl.textContent=`✏️ Edit ${type==='invoice'?'Invoice':'Quotation'}`;
 }
 
 /* ── EXPENSE ENTRY (migrations/0028_accounting_expenses.sql) — same open/save/sync/submit shape
@@ -2220,10 +2497,10 @@ function buildDocumentPdf(id){
   const pageH=doc.internal.pageSize.getHeight();
   const contentW=pageW-marginX*2;
   let y=56;
-  const typeLabel={quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document';
-  // Defaults to black/white (the reference template's own look) — still overridable via the
-  // existing Accent Color setting for a client who wants their own brand color instead.
-  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[0,0,0];
+  const isTaxInvoice=d.type==='invoice'&&!!d.is_tax_invoice;
+  const typeLabel=isTaxInvoice?'Tax Invoice':({quotation:'Quotation', invoice:'Invoice', receipt:'Receipt'}[d.type]||'Document');
+  // Defaults to Leadvyne teal — still overridable via Accent Color in quotation settings.
+  const accentRgb=hexToRgb(clientRecord?.quote_accent_color)||[13,156,147];
 
   // ── Header: logo mark top-left, large document-type wordmark top-right ──
   let logoBottom=y;
@@ -2246,6 +2523,12 @@ function buildDocumentPdf(id){
     doc.text(clientRecord?.quote_header_title||clientRecord?.client_name||'',marginX,y+16);
     logoBottom=y+24;
   }
+  // Supplier GSTIN under business name (Tax Invoice requirement)
+  if(isTaxInvoice&&d.supplier_gstin){
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(80);
+    doc.text('GSTIN: '+d.supplier_gstin,marginX,logoBottom+13);
+    logoBottom+=13;
+  }
   doc.setFont('times','bolditalic');doc.setFontSize(30);doc.setTextColor(0);
   doc.text(typeLabel,pageW-marginX,y+24,{align:'right'});
   y=Math.max(logoBottom,y+40)+26;
@@ -2261,9 +2544,23 @@ function buildDocumentPdf(id){
   doc.text('Billed to:',marginX,y);
   doc.setFont('helvetica','normal');doc.setFontSize(10);
   billLines.forEach((line,i)=>doc.text(line,marginX,y+15+i*13));
+  let billY=y+15+billLines.length*13;
+  // Recipient GSTIN (Tax Invoice requirement)
+  if(isTaxInvoice&&d.recipient_gstin){
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+    doc.text('GSTIN: '+d.recipient_gstin,marginX,billY); billY+=12;
+  }
+  if(isTaxInvoice&&d.place_of_supply){
+    const stateLabel=INDIA_STATES.find(([c])=>c===d.place_of_supply)?.[1]||d.place_of_supply;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(80);
+    doc.text('Place of Supply: '+stateLabel,marginX,billY);
+  }
+  doc.setTextColor(0);
 
-  const docNumber=String(d.Id);
+  const fyTag=isTaxInvoice?getFinancialYear(d.doc_created_at)+'/INV/':'';
+  const docNumber=fyTag+String(d.Id).padStart(4,'0');
   const dateStr=d.doc_created_at?new Date(d.doc_created_at).toLocaleDateString(undefined,{day:'2-digit',month:'long',year:'numeric'}):new Date().toLocaleDateString();
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(0);
   doc.text(`${typeLabel} No. ${docNumber}`,pageW-marginX,y,{align:'right'});
   doc.text(dateStr,pageW-marginX,y+15,{align:'right'});
   // Type-specific date: a Quotation is an offer that expires (Valid Until); an Invoice is a
@@ -2296,15 +2593,26 @@ function buildDocumentPdf(id){
   y+=15+billLines.length*13+28;
 
   // ── Item table — clean row dividers, no filled header, matching the reference's plain style ──
+  const hasHsn=isTaxInvoice&&items.some(it=>it.hsn_code);
+  const tableHead=hasHsn?[['Item','HSN/SAC','Qty','Unit Price','Total']]:['Item','Qty','Unit Price','Total'];
+  const tableBody=items.map(it=>{
+    const lineTotal=fmtMoney((Number(it.qty)||0)*(Number(it.price)||0),d.currency);
+    return hasHsn?[it.name,it.hsn_code||'',String(it.qty),fmtMoney(it.price,d.currency),lineTotal]
+                 :[it.name,String(it.qty),fmtMoney(it.price,d.currency),lineTotal];
+  });
+  const colStyles=hasHsn
+    ?{1:{cellWidth:60},2:{halign:'right',cellWidth:40},3:{halign:'right',cellWidth:90},4:{halign:'right',cellWidth:90}}
+    :{1:{halign:'left',cellWidth:80},2:{halign:'right',cellWidth:90},3:{halign:'right',cellWidth:90}};
   doc.autoTable({
     startY:y,
     margin:{left:marginX,right:marginX},
-    head:[['Item','Quantity','Unit Price','Total']],
-    body:items.map(it=>[it.name,String(it.qty),fmtMoney(it.price,d.currency),fmtMoney((Number(it.qty)||0)*(Number(it.price)||0),d.currency)]),
+    head:[tableHead],
+    body:tableBody,
     theme:'plain',
+    showHead:'everyPage',
     styles:{fontSize:10,cellPadding:{top:8,bottom:8,left:0,right:0},textColor:[20,20,20]},
     headStyles:{fontStyle:'bold',textColor:[0,0,0],fontSize:10.5},
-    columnStyles:{1:{halign:'left',cellWidth:80},2:{halign:'right',cellWidth:90},3:{halign:'right',cellWidth:90}},
+    columnStyles:colStyles,
     didDrawCell:(data)=>{
       const isHead=data.section==='head';
       doc.setDrawColor(isHead?0:225);
@@ -2315,33 +2623,66 @@ function buildDocumentPdf(id){
 
   y=((doc.lastAutoTable&&doc.lastAutoTable.finalY)||y+40)+18;
 
-  // ── Summary: Subtotal / Tax (if any, pre-existing documents only — see "No GST" note) / Total ──
-  // Total gets a filled bar (accent color, white text) the same way the reference highlights it.
-  const summaryX=pageW-marginX-160;
-  doc.setFont('helvetica','bold');doc.setFontSize(10);doc.setTextColor(0);
+  // ── Summary: Subtotal / Tax (if any) / Total ──
+  // Clean border-based layout — no filled box; a thin separator above subtotal, a
+  // double rule above the total row, and bold accent-colored label for the total.
+  const summaryX=pageW-marginX-180;
+  const summaryRight=pageW-marginX;
+
+  // Light separator above the subtotal block
+  doc.setDrawColor(210,210,210);doc.setLineWidth(0.5);
+  doc.line(summaryX-16,y-8,summaryRight,y-8);
+
+  doc.setFont('helvetica','normal');doc.setFontSize(10);doc.setTextColor(90);
   doc.text('Subtotal',summaryX,y);
-  doc.setFont('helvetica','normal');
-  doc.text(fmtMoney(d.subtotal,d.currency),pageW-marginX,y,{align:'right'});
+  doc.text(fmtMoney(d.subtotal,d.currency),summaryRight,y,{align:'right'});
   y+=18;
-  if(Number(d.tax_pct)>0){
-    doc.setFont('helvetica','bold');
+  if(isTaxInvoice&&Number(d.gst_rate_pct)>0){
+    if(Number(d.cgst_amount)>0){
+      doc.text(`CGST (${d.gst_rate_pct/2}%)`,summaryX,y);
+      doc.text(fmtMoney(d.cgst_amount,d.currency),summaryRight,y,{align:'right'}); y+=18;
+      doc.text(`SGST (${d.gst_rate_pct/2}%)`,summaryX,y);
+      doc.text(fmtMoney(d.sgst_amount,d.currency),summaryRight,y,{align:'right'}); y+=18;
+    } else {
+      doc.text(`IGST (${d.gst_rate_pct}%)`,summaryX,y);
+      doc.text(fmtMoney(d.igst_amount,d.currency),summaryRight,y,{align:'right'}); y+=18;
+    }
+  } else if(Number(d.tax_pct)>0){
     doc.text(`Tax (${d.tax_pct}%)`,summaryX,y);
-    doc.setFont('helvetica','normal');
-    doc.text(fmtMoney(d.tax_amount,d.currency),pageW-marginX,y,{align:'right'});
+    doc.text(fmtMoney(d.tax_amount,d.currency),summaryRight,y,{align:'right'});
     y+=18;
   }
-  y+=18;
-  const barH=30;
-  doc.setFillColor(...accentRgb);
-  doc.rect(summaryX-16,y-barH+9,pageW-marginX-(summaryX-16),barH,'F');
-  doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(12);
+  y+=8;
+
+  // Double rule before the total row — standard professional invoice convention
+  doc.setDrawColor(160,160,160);doc.setLineWidth(1);
+  doc.line(summaryX-16,y-2,summaryRight,y-2);
+  doc.setLineWidth(0.35);
+  doc.line(summaryX-16,y+3,summaryRight,y+3);
+  y+=16;
+
   // Total bar label — an unpaid Invoice reads "Amount Due" (a payment demand), everything else
   // (Quotation, Receipt, a paid Invoice) reads "Total"/"Amount Paid".
   const totalLabel=d.type==='invoice'?(d.status==='paid'?'Amount Paid':'Amount Due'):(d.type==='receipt'?'Amount Paid':'Total');
-  doc.text(totalLabel,summaryX,y+9);
-  doc.text(fmtMoney(d.total,d.currency),pageW-marginX,y+9,{align:'right'});
+  doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.setTextColor(...accentRgb);
+  doc.text(totalLabel,summaryX,y);
   doc.setTextColor(0);
-  y+=barH+34;
+  doc.text(fmtMoney(d.total,d.currency),summaryRight,y,{align:'right'});
+  doc.setTextColor(0);
+  y+=20;
+  // GST-compliance: tax amount in words + reverse charge indicator
+  if(isTaxInvoice){
+    const taxTotalAmt=Number(d.cgst_amount||0)+Number(d.sgst_amount||0)+Number(d.igst_amount||0);
+    if(taxTotalAmt>0){
+      doc.setFont('helvetica','italic');doc.setFontSize(8.5);doc.setTextColor(80);
+      doc.text('Tax Amount (in words): '+inrWords(taxTotalAmt)+' Only',marginX,y); y+=14;
+    }
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);doc.setTextColor(80);
+    doc.text('Whether tax is payable under reverse charge: '+(d.reverse_charge?'Yes':'No'),marginX,y); y+=14;
+    doc.setTextColor(0);
+  }
+  y+=28;
 
   // ── Thank you — an italic serif flourish standing in for a script font (jsPDF only ships the
   // core Helvetica/Times/Courier faces; embedding a custom script font is a heavier lift not
