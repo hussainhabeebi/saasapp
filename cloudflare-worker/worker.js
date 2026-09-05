@@ -475,8 +475,8 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 export function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -1089,6 +1089,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // would show up, so the check has to live here rather than only in the Settings UI.
   if(isClientPatch && parsedBody){
     if(META_CHANNEL_CREDENTIALS_FIELD in parsedBody) return json({error:'Per-channel credentials are managed by the secure channel connection flow.'},403);
+    if('sarvam_api_key' in parsedBody) return json({error:'Sarvam credentials are managed by the secure Voice settings flow.'},403);
     // plan_tier is billing-controlled — never something a client's own session can set, no matter
     // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
     // client-writable) because this one has no legitimate client-side writer at all.
@@ -1140,7 +1141,19 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
     body
   });
-  const data=await r.text();
+  let data=await r.text();
+
+  // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
+  // browser after unrelated saves. Only the dedicated /voice/settings endpoint exposes a boolean.
+  if(r.ok && method==='GET' && singleClientRecord){
+    try{
+      const rec=JSON.parse(data);
+      const configured=!!rec.sarvam_api_key;
+      delete rec.sarvam_api_key;
+      rec.sarvam_api_key_configured=configured;
+      data=JSON.stringify(rec);
+    }catch(_e){}
+  }
 
   // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
   // passthrough (no dedicated handler per field). Any successful PATCH to the client's own row is
@@ -13177,14 +13190,18 @@ const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'mee
 // voice-note customer silently and permanently getting a text reply with zero trace of why.
 // Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
 // just voice-to-voice not being set up yet for this environment, not a bug.
-async function engineSarvamTts(env, text, targetLangCode){
+async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', requestTimeoutMs=0){
   if(!text || !targetLangCode) return null;
-  if(!env.SARVAM_API_KEY){ await reportOpsError(env, 'engineSarvamTts — SARVAM_API_KEY not configured', new Error('missing secret')); return null; }
+  const apiKey=String(clientApiKey||env.SARVAM_API_KEY||'').trim();
+  if(!apiKey){ await reportOpsError(env, 'engineSarvamTts — no client or Worker SARVAM_API_KEY configured', new Error('missing secret')); return null; }
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const r=await engineFetchWithRetry('https://api.sarvam.ai/text-to-speech', {
       method:'POST',
-      headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
-      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'})
+      headers:{'api-subscription-key':apiKey, 'Content-Type':'application/json'},
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'}),
+      ...(controller?{signal:controller.signal}:{})
     });
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
@@ -13212,7 +13229,88 @@ async function engineSarvamTts(env, text, targetLangCode){
   }catch(e){
     await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
+}
+
+const ENGINE_VOICE_REPLY_DEADLINE_MS=10000;
+const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v1';
+
+export function engineResolveSarvamApiKey(env, c){
+  return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
+}
+
+export async function engineWithDeadline(promise, deadlineMs){
+  let timer;
+  try{
+    return await Promise.race([
+      promise,
+      new Promise(resolve=>{ timer=setTimeout(()=>resolve(null),deadlineMs); })
+    ]);
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function engineVoiceCacheKey(clientId, langCode, replyText){
+  const normalized=String(replyText||'').trim().replace(/\s+/g,' ').toLowerCase();
+  const digest=await sha256Hex(`${langCode}|${ENGINE_TTS_SPEAKER}|${normalized}`);
+  return `${ENGINE_VOICE_CACHE_PREFIX}/${clientId}/${langCode}/${digest}.ogg`;
+}
+
+async function engineVoiceCacheGet(env, key){
+  if(!env.HOSPITALITY_MEDIA) return null;
+  try{
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(!obj) return null;
+    const buf=await obj.arrayBuffer();
+    return buf.byteLength>=200?buf:null;
+  }catch(_e){ return null; }
+}
+
+async function engineVoiceCachePut(env, key, audioBuf){
+  if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
+  try{
+    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:'sarvam'}});
+  }catch(_e){}
+}
+
+// Voice-to-voice only: exact generated spoken text is safe to reuse, so check R2 first. On a miss,
+// Sarvam is the sole live provider. The caller races this entire operation against ten seconds and
+// sends the already-generated text if voice is unavailable or late.
+async function engineCachedOrSarvamVoice(env, c, clientId, replyText, langCode){
+  // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
+  // call and Sarvam. The speaker/version remain in the key, making future voice changes safe.
+  const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
+  const cached=await engineVoiceCacheGet(env, cacheKey);
+  if(cached) return cached;
+  const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+  if(!spokenText) return null;
+  const audio=await engineSarvamTts(env, spokenText, ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()], engineResolveSarvamApiKey(env,c), 9000);
+  // Cache writes must never delay the first live send. R2 is best-effort here; the generated
+  // audio remains immediately usable even if this background write is interrupted or fails.
+  if(audio) void engineVoiceCachePut(env, cacheKey, audio);
+  return audio;
+}
+
+async function handleVoiceSettingsGet(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,session.cid);
+  if(!c) return json({error:'Client not found'},404);
+  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY});
+}
+
+async function handleVoiceSettingsUpdate(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const apiKey=String(body.api_key||'').trim();
+  if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
+  await ensureClientColumns(env,['sarvam_api_key']);
+  await patchClientFields(env,session.cid,{sarvam_api_key:apiKey});
+  return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
 }
 
 // Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
@@ -13834,12 +13932,11 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). This is the
-  // only gate: not tied to voice_addon_active/billing at all (deliberately — see the toggle's own
-  // comment in dashboard.html), so a client controls this purely by flipping the toggle on or off.
-  if(mediaType==='voice' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
-    const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
-    const audioBuf=await engineTtsWithFallback(env, spokenText, langCode, c.voice_tts_provider);
+  // Voice input automatically receives voice: exact cache first, then Sarvam using the client's
+  // key or Worker-level fallback. No per-client enable/provider/model switch. A hard ten-second
+  // ceiling returns the already-computed text instead of keeping the customer waiting.
+  if(mediaType==='voice' && !imageUrl && bcp47){
+    const audioBuf=await engineWithDeadline(engineCachedOrSarvamVoice(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
@@ -22904,7 +23001,7 @@ async function marketingR2PresignUrl(env, method, key, expiresSec){
 // loadUsage(). Real, repeated confusion from deploy sequencing (stale local git checkout, D1
 // migrations run before pulling the migration files, Coolify restart vs rebuild) is what this is
 // for: one glance instead of re-deriving "did this actually take" from scratch each time.
-const MARKETING_BUILD_TAG='2026-09-05-fast-voice-hedge';
+const MARKETING_BUILD_TAG='2026-09-05-sarvam-voice-cache';
 async function handleMarketingUsage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -27548,13 +27645,16 @@ export default {
           sarvam_configured:!!env.SARVAM_API_KEY,
           ai4bharat_render_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
           hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
-          deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS
+          legacy_ai4bharat_deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS,
+          reply_deadline_ms:ENGINE_VOICE_REPLY_DEADLINE_MS
         }
       }); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
+      else if(url.pathname==='/voice/settings' && request.method==='GET'){ res=await handleVoiceSettingsGet(request, env); }
+      else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
