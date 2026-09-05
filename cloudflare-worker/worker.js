@@ -3091,7 +3091,11 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     sentText=`[template: ${content.template_name}]`;
   }
 
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  // Mark the step as sent. If this PATCH fails the message still went out, so we log the failure
+  // rather than throwing — throwing here would leave `Follow up N` unset and cause the next cron
+  // tick to send the same message again (double-send).
+  const patchRes=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  if(!patchRes.ok) console.error('[followup] PATCH Follow up',step,'failed for lead',lead.Id,'HTTP',patchRes.status);
   try{
     await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
       .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
@@ -3118,8 +3122,14 @@ async function handleBroadcastFollowupSend(request, env){
   await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
   const steps={}; (stepRows||[]).forEach(r=>{ steps[r.step]=r; });
+  const silentHoursManual=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
   let nextStep=-1;
-  for(let s=1; s<=5; s++){ if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; } }
+  for(let s=1; s<=5; s++){
+    if(lead['Follow up '+s]==='Yes') continue;
+    const stepCfg=steps[s];
+    if(stepCfg?.type==='session' && silentHoursManual>=24) continue; // WhatsApp 24h session window closed
+    nextStep=s; break;
+  }
   if(nextStep===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
   const stepCfg=steps[nextStep];
   if(!stepCfg) return json({error:`Step ${nextStep} isn't set up yet — configure it in Campaigns → Follow-up Engine.`}, 400);
@@ -3195,8 +3205,10 @@ async function classicFollowupProcessClient(env, c){
       const stepCfg=steps[nextStep];
       if(stepCfg.type==='session' && !stepCfg.message) continue;
       if(stepCfg.type==='template' && !stepCfg.template_name){
-        // Template step has no template name configured — log once per tick so the dashboard can surface it.
         console.warn('[classic-followups] step',nextStep,'for lead',lead.Id,'has no template_name configured');
+        env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, source, failed_at) VALUES (?,?,?,?,?,?)`)
+          .bind(Number(c.Id), Number(lead.Id), nextStep, 'No template_name configured for this step', 'cron', new Date().toISOString())
+          .run().catch(()=>{});
         continue;
       }
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
