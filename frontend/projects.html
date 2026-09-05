@@ -334,6 +334,27 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
   .field textarea{min-height:82px}
   .subhead{margin-top:22px}
 }
+
+/* ── Support Tickets View ── */
+#viewSupport{padding-bottom:20px}
+.skt-board{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;align-items:flex-start}
+.skt-col{background:var(--bg);border-radius:var(--r);width:300px;flex:none;display:flex;flex-direction:column;max-height:calc(100vh - 200px)}
+.skt-col-hd{padding:12px 14px 8px;display:flex;align-items:center;gap:8px;font-family:var(--disp);font-weight:700;font-size:13px;color:var(--muted)}
+.skt-col-hd .n{font-family:var(--mono);font-weight:500;color:var(--muted);background:var(--card);border-radius:20px;padding:1px 8px;font-size:11px}
+.skt-col-body{flex:1;overflow-y:auto;padding:0 8px 8px;display:flex;flex-direction:column;gap:8px;min-height:40px}
+.skt-card{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:12px 13px;cursor:default}
+.skt-ref{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent-ink);margin-bottom:5px}
+.skt-name{font-weight:600;font-size:13.5px;color:var(--ink);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.skt-msg{font-size:12px;color:var(--muted);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-bottom:8px}
+.skt-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+.skt-time{font-size:11px;color:var(--muted)}
+.skt-actions{display:flex;gap:6px}
+.skt-btn{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:4px 9px;font-size:11.5px;font-weight:600;color:var(--ink);cursor:pointer}
+.skt-btn:hover{background:var(--line)}
+.skt-btn.resolve{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink)}
+.skt-btn.resolve:hover{background:var(--accent);color:#fff}
+.skt-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:18px}
+@media(max-width:760px){.skt-board{display:block}.skt-col{width:100%;margin-bottom:14px;max-height:none}}
 </style>
 </head>
 <body>
@@ -348,6 +369,7 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
     <button class="viewtab" data-view="timeline" onclick="setView('timeline')">Timeline</button>
     <button class="viewtab" data-view="sprints" onclick="setView('sprints')">Sprints</button>
     <button class="viewtab" data-view="calendar" onclick="setView('calendar')">Calendar</button>
+    <button class="viewtab" data-view="support" onclick="setView('support')">🎫 Support</button>
   </div>
   <div class="hright">
     <div class="hd-more-wrap">
@@ -410,6 +432,10 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
         <div class="calgrid-body" id="calGridBody"></div>
       </div>
       <div class="mobile-agenda" id="mobileAgenda"></div>
+    </div>
+    <div id="viewSupport" style="display:none">
+      <div class="skt-stats" id="sktStats"></div>
+      <div class="skt-board" id="sktBoard"></div>
     </div>
   </div>
 </div>
@@ -747,6 +773,7 @@ function myCurrentEmail(){
 /* ── STATE ── */
 let clientRecord=null, teamOptions=[];
 let allProjects=[], allTasks=[], allDependencies=[], allTimeEntries=[], allSprints=[], allAutomations=[];
+let allSupportTickets=[];
 let pmAutomationHealth={active_workflows:0,failed_jobs:0,queue_configured:false,workflow_configured:false};
 let selectedProjectId='all';
 let selectedSprintId=null;
@@ -793,7 +820,7 @@ async function boot(){
     clientRecord=me.client||{};
     buildTeamOptions();
     await loadProjects(); // dependencies/sprints/automations below all need this list first
-    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations(), loadAutomationHealth()]);
+    await Promise.all([loadTasks(), loadDependencies(), loadTimeEntries(), loadSprints(), loadAutomations(), loadAutomationHealth(), loadSupportTickets()]);
     renderSidebar();
     renderStats();
     renderView();
@@ -838,6 +865,7 @@ function buildTeamOptions(){
 }
 async function loadProjects(){ allProjects=(await pmFetch('/pm/projects',{method:'GET'})).list||[]; }
 async function loadTasks(){ allTasks=(await pmFetch('/pm/tasks',{method:'GET'})).list||[]; }
+async function loadSupportTickets(){ try{ allSupportTickets=(await pmFetch('/support/tickets',{method:'GET'})).tickets||[]; }catch(e){ allSupportTickets=[]; } }
 async function loadDependencies(){
   // Loaded per-project (dependencies never cross projects — see handlePmDependencyCreate), then
   // flattened, mirroring the "load everything, filter client-side" approach the rest of this page
@@ -918,10 +946,11 @@ function setView(v){
   $id('viewTimeline').style.display=v==='timeline'?'':'none';
   $id('viewSprints').style.display=v==='sprints'?'':'none';
   $id('viewCalendar').style.display=v==='calendar'?'':'none';
+  $id('viewSupport').style.display=v==='support'?'':'none';
   // The item-type filter (All/Tasks/Bugs) only means something for the flat views — Sprints/
   // Calendar have their own scoping already, so hide it there rather than leave a control that
   // silently does nothing.
-  $id('itemTypeFilter').closest('.filterbar').style.display=(v==='sprints'||v==='calendar')?'none':'';
+  $id('itemTypeFilter').closest('.filterbar').style.display=(v==='sprints'||v==='calendar'||v==='support')?'none':'';
   renderView();
 }
 function renderView(){
@@ -929,7 +958,67 @@ function renderView(){
   else if(currentView==='table') renderTable();
   else if(currentView==='sprints') renderSprints();
   else if(currentView==='calendar') renderCalendar();
+  else if(currentView==='support') renderSupport();
   else renderTimeline();
+}
+
+/* ── SUPPORT TICKETS ── */
+function fmtTicketTime(ts){
+  if(!ts) return '';
+  const d=new Date(typeof ts==='number'?ts*1000:ts);
+  const diff=Date.now()-d.getTime();
+  if(diff<60000) return 'just now';
+  if(diff<3600000) return Math.floor(diff/60000)+'m ago';
+  if(diff<86400000) return Math.floor(diff/3600000)+'h ago';
+  return Math.floor(diff/86400000)+'d ago';
+}
+function sktCardHtml(t){
+  const msgs=JSON.parse(t.messages||'[]');
+  const firstMsg=t.source_message||(msgs[0]?.text)||'';
+  const msgCount=msgs.length;
+  const canProgress=t.status==='open';
+  const canResolve=t.status==='open'||t.status==='in_progress';
+  return `<div class="skt-card">
+    <div class="skt-ref">🎫 ${esc(t.ref_number||'')}</div>
+    <div class="skt-name">${esc(t.customer_name||t.phone||'Customer')}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${esc(t.phone||'')}</div>
+    <div class="skt-msg">${esc(firstMsg)}</div>
+    <div class="skt-meta">
+      <span class="skt-time">${fmtTicketTime(t.created_at)} · ${msgCount} msg${msgCount!==1?'s':''}</span>
+      <div class="skt-actions">
+        ${canProgress?`<button class="skt-btn" onclick="updateTicketStatus(${t.id},'in_progress')">▶ Start</button>`:''}
+        ${canResolve?`<button class="skt-btn resolve" onclick="updateTicketStatus(${t.id},'resolved')">✓ Resolve</button>`:''}
+      </div>
+    </div>
+  </div>`;
+}
+async function updateTicketStatus(id, status){
+  try{
+    await pmFetch(`/support/tickets?id=${id}`,{method:'PATCH',body:JSON.stringify({status})});
+    await loadSupportTickets();
+    renderSupport();
+  }catch(e){ alert('Failed: '+(e.message||'unknown error')); }
+}
+function renderSupport(){
+  const tickets=allSupportTickets;
+  const open=tickets.filter(t=>t.status==='open');
+  const inProg=tickets.filter(t=>t.status==='in_progress');
+  const resolved=tickets.filter(t=>t.status==='resolved'||t.status==='closed');
+  $id('sktStats').innerHTML=`
+    <div class="stat"><div class="stat-val">${tickets.length}</div><div class="stat-lbl">Total tickets</div></div>
+    <div class="stat"><div class="stat-val" style="color:#D97706">${open.length}</div><div class="stat-lbl">Open</div></div>
+    <div class="stat"><div class="stat-val" style="color:var(--accent-ink)">${inProg.length}</div><div class="stat-lbl">In Progress</div></div>
+    <div class="stat"><div class="stat-val">${resolved.length}</div><div class="stat-lbl">Resolved</div></div>
+  `;
+  const col=(label, items, dotColor)=>`
+    <div class="skt-col">
+      <div class="skt-col-hd"><span style="width:9px;height:9px;border-radius:50%;background:${dotColor};display:inline-block;flex:none"></span>${label}<span class="n">${items.length}</span></div>
+      <div class="skt-col-body">${items.length?items.map(sktCardHtml).join(''):'<div class="empty-state" style="padding:24px 10px">No tickets.</div>'}</div>
+    </div>`;
+  $id('sktBoard').innerHTML=
+    col('Open', open, '#D97706')+
+    col('In Progress', inProg, '#0D9C93')+
+    col('Resolved', resolved, '#888');
 }
 
 /* ── BOARD (KANBAN) ── */
