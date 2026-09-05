@@ -71,6 +71,8 @@ app.get('/health', (_req, res) => {
     piper_voices: Object.keys(PIPER_VOICE_MAP).filter(lang => piperSupportsLanguage(lang)),
     ai4bharat_tts_active: ai4bharatLiveSemaphore.active,
     ai4bharat_tts_limit: ai4bharatLiveSemaphore.limit,
+    ai4bharat_tts_enabled: Boolean(env.AI4BHARAT_TTS_ENABLED),
+    ai4bharat_tts_timeout_ms: Math.max(5000, Number(env.AI4BHARAT_TTS_TIMEOUT_MS || 20000)),
   });
 });
 

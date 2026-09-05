@@ -113,6 +113,18 @@ describe('Fast voice-to-voice TTS',()=>{
     );
     assert.deepEqual([...new Uint8Array(audio)],[1]);
   });
+
+  test('never leaves the customer waiting indefinitely when both providers stall',async()=>{
+    const started=Date.now();
+    const audio=await engineHedgeAi4BharatTts(
+      ()=>new Promise(()=>{}),
+      ()=>new Promise(()=>{}),
+      2,
+      15
+    );
+    assert.equal(audio,null);
+    assert.ok(Date.now()-started<100);
+  });
 });
 
 describe('Live Travel ticketing in chat',()=>{
