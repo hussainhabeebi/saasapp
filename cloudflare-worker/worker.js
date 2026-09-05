@@ -13247,7 +13247,9 @@ async function engineAi4BharatTts(env, text, isoLangCode){
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
-    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
+    // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
@@ -13407,6 +13409,34 @@ async function enginePiperTts(env, text, isoLangCode){
   }
 }
 
+const ENGINE_AI4BHARAT_HEDGE_MS=1500;
+
+// AI4Bharat is preferred for clients that explicitly select it, but it is self-hosted and can
+// occasionally cold-start or wait behind another synthesis. Start Sarvam after a short hedge
+// delay and return the first *valid* audio result. A null/failed provider never wins the race.
+// Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
+export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS){
+  const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
+  const early=await Promise.race([
+    ai4bharatPromise.then(audio=>({finished:true,audio})),
+    new Promise(resolve=>setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs))
+  ]);
+  if(early.finished && early.audio) return early.audio;
+  if(early.finished) return sarvamCall();
+
+  // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
+  // and resolves with whichever provider produces usable audio first.
+  const requireAudio=promise=>promise.then(audio=>audio||Promise.reject(new Error('TTS provider returned no audio')));
+  try{
+    return await Promise.any([
+      requireAudio(ai4bharatPromise),
+      requireAudio(Promise.resolve().then(sarvamCall))
+    ]);
+  }catch(_e){
+    return null;
+  }
+}
+
 async function engineTtsWithFallback(env, text, langCode, provider){
   const iso=(langCode||'').toLowerCase();
   const bcp47=ENGINE_TTS_LANG_MAP[iso];
@@ -13414,12 +13444,10 @@ async function engineTtsWithFallback(env, text, langCode, provider){
   if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
   if(mode==='piper') return enginePiperTts(env, text, iso);
   if(mode==='ai4bharat'){
-    const ai4bharatBuf=await engineAi4BharatTts(env, text, iso);
-    if(ai4bharatBuf) return ai4bharatBuf;
-    // AI4Bharat failed (render pipeline unavailable / AI4BHARAT_TTS_ENABLED not set) — fall back
-    // to Sarvam so the customer still gets a voice reply instead of silently downgrading to text.
-    if(bcp47) return engineSarvamTts(env, text, bcp47);
-    return null;
+    return engineHedgeAi4BharatTts(
+      ()=>engineAi4BharatTts(env, text, iso),
+      ()=>bcp47?engineSarvamTts(env, text, bcp47):null
+    );
   }
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
@@ -22868,7 +22896,7 @@ async function marketingR2PresignUrl(env, method, key, expiresSec){
 // loadUsage(). Real, repeated confusion from deploy sequencing (stale local git checkout, D1
 // migrations run before pulling the migration files, Coolify restart vs rebuild) is what this is
 // for: one glance instead of re-deriving "did this actually take" from scratch each time.
-const MARKETING_BUILD_TAG='2026-07-27-autosave-fonts';
+const MARKETING_BUILD_TAG='2026-09-05-fast-voice-hedge';
 async function handleMarketingUsage(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);

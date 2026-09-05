@@ -81,7 +81,39 @@ import {
   ltLiveAgencyEnabled,
   ltParseFlightRoute,
   ltPoomasEnabledAfterSettingsSave,
+  engineHedgeAi4BharatTts,
 } from './worker.js';
+
+describe('Fast voice-to-voice TTS',()=>{
+  test('uses AI4Bharat without starting Sarvam when it finishes inside the hedge window',async()=>{
+    let sarvamCalls=0;
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>new Uint8Array([1]).buffer,
+      async()=>{ sarvamCalls++; return new Uint8Array([2]).buffer; },
+      20
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[1]);
+    assert.equal(sarvamCalls,0);
+  });
+
+  test('starts Sarvam after the hedge and returns the first valid audio',async()=>{
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>{ await new Promise(resolve=>setTimeout(resolve,40)); return new Uint8Array([1]).buffer; },
+      async()=>new Uint8Array([2]).buffer,
+      5
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[2]);
+  });
+
+  test('waits for AI4Bharat when the hedged Sarvam call fails',async()=>{
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>{ await new Promise(resolve=>setTimeout(resolve,20)); return new Uint8Array([1]).buffer; },
+      async()=>null,
+      5
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[1]);
+  });
+});
 
 describe('Live Travel ticketing in chat',()=>{
   test('recognizes a live fare request but does not hijack PNR/status questions',()=>{
