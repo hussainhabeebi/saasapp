@@ -16,6 +16,8 @@ import {
   engineQualQuestionOptions,
   engineExtractReplyOptions,
   engineHandoverCannedTexts,
+  engineHealthcareHandoverSilenceActive,
+  HEALTHCARE_HANDOVER_SILENCE_MS,
   engineRouteFlow,
   engineFindHallucinatedLink,
   engineSendChatwootReply,
@@ -905,5 +907,44 @@ describe('Fashion ecommerce verified order flow', () => {
 
   test('confirmed order item text contains only selected product variants', () => {
     assert.equal(ecomFashionOrderItems({productName:'Linen Shirt',size:'M',color:'Blue'}),'Linen Shirt | Size: M | Color: Blue');
+  });
+});
+
+
+describe('Healthcare human handover silence and natural communication', () => {
+  const at='2026-09-05T08:00:00.000Z';
+  const start=Date.parse(at);
+
+  test('silences repeat taps and patient messages for exactly five hours', () => {
+    const c={industry:'healthcare'};
+    const state={stage:'human_handover',lead:{Handover:'Yes',HandoverAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start),true);
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start+HEALTHCARE_HANDOVER_SILENCE_MS-1),true);
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start+HEALTHCARE_HANDOVER_SILENCE_MS),false);
+  });
+
+  test('uses LastMsgAt for older handed-over records without HandoverAt', () => {
+    const state={stage:'human_handover',lead:{Handover:'Yes',LastMsgAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive({industry:'healthcare'},state,start+60_000),true);
+  });
+
+  test('does not apply the five-hour healthcare rule to other industries', () => {
+    const state={stage:'human_handover',lead:{Handover:'Yes',HandoverAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive({industry:'education'},state,start),false);
+  });
+
+  test('healthcare prompt prevents repeated, robotic conversation patterns', () => {
+    const sys=engineBuildFaqSystemPrompt({main_prompt:'',services:'[]',kb_summary:''},{activeHistory:[]},null,'healthcare','en',false);
+    assert.match(sys,/calm, attentive clinic receptionist/i);
+    assert.match(sys,/never repeat information or a question already answered/i);
+    assert.match(sys,/ask only one necessary question at a time/i);
+    assert.match(sys,/Once human handover is requested, do not add more questions or buttons/i);
+  });
+
+  test('healthcare resumes normal routing after the timed hard stop instead of permanent drop', () => {
+    const c={industry:'healthcare',handover_silence_enabled:'Yes',bot_config:'{}',qual_questions:'[]',flow_json:'{}'};
+    const state={stage:'human_handover',qualAnswers:{},leadOptOut:'No',looping:false,botMsgs:[]};
+    const cls={intent:'QUESTION',sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:'en',nextStage:null,confidence:1,productInterest:'',productCategory:''};
+    assert.equal(engineRouteFlow(c,state,'What time do you open?',cls).route,'faq');
   });
 });

@@ -11450,6 +11450,7 @@ export function engineHandoverCannedTexts(botConfig){
   return new Set([
     'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.',
     'Sure — connecting you to our team now. Someone will reply here shortly.',
+    'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.',
     botConfig.callback_msg,
     botConfig.callback_msg_frustrated,
     botConfig.callback_msg_lowconf,
@@ -11551,7 +11552,7 @@ export function engineRouteFlow(c, state, userText, cls){
   // routing is computed at all in the default (silence-off) case; when that hard-stop IS skipped
   // (handover_silence_enabled='No'), without this exception every such reply would still get
   // forced to 'drop' right here regardless.
-  else if(state.stage==='human_handover' && c.handover_silence_enabled==='Yes') route='drop';
+  else if(state.stage==='human_handover' && c.industry!=='healthcare' && c.handover_silence_enabled==='Yes') route='drop';
   // A QUESTION (or NEGATIVE) always gets a clean FAQ answer before qualification even gets a
   // chance to run — matches the original precedence (a customer asking something mid-qualification
   // still gets answered, not another qualifying question).
@@ -12173,6 +12174,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
+    sys+='\n\nHEALTHCARE CONVERSATION STYLE — sound like a calm, attentive clinic receptionist: answer the patient’s latest question first; acknowledge relevant details already shared; never restart with another greeting during an active conversation; never repeat information or a question already answered in the recent conversation; interpret short replies such as “yes”, “okay”, dates, and times using the immediately previous question; ask only one necessary question at a time; do not repeat the patient’s full sentence; use the patient’s name occasionally, never in every reply; keep the response concise and natural; before answering, compare the draft with the last two assistant messages and rewrite it if it repeats the same wording or meaning. Once human handover is requested, do not add more questions or buttons.';
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
   }
   if(industry==='ecommerce'){
@@ -13823,6 +13825,16 @@ async function engineSendHandoverLabel(c, convId){
   }catch(e){}
 }
 
+export const HEALTHCARE_HANDOVER_SILENCE_MS=5*60*60*1000;
+export function engineHealthcareHandoverSilenceActive(c, state, nowMs=Date.now()){
+  if(String(c?.industry||'').toLowerCase()!=='healthcare' || !state?.lead) return false;
+  if(state.lead.Handover!=='Yes' && state.stage!=='human_handover') return false;
+  const handoverMs=Date.parse(state.lead.HandoverAt||state.lead.LastMsgAt||'');
+  if(!Number.isFinite(handoverMs)) return false;
+  const age=Number(nowMs)-handoverMs;
+  return age>=0 && age<HEALTHCARE_HANDOVER_SILENCE_MS;
+}
+
 // Deterministic phone→country lookup (E.164 calling codes) — no external API, no cost, always
 // on. Sorted longest-code-first so e.g. '971' (UAE) matches before a shorter code some other
 // country shares as a prefix. NANP ('1') covers US/Canada/most Caribbean nations under one
@@ -14312,15 +14324,17 @@ async function handleEngineWebhook(request, env, secret){
     const messageId=String(body.id||body.message?.id||'');
     if(messageId && state.lead?.LastProcessedMessageId===messageId){ await logEngineSkip(env, clientId, phone, convId, 'duplicate-delivery', `message ${messageId}`); return json({ok:true, skipped:'duplicate-delivery'}); }
 
-    // engine.json's own Code·State hard-stop ("the bot stops writing to the lead entirely once
-    // handed over ... so it can never talk over a live agent") is now opt-in, not the default — set
-    // CLIENTS.handover_silence_enabled='Yes' (Settings → Human Handover, off by default) for a
-    // client who wants that. Left off, the bot keeps replying (ordinary FAQ-style, via
-    // engineRouteFlow's own matching exception — its human_handover→'drop' branch needs the same
-    // gate, since this check alone isn't enough) even after handover; the lead still shows
-    // Handover='Yes'/Stage='human_handover' in the CRM either way — only whether the bot keeps
-    // replying changes.
-    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.handover_silence_enabled==='Yes'){ await logEngineSkip(env, clientId, phone, convId, 'handed-over', `stage ${state.stage||''}`); return json({ok:true, skipped:'handed-over'}); }
+    // Healthcare always pauses the bot for five hours after human handover. Repeat button taps
+    // and new patient messages stay silent in that window so the AI never talks over clinic staff.
+    // Other industries retain the existing per-client indefinite-silence setting.
+    const healthcareHandoverSilence=engineHealthcareHandoverSilenceActive(c,state,startMs);
+    const configuredHandoverSilence=c.industry!=='healthcare' && state.lead &&
+      (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
+      c.handover_silence_enabled==='Yes';
+    if(healthcareHandoverSilence||configuredHandoverSilence){
+      await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
+      return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
+    }
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
 
     const botConfig=engineParseJsonField(c.bot_config, {});
@@ -15212,7 +15226,10 @@ async function handleEngineWebhook(request, env, secret){
       // decision is left untouched so the flow/qualification funnel resumes from wherever it was
       // on the next turn; only the reply actually sent to the customer this turn changes.
     } else if(routing.route==='human'){
-      sentText=await engineLocalizeReply(env, c, routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', replyLang);
+      const handoverFallback=c.industry==='healthcare'
+        ? 'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.'
+        : 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      sentText=await engineLocalizeReply(env, c, routing.reply || handoverFallback, replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
       await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
       await engineSendHandoverLabel(c, convId);
