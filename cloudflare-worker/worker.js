@@ -10812,6 +10812,23 @@ function engineGeminiGenerationConfig(model, opts){
   return cfg;
 }
 
+// Cloudflare Workers AI — lightweight inference for structured/short-output tasks (classify,
+// extract-options, fp-snapshot, fp-forecast). Falls back gracefully when env.AI is absent so a
+// deployment without the [ai] binding still works (it just routes to Gemini instead).
+async function engineCfAiGenerate(env, systemText, userText, opts={}){
+  if(!env.AI) return null;
+  try{
+    const result=await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages:[{role:'system', content:systemText}, {role:'user', content:userText}],
+      max_tokens:opts.maxOutputTokens||300,
+      temperature:opts.temperature??0.3
+    });
+    const text=result?.response||result?.choices?.[0]?.message?.content||null;
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'cf-ai', model:'llama-3.1-8b-instruct', ts:new Date().toISOString()}));
+    return text?String(text).trim():null;
+  }catch(e){ return null; }
+}
+
 async function engineGeminiGenerate(env, systemText, userText, opts={}){
   if(!env.GEMINI_API_KEY) return null;
   try{
@@ -11365,12 +11382,13 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'});
-    if(geminiRaw){
-      try{ aiResult=JSON.parse(geminiRaw); }
-      catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini returned unparseable JSON', e, {geminiRaw:geminiRaw.slice(0,500)}); }
+    const raw=await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'})
+      || await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'});
+    if(raw){
+      try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
+      catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
     }
-  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini request threw', e); }
+  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier request threw', e); }
 
   if(!aiResult && c.openrouter_key){
     try{
@@ -12821,9 +12839,8 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {
-      temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'
-    }))||'';
+    const raw=(await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'})
+      || await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'}))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
@@ -20310,7 +20327,8 @@ async function handleFpAiAsk(request, env){
 async function fpAiGenerateSnapshotNarrative(env, clientId){
   const data=await fpAiComputeSnapshotData(env, clientId);
   const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'});
+  const text=await engineCfAiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'})
+    || await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'});
   return {text, data};
 }
 async function fpAiGetOrRefreshSnapshot(env, clientId, force){
@@ -20387,7 +20405,8 @@ async function handleFpAiForecast(request, env){
   }
   if(!env.GEMINI_API_KEY) return json({forecast:row?.ai_forecast_text||null, data, error:'AI features are not configured for this deployment yet.'});
   const system=`You are a friendly bookkeeping assistant writing a short cash-flow outlook for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, jargon-free (say "money still to come in" not "receivables", "bills still to pay" not "payables"), 2-4 short sentences, mention the money expected in before month end, what's still due to go out for fixed costs, and the rough net position that leaves. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const forecast=await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'});
+  const forecast=await engineCfAiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'})
+    || await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'});
   if(forecast){
     const now=new Date().toISOString();
     await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_forecast_text, ai_forecast_period, updated_at) VALUES (?,1,1,?,?,?)
