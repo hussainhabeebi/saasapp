@@ -13410,12 +13410,13 @@ async function enginePiperTts(env, text, isoLangCode){
 }
 
 const ENGINE_AI4BHARAT_HEDGE_MS=1500;
+const ENGINE_LIVE_TTS_DEADLINE_MS=8000;
 
 // AI4Bharat is preferred for clients that explicitly select it, but it is self-hosted and can
 // occasionally cold-start or wait behind another synthesis. Start Sarvam after a short hedge
 // delay and return the first *valid* audio result. A null/failed provider never wins the race.
 // Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
-export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS){
+export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
   const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
   const early=await Promise.race([
     ai4bharatPromise.then(audio=>({finished:true,audio})),
@@ -13427,13 +13428,20 @@ export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs
   // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
   // and resolves with whichever provider produces usable audio first.
   const requireAudio=promise=>promise.then(audio=>audio||Promise.reject(new Error('TTS provider returned no audio')));
+  let deadlineTimer;
   try{
-    return await Promise.any([
+    const firstValid=Promise.any([
       requireAudio(ai4bharatPromise),
       requireAudio(Promise.resolve().then(sarvamCall))
     ]);
+    return await Promise.race([
+      firstValid,
+      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), deadlineMs); })
+    ]);
   }catch(_e){
     return null;
+  }finally{
+    clearTimeout(deadlineTimer);
   }
 }
 
@@ -27533,7 +27541,16 @@ export default {
     try{
       if(url.pathname.startsWith('/healthcare/')||url.pathname.startsWith('/hc/book')) await hcEnsureOperationsSchema(env);
       if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
-      if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
+      if(url.pathname==='/health'){ res=json({
+        ok:true,
+        marketing_build:MARKETING_BUILD_TAG,
+        voice:{
+          sarvam_configured:!!env.SARVAM_API_KEY,
+          ai4bharat_render_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
+          hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
+          deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS
+        }
+      }); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
