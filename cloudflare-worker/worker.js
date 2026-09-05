@@ -10815,6 +10815,7 @@ async function engineGeminiGenerate(env, systemText, userText, opts={}){
     const data=await r.json().catch(()=>({}));
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const outText=parts.map(p=>p.text||'').join('').trim();
+    if(outText) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'unknown', model, ts:new Date().toISOString()}));
     return outText||null;
   }catch(e){ return null; }
 }
@@ -10928,6 +10929,7 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, 
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
     if(!text) await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript in response', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:'transcribe', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()}));
     return text||null;
   }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
@@ -11350,7 +11352,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true});
+    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'});
     if(geminiRaw){
       try{ aiResult=JSON.parse(geminiRaw); }
       catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini returned unparseable JSON', e, {geminiRaw:geminiRaw.slice(0,500)}); }
@@ -12466,7 +12468,7 @@ function engineStripHallucinatedToolCode(text){
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
-  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL}));
+  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
   if(geminiReply) return geminiReply;
   // OpenRouter is optional legacy fallback only; never request it with an absent key.
   if(!c?.openrouter_key){
@@ -12578,7 +12580,9 @@ async function engineEmbedText(env, text){
       body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
     });
     const data=await r.json().catch(()=>({}));
-    return Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+    const values=Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+    if(values) console.log('[gemini-call]', JSON.stringify({caller:'embed', model:'text-embedding-004', ts:new Date().toISOString()}));
+    return values;
   }catch(e){ return null; }
 }
 
@@ -12790,7 +12794,7 @@ async function engineLocalizeReply(env, c, text, targetLang){
   if(!trimmed || !targetLang || targetLang==='en') return text;
   const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400});
+    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
     if(geminiRaw) return geminiRaw;
   }catch(e){}
   if(c.openrouter_key){
@@ -12909,7 +12913,7 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
     const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {
-      temperature:0.1, maxOutputTokens:150, json:true
+      temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'
     }))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
@@ -13734,7 +13738,7 @@ async function handleNativeFormEndpoint(request, env){
 // text caption by engineExtractLinkPriceCaption instead.
 async function engineBuildSpokenReply(env, c, replyText, langCode){
   const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
-  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120});
+  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120, caller:'build-spoken'});
   if(spoken) return spoken;
   // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
   // and cap length, rather than failing the voice reply outright.
@@ -20282,7 +20286,7 @@ async function handleFpAiAsk(request, env){
 async function fpAiGenerateSnapshotNarrative(env, clientId){
   const data=await fpAiComputeSnapshotData(env, clientId);
   const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220});
+  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'});
   return {text, data};
 }
 async function fpAiGetOrRefreshSnapshot(env, clientId, force){
@@ -20371,7 +20375,7 @@ async function fpAiDraftReminder(env, due){
   const overdueDays=Math.max(0, Math.floor((Date.now()-new Date(due.due_date).getTime())/86400000));
   const system=`Write one short, warm WhatsApp message to a customer reminding them a payment is due. Not robotic or threatening — this is a small business owner following up personally. Use the customer's name naturally. 1-3 sentences, end with a light thank-you. No subject line, no signature block, plain message text only.`;
   const userPrompt=`Customer: ${due.customer_name||'the customer'}\nAmount due: ${due.currency} ${balance.toFixed(2)}\nBilling period: ${due.period_key}\nDays overdue: ${overdueDays>0?overdueDays:'not yet overdue, due soon'}`;
-  const drafted=await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150});
+  const drafted=await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'});
   return drafted||fallback;
 }
 async function handleFpAiDraftReminder(request, env){
@@ -28143,7 +28147,7 @@ export default {
       ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
-      ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env)); ctx.waitUntil(runFinancialPlanningRemindersForAllClients(env));
+      ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env));
       // SaaS Ops — health score recompute, renewal/activation reminders, support-signal pull; all
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
