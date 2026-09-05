@@ -14303,25 +14303,21 @@ async function supportTicketAppendMessage(env, ticketId, leadId, clientId, messa
 
 async function sendSupportTicketResolvedTemplate(env, c, ticket){
   const templateName=c.support_resolved_template_name||'ticket_resolved';
-  const langCode=c.support_resolved_template_lang||'en_US';
-  if(!c.wa_phone_id||!c.wa_token) return;
-  await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`,{
+  const langCode=c.support_resolved_template_lang||'en';
+  const convId=ticket.conv_id;
+  if(!convId||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{
     method:'POST',
-    headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},
+    headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},
     body:JSON.stringify({
-      messaging_product:'whatsapp',
-      to:ticket.phone,
-      type:'template',
-      template:{
+      content:templateName,
+      message_type:'outgoing',
+      private:false,
+      template_params:{
         name:templateName,
-        language:{code:langCode},
-        components:[{
-          type:'body',
-          parameters:[
-            {type:'text', text:ticket.customer_name||'there'},
-            {type:'text', text:ticket.ref_number}
-          ]
-        }]
+        category:'UTILITY',
+        language:langCode,
+        processed_params:{1:ticket.customer_name||'Customer',2:ticket.ref_number||''}
       }
     })
   });
