@@ -82,9 +82,19 @@ import {
   ltParseFlightRoute,
   ltPoomasEnabledAfterSettingsSave,
   engineHedgeAi4BharatTts,
+  engineResolveSarvamApiKey,
+  engineWithDeadline,
 } from './worker.js';
 
 describe('Fast voice-to-voice TTS',()=>{
+  test('prefers a client Sarvam key and otherwise uses the Worker key',()=>{
+    assert.equal(engineResolveSarvamApiKey({SARVAM_API_KEY:'worker-key'},{sarvam_api_key:'client-key'}),'client-key');
+    assert.equal(engineResolveSarvamApiKey({SARVAM_API_KEY:'worker-key'},{}),'worker-key');
+  });
+
+  test('enforces a total voice deadline without leaving a live timer behind',async()=>{
+    assert.equal(await engineWithDeadline(new Promise(()=>{}),10),null);
+  });
   test('uses AI4Bharat without starting Sarvam when it finishes inside the hedge window',async()=>{
     let sarvamCalls=0;
     const audio=await engineHedgeAi4BharatTts(
@@ -249,10 +259,12 @@ describe('per-channel Meta credential resolution',()=>{
   });
 
   test('safe client payload never exposes global or per-channel tokens',()=>{
-    const safe=safeClient({...stored,wa_token:'legacy-secret',client_name:'Example'});
+    const safe=safeClient({...stored,wa_token:'legacy-secret',sarvam_api_key:'sarvam-secret',client_name:'Example'});
     assert.equal(safe.meta_channel_credentials,undefined);
     assert.equal(safe.wa_token,undefined);
     assert.equal(safe.wa_token_connected,true);
+    assert.equal(safe.sarvam_api_key,undefined);
+    assert.equal(safe.sarvam_api_key_configured,true);
   });
 });
 

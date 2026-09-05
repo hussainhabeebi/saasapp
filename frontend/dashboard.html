@@ -2962,49 +2962,20 @@ const ROLES = {
         </div>
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
 
-        <!-- Voice-to-Voice Reply — controlled ONLY by this toggle, no billing add-on required or
-             checked anywhere in the reply path (engineDeliverReply, worker.js). Moved here from
-             Integrations. -->
+        <!-- Voice-to-voice is automatic for inbound voice notes. Sarvam is the only live provider;
+             this card stores an optional per-client key without ever reading it back into the
+             browser. A blank client key uses the Worker-level SARVAM_API_KEY. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🎙️ Voice-to-Voice Reply</div>
-            <div class="s-note">When a customer sends a voice note, the bot can reply with a voice note back instead of text — same language as the customer, spoken naturally, with any link or price sent as a short text note alongside it instead of being read aloud.</div>
-            <div id="intVoiceAddonNote" class="s-note" style="margin-bottom:12px"></div>
-            <label class="tgl-wrap" id="intVoiceToggleWrap">
-              <input type="checkbox" id="cfgVoiceReplyEnabled" onchange="saveVoiceReplyToggle()">
-              <span class="tgl-track"></span>
-              <span class="tgl-label" id="intVoiceToggleLabel">Off — always reply with text</span>
-            </label>
-            <span class="save-msg" id="saveVoiceReplyEnabledMsg"></span>
-          </div>
-        </div>
-
-        <!-- TTS provider override — lets you force which text-to-speech engine voice-to-voice
-             replies AND voice follow-ups use (CLIENTS.voice_tts_provider, read by worker.js's
-             engineTtsWithFallback and backend/recovery.js's ttsWithFallback). Auto (blank, default)
-             is unchanged production behavior: Sarvam AI primary, self-hosted AI4Bharat standby on
-             any Sarvam failure. "AI4Bharat only" tests the self-hosted standby directly against
-             real conversations without touching Sarvam for anyone else. "Gemini Live" and "Piper"
-             are separate, fully optional providers (never an automatic fallback for anyone else)
-             — see engineGeminiLiveTts/enginePiperTts in worker.js. Piper is free and fully local
-             (no API key, no per-request cost) but only has an English voice configured by default
-             — see render-pipeline/lib/piperTts.js to add more languages. Test with real traffic
-             before relying on either. -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🔧 TTS Provider (testing)</div>
-            <div class="s-note">Which text-to-speech engine voice-to-voice replies and voice follow-ups use for this client. Leave on Auto for normal operation. "Gemini Live" and "Piper" are optional alternative voice engines — enable one here to try it for this client only. Piper is free and local but English-only by default.</div>
+            <div class="s-head">🎙️ Voice-to-Voice Replies</div>
+            <div class="s-note">Automatic for incoming voice notes: cached audio first, then Sarvam. If voice is unavailable after 10 seconds, the customer receives the text answer. Add a client Sarvam API key below, or leave it empty to use Leadvyne's platform key.</div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <select class="form-input" id="cfgVoiceTtsProvider" style="max-width:300px">
-                <option value="">Auto — Sarvam, AI4Bharat standby</option>
-                <option value="sarvam">Sarvam only (no standby)</option>
-                <option value="ai4bharat">AI4Bharat only (force, for testing)</option>
-                <option value="gemini_live">Gemini Live (optional, beta)</option>
-                <option value="piper">Piper (free, local, English-only, beta)</option>
-              </select>
-              <button class="save-btn" onclick="saveVoiceTtsProvider()">Save</button>
-              <span class="save-msg" id="saveVoiceTtsProviderMsg"></span>
+              <input class="form-input" id="cfgSarvamApiKey" type="password" autocomplete="new-password" placeholder="Enter client Sarvam API key" style="max-width:360px">
+              <button class="save-btn" onclick="saveSarvamApiKey()">Save key</button>
+              <button class="save-btn" onclick="clearSarvamApiKey()">Use platform key</button>
+              <span class="save-msg" id="saveSarvamApiKeyMsg"></span>
             </div>
+            <div class="s-note" id="sarvamApiKeyStatus" style="margin-top:10px">Checking configuration…</div>
           </div>
         </div>
 
@@ -11470,8 +11441,7 @@ function integrationsInit(){
 
 // pageVoice — Voice-to-Voice Reply (moved from Integrations) + Voice Follow-ups.
 function voiceInit(){
-  renderVoiceAddonCard();
-  renderVoiceTtsProviderCard();
+  loadVoiceSettings();
   renderVoiceFollowupCard();
   renderPipelineFollowupCard();
 }
@@ -11693,61 +11663,38 @@ async function logsInit(){
   }).join('')}</div>`;
 }
 
-// Voice-to-Voice Reply toggle. Deliberately the ONLY gate on this feature — not tied to
-// voice_addon_active/billing in any way, so a client controls it purely by flipping this switch.
-function renderVoiceAddonCard(){
-  const input=$id('cfgVoiceReplyEnabled');
-  if(!input) return;
-  const enabled=clientRecord?.voice_reply_enabled==='Yes';
-  input.checked=enabled;
-  $id('intVoiceToggleLabel').textContent=enabled?'On — reply with voice':'Off — always reply with text';
-  $id('intVoiceAddonNote').textContent='Flip the toggle below to start or stop voice replies — no billing add-on required.';
-}
-
-async function saveVoiceReplyToggle(){
-  const input=$id('cfgVoiceReplyEnabled'),msg=$id('saveVoiceReplyEnabledMsg'),label=$id('intVoiceToggleLabel');
-  const value=input.checked?'Yes':'No';
-  label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
-  msg.textContent='';msg.className='save-msg';
-  input.disabled=true;
+async function loadVoiceSettings(){
+  const status=$id('sarvamApiKeyStatus');
   try{
-    await patchClient({voice_reply_enabled:value});
-    clientRecord.voice_reply_enabled=value;
-    msg.textContent='✓ Saved';
-  }catch(e){
-    input.checked=!input.checked;
-    label.textContent=input.checked?'On — reply with voice':'Off — always reply with text';
-    msg.textContent='Error: '+e.message;msg.className='save-msg err';
-  }finally{
-    input.disabled=false;
-    setTimeout(()=>msg.textContent='',3000);
-  }
+    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{headers:ncAuthHeaders()});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'Could not load voice settings');
+    status.textContent=data.client_key_configured?'Client Sarvam key configured.':(data.worker_fallback_available?'Using Leadvyne platform Sarvam key.':'No Sarvam key configured — voice will fall back to text.');
+  }catch(e){ status.textContent='Could not check Sarvam configuration: '+e.message; }
 }
 
-// TTS provider override — reads/writes CLIENTS.voice_tts_provider (blank='', 'sarvam', or
-// 'ai4bharat'). Purely a testing/debug knob — see the card's own HTML comment for why this exists.
-function renderVoiceTtsProviderCard(){
-  const input=$id('cfgVoiceTtsProvider');
-  if(!input) return;
-  input.value=clientRecord?.voice_tts_provider||'';
-}
-
-async function saveVoiceTtsProvider(){
-  const input=$id('cfgVoiceTtsProvider'),msg=$id('saveVoiceTtsProviderMsg');
-  const value=input.value,prev=clientRecord?.voice_tts_provider||'';
-  msg.textContent='';msg.className='save-msg';
-  input.disabled=true;
+async function saveSarvamApiKey(){
+  const input=$id('cfgSarvamApiKey'),msg=$id('saveSarvamApiKeyMsg');
+  const apiKey=input.value.trim();
+  if(!apiKey){ msg.textContent='Enter a key, or choose Use platform key.';msg.className='save-msg err';return; }
+  input.disabled=true;msg.textContent='Saving…';msg.className='save-msg';
   try{
-    await patchClient({voice_tts_provider:value});
-    clientRecord.voice_tts_provider=value;
-    msg.textContent='✓ Saved';
-  }catch(e){
-    input.value=prev;
-    msg.textContent='Error: '+e.message;msg.className='save-msg err';
-  }finally{
-    input.disabled=false;
-    setTimeout(()=>msg.textContent='',3000);
-  }
+    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({api_key:apiKey})});
+    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Save failed');
+    input.value='';msg.textContent='✓ Client key saved';await loadVoiceSettings();
+  }catch(e){ msg.textContent='Error: '+e.message;msg.className='save-msg err'; }
+  finally{ input.disabled=false;setTimeout(()=>msg.textContent='',4000); }
+}
+
+async function clearSarvamApiKey(){
+  const input=$id('cfgSarvamApiKey'),msg=$id('saveSarvamApiKeyMsg');
+  input.disabled=true;msg.textContent='Saving…';msg.className='save-msg';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({api_key:''})});
+    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Save failed');
+    input.value='';msg.textContent='✓ Platform key selected';await loadVoiceSettings();
+  }catch(e){ msg.textContent='Error: '+e.message;msg.className='save-msg err'; }
+  finally{ input.disabled=false;setTimeout(()=>msg.textContent='',4000); }
 }
 
 // Voice Follow-ups toggle — independent of Voice-to-Voice Reply above, same pattern. Read by
