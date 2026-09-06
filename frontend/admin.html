@@ -407,7 +407,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
           <option value="basic">Basic — 1 user, 1 channel</option>
           <option value="standard">Standard — 3 users, 2 channels</option>
           <option value="business_intelligence">Business Intelligence — 8 users, 5 channels</option>
-          <option value="marketing_pro">Marketing Pro — 15 users, 10 channels</option>
+          <option value="marketing_pro">Enterprise — 15 users, 10 channels</option>
         </select>
         <div class="field-note">Moving a client off "Legacy" applies real limits immediately — only do this for a client who's actually on a paid tier. This field can't be changed by the client themselves.</div>
       </div>
@@ -479,7 +479,7 @@ const CONFIG = {
 // grandfathered) both here and in getPlanLimits.
 const PLAN_TIER_LABELS = {
   basic: 'Basic', standard: 'Standard',
-  business_intelligence: 'Business Intelligence', marketing_pro: 'Marketing Pro',
+  business_intelligence: 'Business Intelligence', marketing_pro: 'Enterprise',
 };
 
 let adminSessionToken = sessionStorage.getItem('lv_admin_session') || '';

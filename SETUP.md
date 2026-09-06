@@ -4189,7 +4189,7 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   `engineTtsWithFallback(env, text, langCode)` helper instead of `engineSarvamTts` directly: it
   tries Sarvam first, and only when that returns `null` (missing key, unsupported language,
   transient failure) does it try `engineAi4BharatTts` — a self-hosted AI4Bharat Indic Parler-TTS
-  model running on the Marketing Studio render pipeline (`render-pipeline/lib/ai4bharatTts.js`,
+  model running on the dedicated Coolify voice service (`render-pipeline/lib/ai4bharatTts.js`,
   `POST /synthesize-voice-reply`, gated behind that service's own `AI4BHARAT_TTS_ENABLED`). Reuses
   the render pipeline's existing `MARKETING_RENDER_WEBHOOK_URL`/`_SECRET` Worker secrets — no new
   secret to configure on the Worker. Same scope as this app's other AI4Bharat integration (the 10
@@ -5633,7 +5633,12 @@ grouping Leads by phone (what the base Churn & LTV view does) misses real repeat
 entirely for ecommerce clients. Rendered as a supplementary card beneath the main Churn & LTV table
 — genuine order-based LTV, not a proxy.
 
-## Marketing Studio module (`frontend/marketing-studio.html`, `feat_marketing_studio_enabled`)
+## Marketing Studio module — removed (historical reference)
+
+Marketing Studio was retired on 2026-09-06. Its frontend and public product controls were removed,
+all `/marketing/*` Worker routes return HTTP 410, and `render-pipeline/` is now a voice-only
+Coolify service for AI4Bharat/Piper/PCM conversion. The detailed notes below are retained only to
+explain existing D1 migration history; they do not describe an available product feature.
 A standalone short-form video repurposing tool — upload a long video, auto-transcribe it, edit
 captions, pick a caption style, render a vertical/square/landscape clip, send it out. Deliberately
 a **different kind of "marketing" module** from Campaigns/Email Marketing (`broadcast.html`/
