@@ -172,6 +172,7 @@ async function checkRateLimit(env, bucket, ip, limit, windowSec){
 async function cleanupRateLimitCounters(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
+  try{ await env.DB.prepare(`DELETE FROM voice_sarvam_daily_usage WHERE usage_date < date('now','-30 days')`).run(); }catch(e){}
 }
 
 /* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
@@ -13148,10 +13149,50 @@ async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', reque
 }
 
 const ENGINE_VOICE_REPLY_DEADLINE_MS=10000;
-const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v1';
+const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
+const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
+const ENGINE_AI4BHARAT_HEDGE_MS=1500;
+const ENGINE_LIVE_TTS_DEADLINE_MS=6500;
+const ENGINE_SARVAM_DAILY_FALLBACK_LIMIT=25;
 
 export function engineResolveSarvamApiKey(env, c){
   return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
+}
+
+export function engineResolveSarvamCredential(env, c){
+  const clientKey=String(c?.sarvam_api_key||'').trim();
+  if(clientKey) return {apiKey:clientKey, source:'client'};
+  const workerKey=String(env?.SARVAM_API_KEY||'').trim();
+  return workerKey?{apiKey:workerKey, source:'worker'}:null;
+}
+
+function engineSarvamDailyFallbackLimit(env){
+  const configured=Number(env?.SARVAM_DAILY_FALLBACK_LIMIT);
+  return Number.isFinite(configured)?Math.max(0,Math.floor(configured)):ENGINE_SARVAM_DAILY_FALLBACK_LIMIT;
+}
+
+// Client-owned Sarvam keys are never charged to LeadVyne's allowance. The shared Worker key is
+// protected by an atomic D1 daily counter; if D1/migration is unavailable, fail closed to the text
+// reply instead of accidentally creating unbounded paid usage.
+async function engineClaimSarvamCredential(env, c, clientId){
+  const credential=engineResolveSarvamCredential(env,c);
+  if(!credential || credential.source==='client') return credential;
+  const limit=engineSarvamDailyFallbackLimit(env);
+  if(!env.DB || limit<=0) return null;
+  const usageDate=new Date().toISOString().slice(0,10);
+  try{
+    await env.DB.prepare(`INSERT OR IGNORE INTO voice_sarvam_daily_usage
+      (client_id,usage_date,usage_count,updated_at) VALUES (?,?,0,CURRENT_TIMESTAMP)`)
+      .bind(String(clientId),usageDate).run();
+    const claimed=await env.DB.prepare(`UPDATE voice_sarvam_daily_usage
+      SET usage_count=usage_count+1,updated_at=CURRENT_TIMESTAMP
+      WHERE client_id=? AND usage_date=? AND usage_count<? RETURNING usage_count`)
+      .bind(String(clientId),usageDate,limit).first();
+    return claimed?credential:null;
+  }catch(e){
+    await reportOpsError(env,'engineClaimSarvamCredential — Worker fallback quota unavailable',e,{clientId});
+    return null;
+  }
 }
 
 export async function engineWithDeadline(promise, deadlineMs){
@@ -13182,29 +13223,54 @@ async function engineVoiceCacheGet(env, key){
   }catch(_e){ return null; }
 }
 
-async function engineVoiceCachePut(env, key, audioBuf){
+async function engineVoiceCachePut(env, key, audioBuf, provider){
   if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
   try{
-    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:'sarvam'}});
+    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:String(provider||'unknown')}});
   }catch(_e){}
 }
 
-// Voice-to-voice only: exact generated spoken text is safe to reuse, so check R2 first. On a miss,
-// Sarvam is the sole live provider. The caller races this entire operation against ten seconds and
-// sends the already-generated text if voice is unavailable or late.
-async function engineCachedOrSarvamVoice(env, c, clientId, replyText, langCode){
+// Free Piper gets a short first attempt. If it is unavailable/unsupported, warm AI4Bharat starts;
+// Sarvam is hedged 1.5s later and only runs when a client key or a Worker quota slot is available.
+// Kept as an injectable coordinator so ordering and deadlines are covered without live APIs.
+export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sarvamCall, piperDeadlineMs=ENGINE_PIPER_TTS_DEADLINE_MS){
+  const safeCall=call=>Promise.resolve().then(call).catch(()=>null);
+  const piper=await engineWithDeadline(safeCall(piperCall),piperDeadlineMs);
+  if(piper) return {audio:piper,provider:'piper'};
+  const live=await engineHedgeAi4BharatTts(
+    ()=>safeCall(ai4bharatCall).then(audio=>audio?{audio,provider:'ai4bharat'}:null),
+    ()=>safeCall(sarvamCall).then(audio=>audio?{audio,provider:'sarvam'}:null),
+    ENGINE_AI4BHARAT_HEDGE_MS,
+    ENGINE_LIVE_TTS_DEADLINE_MS
+  );
+  return live||{audio:null,provider:'text'};
+}
+
+// Voice-to-voice only: exact final replies are safe to reuse. Text-message delivery and scheduled
+// follow-ups do not call this function and therefore retain their existing behaviour.
+async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
-  // call and Sarvam. The speaker/version remain in the key, making future voice changes safe.
+  // call and every TTS provider. The cache prefix changes when the provider/voice ladder changes.
   const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
   const cached=await engineVoiceCacheGet(env, cacheKey);
   if(cached) return cached;
   const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
   if(!spokenText) return null;
-  const audio=await engineSarvamTts(env, spokenText, ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()], engineResolveSarvamApiKey(env,c), 9000);
+  const iso=(langCode||'').toLowerCase();
+  const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  const result=await engineRunLiveVoiceTtsRotation(
+    ()=>enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS),
+    ()=>engineAi4BharatTts(env,spokenText,iso,ENGINE_LIVE_TTS_DEADLINE_MS),
+    async()=>{
+      if(!bcp47) return null;
+      const credential=await engineClaimSarvamCredential(env,c,clientId);
+      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,4500):null;
+    }
+  );
   // Cache writes must never delay the first live send. R2 is best-effort here; the generated
   // audio remains immediately usable even if this background write is interrupted or fails.
-  if(audio) void engineVoiceCachePut(env, cacheKey, audio);
-  return audio;
+  if(result.audio) void engineVoiceCachePut(env,cacheKey,result.audio,result.provider);
+  return result.audio;
 }
 
 async function handleVoiceSettingsGet(request, env){
@@ -13249,17 +13315,19 @@ const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te',
 // managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
 // whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
 // instead of instantly falling back to text", not tuned for low latency.
-async function engineAi4BharatTts(env, text, isoLangCode){
+async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
   if(!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
     // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
     // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
-    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
@@ -13277,6 +13345,8 @@ async function engineAi4BharatTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'engineAi4BharatTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
 }
 
@@ -13394,14 +13464,16 @@ async function engineGeminiLiveTts(env, text, isoLangCode){
 // it for an Indic-language customer would silently downgrade them to an English-accented voice.
 // Same voice service as engineAi4BharatTts/engineGeminiLiveTts
 // (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
-async function enginePiperTts(env, text, isoLangCode){
+async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
-    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 400 here just means no Piper voice is configured for this language — expected/
@@ -13416,24 +13488,30 @@ async function enginePiperTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
 }
 
-const ENGINE_AI4BHARAT_HEDGE_MS=1500;
-const ENGINE_LIVE_TTS_DEADLINE_MS=8000;
-
-// AI4Bharat is preferred for clients that explicitly select it, but it is self-hosted and can
-// occasionally cold-start or wait behind another synthesis. Start Sarvam after a short hedge
+// AI4Bharat is self-hosted and can occasionally cold-start or wait behind another synthesis.
+// Start Sarvam after a short hedge
 // delay and return the first *valid* audio result. A null/failed provider never wins the race.
 // Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
 export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
+  const started=Date.now();
   const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
+  let hedgeTimer;
   const early=await Promise.race([
     ai4bharatPromise.then(audio=>({finished:true,audio})),
-    new Promise(resolve=>setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs))
+    new Promise(resolve=>{ hedgeTimer=setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs); })
   ]);
+  clearTimeout(hedgeTimer);
   if(early.finished && early.audio) return early.audio;
-  if(early.finished) return sarvamCall();
+  const remainingMs=Math.max(0,deadlineMs-(Date.now()-started));
+  if(early.finished){
+    if(!remainingMs) return null;
+    return engineWithDeadline(Promise.resolve().then(sarvamCall).catch(()=>null),remainingMs);
+  }
 
   // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
   // and resolves with whichever provider produces usable audio first.
@@ -13446,7 +13524,7 @@ export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs
     ]);
     return await Promise.race([
       firstValid,
-      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), deadlineMs); })
+      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), remainingMs); })
     ]);
   }catch(_e){
     return null;
@@ -13844,11 +13922,11 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // Voice input automatically receives voice: exact cache first, then Sarvam using the client's
-  // key or Worker-level fallback. No per-client enable/provider/model switch. A hard ten-second
+  // Voice input automatically receives voice: exact cache, free local Piper, warm AI4Bharat,
+  // quota-limited Sarvam, then text. No per-client enable/provider/model switch. A hard ten-second
   // ceiling returns the already-computed text instead of keeping the customer waiting.
   if(mediaType==='voice' && !imageUrl && bcp47){
-    const audioBuf=await engineWithDeadline(engineCachedOrSarvamVoice(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
+    const audioBuf=await engineWithDeadline(engineCachedVoiceRotation(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);

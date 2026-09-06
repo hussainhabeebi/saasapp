@@ -14,21 +14,25 @@ ARG HF_TOKEN
 ENV HF_TOKEN=${HF_TOKEN}
 RUN python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('AI4Bharat TTS cached')"
 
-# Keep the small local Piper fallback used by the existing voice integration.
+# Keep the small local Piper tier used before AI4Bharat. English, Malayalam and Hindi are baked
+# into the image so a fresh Coolify deployment is ready without manually populating its volume.
 ARG PIPER_VERSION=2023.11.14-2
 RUN mkdir -p /opt/piper /app/models/piper-voices \
   && curl -fL -o /tmp/piper.tar.gz "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz" \
   && tar -xzf /tmp/piper.tar.gz -C /opt/piper --strip-components=1 \
   && rm /tmp/piper.tar.gz \
   && curl -fL -o /app/models/piper-voices/en_US-lessac-medium.onnx "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
-  && curl -fL -o /app/models/piper-voices/en_US-lessac-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+  && curl -fL -o /app/models/piper-voices/en_US-lessac-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
+  && curl -fL -o /app/models/piper-voices/ml_IN-meera-medium.onnx "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/meera/medium/ml_IN-meera-medium.onnx" \
+  && curl -fL -o /app/models/piper-voices/ml_IN-meera-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/main/ml/ml_IN/meera/medium/ml_IN-meera-medium.onnx.json" \
+  && curl -fL -o /app/models/piper-voices/hi_IN-priyamvada-medium.onnx "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/priyamvada/medium/hi_IN-priyamvada-medium.onnx" \
+  && curl -fL -o /app/models/piper-voices/hi_IN-priyamvada-medium.onnx.json "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/priyamvada/medium/hi_IN-priyamvada-medium.onnx.json"
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY . .
 
-VOLUME ["/app/models/piper-voices"]
 ENV PORT=8787
 EXPOSE 8787
 CMD ["node", "server.js"]

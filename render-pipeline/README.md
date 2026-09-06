@@ -8,7 +8,7 @@ Worker and backend recovery settings do not need to change.
 
 - `GET /health` — build, AI4Bharat concurrency and Piper readiness.
 - `POST /synthesize-voice-reply` — AI4Bharat Indic Parler-TTS to Ogg/Opus.
-- `POST /synthesize-piper-tts` — lightweight local Piper fallback.
+- `POST /synthesize-piper-tts` — lightweight local Piper first tier (English/Malayalam/Hindi).
 - `POST /pcm-to-ogg` — PCM conversion retained for the voice integration.
 
 All POST endpoints require `X-Signature`, calculated as base64 HMAC-SHA256 of the exact JSON body
@@ -20,8 +20,10 @@ Build from `render-pipeline/Dockerfile` and configure:
 
 - `RENDER_WEBHOOK_SECRET` — required; keep the current value.
 - `AI4BHARAT_TTS_ENABLED=true` — enables AI4Bharat synthesis.
-- `AI4BHARAT_TTS_TIMEOUT_MS=20000` — subprocess safety ceiling.
+- `AI4BHARAT_TTS_TIMEOUT_MS=6500` — live synthesis safety ceiling.
 - `AI4BHARAT_STARTUP_TIMEOUT_MS=180000` — one-time model preload ceiling.
+- `AI4BHARAT_RESTART_COOLDOWN_MS=60000` — prevents repeated heavy reloads after a timeout.
+- `PIPER_TTS_TIMEOUT_MS=2500` — kills a stuck Piper process before it can hold the VPS.
 - `HF_TOKEN` — build variable if Hugging Face requires access.
 - `PORT=8787` — optional; this is the default.
 

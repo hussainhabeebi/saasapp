@@ -47,7 +47,7 @@ app.get('/health', (_req, res) => {
     ai4bharat_tts_limit: ai4bharatLiveSemaphore.limit,
     ai4bharat_tts_enabled: Boolean(env.AI4BHARAT_TTS_ENABLED),
     ai4bharat_model_ready: isAi4BharatReady(),
-    ai4bharat_tts_timeout_ms: Math.max(5000, Number(env.AI4BHARAT_TTS_TIMEOUT_MS || 20000)),
+    ai4bharat_tts_timeout_ms: Math.max(5000, Number(env.AI4BHARAT_TTS_TIMEOUT_MS || 6500)),
     piper_available: fs.existsSync(piperBin),
     piper_voices: Object.keys(PIPER_VOICE_MAP).filter(language => piperSupportsLanguage(language)),
   });

@@ -15,6 +15,7 @@ let child = null;
 let readyPromise = null;
 let readyState = false;
 let pending = new Map();
+let retryAfterMs = 0;
 
 function supportsLanguage(language) {
   return LANGUAGES.has((language || '').toLowerCase());
@@ -39,6 +40,9 @@ function stopWorker(error) {
 
 function ensureWorker() {
   if (child && readyPromise) return readyPromise;
+  if (Date.now() < retryAfterMs) {
+    return Promise.reject(new Error(`AI4Bharat restart cooling down for ${Math.ceil((retryAfterMs - Date.now()) / 1000)}s`));
+  }
   readyPromise = new Promise((resolve, reject) => {
     const proc = spawn('python3', [SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
     child = proc;
@@ -93,14 +97,16 @@ function ensureWorker() {
 async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
-  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 20000));
+  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 6500));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
       const error = new Error(`AI4Bharat synthesis exceeded ${timeoutMs}ms`);
       reject(error);
       // Model generation cannot be cancelled safely in-process. Restart it so a timed-out job
-      // cannot continue consuming the VPS while later requests arrive.
+      // cannot continue consuming the VPS while later requests arrive. A cooldown prevents a
+      // burst of slow requests from repeatedly reloading several gigabytes of model.
+      retryAfterMs = Date.now() + Math.max(10000, Number(process.env.AI4BHARAT_RESTART_COOLDOWN_MS || 60000));
       stopWorker(error);
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
