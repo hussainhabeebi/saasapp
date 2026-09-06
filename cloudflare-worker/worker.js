@@ -2820,14 +2820,16 @@ async function handleBroadcastTemplatesSync(request, env){
 async function handleBroadcastTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body, header, footer, inbox_id}=await request.json().catch(()=>({}));
+  const {name, category, language, body, header, footer, inbox_id, buttons}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
+  if(buttons&&(!Array.isArray(buttons)||buttons.length>3)) return json({error:'buttons must be an array of up to 3 items'}, 400);
   const c=await getClientById(env, payload.cid);
   const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.waba_id||!creds?.wa_token) return json({error:'Creating a template requires Meta credentials for the selected WhatsApp channel. Use Detect credentials beside that channel in Settings → Channels.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});
+  if(buttons&&buttons.length) components.push({type:'BUTTONS', buttons:buttons.map(text=>({type:'QUICK_REPLY', text:String(text).slice(0,20)}))});
   const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
     method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components})
