@@ -1209,7 +1209,6 @@ const ROLES = {
             <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
             <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
             <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
-            <button class="hact-btn" id="homeMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
             <button class="hact-btn" onclick="openProjectsTool()">🗂️ Projects</button>
           </div>
         </div>
@@ -1337,7 +1336,6 @@ const ROLES = {
                 <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
                 <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
                 <button class="qact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
-                <button class="qact-btn" id="qaMarketingStudioBtn" style="display:none" onclick="window.open('marketing-studio.html','_blank')">🎬 Marketing Studio</button>
                 <button class="qact-btn" onclick="navigate('settings')">⚙️ Settings</button>
               </div>
             </div>
@@ -3118,18 +3116,6 @@ const ROLES = {
               <span id="matrimonialModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
-            <!-- Marketing Studio (SETUP.md "Marketing Studio module") — a standalone page
-                 (marketing-studio.html), not a dashboard tab, so this toggle shows/hides the
-                 quick-action buttons that open it (updateMarketingStudioVisibility below) rather
-                 than a dnXTab/moreXTab pair. Metered and dependent on an operator-configured
-                 external render pipeline, so — unlike Dashboard Tabs above — it defaults OFF. -->
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0">
-              <div style="flex:1;min-width:180px"><b>🎬 Marketing Studio</b><div class="s-note" style="margin:2px 0 0">Turn a long video into a captioned, auto-cropped short — transcribe, edit captions, pick a style, export for Reels/Shorts/Status.</div></div>
-              <select class="form-input" id="cfgMarketingStudioEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
-              <button class="save-btn" id="saveMarketingStudioEnabled">Save</button>
-              <span class="save-msg" id="saveMarketingStudioEnabledMsg"></span>
-              <span id="marketingStudioModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
-            </div>
           </div>
         </div>
 
@@ -4892,7 +4878,7 @@ function closeMoreSheet(){
 }
 
 // Projects (frontend/projects.html) — a standalone tool, not a dashboard page, same as Broadcast/
-// Email Marketing/Marketing Studio above. Unlike those, it reads its own client/session from the
+// Email Marketing above. Unlike it, this reads its own client/session from the
 // URL instead of localStorage (real-estate.html's pattern) so it never depends on being opened
 // from this exact origin's storage — passed here, not baked into a link, since sessionToken can
 // rotate (see resumeSession's sliding-window refresh).
@@ -4948,7 +4934,6 @@ function showApp(){
   updateMatrimonialTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
-  updateMarketingStudioVisibility();
   applyUserModulePermissions();
   applyRoleHomeView();
   applyRoleLeadsDefault();
@@ -10174,16 +10159,6 @@ async function ensureHospitalityStyleColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
-  }catch(e){}
-}
-
-// Same "create the column on first save" pattern as ensureHospitalityEnabledColumn above — see
-// SETUP.md "Marketing Studio module".
-async function ensureMarketingStudioEnabledColumn(){
-  try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
-    const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('feat_marketing_studio_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'feat_marketing_studio_enabled',title:'feat_marketing_studio_enabled',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -16756,7 +16731,6 @@ function populateModulesPage(){
   initRealEstateSettings();
   initHealthcareSettings();
   initMatrimonialSettings();
-  initMarketingStudioSettings();
   updateFeatureTabVisibility();
 }
 
@@ -17558,34 +17532,6 @@ function updateHealthcareTabVisibility(){
   const enabled=(clientRecord.healthcare_enabled==='Yes');
   [$id('dnHealthcareTab'),$id('moreHealthcareTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
 }
-
-// Marketing Studio has no dashboard tab of its own (it's a standalone page, marketing-studio.html
-// — see SETUP.md "Marketing Studio module") — this shows/hides the quick-action buttons that
-// open it instead of a dnXTab/moreXTab pair.
-function updateMarketingStudioVisibility(){
-  const enabled=(clientRecord.feat_marketing_studio_enabled==='Yes');
-  [$id('homeMarketingStudioBtn'),$id('qaMarketingStudioBtn')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
-}
-
-function initMarketingStudioSettings(){
-  const sel=$id('cfgMarketingStudioEnabled'); if(sel) sel.value=(clientRecord.feat_marketing_studio_enabled==='Yes')?'Yes':'No';
-  _renderModuleBadge('marketingStudioModuleStatusBadge',clientRecord.feat_marketing_studio_enabled==='Yes');
-  updateMarketingStudioVisibility();
-}
-$id('saveMarketingStudioEnabled').addEventListener('click',async()=>{
-  const btn=$id('saveMarketingStudioEnabled'),msg=$id('saveMarketingStudioEnabledMsg');
-  btn.disabled=true;msg.textContent='';msg.className='save-msg';
-  const val=$id('cfgMarketingStudioEnabled').value;
-  try{
-    await ensureMarketingStudioEnabledColumn();
-    await patchClient({feat_marketing_studio_enabled:val});
-    clientRecord.feat_marketing_studio_enabled=val;
-    updateMarketingStudioVisibility();
-    _renderModuleBadge('marketingStudioModuleStatusBadge',val==='Yes');
-    msg.textContent='✓ Saved';
-  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
-  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
-});
 
 function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';

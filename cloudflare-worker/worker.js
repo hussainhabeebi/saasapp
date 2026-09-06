@@ -65,7 +65,7 @@ const PLAN_TIERS = {
   basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
   standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
   business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] },
-  marketing_pro:{ label:'Marketing Pro', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','feat_marketing_studio_enabled'] }
+  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] }
 };
 // Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
 // (so dashboard.html can render a modules grid without hardcoding this list twice) and the
@@ -73,7 +73,7 @@ const PLAN_TIERS = {
 const PLAN_GATED_MODULES = {
   ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
   b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
-  matrimonial_enabled:'Matrimonial Service', feat_marketing_studio_enabled:'Marketing Studio'
+  matrimonial_enabled:'Matrimonial Service'
 };
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
@@ -172,6 +172,7 @@ async function checkRateLimit(env, bucket, ip, limit, windowSec){
 async function cleanupRateLimitCounters(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
+  try{ await env.DB.prepare(`DELETE FROM voice_sarvam_daily_usage WHERE usage_date < date('now','-30 days')`).run(); }catch(e){}
 }
 
 /* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
@@ -13148,10 +13149,50 @@ async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', reque
 }
 
 const ENGINE_VOICE_REPLY_DEADLINE_MS=10000;
-const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v1';
+const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
+const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
+const ENGINE_AI4BHARAT_HEDGE_MS=1500;
+const ENGINE_LIVE_TTS_DEADLINE_MS=6500;
+const ENGINE_SARVAM_DAILY_FALLBACK_LIMIT=25;
 
 export function engineResolveSarvamApiKey(env, c){
   return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
+}
+
+export function engineResolveSarvamCredential(env, c){
+  const clientKey=String(c?.sarvam_api_key||'').trim();
+  if(clientKey) return {apiKey:clientKey, source:'client'};
+  const workerKey=String(env?.SARVAM_API_KEY||'').trim();
+  return workerKey?{apiKey:workerKey, source:'worker'}:null;
+}
+
+function engineSarvamDailyFallbackLimit(env){
+  const configured=Number(env?.SARVAM_DAILY_FALLBACK_LIMIT);
+  return Number.isFinite(configured)?Math.max(0,Math.floor(configured)):ENGINE_SARVAM_DAILY_FALLBACK_LIMIT;
+}
+
+// Client-owned Sarvam keys are never charged to LeadVyne's allowance. The shared Worker key is
+// protected by an atomic D1 daily counter; if D1/migration is unavailable, fail closed to the text
+// reply instead of accidentally creating unbounded paid usage.
+async function engineClaimSarvamCredential(env, c, clientId){
+  const credential=engineResolveSarvamCredential(env,c);
+  if(!credential || credential.source==='client') return credential;
+  const limit=engineSarvamDailyFallbackLimit(env);
+  if(!env.DB || limit<=0) return null;
+  const usageDate=new Date().toISOString().slice(0,10);
+  try{
+    await env.DB.prepare(`INSERT OR IGNORE INTO voice_sarvam_daily_usage
+      (client_id,usage_date,usage_count,updated_at) VALUES (?,?,0,CURRENT_TIMESTAMP)`)
+      .bind(String(clientId),usageDate).run();
+    const claimed=await env.DB.prepare(`UPDATE voice_sarvam_daily_usage
+      SET usage_count=usage_count+1,updated_at=CURRENT_TIMESTAMP
+      WHERE client_id=? AND usage_date=? AND usage_count<? RETURNING usage_count`)
+      .bind(String(clientId),usageDate,limit).first();
+    return claimed?credential:null;
+  }catch(e){
+    await reportOpsError(env,'engineClaimSarvamCredential — Worker fallback quota unavailable',e,{clientId});
+    return null;
+  }
 }
 
 export async function engineWithDeadline(promise, deadlineMs){
@@ -13182,29 +13223,54 @@ async function engineVoiceCacheGet(env, key){
   }catch(_e){ return null; }
 }
 
-async function engineVoiceCachePut(env, key, audioBuf){
+async function engineVoiceCachePut(env, key, audioBuf, provider){
   if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
   try{
-    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:'sarvam'}});
+    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:String(provider||'unknown')}});
   }catch(_e){}
 }
 
-// Voice-to-voice only: exact generated spoken text is safe to reuse, so check R2 first. On a miss,
-// Sarvam is the sole live provider. The caller races this entire operation against ten seconds and
-// sends the already-generated text if voice is unavailable or late.
-async function engineCachedOrSarvamVoice(env, c, clientId, replyText, langCode){
+// Free Piper gets a short first attempt. If it is unavailable/unsupported, warm AI4Bharat starts;
+// Sarvam is hedged 1.5s later and only runs when a client key or a Worker quota slot is available.
+// Kept as an injectable coordinator so ordering and deadlines are covered without live APIs.
+export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sarvamCall, piperDeadlineMs=ENGINE_PIPER_TTS_DEADLINE_MS){
+  const safeCall=call=>Promise.resolve().then(call).catch(()=>null);
+  const piper=await engineWithDeadline(safeCall(piperCall),piperDeadlineMs);
+  if(piper) return {audio:piper,provider:'piper'};
+  const live=await engineHedgeAi4BharatTts(
+    ()=>safeCall(ai4bharatCall).then(audio=>audio?{audio,provider:'ai4bharat'}:null),
+    ()=>safeCall(sarvamCall).then(audio=>audio?{audio,provider:'sarvam'}:null),
+    ENGINE_AI4BHARAT_HEDGE_MS,
+    ENGINE_LIVE_TTS_DEADLINE_MS
+  );
+  return live||{audio:null,provider:'text'};
+}
+
+// Voice-to-voice only: exact final replies are safe to reuse. Text-message delivery and scheduled
+// follow-ups do not call this function and therefore retain their existing behaviour.
+async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
-  // call and Sarvam. The speaker/version remain in the key, making future voice changes safe.
+  // call and every TTS provider. The cache prefix changes when the provider/voice ladder changes.
   const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
   const cached=await engineVoiceCacheGet(env, cacheKey);
   if(cached) return cached;
   const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
   if(!spokenText) return null;
-  const audio=await engineSarvamTts(env, spokenText, ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()], engineResolveSarvamApiKey(env,c), 9000);
+  const iso=(langCode||'').toLowerCase();
+  const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  const result=await engineRunLiveVoiceTtsRotation(
+    ()=>enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS),
+    ()=>engineAi4BharatTts(env,spokenText,iso,ENGINE_LIVE_TTS_DEADLINE_MS),
+    async()=>{
+      if(!bcp47) return null;
+      const credential=await engineClaimSarvamCredential(env,c,clientId);
+      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,4500):null;
+    }
+  );
   // Cache writes must never delay the first live send. R2 is best-effort here; the generated
   // audio remains immediately usable even if this background write is interrupted or fails.
-  if(audio) void engineVoiceCachePut(env, cacheKey, audio);
-  return audio;
+  if(result.audio) void engineVoiceCachePut(env,cacheKey,result.audio,result.provider);
+  return result.audio;
 }
 
 async function handleVoiceSettingsGet(request, env){
@@ -13234,15 +13300,14 @@ async function handleVoiceSettingsUpdate(request, env){
 const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
 
 // STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
-// render-pipeline server that already hosts AI4Bharat's self-hosted ASR model (see
+// dedicated Coolify voice service (see
 // render-pipeline/lib/ai4bharatTts.js / render-pipeline/tts/synthesize_ai4bharat.py for what is and
 // isn't verified about the model itself — no live test was possible without a real deploy). Sarvam
 // AI (engineSarvamTts above) stays the PRIMARY TTS provider everywhere — this only exists to be
 // called from engineTtsWithFallback below when Sarvam's call already failed or SARVAM_API_KEY isn't
 // configured, so a customer still gets a real voice-note reply instead of silently downgrading
-// straight to text. Requires the render pipeline configured (MARKETING_RENDER_WEBHOOK_URL/_SECRET —
-// the same Marketing Studio render service this Worker already calls for transcription/scene
-// detection, reused rather than standing up a second service) AND AI4BHARAT_TTS_ENABLED set on that
+// straight to text. Requires the voice service configured (the legacy-named
+// MARKETING_RENDER_WEBHOOK_URL/_SECRET settings) AND AI4BHARAT_TTS_ENABLED set on that
 // service. Missing either is the expected/unconfigured case (silent null, no ops report), same
 // convention as engineSarvamTts's own missing-SARVAM_API_KEY case — this feature simply isn't set
 // up yet for this environment, not a bug.
@@ -13250,17 +13315,19 @@ const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te',
 // managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
 // whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
 // instead of instantly falling back to text", not tuned for low latency.
-async function engineAi4BharatTts(env, text, isoLangCode){
+async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
   if(!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
     // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
     // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
-    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
@@ -13278,6 +13345,8 @@ async function engineAi4BharatTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'engineAi4BharatTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
 }
 
@@ -13290,7 +13359,7 @@ async function engineAi4BharatTts(env, text, isoLangCode){
 //
 // GEMINI_API_KEY is the same shared Worker secret the intent classifier/transcriber already use
 // (see engineGeminiGenerateWithFallback) — no new secret needed. Reuses the exact same
-// render-pipeline service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
+// voice service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
 // one thing only: converting the Live API's raw PCM16 output into the Ogg/Opus format WhatsApp
 // needs for a native voice-note bubble, since Cloudflare Workers have no audio codec available and
 // this repo's own convention is "anything ffmpeg-shaped runs on the render pipeline, not here" —
@@ -13393,16 +13462,18 @@ async function engineGeminiLiveTts(env, text, isoLangCode){
 // elsewhere), Piper's language coverage on the render pipeline defaults to English only (see that
 // file's PIPER_VOICE_MAP comment on why more languages aren't guessed at) — auto-falling back to
 // it for an Indic-language customer would silently downgrade them to an English-accented voice.
-// Same render-pipeline service as engineAi4BharatTts/engineGeminiLiveTts
+// Same voice service as engineAi4BharatTts/engineGeminiLiveTts
 // (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
-async function enginePiperTts(env, text, isoLangCode){
+async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
-    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 400 here just means no Piper voice is configured for this language — expected/
@@ -13417,24 +13488,30 @@ async function enginePiperTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
 }
 
-const ENGINE_AI4BHARAT_HEDGE_MS=1500;
-const ENGINE_LIVE_TTS_DEADLINE_MS=8000;
-
-// AI4Bharat is preferred for clients that explicitly select it, but it is self-hosted and can
-// occasionally cold-start or wait behind another synthesis. Start Sarvam after a short hedge
+// AI4Bharat is self-hosted and can occasionally cold-start or wait behind another synthesis.
+// Start Sarvam after a short hedge
 // delay and return the first *valid* audio result. A null/failed provider never wins the race.
 // Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
 export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
+  const started=Date.now();
   const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
+  let hedgeTimer;
   const early=await Promise.race([
     ai4bharatPromise.then(audio=>({finished:true,audio})),
-    new Promise(resolve=>setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs))
+    new Promise(resolve=>{ hedgeTimer=setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs); })
   ]);
+  clearTimeout(hedgeTimer);
   if(early.finished && early.audio) return early.audio;
-  if(early.finished) return sarvamCall();
+  const remainingMs=Math.max(0,deadlineMs-(Date.now()-started));
+  if(early.finished){
+    if(!remainingMs) return null;
+    return engineWithDeadline(Promise.resolve().then(sarvamCall).catch(()=>null),remainingMs);
+  }
 
   // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
   // and resolves with whichever provider produces usable audio first.
@@ -13447,7 +13524,7 @@ export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs
     ]);
     return await Promise.race([
       firstValid,
-      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), deadlineMs); })
+      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), remainingMs); })
     ]);
   }catch(_e){
     return null;
@@ -13845,11 +13922,11 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // Voice input automatically receives voice: exact cache first, then Sarvam using the client's
-  // key or Worker-level fallback. No per-client enable/provider/model switch. A hard ten-second
+  // Voice input automatically receives voice: exact cache, free local Piper, warm AI4Bharat,
+  // quota-limited Sarvam, then text. No per-client enable/provider/model switch. A hard ten-second
   // ceiling returns the already-computed text instead of keeping the customer waiting.
   if(mediaType==='voice' && !imageUrl && bcp47){
-    const audioBuf=await engineWithDeadline(engineCachedOrSarvamVoice(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
+    const audioBuf=await engineWithDeadline(engineCachedVoiceRotation(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
     if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
@@ -22660,2213 +22737,7 @@ async function handleHospitalityStats(request, env){
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════════════════════════════
-   MARKETING STUDIO MODULE (SETUP.md "Marketing Studio module") — standalone short-form video
-   repurposing tool: upload a long video, auto-transcribe it, edit captions, pick a caption
-   style, render a vertical/square/landscape clip, send it out. A genuinely different module from
-   the existing WhatsApp/Email "Campaigns" marketing tools (broadcast.html/email-marketing.html)
-   — those send messages, this produces video assets — so it gets its own standalone page
-   (frontend/marketing-studio.html) and its own D1 tables (migrations/0015_marketing_studio.sql),
-   same "new data shape, no existing NocoDB reader" reasoning as ecom_categories/review_config.
-
-   Gating: like the other optional tabs (feat_campaigns_enabled etc., see
-   setupFeatureTabToggle in dashboard.html), visibility is controlled by a Clients field —
-   `feat_marketing_studio_enabled`. Unlike those, this one defaults OFF (only 'Yes' counts as
-   enabled, not "anything other than 'No'") — it's metered (see marketing_minutes_used/limit
-   below) and depends on an operator-configured external render pipeline, so it shouldn't
-   silently light up for every existing client the moment this ships. As with every feat_*
-   flag in this codebase, the gate is frontend-only (the tab/nav button is hidden) — routes below
-   don't re-check it, same as /email/*, /accounting/*, etc.
-
-   What actually runs inside this Worker vs. what's delegated out, and why:
-   - Upload, project/job bookkeeping, caption editing, style presets, usage metering, and
-     WhatsApp delivery are all real, self-contained Worker code (D1 + R2, no external service).
-   - Transcription is a single HTTP call to an OpenAI-Whisper-compatible endpoint
-     (MARKETING_TRANSCRIBE_API_URL/KEY) — also genuinely runs here, no external orchestration.
-   - Rendering (crop to aspect, burn in captions, silence-cut, auto-zoom, background music +
-     ducking, watermark) is NOT something a Cloudflare Worker can do — there's no ffmpeg, no GPU,
-     and a 9:16 export with caption burn-in is minutes of CPU work, far past what Workers allow
-     per request. handleMarketingRenderStart instead posts a full render spec to an
-     operator-configured external pipeline (MARKETING_RENDER_WEBHOOK_URL — e.g. a small
-     ffmpeg/Remotion service, or Shotstack/Creatomate behind an n8n workflow, same "engine
-     outside this repo" shape the WhatsApp bot's n8n engine already uses) and that pipeline calls
-     back into POST /marketing/webhook/render-complete when done. Until that env var is set,
-     renders fail immediately with a clear error instead of hanging — see SETUP.md for the exact
-     request/callback contract an operator needs to implement on the other end. ── */
-
-// Videos upload directly browser -> R2 via a presigned PUT URL (marketingR2PresignPutUrl below),
-// NOT through this Worker's own request body — Cloudflare Workers cap request bodies around
-// 100 MB on most plans, a platform ceiling no amount of application code can raise. Presigned R2
-// uploads bypass that entirely; this max is a real, chosen application limit instead (R2 itself
-// handles single-PUT objects up to 5 GB).
-const MARKETING_SOURCE_MAX_BYTES = 2*1024*1024*1024;
-const MARKETING_VIDEO_MIME_EXT = {'video/mp4':'mp4', 'video/quicktime':'mov', 'video/webm':'webm', 'video/x-m4v':'m4v'};
-const MARKETING_RESOLUTIONS = {'9:16':'1080x1920', '1:1':'1080x1080', '16:9':'1920x1080'};
-// Export quality — always MP4 (the only format the render pipeline produces); this is the encode
-// speed/quality tradeoff, matching render-pipeline/lib/filtergraph.js's QUALITY_PRESETS exactly.
-const MARKETING_QUALITY_LEVELS = ['draft', 'standard', 'high'];
-
-// Built-in caption style presets (#7 "6-10 caption style presets") — static, no table needed.
-// Custom per-client presets ("brand style saving", #8) live in marketing_brand_styles instead,
-// referenced from a project as style_id:'custom:<id>'.
-const MARKETING_STYLE_PRESETS = [
-  {id:'bold-pop', name:'Bold Pop', font:'Montserrat, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFE600', bg_style:'none', position:'bottom', animation:'pop'},
-  {id:'clean-minimal', name:'Clean Minimal', font:'Inter, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'none', position:'bottom', animation:'none'},
-  {id:'neon-highlight', name:'Neon Highlight', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#39FF14', bg_style:'none', position:'middle', animation:'word-highlight'},
-  {id:'karaoke-yellow', name:'Karaoke Yellow', font:'"Archivo Black", sans-serif', text_color:'#FFFFFF', highlight_color:'#FFD400', bg_style:'none', position:'bottom', animation:'word-highlight'},
-  {id:'boxed-caption', name:'Boxed Caption', font:'Inter, sans-serif', text_color:'#111111', highlight_color:'#111111', bg_style:'pill', bg_color:'#FFFFFF', position:'bottom', animation:'none'},
-  {id:'classic-white', name:'Classic White', font:'Helvetica, Arial, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'box', bg_color:'rgba(0,0,0,0.55)', position:'bottom', animation:'none'},
-  {id:'gradient-glow', name:'Gradient Glow', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#FF3CAC', bg_style:'none', position:'top', animation:'pop'},
-  {id:'manglish-casual', name:'Manglish Casual', font:'"Baloo Chettan 2", sans-serif', text_color:'#FFFFFF', highlight_color:'#25D366', bg_style:'pill', bg_color:'rgba(0,0,0,0.6)', position:'bottom', animation:'word-highlight'},
-];
-
-// Auto-Edit Templates (SETUP.md "Marketing Studio module — Auto-Edit Templates & Cue
-// Suggestions") — bundled, sensible defaults for the render options an operator's pipeline
-// already understands (silence_cut/auto_zoom/background_music, all pre-existing spec fields) plus
-// broll_density, a new hint the pipeline can use if it auto-generates its own B-roll beyond the
-// suggested cues below. Purely static config, same zero-cost "no table needed" shape as
-// MARKETING_STYLE_PRESETS — picking one just pre-fills the existing per-project toggles, still
-// overridable afterwards.
-const MARKETING_AUTOEDIT_PRESETS = [
-  {id:'talking-head', name:'Talking Head — Clean', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'highlight-reel', name:'Hype / Highlight Reel', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'tutorial', name:'Tutorial / How-To', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
-  {id:'testimonial', name:'Testimonial', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'product-ad', name:'Product Ad', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
-  {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
-  {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
-  {id:'sales-pitch', name:'Sales Pitch / Offer', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'faq-explainer', name:'FAQ / Explainer', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'low'},
-  {id:'before-after', name:'Before & After / Transformation', silence_cut:true, auto_zoom:true, background_music:'cinematic', broll_density:'medium'},
-  {id:'event-recap', name:'Event Recap', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'medium'},
-  {id:'interview', name:'Interview / Podcast Clip', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'unboxing', name:'Unboxing / Demo', silence_cut:true, auto_zoom:true, background_music:'chill', broll_density:'high'},
-];
-
-// Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
-// scanning the transcript this already has (free — no external request) against ~30 common
-// short-form-video trigger words costs nothing per suggestion, unlike an LLM pass per project.
-// (An AI-enhanced version of this is a reasonable future upgrade — reuse the GEMINI_API_KEY this
-// app already shares with the Conversation Engine for a single cheap call over the transcript
-// text — but wasn't added here so this feature stays exactly $0 marginal cost by default.)
-const MARKETING_CUE_KEYWORDS = [
-  {re:/\b(money|price|cost|discount|offer|sale|cash|₹|\$|rupees|dollars)\b/i, type:'broll', tag:'money', label:'Money / pricing shot'},
-  {re:/\b(fast|quick|quickly|speed|hurry|instant|instantly)\b/i, type:'broll', tag:'speed', label:'Fast-motion / speed shot'},
-  {re:/\b(team|office|work|staff|company|employees)\b/i, type:'broll', tag:'office', label:'Team / office shot'},
-  {re:/\b(phone|call|whatsapp|message|chat|text)\b/i, type:'broll', tag:'phone', label:'Phone / messaging shot'},
-  {re:/\b(location|city|travel|drive|road|journey)\b/i, type:'broll', tag:'location', label:'Location / travel shot'},
-  {re:/\b(product|unbox|unboxing|package|delivery|order)\b/i, type:'broll', tag:'product', label:'Product close-up shot'},
-  {re:/\b(customer|client|people|crowd|everyone)\b/i, type:'broll', tag:'people', label:'Customers / people shot'},
-  {re:/\b(wow|amazing|incredible|awesome|unbelievable)\b/i, type:'sfx', tag:'sparkle', label:'Sparkle / positive sting'},
-  {re:/\b(warning|careful|problem|mistake|don't|stop)\b/i, type:'sfx', tag:'alert', label:'Alert / negative sting'},
-  {re:/\b(boom|bang|hit|impact|crash)\b/i, type:'sfx', tag:'impact', label:'Impact hit'},
-  {re:/\b(new|launch|launching|introducing|announcing|announcement)\b/i, type:'sfx', tag:'whoosh', label:'Whoosh transition'},
-  {re:/\b(click|tap|swipe|select|choose)\b/i, type:'sfx', tag:'click', label:'UI click sound'},
-  {re:/\b(free|win|winner|prize|gift|giveaway)\b/i, type:'vfx', tag:'flash', label:'Flash / highlight burst'},
-  {re:/\b(compare|versus|vs\.?|before|after)\b/i, type:'vfx', tag:'split', label:'Split-screen compare'},
-  {re:/\b(number one|best|top|#1|guaranteed)\b/i, type:'vfx', tag:'badge', label:'Badge / callout overlay'},
-];
-
-// Pure function — words from an already-fetched transcript in, cue suggestions out, no I/O and
-// no cost. Caps at 20 cues and enforces a minimum gap between them so a keyword-dense transcript
-// doesn't produce an unusable wall of suggestions; every suggestion is accepted by default and
-// meant to be reviewed/pruned in the editor before it's ever sent to the render pipeline.
-function marketingSuggestCuesHeuristic(transcript){
-  const words=transcript?.words||[];
-  const MIN_GAP_SEC=2.5, MAX_CUES=20;
-  const cues=[];
-  let lastCueEnd=-Infinity;
-  for(const w of words){
-    if(cues.length>=MAX_CUES) break;
-    const match=MARKETING_CUE_KEYWORDS.find(k=>k.re.test(w.word||''));
-    if(!match) continue;
-    const start=Number(w.start)||0;
-    if(start-lastCueEnd<MIN_GAP_SEC) continue;
-    const end=(Number(w.end)||start)+1.2;
-    cues.push({start:Math.max(0, start-0.3), end, type:match.type, tag:match.tag, label:match.label, keyword:w.word, accepted:true});
-    lastCueEnd=end;
-  }
-  return cues;
-}
-
-function marketingSourceKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/source.${ext}`; }
-
-function marketingSerializeProject(row){
-  if(!row) return null;
-  const parseJson=(s)=>{ if(!s) return null; try{ return JSON.parse(s); }catch(e){ return null; } };
-  return {
-    id:row.id, title:row.title, source_key:row.source_key,
-    source_duration_sec:row.source_duration_sec, target_aspect:row.target_aspect,
-    trim_start_sec:row.trim_start_sec, trim_end_sec:row.trim_end_sec, language:row.language,
-    transcript:parseJson(row.transcript_json), captions:parseJson(row.captions_json),
-    style_id:row.style_id, style_overrides:parseJson(row.style_overrides_json)||{},
-    status:row.status, output_key:row.output_key, output_url:row.output_url,
-    output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
-    template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
-    cues:parseJson(row.cues_json)||[],
-    scenes:parseJson(row.scenes_json)||[],
-    // The Auto-edit step's toggle selections, persisted so they're still there next time this
-    // project is opened (previously only lived transiently in the browser tab) — see
-    // handleMarketingAutoeditOptionsSave.
-    autoedit_options:parseJson(row.autoedit_options_json)||{},
-    created_at:row.created_at, updated_at:row.updated_at,
-  };
-}
-
-// Word-level timestamps aren't guaranteed by every OpenAI-Whisper-compatible provider even with
-// timestamp_granularities=word requested (some self-hosted Whisper front-ends only return
-// segment-level timing) — falls back to splitting each segment's text evenly across its
-// duration so the caption editor always has *something* word-grained to show, flagged
-// `approximate:true` so the frontend can visually distinguish an estimate from a real timestamp.
-function marketingWordsFromTranscription(data){
-  // approximate propagated (not just start/end/word) — render-pipeline's Sarvam path
-  // (lib/sarvamTranscribe.js) can itself fall back to evenly-split timing per chunk and flags
-  // those words approximate:true, same convention as the segments-fallback branch below; Whisper
-  // responses never set it, so this is a no-op for the existing path.
-  if(Array.isArray(data.words) && data.words.length) return data.words.map(w=>({word:w.word, start:w.start, end:w.end, ...(w.approximate?{approximate:true}:{})}));
-  const words=[];
-  (data.segments||[]).forEach(seg=>{
-    const tokens=(seg.text||'').trim().split(/\s+/).filter(Boolean);
-    if(!tokens.length) return;
-    const span=(Number(seg.end)-Number(seg.start))/tokens.length;
-    tokens.forEach((t,i)=>words.push({word:t, start:seg.start+i*span, end:seg.start+(i+1)*span, approximate:true}));
-  });
-  return words;
-}
-
-// revertStatus:null means "don't touch the project row at all" (a preview job failing shouldn't
-// revert the project's real status) — distinct from omitting it, which still falls back to
-// 'uploaded' for every existing caller.
-async function marketingFailJob(env, jobId, projectId, error, revertStatus){
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='failed', error=?, updated_at=? WHERE id=?`).bind(String(error||'Failed').slice(0,500), now, jobId).run();
-  if(revertStatus!==null) await env.DB.prepare(`UPDATE marketing_projects SET status=?, updated_at=? WHERE id=?`).bind(revertStatus||'uploaded', now, projectId).run();
-}
-
-async function hmacSha256Base64(secret, body){
-  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)));
-}
-async function verifyHmacSignature(secret, body, sigHeader){
-  if(!sigHeader) return false;
-  const expected=await hmacSha256Base64(secret, body);
-  if(expected.length!==sigHeader.length) return false;
-  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
-  return diff===0;
-}
-
-/* ── R2 presigned uploads (large-video direct-to-R2 upload, bypassing this Worker's own
-   ~100 MB-on-most-plans request-body ceiling — see MARKETING_SOURCE_MAX_BYTES above). AWS
-   SigV4 query-string ("presigned URL") signing, implemented directly against Web Crypto (no
-   dependency — Workers can't bundle npm packages like aws4fetch the way render-pipeline's Node
-   service can). Requires R2 API-token credentials as Worker secrets (R2_ACCOUNT_ID/
-   R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME) — separate from the native env.MARKETING_MEDIA
-   binding, which has no presign capability of its own; reuse the same R2 API token
-   render-pipeline already has, just also added as Worker secrets. Verified: the HMAC-chain
-   signing-key derivation was cross-checked byte-for-byte against Node's independent `crypto`
-   module for a fixed test vector, and the canonical-request/query-string structure was confirmed
-   against AWS's own documented format for S3 presigned URLs. NOT verified: an actual signed
-   request against live R2 (no R2 credentials available in the dev sandbox this was built in) —
-   test a real upload once R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY are set. ── */
-function marketingR2Configured(env){
-  return !!(env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET_NAME);
-}
-function marketingToHex(bytes){ return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-async function marketingHmacRaw(keyBytes, msg){
-  const key=await crypto.subtle.importKey('raw', keyBytes, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, typeof msg==='string'?new TextEncoder().encode(msg):msg);
-  return new Uint8Array(sig);
-}
-async function marketingSha256Hex(str){
-  const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return marketingToHex(new Uint8Array(buf));
-}
-async function marketingR2SigningKey(secretKey, dateStamp, region, service){
-  const kDate=await marketingHmacRaw(new TextEncoder().encode('AWS4'+secretKey), dateStamp);
-  const kRegion=await marketingHmacRaw(kDate, region);
-  const kService=await marketingHmacRaw(kRegion, service);
-  return await marketingHmacRaw(kService, 'aws4_request');
-}
-// method: 'PUT' (upload) or 'GET' (used nowhere yet, but the same signer works for either).
-async function marketingR2PresignUrl(env, method, key, expiresSec){
-  const region='auto', service='s3';
-  const host=`${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  const now=new Date();
-  const amzDate=now.toISOString().replace(/[:-]|\.\d{3}/g,''); // YYYYMMDDTHHMMSSZ
-  const dateStamp=amzDate.slice(0,8);
-  const credentialScope=`${dateStamp}/${region}/${service}/aws4_request`;
-  // R2 keys here are always plain marketing/<clientId>/<projectId>/... segments (no reserved
-  // characters) — encodeURIComponent per-segment then rejoined with literal '/' is exactly what
-  // S3/R2's canonical URI wants.
-  const canonicalUri='/'+env.R2_BUCKET_NAME+'/'+key.split('/').map(encodeURIComponent).join('/');
-  const queryParams={
-    'X-Amz-Algorithm':'AWS4-HMAC-SHA256',
-    'X-Amz-Credential':`${env.R2_ACCESS_KEY_ID}/${credentialScope}`,
-    'X-Amz-Date':amzDate,
-    'X-Amz-Expires':String(expiresSec),
-    'X-Amz-SignedHeaders':'host',
-  };
-  const canonicalQueryString=Object.keys(queryParams).sort().map(k=>`${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join('&');
-  const canonicalHeaders=`host:${host}\n`;
-  const canonicalRequest=`${method}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\nhost\nUNSIGNED-PAYLOAD`;
-  const stringToSign=`AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${await marketingSha256Hex(canonicalRequest)}`;
-  const signingKey=await marketingR2SigningKey(env.R2_SECRET_ACCESS_KEY, dateStamp, region, service);
-  const signature=marketingToHex(await marketingHmacRaw(signingKey, stringToSign));
-  return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
-}
-
-// Bumped by hand on every Marketing Studio deploy — NOT a git SHA (Workers don't have build-time
-// access to one). Exists purely as a fast, visual "is the Worker I'm hitting actually running the
-// code I just deployed" check, surfaced in the frontend header — see marketing-studio.html's
-// loadUsage(). Real, repeated confusion from deploy sequencing (stale local git checkout, D1
-// migrations run before pulling the migration files, Coolify restart vs rebuild) is what this is
-// for: one glance instead of re-deriving "did this actually take" from scratch each time.
-const MARKETING_BUILD_TAG='2026-09-05-sarvam-voice-cache';
-async function handleMarketingUsage(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  return json({used, limit, remaining:Math.max(0, limit-used), build:MARKETING_BUILD_TAG});
-}
-
-// Client-level API keys (SETUP.md "Marketing Studio module — Client API keys") — Pexels/Pixabay/
-// Freesound/fal.ai default to the render pipeline's own shared Coolify env vars; a client can
-// optionally bring their own instead (e.g. so their own fal.ai spend bills to them). Masked on
-// read (only the last 4 characters, like every "is this set" UI that doesn't need to show a real
-// secret back) — handleMarketingRenderStart/Preview/DetectScenes read the real values straight
-// from D1 server-side, this route is display-only.
-const MARKETING_CLIENT_KEY_FIELDS=['pexels_api_key','pixabay_api_key','freesound_api_key','fal_api_key'];
-function marketingMaskKey(k){ return k ? '••••'+k.slice(-4) : null; }
-async function handleMarketingSettingsGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  const keys={};
-  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ keys[f]=marketingMaskKey(row?.[f]); });
-  return json({keys});
-}
-async function handleMarketingSettingsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  const values=MARKETING_CLIENT_KEY_FIELDS.map(f=>{
-    const v=body[f];
-    return v===undefined?undefined:(String(v).trim()||null); // empty string clears the key back to "use shared default"
-  });
-  if(existing){
-    const sets=[], vals=[];
-    MARKETING_CLIENT_KEY_FIELDS.forEach((f,i)=>{ if(values[i]!==undefined){ sets.push(`${f}=?`); vals.push(values[i]); } });
-    if(sets.length){
-      sets.push('updated_at=?'); vals.push(now); vals.push(Number(payload.cid));
-      await env.DB.prepare(`UPDATE marketing_client_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
-    }
-  } else {
-    await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), values[0]??null, values[1]??null, values[2]??null, values[3]??null, now, now).run();
-  }
-  return json({ok:true});
-}
-// Real values (not masked) — used server-side when building a render/preview/scene-detect
-// request to the render pipeline, never returned to the frontend.
-async function marketingGetClientKeys(env, clientId){
-  const row=await env.DB.prepare(`SELECT pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
-  if(!row) return {};
-  const out={};
-  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ if(row[f]) out[f]=row[f]; });
-  return out;
-}
-
-/* ── CONTENT CALENDAR (SETUP.md "Marketing Studio module — Content Calendar") — plan social posts
-   (title/caption/schedule date) ahead of time. Image generation/editing and Instagram
-   auto-posting are separate, later increments (see marketing_content_posts' image_key/
-   approved_at/ig_media_id columns, already in the schema for them) — this slice is just the
-   planning layer: create/list/edit/delete a post, and the "Generate a week" button below that
-   fans one topic out into a week of draft ideas in a single call. Scheduling a post (setting
-   scheduled_at) best-effort pushes it onto the client's EXISTING Google Calendar connection
-   (gcal_refresh_token/gcal_calendar_id, "Google Calendar Sync" module above) — no second OAuth
-   flow — so a planned post shows up on a rep's phone the same way a Task or Calendar Event
-   already does. That connection is one-way (Leadvyne → Google); editing the event directly in
-   Google Calendar does not reschedule the post here. */
-function marketingSerializeContentPost(env, row){
-  if(!row) return null;
-  return {
-    id:row.id, title:row.title, caption:row.caption, image_key:row.image_key||null,
-    image_url:row.image_key?mediaUrlFor(env,row.image_key):null,
-    platform:row.platform, status:row.status, scheduled_at:row.scheduled_at,
-    approved:!!row.approved_at, gcal_event_id:row.gcal_event_id||null, ig_media_id:row.ig_media_id||null,
-    error:row.error||null, created_at:row.created_at, updated_at:row.updated_at,
-  };
-}
-
-async function handleContentPostsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE client_id=? ORDER BY (scheduled_at IS NULL), scheduled_at ASC, created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(r=>marketingSerializeContentPost(env,r))});
-}
-
-async function handleContentPostCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const title=(body.title||'').trim().slice(0,120)||null;
-  const caption=(body.caption||'').trim().slice(0,2200)||null;
-  const scheduledAt=body.scheduled_at||null;
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, caption, 'instagram', scheduledAt?'scheduled':'draft', scheduledAt, now, now).run();
-  const id=result.meta.last_row_id;
-  if(scheduledAt) await marketingContentSyncGcal(env, payload.cid, id);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-async function handleContentPostUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!existing) return json({error:'Not found'}, 404);
-  if(existing.status==='posted') return json({error:'This post has already gone out — it cannot be edited.'}, 400);
-  const sets=[], vals=[];
-  if(body.title!==undefined){ sets.push('title=?'); vals.push((body.title||'').trim().slice(0,120)||null); }
-  if(body.caption!==undefined){ sets.push('caption=?'); vals.push((body.caption||'').trim().slice(0,2200)||null); }
-  let scheduleChanged=false;
-  if(body.scheduled_at!==undefined){
-    sets.push('scheduled_at=?'); vals.push(body.scheduled_at||null);
-    sets.push('status=?'); vals.push(body.scheduled_at?'scheduled':'draft');
-    scheduleChanged=true;
-  }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_content_posts SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  if(scheduleChanged) await marketingContentSyncGcal(env, payload.cid, id);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-async function handleContentPostDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!post) return json({error:'Not found'}, 404);
-  if(post.gcal_event_id){
-    const c=await getClientById(env, payload.cid);
-    if(c) await gcalDeleteEvent(env, c, post.gcal_event_id);
-  }
-  await env.DB.prepare(`DELETE FROM marketing_content_posts WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-// Best-effort — silently no-ops if this client never connected Google Calendar (gcalUpsertEvent/
-// gcalDeleteEvent already do the same), same as every other caller of that module.
-async function marketingContentSyncGcal(env, clientId, postId){
-  const c=await getClientById(env, clientId);
-  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return;
-  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(postId).first();
-  if(!post) return;
-  if(!post.scheduled_at){
-    if(post.gcal_event_id){ await gcalDeleteEvent(env, c, post.gcal_event_id); await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=NULL WHERE id=?`).bind(postId).run(); }
-    return;
-  }
-  const [date, time]=String(post.scheduled_at).split('T');
-  const gcalEventId=await gcalUpsertEvent(env, c, {gcalEventId:post.gcal_event_id||null, title:`📲 ${post.title||'Instagram post'}`, notes:post.caption||'', date, time:time?time.slice(0,5):null, allDay:!time});
-  if(gcalEventId) await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=? WHERE id=?`).bind(gcalEventId, postId).run();
-}
-
-// "Generate a week" — one topic fans out into a week of DRAFT post ideas (title + caption +
-// hashtags, one per day), scheduled but with no image yet. Deliberately drafts only: no fal.ai
-
-// "Turn a customer into a post" — source a testimonial/case-study draft straight from a closed
-// deal record (a Leads row whose Stage is 'won'/'converted', same literal values Human Deals'
-// one-click "✅ Won" button writes — see dashboard.html's isWonLead/HD_OUTCOME_STAGE) instead of a
-// free-text topic. Same lazy-image-later shape as "Generate a week" above: lands as a text-only
-// draft, no fal.ai cost until an image is added and the post is approved.
-// Deliberately anonymized by default — the generated CAPTION never includes the customer's real
-// name/phone (only the internal `title`, never shown to followers, may reference them, purely so
-// the marketer can tell drafts apart) — this endpoint has no way to know consent was given to name
-// a real customer publicly, so it doesn't assume it. A marketer with actual consent can still type
-// the name into the caption by hand afterward from the Edit form.
-async function handleContentCustomersList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const where=`(ClientId,eq,${Number(payload.cid)})~and((Stage,eq,won)~or(Stage,eq,converted))`;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-ClosedAt`);
-  if(!r.ok) return json({list:[]});
-  const data=await r.json().catch(()=>({}));
-  const list=(data?.list||[]).map(l=>({id:l.Id, name:l.Name||'(unnamed)', interested_product:l.InterestedProduct||'', deal_value:l.DealValue||null, closed_at:l.ClosedAt||null}));
-  return json({list});
-}
-
-async function handleContentFromCustomer(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const leadId=Number(body.lead_id);
-  if(!leadId) return json({error:'lead_id required'}, 400);
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
-  if(!leadR.ok) return json({error:'Customer record not found'}, 404);
-  const lead=await leadR.json().catch(()=>({}));
-  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Customer record not found'}, 404);
-  if(!(lead.Stage==='won'||lead.Stage==='converted')) return json({error:'This lead is not a closed/won deal.'}, 400);
-
-  const facts=[
-    lead.InterestedProduct?`Interested in / bought: ${lead.InterestedProduct}`:null,
-    lead.DealValue?`Deal value: ${lead.DealValue}`:null,
-    lead.ClosedAt?`Closed: ${new Date(lead.ClosedAt).toLocaleDateString()}`:null,
-  ].filter(Boolean).join('\n');
-  const userText=facts||'A customer recently closed a deal with us.';
-
-  const raw=await engineGeminiGenerate(env,
-    'You write a short Instagram case-study/social-proof caption celebrating a real customer win, given a few internal facts about the deal. NEVER include the customer\'s real name, phone, or any other identifying detail — refer to them generically ("a local business", "one of our clients", "a customer looking for [product]"). Reply with ONLY compact JSON: {"title":"...", "caption":"...", "hashtags":["...","..."]}. title: a short internal label (not shown to followers), max 60 chars. caption: 2-4 sentences, upbeat, no hashtags inside it. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
-    userText, {json:true, maxOutputTokens:250});
-  let title=null, caption=null, hashtags=[];
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(parsed && typeof parsed.caption==='string'){ title=parsed.title; caption=parsed.caption; hashtags=Array.isArray(parsed.hashtags)?parsed.hashtags:[]; }
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  if(!caption){
-    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
-    caption=`Another happy customer! ${lead.InterestedProduct?`Proud to have helped with ${lead.InterestedProduct}.`:'Thank you for trusting us.'}`;
-    hashtags=['customerstory','testimonial','smallbusiness'];
-  }
-  title=(title||`Customer story — ${lead.Name||('lead #'+leadId)}`).toString().slice(0,120);
-  const hashtagLine=hashtags.map(h=>'#'+String(h).replace(/^#/,'').trim()).filter(h=>h.length>1).join(' ');
-  const fullCaption=[String(caption).trim(), hashtagLine].filter(Boolean).join('\n\n').slice(0,2200);
-
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, fullCaption, 'instagram', 'draft', now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, source:raw?'ai':'heuristic', post:marketingSerializeContentPost(env,row)});
-}
-
-/* ── IMAGE STUDIO (SETUP.md "Marketing Studio module — Image Studio") ─────────────────────────
-   Two distinct kinds of operation, deliberately NOT unified into one "AI does everything" call:
-   - Generative work that genuinely needs an ML model (fal.ai, paid, client-supplied key only —
-     same policy as AI B-roll, see marketing_client_settings.fal_api_key): text-to-image,
-     image-to-image restyling, background removal.
-   - Deterministic pixel work that doesn't need a model at all — logo watermarking, compositing a
-     cutout onto a solid brand color, and burning in a headline/subtext — delegated to the render
-     pipeline's new POST /image-compose (render-pipeline/lib/imageCompose.js), a plain ffmpeg
-     filter pass. Free (no fal spend), pixel-exact, and for in-image TEXT specifically actually
-     MORE reliable than a diffusion model, which is notoriously bad at rendering legible text.
-   NOT verified against a live fal.ai key or a live render-pipeline deploy in this sandbox (same
-   caveat as AI B-roll/falBroll.js) — every failure path below surfaces the raw upstream response,
-   so a wrong field/model name is a one-line fix once tested against real credentials. */
-const FAL_TEXT_TO_IMAGE_MODEL='fal-ai/flux/dev';
-const FAL_TEXT_TO_IMAGE_MODEL_DRAFT='fal-ai/flux/schnell'; // distilled/turbo variant — faster and cheaper, for exploring ideas before committing to a 'final' quality generation
-const FAL_IMAGE_EDIT_MODEL='fal-ai/flux-pro/kontext'; // single reference image + text instruction — "restyle a real photo"
-const FAL_BG_REMOVE_MODEL='fal-ai/imageutils/rembg';
-const FAL_ASPECT_TO_IMAGE_SIZE={'1:1':'square_hd', '4:5':'portrait_4_3', '9:16':'portrait_16_9', '16:9':'landscape_16_9'};
-
-function mediaUrlFor(env, key){ return key?`${env.WORKER_BASE_URL}/marketing/media/${key}`:null; }
-function marketingImageKey(clientId, ext){ return `marketing/${clientId}/images/${crypto.randomUUID()}.${ext||'png'}`; }
-// Random-UUID keys aren't reconstructible from client input (same reasoning as marketingClipKey),
-// so ownership is a prefix match against this client's own image/logo namespace rather than an
-// exact-key rebuild — still exactly scoped to what this session owns, same pattern the multi-clip
-// upload-finish check above already established for this codebase.
-function marketingImageKeyOwnedBy(key, clientId){ return typeof key==='string' && (key.startsWith(`marketing/${clientId}/images/`) || key.startsWith(`marketing/${clientId}/logo.`)); }
-
-// Curated starter prompts — no fal cost, purely a UI helper for a non-designer who doesn't know
-// how to write an image-gen prompt from scratch. Each just pre-fills the generate form; still
-// fully editable before actually generating.
-const MARKETING_IMAGE_PROMPT_TEMPLATES=[
-  {id:'product-table', label:'Product on a table', prompt:'A professional product photo of {product} on a clean wooden table, soft natural lighting, minimal background, high detail'},
-  {id:'quote-card', label:'Quote / testimonial card', prompt:'A minimalist social media quote card background, soft gradient, elegant, plenty of empty space in the center for text overlay'},
-  {id:'sale-announcement', label:'Sale announcement backdrop', prompt:'A bold, colorful sale announcement background for social media, vibrant gradient, dynamic shapes, plenty of empty space for text overlay'},
-  {id:'before-after', label:'Before / after backdrop', prompt:'A clean split-screen style background for a before-and-after comparison post, neutral studio background, soft shadows'},
-  {id:'lifestyle', label:'Lifestyle scene', prompt:'A warm, candid lifestyle photo of people enjoying {product} in a cozy setting, natural light, authentic, not staged'},
-];
-async function handleMarketingImagePromptTemplates(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_IMAGE_PROMPT_TEMPLATES});
-}
-
-// One log row per successful image operation of ANY kind (generate/restyle/etc.), purely so
-// "images generated this month" can be shown as a usage counter — same reasoning/shape as
-// marketing_minutes_used, just derived by COUNT(*) instead of a running total column since this
-// number never needs to be decremented/reset by anything other than the calendar turning over.
-async function marketingImageLog(env, clientId, kind, imageKey, promptHash){
-  await env.DB.prepare(`INSERT INTO marketing_image_log (client_id, kind, image_key, prompt_hash, created_at) VALUES (?,?,?,?,?)`)
-    .bind(Number(clientId), kind, imageKey||null, promptHash||null, new Date().toISOString()).run();
-}
-// Only counts the fal.ai-billed operations (generate/restyle/remove-background) — watermark/
-// composite-background/text-overlay/reframe are free ffmpeg passes and a stock-photo import costs
-// nothing either, so counting those here would make this "money spent" signal misleadingly high.
-const MARKETING_IMAGE_PAID_KINDS=['generate','restyle','remove-background'];
-async function handleMarketingImageUsage(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const monthStart=new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0,0,0,0);
-  const placeholders=MARKETING_IMAGE_PAID_KINDS.map(()=>'?').join(',');
-  const row=await env.DB.prepare(`SELECT COUNT(*) AS n FROM marketing_image_log WHERE client_id=? AND created_at>=? AND kind IN (${placeholders})`).bind(Number(payload.cid), monthStart.toISOString(), ...MARKETING_IMAGE_PAID_KINDS).first();
-  return json({used:Number(row?.n)||0});
-}
-
-async function falSubmit(model, apiKey, input){
-  const r=await fetch(`https://queue.fal.run/${model}`, {method:'POST', headers:{Authorization:`Key ${apiKey}`, 'Content-Type':'application/json'}, body:JSON.stringify(input)});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data?.detail || data?.error?.message || `fal.ai submit failed: HTTP ${r.status}`);
-  if(!data.request_id) throw new Error('fal.ai did not return a request_id.');
-  return data.request_id;
-}
-function extractFalImageUrls(result){
-  if(Array.isArray(result?.images)&&result.images.length) return result.images.map(i=>i?.url).filter(Boolean);
-  if(result?.image?.url) return [result.image.url];
-  if(result?.image_url) return [result.image_url];
-  return [];
-}
-async function falPollImages(model, requestId, apiKey){
-  const statusUrl=`https://queue.fal.run/${model}/requests/${requestId}/status`;
-  const resultUrl=`https://queue.fal.run/${model}/requests/${requestId}`;
-  const deadline=Date.now()+120000;
-  while(Date.now()<deadline){
-    const r=await fetch(statusUrl, {headers:{Authorization:`Key ${apiKey}`}});
-    const data=await r.json().catch(()=>({}));
-    if(data.status==='COMPLETED'){
-      const rr=await fetch(resultUrl, {headers:{Authorization:`Key ${apiKey}`}});
-      const result=await rr.json().catch(()=>({}));
-      const urls=extractFalImageUrls(result);
-      if(!urls.length) throw new Error('fal.ai completed but no image URL was found in the result: '+JSON.stringify(result).slice(0,300));
-      return urls;
-    }
-    if(data.status==='ERROR'||data.status==='FAILED') throw new Error('fal.ai generation failed: '+(data.error||data.status));
-    await new Promise(res=>setTimeout(res, 3000));
-  }
-  throw new Error('fal.ai generation timed out after 2 minutes.');
-}
-// Fetches an already-produced image (a fal.ai result URL, or a render-pipeline local-fallback
-// output_url) and stores it into OUR OWN R2 bucket — every image this module hands back to the
-// frontend is addressed the same way (an R2 key under marketing/<client>/images/) regardless of
-// which upstream produced it.
-async function marketingStoreExternalImage(env, clientId, imageUrl, kind, promptHash){
-  const imgR=await fetch(imageUrl);
-  if(!imgR.ok) throw new Error('Could not download the generated image.');
-  const key=marketingImageKey(clientId);
-  await env.MARKETING_MEDIA.put(key, imgR.body, {httpMetadata:{contentType:imgR.headers.get('content-type')||'image/png'}});
-  await marketingImageLog(env, clientId, kind, key, promptHash);
-  return key;
-}
-
-async function marketingGetImageBrandStyle(env, clientId){
-  const row=await env.DB.prepare(`SELECT image_brand_style FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
-  return row?.image_brand_style||'';
-}
-
-// prompt-hash caching — a repeated identical generate call (most commonly: re-running "Generate a
-// week" with the same topic, or a marketer clicking Generate again without changing anything)
-// reuses the last matching result instead of spending fresh fal.ai credits. Scoped to this client +
-// exact prompt/aspect/quality combination, and only looks back 24h — long enough to catch an
-// accidental double-click or a same-day re-run, not so long that "generate a fresh take on this"
-// stays permanently stuck on an old result.
-async function marketingImageCacheLookup(env, clientId, promptHash, numImages){
-  const since=new Date(Date.now()-24*3600*1000).toISOString();
-  const {results}=await env.DB.prepare(`SELECT image_key FROM marketing_image_log WHERE client_id=? AND kind='generate' AND prompt_hash=? AND created_at>=? ORDER BY id DESC LIMIT ?`)
-    .bind(Number(clientId), promptHash, since, Number(numImages)).all();
-  const keys=(results||[]).map(r=>r.image_key).filter(Boolean);
-  return keys.length>=numImages ? keys.slice(0,numImages) : null;
-}
-
-async function marketingGenerateImages(env, clientId, {prompt, aspectRatio, numImages, quality}){
-  const n=Math.min(4,Math.max(1,Number(numImages)||1));
-  const brandStyle=await marketingGetImageBrandStyle(env, clientId);
-  const fullPrompt=brandStyle?`${prompt}. Style: ${brandStyle}`:prompt;
-  const model=quality==='draft'?FAL_TEXT_TO_IMAGE_MODEL_DRAFT:FAL_TEXT_TO_IMAGE_MODEL;
-  const promptHash=await marketingSha256Hex(`${fullPrompt}|${aspectRatio||''}|${n}|${model}`);
-
-  const cached=await marketingImageCacheLookup(env, clientId, promptHash, n);
-  if(cached) return {images:cached.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'cache'};
-
-  const keys=await marketingGetClientKeys(env, clientId);
-  if(!keys.fal_api_key) throw {status:400, message:'Add a fal.ai API key first — Settings → API Keys.'};
-  const requestId=await falSubmit(model, keys.fal_api_key, {prompt:fullPrompt, image_size:FAL_ASPECT_TO_IMAGE_SIZE[aspectRatio]||'square_hd', num_images:n});
-  const urls=await falPollImages(model, requestId, keys.fal_api_key);
-  const keysOut=[];
-  for(const url of urls) keysOut.push(await marketingStoreExternalImage(env, clientId, url, 'generate', promptHash));
-  return {images:keysOut.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'fal'};
-}
-
-async function handleMarketingImageGenerate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const prompt=(body.prompt||'').trim().slice(0,2000);
-  if(!prompt) return json({error:'prompt required'}, 400);
-  try{
-    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
-    return json({ok:true, images, source});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// Reuses a Content Calendar draft's own title/caption as the prompt seed instead of asking the
-// marketer to describe the image separately from the post they already wrote — closes the loop
-// between the two halves of this module. Returns candidates only; the marketer still picks one via
-// /marketing/images/attach below (never auto-attaches, so a bad generation never silently lands on
-// a post).
-async function handleMarketingImageGenerateForPost(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const postId=Number(body.post_id);
-  if(!postId) return json({error:'post_id required'}, 400);
-  const post=await env.DB.prepare(`SELECT title, caption FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(postId, Number(payload.cid)).first();
-  if(!post) return json({error:'Post not found'}, 404);
-  const seed=(post.caption||post.title||'').replace(/#\S+/g,'').trim().slice(0,300);
-  if(!seed) return json({error:'This post has no title/caption yet to generate an image from.'}, 400);
-  const prompt=`A social media image for this post: ${seed}. Photorealistic, high quality, no text or logos in the image.`;
-  try{
-    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
-    return json({ok:true, images, source});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// "Generate a themed set" (carousel material) — N images in one flow, each nudged toward a
-// distinct role in a short sequence (intro/detail/detail/CTA) rather than N unrelated takes on the
-// same prompt. NOTE: this only produces the images — Content Calendar posts still hold a single
-// image_key (marketing_content_posts has no multi-image column), and there is no Instagram
-// publish step in this app yet at all, so an actual multi-image carousel POST isn't wired end to
-// end. Deliberately not building that part yet: it would mean guessing at a schema/publish shape
-// ahead of the real auto-post feature actually existing. What this DOES give a marketer today: a
-// thematically coherent set of images to review and pick the single best one from via the normal
-// /marketing/images/attach flow.
-const MARKETING_CAROUSEL_SLOT_HINTS=['an eye-catching opening image that introduces the topic', 'a close-up detail shot related to the topic', 'a supporting/contextual shot related to the topic', 'a clear call-to-action closing image related to the topic'];
-async function handleMarketingImageGenerateCarousel(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const topic=(body.prompt||'').trim().slice(0,2000);
-  if(!topic) return json({error:'prompt required'}, 400);
-  const count=Math.min(4,Math.max(2,Number(body.count)||3));
-  try{
-    const images=[];
-    for(let i=0;i<count;i++){
-      const slotPrompt=`${topic}. This is ${MARKETING_CAROUSEL_SLOT_HINTS[i]||'another image in the same themed set'}. Keep a consistent visual style across the set.`;
-      const {images:one}=await marketingGenerateImages(env, payload.cid, {prompt:slotPrompt, aspectRatio:body.aspect_ratio, numImages:1, quality:body.quality});
-      images.push(...one);
-    }
-    return json({ok:true, images});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// Saved brand-style hint (e.g. "warm earthy tones, minimalist, natural light") appended to every
-// generate/generate-for-post/carousel prompt automatically — so a marketer doesn't have to
-// remember to retype their look every single time, same reasoning as the video module's Brand
-// Styles. Plain text, no masking needed (unlike the API-key settings above, this isn't a secret).
-async function handleMarketingImageBrandStyleGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({style:await marketingGetImageBrandStyle(env, payload.cid)});
-}
-async function handleMarketingImageBrandStyleSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const style=String(body.style||'').trim().slice(0,500);
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(existing) await env.DB.prepare(`UPDATE marketing_client_settings SET image_brand_style=?, updated_at=? WHERE client_id=?`).bind(style||null, now, Number(payload.cid)).run();
-  else await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, image_brand_style, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(payload.cid), style||null, now, now).run();
-  return json({ok:true});
-}
-
-// Free stock-photo fallback (SETUP.md "Marketing Studio module — Image Studio") — reuses the SAME
-// Pexels/Pixabay API keys already stored for video B-roll (marketing_client_settings), just
-// against their PHOTO search endpoints instead of video. Makes Image Studio usable for a client
-// who hasn't (or won't) add a paid fal.ai key — search, then /marketing/images/stock-import below
-// pulls the chosen photo into this client's own R2 namespace so it behaves identically to any
-// generated image afterward (watermark/text-overlay/attach all just take an image_key).
-async function marketingSearchPexelsPhotos(query, apiKey){
-  const r=await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=12`, {headers:{Authorization:apiKey}});
-  if(!r.ok) throw new Error(`Pexels search failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  return (data.photos||[]).map(p=>({source:'pexels', id:String(p.id), thumbnail_url:p.src?.medium||p.src?.small, full_url:p.src?.large2x||p.src?.original}));
-}
-async function marketingSearchPixabayPhotos(query, apiKey){
-  const r=await fetch(`https://pixabay.com/api/?key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(query)}&per_page=12`);
-  if(!r.ok) throw new Error(`Pixabay search failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  return (data.hits||[]).map(h=>({source:'pixabay', id:String(h.id), thumbnail_url:h.webformatURL, full_url:h.largeImageURL||h.webformatURL}));
-}
-async function handleMarketingImageStockSearch(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const url=new URL(request.url);
-  const q=(url.searchParams.get('q')||'').trim().slice(0,200);
-  if(!q) return json({error:'q required'}, 400);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.pexels_api_key && !keys.pixabay_api_key) return json({error:'Add a free Pexels or Pixabay API key first — Settings → API Keys.'}, 400);
-  const [pexels, pixabay]=await Promise.all([
-    keys.pexels_api_key?marketingSearchPexelsPhotos(q, keys.pexels_api_key).catch(()=>[]):[],
-    keys.pixabay_api_key?marketingSearchPixabayPhotos(q, keys.pixabay_api_key).catch(()=>[]):[],
-  ]);
-  return json({list:[...pexels, ...pixabay]});
-}
-// Free (no image_log entry under a paid kind — see MARKETING_IMAGE_PAID_KINDS) — still logged
-// under kind='stock-import' for the same history/audit trail every other image operation gets.
-async function handleMarketingImageStockImport(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const fullUrl=String(body.full_url||'');
-  if(!fullUrl || !/^https:\/\//.test(fullUrl)) return json({error:'full_url required'}, 400);
-  try{
-    const key=await marketingStoreExternalImage(env, payload.cid, fullUrl, 'stock-import');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-// "Multi-aspect from one generation" — center-crops an already-approved image to a different
-// platform aspect (see render-pipeline/lib/imageCompose.js's reframeToAspect) instead of paying
-// for a second fal.ai generation just to get a different shape of the same shot. Deterministic,
-// free, same render-pipeline delegation as watermark/composite-background/text-overlay.
-async function handleMarketingImageReframe(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  const aspect=String(body.aspect||'');
-  if(!imageKey||!aspect) return json({error:'image_key and aspect required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'reframe', {image_url:mediaUrlFor(env,imageKey), aspect});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageAttach(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const postId=Number(body.post_id);
-  const imageKey=String(body.image_key||'');
-  if(!postId||!imageKey) return json({error:'post_id and image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const post=await env.DB.prepare(`SELECT id, status FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(postId, Number(payload.cid)).first();
-  if(!post) return json({error:'Post not found'}, 404);
-  if(post.status==='posted') return json({error:'This post has already gone out — it cannot be edited.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_content_posts SET image_key=?, updated_at=? WHERE id=?`).bind(imageKey, new Date().toISOString(), postId).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(postId).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-// Upload an arbitrary photo (a real product/shop photo, not an AI generation) — shared by Restyle
-// ("turn a real photo into a polished graphic") and anything else in this module that needs a
-// starting image beyond what's already been generated.
-async function handleMarketingImageUpload(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  const file=form?.get('file');
-  if(!file||typeof file==='string') return json({error:'file required'}, 400);
-  const mimeExt={'image/png':'png', 'image/jpeg':'jpg', 'image/webp':'webp'};
-  const ext=mimeExt[file.type];
-  if(!ext) return json({error:'Upload a PNG, JPG or WebP image.'}, 400);
-  const key=marketingImageKey(payload.cid, ext);
-  await env.MARKETING_MEDIA.put(key, file.stream(), {httpMetadata:{contentType:file.type}});
-  return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-}
-
-async function handleMarketingImageRestyle(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  const prompt=(body.prompt||'').trim().slice(0,2000);
-  if(!imageKey||!prompt) return json({error:'image_key and prompt required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.fal_api_key) return json({error:'Add a fal.ai API key first — Settings → API Keys.'}, 400);
-  try{
-    const requestId=await falSubmit(FAL_IMAGE_EDIT_MODEL, keys.fal_api_key, {prompt, image_url:mediaUrlFor(env,imageKey)});
-    const urls=await falPollImages(FAL_IMAGE_EDIT_MODEL, requestId, keys.fal_api_key);
-    const key=await marketingStoreExternalImage(env, payload.cid, urls[0], 'restyle');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-async function handleMarketingImageRemoveBackground(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.fal_api_key) return json({error:'Add a fal.ai API key first — Settings → API Keys.'}, 400);
-  try{
-    const requestId=await falSubmit(FAL_BG_REMOVE_MODEL, keys.fal_api_key, {image_url:mediaUrlFor(env,imageKey)});
-    const urls=await falPollImages(FAL_BG_REMOVE_MODEL, requestId, keys.fal_api_key);
-    const key=await marketingStoreExternalImage(env, payload.cid, urls[0], 'remove-background');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-// Shared caller for the render pipeline's deterministic (ffmpeg, no fal) POST /image-compose —
-// same HMAC-over-raw-body + fetch pattern handleMarketingDetectScenes etc. already use.
-// output_key (R2-backed render pipeline) is already a key in OUR OWN MARKETING_MEDIA bucket (see
-// render-pipeline/lib/storage.js's own comment — same bucket the Worker serves from) so it's used
-// directly; output_url (local-fallback render pipeline, no R2 there) is re-fetched into our bucket
-// via marketingStoreExternalImage so every image in this module is addressed the same way either way.
-async function marketingRenderPipelineImageCompose(env, clientId, mode, extraBody){
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) throw {status:400, message:'This needs the render pipeline configured — see SETUP.md "Marketing Studio module".'};
-  const reqBody=JSON.stringify({mode, client_id:clientId, ...extraBody});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/image-compose`;
-  let resp;
-  try{
-    resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-  }catch(e){ throw {status:502, message:'Could not reach the render pipeline: '+e.message}; }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) throw {status:502, message:data.error||('HTTP '+resp.status)};
-  if(data.output_key){ await marketingImageLog(env, clientId, mode, data.output_key); return data.output_key; }
-  if(data.output_url) return await marketingStoreExternalImage(env, clientId, data.output_url, mode);
-  throw {status:502, message:'The render pipeline did not return an image.'};
-}
-
-async function handleMarketingImageWatermark(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const settings=await env.DB.prepare(`SELECT logo_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(!settings?.logo_key) return json({error:'Upload a logo first — Image Studio → Brand logo.'}, 400);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'watermark', {image_url:mediaUrlFor(env,imageKey), logo_url:mediaUrlFor(env,settings.logo_key), position:body.position});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageCompositeBackground(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'composite-background', {cutout_url:mediaUrlFor(env,imageKey), color:body.color});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageTextOverlay(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!body.headline&&!body.subtext) return json({error:'headline or subtext required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'text-overlay', {image_url:mediaUrlFor(env,imageKey), headline:body.headline, subtext:body.subtext, text_color:body.text_color, box_color:body.box_color, position:body.position});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingLogoUpload(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  const file=form?.get('file');
-  if(!file||typeof file==='string') return json({error:'file required'}, 400);
-  const mimeExt={'image/png':'png', 'image/jpeg':'jpg', 'image/webp':'webp'};
-  const ext=mimeExt[file.type];
-  if(!ext) return json({error:'Logo must be a PNG, JPG or WebP image.'}, 400);
-  const key=`marketing/${payload.cid}/logo.${ext}`;
-  await env.MARKETING_MEDIA.put(key, file.stream(), {httpMetadata:{contentType:file.type}});
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(existing) await env.DB.prepare(`UPDATE marketing_client_settings SET logo_key=?, updated_at=? WHERE client_id=?`).bind(key, now, Number(payload.cid)).run();
-  else await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, logo_key, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(payload.cid), key, now, now).run();
-  return json({ok:true, logo_key:key, logo_url:mediaUrlFor(env,key)});
-}
-async function handleMarketingLogoGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const row=await env.DB.prepare(`SELECT logo_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  return json({logo_key:row?.logo_key||null, logo_url:row?.logo_key?mediaUrlFor(env,row.logo_key):null});
-}
-
-async function handleMarketingStylePresets(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_STYLE_PRESETS});
-}
-
-async function handleMarketingBrandStylesList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_brand_styles WHERE client_id=? ORDER BY id DESC`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(r=>({id:r.id, name:r.name, config:JSON.parse(r.config_json||'{}'), created_at:r.created_at}))});
-}
-async function handleMarketingBrandStyleCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  if(!body.name||!body.config) return json({error:'name and config required'}, 400);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_brand_styles (client_id, name, config_json, created_at) VALUES (?,?,?,?)`)
-    .bind(Number(payload.cid), String(body.name).slice(0,60), JSON.stringify(body.config), now).run();
-  return json({ok:true, id:result.meta.last_row_id});
-}
-async function handleMarketingBrandStyleDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  await env.DB.prepare(`DELETE FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
-  return json({ok:true});
-}
-
-async function handleMarketingProjectsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE client_id=? ORDER BY updated_at DESC LIMIT 200`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(marketingSerializeProject)});
-}
-
-async function handleMarketingProjectCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const title=(body.title||'').trim().slice(0,120)||'Untitled project';
-  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, language, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, targetAspect, body.language||null, 'uploading', now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, project:marketingSerializeProject(row)});
-}
-
-async function handleMarketingProjectUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const assignable={title:'title', target_aspect:'target_aspect', trim_start_sec:'trim_start_sec', trim_end_sec:'trim_end_sec', language:'language', style_id:'style_id'};
-  const sets=[], vals=[];
-  Object.entries(assignable).forEach(([field,col])=>{ if(body[field]!==undefined){ sets.push(`${col}=?`); vals.push(body[field]); } });
-  if(body.style_overrides!==undefined){ sets.push('style_overrides_json=?'); vals.push(JSON.stringify(body.style_overrides||{})); }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_projects SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(id).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-async function handleMarketingProjectDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(project.source_key) await env.MARKETING_MEDIA.delete(project.source_key).catch(()=>{});
-  if(project.output_key) await env.MARKETING_MEDIA.delete(project.output_key).catch(()=>{});
-  await env.DB.prepare(`DELETE FROM marketing_jobs WHERE project_id=?`).bind(id).run();
-  await env.DB.prepare(`DELETE FROM marketing_projects WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-// Two-step direct-to-R2 upload (replaces a single multipart-through-the-Worker POST, which
-// couldn't exceed Cloudflare's own ~100 MB-on-most-plans request-body ceiling regardless of any
-// limit this app chose): 1) upload-init returns a short-lived presigned R2 PUT URL, the browser
-// PUTs the file straight to R2 with it — the Worker never sees the file bytes, so its own
-// request-body limit is irrelevant; 2) upload-finish is called once that PUT succeeds, confirms
-// the object actually landed in R2 (a client calling this without a real successful PUT
-// shouldn't be able to point a project at a nonexistent/empty key), and does the exact same
-// D1 bookkeeping the old single-step handler did.
-async function handleMarketingProjectUploadInit(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const mime=(body.content_type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!projectId) return json({error:'project_id required'}, 400);
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const key=marketingSourceKey(payload.cid, projectId, ext);
-  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
-  return json({ok:true, upload_url:uploadUrl, source_key:key});
-}
-
-async function handleMarketingProjectUploadFinish(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const key=String(body.source_key||'');
-  const durationSec=Number(body.duration_sec)||null; // reported by the browser's <video>.duration — the Worker never decodes video
-  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(key!==marketingSourceKey(payload.cid, projectId, key.split('.').pop())) return json({error:'source_key does not match this project.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
-  if(head.size>MARKETING_SOURCE_MAX_BYTES){
-    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
-    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
-  }
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
-    .bind(key, durationSec, durationSec, now, projectId).run();
-  // Also registered as clip #0 (marketing_project_clips) — see the "MULTI-CLIP PROJECTS" block
-  // below — so a project that only ever gets this one direct upload behaves identically to
-  // before (no extra step), while one that later adds more clips via /marketing/projects/clips
-  // has a consistent, complete clip list to combine (this upload included) rather than a gap.
-  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE project_id=? AND order_index=0`).bind(projectId).run();
-  await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,0,?)`)
-    .bind(projectId, Number(payload.cid), key, durationSec, now).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-/* ── MULTI-CLIP PROJECTS (SETUP.md "Marketing Studio module — Multi-clip projects & template
-   library") — a project can hold several uploaded clips (marketing_project_clips), stitched by
-   render-pipeline's POST /concat-clips into one combined source video before the existing
-   transcribe/caption/render pipeline runs on it unchanged. Clips are addressed by their own R2
-   keys (marketingClipKey), separate from the project's own source_key (the COMBINED output). ── */
-function marketingClipKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/clips/${crypto.randomUUID()}.${ext}`; }
-function marketingSerializeClip(row){
-  return {id:row.id, source_key:row.source_key, source_duration_sec:row.source_duration_sec, order_index:row.order_index, created_at:row.created_at};
-}
-
-async function handleMarketingClipsList(request, env, url){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const projectId=Number(url.searchParams.get('project_id'));
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
-  return json({list:(results||[]).map(marketingSerializeClip)});
-}
-
-// Same two-step direct-to-R2 pattern as handleMarketingProjectUploadInit/Finish above — see that
-// pair's comment for why. The clip key embeds a random UUID (marketingClipKey) generated here at
-// init time, not reconstructible from client input the way the project's source key is, so
-// upload-finish's ownership check is a prefix match against this client+project's own clip
-// namespace instead of an exact-key rebuild — still exactly scoped to what this session owns.
-async function handleMarketingClipUploadInit(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const mime=(body.content_type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!projectId) return json({error:'project_id required'}, 400);
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const key=marketingClipKey(payload.cid, projectId, ext);
-  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
-  return json({ok:true, upload_url:uploadUrl, source_key:key});
-}
-
-async function handleMarketingClipUploadFinish(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const key=String(body.source_key||'');
-  const durationSec=Number(body.duration_sec)||null;
-  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!key.startsWith(`marketing/${payload.cid}/${projectId}/clips/`)) return json({error:'source_key does not match this project.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
-  if(head.size>MARKETING_SOURCE_MAX_BYTES){
-    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
-    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
-  }
-  const maxOrder=await env.DB.prepare(`SELECT COALESCE(MAX(order_index),-1) AS m FROM marketing_project_clips WHERE project_id=?`).bind(projectId).first();
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,?,?)`)
-    .bind(projectId, Number(payload.cid), key, durationSec, (maxOrder?.m ?? -1)+1, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, clip:marketingSerializeClip(row)});
-}
-
-async function handleMarketingClipDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const clip=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!clip) return json({error:'Not found'}, 404);
-  await env.MARKETING_MEDIA.delete(clip.source_key).catch(()=>{});
-  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-async function handleMarketingClipsReorder(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const order=Array.isArray(body.order)?body.order.map(Number):[];
-  if(!projectId||!order.length) return json({error:'project_id and order (an array of clip ids) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  for(let i=0;i<order.length;i++){
-    await env.DB.prepare(`UPDATE marketing_project_clips SET order_index=? WHERE id=? AND project_id=?`).bind(i, order[i], projectId).run();
-  }
-  return json({ok:true});
-}
-
-// Stitches every clip (in order_index order) into one combined video via render-pipeline's
-// POST /concat-clips, then treats that combined video exactly like a normal single-video upload
-// (sets source_key/source_duration_sec, status='uploaded') — everything downstream (transcribe,
-// captions, render) never needs to know this project started out as several clips. Clips
-// themselves aren't deleted after combining, so re-adding/reordering/re-combining stays possible.
-async function handleMarketingCombineClips(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Combining clips needs the render pipeline configured — see SETUP.md "Marketing Studio module".'}, 400);
-  const {results:clips}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
-  if(!clips||clips.length<1) return json({error:'Upload at least one clip first.'}, 400);
-
-  const sourceUrls=clips.map(c=>`${env.WORKER_BASE_URL}/marketing/media/${c.source_key}`);
-  const resolution=MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
-  const reqBody=JSON.stringify({source_urls:sourceUrls, resolution, client_id:Number(payload.cid), project_id:projectId});
-  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const concatEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/concat-clips`;
-  let resp;
-  try{
-    resp=await fetch(concatEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:reqBody});
-  }catch(e){
-    return json({error:'Could not reach the render pipeline to combine clips: '+e.message}, 502);
-  }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok||!data.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
-
-  const key=data.output_key||null;
-  const now=new Date().toISOString();
-  if(key){
-    await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
-      .bind(key, data.duration_sec||null, data.duration_sec||null, now, projectId).run();
-  } else if(data.output_url){
-    // Local-fallback storage mode (no R2) — the combined file lives outside this app's own
-    // media serving, so store the URL directly rather than a key (marketingSerializeProject/
-    // the frontend's video player both already accept a full absolute source_key... no — the
-    // frontend builds mediaUrl() from source_key assuming it's an R2 key. In local-fallback mode
-    // there's no R2 key to store, so this path isn't supported — surface that clearly instead of
-    // silently storing a URL the rest of the app can't use.
-    return json({error:'Combining clips requires the render pipeline to be configured with R2 storage (LOCAL_PUBLIC_BASE_URL fallback mode is not supported for this feature).'}, 400);
-  }
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-// Direct-from-Worker Whisper call — the fallback path in handleMarketingTranscribe when the
-// render pipeline isn't configured (render-pipeline/lib/transcribe.js has its own copy of this
-// for the primary path, since it runs in a different runtime). Throws on any non-2xx response
-// with the API's own error message, so callers can pattern-match specific errors (e.g. retrying
-// without an unsupported `language` hint) without re-parsing the response themselves.
-async function marketingCallWhisper(env, fileBytes, fileMime, fileName, language){
-  const form=new FormData();
-  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
-  form.append('model', 'whisper-1');
-  form.append('response_format', 'verbose_json');
-  form.append('timestamp_granularities[]', 'word');
-  if(language) form.append('language', language); // omit to let the API auto-detect
-  const r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
-    method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
-  return data;
-}
-
-// Transcription runs inline (one HTTP call, no async job needed on this end) — see the module
-// header comment above for why this is real, in-Worker work while rendering is not.
-async function handleMarketingTranscribe(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  const renderPipelineConfigured=!!(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET);
-  if(!renderPipelineConfigured && !env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const now0=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
-  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
-  const jobId=jobResult.meta.last_row_id;
-  const languageHint=body.language||project.language;
-
-  // OpenAI's Whisper endpoint blocks requests whose source IP resolves to certain
-  // countries/regions AND hard-caps requests at 25 MB. Cloudflare Workers run on a globally
-  // distributed edge network with an unpredictable egress IP per request, so calling OpenAI
-  // directly from HERE can hit the country block even when the account/user's actual location is
-  // fine — this really happened ("Country, region, or territory not supported"), not a
-  // hypothetical. When the render pipeline is configured, route the actual OpenAI call through it
-  // instead (render-pipeline/lib/transcribe.js) — it runs on one fixed host, so its egress IP is
-  // stable, and it extracts audio-only first (same fix /extract-audio already applied elsewhere),
-  // solving the 25 MB cap too. Falls back to calling OpenAI directly from here (raw video,
-  // Worker-held key) when the render pipeline isn't configured, so transcription still works
-  // without it set up — just subject to both the 25 MB cap and the country-block risk.
-  let data;
-  if(renderPipelineConfigured){
-    const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-    const reqBody=JSON.stringify({source_url:sourceUrl, language:languageHint||null});
-    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-    const transcribeEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/transcribe`;
-    let resp;
-    try{
-      resp=await fetch(transcribeEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-    }catch(e){
-      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to transcribe: '+e.message, 'uploaded');
-      return json({error:'Could not reach the render pipeline to transcribe.'}, 502);
-    }
-    data=await resp.json().catch(()=>({}));
-    if(!resp.ok){
-      const errMsg=data?.error||('HTTP '+resp.status);
-      await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
-      return json({error:errMsg}, 502);
-    }
-  } else {
-    const obj=await env.MARKETING_MEDIA.get(project.source_key);
-    if(!obj) return json({error:'Source video not found in storage.'}, 404);
-    const fileBytes=await obj.arrayBuffer();
-    const ext=(project.source_key.split('.').pop()||'mp4');
-    const fileMime=obj.httpMetadata?.contentType||'video/mp4';
-    const fileName=`source.${ext}`;
-    try{
-      data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, languageHint);
-    }catch(e){
-      // A language hint a project can be tagged with (e.g. Malayalam, "ml") isn't necessarily in
-      // OpenAI's Whisper API's accepted `language` parameter list — confirmed via a real
-      // "Language 'ml' is not supported." response — even though the model can often still
-      // transcribe that audio correctly through auto-detection; the parameter is only a decoding
-      // hint. Retry once without it instead of failing the whole transcription.
-      if(languageHint && /language .* is not supported/i.test(e.message||'')){
-        try{ data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, null); }
-        catch(e2){ await marketingFailJob(env, jobId, projectId, e2.message, 'uploaded'); return json({error:e2.message}, 502); }
-      } else {
-        await marketingFailJob(env, jobId, projectId, e.message, 'uploaded');
-        return json({error:e.message}, 502);
-      }
-    }
-  }
-
-  const words=marketingWordsFromTranscription(data);
-  const transcript={language:data.language||languageHint||null, text:data.text||'', words};
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET transcript_json=?, captions_json=?, language=?, status='ready', updated_at=? WHERE id=?`)
-    .bind(JSON.stringify(transcript), JSON.stringify(transcript), transcript.language, now, projectId).run();
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, completed_at=?, updated_at=? WHERE id=?`).bind(now, now, jobId).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-async function handleMarketingCaptionsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!body.captions) return json({error:'project_id and captions required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET captions_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.captions), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Auto-translate captions — MyMemory Translation API (api.mymemory.translated.net), genuinely
-// free with NO API key/signup at all: 5,000 chars/day anonymously by IP, or 50,000/day if a
-// contact email is set via the `de=` param (env.MYMEMORY_EMAIL, a shared server-level setting, not
-// per-client — it's just a quota-multiplier, not a real credential like the Pexels/Pixabay/
-// Freesound/fal.ai keys). Splits into ~450-char chunks (MyMemory's own per-query limit is small)
-// joined on word boundaries, translated sequentially (not parallel — the daily budget is shared
-// across every chunk/project/client on this Worker, so bursts don't help and risk 429s).
-function marketingChunkText(text, maxLen){
-  const words=text.split(/\s+/);
-  const chunks=[]; let cur='';
-  for(const w of words){
-    if(cur && (cur+' '+w).length>maxLen){ chunks.push(cur); cur=w; }
-    else cur=cur?cur+' '+w:w;
-  }
-  if(cur) chunks.push(cur);
-  return chunks;
-}
-async function marketingTranslateChunk(text, sourceLang, targetLang, env){
-  const emailParam=env.MYMEMORY_EMAIL?`&de=${encodeURIComponent(env.MYMEMORY_EMAIL)}`:'';
-  const url=`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}${emailParam}`;
-  const r=await fetch(url);
-  if(!r.ok) throw new Error(`MyMemory translation failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  if(data.responseStatus && Number(data.responseStatus)!==200) throw new Error(data.responseDetails||'MyMemory translation error');
-  return data.responseData?.translatedText||'';
-}
-async function handleMarketingTranslateCaptions(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  const targetLang=(body.target_language||'').trim();
-  if(!id||!targetLang) return json({error:'project_id and target_language required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — translation is derived from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const words=transcript.words||[];
-  if(!words.length) return json({error:'Transcript has no words to translate.'}, 400);
-  // Capped well under MyMemory's smallest free daily budget (5,000 chars/day with no email set)
-  // so one long project can't exhaust the WHOLE Worker's shared quota by itself.
-  const text=(transcript.text||words.map(w=>w.word).join(' ')).slice(0, 4500);
-  const sourceLang=project.language||'en';
-  const chunks=marketingChunkText(text, 450);
-  let translatedText='';
-  try{
-    for(const chunk of chunks){
-      const piece=await marketingTranslateChunk(chunk, sourceLang, targetLang, env);
-      translatedText+=(translatedText?' ':'')+piece;
-    }
-  }catch(e){ return json({error:'Translation failed: '+e.message}, 502); }
-
-  // Word-level timing can't survive translation (word order/count changes across languages) — the
-  // translated words are evenly spread across the SAME total time span the original transcript
-  // covered, the same honest "equal split" approximation this module already uses elsewhere
-  // (splitSceneEvenly/redistributeCaptionsAcrossScenes) rather than a false claim of exact sync.
-  const translatedWords=translatedText.split(/\s+/).filter(Boolean);
-  if(!translatedWords.length) return json({error:'Translation returned no text.'}, 502);
-  const firstStart=Number(words[0]?.start)||0;
-  const lastEnd=Number(words[words.length-1]?.end)||firstStart+1;
-  const totalDur=Math.max(0.1, lastEnd-firstStart);
-  const perWord=totalDur/translatedWords.length;
-  const newWords=translatedWords.map((w,i)=>({word:w, start:firstStart+i*perWord, end:firstStart+(i+1)*perWord}));
-  return json({ok:true, captions:{words:newWords}, language:targetLang});
-}
-
-// AI voiceover/dubbing — free, fully local text-to-speech (render-pipeline/lib/tts.js, espeak-ng)
-// generating a standalone narration track from the transcript (or custom text). v1 scope: produces
-// a real, downloadable audio file — it does NOT automatically dub/time-align itself into the
-// video render (the original speech and a synthesized voiceover generally run different lengths
-// for the same text, and reconciling that against the existing silence-cut/caption-timing
-// machinery is real additional work, not attempted here). A natural future addition, not built.
-async function handleMarketingGenerateVoiceover(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Voiceover generation requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  let text=(body.text||'').trim();
-  if(!text && project.transcript_json){
-    try{ const t=JSON.parse(project.transcript_json); text=(t.text||(t.words||[]).map(w=>w.word).join(' ')||'').trim(); }catch(e){}
-  }
-  if(!text) return json({error:'No text to synthesize — transcribe first, or type custom voiceover text.'}, 400);
-  text=text.slice(0, 5000);
-
-  const reqBody=JSON.stringify({text, language:body.language||project.language||'en', client_id:Number(payload.cid), project_id:projectId});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voiceover`;
-  let resp;
-  try{ resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody}); }
-  catch(e){ return json({error:'Could not reach the render pipeline: '+e.message}, 502); }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) return json({error:data?.error||('HTTP '+resp.status)}, 502);
-  const outputUrl=data.output_url||(data.output_key?`${env.WORKER_BASE_URL}/marketing/media/${data.output_key}`:null);
-  return json({ok:true, output_url:outputUrl});
-}
-
-async function handleMarketingAutoeditPresets(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_AUTOEDIT_PRESETS});
-}
-
-// Free (no external call) cue suggestion pass — see marketingSuggestCuesHeuristic. Overwrites
-// any previously suggested-but-unreviewed cues; a project's already-reviewed cues can still be
-// edited afterwards via handleMarketingCuesSave, same "suggest, then edit" shape as transcribe→
-// caption-edit above.
-async function handleMarketingSuggestCues(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — cue suggestions are derived from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const cues=marketingSuggestCuesHeuristic(transcript);
-  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(cues), new Date().toISOString(), id).run();
-  return json({ok:true, cues});
-}
-
-async function handleMarketingCuesSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!Array.isArray(body.cues)) return json({error:'project_id and cues (an array) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Auto-edit toggle selections ("apply without clicking Save, can still amend") — the frontend
-// autosaves here (debounced) on every chip/select change in Editor step 3, so a returning visit
-// restores exactly what was picked, same edit-in-place shape as cues_json/captions_json. Note this
-// is purely about PERSISTING the selections for next time — a render/preview already reads these
-// values live off the DOM at the moment you click Render/Preview (marketingBuildRenderSpec takes
-// `opts` straight from that request body), so nothing here is required for a render to pick up
-// current toggle state; this only prevents the picks themselves from being lost on reload.
-async function handleMarketingAutoeditOptionsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!body.options||typeof body.options!=='object') return json({error:'project_id and options (an object) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET autoedit_options_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.options), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Social caption + hashtags for the post itself ("what do I write when I share this clip") —
-// reuses the same shared GEMINI_API_KEY/engineGeminiGenerate the Conversation Engine already
-// calls, not a new integration. Best-effort: if no key is configured or the call fails, a plain
-// heuristic fallback (first sentence + a couple of generic hashtags) still returns something
-// usable rather than erroring the whole request — this is a nice-to-have suggestion, not something
-// that should block "Send to WhatsApp."
-async function handleMarketingSuggestCaption(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — the caption is drafted from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const text=(transcript.text||(transcript.words||[]).map(w=>w.word).join(' ')||'').slice(0, 4000);
-  if(!text.trim()) return json({error:'Transcript is empty.'}, 400);
-
-  const raw=await engineGeminiGenerate(env,
-    'You write short, punchy social captions for a video clip, based on its transcript. Reply with ONLY compact JSON: {"caption":"...", "hashtags":["...", "..."]}. caption: 1-2 sentences, no hashtags inside it, matching the transcript\'s own language/tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
-    text, {json:true, maxOutputTokens:250});
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(parsed && typeof parsed.caption==='string' && Array.isArray(parsed.hashtags)){
-        return json({ok:true, caption:parsed.caption.trim(), hashtags:parsed.hashtags.map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8), source:'ai'});
-      }
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  // Heuristic fallback — no key configured, or the model didn't return valid JSON.
-  const firstSentence=(text.match(/^[^.!?]*[.!?]/)||[text.slice(0,140)])[0].trim();
-  return json({ok:true, caption:firstSentence, hashtags:['reels','video','smallbusiness'], source:'heuristic'});
-}
-
-// Real shot/cut detection (render-pipeline/lib/sceneDetect.js) — not a heuristic, actual ffmpeg
-// frame-difference analysis, same "delegate what a Worker structurally can't do" boundary as
-// transcription/rendering. Scenes group the caption editor's word list for per-scene editing
-// (SETUP.md "Marketing Studio module — Scene detection & per-scene editing").
-async function handleMarketingDetectScenes(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Scene detection requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT source_key FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-  const reqBody=JSON.stringify({source_url:sourceUrl, client_id:payload.cid, project_id:id});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/detect-scenes`;
-  let resp;
-  try{
-    resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-  }catch(e){
-    return json({error:'Could not reach the render pipeline to detect scenes: '+e.message}, 502);
-  }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
-  // Same output_key/output_url duality the render-complete webhook already resolves (R2-backed vs.
-  // local-fallback render pipeline) — thumbnails go through the identical GET /marketing/media/:key
-  // route either way once resolved to a full URL.
-  const scenes=(data.scenes||[]).map(s=>({...s, thumbnail_url:s.output_url||(s.output_key?`${env.WORKER_BASE_URL}/marketing/media/${s.output_key}`:null), output_key:undefined, output_url:undefined}));
-  await env.DB.prepare(`UPDATE marketing_projects SET scenes_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(scenes), new Date().toISOString(), id).run();
-  return json({ok:true, scenes});
-}
-
-// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
-// style_id ('custom:<marketing_brand_styles.id>' or a MARKETING_STYLE_PRESETS id) to its config.
-async function marketingResolveStyle(env, clientId, styleId){
-  if((styleId||'').startsWith('custom:')){
-    const brandStyleId=Number(styleId.slice(7));
-    const row=await env.DB.prepare(`SELECT config_json FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(brandStyleId, Number(clientId)).first();
-    if(row){ try{ return JSON.parse(row.config_json); }catch(e){} }
-    return MARKETING_STYLE_PRESETS[0];
-  }
-  return MARKETING_STYLE_PRESETS.find(p=>p.id===styleId)||MARKETING_STYLE_PRESETS[0];
-}
-
-// No active/trialing subscription → watermarked export (#14 "watermark-free export on paid tier").
-function marketingIsWatermarked(client){ return !['active','trialing'].includes(client?.plan_status); }
-
-// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — creates the
-// marketing_jobs row, signs + posts the spec to the external render pipeline, and marks the
-// project 'rendering' (or reverts both to a failed/retryable state if the pipeline can't be
-// reached). Returns {ok, job_id} or {ok:false, error}.
-// jobType/updateProjectStatus let a preview render (handleMarketingPreview below) reuse the exact
-// same submit path as a real render without disturbing the project row — a preview must never
-// overwrite the project's real output/status, since it's a throwaway short/draft-quality clip,
-// not the deliverable.
-async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail, jobType='render', updateProjectStatus=true){
-  const now=new Date().toISOString();
-  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(clientId), jobType, 'queued', JSON.stringify(spec), now, now).run();
-  const jobId=jobResult.meta.last_row_id;
-
-  const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(clientId), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
-  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, outboundBody);
-  let sendErr=null;
-  try{
-    const r=await fetch(env.MARKETING_RENDER_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:outboundBody});
-    if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
-  }catch(e){ sendErr=e.message; }
-  if(sendErr){
-    await marketingFailJob(env, jobId, projectId, sendErr, updateProjectStatus?revertStatusOnFail:null);
-    return {ok:false, error:sendErr};
-  }
-
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
-  if(updateProjectStatus) await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
-  return {ok:true, job_id:jobId};
-}
-
-// Shared by handleMarketingRenderStart and handleMarketingPreview — everything about turning a
-// project + its current auto-edit/cue options into a render spec, independent of trim
-// range/quality/billing (each caller decides those). Throws (caller catches) rather than
-// returning a Response, since a preview needs the same validation without duplicating it.
-const MARKETING_HEX_COLOR_RE=/^#?[0-9a-fA-F]{6}$/;
-function marketingSanitizeHexColor(c, fallback){ return MARKETING_HEX_COLOR_RE.test(c||'')?c:fallback; }
-
-async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart, trimEnd, watermarked, qualityOverride, aspectOverride){
-  const style=await marketingResolveStyle(env, clientId, project.style_id);
-  let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
-  let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ throw new Error('Captions are corrupted — re-transcribe.'); }
-
-  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
-  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
-  // preset and then hand-tweaking one toggle behaves as expected.
-  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
-  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
-  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
-  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
-
-  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
-  const clientKeys=await marketingGetClientKeys(env, clientId);
-  const aspect=['9:16','1:1','16:9'].includes(aspectOverride)?aspectOverride:(project.target_aspect||'9:16');
-
-  // Chroma key (green screen) — off unless explicitly enabled with a color; hex colors
-  // re-sanitized here (not just trusted from the request body) since they're interpolated
-  // straight into an ffmpeg filter string on the render pipeline (see filtergraph.js's own
-  // defense-in-depth re-check of the same fields — belt and suspenders, not redundant, since a
-  // spec could in principle reach the render pipeline from a future caller other than this one).
-  const chromaKeyOpts=opts.chroma_key;
-  const chromaKey=(chromaKeyOpts && chromaKeyOpts.enabled) ? {
-    enabled:true,
-    color:marketingSanitizeHexColor(chromaKeyOpts.color, '#00FF00'),
-    similarity:Math.min(0.6, Math.max(0.05, Number(chromaKeyOpts.similarity)||0.3)),
-    blend:Math.min(0.5, Math.max(0, Number(chromaKeyOpts.blend)||0.1)),
-    background_color:marketingSanitizeHexColor(chromaKeyOpts.background_color, '#000000'),
-  } : null;
-
-  return {
-    mode:'caption-clip',
-    // Only present when the client configured their own (see marketingGetClientKeys) — the
-    // render pipeline falls back to its own shared env vars for whichever of these is absent
-    // (lib/assets.js's resolveBroll/resolveSfx), so this is additive, never a hard requirement.
-    client_keys:clientKeys,
-    source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
-    trim_start_sec:trimStart, trim_end_sec:trimEnd,
-    // aspectOverride lets a batch multi-aspect export (see handleMarketingRenderStart) render the
-    // SAME project at a different aspect than its own saved target_aspect, without touching the
-    // project row itself.
-    target_aspect:aspect,
-    resolution:MARKETING_RESOLUTIONS[aspect]||MARKETING_RESOLUTIONS['9:16'],
-    captions, style:{...style, ...overrides},
-    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
-    // Zero-cost extension of silence-cut using the transcript's own word-level timestamps — no
-    // new API, see render-pipeline/lib/fillerWords.js.
-    filler_word_cut:!!opts.filler_word_cut,
-    broll_density:preset?.broll_density||'none', cues,
-    // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
-    // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
-    // against MARKETING_QUALITY_LEVELS rather than passed through raw, so a typo/garbage value
-    // can't silently reach ffmpeg — falls back to 'standard'. qualityOverride forces 'draft' for
-    // previews regardless of what the project's real export quality is set to.
-    quality:qualityOverride||(MARKETING_QUALITY_LEVELS.includes(opts.quality)?opts.quality:'standard'),
-    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
-    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
-    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
-    // becomes a no-op when this is set), not just documentation.
-    text_behind_subject:!!opts.text_behind_subject,
-    // A single clip-wide speed change (slow-mo <1 / time-lapse >1), not CapCut's full per-segment
-    // ramping — see render-pipeline/lib/filtergraph.js's comment on this v1 scope decision.
-    // Clamped here too (not just in the filtergraph), matching ffmpeg's own atempo range.
-    speed_factor:Math.min(2, Math.max(0.5, Number(opts.speed_factor)||1)),
-    // ffmpeg's built-in FFT denoiser — no new API, no model file to ship.
-    denoise:!!opts.denoise,
-    chroma_key:chromaKey,
-    // Smart auto-reframe — reuses the same local RVM person-matting model text_behind_subject
-    // uses (render-pipeline/lib/autoReframe.js), tracking the subject horizontally instead of
-    // always center-cropping. Best-effort on the render pipeline (falls back to center-crop).
-    auto_reframe:!!opts.auto_reframe,
-    // Beat-synced cuts — snaps B-roll/SFX cue start times to the nearest detected beat in the
-    // background music (render-pipeline/lib/beatDetect.js). A no-op unless background_music is
-    // also set — there's no music track to detect beats in otherwise.
-    beat_sync:!!opts.beat_sync,
-    watermark:watermarked,
-  };
-}
-
-// Kicks off an async render on the external pipeline — see the module header comment for why
-// this can't run inside the Worker itself. Also where usage metering (#18) and the free-tier
-// watermark (#14) are decided, both against the client's own Clients row (plan_status/
-// marketing_minutes_used/marketing_minutes_limit), never anything client-supplied.
-async function handleMarketingRenderStart(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const c=await getClientById(env, payload.cid);
-  const trimStart=Number(project.trim_start_sec)||0;
-  const trimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||trimStart);
-  const durationSec=Math.max(0, trimEnd-trimStart);
-  const minutesPerRender=Math.max(1, Math.ceil(durationSec/60));
-
-  // Batch multi-aspect export ("give me 9:16 AND 1:1 AND 16:9 from one click") — the project's own
-  // target_aspect always renders as the normal, primary render (jobType:'render', the one whose
-  // result becomes the project's output_key/output_url); any OTHER aspects requested in
-  // body.aspects render as jobType:'render_extra' — real, billable renders (same minutes cost as
-  // any other render), but their result only ever lives on their own job row
-  // (marketing_jobs.output_url), same as a preview/AI-broll job, so they never fight the primary
-  // render for the one output_key column a project has.
-  const extraAspects=Array.isArray(body.aspects)
-    ? [...new Set(body.aspects.filter(a=>['9:16','1:1','16:9'].includes(a) && a!==(project.target_aspect||'9:16')))]
-    : [];
-  const totalRenders=1+extraAspects.length;
-  const minutesNeeded=minutesPerRender*totalRenders;
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min (${totalRenders} aspect${totalRenders>1?'s':''}) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
-
-  const watermarked=marketingIsWatermarked(c);
-  let spec;
-  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked); }
-  catch(e){ return json({error:e.message}, 400); }
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-
-  const extraJobIds=[];
-  for(const aspect of extraAspects){
-    let extraSpec;
-    try{ extraSpec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked, null, aspect); }
-    catch(e){ continue; } // same captions/style as the primary render — shouldn't fail independently, but a batch export partially succeeding is better than the whole thing failing
-    const extraResult=await marketingSubmitRenderJob(env, payload.cid, projectId, extraSpec, null, 'render_extra', false);
-    if(extraResult.ok) extraJobIds.push({aspect, job_id:extraResult.job_id});
-  }
-  return json({ok:true, job_id:result.job_id, extra_jobs:extraJobIds});
-}
-
-// Apply/preview (SETUP.md "Marketing Studio module — Apply/preview renders") — a short (max 12s),
-// draft-quality render of the CURRENT auto-edit/cue settings, so they can be checked before
-// committing to a full render. Real render job on the real pipeline, not a mock — just capped
-// short and marked jobType:'preview' so marketingSubmitRenderJob/handleMarketingRenderWebhook
-// skip billing and never touch the project's actual output/status (see those functions' comments).
-async function handleMarketingPreview(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const fullTrimStart=Number(project.trim_start_sec)||0;
-  const fullTrimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||fullTrimStart);
-  const PREVIEW_MAX_SEC=12;
-  let previewStart=fullTrimStart, previewEnd=Math.min(fullTrimEnd, fullTrimStart+PREVIEW_MAX_SEC);
-  // A specific scene's own range if given (the per-scene "🔍 Preview" button), still capped —
-  // a scene can itself be longer than the preview window is worth spending render time on.
-  if(Number.isInteger(body.scene_index)){
-    let scenes=[]; try{ scenes=JSON.parse(project.scenes_json||'[]'); }catch(e){}
-    const scene=scenes[body.scene_index];
-    if(scene){ previewStart=Math.max(fullTrimStart, scene.start); previewEnd=Math.min(fullTrimEnd, Math.min(scene.end, scene.start+PREVIEW_MAX_SEC)); }
-  }
-  if(previewEnd<=previewStart) return json({error:'Nothing to preview in this range.'}, 400);
-
-  const c=await getClientById(env, payload.cid);
-  const watermarked=marketingIsWatermarked(c);
-  let spec;
-  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, previewStart, previewEnd, watermarked, 'draft'); }
-  catch(e){ return json({error:e.message}, 400); }
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'preview', false);
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-  return json({ok:true, job_id:result.job_id});
-}
-
-// AI-generated B-roll (see render-pipeline/lib/falBroll.js) — fal.ai is PAID, so this only runs
-// when the client has set their own fal_api_key in Marketing Studio > 🔑 API Keys; there is no
-// shared server default to fall back to (unlike Pexels/Pixabay/Freesound), so a client's spend is
-// always billed to their own key. Runs on the SAME job queue/webhook as a real render
-// (jobType:'ai_broll', updateProjectStatus:false) — see handleMarketingRenderWebhook's job.type
-// branch for why it never touches the project's output/status/minutes.
-async function handleMarketingGenerateAiBroll(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const tag=(body.tag||'').trim();
-  const prompt=(body.prompt||'').trim();
-  if(!projectId||!tag||!prompt) return json({error:'project_id, tag and prompt are required.'}, 400);
-  const project=await env.DB.prepare(`SELECT target_aspect FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const clientKeys=await marketingGetClientKeys(env, payload.cid);
-  if(!clientKeys.fal_api_key) return json({error:'Set your fal.ai API key first — Marketing Studio > 🔑 API Keys (fal.ai is paid; this feature bills to your own key, not a shared default).'}, 400);
-  const spec={mode:'ai-broll', tag, prompt, target_aspect:project.target_aspect||'9:16', client_keys:clientKeys};
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'ai_broll', false);
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-  return json({ok:true, job_id:result.job_id});
-}
-
-async function handleMarketingJobsList(request, env, url){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const projectId=Number(url.searchParams.get('project_id'));
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const {results}=await env.DB.prepare(`SELECT id, type, status, progress_pct, error, output_url, created_at, updated_at, completed_at FROM marketing_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20`).bind(projectId).all();
-  return json({list:results||[]});
-}
-
-// PUBLIC route — the external render pipeline calls this back, not the dashboard, so there's no
-// session token to check. Authenticated instead via MARKETING_RENDER_WEBHOOK_SECRET, same
-// HMAC-over-raw-body scheme as verifyShopifyWebhookHmac (just a generic secret instead of a
-// Shopify one, since the pipeline is whatever the operator wired up rather than a fixed vendor).
-async function handleMarketingRenderWebhook(request, env){
-  const rawBody=await request.text();
-  if(!env.MARKETING_RENDER_WEBHOOK_SECRET||!await verifyHmacSignature(env.MARKETING_RENDER_WEBHOOK_SECRET, rawBody, request.headers.get('X-Signature'))){
-    return json({error:'Invalid signature'}, 401);
-  }
-  const body=JSON.parse(rawBody);
-  const jobId=Number(body.job_id);
-  const job=await env.DB.prepare(`SELECT * FROM marketing_jobs WHERE id=?`).bind(jobId).first();
-  if(!job) return json({error:'Unknown job'}, 404);
-  const now=new Date().toISOString();
-  const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
-  if(body.status==='done'){
-    await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, output_url=?, completed_at=?, updated_at=? WHERE id=?`).bind(outputUrl, now, now, job.id).run();
-    // Previews/AI-broll-generation are never the project's deliverable, so they never touch the
-    // project row. 'render_extra' (a batch multi-aspect export's non-primary aspects — see
-    // handleMarketingRenderStart) IS a real deliverable render, just not the project's *canonical*
-    // one (the project only has one output_key column) — its result lives on the job row only
-    // (already written above), same place a preview's does, but unlike a preview it's still a real
-    // billable render, so minutes billing runs for it while the project-row update doesn't.
-    if(job.type==='render'){
-      await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
-        .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
-    }
-    if(job.type==='render' || job.type==='render_extra'){
-      const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
-      if(minutes>0){
-        const c=await getClientById(env, job.client_id);
-        await patchClientFields(env, job.client_id, {marketing_minutes_used:(Number(c?.marketing_minutes_used)||0)+minutes});
-      }
-    }
-  } else {
-    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', ['preview','ai_broll','render_extra'].includes(job.type)?null:'ready');
-  }
-  return json({ok:true});
-}
-
-// Public, no session — same trust model as handleEcomCategoryMediaServe/handleHospitalityMediaServe
-// (the <video> tag / WhatsApp's own media fetch can't send an Authorization header; the key,
-// keyed by client+project, isn't guessable). Supports Range requests since video scrubbing in the
-// project editor's preview player needs them (plain full-body GETs stall Safari's seek bar).
-async function handleMarketingMediaServe(request, env, key){
-  if(!key) return json({error:'Not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Not found'}, 404);
-  let range=null;
-  const rangeHeader=request.headers.get('Range');
-  if(rangeHeader){
-    const m=/bytes=(\d*)-(\d*)/.exec(rangeHeader);
-    if(m){
-      const start=m[1]?parseInt(m[1],10):0;
-      const end=m[2]?parseInt(m[2],10):head.size-1;
-      range={offset:start, length:Math.min(end,head.size-1)-start+1};
-    }
-  }
-  const obj=await env.MARKETING_MEDIA.get(key, range?{range}:undefined);
-  if(!obj) return json({error:'Not found'}, 404);
-  const headers=new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set('etag', obj.httpEtag);
-  headers.set('Cache-Control', 'public, max-age=86400');
-  headers.set('Accept-Ranges', 'bytes');
-  if(range){
-    headers.set('Content-Range', `bytes ${range.offset}-${range.offset+range.length-1}/${head.size}`);
-    return new Response(obj.body, {status:206, headers});
-  }
-  return new Response(obj.body, {headers});
-}
-
-// Direct send-to-WhatsApp (#17) — reuses the same wa_phone_id/wa_token Graph API credentials as
-// handleWaSend, just a `video` message (link, not upload) instead of `text`, fitting the
-// existing Chatwoot/WhatsApp infra rather than inventing a new delivery channel.
-async function handleMarketingSendWhatsapp(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  const phone=(body.phone||'').replace(/[^0-9]/g,'');
-  if(!id||!phone) return json({error:'project_id and phone required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.output_url) return json({error:'This project has not finished rendering yet.'}, 400);
-  const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'video', video:{link:project.output_url, caption:project.title||''}}),
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  return json({ok:true});
-}
-
-/* ── VIDEO TEMPLATES (SETUP.md "Marketing Studio module — Video Templates") — "create videos
-   using code instead of editing, generate hundreds automatically": a template is a scene spec
-   (JSON, not a WYSIWYG editor) with {{variable}} placeholders; generating a batch substitutes
-   each row of data into that spec and submits one render job per row through the exact same
-   marketingSubmitRenderJob()/external pipeline as a regular project — a template-generated
-   project is a normal marketing_projects row (template_id/template_vars_json just record where
-   it came from), so it shows up in the ordinary Projects list/download/WhatsApp-send flow. ── */
-
-const MARKETING_TEMPLATE_BATCH_MAX=100; // "hundreds automatically" is the pitch; a hard cap keeps one request from fanning out an unbounded number of render jobs (and unbounded minutes spend) at once — regenerate in further batches for more than this.
-
-// Template Library ("create a template library like Captions.ai") — curated starter templates
-// any client can browse and clone into their own editable marketing_templates row
-// (handleMarketingTemplateLibraryClone below). Static list, same zero-cost shape as
-// MARKETING_STYLE_PRESETS/MARKETING_AUTOEDIT_PRESETS — no seed data in D1, nothing to migrate.
-const MARKETING_TEMPLATE_LIBRARY=[
-  {id:'flash-sale', name:'Flash Sale', category:'Ecommerce', description:'Bold discount announcement with an urgency close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'⚡ {{discount}}% OFF', duration_sec:3, text_color:'#FFFFFF', bg_color:'#DC2626'},
-      {type:'text', content:'{{product_name}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:'Ends {{end_date}} — Shop Now!', duration_sec:3, text_color:'#FFE600', bg_color:'#DC2626'},
-    ]},
-  {id:'product-launch', name:'Product Launch', category:'Ecommerce', description:'Three-beat reveal: intro, name, tagline.', target_aspect:'9:16', style_id:'gradient-glow', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'Introducing', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:'{{product_name}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{tagline}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'testimonial-quote', name:'Testimonial Quote', category:'Trust & Social Proof', description:'Customer quote card with attribution.', target_aspect:'9:16', style_id:'classic-white', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'"{{quote}}"', duration_sec:5, text_color:'#FFFFFF', bg_color:'#0F766E'},
-      {type:'text', content:'— {{customer_name}}', duration_sec:3, text_color:'#A7F3D0', bg_color:'#0F766E'},
-    ]},
-  {id:'countdown-urgency', name:'Countdown / Urgency', category:'Ecommerce', description:'Time-boxed offer, built for a fast scroll-stop.', target_aspect:'9:16', style_id:'karaoke-yellow', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'⏰ Only {{hours_left}} hours left!', duration_sec:4, text_color:'#FFFFFF', bg_color:'#B45309'},
-      {type:'text', content:'{{offer_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'before-after', name:'Before & After', category:'Trust & Social Proof', description:'Transformation reveal in three beats.', target_aspect:'9:16', style_id:'boxed-caption', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'BEFORE', duration_sec:3, text_color:'#FFFFFF', bg_color:'#374151'},
-      {type:'text', content:'AFTER', duration_sec:3, text_color:'#FFFFFF', bg_color:'#059669'},
-      {type:'text', content:'{{result_description}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'welcome-intro', name:'Welcome / Business Intro', category:'Brand', description:'Founder/business introduction ending in a WhatsApp CTA.', target_aspect:'9:16', style_id:'clean-minimal', estimated_duration_sec:10,
-    scenes:[
-      {type:'text', content:"Hi, I'm {{name}}", duration_sec:3, text_color:'#FFFFFF', bg_color:'#1E3A8A'},
-      {type:'text', content:'{{business_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:"Let's connect on WhatsApp", duration_sec:3, text_color:'#FFFFFF', bg_color:'#25D366'},
-    ]},
-  {id:'cta-contact', name:'Call-to-Action / Contact', category:'Brand', description:'Punchy CTA card with a phone number close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:6,
-    scenes:[
-      {type:'text', content:'{{cta_headline}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#DC2626'},
-      {type:'text', content:'📱 {{phone_number}}', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'weekly-tip', name:'Weekly Tip / Educational', category:'Content', description:'Recurring tip-of-the-week format.', target_aspect:'9:16', style_id:'neon-highlight', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'💡 Tip of the Week', duration_sec:3, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{tip_text}}', duration_sec:5, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'square-promo', name:'Square Feed Promo', category:'Ecommerce', description:'1:1 format for Instagram/Facebook feed posts.', target_aspect:'1:1', style_id:'gradient-glow', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'{{headline}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{cta_text}}', duration_sec:4, text_color:'#FFE600', bg_color:'#111111'},
-    ]},
-];
-
-async function handleMarketingTemplateLibrary(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_TEMPLATE_LIBRARY.map(({scenes, ...meta})=>({...meta, scene_count:scenes.length}))});
-}
-
-async function handleMarketingTemplateLibraryClone(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const libraryTemplate=MARKETING_TEMPLATE_LIBRARY.find(t=>t.id===body.library_id);
-  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), libraryTemplate.name, JSON.stringify(libraryTemplate.scenes), libraryTemplate.target_aspect, libraryTemplate.style_id, libraryTemplate.estimated_duration_sec, now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-// Remotion Library ("Remotion for the template/style layer") — real animated React/Remotion
-// compositions (spring/interpolate-driven motion), as opposed to the static text/image "scenes"
-// MARKETING_TEMPLATE_LIBRARY clones. Registry ids/props here must match
-// render-pipeline/remotion/Root.jsx's REGISTRY exactly — this is metadata only (labels, hints,
-// duration) for the picker UI and batch-generate form; the actual composition code lives in the
-// render pipeline. Cloning creates a normal marketing_templates row with engine='remotion', so it
-// flows through the exact same list/edit/generate/render machinery as an ffmpeg template.
-const MARKETING_REMOTION_LIBRARY=[
-  {id:'FlashSale', name:'Flash Sale (Animated)', category:'Ecommerce', description:'Pulsing discount badge with an animated reveal.', target_aspect:'9:16', estimated_duration_sec:3,
-    props_schema:[
-      {key:'discount', label:'Discount %', default:'50'},
-      {key:'product_name', label:'Product name', default:'Your Product'},
-      {key:'end_date', label:'Offer ends', default:'Sunday'},
-    ]},
-  {id:'ProductLaunch', name:'Product Launch (Animated)', category:'Ecommerce', description:'Animated name + tagline reveal for a new product.', target_aspect:'9:16', estimated_duration_sec:3.5,
-    props_schema:[
-      {key:'product_name', label:'Product name', default:'Your Product'},
-      {key:'tagline', label:'Tagline', default:'The next big thing.'},
-    ]},
-  {id:'Countdown', name:'Countdown / Urgency (Animated)', category:'Ecommerce', description:'Live-ticking hours-left counter with a pulsing animation.', target_aspect:'9:16', estimated_duration_sec:3,
-    props_schema:[
-      {key:'hours_left', label:'Hours left', default:'24'},
-      {key:'offer_description', label:'Offer description', default:'Limited time offer'},
-    ]},
-  {id:'Testimonial', name:'Testimonial Quote (Animated)', category:'Trust & Social Proof', description:'Animated quote card with attribution.', target_aspect:'9:16', estimated_duration_sec:3.5,
-    props_schema:[
-      {key:'quote', label:'Quote', default:'This changed everything for us.'},
-      {key:'customer_name', label:'Customer name', default:'A happy customer'},
-    ]},
-];
-
-async function handleMarketingRemotionLibrary(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_REMOTION_LIBRARY});
-}
-
-async function handleMarketingRemotionLibraryClone(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const libraryTemplate=MARKETING_REMOTION_LIBRARY.find(t=>t.id===body.library_id);
-  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, engine, remotion_composition_id, props_schema_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), libraryTemplate.name, '[]', libraryTemplate.target_aspect, null, libraryTemplate.estimated_duration_sec, 'remotion', libraryTemplate.id, JSON.stringify(libraryTemplate.props_schema), now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-function marketingSerializeTemplate(row){
-  if(!row) return null;
-  let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
-  let propsSchema=null; try{ propsSchema=row.props_schema_json?JSON.parse(row.props_schema_json):null; }catch(e){}
-  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec,
-    engine:row.engine||'ffmpeg', remotion_composition_id:row.remotion_composition_id||null, props_schema:propsSchema,
-    created_at:row.created_at, updated_at:row.updated_at};
-}
-
-// Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
-// deliberately dumb string substitution, not a template language, matching the "code, not a
-// visual editor" pitch without pulling in a templating dependency for eight scene fields.
-function marketingResolveScenes(scenes, vars){
-  const sub=(s)=>typeof s==='string'?s.replace(/\{\{\s*([\w.-]+)\s*\}\}/g,(m,k)=>(vars[k]!=null?String(vars[k]):'')):s;
-  return (scenes||[]).map(scene=>{
-    const resolved={};
-    Object.entries(scene).forEach(([k,v])=>{ resolved[k]=sub(v); });
-    return resolved;
-  });
-}
-
-async function handleMarketingTemplatesList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE client_id=? ORDER BY updated_at DESC`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(marketingSerializeTemplate)});
-}
-
-async function handleMarketingTemplateCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const name=(body.name||'').trim().slice(0,120);
-  if(!name) return json({error:'name required'}, 400);
-  if(!Array.isArray(body.scenes)||!body.scenes.length) return json({error:'scenes (a non-empty array) required'}, 400);
-  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), name, JSON.stringify(body.scenes), targetAspect, body.style_id||null, Number(body.estimated_duration_sec)||15, now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-async function handleMarketingTemplateUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT id FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!existing) return json({error:'Not found'}, 404);
-  const sets=[], vals=[];
-  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).slice(0,120)); }
-  if(body.scenes!==undefined){ sets.push('scenes_json=?'); vals.push(JSON.stringify(body.scenes)); }
-  if(body.target_aspect!==undefined && ['9:16','1:1','16:9'].includes(body.target_aspect)){ sets.push('target_aspect=?'); vals.push(body.target_aspect); }
-  if(body.style_id!==undefined){ sets.push('style_id=?'); vals.push(body.style_id); }
-  if(body.estimated_duration_sec!==undefined){ sets.push('estimated_duration_sec=?'); vals.push(Number(body.estimated_duration_sec)||15); }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_templates SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-async function handleMarketingTemplateDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  await env.DB.prepare(`DELETE FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
-  return json({ok:true});
-}
-
-// Batch-generate: one marketing_projects row + one render job per data row. Partial failure is
-// expected at this scale (a bad row, a flaky pipeline call) — every row is attempted and the
-// per-row outcome is returned rather than aborting the whole batch on the first error.
-async function handleMarketingTemplateGenerate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const templateId=Number(body.template_id);
-  const rows=Array.isArray(body.rows)?body.rows:[];
-  if(!templateId) return json({error:'template_id required'}, 400);
-  if(!rows.length) return json({error:'rows (a non-empty array of variable objects) required'}, 400);
-  if(rows.length>MARKETING_TEMPLATE_BATCH_MAX) return json({error:`Max ${MARKETING_TEMPLATE_BATCH_MAX} rows per batch — split into more than one generate call.`}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const template=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=? AND client_id=?`).bind(templateId, Number(payload.cid)).first();
-  if(!template) return json({error:'Not found'}, 404);
-  let scenes=[]; try{ scenes=JSON.parse(template.scenes_json||'[]'); }catch(e){ return json({error:'Template scenes are corrupted.'}, 400); }
-
-  const c=await getClientById(env, payload.cid);
-  const perVideoMinutes=Math.max(1, Math.ceil((Number(template.estimated_duration_sec)||15)/60));
-  const minutesNeeded=perVideoMinutes*rows.length;
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
-
-  const engine=template.engine||'ffmpeg';
-  const style=engine==='remotion'?null:await marketingResolveStyle(env, payload.cid, template.style_id);
-  const watermarked=marketingIsWatermarked(c);
-  const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
-
-  const results=[];
-  for(const vars of rows){
-    const now=new Date().toISOString();
-    const title=(vars.title||vars.name||template.name).toString().slice(0,120);
-    const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
-    const projectId=projectResult.meta.last_row_id;
-    const spec=engine==='remotion'
-      ? {mode:'template', engine:'remotion', remotion_composition_id:template.remotion_composition_id, target_aspect:template.target_aspect, resolution, props:vars, watermark:watermarked}
-      : {mode:'template', target_aspect:template.target_aspect, resolution, style, scenes:marketingResolveScenes(scenes, vars), watermark:watermarked};
-    const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
-    results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
-  }
-  return json({ok:true, results});
-}
-
+/* Marketing Studio was retired. Historical D1 tables are intentionally preserved by the migration files. */
 /* ══════════════════════════════════════════════════════════════════════════════════════════
    REAL ESTATE MODULE (frontend/real-estate.html — "🏘️ Real Estate" dashboard nav tab, gated by
    CLIENTS.real_estate_enabled same as b2b_enabled/hospitality_enabled). Same iframe-embed pattern
@@ -27514,10 +25385,10 @@ export default {
       if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
       if(url.pathname==='/health'){ res=json({
         ok:true,
-        marketing_build:MARKETING_BUILD_TAG,
+        build:'2026-09-06-voice-only',
         voice:{
           sarvam_configured:!!env.SARVAM_API_KEY,
-          ai4bharat_render_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
+          ai4bharat_voice_service_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
           hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
           legacy_ai4bharat_deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS,
           reply_deadline_ms:ENGINE_VOICE_REPLY_DEADLINE_MS
@@ -28062,76 +25933,9 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
-      else if(url.pathname==='/marketing/usage' && request.method==='GET'){ res=await handleMarketingUsage(request, env); }
-      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='GET'){ res=await handleMarketingSettingsGet(request, env); }
-      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='POST'){ res=await handleMarketingSettingsSave(request, env); }
-      else if(url.pathname==='/marketing/styles/presets' && request.method==='GET'){ res=await handleMarketingStylePresets(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='GET'){ res=await handleMarketingBrandStylesList(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='POST'){ res=await handleMarketingBrandStyleCreate(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='DELETE'){ res=await handleMarketingBrandStyleDelete(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='GET'){ res=await handleContentPostsList(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='POST'){ res=await handleContentPostCreate(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='PATCH'){ res=await handleContentPostUpdate(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='DELETE'){ res=await handleContentPostDelete(request, env); }
-else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
-      else if(url.pathname==='/marketing/content/from-customer' && request.method==='POST'){ res=await handleContentFromCustomer(request, env); }
-      else if(url.pathname==='/marketing/images/prompt-templates' && request.method==='GET'){ res=await handleMarketingImagePromptTemplates(request, env); }
-      else if(url.pathname==='/marketing/images/usage' && request.method==='GET'){ res=await handleMarketingImageUsage(request, env); }
-      else if(url.pathname==='/marketing/images/generate' && request.method==='POST'){ res=await handleMarketingImageGenerate(request, env); }
-      else if(url.pathname==='/marketing/images/generate-for-post' && request.method==='POST'){ res=await handleMarketingImageGenerateForPost(request, env); }
-      else if(url.pathname==='/marketing/images/generate-carousel' && request.method==='POST'){ res=await handleMarketingImageGenerateCarousel(request, env); }
-      else if(url.pathname==='/marketing/images/attach' && request.method==='POST'){ res=await handleMarketingImageAttach(request, env); }
-      else if(url.pathname==='/marketing/images/upload' && request.method==='POST'){ res=await handleMarketingImageUpload(request, env); }
-      else if(url.pathname==='/marketing/images/restyle' && request.method==='POST'){ res=await handleMarketingImageRestyle(request, env); }
-      else if(url.pathname==='/marketing/images/remove-background' && request.method==='POST'){ res=await handleMarketingImageRemoveBackground(request, env); }
-      else if(url.pathname==='/marketing/images/watermark' && request.method==='POST'){ res=await handleMarketingImageWatermark(request, env); }
-      else if(url.pathname==='/marketing/images/composite-background' && request.method==='POST'){ res=await handleMarketingImageCompositeBackground(request, env); }
-      else if(url.pathname==='/marketing/images/text-overlay' && request.method==='POST'){ res=await handleMarketingImageTextOverlay(request, env); }
-      else if(url.pathname==='/marketing/images/reframe' && request.method==='POST'){ res=await handleMarketingImageReframe(request, env); }
-      else if(url.pathname==='/marketing/images/brand-style' && request.method==='GET'){ res=await handleMarketingImageBrandStyleGet(request, env); }
-      else if(url.pathname==='/marketing/images/brand-style' && request.method==='POST'){ res=await handleMarketingImageBrandStyleSave(request, env); }
-      else if(url.pathname==='/marketing/images/stock-search' && request.method==='GET'){ res=await handleMarketingImageStockSearch(request, env); }
-      else if(url.pathname==='/marketing/images/stock-import' && request.method==='POST'){ res=await handleMarketingImageStockImport(request, env); }
-      else if(url.pathname==='/marketing/logo' && request.method==='GET'){ res=await handleMarketingLogoGet(request, env); }
-      else if(url.pathname==='/marketing/logo' && request.method==='POST'){ res=await handleMarketingLogoUpload(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='DELETE'){ res=await handleMarketingProjectDelete(request, env); }
-      else if(url.pathname==='/marketing/projects/upload-init' && request.method==='POST'){ res=await handleMarketingProjectUploadInit(request, env); }
-      else if(url.pathname==='/marketing/projects/upload-finish' && request.method==='POST'){ res=await handleMarketingProjectUploadFinish(request, env); }
-      else if(url.pathname==='/marketing/projects/clips' && request.method==='GET'){ res=await handleMarketingClipsList(request, env, url); }
-      else if(url.pathname==='/marketing/projects/clips/upload-init' && request.method==='POST'){ res=await handleMarketingClipUploadInit(request, env); }
-      else if(url.pathname==='/marketing/projects/clips/upload-finish' && request.method==='POST'){ res=await handleMarketingClipUploadFinish(request, env); }
-      else if(url.pathname==='/marketing/projects/clips' && request.method==='DELETE'){ res=await handleMarketingClipDelete(request, env); }
-      else if(url.pathname==='/marketing/projects/clips/reorder' && request.method==='PATCH'){ res=await handleMarketingClipsReorder(request, env); }
-      else if(url.pathname==='/marketing/projects/combine-clips' && request.method==='POST'){ res=await handleMarketingCombineClips(request, env); }
-      else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
-      else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
-      else if(url.pathname==='/marketing/projects/translate-captions' && request.method==='POST'){ res=await handleMarketingTranslateCaptions(request, env); }
-      else if(url.pathname==='/marketing/projects/generate-voiceover' && request.method==='POST'){ res=await handleMarketingGenerateVoiceover(request, env); }
-      else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
-      else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
-      else if(url.pathname==='/marketing/projects/suggest-caption' && request.method==='POST'){ res=await handleMarketingSuggestCaption(request, env); }
-      else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
-      else if(url.pathname==='/marketing/projects/autoedit-options' && request.method==='PATCH'){ res=await handleMarketingAutoeditOptionsSave(request, env); }
-      else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
-      else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
-      else if(url.pathname==='/marketing/projects/preview' && request.method==='POST'){ res=await handleMarketingPreview(request, env); }
-      else if(url.pathname==='/marketing/projects/generate-ai-broll' && request.method==='POST'){ res=await handleMarketingGenerateAiBroll(request, env); }
-      else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
-      else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
-      else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }
-      else if(url.pathname.startsWith('/marketing/media/') && request.method==='GET'){ res=await handleMarketingMediaServe(request, env, url.pathname.slice('/marketing/media/'.length)); }
-      else if(url.pathname==='/marketing/templates' && request.method==='GET'){ res=await handleMarketingTemplatesList(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='POST'){ res=await handleMarketingTemplateCreate(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='PATCH'){ res=await handleMarketingTemplateUpdate(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='DELETE'){ res=await handleMarketingTemplateDelete(request, env); }
-      else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
-      else if(url.pathname==='/marketing/template-library' && request.method==='GET'){ res=await handleMarketingTemplateLibrary(request, env); }
-      else if(url.pathname==='/marketing/template-library/clone' && request.method==='POST'){ res=await handleMarketingTemplateLibraryClone(request, env); }
-      else if(url.pathname==='/marketing/remotion-library' && request.method==='GET'){ res=await handleMarketingRemotionLibrary(request, env); }
-      else if(url.pathname==='/marketing/remotion-library/clone' && request.method==='POST'){ res=await handleMarketingRemotionLibraryClone(request, env); }
+      // Marketing Studio has been retired. Keep the old paths explicitly closed so stale browser
+      // tabs cannot submit render, image-generation or content-calendar work after deployment.
+      else if(url.pathname.startsWith('/marketing/')){ res=json({error:'Marketing Studio has been removed.'}, 410); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);

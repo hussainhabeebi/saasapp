@@ -74,16 +74,6 @@ bucket_name = "leadvyne-hospitality-media"
 binding = "ECOM_CATEGORY_MEDIA"
 bucket_name = "leadvyne-ecom-category-media"
 
-# R2 — object storage for the Marketing Studio module's source videos and rendered clips
-# (SETUP.md "Marketing Studio module"), same per-domain-bucket rationale as HOSPITALITY_MEDIA/
-# ECOM_CATEGORY_MEDIA above. Holds much larger objects than either of those (source video, not
-# a handful of photos) but the binding pattern is identical. One-time setup:
-#   1. wrangler r2 bucket create leadvyne-marketing-media
-#   2. No id/paste-in needed — R2 buckets are addressed by name, unlike D1's UUID.
-[[r2_buckets]]
-binding = "MARKETING_MEDIA"
-bucket_name = "leadvyne-marketing-media"
-
 # Vectorize — semantic memory (SETUP.md "Semantic memory"). One shared index across all clients
 # (metadata-filtered by client_id/kind per query, not a physical per-client index, since Vectorize
 # indexes are a paid-per-index resource). Holds embeddings of past conversation exchanges plus
@@ -202,15 +192,13 @@ CHATWOOT_INSTANCE_BASE = "https://app.aiingo.com"
 APP_BASE_URL = "https://app.leadvyne.com/dashboard.html"
 WORKER_BASE_URL = "https://leadvyne-api-proxy.leadvyne.workers.dev"
 ENGINE_ENABLED = "true"
+SARVAM_DAILY_FALLBACK_LIMIT = "25"
 STRIPE_PLAN_PRICE_IDS = "price_1U2XJAJWa5B2ayZg2jScv4AN,price_1U2XTJJWa5B2ayZga444C5SV,price_1U2XMvJWa5B2ayZgPRBaFUX2,price_1U2XW2JWa5B2ayZgTeXP12Yo"
 STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZghpfgBxli,price_1TpvPlJWa5B2ayZgHya1YHiK,price_1TpvPRJWa5B2ayZgWmPFKXvG"
-MARKETING_DEFAULT_MINUTES_LIMIT = "30"
-
 # Workers AI — used for low-stakes structured inference (classify, extract-options, fp-snapshot,
 # fp-forecast) to reduce Gemini API cost. No setup needed beyond wrangler deploy; the binding is
 # provisioned automatically when [ai] is present in this file.
 [ai]
 binding = "AI"
-
 # Secrets are configured in Cloudflare dashboard / wrangler secret put.
 # POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
