@@ -19,6 +19,8 @@ const BUILD_TAG = '2026-09-06-voice-only';
 const env = process.env;
 const PORT = env.PORT || 8787;
 const ai4bharatLiveSemaphore = createLiveSemaphore(2);
+const ai4bharatInstalled = env.AI4BHARAT_TTS_INSTALLED === 'true';
+const ai4bharatEnabled = ai4bharatInstalled && env.AI4BHARAT_TTS_ENABLED === 'true';
 
 if (!env.RENDER_WEBHOOK_SECRET) {
   console.error('RENDER_WEBHOOK_SECRET is not set. Refusing to start.');
@@ -45,7 +47,8 @@ app.get('/health', (_req, res) => {
     build: BUILD_TAG,
     ai4bharat_tts_active: ai4bharatLiveSemaphore.active,
     ai4bharat_tts_limit: ai4bharatLiveSemaphore.limit,
-    ai4bharat_tts_enabled: Boolean(env.AI4BHARAT_TTS_ENABLED),
+    ai4bharat_tts_installed: ai4bharatInstalled,
+    ai4bharat_tts_enabled: ai4bharatEnabled,
     ai4bharat_model_ready: isAi4BharatReady(),
     ai4bharat_tts_timeout_ms: Math.max(5000, Number(env.AI4BHARAT_TTS_TIMEOUT_MS || 6500)),
     piper_available: fs.existsSync(piperBin),
@@ -55,7 +58,7 @@ app.get('/health', (_req, res) => {
 
 app.post('/synthesize-voice-reply', async (req, res) => {
   if (!requireSignature(req, res)) return;
-  if (!env.AI4BHARAT_TTS_ENABLED) return res.status(503).json({ error: 'AI4BHARAT_TTS_ENABLED is not set.' });
+  if (!ai4bharatEnabled) return res.status(503).json({ error: 'AI4Bharat TTS is not installed and enabled.' });
   const { text, language } = req.body || {};
   if (!text || !language) return res.status(400).json({ error: 'text and language required' });
   if (!ai4bharatSupportsLanguage(language)) return res.status(400).json({ error: `Unsupported language: ${language}` });
@@ -105,7 +108,7 @@ app.use((_req, res) => res.status(404).json({ error: 'Voice endpoint not found' 
 
 app.listen(PORT, () => {
   console.log(`LeadVyne voice service listening on :${PORT}`);
-  if (env.AI4BHARAT_TTS_ENABLED) {
+  if (ai4bharatEnabled) {
     preloadAi4Bharat()
       .then(info => console.log(`AI4Bharat model ready on ${info.device}`))
       .catch(error => console.error('AI4Bharat preload failed:', error.message));
