@@ -76,8 +76,6 @@ import {
   ltFormatChatOffers,
   ltBookableChatOffers,
   ltExactRouteOffers,
-  ltBookButtons,
-  ltCheckoutCtaPayload,
   ltLiveAgencyEnabled,
   ltParseFlightRoute,
   ltPoomasEnabledAfterSettingsSave,
@@ -165,16 +163,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
   });
 
-  test('displayed options and booking buttons use the same validated fare list',()=>{
+  test('displayed options use only the validated fare list',()=>{
     const oldOrInvalid={airline_name:'Invalid Cheap Fare',total_amount:100,bookable:true,supplier_offer_id:''};
     const option1={airline_name:'Bookable One',total_amount:250,bookable:true,supplier_offer_id:'fare-1'};
     const option2={airline_name:'Bookable Two',total_amount:300,bookable:true,supplier_offer_id:'fare-2'};
     const prepared=ltBookableChatOffers([oldOrInvalid,option2,option1]);
     assert.deepEqual(prepared,[option1,option2]);
-    assert.deepEqual(ltBookButtons(prepared),[
-      {title:'Book Option 1',value:'book first'},
-      {title:'Book Option 2',value:'book second'}
-    ]);
   });
 
   test('saving only POOMAS URLs preserves the existing enabled flag',()=>{
@@ -182,25 +176,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltPoomasEnabledAfterSettingsSave({enabled:false},{enabled:1}),false);
   });
 
-  test('offers exact-route booking buttons without collecting passport in WhatsApp',()=>{
+  test('keeps only exact-route offers without collecting passport in WhatsApp',()=>{
     const offers=[
       {itinerary:[{origin:'CCJ',destination:'MCT'}]},
       {itinerary:[{origin:'CCJ',destination:'BOM'},{origin:'BOM',destination:'SHJ'}]},
     ];
     assert.deepEqual(ltExactRouteOffers(offers,'CCJ','SHJ'),[offers[1]]);
-    assert.deepEqual(ltBookButtons([{}, {}, {}]),[
-      {title:'Book Option 1',value:'book first'},
-      {title:'Book Option 2',value:'book second'},
-      {title:'Book Option 3',value:'book third'},
-    ]);
-  });
-
-  test('builds a WhatsApp CTA URL button for POOMAS checkout',()=>{
-    const payload=ltCheckoutCtaPayload('+971 58 130 1595','https://flypoomas.com/book?fareId=abc');
-    assert.equal(payload.to,'971581301595');
-    assert.equal(payload.interactive.type,'cta_url');
-    assert.equal(payload.interactive.action.parameters.display_text,'Book Now');
-    assert.equal(payload.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=abc');
   });
 
   test('recognizes every stored travel-industry label used by live agencies',()=>{
