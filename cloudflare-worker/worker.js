@@ -8136,9 +8136,11067 @@ async function eduAdmissionPrompt(env,c,clientId,convId,app,extra){
   await eduAdmissionSend(env,c,clientId,convId,text,options);
   return {handled:true,step:app.current_step};
 }
-async function eduAdmis
-... 776751 bytes omitted ...
-new Error(`Unknown Project queue job: ${job.type}`);
+async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
+  const now=new Date().toISOString();
+  await env.DB.prepare("INSERT INTO edu_admission_documents (client_id,application_id,document_type,file_url,media_type,verification_status,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?) ON CONFLICT(application_id,document_type) DO UPDATE SET file_url=excluded.file_url,media_type=excluded.media_type,verification_status='pending',updated_at=excluded.updated_at")
+    .bind(Number(app.client_id),Number(app.id),type,String(url||''),String(mediaType||''),now,now).run();
+  await eduAdmissionEvent(env,app,'document_received',{document_type:type});
+}
+async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl,history){
+  if(c.industry!=='education') return null;
+  const clean=String(userText||'').trim();
+  let app=await eduAdmissionActive(env,clientId,phone);
+  let wantsStart=eduAdmissionWantsStart(clean);
+  let preselectedCourse=null;
+  if(!app){
+    const courses=await eduAdmissionCourses(env,clientId);
+    preselectedCourse=eduEnrollmentCourseFromChat(courses,clean,history);
+    if(preselectedCourse) wantsStart=true;
+  }
+  if(!app&&!wantsStart) return null;
+  if(!app) app=await eduAdmissionCreate(env,clientId,phone,leadId,convId);
+  if(String(app.lead_id||'')!==String(leadId||'')||String(app.conversation_id||'')!==String(convId||'')) await eduAdmissionPatch(env,app,{lead_id:String(leadId||''),conversation_id:String(convId||'')},null);
+
+  if(preselectedCourse&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{course_id:Number(preselectedCourse.id),current_step:'full_name'},'course_selected');
+    const durationNote=preselectedCourse.duration?'':'⏱ Duration is not confirmed yet.\n• It does not block enrollment.\n\n';
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+preselectedCourse.name+' selected.\n\n'+durationNote+'▶️ Let’s continue your enrollment.');
+  }
+
+  if(EDU_ADMISSION_CANCEL_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{status:'cancelled',current_step:'cancelled'},'application_cancelled');
+    await eduAdmissionSend(env,c,clientId,convId,'❌ *Application cancelled*\n\n• Your saved application has been closed.\n• You can start a new application anytime.',eduAdmissionOptions([['🎓 Start Application','Start Application'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'cancelled'};
+  }
+  if(eduAdmissionWantsAdvisor(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'advisor_requested');
+    return null;
+  }
+  if(EDU_ADMISSION_CHANGE_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{course_id:null,current_step:'course',paused_step:''},'course_change_requested');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^(?:❓\s*)?ask another question$/i.test(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'question_mode_started');
+    await eduAdmissionSend(env,c,clientId,convId,'❓ *Ask your question*\n\n• Your application progress is safely saved.\n• I will return you to the same step.',eduAdmissionOptions([['▶️ Continue Application','Continue Application'],['🔄 Change Course','Change Course']]));
+    return {handled:true,step:app.current_step};
+  }
+  if(EDU_ADMISSION_CONTINUE_RE.test(clean)){
+    if(app.paused_step) await eduAdmissionPatch(env,app,{current_step:app.paused_step,paused_step:''},'application_resumed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'▶️ Your application has resumed.');
+  }
+  if(app.paused_step&&EDU_ADMISSION_QUESTION_RE.test(clean)) return null;
+  if(EDU_ADMISSION_QUESTION_RE.test(clean)&&!wantsStart){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'application_paused_for_question');
+    return null;
+  }
+  if(wantsStart&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{current_step:'course'},'step_completed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^back$/i.test(clean)){
+    const back={email:'full_name',completion_year:'qualification',confirm:'payment_option'}[app.current_step];
+    if(back) await eduAdmissionPatch(env,app,{current_step:back},'step_back');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+
+  if(app.current_step==='welcome') return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  if(app.current_step==='course'){
+    const courses=await eduAdmissionCourses(env,clientId);
+    const course=eduResolveAdmissionCourse(courses,clean);
+    if(!course) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please select one of the verified courses.');
+    await eduAdmissionPatch(env,app,{course_id:Number(course.id),current_step:'full_name'},'course_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+course.name+' selected.');
+  }
+  if(app.current_step==='full_name'){
+    if(clean.length<2||clean.length>100) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid full name.');
+    await eduAdmissionPatch(env,app,{full_name:clean,current_step:'email'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='email'){
+    if(!eduEmailValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid email address.');
+    await eduAdmissionPatch(env,app,{email:clean.toLowerCase(),current_step:'qualification'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='qualification'){
+    await eduAdmissionPatch(env,app,{qualification:clean.slice(0,80),current_step:'completion_year'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='completion_year'){
+    if(!eduYearValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid four-digit year.');
+    await eduAdmissionPatch(env,app,{completion_year:String(clean.match(/\d{4}/)[0]),current_step:'study_mode',eligibility_status:'review_required'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ Details saved. Eligibility will be verified by admissions.');
+  }
+  if(app.current_step==='study_mode'){
+    const mode=/online/i.test(clean)?'Online':/class/i.test(clean)?'Classroom':/hybrid/i.test(clean)?'Hybrid':'';
+    if(!mode) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one study mode.');
+    await eduAdmissionPatch(env,app,{study_mode:mode,current_step:'scholarship'},'study_mode_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='scholarship'){
+    let code='';
+    if(!/^skip$/i.test(clean)){
+      const p=await env.DB.prepare("SELECT code FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 1").bind(Number(clientId)).first();
+      code=p?.code||'review_requested';
+    }
+    await eduAdmissionPatch(env,app,{scholarship_code:code,current_step:'id_proof'},'scholarship_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  const docSteps={id_proof:['id_proof','qualification_document'],qualification_document:['qualification_certificate','photo'],photo:['passport_photo','payment_option']};
+  if(docSteps[app.current_step]){
+    const spec=docSteps[app.current_step];
+    if(mediaUrl) await eduAdmissionSaveDocument(env,app,spec[0],mediaUrl,mediaType);
+    else if(!/^upload later$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please upload a file or choose Upload Later.');
+    await eduAdmissionPatch(env,app,{current_step:spec[1]},mediaUrl?'document_step_completed':'document_deferred');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,mediaUrl?'✅ Document received securely.':'⏭️ Document marked for later upload.');
+  }
+  if(app.current_step==='payment_option'){
+    const option=/install/i.test(clean)?'Installments':/full/i.test(clean)?'Full Fee':/advisor|discuss/i.test(clean)?'Discuss with Advisor':'';
+    if(!option) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one payment preference.');
+    await eduAdmissionPatch(env,app,{payment_option:option,current_step:'confirm',status:'payment_pending'},'payment_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='confirm'){
+    if(/^edit details$/i.test(clean)){
+      await eduAdmissionPatch(env,app,{current_step:'full_name',status:'in_progress'},'edit_requested');
+      return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    }
+    if(!/^submit application$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    const now=new Date().toISOString();
+    let student=await env.DB.prepare('SELECT * FROM edu_students WHERE client_id=? AND phone=?').bind(Number(clientId),eduNormalizePhone(phone)).first();
+    if(!student){
+      const sr=await env.DB.prepare('INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),app.full_name,eduNormalizePhone(phone),app.email,'Created from chat admission',now).run();
+      student={id:sr.meta.last_row_id};
+    }else{
+      await env.DB.prepare('UPDATE edu_students SET name=?,email=? WHERE id=?').bind(app.full_name,app.email,student.id).run();
+    }
+    await eduAdmissionPatch(env,app,{student_id:Number(student.id),current_step:'submitted',status:'awaiting_review',submitted_at:now},'application_submitted');
+    await eduAdmissionSend(env,c,clientId,convId,'🎉 *Application submitted!*\n\n• 🆔 '+app.application_id+'\n• ✅ Your details are saved.\n• 🎓 Admissions will verify eligibility and documents.\n• 💳 Use only the secure payment link shared by the team.',eduAdmissionOptions([['📋 Application Status','Application Status'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'submitted'};
+  }
+  return null;
+}
+
+async function handleEduAdmissionApplicationsList(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const r=await env.DB.prepare('SELECT a.*,c.name AS course_name,(SELECT COUNT(*) FROM edu_admission_documents d WHERE d.application_id=a.id) AS document_count FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? ORDER BY a.updated_at DESC LIMIT 500').bind(Number(clientId)).all();
+  return json({list:r.results||[]});
+}
+async function handleEduAdmissionApplicationDetail(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||''),id=Number(url.searchParams.get('id'));
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const application=await env.DB.prepare('SELECT a.*,c.name AS course_name FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? AND a.id=?').bind(Number(clientId),id).first();
+  if(!application) return json({error:'Not found'},404);
+  const [docs,events]=await Promise.all([
+    env.DB.prepare('SELECT * FROM edu_admission_documents WHERE client_id=? AND application_id=? ORDER BY created_at').bind(Number(clientId),id).all(),
+    env.DB.prepare('SELECT * FROM edu_admission_events WHERE client_id=? AND application_id=? ORDER BY created_at DESC LIMIT 100').bind(Number(clientId),id).all()
+  ]);
+  return json({application:application,documents:docs.results||[],events:events.results||[]});
+}
+async function handleEduAdmissionApplicationUpdate(request,env){
+  const body=await request.json().catch(function(){return {};});
+  const clientId=String(body.client_id||''),id=Number(body.id);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE client_id=? AND id=?').bind(Number(clientId),id).first();
+  if(!app) return json({error:'Not found'},404);
+  const patch={};
+  ['status','eligibility_status','payment_status','payment_reference'].forEach(function(k){if(Object.prototype.hasOwnProperty.call(body,k))patch[k]=String(body[k]||'');});
+  await eduAdmissionPatch(env,app,patch,'admin_updated');
+  if(body.document_id&&body.verification_status){
+    await env.DB.prepare('UPDATE edu_admission_documents SET verification_status=?,updated_at=? WHERE id=? AND client_id=? AND application_id=?').bind(String(body.verification_status),new Date().toISOString(),Number(body.document_id),Number(clientId),id).run();
+  }
+  return json({ok:true});
+}
+
+
+/* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
+async function handleEduCategoriesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  return json({categories:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+async function handleEduCategoryCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,80);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(`INSERT INTO edu_categories (client_id, name, created_at) VALUES (?,?,?)`)
+    .bind(Number(clientId), name, new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+async function findEduCategory(env, id){
+  return await env.DB.prepare(`SELECT * FROM edu_categories WHERE id=?`).bind(Number(id)).first();
+}
+async function handleEduCategoryUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id||body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){
+    const name=String(body.name).trim().slice(0,80);
+    if(!name) return json({error:'name cannot be blank'},400);
+    sets.push('name=?'); vals.push(name);
+  }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE edu_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleEduCategoryDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id||body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_category_media_sent WHERE category_id=?`).bind(id).run();
+  await env.DB.prepare(`DELETE FROM edu_categories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+async function handleEduCategoryMediaUpload(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  const slot=String(body.slot||'');
+  const url=String(body.url||'').trim().slice(0,500);
+  if(!clientId||!id||!slot) return json({error:'client_id, id and slot required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const col={'1':'image_url_1','2':'image_url_2','3':'image_url_3'}[slot];
+  if(!col) return json({error:'invalid slot'},400);
+  await env.DB.prepare(`UPDATE edu_categories SET ${col}=? WHERE id=?`).bind(url||null, id).run();
+  return json({ok:true});
+}
+async function handleEduCategoryMediaDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  const slot=String(body.slot||'');
+  if(!clientId||!id||!slot) return json({error:'client_id, id and slot required'},400);
+  const existing=await findEduCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const col={'1':'image_url_1','2':'image_url_2','3':'image_url_3'}[slot];
+  if(!col) return json({error:'invalid slot'},400);
+  await env.DB.prepare(`UPDATE edu_categories SET ${col}=NULL WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Education Scholarships/Promotions (D1-backed, same shape as ecom_promotions) ── */
+async function handleEduPromotionsList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({promotions:(results||[]).map(r=>({...r, Id:r.id, course_ids:engineParseJsonField(r.course_ids,[])}))});
+}
+async function handleEduPromotionCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const code=String(body.code||'').trim().toUpperCase().slice(0,40);
+  if(!clientId||!code) return json({error:'client_id and code required'},400);
+  const courseIds=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+  try{
+    const r=await env.DB.prepare(`INSERT INTO edu_promotions (client_id, code, description, reply_text, course_ids, image_url, audio_url, video_url, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId), code, String(body.description||'').trim().slice(0,500), String(body.reply_text||'').trim().slice(0,1000), JSON.stringify(courseIds), body.image_url?String(body.image_url).trim().slice(0,500):null, body.audio_url?String(body.audio_url).trim().slice(0,500):null, body.video_url?String(body.video_url).trim().slice(0,500):null, body.status==='inactive'?'inactive':'active', new Date().toISOString()).run();
+    return json({Id:r.meta.last_row_id, client_id:Number(clientId), code});
+  }catch(e){
+    if(String(e.message||'').includes('UNIQUE')) return json({error:`A scholarship with code "${code}" already exists.`},409);
+    throw e;
+  }
+}
+async function findEduPromotion(env, id){ return await env.DB.prepare(`SELECT * FROM edu_promotions WHERE id=?`).bind(Number(id)).first(); }
+async function handleEduPromotionUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id||body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduPromotion(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.code!==undefined){ const code=String(body.code).trim().toUpperCase().slice(0,40); if(!code) return json({error:'code cannot be blank'},400); sets.push('code=?'); vals.push(code); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,500)); }
+  if(body.reply_text!==undefined){ sets.push('reply_text=?'); vals.push(String(body.reply_text).trim().slice(0,1000)); }
+  if(body.course_ids!==undefined){ const ids=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[]; sets.push('course_ids=?'); vals.push(JSON.stringify(ids)); }
+  if(body.image_url!==undefined){ sets.push('image_url=?'); vals.push(body.image_url?String(body.image_url).trim().slice(0,500):null); }
+  if(body.audio_url!==undefined){ sets.push('audio_url=?'); vals.push(body.audio_url?String(body.audio_url).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  try{
+    await env.DB.prepare(`UPDATE edu_promotions SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+    return json({ok:true});
+  }catch(e){
+    if(String(e.message||'').includes('UNIQUE')) return json({error:'A scholarship with that code already exists.'},409);
+    throw e;
+  }
+}
+async function handleEduPromotionDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id||body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findEduPromotion(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_promotions WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Education Success Stories (D1-backed, same shape as ecom_testimonials) ── */
+async function handleEduStoriesList(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM edu_stories WHERE client_id=? ORDER BY created_at DESC`).bind(Number(clientId)).all();
+  return json({stories:(results||[]).map(r=>({...r, course_ids:engineParseJsonField(r.course_ids,[])}))});
+}
+async function handleEduStoryCreate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const courseIds=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[];
+  const r=await env.DB.prepare(`INSERT INTO edu_stories (client_id, student_name, text, course_ids, image_url, video_url, status, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+    .bind(Number(clientId), String(body.student_name||'').trim().slice(0,120), String(body.text||'').trim().slice(0,1000), JSON.stringify(courseIds), body.image_url?String(body.image_url).trim().slice(0,500):null, body.video_url?String(body.video_url).trim().slice(0,500):null, body.status==='inactive'?'inactive':'active', new Date().toISOString()).run();
+  return json({id:r.meta.last_row_id, client_id:Number(clientId)});
+}
+async function findEduStory(env, id){ return await env.DB.prepare(`SELECT * FROM edu_stories WHERE id=?`).bind(Number(id)).first(); }
+async function handleEduStoryUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const existing=await findEduStory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.student_name!==undefined){ sets.push('student_name=?'); vals.push(String(body.student_name).trim().slice(0,120)); }
+  if(body.text!==undefined){ sets.push('text=?'); vals.push(String(body.text).trim().slice(0,1000)); }
+  if(body.course_ids!==undefined){ const ids=Array.isArray(body.course_ids)?body.course_ids.map(Number).filter(n=>Number.isFinite(n)):[]; sets.push('course_ids=?'); vals.push(JSON.stringify(ids)); }
+  if(body.image_url!==undefined){ sets.push('image_url=?'); vals.push(body.image_url?String(body.image_url).trim().slice(0,500):null); }
+  if(body.video_url!==undefined){ sets.push('video_url=?'); vals.push(body.video_url?String(body.video_url).trim().slice(0,500):null); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE edu_stories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleEduStoryDelete(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.id,10);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const existing=await findEduStory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM edu_stories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── Course brochure/media dedup — per (lead, course, day), same as engineClaimProductImageForToday ── */
+async function eduClaimCourseBrochureForToday(env, clientId, leadId, courseId){
+  if(!leadId || !courseId) return true;
+  try{
+    const today=new Date().toISOString().slice(0,10);
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO edu_course_brochure_sent (client_id, lead_id, course_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId), leadId, String(courseId), today, new Date().toISOString()).run();
+    return !!ins?.meta?.changes;
+  }catch(e){ await reportOpsError(env, 'eduClaimCourseBrochureForToday', e, {clientId, leadId, courseId}); return true; }
+}
+
+async function eduMaybeSendCourseMedia(env, c, clientId, convId, course, pdfOnly=false){
+  if(!course || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    if(pdfOnly){
+      if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
+      return;
+    }
+    // Primary image first (image_url), then secondary images, then audio/video, then PDF
+    if(course.image_url) await sendDriveMediaToChatwoot(c, convId, course.image_url, '');
+    if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
+    if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
+    if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
+    if(course.video_url) await sendDriveMediaToChatwoot(c, convId, course.video_url, '');
+    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
+  }catch(e){ await reportOpsError(env, 'eduMaybeSendCourseMedia', e, {clientId, convId}); }
+}
+
+function eduMediaNormalize(value){
+  return String(value||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+// Resolve a course only when the current/recent chat names exactly one verified active course.
+// This lets a tap on "Get Brochure" reuse the one course named in the immediately preceding bot
+// reply, while refusing to guess when that reply listed several courses.
+export function eduResolveCourseForMedia(courses, texts){
+  const haystacks=(texts||[]).map(eduMediaNormalize).filter(Boolean);
+  if(!haystacks.length) return null;
+  const matches=(courses||[]).filter(course=>{
+    const names=[course.name,course.short_label].map(eduMediaNormalize).filter(name=>name.length>=3);
+    return names.some(name=>haystacks.some(text=>text===name||text.includes(` ${name} `)||text.startsWith(`${name} `)||text.endsWith(` ${name}`)));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+export function eduVerifiedChoicesFromReply(courses,categories,replyText){
+  const text=eduMediaNormalize(replyText);
+  if(!text) return [];
+  const mentioned=(rows,labelKey)=>{
+    const seen=new Set();
+    return (rows||[]).filter(row=>{
+      const label=String(typeof row==='string'?row:row?.[labelKey]||'').trim();
+      const normalized=eduMediaNormalize(label);
+      if(normalized.length<3||seen.has(normalized)) return false;
+      const found=text===normalized||text.includes(` ${normalized} `)||text.startsWith(`${normalized} `)||text.endsWith(` ${normalized}`);
+      if(found) seen.add(normalized);
+      return found;
+    }).map(row=>String(typeof row==='string'?row:row?.[labelKey]||'').trim());
+  };
+  const courseNames=mentioned(courses,'name');
+  if(courseNames.length>=2) return courseNames.slice(0,10).map(name=>({title:name,value:name}));
+  const categoryNames=mentioned(categories,'name');
+  if(categoryNames.length>=2) return categoryNames.slice(0,10).map(name=>({title:name,value:name}));
+  return [];
+}
+
+async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,history,replyText){
+  if(c.industry!=='education'||!convId||!userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  const wantsPdf=/\b(brochure|syllabus|prospectus|course\s*pdf|pdf|download)\b/i.test(userText);
+  try{
+    // Include image_url (primary) in addition to secondary images
+    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
+    if(!courses?.length) return;
+    // 1. Try explicit course name in student's current message
+    let course=eduResolveCourseForMedia(courses,[userText]);
+    // 2. Always fall back to the last assistant reply and bot reply text when no match in userText
+    //    (covers "Tell me more", button taps, "enroll", etc. where the course name is in the bot's reply)
+    if(!course){
+      const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+      course=eduResolveCourseForMedia(courses,[lastAssistant?.content,replyText]);
+    }
+    if(!course||(!course.image_url&&!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
+    if(!await eduClaimCourseBrochureForToday(env,clientId,resolvedLeadId,course.id)) return;
+    await eduMaybeSendCourseMedia(env,c,clientId,convId,course,wantsPdf);
+  }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
+}
+
+/* ── Education enrollment collection flow ─────────────────────────────────────────────────────
+   Deterministic name → phone collection, then INSERT into edu_enrollments.
+   Intercepts BEFORE the FAQ LLM so the bot never hallucinates "recorded" without actually saving.
+   State is stored as EduEnrollState (JSON) on the lead row in NocoDB.
+   ─────────────────────────────────────────────────────────────────────────────────────────── */
+const EDU_ENROLL_INTENT_RE=/\b(enroll|admission|apply|register|i want to join|want enroll|need enroll|enroll me|i want to enroll|how to enroll|how to apply|start enrollment|begin enrollment|take admission)\b/i;
+
+async function engineMaybeEduEnrollFlow(env, c, clientId, convId, leadId, userText, state, routing){
+  if(c.industry!=='education'||!leadId||!userText) return false;
+  const enrollState=engineParseJsonField(state.lead?.EduEnrollState, null);
+
+  // STEP: awaiting_name — previous turn asked for full name
+  if(enrollState?.step==='awaiting_name'){
+    const studentName=userText.trim();
+    const next={...enrollState, step:'awaiting_phone', student_name:studentName};
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(next)}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`Thanks, ${studentName}! 😊\n\nCould you please share your *Mobile Number* so we can complete your enrollment for *${courseName}*?`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // STEP: awaiting_phone — previous turn asked for phone, now save to D1
+  if(enrollState?.step==='awaiting_phone'){
+    const phone=userText.replace(/[^\d+]/g,'').trim()||userText.trim();
+    const now=new Date().toISOString();
+    const enrollmentId='ENR-'+Date.now();
+    try{
+      await env.DB.prepare(
+        `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(Number(clientId),enrollmentId,now.slice(0,10),String(enrollState.student_name||''),phone,'',String(enrollState.course_name||''),'pending','via WhatsApp',now,now).run();
+    }catch(e){ await reportOpsError(env,'eduEnrollFlowInsert',e,{clientId,convId}); }
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:null}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`✅ Your enrollment request for *${courseName}* has been recorded!\n\n• 📚 Course: ${courseName}\n• 👤 Name: ${enrollState.student_name}\n• 📱 Mobile: ${phone}\n• 🆔 Reference: ${enrollmentId}\n\nOur admissions team will contact you shortly to confirm. 🎓\n\n*Reply with:* [Ask a Question] [View Other Courses] [Talk to Advisor]`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // DETECT ENROLLMENT INTENT — start the collection flow
+  if(!EDU_ENROLL_INTENT_RE.test(userText)) return false;
+  let courseName='';
+  try{
+    const {results:courses}=await env.DB.prepare(`SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    let found=courses.find(cr=>cr.name&&lower.includes(cr.name.toLowerCase()));
+    if(!found){
+      // Search recent conversation history for a course name the bot mentioned
+      const history=(state.activeHistory||[]).slice(-8).reverse();
+      for(const msg of history){
+        if(!msg.content) continue;
+        const msgLower=msg.content.toLowerCase();
+        found=courses.find(cr=>cr.name&&msgLower.includes(cr.name.toLowerCase()));
+        if(found) break;
+      }
+    }
+    if(!found&&courses.length===1) found=courses[0];
+    if(found) courseName=found.name;
+  }catch(e){}
+  const newState={step:'awaiting_name',course_name:courseName};
+  await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+  await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(newState)}}).catch(()=>{});
+  const courseLabel=courseName?`the *${courseName}*`:`a course`;
+  const reply=`Great! To enroll in ${courseLabel}, I need a few details. 📋\n\nCould you please share your *Full Name*?`;
+  await engineSendChatwootReply(env,c,clientId,convId,reply);
+  routing.reply=reply;
+  return true;
+}
+
+/* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
+async function engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText){
+  if(c.industry!=='education' || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM edu_categories WHERE client_id=?`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
+    if(!category) return;
+    const already=await env.DB.prepare(`SELECT id FROM edu_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
+    if(already) return;
+    for(const url of [category.image_url_1, category.image_url_2, category.image_url_3].filter(Boolean)){
+      await sendDriveMediaToChatwoot(c, convId, url, '');
+    }
+    await env.DB.prepare(`INSERT OR IGNORE INTO edu_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEduCategoryMedia', e, {clientId, convId}); }
+}
+
+/* ── Education scholarship offer — keyword/code match, same pattern as engineMaybeSendPromoOffer ── */
+const EDU_SCHOLARSHIP_KEYWORD_RE=/\b(scholarship|discount|offer|promo|coupon|bursary|financial aid|fee waiver|fee reduction)\b/i;
+async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText){
+  if(c.industry!=='education' || !userText) return;
+  try{
+    const {results:promos}=await env.DB.prepare(`SELECT * FROM edu_promotions WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
+    if(!promos||!promos.length) return;
+    const lower=userText.toLowerCase();
+    let match=(promos||[]).find(p=>p.code && new RegExp(`\\b${escapeRegexLiteral(p.code.toLowerCase())}\\b`).test(lower));
+    if(!match && EDU_SCHOLARSHIP_KEYWORD_RE.test(userText)){
+      if(promos.length===1){ match=promos[0]; }
+      else{
+        const lines=promos.map(p=>`*${p.code}* — ${p.description||'ask us for details!'}`).join('\n');
+        await engineSendChatwootReply(env, c, clientId, convId, `🎁 Current scholarships & offers:\n\n${lines}\n\nAsk about a specific code for more details!`);
+        return;
+      }
+    }
+    if(!match) return;
+    const replyText=(match.reply_text||'').trim() || `🎁 *${match.code}* — ${match.description||'Ask us for details!'}`;
+    await engineSendChatwootReply(env, c, clientId, convId, replyText);
+    if(match.image_url) await sendDriveMediaToChatwoot(c, convId, match.image_url, '');
+    if(match.audio_url) await sendDriveMediaToChatwoot(c, convId, match.audio_url, '');
+    if(match.video_url) await sendDriveMediaToChatwoot(c, convId, match.video_url, '');
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEduScholarshipOffer', e, {clientId, convId}); }
+}
+
+// Auto-sends a category's photos into the chat the first time a lead's message names it —
+// simple case-insensitive substring match on the category name, same "cheap and predictable,
+// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
+// from and never overriding the existing per-product image send (detectOrderSignal/
+// ecomResolveProduct/product.image_url, handleEngineWebhook's ecommerce block above) — only runs
+// when this turn did NOT already handle a specific product (orderHandledInline false), so a
+// customer asking about one exact item never gets a redundant category photo dump in the same
+// reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
+// re-sent on every later message that happens to mention the same category again.
+async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
+  if(c.industry!=='ecommerce' || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
+    if(!category) return;
+    const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
+    if(already) return;
+    const items=[
+      {url:category.image_url_1, name:'photo1.jpg'},
+      {url:category.image_url_2, name:'photo2.jpg'},
+      {url:category.image_url_3, name:'photo3.jpg'},
+    ].filter(m=>m.url);
+    if(!items.length) return;
+    let sentAny=false;
+    for(let i=0;i<items.length;i++){
+      // Each item's URL is either a legacy R2-hosted one from before the Google Drive switch
+      // (fetched straight from the R2 binding, unchanged), or a Google Drive share link (fetched
+      // via driveFetchFile — same helpers hospitalitySendUnitMedia uses for the Hospitality
+      // module's units, SETUP.md "Hospitality module — unit photos/video"). Every non-empty slot
+      // gets its own attempt — one unreachable link doesn't block the category's other photos.
+      let blob=null;
+      const marker='/ecom/category-media/';
+      const idx=items[i].url.indexOf(marker);
+      if(idx!==-1){
+        const key=items[i].url.slice(idx+marker.length);
+        const obj=await env.ECOM_CATEGORY_MEDIA.get(key);
+        if(obj) blob=await obj.blob();
+      }else{
+        const fileId=driveFileId(items[i].url);
+        if(fileId){
+          const fetched=await driveFetchFile(fileId);
+          if(fetched) blob=fetched.blob;
+        }
+      }
+      if(!blob) continue;
+      const fd=new FormData();
+      fd.append('content', i===0?`Here's our ${category.name} range 📸`:'');
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', blob, items[i].name);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sentAny=true;
+    }
+    if(sentAny){
+      await env.DB.prepare(`INSERT OR IGNORE INTO ecom_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+        .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+    }
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendEcomCategoryMedia', e, {clientId, convId}); }
+}
+
+// Escapes a promo code for safe use inside a RegExp — codes are shop-owner-entered free text
+// (SAVE20, WELCOME10, etc.) and could in principle contain regex metacharacters.
+function escapeRegexLiteral(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Generic "asking about a promo/offer without naming a specific code" wording — deliberately
+// narrow (no bare "sale"/"deal" alone, which false-positives on ordinary chat far too often:
+// "it's a deal", "on sale of my old car") in favor of phrases that only really come up when
+// someone's asking a shop about a promotion.
+const ECOM_PROMO_KEYWORD_RE=/\b(promo\s*code|promocode|coupon\s*code|discount\s*code|any\s+offers?|any\s+discounts?|any\s+promo|current\s+offers?|ongoing\s+offers?|special\s+offers?)\b/i;
+// Explicit re-send requests that bypass the 5-hour tier gate and deliver only
+// what the customer asked for (primary image OR Shopify link), without
+// advancing the progressive-disclosure counter.
+const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photo|image|pic|picture)|send\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|show\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|photo\s+again|image\s+again|pic\s+again)\b/i;
+const ECOM_RESEND_LINK_RE=/\b(re[-\s]?send\s*(the\s+)?(link|url)|send\s*(me\s+)?(the\s+)?(link|url|product\s*link|shopify\s*link)|link\s+again|url\s+again)\b/i;
+
+/* ── PROMOTIONS & OFFERS engine hook (migrations/0045_ecom_promotions.sql) ──────────────────
+   Two ways a customer's message triggers a reply:
+   1. They mention an active promo code by name ("do you have SAVE20?") — matched whole-word,
+      case-insensitively, against every active code for this client.
+   2. They ask about offers/promos in general without naming one (ECOM_PROMO_KEYWORD_RE) — if
+      there's exactly one active promo, that one is used; with several, a short list of codes +
+      descriptions is sent instead (no media — there's no single offer to attach media to yet).
+   Sent as a supplementary message after the AI's own reply already went out, same layering as
+   engineMaybeSendEcomCategoryMedia above (that one's own comment explains why: the AI still
+   answers the actual question, this only adds what it can't — real promo-specific text and
+   attachments the AI has no way to generate on its own). No per-lead dedup (unlike category
+   photos) — a customer re-asking "what was that code again?" should get an answer again, not
+   silence, and the keyword/code match itself already keeps this from firing on unrelated chat. */
+async function engineMaybeSendPromoOffer(env, c, clientId, convId, userText){
+  if(c.industry!=='ecommerce' || !userText || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const {results:promos}=await env.DB.prepare(`SELECT * FROM ecom_promotions WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
+    if(!promos||!promos.length) return;
+    const lower=userText.toLowerCase();
+    let match=(promos||[]).find(p=>p.code && new RegExp(`\\b${escapeRegexLiteral(p.code.toLowerCase())}\\b`).test(lower));
+    if(!match && ECOM_PROMO_KEYWORD_RE.test(userText)){
+      if(promos.length===1){
+        match=promos[0];
+      }else{
+        const lines=promos.map(p=>`*${p.code}* — ${p.description||'ask us for details!'}`).join('\n');
+        await engineSendChatwootReply(env, c, clientId, convId, `🎁 Here are our current offers:\n\n${lines}\n\nAsk about a specific code for more details!`);
+        return;
+      }
+    }
+    if(!match) return;
+
+    let replyText=(match.reply_text||'').trim() || `🎁 *${match.code}* — ${match.description||'Ask us for details!'}`;
+    const productIds=engineParseJsonField(match.product_ids, []);
+    if(Array.isArray(productIds) && productIds.length){
+      const productsTable=await ecomResolveTable(env, clientId, 'products');
+      if(productsTable){
+        const names=[];
+        for(const pid of productIds.slice(0,10)){
+          const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records/${pid}`);
+          const pd=await pr.json().catch(()=>null);
+          if(pr.ok && pd?.name) names.push(pd.name);
+        }
+        if(names.length) replyText+=`\n\n✅ Applicable on: ${names.join(', ')}`;
+      }
+    }
+    await engineSendChatwootReply(env, c, clientId, convId, replyText);
+    if(match.image_url) await sendDriveMediaToChatwoot(c, convId, match.image_url, '');
+    if(match.audio_url) await sendDriveMediaToChatwoot(c, convId, match.audio_url, '');
+    if(match.video_url) await sendDriveMediaToChatwoot(c, convId, match.video_url, '');
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendPromoOffer', e, {clientId, convId}); }
+}
+
+/* ── TESTIMONIALS engine hook (migrations/0046_ecom_testimonials.sql) ────────────────────────
+   Fires once a specific product has been resolved this turn (order or enquiry — see the caller,
+   which tracks the matched product across engineRouteFlow's order-detection block the same way
+   engineMaybeSendEcomCategoryMedia's caller tracks orderHandledInline). Picks ONE testimonial at
+   random from whichever candidates apply to that product — product-specific ones over storewide
+   ones when any exist, so it's still relevant, but not always the same one every time — and sends
+   ONLY its image, no text and no video (a deliberate choice — a bare photo reads as a quick,
+   unobtrusive bit of social proof; a caption or a second video attachment would feel like the bot
+   interrupting the conversation with a sales pitch). Candidates with no image_url are skipped
+   entirely — there's nothing to send. Deduped once per (lead, product) ever
+   (ecom_testimonial_sent), same "supplementary message after the AI's own reply" layering as
+   engineMaybeSendPromoOffer/engineMaybeSendEcomCategoryMedia above. */
+async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, product){
+  if(c.industry!=='ecommerce' || !product?.Id || !resolvedLeadId || !convId) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const already=await env.DB.prepare(`SELECT id FROM ecom_testimonial_sent WHERE lead_id=? AND product_id=?`).bind(resolvedLeadId, product.Id).first();
+    if(already) return;
+    const {results:testimonials}=await env.DB.prepare(`SELECT * FROM ecom_testimonials WHERE client_id=? AND status='active'`).bind(Number(clientId)).all();
+    if(!testimonials||!testimonials.length) return;
+    const specific=[], storewide=[];
+    for(const t of testimonials){
+      if(!t.image_url) continue; // nothing to send without an image
+      const productIds=engineParseJsonField(t.product_ids, []);
+      if(Array.isArray(productIds) && productIds.includes(product.Id)) specific.push(t);
+      else if(!Array.isArray(productIds) || !productIds.length) storewide.push(t);
+    }
+    const candidates=specific.length?specific:storewide;
+    if(!candidates.length) return;
+    const bestMatch=candidates[Math.floor(Math.random()*candidates.length)];
+    await sendDriveMediaToChatwoot(c, convId, bestMatch.image_url, '');
+    await env.DB.prepare(`INSERT OR IGNORE INTO ecom_testimonial_sent (client_id, lead_id, product_id, testimonial_id, sent_at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId), resolvedLeadId, product.Id, bestMatch.id, new Date().toISOString()).run();
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
+}
+
+/* ── PRODUCT DESCRIPTION whenever a product is asked about — no new field, reuses the existing
+   product `description` (ecom.html's Description textarea, already used as AI grounding context
+   via engineBuildProductEnquirySystemPrompt) as a customer-facing message in its own right. The
+   AI's own enquiry reply stays conversational/partial as before; this sends the full description
+   verbatim as a supplementary follow-up — same layering as engineMaybeSendProductTestimonial/
+   engineMaybeSendPromoOffer above (a follow-up after the AI's own reply, not a replacement for
+   it). Previously gated on the customer's wording matching ECOM_PRODUCT_DETAILS_KEYWORD_RE
+   ("more details", "full description", etc.) with no dedup at all; per explicit product
+   direction this now sends whenever any product is confidently matched (same trigger as the
+   photo), capped to once per 5-hour window by the caller's engineClaimProductSend tier-1
+   claim (sendProductImage===true) that the photo/media bundle already uses.
+   Called right before engineMaybeSendProductMedia at each order-detection branch in
+   handleEngineWebhook, so the customer sees description → extra images → audio → video,
+   in that order, as one bundle. */
+async function engineMaybeSendProductDescription(env, c, clientId, convId, product){
+  if(c.industry!=='ecommerce' || !convId || !product?.description) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
+    await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductDescription', e, {clientId, convId}); }
+}
+
+/* ── ADVANCED PIPELINE — escalating follow-up cadence (SETUP.md "Advanced Pipeline follow-up
+   cadence") ──
+   Whenever a lead's Stage changes, this makes sure a rep always has exactly one open, tagged
+   follow-up task queued for that lead — "no lead sits without a next action". The cadence itself
+   (migrations/0013_pipeline_followups.sql, `pipeline_followups`, one row per lead) tracks how far
+   a lead has drifted since it last entered its *current* Stage; the actual to-do items reps see
+   still live in the existing Tasks module (`manual_tasks` CLIENTS field) — this table only tracks
+   progress, it never duplicates task content.
+   Two entry points, mirroring the Automations/recovery.js split already used elsewhere in this
+   file for the same reason (a multi-day cadence can't depend on a browser tab staying open):
+   - `handlePipelineStageChange` — fired immediately (fire-and-forget) by dashboard.html the
+     moment a rep changes a lead's Stage, so the Day-1 task appears right away instead of waiting
+     for the next cron tick.
+   - `runPipelineFollowupsForAllClients` — the daily cron tick (piggybacked on the existing
+     `0 2 * * *` health-check schedule; day-granularity cadence doesn't need the 15-minute tick).
+     Also the safety net for Stage changes the dashboard route never saw at all — a stage move
+     driven by the Conversation Engine itself (bot-driven flow progression) has no browser call
+     site to fire the instant route from, so this tick detects "stored stage !== lead's current
+     Stage" itself and resets the cadence the same way, just up to a day later. */
+const PIPELINE_TERMINAL_STAGES=new Set(['won','converted','lost','human_handover','consultation_booked','visit_booked','appt_booked','Converted','Lost','Closed','Opt Out']);
+// Step 1 fires the moment a lead enters a stage; steps 2-4 fire on/after these many days since
+// then; step 5+ repeats every 30 days after that ("...then monthly if stuck").
+const PIPELINE_FOLLOWUP_DAY_THRESHOLDS=[1,3,7,14];
+function pipelineFollowupTargetStep(elapsedDays){
+  let step=0;
+  for(let i=0;i<PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length;i++){
+    if(elapsedDays>=PIPELINE_FOLLOWUP_DAY_THRESHOLDS[i]) step=i+1;
+  }
+  if(step===PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length){
+    const lastThreshold=PIPELINE_FOLLOWUP_DAY_THRESHOLDS[PIPELINE_FOLLOWUP_DAY_THRESHOLDS.length-1];
+    step+=Math.floor((elapsedDays-lastThreshold)/30);
+  }
+  return step;
+}
+const PIPELINE_CHANNEL_ICON={whatsapp:'💬', call:'📞', email:'📧'};
+// The escalation policy the user asked for, made deterministic: 1st touch = text, 2nd = voice
+// note, 3rd = video (a personal 30-45s clip reads best right after a lead went quiet, per the
+// request) — UNLESS the lead never replied to either of the first two, in which case that's the
+// "no reply after 2 follow-ups" trigger: flag the lead cold and escalate the *channel* instead
+// (WhatsApp → phone call → email), same as the request's channel-switch rule. `hasReplied` is
+// recomputed fresh every time from the lead's own LastMsgAt vs. stage_entered_at, so a lead that
+// goes quiet, gets flagged cold, then genuinely replies later in the same stage-run naturally
+// clears the flag on the next tick — never a one-way ratchet.
+function pipelineFollowupPlan(step, hasReplied){
+  if(step<=1) return {channel:'whatsapp', mode:'text', label:'Day 1 follow-up', cold:false};
+  if(step===2) return {channel:'whatsapp', mode:'voice', label:'Day 3 follow-up — send a voice note', cold:false};
+  if(step===3) return hasReplied
+    ? {channel:'whatsapp', mode:'video', label:'Day 7 follow-up — send a short personal video', cold:false}
+    : {channel:'call', mode:'call', label:'Day 7 follow-up — no response yet, call the lead directly', cold:true};
+  if(step===4) return hasReplied
+    ? {channel:'whatsapp', mode:'text', label:'Day 14 follow-up', cold:false}
+    : {channel:'email', mode:'text', label:'Day 14 follow-up — try email', cold:true};
+  return hasReplied
+    ? {channel:'whatsapp', mode:'text', label:'Monthly check-in — still active in this stage', cold:false}
+    : {channel:'email', mode:'text', label:'Monthly check-in — try email', cold:true};
+}
+// Lazily creates the one shared "Follow-ups" pm_project a client's cadence-generated tasks live
+// in — found by name rather than a dedicated CLIENTS column, since a project is cheap to
+// recreate/rename and this only ever needs to resolve to *a* row, not survive a rename intact.
+async function pmFindOrCreateFollowupsProject(env, clientId){
+  const existing=await env.DB.prepare(`SELECT id FROM pm_projects WHERE client_id=? AND name=?`).bind(Number(clientId), 'Follow-ups').first();
+  if(existing) return existing.id;
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(Number(clientId), 'Follow-ups', 'Auto-generated by the Advanced Pipeline follow-up cadence — one task per lead needing a next touch.', '#D97706', 'active', now).run();
+  return r.meta.last_row_id;
+}
+// Writes (or replaces) the one open cadence task for a lead directly as a pm_tasks row — this
+// used to be a capped-JSON-array-on-CLIENTS read/modify/write (manual_tasks), now a normal D1
+// write per lead, since pm_tasks is a real table with its own client_id/lead_id index instead of
+// a blob the whole client has to be re-read/re-written to touch. Replaces (not appends alongside)
+// any still-open auto-generated task already queued for this lead, so a lead's cadence never
+// shows two auto follow-ups at once — same rule the old blob version enforced.
+async function pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan){
+  await env.DB.prepare(`DELETE FROM pm_tasks WHERE client_id=? AND lead_id=? AND auto_generated=1 AND status!='done'`).bind(Number(clientId), lead.Id).run();
+  const icon=PIPELINE_CHANNEL_ICON[plan.channel]||'💬';
+  const now=new Date().toISOString();
+  const title=`${icon} Follow up with ${lead.Name||lead.Phone||'lead'}`;
+  const description=`${plan.label} (stage: ${stage})`;
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, auto_generated, lead_id, lead_name, created_at, updated_at)
+     VALUES (?,?,?,?,'todo','medium',?,?,0,'Follow-up',?,?,?,1,?,?,?,?)`
+  ).bind(Number(clientId), projectId, title, description, lead.Owner||'', now.slice(0,10), plan.channel, plan.mode, step, lead.Id, lead.Name||lead.Phone||'', now, now).run();
+  return r.meta.last_row_id;
+}
+// The instant path's entry point (handlePipelineStageChange below) — resolves the Follow-ups
+// project then delegates to pipelineWriteTask. Kept separate from the batch path
+// (pipelineProcessClient) so that one doesn't pay for a project lookup per lead when several of a
+// client's leads advance on the same cron tick.
+async function pipelineAppendTask(env, clientId, lead, stage, step, plan){
+  const projectId=await pmFindOrCreateFollowupsProject(env, clientId);
+  const id=await pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan);
+  return {id};
+}
+// Drops a lead's cadence entirely (D1 row + any still-open auto task) once it reaches a terminal
+// stage — Won/Spam/Lost/human-handover all close the loop this feature exists to chase.
+async function pipelineClearLead(env, clientId, leadId){
+  await env.DB.prepare(`DELETE FROM pipeline_followups WHERE lead_id=?`).bind(leadId).run();
+  await env.DB.prepare(`DELETE FROM pm_tasks WHERE client_id=? AND lead_id=? AND auto_generated=1 AND status!='done'`).bind(Number(clientId), leadId).run();
+}
+async function pipelineMaybeTagCold(env, clientId, lead, cold){
+  const tags=(lead.Tags||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const hasCold=tags.includes('cold');
+  if(cold && !hasCold){ tags.push('cold'); }
+  else if(!cold && hasCold){ const i=tags.indexOf('cold'); tags.splice(i,1); }
+  else return;
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Tags:tags.join(', ')}});
+}
+// The instant path — dashboard.html's reportLeadQualityChange fires this fire-and-forget the
+// moment a rep changes a lead's Stage (kbDrop, saveLead, patchDetailField, applyHumanDealOutcome
+// all already funnel through that one function). Resets the cadence to step 1 and creates the
+// Day-1 task right away, so "no lead sits without a next action" holds true immediately rather
+// than waiting for tomorrow's cron tick.
+async function handlePipelineStageChange(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, stage}=await request.json().catch(()=>({}));
+  if(!lead_id||!stage) return json({error:'lead_id and stage required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.pipeline_followup_enabled==='No') return json({ok:true, skipped:'disabled'});
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  const lead=await leadR.json().catch(()=>null);
+  if(!leadR.ok||!lead) return json({error:'Lead not found'}, 404);
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Not your lead'}, 403);
+  if(PIPELINE_TERMINAL_STAGES.has(stage)){
+    await pipelineClearLead(env, payload.cid, Number(lead_id));
+    return json({ok:true, skipped:'terminal'});
+  }
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO pipeline_followups (client_id, lead_id, stage, stage_entered_at, step, cold, channel, created_at, updated_at)
+    VALUES (?,?,?,?,1,0,'whatsapp',?,?)
+    ON CONFLICT(lead_id) DO UPDATE SET client_id=excluded.client_id, stage=excluded.stage, stage_entered_at=excluded.stage_entered_at, step=1, cold=0, channel='whatsapp', updated_at=excluded.updated_at`)
+    .bind(Number(payload.cid), Number(lead_id), stage, now, now, now).run();
+  await pipelineMaybeTagCold(env, payload.cid, lead, false);
+  const item=await pipelineAppendTask(env, payload.cid, lead, stage, 1, pipelineFollowupPlan(1, false));
+  return json({ok:true, task_id:item?.id||null});
+}
+// The daily cron path — advances every lead already mid-cadence whose next threshold has passed,
+// and catches any Stage change the instant route above never saw (a bot-driven stage move has no
+// browser call site). One manual_tasks read+write per client (not per lead) even when several of
+// that client's leads advance on the same tick, matching this file's existing "bulk save, not
+// per-field" convention for CLIENTS JSON blobs.
+async function runPipelineFollowupsForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(c.pipeline_followup_enabled==='No') continue;
+      try{ await pipelineProcessClient(env, c); }
+      catch(e){ console.error('[pipeline-followups] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+async function pipelineProcessClient(env, c){
+  const clientId=c.Id;
+  const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`)}&limit=1000&fields=Id,Name,Phone,Owner,Stage,LastMsgAt,Tags`);
+  if(!leadsR.ok) return;
+  const leads=(await leadsR.json().catch(()=>({})))?.list||[];
+  if(!leads.length) return;
+  const {results:rows}=await env.DB.prepare(`SELECT * FROM pipeline_followups WHERE client_id=?`).bind(Number(clientId)).all();
+  const byLead=new Map((rows||[]).map(row=>[row.lead_id, row]));
+  const now=new Date();
+  const nowIso=now.toISOString();
+  const newTasks=[];
+  for(const lead of leads){
+    const stage=lead.Stage||'new';
+    const existing=byLead.get(lead.Id);
+    if(PIPELINE_TERMINAL_STAGES.has(stage)){
+      if(existing) await pipelineClearLead(env, clientId, lead.Id);
+      continue;
+    }
+    if(!existing){
+      // Bootstrap: this lead has no cadence row at all (feature just enabled, or its
+      // on-stage-change call never landed). Seed step 0 with "now" as the stage-entry point rather
+      // than guessing when it actually entered — the first real task appears on tomorrow's tick
+      // once a day has genuinely elapsed, an accepted one-day delay for this edge case only.
+      await env.DB.prepare(`INSERT INTO pipeline_followups (client_id, lead_id, stage, stage_entered_at, step, cold, channel, created_at, updated_at) VALUES (?,?,?,?,0,0,'whatsapp',?,?)`)
+        .bind(Number(clientId), lead.Id, stage, nowIso, nowIso, nowIso).run();
+      continue;
+    }
+    if(existing.stage!==stage){
+      // A Stage change the instant route never saw (bot-driven, or the rep's own call failed) —
+      // reset exactly like handlePipelineStageChange would, just up to a day late.
+      await env.DB.prepare(`UPDATE pipeline_followups SET stage=?, stage_entered_at=?, step=1, cold=0, channel='whatsapp', updated_at=? WHERE lead_id=?`)
+        .bind(stage, nowIso, nowIso, lead.Id).run();
+      await pipelineMaybeTagCold(env, clientId, lead, false);
+      newTasks.push({lead, stage, step:1, plan:pipelineFollowupPlan(1, false)});
+      continue;
+    }
+    const elapsedDays=Math.floor((now.getTime()-new Date(existing.stage_entered_at).getTime())/86400000);
+    const targetStep=pipelineFollowupTargetStep(elapsedDays);
+    if(targetStep<=existing.step) continue;
+    const nextStep=existing.step+1;
+    const hasReplied=!!lead.LastMsgAt && new Date(lead.LastMsgAt).getTime()>new Date(existing.stage_entered_at).getTime();
+    const plan=pipelineFollowupPlan(nextStep, hasReplied);
+    await env.DB.prepare(`UPDATE pipeline_followups SET step=?, cold=?, channel=?, updated_at=? WHERE lead_id=?`)
+      .bind(nextStep, plan.cold?1:0, plan.channel, nowIso, lead.Id).run();
+    await pipelineMaybeTagCold(env, clientId, lead, plan.cold);
+    newTasks.push({lead, stage, step:nextStep, plan});
+  }
+  if(!newTasks.length) return;
+  // One project lookup for every lead that advanced this tick, then one pm_tasks write per lead —
+  // each write is already scoped to its own row (client_id+lead_id), so unlike the old blob
+  // version there's no shared client-level state to read/merge/write back here at all.
+  const projectId=await pmFindOrCreateFollowupsProject(env, clientId);
+  for(const {lead, stage, step, plan} of newTasks){
+    await pipelineWriteTask(env, clientId, projectId, lead, stage, step, plan);
+  }
+}
+// Rep-triggered ad-hoc video send — the genuinely new capability this feature needed (everything
+// else reuses existing send paths: WA text/voice both go through the existing
+// POST /broadcast/followup-send, call/email steps are just task labels since neither can be
+// automated). Same Chatwoot FormData-relay shape as handleQuoteSend (conv_id + file straight
+// through, Worker holds the Chatwoot token so it never reaches the browser) — deliberately not
+// persisted to R2 first, since Chatwoot only ever needs the bytes once, at send time; nothing else
+// in the app needs to re-serve this clip later the way Hospitality/Ecom category photos do.
+async function handlePipelineVideoSend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const form=await request.formData().catch(()=>null);
+  if(!form) return json({error:'multipart form data required'}, 400);
+  const conv_id=form.get('conv_id'), caption=form.get('caption')||'', file=form.get('file'), task_id=form.get('task_id');
+  if(!conv_id||!file) return json({error:'conv_id and file required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const fd=new FormData();
+  fd.append('message_type','outgoing'); fd.append('private','false'); fd.append('content', caption);
+  fd.append('attachments[]', file, file.name||'follow-up.mp4');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(task_id){
+    try{
+      const parsed=JSON.parse(c.manual_tasks||'{}');
+      const items=Array.isArray(parsed.items)?parsed.items:[];
+      const idx=items.findIndex(t=>t.id===task_id);
+      if(idx>=0){ items[idx]={...items[idx], status:'done', completed_at:new Date().toISOString()}; }
+      await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), manual_tasks:JSON.stringify({...parsed, items})}});
+    }catch(e){}
+  }
+  return json({ok:true, data:await r.json().catch(()=>({}))});
+}
+
+// Automation entry point for "order intent detected" — meant to be called by the client's own
+// conversational bot (the external n8n engine, not this repo — see SETUP.md's "Trust Signals"
+// section for why) the moment it decides a customer wants to buy, without a dashboard session:
+// same client_id-based auth model as the rest of /ecom/*, since n8n has no Authentik session.
+// Builds the same product-level/client-wide link buildOrderLink resolves below, sends it directly
+// via Meta's Graph API (bypassing Chatwoot, same as handleWaSend), and always logs a 'pending' row
+// in the client's ecom orders table — so "order intent" leaves a paper trail even if the WhatsApp
+// send itself fails (e.g. outside the 24h free-form-message window) or the customer never finishes
+// checking out.
+// Shared by handleEcomOrderLink and the KB-payload guidance's server-side equivalents. Priority:
+// the specific product's own shopify_product_url (if the matched product carries one) wins over
+// everything, since it's the most specific link possible; next, product_link (a generic per-product
+// override); finally, a client's own external_store_link (Shopify or any other storefront they
+// actually sell through, set in Settings → Order Link). The built-in Ecommerce module's own
+// generic storefront/catalog page (onshope.com/<slug>, store.html?client=<id>) is deliberately no
+// longer a fallback here — per explicit product direction, a customer should only ever be handed a
+// link that was actually configured for that product/client, never a generic catalog page standing
+// in for one that wasn't set up. Returns '' when none of the three is set; callers must handle that.
+function buildOrderLink(c, clientId, sku, product){
+  // Ecommerce product lock: customer order links may come only from the matched Ecom Product
+  // record. Never fall back to a client-wide store/catalog URL for a specific product.
+  const shopifyProductUrl=(product?.shopify_product_url||'').trim();
+  if(shopifyProductUrl) return shopifyProductUrl;
+  const productLink=(product?.product_link||'').trim();
+  if(productLink) return productLink;
+  return '';
+}
+
+// Shared by both order-link senders below — resolves the optional matched product and logs the
+// `pending` order row, the one part that happens regardless of how the WhatsApp message gets sent.
+// Previously never checked whether the write actually succeeded (same silent-failure shape found
+// and fixed elsewhere this file, e.g. ncPatchVerified) — a rejected/failed POST (bad field type,
+// NocoDB schema-cache lag right after the client's orders table was first configured, etc.) still
+// returned a fake order_id as if it had landed, so an order could be sent to the customer over
+// WhatsApp and never appear on the Orders page at all, with nothing in the logs to explain why.
+async function logPendingOrder(env, c, clientId, phone, name, product){
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return null;
+  const order_id='ORD-'+Date.now();
+  const body={
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:product?product.name:'Catalog link sent',
+    total:product?.price||0, currency:product?.currency||'',
+    status:'pending', notes:'Order intent detected — link sent automatically'
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'logPendingOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, phone, ordersTable});
+    return null;
+  }
+  return order_id;
+}
+
+// Self-migrating LEADS column, same pattern as ensureB2bLeadFields — holds the in-progress
+// item/price seed for the chat-based order collection ladder below (order_collect_items →
+// order_collect_address) while it's waiting on the customer's next reply; cleared once the order
+// is finalized. Cached per-isolate so this only ever calls NocoDB's meta API once, not on every
+// message.
+let _orderCollectFieldEnsured=false;
+async function ensureOrderCollectField(env){
+  if(_orderCollectFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('OrderCollect')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'OrderCollect', uidt:'LongText'}});
+    _orderCollectFieldEnsured=true;
+  }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
+}
+
+// Remembers whichever product this lead was last confidently matched to (written right below,
+// wherever `matchedProduct` gets set in the order/enquiry detection block), so a later message
+// with no product-identifying detail of its own ("proceed with order", a bare "yes") can still be
+// resolved instead of asking the customer to repeat the product name — real observed failure: a
+// customer discussed a specific product, then replied "Proceed with order" to a quote-reply, and
+// got "which item would you like?" even though it was obvious from the conversation. Same cached-
+// per-isolate pattern as ensureOrderCollectField above.
+let _lastProductSkuFieldEnsured=false;
+async function ensureLastProductSkuField(env){
+  if(_lastProductSkuFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('Last Product Sku')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Last Product Sku', uidt:'SingleLineText'}});
+    _lastProductSkuFieldEnsured=true;
+  }catch(e){ console.error('[ecom] ensureLastProductSkuField failed', e.message); }
+}
+
+let _productCategoryFieldEnsured=false;
+async function ensureProductCategoryField(env){
+  if(_productCategoryFieldEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('ProductCategory')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'ProductCategory', uidt:'SingleLineText'}});
+    _productCategoryFieldEnsured=true;
+  }catch(e){ console.error('[engine] ensureProductCategoryField failed', e.message); }
+}
+
+// Writes the order a customer just finished dictating in chat (see the order_collect_items/
+// order_collect_address handling in handleEngineWebhook) — the ecom_order_link_enabled==='No'
+// alternative to sending a checkout link at all. Deliberately its own writer rather than reusing
+// logPendingOrder (only ever has a matched catalog product's own name/price, no address, no
+// free-text item list) or handleEcomPublicOrder's inline POST (shaped around strictly validating
+// a public web-form submission, which doesn't apply to values the bot itself already collected
+// turn-by-turn). `seed` carries whatever context was known when collection started — items is the
+// customer's own free-text answer; price/currency are a best-effort estimate from the product that
+// triggered collection, not a real computed total (a free-text item list can't be reliably priced
+// here), which is why this is always logged as `pending` with a note for staff to verify.
+async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return {ok:false};
+  const order_id='ORD-'+Date.now();
+  const body={
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:(seed?.items||'').trim().slice(0,500)||'Collected via chat',
+    total:seed?.price||0, currency:seed?.currency||'',
+    delivery_address:(address||'').trim().slice(0,500), status:'pending',
+    notes:seed?.fashionFlow
+      ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
+      : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'finalizeChatOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, phone, ordersTable});
+    return {ok:false};
+  }
+  return {ok:true, order_id};
+}
+
+// Fashion-only order choices. Product size/color fields may be stored as JSON arrays by an
+// integration or as comma/slash/newline-separated text by the Ecom editor. Every outgoing choice
+// is copied from that field; nothing is generated by AI.
+export function ecomFashionFieldChoices(raw){
+  const parsed=engineParseJsonField(raw, null);
+  const values=Array.isArray(parsed)?parsed:String(raw||'').split(/[,|/\n]+/);
+  return [...new Set(values.map(value=>String(value||'').trim()).filter(Boolean))].slice(0,10);
+}
+
+export function ecomFashionOrderItems(seed={}){
+  return [String(seed.productName||'').trim(),seed.size?`Size: ${seed.size}`:'',seed.color?`Color: ${seed.color}`:'']
+    .filter(Boolean).join(' | ');
+}
+
+async function ecomFindProductBySku(env, clientId, sku){
+  if(!sku) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list?.[0]||null;
+}
+
+// Fuzzy fallback for when detectOrderSignal is confident WHICH product but didn't reproduce its
+// exact sku string closely enough for ecomFindProductBySku's exact match — an LLM copying a
+// natural-language product name is far more reliable than copying an alphanumeric code. Observed
+// live: a customer confirmed "Yes" right after the bot itself named a specific product in its own
+// immediately-prior message; detectOrderSignal correctly classified mode:'order' but the sku it
+// returned didn't match any real product, so the customer got "which item would you like?"
+// immediately after the bot had just told them. Case-insensitive substring match either direction
+// (catalog name contains the guess, or the guess contains the catalog name) against the same
+// client's products, capped the same as detectOrderSignal's own catalog scan.
+async function ecomResolveProduct(env, clientId, sku, productName){
+  // Zero-hallucination product resolution: an SKU must exist in this client's Products table,
+  // otherwise the model-returned product name must match one stored product name exactly after
+  // harmless punctuation/spacing normalization. Never use substring matching here: a guessed
+  // "Cream" must not silently resolve to an arbitrary "Night Cream" product.
+  const bySku=await ecomFindProductBySku(env, clientId, sku);
+  if(bySku) return bySku;
+  const normalizeName=v=>String(v||'').trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+  const guess=normalizeName(productName);
+  if(!guess) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  return products.find(p=>normalizeName(p.name)===guess)||null;
+}
+
+// Click-to-WhatsApp/Instagram ads commonly prefill a deliberately generic opener such as
+// "Hello! Can I get more info on this?". That is a request to introduce the BUSINESS shown by
+// the ad, not evidence that the customer named a catalog product. Treating "this" as a product
+// made detectOrderSignal invent a product signal and trigger the strict SKU fallback before the
+// main prompt ever got a chance to answer. Keep this matcher intentionally narrow: any explicit
+// product/item/SKU/model/price/stock/size/colour/order wording remains on the verified Products
+// path and retains the zero-hallucination lock.
+export function ecomIsGeneralBusinessInfoQuery(text){
+  const normalized=String(text||'').trim().toLowerCase().replace(/[’']/g,"'").replace(/\s+/g,' ');
+  if(!normalized) return false;
+  if(/\b(product|item|sku|model|price|cost|stock|available|availability|size|colou?r|variant|order|buy|purchase)\b/i.test(normalized)) return false;
+  return /^(?:(?:hi|hello|hey)[,! .-]*)?(?:(?:can|could|may) i (?:get|have) (?:some )?more (?:info|information)(?: (?:on|about))? (?:this|your business|your company|your store)?|tell me (?:more )?about (?:your business|your company|your store|what you do)|what (?:does your (?:business|company) do|do you do)|(?:business|company|store) (?:info|information|details))[?!. ]*$/i.test(normalized);
+}
+
+// The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
+// generated reply, not the customer's message), find whether it confidently names exactly one
+// catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
+// human) to a FAQ answer that happens to recommend a specific item, the free-text path's equivalent
+// of the deterministic category picker's buttons. Deliberately returns null on zero OR more than
+// one match — offering buttons tied to the wrong product (or a random pick among several actually
+// named) is worse than offering no buttons at all.
+async function ecomDetectMentionedProduct(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return null;
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return null;
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  const matches=products.filter(p=>{
+    const name=(p.name||'').trim().toLowerCase();
+    return name.length>2 && text.includes(name);
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+// Category-level sibling of ecomDetectMentionedProduct above: an ecom_faq reply that couldn't be
+// pinned to one confident product (e.g. it instead rattled off several category names — "Mattress,
+// Sofa Set, Recliner...") is still a real multiple-choice moment for the customer, just at the
+// category level rather than the product level. Requires 2+ distinct matches — a reply naming
+// only one category is better served by leaving it as prose (or it already matches as a single
+// mentioned product/OPTIONS: question through the other paths). Reuses ecomListCategories so this
+// and the deterministic first-touch menu (handleEngineWebhook) share one source of truth for what
+// "this client's categories" even means.
+async function ecomDetectMentionedCategories(env, clientId, replyText){
+  const text=(replyText||'').toLowerCase();
+  if(!text) return [];
+  const categories=await ecomListCategories(env, clientId);
+  const matches=categories.filter(cat=>cat && text.includes(cat.toLowerCase()));
+  return matches.length>=2?matches:[];
+}
+
+// Product-level audio note / video / PDF (audio_url/video_url/pdf_url, Google Drive share links
+// set on the product itself in ecom.html's Add/Edit Product modal) — sent right after the
+// product's photo whenever a specific product was confidently identified, same "the customer asked
+// about this, so show/tell them everything curated for it" reasoning as the photo send just above
+// it at each call site. Deliberately separate from engineSendChatwootImageReply (the existing
+// photo path, an image-only thumbnail-URL trick) — audio/video/PDF need the real file bytes, not a
+// thumbnail, so this reuses the general-purpose sendDriveMediaToChatwoot (Automations & Flow's
+// send_whatsapp_media step, Follow-up Engine's per-variant media) instead of duplicating a second
+// Drive-fetch path. Best-effort: a missing/unshared Drive link for any of the three just skips that
+// one send, never blocks or fails the product reply that already went out above it.
+//
+// Progressive-disclosure tier tracker (migrations/0084_ecom_product_image_sent_send_count.sql).
+// Replaces the old per-calendar-day binary claim with a 5-hour rolling window and a send_count
+// that drives three tiers for Shopify products:
+//   tier 1 (first ask in window)  — full bundle: primary image + description + all media
+//   tier 2 (second ask in window) — 1 random extra angle + description + Shopify link
+//   tier 3+ (third+ ask in window)— 1 random extra angle + audio + Shopify link
+// Non-Shopify products continue to use tier 1 vs. Furniture random-image fallback as before.
+// Window resets after 5 hours so the same product can cycle through tiers again the next
+// conversation window without being permanently gated.
+// Returns the new send_count (1, 2, 3…); fail-open returns 1 so media always sends on error.
+async function engineClaimProductSend(env, clientId, leadId, productId){
+  if(!leadId || !productId) return 1;
+  try{
+    const now=new Date().toISOString();
+    const today=now.slice(0,10);
+    const fiveHoursAgo=new Date(Date.now()-5*60*60*1000).toISOString();
+    const existing=await env.DB.prepare(
+      `SELECT id, sent_at, send_count FROM ecom_product_image_sent WHERE lead_id=? AND product_id=? ORDER BY sent_at DESC LIMIT 1`
+    ).bind(leadId, productId).first();
+    if(!existing){
+      // First ever send for this lead+product
+      await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at, send_count) VALUES (?,?,?,?,?,1)`)
+        .bind(Number(clientId), leadId, productId, today, now).run();
+      return 1;
+    }
+    if(existing.sent_at < fiveHoursAgo){
+      // Window expired — reset counter on the existing row (avoids a new row duplicating the index)
+      await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, sent_date=?, send_count=1 WHERE id=?`)
+        .bind(now, today, existing.id).run();
+      return 1;
+    }
+    // Within 5-hour window — advance to next tier
+    const next=(existing.send_count||1)+1;
+    await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, send_count=? WHERE id=?`)
+      .bind(now, next, existing.id).run();
+    return next;
+  }catch(e){ await reportOpsError(env, 'engineClaimProductSend', e, {clientId, leadId, productId}); return 1; }
+}
+
+// Shopify tier 2 follow-up: 1 random extra angle image, then optionally full description and
+// the Shopify product URL as separate messages. opts.withDescription controls whether to re-send
+// the description (skip when the main reply already includes it inline). opts.withLink controls
+// whether to append the Shopify URL (skip when the main reply text already contains it).
+async function engineSendShopifyTier2(env, c, clientId, convId, product, opts={}){
+  const {withDescription=true, withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(withDescription && product.description){
+      const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
+      await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
+    }
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier2', e, {clientId, convId}); }
+}
+
+// Shopify tier 3 follow-up: 1 random extra angle image + audio note + optionally the Shopify URL.
+async function engineSendShopifyTier3(env, c, clientId, convId, product, opts={}){
+  const {withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier3', e, {clientId, convId}); }
+}
+
+// Furniture & Home Appliances same-day repeat: pick 2 random images from the product's pool
+// (image_url through image_url_5) and send them instead of the full bundle or nothing.
+async function engineSendRandomTwoProductImages(env, c, clientId, convId, product){
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url, product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(!pool.length) return;
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    for(const url of pool.slice(0,2)) await sendDriveMediaToChatwoot(c, convId, url, '');
+  }catch(e){ await reportOpsError(env, 'engineSendRandomTwoProductImages', e, {clientId, convId}); }
+}
+
+async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    // image_url is sent separately as the primary product photo. Send only the additional
+    // Product-level media explicitly configured in Ecom → Products: images 2–5, audio and video.
+    if(product.image_url_2) await sendDriveMediaToChatwoot(c, convId, product.image_url_2, '');
+    if(product.image_url_3) await sendDriveMediaToChatwoot(c, convId, product.image_url_3, '');
+    if(product.image_url_4) await sendDriveMediaToChatwoot(c, convId, product.image_url_4, '');
+    if(product.image_url_5) await sendDriveMediaToChatwoot(c, convId, product.image_url_5, '');
+    if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
+    if(product.video_url) await sendDriveMediaToChatwoot(c, convId, product.video_url, '');
+    if(product.pdf_url) await sendDriveMediaToChatwoot(c, convId, product.pdf_url, '');
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductMedia', e, {clientId, convId}); }
+}
+
+// Distinct category strings across this client's active products, capped at 10 — the same limit
+// engineSendChatwootQuickReply's own list-message cap already enforces, so a caller can hand this
+// straight to it as `items` with no further trimming. Two callers: the deterministic first-touch
+// category menu (handleEngineWebhook, a brand-new lead's very first message) and
+// ecomDetectMentionedCategories (the free-text-reply safety net above) — both need the same
+// "what are this client's categories" answer, so this is the one place that fetches it.
+async function ecomListCategories(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=category`);
+  const pd=await pr.json().catch(()=>({}));
+  const products=pd?.list||[];
+  return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
+}
+
+async function ecomListActiveProducts(env, clientId){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  return pd?.list||[];
+}
+
+// Build one WhatsApp menu containing both database categories and database products. WhatsApp
+// permits at most 10 rows, so keep up to three product recommendations visible and use the other
+// rows for category navigation. "Recommended" here means the first active rows in the merchant's
+// Products-table order; there is no AI ranking or inferred substitute.
+export function ecomAvailableCatalogueItems(categories, products, limit=10){
+  const cap=Math.max(1,Math.min(10,Number(limit)||10));
+  const categoryValues=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const productItems=ecomProductChoiceItems(products);
+  if(!categoryValues.length) return productItems.slice(0,cap);
+  if(!productItems.length) return categoryValues.slice(0,cap).map(category=>({title:category,value:category}));
+  const productSlots=Math.min(3,productItems.length,Math.max(1,cap-1));
+  const categorySlots=cap-productSlots;
+  const items=categoryValues.slice(0,categorySlots).map(category=>({title:category,value:category}));
+  const usedValues=new Set(items.map(item=>ecomNormalizeCatalogueText(item.value)));
+  for(const item of productItems){
+    if(items.length>=cap) break;
+    const key=ecomNormalizeCatalogueText(item.value);
+    if(usedValues.has(key)) continue;
+    usedValues.add(key);
+    items.push(item);
+  }
+  return items;
+}
+
+export function ecomExactProductSelection(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const matches=(products||[]).filter(product=>[product?.name,product?.short_label,product?.sku]
+    .some(value=>value&&ecomNormalizeCatalogueText(value)===query));
+  return matches.length===1?matches[0]:null;
+}
+
+// Zero-hallucination catalogue fallback. The labels and returned values are copied verbatim from
+// active Ecom Product rows. Categories and recommended active products share the same message.
+async function ecomSendAvailableCatalogueOptions(env, c, clientId, convId, replyLang){
+  const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+  const items=ecomAvailableCatalogueItems(categories,products);
+  if(items.length){
+    const sourceText=categories.length
+      ? 'Please choose an available category or one of these recommended products:'
+      : 'Please choose from these recommended available products:';
+    const text=await engineLocalizeReply(env, c, sourceText, replyLang);
+    const quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, text, items);
+    return {sent:true,text,quickReplies};
+  }
+  return {sent:false,text:'',quickReplies:null};
+}
+
+// Broad but deterministic Ecom catalogue lookup. It searches only values physically stored on
+// this client's Product records; it never asks an LLM to invent a candidate. This catches natural
+// wording such as "sofa", "3 seater sofa", a brand, variant, material/concern from Description,
+// color, size, style, SKU, etc. Multiple real matches are intentionally returned so the caller can
+// show exact Product-record choices as WhatsApp buttons/list rows instead of guessing one.
+function ecomNormalizeCatalogueText(value){
+  return String(value||'')
+    .toLowerCase()
+    .replace(/\b(one|single)\b/g,'1').replace(/\btwo\b/g,'2').replace(/\bthree\b/g,'3')
+    .replace(/\bfour\b/g,'4').replace(/\bfive\b/g,'5').replace(/\bsix\b/g,'6')
+    .replace(/[^\p{L}\p{N}]+/gu,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function ecomCatalogueQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','price','cost','buy','order','available','availability','product','item']);
+  return [...new Set(ecomNormalizeCatalogueText(value).split(' ').filter(t=>t && !stop.has(t) && (t.length>1 || /^\d$/.test(t))))];
+}
+
+// Generic catalogue requests have no product-specific token to match ("show products", "what do
+// you sell", "catalogue"), but they are still unambiguously asking to browse Ecom. Keep this
+// deterministic and deliberately narrow so working-hours, location, delivery-policy and other
+// business questions continue to the client's configured prompt instead of opening the catalogue.
+export function ecomIsGenericProductCatalogueQuery(text){
+  const normalized=ecomNormalizeCatalogueText(text);
+  if(!normalized) return false;
+  return /\b(?:products?|items?|catalog(?:ue)?|collection|range)\b/u.test(normalized)
+    || /\bwhat (?:do|are) (?:you|u) sell\b/u.test(normalized);
+}
+
+function ecomCatalogueTokenRoot(token){
+  const value=String(token||'');
+  if(value.length>4 && value.endsWith('ies')) return value.slice(0,-3)+'y';
+  if(value.length>4 && value.endsWith('sses')) return value.slice(0,-2);
+  if(value.length>4 && value.endsWith('es') && !value.endsWith('ses')) return value.slice(0,-2);
+  if(value.length>3 && value.endsWith('s') && !value.endsWith('ss')) return value.slice(0,-1);
+  return value;
+}
+
+// Pure form of the broad matcher, exported for regression tests. Every returned value is one of
+// the supplied Product rows; scoring can rank or filter verified records but can never manufacture
+// a product. The async database wrapper below only loads active rows and delegates here.
+export function ecomBroadProductMatches(products, message){
+  const query=ecomNormalizeCatalogueText(message);
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!query || !tokens.length) return [];
+  const weightedFields=[
+    ['sku',30],['short_label',24],['name',22],['variant',14],['category',12],['brand',11],
+    ['style',10],['color',9],['size',9],['shade',8],['skin_type',8],['hair_type',8],
+    ['concern',8],['volume_ml',7],['ingredient',6],['description',4]
+  ];
+  const scored=[];
+  for(const product of products||[]){
+    const normalizedFields=weightedFields.map(([field,weight])=>({field,weight,text:ecomNormalizeCatalogueText(product[field])})).filter(x=>x.text);
+    const combinedWords=normalizedFields.flatMap(x=>x.text.split(' '));
+    const matched=tokens.filter(token=>{
+      const root=ecomCatalogueTokenRoot(token);
+      return combinedWords.some(word=>ecomCatalogueTokenRoot(word)===root);
+    });
+    const required=tokens.length<=2?1:Math.ceil(tokens.length*0.6);
+    if(matched.length<required) continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of normalizedFields){
+      if(f.text===query) score+=f.weight*3;
+      else if(f.text.includes(query)) score+=f.weight*2;
+      const fieldWords=f.text.split(' ');
+      for(const token of matched){
+        const root=ecomCatalogueTokenRoot(token);
+        if(fieldWords.some(word=>ecomCatalogueTokenRoot(word)===root)) score+=f.weight;
+      }
+    }
+    scored.push({product,score});
+  }
+  if(!scored.length) return [];
+  scored.sort((a,b)=>b.score-a.score || String(a.product.name||'').localeCompare(String(b.product.name||'')));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(100,best*0.55)).slice(0,10).map(x=>x.product);
+}
+
+// Resolve a short customer reply against the exact category values stored in Ecom → Products.
+// This is deliberately deterministic: tapping a category button such as "Mattress" must browse
+// that category, not be sent to the product/SKU resolver and rejected as an unknown product. A
+// single meaningful word may also match one longer category ("mattress" -> "Premium Mattress"),
+// but only when that match is unique; ambiguous words never select a category by guesswork.
+export function ecomMatchProductCategory(message, categories){
+  const query=ecomNormalizeCatalogueText(message);
+  if(!query) return null;
+  const cleaned=[...new Set((categories||[]).map(c=>String(c||'').trim()).filter(Boolean))];
+  const exact=cleaned.find(category=>ecomNormalizeCatalogueText(category)===query);
+  if(exact) return exact;
+  const tokens=ecomCatalogueQueryTokens(message);
+  if(!tokens.length) return null;
+  const roots=tokens.map(ecomCatalogueTokenRoot);
+  const matches=cleaned.filter(category=>{
+    const categoryRoots=ecomNormalizeCatalogueText(category).split(' ').map(ecomCatalogueTokenRoot);
+    return roots.length===1 ? categoryRoots.includes(roots[0]) : categoryRoots.every(token=>roots.includes(token));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+async function ecomFindMatchedProductCategory(env, clientId, message){
+  return ecomMatchProductCategory(message, await ecomListCategories(env, clientId));
+}
+
+// Healthcare's verified equivalent of the Ecom Products matcher. It only searches active rows
+// saved in Healthcare → Services and returns real records for exact WhatsApp choice labels.
+export function hcNormalizeText(value){
+  return String(value||'').normalize('NFC').toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+export function hcQueryTokens(value){
+  const stop=new Set(['a','an','the','i','me','my','we','you','your','want','need','looking','look','for','show','tell','about','have','has','do','does','is','are','please','pls','clinic','hospital','doctor','appointment','book','available','availability','treatment','service']);
+  return [...new Set(hcNormalizeText(value).split(' ').filter(t=>t&&!stop.has(t)&&t.length>1))];
+}
+
+// D1 migrations are a separate deployment step from `wrangler deploy`. Keep the checked-in
+// migration as the canonical schema, but also repair a Worker whose code reached production
+// before migration 0056 was applied. Every statement is additive/idempotent, so this never drops,
+// replaces or clears existing Healthcare data. Cache the promise per D1 binding so the check runs
+// only once per Worker isolate instead of on every Healthcare request/message.
+const hcOperationsSchemaReady=new WeakMap();
+const HC_OPERATIONS_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS healthcare_departments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    image_url_1 TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL, name TEXT NOT NULL,
+    qualification TEXT NOT NULL DEFAULT '', specialization TEXT NOT NULL DEFAULT '',
+    experience_years INTEGER NOT NULL DEFAULT 0, consultation_fee REAL NOT NULL DEFAULT 0,
+    phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', image_url TEXT NOT NULL DEFAULT '',
+    image_url_2 TEXT NOT NULL DEFAULT '', image_url_3 TEXT NOT NULL DEFAULT '',
+    image_url_4 TEXT NOT NULL DEFAULT '', image_url_5 TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL,
+    short_label TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '', price REAL NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT '', duration_minutes INTEGER NOT NULL DEFAULT 30,
+    preparation TEXT NOT NULL DEFAULT '', booking_url TEXT NOT NULL DEFAULT '',
+    image_url TEXT NOT NULL DEFAULT '', image_url_2 TEXT NOT NULL DEFAULT '',
+    image_url_3 TEXT NOT NULL DEFAULT '', image_url_4 TEXT NOT NULL DEFAULT '',
+    image_url_5 TEXT NOT NULL DEFAULT '', audio_url TEXT NOT NULL DEFAULT '',
+    video_url TEXT NOT NULL DEFAULT '', pdf_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, weekday INTEGER NOT NULL, start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL, break_start TEXT NOT NULL DEFAULT '',
+    break_end TEXT NOT NULL DEFAULT '', slot_minutes INTEGER NOT NULL DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    patient_name TEXT NOT NULL, patient_phone TEXT NOT NULL,
+    lead_id INTEGER NOT NULL DEFAULT 0, service_id INTEGER NOT NULL DEFAULT 0,
+    doctor_id INTEGER NOT NULL DEFAULT 0, appointment_date TEXT NOT NULL,
+    start_time TEXT NOT NULL, end_time TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested', source TEXT NOT NULL DEFAULT 'dashboard',
+    notes TEXT NOT NULL DEFAULT '', gcal_event_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_insurance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    provider_name TEXT NOT NULL, network_name TEXT NOT NULL DEFAULT '',
+    plan_name TEXT NOT NULL DEFAULT '', covered_services TEXT NOT NULL DEFAULT '',
+    preapproval_required INTEGER NOT NULL DEFAULT 0,
+    verification_note TEXT NOT NULL DEFAULT '', contact TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', last_verified_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_settings (
+    client_id INTEGER PRIMARY KEY, strict_zero_hallucination INTEGER NOT NULL DEFAULT 1,
+    emergency_keywords TEXT NOT NULL DEFAULT 'chest pain,cannot breathe,can''t breathe,unconscious,severe bleeding,stroke,suicidal,overdose',
+    emergency_message TEXT NOT NULL DEFAULT 'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.',
+    handover_message TEXT NOT NULL DEFAULT 'I am connecting you to the clinic team now. Please stay available for their response.',
+    emergency_contact TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_media_sent (
+    client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    sent_date TEXT NOT NULL, sent_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, lead_id, service_id, sent_date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_automation_settings (
+    client_id INTEGER PRIMARY KEY,
+    confirmation_template_name TEXT NOT NULL DEFAULT '',
+    reminder_template_name TEXT NOT NULL DEFAULT '',
+    template_language TEXT NOT NULL DEFAULT 'en',
+    reminder_24h_enabled INTEGER NOT NULL DEFAULT 1,
+    reminder_2h_enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_automation (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', calendar_status TEXT NOT NULL DEFAULT 'pending',
+    reminder_status TEXT NOT NULL DEFAULT 'pending', last_error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL, PRIMARY KEY (client_id, appointment_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_appointment_notifications (
+    client_id INTEGER NOT NULL, appointment_id INTEGER NOT NULL,
+    appointment_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, appointment_id, appointment_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS healthcare_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    appointment_id INTEGER NOT NULL DEFAULT 0, job_type TEXT NOT NULL DEFAULT '',
+    failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_client ON healthcare_services(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_services_department ON healthcare_services(department_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_schedules_doctor ON healthcare_doctor_schedules(client_id, doctor_id, weekday)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_client_date ON healthcare_appointments(client_id, appointment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_appointments_doctor_slot ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_healthcare_appointments_active_slot
+    ON healthcare_appointments(client_id, doctor_id, appointment_date, start_time)
+    WHERE status NOT IN ('cancelled','completed','no_show')`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_insurance_client ON healthcare_insurance(client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_automation_status
+    ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
+    ON healthcare_queue_failures(client_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_doctor_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
+    doctor_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(client_id, doctor_id, service_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_doctor
+    ON healthcare_doctor_services(client_id, doctor_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_service
+    ON healthcare_doctor_services(client_id, service_id)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_simple_sessions (
+    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '', appt_date TEXT NOT NULL DEFAULT '',
+    appt_time TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, patient_phone)
+  )`
+];
+export async function hcEnsureOperationsSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=hcOperationsSchemaReady.get(env.DB);
+  if(cached) return cached;
+  const pending=(async()=>{
+    for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
+    // service_type column added by migration 0081_healthcare_service_type.sql
+  })();
+  hcOperationsSchemaReady.set(env.DB,pending);
+  try{ await pending; }
+  catch(error){ hcOperationsSchemaReady.delete(env.DB); throw error; }
+}
+async function hcListActiveServices(env, clientId){
+  await hcEnsureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return results||[];
+}
+function hcDedupeServices(services){
+  const seen=new Set(), out=[];
+  for(const s of services||[]){
+    const key=String(s.name||'').trim().toLowerCase();
+    if(!key||seen.has(key)) continue;
+    seen.add(key); out.push(s);
+  }
+  return out;
+}
+export function hcServiceChoiceItems(services){
+  const seen=new Set(), items=[];
+  for(const s of services||[]){
+    const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
+    if(!name||seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase()); items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
+  }
+  return items.slice(0,10);
+}
+async function hcFindBroadServiceMatches(env,clientId,message){
+  const query=hcNormalizeText(message), tokens=hcQueryTokens(message); if(!query||!tokens.length)return [];
+  const services=await hcListActiveServices(env,clientId), scored=[];
+  for(const service of services){
+    const fields=[['name',25],['short_label',22],['aliases',18],['description',5],['preparation',3]]
+      .map(([key,weight])=>({text:hcNormalizeText(service[key]),weight})).filter(x=>x.text);
+    const combined=fields.map(x=>x.text).join(' '), matched=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(combined));
+    if(!matched.length)continue;
+    let score=(matched.length/tokens.length)*100;
+    for(const f of fields){if(f.text===query)score+=f.weight*3;else if(f.text.includes(query))score+=f.weight*2;for(const t of matched)if(new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(f.text))score+=f.weight;}
+    scored.push({service,score});
+  }
+  if(!scored.length)return [];
+  scored.sort((a,b)=>b.score-a.score||String(a.service.name).localeCompare(String(b.service.name)));
+  const best=scored[0].score;
+  return scored.filter(x=>x.score>=Math.max(80,best*.55)).slice(0,10).map(x=>x.service);
+}
+async function hcFindDoctorMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message).filter(t=>t!=='dr'); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).map(doctor=>{
+    const text=hcNormalizeText([doctor.name,doctor.specialization,doctor.qualification,doctor.description].join(' '));
+    const hits=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text));
+    return {doctor,score:hits.length/tokens.length};
+  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor);
+}
+async function hcFindDepartmentMatches(env,clientId,message){
+  const tokens=hcQueryTokens(message); if(!tokens.length)return [];
+  const {results}=await env.DB.prepare(`SELECT * FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  return (results||[]).filter(dep=>{
+    const text=hcNormalizeText([dep.name,dep.description].join(' '));
+    return tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text)).length>=Math.max(1,Math.ceil(tokens.length*.5));
+  }).slice(0,10);
+}
+function hcVerifiedDoctorText(doctor,question){
+  const lines=[`*${doctor.name}*`];
+  if(doctor.specialization)lines.push(doctor.specialization);
+  if(doctor.qualification)lines.push(`Qualification: ${doctor.qualification}`);
+  if(Number(doctor.experience_years)>0)lines.push(`Experience: ${doctor.experience_years} years`);
+  if(/price|cost|fee|how much|consultation/i.test(question||'')&&Number(doctor.consultation_fee)>0)lines.push(`Consultation fee: ${doctor.consultation_fee}`);
+  if(doctor.description)lines.push(doctor.description);
+  return lines.join('\n\n');
+}
+async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
+  try{for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','video_url','pdf_url'])if(doctor[key])await sendDriveMediaToChatwoot(c,convId,doctor[key],'');}
+  catch(e){await reportOpsError(env,'hcSendDoctorMedia',e,{clientId,convId,doctorId:doctor.id});}
+}
+export function hcVerifiedServiceText(service,question){
+  const lines=[`*${service.name}*`];
+  if(service.description)lines.push(service.description);
+  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
+  if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
+  if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
+  // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
+  // into a service answer; the deterministic Book Appointment button owns this transition.
+  return lines.join('\n\n');
+}
+async function hcClaimServiceMediaForToday(env,clientId,leadId,serviceId){
+  if(!leadId||!serviceId)return true;
+  try{
+    const now=new Date(), date=now.toISOString().slice(0,10);
+    const r=await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_media_sent (client_id,lead_id,service_id,sent_date,sent_at) VALUES (?,?,?,?,?)`).bind(Number(clientId),Number(leadId),Number(serviceId),date,now.toISOString()).run();
+    return !!r?.meta?.changes;
+  }catch(e){return true;}
+}
+async function hcSendServiceMedia(env,c,clientId,convId,service){
+  if(!service||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token)return;
+  try{
+    for(const key of ['image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url'])if(service[key])await sendDriveMediaToChatwoot(c,convId,service[key],'');
+  }catch(e){await reportOpsError(env,'hcSendServiceMedia',e,{clientId,convId,serviceId:service.id});}
+}
+async function hcSettingsForClient(env,clientId){
+  try{
+    await hcEnsureOperationsSchema(env);
+    await env.DB.prepare(`INSERT OR IGNORE INTO healthcare_settings (client_id) VALUES (?)`).bind(Number(clientId)).run();
+    return await env.DB.prepare(`SELECT * FROM healthcare_settings WHERE client_id=?`).bind(Number(clientId)).first();
+  }catch(e){return null;}
+}
+export function hcEmergencyMatch(settings,message){
+  const text=hcNormalizeText(message), keywords=String(settings?.emergency_keywords||'').split(',').map(hcNormalizeText).filter(Boolean);
+  return keywords.find(k=>{
+    const at=text.indexOf(k); if(at<0)return false;
+    const before=text.slice(Math.max(0,at-18),at);
+    return !/(?:no|not|without|don t|dont)\s*$/.test(before);
+  })||null;
+}
+async function engineBuildHealthcareContext(env,clientId){
+  const [services,deps,docs,insurance,hcSettings]=await Promise.all([
+    hcListActiveServices(env,clientId),
+    env.DB.prepare(`SELECT id,name,description FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 50`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT id,department_id,name,qualification,specialization,experience_years,consultation_fee,description FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT provider_name,network_name,plan_name,covered_services,preapproval_required,verification_note,last_verified_at FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 100`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    hcSettingsForClient(env,clientId)
+  ]);
+  const strict=hcSettings?.strict_zero_hallucination!==0;
+  const lines=[`\n\n## VERIFIED HEALTHCARE DATA${strict?' — ONLY SOURCE OF TRUTH':''}`,`STRICT_ZERO_HALLUCINATION=${strict?'ON':'OFF'}`];
+  lines.push(`Never diagnose, prescribe, guarantee insurance coverage, invent availability, price, doctor, treatment, or policy.${strict?' If the requested fact is absent below, say it is not verified and offer clinic-team handover.':''}`);
+  if(services.length){lines.push('### Services');services.forEach(s=>lines.push(`- ${s.name}${s.short_label?' | label: '+s.short_label:''}${s.aliases?' | aliases: '+s.aliases:''}${s.description?' | '+s.description:''}${Number(s.price)>0?' | price: '+(s.currency||'')+' '+s.price:' | price: On consultation (never invent a number — say exactly "on consultation" when asked)'}${Number(s.duration_minutes)>0?' | '+s.duration_minutes+' min':''}${s.preparation?' | preparation: '+s.preparation:''}${s.booking_url?' | booking: '+s.booking_url:''}`));}
+  if(deps.length){lines.push('### Departments');deps.forEach(d=>lines.push(`- ${d.name}${d.description?' | '+d.description:''}`));}
+  if(docs.length){lines.push('### Doctors');docs.forEach(d=>lines.push(`- ${d.name}${d.specialization?' | '+d.specialization:''}${d.qualification?' | '+d.qualification:''}${d.experience_years?' | '+d.experience_years+' years':''}${d.consultation_fee?' | consultation fee '+d.consultation_fee:''}${d.description?' | '+d.description:''}`));}
+  if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
+  return lines.join('\n');
+}
+async function engineBuildEduContext(env, clientId, phone){
+  const [courses, categories, promos]=await Promise.all([
+    env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
+  ]);
+  const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
+    `STRICT_ZERO_HALLUCINATION=ON`,
+    `Never invent, estimate, or infer any course name, price, duration, level, start date, seats, link, brochure, certificate, scholarship amount, or instructor. Answer ONLY from the data below and the main business prompt. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover.`
+  ];
+  if(categories.length){
+    lines.push('### Course Categories');
+    categories.forEach(cat=>lines.push(`- ${cat.name}`));
+  }
+  if(courses.length){
+    lines.push('### Active Courses');
+    courses.forEach(cr=>{
+      const p=[`- ${cr.name}`];
+      if(cr.short_label) p.push(`label: ${cr.short_label}`);
+      if(cr.category) p.push(`category: ${cr.category}`);
+      if(cr.level) p.push(`level: ${cr.level}`);
+      if(cr.duration) p.push(`duration: ${cr.duration}`);
+      if(cr.start_date) p.push(`starts: ${cr.start_date}`);
+      p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
+      if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
+      if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
+      if(cr.pdf_url) p.push('brochure: available — attach it directly in chat; never print or expose its Drive URL');
+      if(cr.description) p.push(cr.description.slice(0,200));
+      lines.push(p.join(' | '));
+    });
+  } else {
+    lines.push('No active courses in the database — answer from the main business prompt only and never invent course details.');
+  }
+  if(promos.length){
+    lines.push('### Active Scholarships / Offers');
+    promos.forEach(pr=>{
+      const p=[`- ${pr.code}`];
+      if(pr.description) p.push(pr.description.slice(0,150));
+      if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
+      lines.push(p.join(' | '));
+    });
+  }
+  if(phone){
+    const app=await eduAdmissionActive(env,clientId,phone).catch(function(){return null;});
+    if(app){
+      lines.push('### ACTIVE CHAT ADMISSION — STRICT MEMORY');
+      lines.push('- application id: '+app.application_id+' | current step: '+app.current_step+' | paused step: '+(app.paused_step||'none')+' | status: '+app.status);
+      lines.push('- saved name: '+(app.full_name||'not collected')+' | qualification: '+(app.qualification||'not collected')+' | mode: '+(app.study_mode||'not selected'));
+      lines.push('- Never restart or repeat completed questions. Answer the current question first, then offer exactly: OPTIONS: Continue Application | Ask Another Question | Change Course');
+    }
+  }
+  return lines.join('\n');
+}
+function ecomProductChoiceItems(products){
+  const seen=new Set();
+  const items=[];
+  for(const p of products||[]){
+    const value=String(p?.name||'').trim();
+    if(!value) continue;
+    const key=String(p?.Id||p?.sku||value).toLowerCase();
+    if(seen.has(key)) continue;
+    seen.add(key);
+    // Both visible label and returned value come directly from Ecom → Products. short_label is
+    // preferred only when the merchant explicitly configured it; otherwise the exact name is used.
+    items.push({title:String(p.short_label||p.name).trim(), value});
+  }
+  return items.slice(0,10);
+}
+async function ecomFindBroadProductMatches(env, clientId, message){
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(!productsTable) return [];
+  // Fetch full rows instead of requesting an explicit optional-field list: older client tables may
+  // not yet have every style/media column, and one missing NocoDB column must not break matching.
+  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+  const pd=await pr.json().catch(()=>({}));
+  return ecomBroadProductMatches(pd?.list||[],message);
+}
+
+// Category-level browsing: the customer named a category ("shirts") rather than one specific
+// product, so detectOrderSignal returned `category` instead of a sku. Used to send a representative
+// photo (the first matching product that actually has one) alongside a clarifying question listing
+// that category's distinct variants — there's no dedicated categories table or subcategory field in
+// this data model, so `color` (the field that reliably varies within a category) stands in for it.
+// `like` (not `eq`) absorbs minor case/wording drift between the LLM's category guess and the
+// catalog string, same tolerance handleEcomList already gives shop-owner category filters.
+export function ecomProductsForCategory(products, category){
+  if(!category) return [];
+  const wanted=ecomNormalizeCatalogueText(category);
+  return (products||[]).filter(product=>ecomNormalizeCatalogueText(product.category)===wanted).slice(0,50);
+}
+async function ecomFindProductsByCategory(env, clientId, category){
+  return ecomProductsForCategory(await ecomListActiveProducts(env, clientId),category);
+}
+
+// The shop-owner-managed category photo (ecom_categories.image_url_1/2/3, set up in the CRM's
+// Ecommerce → Categories tab) — distinct from the NocoDB `products` table category text matched
+// above. Same loose two-way substring match engineMaybeSendEcomCategoryMedia uses, since the
+// LLM's category guess and the CRM's category name aren't guaranteed to match exactly.
+async function ecomFindCategoryImage(env, clientId, category){
+  if(!category) return null;
+  const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
+  const guess=category.trim().toLowerCase();
+  const match=(categories||[]).find(cat=>{
+    const name=(cat.name||'').trim().toLowerCase();
+    return name && (name.includes(guess) || guess.includes(name));
+  });
+  if(!match) return null;
+  return match.image_url_1||match.image_url_2||match.image_url_3||null;
+}
+
+async function resolveOrderProductAndText(env, c, clientId, name, sku, link){
+  const product=await ecomFindProductBySku(env, clientId, sku);
+  const displayName=name||'there';
+  // No link at all (buildOrderLink found no product-level or client-wide link to send) — no
+  // generic catalog page to fall back to anymore, so hand off to a human instead of a dead-end
+  // message with nothing after the colon.
+  const text=product
+    ? (link
+        ? `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOrder it here: ${link}`
+        : `Hi ${displayName}! Here's the item you were asking about:\n\n*${product.name}* — ${product.currency||''} ${product.price||''}\n\nOur team will follow up shortly to help you complete the order.`)
+    : (link
+        ? `Hi ${displayName}! Here's our full catalog — order directly from here:\n${link}`
+        : `Hi ${displayName}! Thanks for your interest — our team will follow up shortly to help you with your order.`);
+  return {product, text};
+}
+
+// The "just asking" reply — full product detail available as context, no order/checkout link.
+// Deliberately never mentions ordering or includes a link: a customer asking about a product
+// (size, color, stock, price) should get an answer and the photo, and only see an order link once
+// they've actually said they want to order (detectOrderSignal's separate 'order' mode, handled
+// elsewhere) — conflating "interested" with "ready to buy" was pushing a checkout link into every
+// product question, whether the customer had asked for it or not.
+// LLM-generated rather than a fixed name/price/color/size/stock template that always dumped every
+// field regardless of what was actually asked — observed live: a plain "Hi" got a long, salesy
+// paragraph reciting sizes/colors nobody asked about, and price was always volunteered even when
+// the customer only asked about availability. This tells the model everything it's allowed to say
+// but leaves *what to actually say* up to what the customer asked.
+// Style-specific attribute lines, shared by engineBuildProductEnquirySystemPrompt (single-product
+// reply) and engineBuildEcomContext (whole-catalog context). `style` defaults to 'fashion_garments'
+// when blank/unrecognized, so every product created before this feature — and any product that
+// simply never had a style picked — keeps relying only on the existing color/size/category lines
+// each caller already builds; nothing here duplicates those.
+function ecomStyleAttributeLines(product){
+  const lines=[];
+  const style=product.style||'fashion_garments';
+  if(style==='cosmetics'){
+    if(product.shade) lines.push(`Shade: ${product.shade}`);
+    if(product.skin_type) lines.push(`Skin type: ${product.skin_type}`);
+    if(product.volume_ml) lines.push(`Volume: ${product.volume_ml}`);
+    if(product.expiry_date) lines.push(`Expiry date: ${product.expiry_date}`);
+    if(product.ingredient) lines.push(`Key ingredient: ${product.ingredient}`);
+  }else if(style==='haircare'){
+    if(product.hair_type) lines.push(`Hair type: ${product.hair_type}`);
+    if(product.concern) lines.push(`Addresses: ${product.concern}`);
+    if(product.volume_ml) lines.push(`Volume: ${product.volume_ml}`);
+    if(product.ingredient) lines.push(`Key ingredient: ${product.ingredient}`);
+  }else if(style==='general'){
+    if(product.brand) lines.push(`Brand: ${product.brand}`);
+    if(product.variant) lines.push(`Variant: ${product.variant}`);
+    if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
+  }
+  return lines;
+}
+
+// engineBuildProductEnquirySystemPrompt (LLM-generated product-enquiry replies) was removed here —
+// its one call site (the `detection.mode==='enquiry' && product` branch in handleEngineWebhook) now
+// renders directly from the verified Ecom Product record instead (see that branch's own comment):
+// a stronger anti-hallucination guarantee than any prompt instruction, since there's no LLM call in
+// that path left to hallucinate in the first place.
+
+// `product` is optional (a general FAQ/objection reply has no specific product in view) — when
+// given, its own shopify_product_url/product_link win over the client-wide external_store_link,
+// same priority as buildOrderLink above. The built-in Ecommerce module's own generic checkout page
+// (order.html?client=<id>) is deliberately no longer a fallback here — per explicit product
+// direction, only a link actually configured for that product/client should ever be sent, never a
+// generic in-house checkout page standing in for one that wasn't set up. Returns '' when none of
+// the three is set; callers must handle that (e.g. by collecting the order conversationally
+// instead, same as the ecom_order_link_enabled==='No' path).
+function buildCheckoutLink(c, clientId, sku, product){
+  // Same product-level-only rule as buildOrderLink: no generic or guessed checkout URL.
+  const shopifyProductUrl=(product?.shopify_product_url||'').trim();
+  if(shopifyProductUrl) return shopifyProductUrl;
+  const productLink=(product?.product_link||'').trim();
+  if(productLink) return productLink;
+  return '';
+}
+
+// Client-authored template placeholder — real observed failure: an ecommerce client wrote
+// "[ORDER_LINK]" literally into their own Main Prompt script (e.g. "Order ചെയ്യാൻ ഇവിടെ ക്ലിക്ക്
+// ചെയ്യൂ: [ORDER_LINK]"), expecting it swapped for a real per-product checkout link — the same
+// idea as `{name}` being substituted in follow-up messages elsewhere in this file. Nothing did
+// that substitution here, so the model just echoed the bracket text verbatim, sending a customer
+// the literal string "[ORDER_LINK]" instead of a clickable link. Case-insensitive; only touches
+// ecommerce clients (`buildCheckoutLink`'s shape is ecom-specific — a client in another industry
+// writing this placeholder is out of scope for now). `sku` is optional — when no specific product
+// is in view (a general FAQ/objection reply, not a matched-product enquiry), falls back to
+// `buildCheckoutLink`'s own no-sku behavior (`external_store_link`, or nothing at all now that the
+// generic order.html catalog page is gone). If no link resolves at all, leaves the placeholder line
+// out entirely rather than leaving a dangling "click here: " with nothing after it — cleaner than
+// echoing the literal bracket text back at the customer.
+function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku, product){
+  if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
+  const link=buildCheckoutLink(c, clientId, sku||'', product);
+  if(!link) return text.split('\n').filter(line=>!/\[order_link\]/i.test(line)).join('\n');
+  return text.replace(/\[order_link\]/gi, link);
+}
+
+// Core "actually send the order link" logic — direct Meta Graph API, bypassing Chatwoot. Kept as
+// the implementation POST /ecom/order-link uses, and as sendOrderLinkViaChatwoot's fallback below.
+async function sendOrderLinkNow(env, c, clientId, phone, name, sku){
+  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
+  const knownProduct=await ecomFindProductBySku(env, clientId, sku);
+  const link=buildOrderLink(c, clientId, sku, knownProduct);
+  const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+  const order_id=await logPendingOrder(env, c, clientId, phone, name, product);
+  return {ok:true, link, order_id, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), via:'graph'};
+}
+
+// Used only by the ecom auto-send path (handleChatwootIncomingOrderSignal below) — same reasoning
+// as sendBookingLinkViaChatwoot: this webhook fires because of a real message on a real Chatwoot
+// conversation, so its id is already known, and routing the reply through Chatwoot's own message
+// endpoint means it shows up in the rep's inbox and Chatwoot's own WhatsApp channel does the relay,
+// instead of this repo hand-building a Graph API payload for a path Chatwoot never learns about.
+async function sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone, name, sku){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
+  const knownProduct=await ecomFindProductBySku(env, clientId, sku);
+  const link=buildOrderLink(c, clientId, sku, knownProduct);
+  const {product, text}=await resolveOrderProductAndText(env, c, clientId, name, sku, link);
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  // Attach the actual product photo, same as the primary inline-order path
+  // (engineSendChatwootImageReply) — best-effort, falls straight through to a text-only send if
+  // there's no image or the fetch fails.
+  const directUrl=product?.image_url?engineResolveDirectImageUrl(product.image_url):'';
+  if(directUrl){
+    try{
+      const imgR=await fetch(directUrl);
+      if(imgR.ok) fd.append('attachments[]', await imgR.blob(), 'product.jpg');
+    }catch(e){}
+  }
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+  const order_id=await logPendingOrder(env, c, clientId, phone, name, product);
+  return {ok:true, link, order_id, whatsapp_sent:r.ok, whatsapp_error:r.ok?undefined:('HTTP '+r.status), via:'chatwoot'};
+}
+
+async function handleEcomOrderLink(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const result=await sendOrderLinkNow(env, c, clientId, phone, body.name, body.sku);
+  if(result.error) return json({error:result.error}, 400);
+  return json(result);
+}
+
+// Non-ecom equivalent of /ecom/order-link, for healthcare/services/consultancy-style clients
+// where the conversion event is a booking, not a purchase — there's no product/order to log, so
+// instead of writing to the ecom orders table this advances the matching lead and drops a
+// follow-up task. Reuses external_store_link (Settings -> Order Link) as the booking link — same
+// field ecom clients use for their storefront override, here holding a Calendly/Cal.com/booking
+// page URL instead; and reuses manual_tasks, the same JSON-on-CLIENTS field the dashboard's Tasks
+// page already reads/writes, so no new table for either.
+const BOOKING_TERMINAL_STAGES=['appt_booked','consultation_booked','visit_booked'];
+
+// A client's own Appointment Booking module tables (Settings -> Modules -> Appointment Booking),
+// created on demand by apptSetupTables() in dashboard.html — same per-client-tables model as
+// Travel/Recruit, not the shared-table-with-client_id model Ecommerce uses, so there's no default
+// table id to fall back to here.
+function apptResolveTable(c, kind){
+  try{ return (JSON.parse(c.appt_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
+// Shared by handleLeadBookingLink and handleChatwootMessageHook's non-ecom fallback below — finds
+// the lead by phone, advances it to a booking-terminal stage (only one the client has actually
+// defined in their own flow_json — never writes a stage value they haven't configured), drops a
+// follow-up task via manual_tasks (the same JSON-on-CLIENTS field the Tasks page itself uses), and
+// — if the client has set up the Appointment Booking module — logs a `requested` row there too.
+// `explicitWhen` is optional {date, time} — set by handleApptPublicBook when a customer submits a
+// real date/time through the public booking page, vs. the other callers here which only know
+// *intent*, not a specific slot yet. When set: source is 'public' instead of 'bot', the row always
+// gets inserted (a real distinct booking, not just intent, so no "already has one requested"
+// dedupe), and the task is worded as "review", not "confirm the link landed". Returns
+// {lead_id, stage_advanced} for the caller to report back.
+async function advanceLeadBookingAndTask(env, c, clientId, phone, name, service, explicitWhen){
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+
+  let stage_advanced=null;
+  if(lead){
+    let flow={}; try{ flow=JSON.parse(c.flow_json||'{}'); }catch(e){}
+    const stageKeys=Object.keys(flow.stages||{});
+    const target=BOOKING_TERMINAL_STAGES.find(s=>stageKeys.includes(s));
+    if(target && lead.Stage!==target){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, Stage:target}});
+      stage_advanced=target;
+    }
+  }
+
+  const whenText=explicitWhen?.date?` on ${explicitWhen.date}${explicitWhen.time?' '+explicitWhen.time:''}`:'';
+  let manual={items:[],dismissed:[],projects:[]};
+  try{ manual={...manual, ...JSON.parse(c.manual_tasks||'{}')}; }catch(e){}
+  if(!Array.isArray(manual.items)) manual.items=[];
+  manual.items.push({
+    id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+    title:`${explicitWhen?'Review booking':'Confirm booking'} — ${name||phone}${service?.name?' ('+service.name+')':''}${whenText}`,
+    notes:explicitWhen?'Booked via the public booking page — review and confirm.':'Booking link sent — confirm the appointment landed.',
+    due_date:new Date().toISOString().slice(0,10), due_time:'',
+    lead_id:lead?lead.Id:null, lead_name:lead?.Name||name||'',
+    assignee_email:'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()
+  });
+  await patchClientFields(env, clientId, {manual_tasks:JSON.stringify(manual)});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(bookingsTable){
+    const insert=async()=>ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{
+      client_id:clientId, customer_name:name||'', customer_phone:phone,
+      service_id:service?String(service.Id||service.id):'', service_name:service?.name||'',
+      appt_date:explicitWhen?.date||'', appt_time:explicitWhen?.time||'',
+      status:'requested', source:explicitWhen?'public':'bot', lead_id:lead?String(lead.Id):'', calcom_uid:'',
+      notes:explicitWhen?'Booked via the public booking page — awaiting confirmation.':'Booking link sent — awaiting confirmed date/time.',
+      created_at:new Date().toISOString()
+    }}).catch(()=>{});
+    if(explicitWhen){
+      // A real, distinct booking with its own date/time — always insert, no dedupe.
+      await insert();
+    }else{
+      // Intent only, no specific slot yet — dedupe on "this phone already has a requested row" so
+      // the auto-tracking webhook (which can call this repeatedly as the bot repeats the link
+      // across turns) doesn't spam duplicate rows.
+      const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+      const existD=await existR.json().catch(()=>({}));
+      if(!existD?.list?.length) await insert();
+    }
+  }
+
+  return {lead_id:lead?.Id||null, stage_advanced};
+}
+
+// Shared by both senders below — resolves the optional matched service (only if the Appointment
+// module is set up) and builds the message text. Split out so sendBookingLinkNow (direct Graph
+// API) and sendBookingLinkViaChatwoot (routes through Chatwoot instead) don't duplicate it.
+async function resolveApptServiceAndText(env, c, clientId, name, serviceId, link){
+  let service=null;
+  if(serviceId){
+    if(c.industry==='healthcare'){
+      service=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    }else{
+      const servicesTable=apptResolveTable(c, 'services');
+      if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(serviceId)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+      }
+    }
+  }
+  if(service?.booking_url) link=service.booking_url;
+  const displayName=name||'there';
+  const text=service
+    ? `Hi ${displayName}! Here's the link to book your *${service.name}*${service.duration_minutes?' ('+service.duration_minutes+' min)':''}: ${link}`
+    : `Hi ${displayName}! Here's the link to book: ${link}`;
+  return {service, text};
+}
+
+// Core "actually send the booking link" logic — shared by the HTTP endpoint below
+// (handleLeadBookingLink, for n8n or a rep-triggered flow to call) and used as the fallback when
+// sendBookingLinkViaChatwoot below has no Chatwoot conversation to send through. serviceId is
+// optional and only resolved if the Appointment module is set up; without it the message is just
+// the plain booking-link text.
+async function sendBookingLinkNow(env, c, clientId, phone, name, serviceId){
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
+  if(!c.wa_phone_id||!c.wa_token) return {error:'WhatsApp phone / token not configured.'};
+
+  const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
+  const waR=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:text}})
+  });
+  const waData=await waR.json().catch(()=>({}));
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service);
+  return {ok:true, link, whatsapp_sent:waR.ok, whatsapp_error:waR.ok?undefined:(waData?.error?.message||'HTTP '+waR.status), via:'graph', lead_id, stage_advanced};
+}
+
+// Used only by the auto-send path (handleChatwootIncomingBookingSignal), which is triggered by a
+// Chatwoot webhook that already tells us which conversation the customer's message is in — sends
+// the reply through Chatwoot's own message endpoint (same FormData/content pattern as
+// handleWaReplyChatwoot above) instead of building a Meta Graph API payload directly. Two wins
+// over the direct-Graph-API path: (1) the message actually shows up in the rep's Chatwoot inbox,
+// instead of only existing as a raw API call this repo made that Chatwoot never learns about; (2)
+// Chatwoot's own WhatsApp Cloud API channel config (set up with this same wa_token/wa_phone_id
+// during WhatsApp connect — see handleChannelsWhatsappConnect) does the actual Meta relay, so this
+// path never has to hand-build a Graph API text payload at all.
+async function sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, serviceId){
+  let link=(c.external_store_link||'').trim();
+  if(c.industry==='healthcare'&&serviceId){
+    const s=await env.DB.prepare(`SELECT booking_url FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first();
+    link=(s?.booking_url||link).trim();
+  }
+  if(!link) return {error:'No booking link configured for this service.'};
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return {error:'Chatwoot is not configured for this account.'};
+
+  const {service, text}=await resolveApptServiceAndText(env, c, clientId, name, serviceId, link);
+  const fd=new FormData();
+  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conversationId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service);
+  return {ok:true, link, whatsapp_sent:r.ok, whatsapp_error:r.ok?undefined:('HTTP '+r.status), via:'chatwoot', lead_id, stage_advanced};
+}
+
+async function handleLeadBookingLink(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const result=await sendBookingLinkNow(env, c, clientId, phone, body.name, body.service_id);
+  if(result.error) return json({error:result.error}, 400);
+  return json(result);
+}
+
+// "Track only" endpoint for a client whose replies are sent entirely by an external n8n flow
+// instead of this Worker's own Conversation Engine (engine_disabled='Yes' for that client, so
+// /engine/webhook stays silent for them — see SETUP.md "Conversation Engine"). n8n owns deciding
+// AND sending the reply; the one thing it can't do on its own is write the same LEADS fields the
+// built-in engine writes as a side effect of replying (ConvHistory/LastMsgAt/Stage), which is what
+// Pipeline/Reports/Home/Automations actually read — there's no other sync surface between this
+// repo and an external bot, they share one NocoDB table. Client_id-based, no session, same
+// n8n-calls-Cloudflare shape as handleLeadBookingLink/handleAiObjectionReply above.
+//
+// Deliberately NOT trying to reproduce engineBuildLeadUpsertBody's intent/win-probability/qual-
+// score scoring — n8n has no classifier output to feed that with. `stage`, if sent, is validated
+// against the client's own flow_json (never writes a stage the client hasn't defined — same guard
+// advanceLeadBookingAndTask uses above); anything else is left for a human to set manually, same
+// as it would be for a channel this repo doesn't track at all.
+async function handleEngineTrack(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!clientId||!phone) return json({error:'client_id and phone required'}, 400);
+  const incomingText=String(body.incoming_text||'').trim().slice(0,4000);
+  const replyText=String(body.reply_text||'').trim().slice(0,4000);
+  if(!incomingText && !replyText) return json({error:'incoming_text and/or reply_text required'}, 400);
+
+  const c=await getClientById(env, clientId);
+  if(!c||!c.Id) return json({error:'Client not found'}, 404);
+
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+
+  let history=[];
+  try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  if(incomingText) history.push({role:'user', content:incomingText});
+  if(replyText) history.push({role:'assistant', content:replyText});
+
+  const now=new Date().toISOString();
+  const upsertBody={ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now, Date:lead?.Date||now};
+  if(body.name && !lead?.Name) upsertBody.Name=String(body.name).trim().slice(0,140);
+
+  let stageWritten=lead?.Stage||'new';
+  if(body.stage){
+    const flow=engineParseJsonField(c.flow_json, {});
+    const stageKeys=Object.keys(flow.stages||{});
+    if(stageKeys.includes(String(body.stage))){ upsertBody.Stage=String(body.stage); stageWritten=upsertBody.Stage; }
+  }
+
+  let leadId=lead?.Id||null;
+  if(leadId){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ...upsertBody}});
+  }else{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{
+      ClientId:clientId, Phone:phone, Name:body.name||'', Stage:upsertBody.Stage||'new', Channel:'whatsapp', ...upsertBody
+    }});
+    const d=await r.json().catch(()=>null);
+    leadId=d?.Id||null;
+  }
+
+  await engineLogAnalytics(env, {
+    ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:'n8n-relay', Route:'n8n',
+    Stage:lead?.Stage||'new', NextStage:stageWritten, ResponseMs:0, IsError:false, ErrorMsg:'', Timestamp:now
+  });
+
+  return json({ok:true, lead_id:leadId, stage:stageWritten});
+}
+
+// Cal.com's HMAC is hex-encoded (X-Cal-Signature-256), unlike Shopify's base64
+// (verifyShopifyWebhookHmac above) — and the secret is per-client, not one app-wide secret, since
+// each client creates their own webhook in their own Cal.com account (Settings -> Developer ->
+// Webhooks) and picks the secret themselves, pasted into Settings -> Cal.com Sync.
+async function verifyCalcomWebhookHmac(secret, rawBody, sigHeader){
+  if(!secret||!sigHeader) return false;
+  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
+  const expected=Array.from(new Uint8Array(sig)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+// Receives Cal.com's booking webhooks (client_id comes from the URL path they pasted into their
+// own Cal.com webhook config — see Settings -> Cal.com Sync). Upserts into the client's own
+// Appointment Booking module (appt_table_ids.bookings — apptSetupTables() in dashboard.html),
+// keyed by Cal.com's own booking uid so BOOKING_RESCHEDULED/BOOKING_CANCELLED update the same row
+// instead of creating duplicates.
+async function handleCalcomWebhook(request, env, clientId){
+  const rawBody=await request.text();
+  const c=await getClientById(env, clientId);
+  // Unknown/removed client — ack with 200 so Cal.com doesn't keep retrying; nothing to act on.
+  if(!c) return json({ok:true});
+  const sig=request.headers.get('X-Cal-Signature-256');
+  if(!(await verifyCalcomWebhookHmac(c.calcom_webhook_secret, rawBody, sig))) return json({error:'Invalid signature'}, 401);
+
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const trigger=data.triggerEvent||'';
+  const b=data.payload||{};
+  const uid=b.uid||b.uuid||'';
+  if(!uid) return json({ok:true});
+
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({ok:true, skipped:'no-bookings-table'});
+
+  const attendee=(b.attendees||[])[0]||{};
+  const start=b.startTime||'';
+  const statusMap={BOOKING_CREATED:'confirmed', BOOKING_RESCHEDULED:'confirmed', BOOKING_CANCELLED:'cancelled', BOOKING_REQUESTED:'requested'};
+  const fields={
+    client_id:clientId, calcom_uid:uid,
+    customer_name:attendee.name||'', customer_phone:attendee.phone||attendee.phoneNumber||'',
+    service_name:b.title||b.eventType?.title||'',
+    appt_date:start?start.slice(0,10):'', appt_time:start?start.slice(11,16):'',
+    status:statusMap[trigger]||'confirmed', source:'calcom', notes:b.description||'',
+  };
+
+  const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(calcom_uid,eq,${encodeURIComponent(uid)})&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  const existing=existD?.list?.[0]||null;
+  if(existing) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:existing.Id, ...fields}});
+  else await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'POST', body:{...fields, created_at:new Date().toISOString()}});
+
+  return json({ok:true});
+}
+
+// One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
+// independent Chatwoot webhook on the client's WhatsApp inbox, alongside whichever one already
+// feeds n8n's bot (see the c.webhook_url registration above, in the WhatsApp-connect flow). This
+// second webhook points at handleChatwootMessageHook below instead — n8n's own webhook/workflow
+// is completely untouched, it doesn't even know this one exists. Chatwoot fires both on every
+// message_created event.
+async function handleEcomEnableOrderTracking(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
+  if(!c?.chatwoot_inbox_id) return json({error:'Connect a WhatsApp inbox first.'}, 400);
+  if(!env.WORKER_BASE_URL) return json({error:'WORKER_BASE_URL is not configured on the server.'}, 500);
+  const hookUrl=`${env.WORKER_BASE_URL}/hooks/chatwoot-message`;
+
+  const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+  const listD=listR?await listR.json().catch(()=>null):null;
+  const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:null);
+  if(existingList?.some(w=>w.url===hookUrl)) return json({ok:true, already_enabled:true});
+
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:hookUrl, subscriptions:['message_created']})
+  });
+  if(!r.ok) return json({error:'Chatwoot webhook registration failed: HTTP '+r.status}, 502);
+  return json({ok:true});
+}
+
+// Receives Chatwoot's message_created event for every message on the client's WhatsApp inbox
+// (registered by handleEcomEnableOrderTracking above). Only acts on the bot's own OUTGOING
+// replies, and only ever performs a silent DB write — it never sends anything to the customer —
+// so it can never race or double-reply against n8n's own bot response to the same conversation.
+// The link it looks for is exactly the one buildKbProcessorText() (dashboard.html) already
+// instructs the bot to share in its own words, so detecting it needs no n8n/engine.json changes.
+// Three shapes: the built-in ecom module's own onshope.com/store.html link (sku extractable from
+// it), this repo's own public booking page (book.html — no sku), or — once external_store_link is
+// set (Settings → Order Link) — that client's own Shopify/Cal.com/other URL, matched as a plain
+// substring since an arbitrary external domain has no known sku query-param scheme to parse out.
+const CHATWOOT_HOOK_LINK_RE=/https:\/\/(?:onshope\.com\/([a-z0-9-]+)|app\.leadvyne\.com\/store\.html\?client=(\d+)|app\.leadvyne\.com\/book\.html\?client=(\d+))(?:[?&]sku=([^\s&"']+))?/i;
+
+// Direct, Cloudflare-only auto-send for booking-industry clients: screens the customer's own
+// INCOMING message for booking intent and, if detected, sends the booking link itself right here
+// — no n8n call involved. This is a deliberate, narrow exception to the "n8n calls Cloudflare, so
+// n8n stays in control of whether it also replies" rule the rest of this file follows for anything
+// that talks to the customer (see /ai/order-signal's and /ai/booking-signal's comments) — it
+// carries a real, accepted risk: if the client's n8n bot also replies to this same incoming
+// message with its own text, the customer gets two messages. Scoped tightly to limit that: only
+// clients with no ecom orders table (i.e. not an ecom client), only once the AI actually screens
+// the message as a signal, and only once per lead (dedupe below) so it can't fire repeatedly in
+// one conversation.
+async function handleChatwootIncomingBookingSignal(env, c, clientId, content, body){
+  if(c.industry==='healthcare') return json({ok:true, skipped:'healthcare-native-whatsapp-booking'});
+  const link=(c.external_store_link||'').trim();
+  if(!link) return json({ok:true, skipped:'no-booking-link'});
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(ordersTable) return json({ok:true, skipped:'ecom-client'});
+  if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
+
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+  const leadD=await leadR.json().catch(()=>({}));
+  const lead=leadD?.list?.[0]||null;
+  if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
+
+  // Dedupe before spending an AI call on every follow-up message — skip if this phone already has
+  // a requested appointment (only checkable once the Appointment module is set up).
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(bookingsTable){
+    const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+    const existD=await existR.json().catch(()=>({}));
+    if(existD?.list?.length) return json({ok:true, skipped:'duplicate-requested'});
+  }
+
+  const conversationId=body.conversation?.id;
+  const contextText=await fetchRecentChatwootContext(c, conversationId, 8);
+  const detection=await detectBookingSignal(env, c, clientId, content, contextText);
+  if(!detection.signal) return json({ok:true, skipped:'no-signal'});
+
+  const name=body.conversation?.meta?.sender?.name;
+  // Prefer routing through Chatwoot — this webhook fired because of a message on an existing
+  // conversation, so conversationId should always be present; sendBookingLinkNow (direct Graph
+  // API) is only a fallback for the unlikely case Chatwoot's payload omits it or isn't configured.
+  const result=(conversationId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token)
+    ? await sendBookingLinkViaChatwoot(env, c, clientId, conversationId, phone, name, detection.service_id)
+    : await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
+  return json({ok:true, auto_sent:true, ...result});
+}
+
+// Ecom counterpart of handleChatwootIncomingBookingSignal above — same direct, Cloudflare-only
+// auto-send exception to "n8n stays in control," same double-reply-risk tradeoff, just for clients
+// with an ecom orders table instead of booking-industry ones. Built specifically to close a real,
+// observed gap: a customer replying "Order M size" to a product the bot had just shown got "we
+// don't have anything matching your preferences" back — the client's own n8n flow wasn't
+// connecting the size reply to the product it had itself just displayed. This path uses
+// fetchRecentChatwootContext so the same short reply resolves correctly against what was actually
+// just discussed, instead of depending on whatever matching logic n8n's own flow has.
+async function handleChatwootIncomingOrderSignal(env, c, clientId, content, body, ordersTable){
+  if(!c.wa_phone_id||!c.wa_token) return json({ok:true, skipped:'whatsapp-not-configured'});
+  if(!env.GEMINI_API_KEY && !c.openrouter_key) return json({ok:true, skipped:'no-ai-provider-key'});
+
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  // Dedupe before spending an AI call — skip if this phone already has a pending auto-sent order.
+  const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,pending)&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  if(existD?.list?.length) return json({ok:true, skipped:'duplicate-pending'});
+
+  const conversationId=body.conversation?.id;
+  const contextText=await fetchRecentChatwootContext(c, conversationId, 8);
+  const detection=await detectOrderSignal(env, c, clientId, content, contextText);
+  if(!detection.signal) return json({ok:true, skipped:'no-signal'});
+
+  const name=body.conversation?.meta?.sender?.name;
+  const result=(conversationId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token)
+    ? await sendOrderLinkViaChatwoot(env, c, clientId, conversationId, phone, name, detection.sku)
+    : await sendOrderLinkNow(env, c, clientId, phone, name, detection.sku);
+  return json({ok:true, auto_sent:true, ...result});
+}
+
+async function handleChatwootMessageHook(request, env){
+  const body=await request.json().catch(()=>({}));
+  const msgType=String(body.message_type ?? '');
+  const content=String(body.content||'');
+  const accountId=String(body.account?.id||'');
+  if(!accountId||!content) return json({ok:true, skipped:'no-account-or-content'});
+
+  const c=await findClientByField(env, 'chatwoot_account_id', accountId);
+  if(!c) return json({ok:true, skipped:'client-not-found'});
+  const clientId=String(c.Id);
+
+  if(msgType==='incoming' || msgType==='0'){
+    const incomingOrdersTable=await ecomResolveTable(env, clientId, 'orders');
+    return incomingOrdersTable
+      ? await handleChatwootIncomingOrderSignal(env, c, clientId, content, body, incomingOrdersTable)
+      : await handleChatwootIncomingBookingSignal(env, c, clientId, content, body);
+  }
+  if(msgType!=='outgoing' && msgType!=='1') return json({ok:true, skipped:'not-outgoing'});
+
+  const ext=(c.external_store_link||'').trim();
+  const m=content.match(CHATWOOT_HOOK_LINK_RE);
+  if(!m && !(ext && content.includes(ext))) return json({ok:true, skipped:'no-link-in-message'});
+
+  const sku=m?.[4]?decodeURIComponent(m[4]):null;
+  const phone=String(
+    body.conversation?.meta?.sender?.phone_number ||
+    body.conversation?.contact_inbox?.source_id ||
+    ''
+  ).replace(/[^0-9+]/g,'');
+  if(!phone) return json({ok:true, skipped:'no-phone'});
+
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  // No ecom module configured for this client at all — treat it as a booking-style client
+  // (healthcare/services/consultancy) instead: advance the lead + drop a follow-up task, same
+  // action handleLeadBookingLink performs, just triggered by the bot's own reply instead of an
+  // explicit n8n call. Dedupe here is "lead already at a booking-terminal stage" rather than a
+  // pending-order check, since there's no orders table to check against.
+  if(!ordersTable){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(Phone,eq,${encodeURIComponent(phone)})&limit=1`);
+    const leadD=await leadR.json().catch(()=>({}));
+    const lead=leadD?.list?.[0]||null;
+    if(lead && BOOKING_TERMINAL_STAGES.includes(lead.Stage)) return json({ok:true, skipped:'already-booked'});
+    const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, body.conversation?.meta?.sender?.name);
+    return json({ok:true, lead_id, stage_advanced});
+  }
+
+  // Dedupe — skip if this phone already has an auto-logged order still pending, so a bot that
+  // repeats the link across several turns of the same conversation doesn't spam duplicate rows.
+  const existR=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${phone})~and(status,eq,pending)&limit=1`);
+  const existD=await existR.json().catch(()=>({}));
+  if(existD?.list?.length) return json({ok:true, skipped:'duplicate-pending'});
+
+  let product=null;
+  if(sku){
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(sku,eq,${encodeURIComponent(sku)})&limit=1`);
+      const pd=await pr.json().catch(()=>({}));
+      product=pd?.list?.[0]||null;
+    }
+  }
+  const order_id='ORD-'+Date.now();
+  await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:{
+    client_id:clientId, order_id,
+    customer_name:body.conversation?.meta?.sender?.name||'', customer_phone:phone,
+    order_date:new Date().toISOString().slice(0,10),
+    items:product?product.name:'Catalog link shared', total:product?.price||0, currency:product?.currency||'',
+    status:'pending', notes:'Order intent detected — bot shared store link (auto-logged, no n8n changes)'
+  }});
+  return json({ok:true, order_id});
+}
+
+/* ── CONVERSATION ENGINE, all industries (replaces n8n's engine.json entirely) ──
+   Point every client's Chatwoot inbox "message_created" webhook at POST
+   /engine/webhook/<their-secret> instead of n8n's own webhook URL (registered automatically —
+   see engineSyncChatwootWebhook), and this one endpoint does everything engine.json's n8n workflow did,
+   for every industry: tenant + lead lookup, media→text, AI intent/sentiment classification, the
+   flow_json state machine (FAQ/qualify/objection/human-handover routing), sending the reply via
+   Chatwoot, and upserting the LEADS row + analytics. The client is resolved the same way
+   handleChatwootMessageHook already does (chatwoot_account_id -> CLIENTS row), so there's no more
+   per-client "wrapper workflow" to stamp out in n8n — one URL serves every client, and
+   engineSyncChatwootWebhook (below) registers it automatically the moment a client connects
+   WhatsApp, so a brand-new signup never touches n8n at all. FAQ grounding is industry-aware
+   (engineRouteFlow's `industryFaqRoute`): 'ecommerce' gets the product/order-catalog context
+   (engineBuildEcomContext), 'travel' gets the Travel Agency module's packages/Umrah-groups/cars
+   context (engineBuildTravelContext), everything else (general/insurance/real_estate/healthcare/
+   education/automotive/consultancy) gets the plain main_prompt+services+kb_summary grounding —
+   matching engine.json's own three-way `industry === 'ecommerce' ? 'ecom_faq' : (industry ===
+   'travel' ? 'travel_faq' : 'faq')` split. Order-intent auto-send (ecommerce) and booking-intent
+   auto-send (every other industry, once a booking link is configured) are both folded into the
+   same turn — see the bottom of handleEngineWebhook.
+
+   Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
+   deliberate deviations from what that workflow literally does today:
+   - Voice notes are still never transcribed — same "(sent a voice note)" placeholder text goes
+     to the AI. That's not a shortcut taken here; it's what engine.json itself actually does
+     (there's no transcription node wired to the voice branch despite docs describing one).
+   - Once a lead's Handover is 'Yes' or Stage is 'human_handover', the bot goes fully silent —
+     matches engine.json's own Code·State hard-stop and SETUP.md's documented "never talk over a
+     live agent" behavior. The HandoverFaqCount/_isPostHandover branch later in that workflow's
+     routing code is unreachable dead code as a result of that same hard-stop; not ported.
+   - ConvHistory is rebuilt from the lead's real accumulated history (state.history below), not
+     from the trimmed activeHistory the source workflow's Prep-lead node ends up using because of
+     a field-name mismatch (slim() drops `history`, keeping only `activeHistory`, but Prep-lead
+     reads `sc.history`) — that mismatch silently caps saved conversation history at ~8 messages
+     and, as a side effect, permanently dead-codes the "Warm" score fallback that depends on real
+     history length. Both are fixed here rather than reproduced, since neither is a documented
+     design choice — they read as an accidental regression, not intended behavior. Worth
+     independently patching in the n8n workflow too if it keeps running for non-ecom clients.
+   - For a human-handover reply, the customer is sent whichever message was actually computed
+     (the time-aware "we'll call you today/tomorrow at 9am" text, or the Frustrated-specific
+     apology) instead of a separate hardcoded "Sure 🙏 connecting you..." string — in engine.json
+     the Switch·Route "human" output wires straight to a fixed-text HTTP node, so that computed
+     message is built but never sent and the saved ConvHistory silently disagrees with what the
+     customer actually received. Falls back to the same fixed text only when nothing more
+     specific was computed (a plain "talk to a human" request with no final-stage/frustration
+     context), matching the one case where the original fixed string was actually the intent.
+   - The "Leadvyne · Ecom Context" n8n sub-workflow engine.json calls out to wasn't available to
+     port (it isn't in this repo). engineBuildEcomContext below is a from-scratch equivalent built
+     directly off this Worker's own product/order tables (top active products + this phone's
+     recent order status) rather than whatever that sub-workflow used to assemble.
+   Order-signal auto-send (previously a second, independent Chatwoot webhook —
+   handleChatwootIncomingOrderSignal above) is folded into this same turn instead of firing as a
+   separate webhook delivery, since this engine now generates the primary reply itself and no
+   longer needs to watch its own outgoing messages for a link pattern to detect what it just sent. ── */
+
+const ENGINE_ANALYTICS_TABLE='m2in19v8n7phitr';
+const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
+// Matches engine.json's "Google Gemini Chat Model" node (modelName: 'models/gemini-2.0-flash'),
+// which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
+// across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
+const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+// Real observed failure: a customer asked about a free-trial offer that WAS explicitly written in
+// this client's own main_prompt (so the model had the correct answer in context) and still got
+// told there wasn't one — a plain accuracy/instruction-following gap in gemini-2.0-flash, the same
+// gap already fixed for voice transcription (see ENGINE_TRANSCRIBE_MODEL above). The customer-
+// facing reply itself (engineCallLlm — every FAQ/objection/product-enquiry answer, for every
+// client) is worth the extra cost/latency of a stronger model; the classifier/translation calls
+// elsewhere stay on the fast/cheap model since a wrong intent guess or a slightly-off translation
+// is a much smaller miss than the actual answer being factually wrong.
+const ENGINE_REPLY_MODEL='gemini-2.5-flash';
+
+// Direct Google Generative Language API call (env.GEMINI_API_KEY — a Worker secret, shared across
+// all clients, same as the n8n workflow's single Gemini credential). Returns the model's raw text
+// output, or null if the key isn't configured or the call fails — callers fall back accordingly.
+// Real observed failure: a customer's first message got the reply "Hello! Leadvyne is an
+// AI-powered" — cut off mid-sentence, nothing after, sent as-is to the customer. Root cause:
+// gemini-2.5-flash (ENGINE_REPLY_MODEL/ENGINE_TRANSCRIBE_MODEL — switched to from gemini-2.0-flash
+// for accuracy) has "thinking" (internal reasoning) on by default, and unlike OpenAI's models,
+// Google counts those invisible thinking tokens against the SAME maxOutputTokens budget as the
+// visible reply — a 2.5 model can burn 90-98% of a short reply's budget on reasoning alone,
+// truncating the actual visible text wherever the budget runs out. None of this engine's calls
+// benefit from extended reasoning (a classifier verdict or a short customer reply isn't a
+// chain-of-thought task), so thinking is switched off whenever a 2.5 model is in use, keeping the
+// whole budget for real output. gemini-2.0-flash has no thinking mode, so this is a no-op there.
+function engineGeminiGenerationConfig(model, opts){
+  const cfg={temperature:opts.temperature??0.3, maxOutputTokens:opts.maxOutputTokens||300, ...(opts.json?{responseMimeType:'application/json'}:{})};
+  if(model.startsWith('gemini-2.5')) cfg.thinkingConfig={thinkingBudget:0};
+  return cfg;
+}
+
+// Cloudflare Workers AI — lightweight inference for structured/short-output tasks (classify,
+// extract-options, fp-snapshot, fp-forecast). Falls back gracefully when env.AI is absent so a
+// deployment without the [ai] binding still works (it just routes to Gemini instead).
+async function engineCfAiGenerate(env, systemText, userText, opts={}){
+  if(!env.AI) return null;
+  try{
+    const result=await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages:[{role:'system', content:systemText}, {role:'user', content:userText}],
+      max_tokens:opts.maxOutputTokens||300,
+      temperature:opts.temperature??0.3
+    });
+    const text=result?.response||result?.choices?.[0]?.message?.content||null;
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'cf-ai', model:'llama-3.1-8b-instruct', ts:new Date().toISOString()}));
+    return text?String(text).trim():null;
+  }catch(e){ return null; }
+}
+
+async function engineGeminiGenerate(env, systemText, userText, opts={}){
+  if(!env.GEMINI_API_KEY) return null;
+  try{
+    const model=opts.model||ENGINE_GEMINI_MODEL;
+    const reqBody={
+      contents:[{role:'user', parts:[{text:userText}]}],
+      generationConfig:engineGeminiGenerationConfig(model, opts)
+    };
+    if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(reqBody)
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const outText=parts.map(p=>p.text||'').join('').trim();
+    if(outText) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'unknown', model, ts:new Date().toISOString()}));
+    return outText||null;
+  }catch(e){ return null; }
+}
+
+function engineArrayBufferToBase64(buf){
+  const bytes=new Uint8Array(buf);
+  let binary='';
+  const chunkSize=0x8000; // avoid a stack-overflowing single String.fromCharCode.apply call on large files
+  for(let i=0;i<bytes.length;i+=chunkSize) binary+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunkSize));
+  return btoa(binary);
+}
+
+// Retries a fetch once (after a short fixed delay) on a thrown network error or a likely-transient
+// status (429 rate limit, or 5xx) — covers the "momentary blip" case for the voice-to-voice
+// pipeline's external calls (media download, Gemini STT, Sarvam TTS) without retrying a real
+// client error (bad key, malformed request) that would just fail identically a second time. Not
+// applied engine-wide — scoped to this one pipeline, where a customer getting silently downgraded
+// to text/placeholder on a single transient failure is the specific problem being solved here.
+async function engineFetchWithRetry(url, options){
+  for(let attempt=0; ; attempt++){
+    let r, thrown=null;
+    try{ r=await fetch(url, options); }catch(e){ thrown=e; }
+    const transient=thrown || r.status===429 || r.status>=500;
+    if(!transient || attempt>=1) { if(thrown) throw thrown; return r; }
+    await new Promise(res=>setTimeout(res, 400));
+  }
+}
+
+const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
+
+// gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
+// measurably under-transcribes audio next to Gemini's newer models, and that gap is worse for
+// lower-resource Indic languages (Malayalam, etc.) than for English — accuracy, not just speed, is
+// what matters for a customer's actual words, so transcription gets its own, stronger model rather
+// than reusing the fast/cheap one.
+const ENGINE_TRANSCRIBE_MODEL='gemini-2.5-flash';
+
+// ISO 639-1 → language name, for a hint in the transcription prompt below (CLIENTS.language, e.g.
+// 'ml' for a Malayalam-speaking client base). Forcing the model to simultaneously guess which
+// language is being spoken AND transcribe it blind is a harder task than transcribing with a
+// steer — Gemini's own docs note a language hint "noticeably improves accuracy on multilingual or
+// accented audio". Not a hard constraint: the prompt still says "if it's actually a different
+// language, transcribe that instead" so a customer who doesn't match the client's configured
+// default language isn't mistranscribed into it.
+const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', te:'Telugu', kn:'Kannada', bn:'Bengali', gu:'Gujarati', mr:'Marathi', pa:'Punjabi', or:'Odia', ar:'Arabic'};
+
+// Downloads the voice note once (shared by both transcription attempts below, so a Gemini failure
+// followed by the OpenRouter fallback doesn't re-fetch the same file from Meta/Chatwoot a second
+// time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file. Every
+// failure branch reports via reportOpsError (not just STT's own two functions below) since a
+// silent null here was previously indistinguishable from "transcription itself failed" — same
+// blind spot that let the Sarvam TTS speaker-name bug go unnoticed. Retries once on a transient
+// network/5xx blip (engineFetchWithRetry) before giving up.
+async function engineFetchAudioBase64(env, mediaUrl){
+  try{
+    const audioR=await engineFetchWithRetry(mediaUrl, {});
+    if(!audioR.ok){ await reportOpsError(env, 'engineFetchAudioBase64 — media fetch returned non-OK', new Error(`HTTP ${audioR.status}`), {mediaUrl}); return null; }
+    // Chatwoot/Meta serve WhatsApp voice notes as "audio/ogg; codecs=opus" — strip the codec
+    // parameter before handing this to Gemini's inline_data.mime_type, which expects a bare type.
+    const rawContentType=audioR.headers.get('content-type')||'audio/ogg';
+    const mimeType=rawContentType.split(';')[0].trim()||'audio/ogg';
+    const buf=await audioR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024){ await reportOpsError(env, 'engineFetchAudioBase64 — audio file too large', new Error(`${buf.byteLength} bytes`), {mediaUrl}); return null; }
+    // Real observed case: a near-instant tap-and-release voice note showed as 00:00 in Chatwoot's
+    // own player — a file this small is essentially silence/container-only, not real speech.
+    // Transcribing it anyway risks Gemini hallucinating plausible-sounding text from noise; treating
+    // it as "too short" up front (tooShort, not null — a distinct outcome from a real fetch/size
+    // failure) lets the caller ask the customer to resend instead of guessing.
+    if(buf.byteLength<800) return {tooShort:true};
+    return {mimeType, base64:engineArrayBufferToBase64(buf)};
+  }catch(e){ await reportOpsError(env, 'engineFetchAudioBase64 — fetch threw', e, {mediaUrl}); return null; }
+}
+
+// Real voice transcription, via the same shared Gemini credential as the intent classifier —
+// engine.json never actually had this wired up (voice notes went to the AI as a literal
+// "(sent a voice note)" placeholder despite the docs describing transcription). Requires
+// GEMINI_API_KEY; falls back to the literal placeholder in engineResolveUserText if it's unset or
+// the call fails. Deliberately Gemini-only — no OpenRouter fallback (unlike text generation
+// elsewhere in this file) since that path used OpenRouter's `input_audio` content part, which was
+// never verified against a live call and was a plausible source of bad transcripts in its own
+// right rather than a safety net.
+async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, vocabHint){
+  if(!env.GEMINI_API_KEY || !base64) return null;
+  const langName=ENGINE_LANG_NAMES[(langHintCode||'').toLowerCase()];
+  let prompt=langName
+    ? `${ENGINE_TRANSCRIBE_PROMPT} This customer usually writes in ${langName}, so expect ${langName} unless the audio is clearly a different language — in that case transcribe the language actually spoken instead.`
+    : ENGINE_TRANSCRIBE_PROMPT;
+  // Business-specific vocabulary — brand/product/service names are exactly the kind of term a
+  // general-purpose ASR model most commonly mishears (unfamiliar words, no context to disambiguate
+  // against). A short list alongside the audio gives it real terms to match against instead of
+  // guessing phonetically. Not a hard constraint: still transcribe whatever's actually said if it
+  // doesn't match anything here.
+  if(vocabHint) prompt+=` This business's own name/product/service names — spell these exactly as given if you hear something close to one, even if pronunciation is unclear: ${vocabHint}.`;
+  try{
+    const r=await engineFetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      // thinkingConfig disabled — see engineGeminiGenerationConfig's comment: gemini-2.5-flash
+      // thinks by default and those tokens count against the same output budget, adding pure
+      // latency/cost here with no benefit (transcription isn't a reasoning task).
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:prompt},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}], generationConfig:{thinkingConfig:{thinkingBudget:0}}})
+    });
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineGeminiTranscribeVoice — Gemini returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {mimeType});
+      return null;
+    }
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const text=parts.map(p=>p.text||'').join('').trim();
+    if(!text) await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript in response', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:'transcribe', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()}));
+    return text||null;
+  }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
+}
+
+// Direct Gemini text generation (engineGeminiGenerate) with an OpenRouter-routed Gemini model as
+// backup when it's unavailable or fails, for plain-text (non-audio) generation calls — voice
+// transcription (engineGeminiTranscribeVoice above) has no such fallback, deliberately Gemini-only.
+// Deliberately hardcodes a Gemini model here rather than using the client's own `c.model` — the
+// point of this fallback is specifically "still get a Gemini-quality answer", not "fall back to
+// whatever model this client happens to have configured".
+async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
+  const direct=await engineGeminiGenerate(env, systemText, userText, opts);
+  if(direct) return direct;
+  if(!c?.openrouter_key) return null;
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'google/gemini-2.5-flash', temperature:opts.temperature??0.3, max_tokens:opts.maxOutputTokens||300,
+        messages:[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userText}]
+      })
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    return data?.choices?.[0]?.message?.content?.trim()||null;
+  }catch(e){ return null; }
+}
+
+function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
+// qual_questions entries were always a plain string ("what's your budget?"). Native Forms (see
+// "NATIVE FORMS" section below) needs a per-question optional/required flag, which a bare string
+// has nowhere to hold — entries can now ALSO be {text, optional}. Every existing string entry is
+// unchanged (still required, same as before this existed); these two helpers are the one place
+// that shape difference is resolved, so every call site (the classic chat qualify_next ladder AND
+// the native-forms flow builder/endpoint) reads it the same way instead of re-deriving it.
+export function engineQualQuestionText(q){ return typeof q==='string'?q:String(q?.text??''); }
+export function engineQualQuestionOptional(q){ return !!(q && typeof q==='object' && q.optional===true); }
+// Same {text, optional} extension, for a question whose answer is really a fixed multiple-choice
+// pick ("Mattress, wooden bed, or something else?") rather than open-ended free text — real
+// observed failure: a client's own qual_questions[0] was phrased exactly like that, and being a
+// plain string with no structured choices anywhere, the chat ladder had no data to build tappable
+// buttons from and could only ever send it as plain text, however choice-shaped the wording was.
+// Entries WITHOUT `options` (the vast majority — free-text questions like "what's your budget?")
+// are completely unaffected; this only ever activates when a business owner explicitly lists
+// choices for a question in Settings. Capped at 10 like every other quick-reply picker in this
+// file (engineSendChatwootQuickReply's own real WhatsApp limit).
+export function engineQualQuestionOptions(q){
+  if(!q || typeof q!=='object' || !Array.isArray(q.options)) return [];
+  return q.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10);
+}
+function engineParseSalesReps(raw){
+  try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
+  return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
+}
+function engineGetLeadRouting(c){
+  try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+// Location keys the bot may store city/area answers under in QualAnswers — same list as the
+// frontend Splits view so routing and display always agree.
+const ENGINE_LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','place','region'];
+function engineExtractCityFromQual(qualAnswers){
+  const entries=Object.entries(qualAnswers||{});
+  for(const k of ENGINE_LOC_KEYS){
+    const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+    if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim().toLowerCase();
+  }
+  return '';
+}
+
+// 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
+// Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
+// When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
+async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  if(!isNewLead || leadBody.Owner) return; // already assigned or not new
+
+  const routing=engineGetLeadRouting(c);
+
+  if(!routing.enabled){
+    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const ps=String(state.phone||'');
+      for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
+      leadBody.Owner=reps[Math.abs(h)%reps.length];
+    }
+    return;
+  }
+
+  const modes=Array.isArray(routing.modes)?routing.modes:[];
+  const rules=routing.rules||{};
+
+  const get=f=>leadBody[f]||state.lead?.[f]||'';
+
+  // ── Priority 0: Channel inbox assignment (bypasses all other rules) ─────────
+  if(state.inboxId && env.DB){
+    try{
+      const asgn=await env.DB.prepare(
+        `SELECT assigned_email FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND assigned_email!=''`
+      ).bind(Number(clientId), Number(state.inboxId)).first();
+      if(asgn?.assigned_email){ leadBody.Owner=asgn.assigned_email; return; }
+    }catch(e){}
+  }
+
+  // ── Priority 1: Product / Property match ─────────────────────────────────────
+  if(modes.includes('product')){
+    const product=(get('InterestedProduct')||get('ProductCategory')||get('Brand')||
+                   get('HospSelectedProperty')||get('HospSelectedUnit')||
+                   get('Destination')||get('ServiceCategory')).toLowerCase();
+    if(product){
+      const match=Object.entries(rules).find(([,r])=>{
+        const pool=[...(r.products||[]),...(r.properties||[])];
+        return pool.some(p=>String(p).toLowerCase()===product);
+      });
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 2: Location match ───────────────────────────────────────────────
+  if(modes.includes('location')){
+    let qa={};
+    try{ qa=JSON.parse(leadBody.QualAnswers||state.lead?.QualAnswers||'{}'); }catch(e){}
+    const city=engineExtractCityFromQual({...qa,...(state.qualAnswers||{})});
+    if(city){
+      const match=Object.entries(rules).find(([,r])=>
+        (r.locations||[]).some(l=>String(l).toLowerCase()===city)
+      );
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
+  if(modes.includes('roundrobin')){
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    if(pool.length){
+      const idx=Number(routing.rrIndex||0)%pool.length;
+      leadBody.Owner=pool[idx];
+      // Persist the next index so the following lead goes to the next rep
+      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
+      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      return;
+    }
+  }
+
+  // ── Priority 4: Catch-all ────────────────────────────────────────────────────
+  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  // Otherwise: Unmatched — lead stays without an Owner
+}
+
+function engineParseChatwootPayload(body){
+  if(body.message_type && body.message_type!=='incoming') return null;
+  if(body.private) return null;
+  const conv=body.conversation||{};
+  const sender=conv?.meta?.sender||body.sender||{};
+  let phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
+  if(phone.startsWith('00')) phone=phone.slice(2);
+  const atts=body.attachments||body.message?.attachments||[];
+  let mediaType='text', mediaUrl='';
+  if(atts.length){
+    const a=atts[0];
+    mediaUrl=a.data_url||a.file_url||'';
+    if((a.file_type||'').includes('audio')) mediaType='voice';
+    else if((a.file_type||'').includes('image')) mediaType='image';
+    else if(mediaUrl) mediaType='document';
+  }
+  const text=(body.content||body.message?.content||'').trim();
+  if(!phone) return null;
+  if(mediaType==='text' && !text) return null;
+  return {convId:conv?.id||null, inboxId:conv?.inbox_id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+}
+// Diagnostic-only twin of the null branches above — recomputes just enough to say *which* check
+// dropped a payload, without touching engineParseChatwootPayload's return contract or behavior at
+// all (purely additive, called only for the 'not-actionable' log line below). Added because
+// "not-actionable" on its own was a black box — a genuine customer "hello" turning up skipped had
+// no way to tell whether Chatwoot sent a non-incoming event, a private note, no phone, or empty
+// text, short of re-inspecting a raw webhook body no one had captured.
+function engineChatwootPayloadSkipReason(body){
+  if(body.message_type && body.message_type!=='incoming') return `message_type=${JSON.stringify(body.message_type)}`;
+  if(body.private) return 'private=true';
+  const conv=body.conversation||{};
+  const sender=conv?.meta?.sender||body.sender||{};
+  const phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
+  if(!phone) return `no-phone (sender keys: ${Object.keys(sender).join(',')||'none'})`;
+  const atts=body.attachments||body.message?.attachments||[];
+  const text=(body.content||body.message?.content||'').trim();
+  if(!atts.length && !text) return 'empty-text-no-attachment';
+  return 'unknown';
+}
+
+// Meta's Instagram Messaging webhook (`{object:'instagram', entry:[{messaging:[...]}]}` — same
+// Messenger Platform shape used by Page/Instagram messaging generally). Deliberately returns the
+// same {convId, phone, name, text, mediaType, mediaUrl} shape engineParseChatwootPayload does —
+// convId is always null (no Chatwoot conversation) and phone is always '' (Instagram has no phone
+// number, only an IGSID) so the rest of the pipeline doesn't need to know which channel this came
+// from. Every actionable event is normalized independently so batched DMs, postbacks, images,
+// voice notes, videos/files and story replies reach the unified Chats history.
+export function engineParseInstagramEvents(entry){
+  return (entry?.messaging||[]).map(messaging=>{
+    if(!messaging||messaging.message?.is_echo) return null;
+    const igId=messaging.sender?.id;
+    if(!igId) return null;
+    const message=messaging.message||{};
+    const attachment=(message.attachments||[])[0];
+    const attachmentType=String(attachment?.type||'').toLowerCase();
+    const mediaUrl=attachment?.payload?.url||message.reply_to?.story?.url||'';
+    const postbackText=messaging.postback?.title||messaging.postback?.payload||'';
+    const typedText=String(message.text||postbackText).trim();
+    const label=attachmentType==='image'?'[Instagram image]':attachmentType==='audio'?'[Instagram voice message]':attachmentType==='video'?'[Instagram video]':attachment?'[Instagram attachment]':message.reply_to?.story?'[Instagram story reply]':'';
+    const text=typedText||label;
+    if(!text) return null; // seen/reaction events are subscribed for health but do not create chat turns
+    const mediaType=attachmentType==='audio'?'voice':attachmentType||'text';
+    return {convId:null, igId:String(igId), recipientId:String(messaging.recipient?.id||entry.id||''), phone:'', name:'', text,
+      mediaType, mediaUrl, mid:message.mid||messaging.postback?.mid||'',
+      userMedia:(attachmentType==='image'||(!attachment&&message.reply_to?.story))&&mediaUrl?{type:'image',url:mediaUrl}:null,
+      userAttachment:attachmentType&&attachmentType!=='image'&&mediaUrl?{kind:attachmentType==='audio'?'voice':attachmentType,url:mediaUrl,name:label.replace(/[\[\]]/g,'')}:null};
+  }).filter(Boolean);
+}
+
+// Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
+// stripped) — used by engineGetLeadState's loop detector below to catch two AI-generated replies
+// that are near-duplicates of each other, not just byte-identical ones. Deliberately not another
+// LLM call: the loop detector needs to be fast and trustworthy on every single turn, not one more
+// thing that can itself fail/hallucinate. Real observed failure: a customer replied "yes" to a
+// product pitch ending in "Would you like to know more about them?" and the FAQ LLM regenerated
+// essentially the same pitch/question with slightly different wording each time ("For general
+// health and wellness, our Glutathione Tablets..." vs "For general health, our Glutathione
+// Tablets...") — an exact-match loop detector never once saw two identical strings, so it never
+// fired, and the conversation could repeat indefinitely with no safety net at all.
+export function engineTextSimilarity(a, b){
+  const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  const wa=words(a), wb=words(b);
+  if(!wa.size || !wb.size) return 0;
+  let overlap=0; for(const w of wa) if(wb.has(w)) overlap++;
+  return overlap/Math.max(wa.size, wb.size);
+}
+// Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
+// clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
+// a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
+// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramEvents/
+// handleInstagramWebhook) key this same lookup off a different column (IgId) instead of Phone —
+// every existing call site passes 3 args, so this stays exactly 'Phone' (the default) for them.
+async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(${identityField},eq,${encodeURIComponent(phone)})&limit=100`);
+  const d=await r.json().catch(()=>({}));
+  const rows=d?.list||[];
+  const lead=rows.find(l=>String(l.ClientId)===String(clientId))||null;
+  const isDuplicate=rows.some(l=>String(l.ClientId)!==String(clientId));
+  let history=[]; try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  // 2, not 3 — a real customer (N7 Tours, Aug 2026) got the exact same scripted reply THREE times
+  // in a row ("Ok" and "Sure" both fell through to a generic FAQ answer that just re-asked the same
+  // question, since intermediate flow stages have no dedicated affirmative handling — see
+  // engineRouteFlow's final `else route=industryFaqRoute` fallthrough) before the loop was even
+  // detected, because detection itself required 3 identical replies to already be in history.
+  // Requiring only 2 halves the number of duplicate replies a stuck customer sees before the next
+  // turn escalates to a human via isRealLoop below, without weakening the signal much — two
+  // consecutive byte-identical bot replies is already a strong smell for genuinely distinct customer
+  // turns (engineHandoverCannedTexts still excludes a correctly-repeated handover confirmation).
+  // Near-duplicate, not just byte-identical (Wellness Virtue, Aug 2026): a customer's "yes" to a
+  // product pitch ending in a question got the FAQ LLM regenerating essentially the same pitch with
+  // slightly different wording each time — exact equality never once matched, so the loop ran with
+  // no safety net at all. engineTextSimilarity (0.7 threshold — high but not exact-match-only;
+  // genuinely different replies about the same product/topic still share some vocabulary but don't
+  // reach this) catches that case the same way exact equality already caught scripted-text repeats.
+  const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
+  const looping=botMsgs.length===2 && engineTextSimilarity(botMsgs[0], botMsgs[1])>=0.7;
+  // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
+  // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
+  // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
+  const activeHistory=history.length>20?history.slice(-20):history;
+  let qualAnswers={}; try{ qualAnswers=JSON.parse(lead?.QualAnswers||'{}'); }catch(e){}
+  let customerFacts=[]; try{ customerFacts=JSON.parse(lead?.['Customer Facts']||'[]'); }catch(e){}
+  return {
+    lead, leadId:lead?.Id||null, stage:lead?.Stage||'new', history, activeHistory, looping, botMsgs,
+    qualAnswers, isDuplicate, leadOptOut:lead?.OptOut||'No', owner:lead?.Owner||null,
+    winProbabilityManual:lead?.WinProbabilityManual||'No', lastMsgAt:lead?.LastMsgAt||null,
+    // Self-healing column (ensureLeadsColumns/ncFetch's own auto-create behavior, same as every
+    // other CLIENTS/LEADS field this file adds over time) — see the rate-limit check in
+    // handleEngineWebhook and LastCustomerMsgAt's own write-side comment for why this is tracked
+    // separately from LastMsgAt. undefined/missing reads as null, same "never rate-limited yet"
+    // treatment lastMsgAt||null already gets.
+    lastCustomerMsgAt:lead?.LastCustomerMsgAt||null,
+    // See engineMaybeSummarizeHistory — a rolling summary of everything ConvHistory's 40-turn cap
+    // has already dropped, so a long-running lead doesn't lose all memory of anything discussed
+    // before that cap. Empty for the vast majority of leads (most conversations never cross 40
+    // turns at all), so this stays a no-op read for them.
+    summary:lead?.ConvSummary||'',
+    // See engineMaybeExtractCustomerFacts — durable preferences/constraints, kept up to date every
+    // few turns from early in the conversation, not gated behind the 40-turn ConvSummary threshold.
+    customerFacts
+  };
+}
+
+// Mirrors "HTTP · Vision" + "Code · image→text" / "Code · text→text" — resolves whatever the
+// customer sent into a single text string for the classifier + FAQ prompt to work with. Voice
+// notes now get real transcription (engineGeminiTranscribeVoice, shared Gemini key) instead of
+// engine.json's literal placeholder text; falls back to that same placeholder if transcription
+// isn't available (no GEMINI_API_KEY set, fetch failure, oversized file, etc.) so the turn still
+// completes instead of failing outright.
+const ENGINE_IMAGE_DESCRIBE_PROMPT='Describe what this image shows in one short sentence, focused on anything relevant to a product or order enquiry.';
+
+// Direct Gemini vision call (shared GEMINI_API_KEY), tried first — same Gemini-first-with-
+// OpenRouter-fallback pattern as every other LLM call in this engine now uses. Null on any
+// failure so engineResolveUserText falls back to the client's own OpenRouter key/model below.
+async function engineGeminiDescribeImage(env, mediaUrl){
+  if(!env.GEMINI_API_KEY || !mediaUrl) return null;
+  try{
+    const imgR=await fetch(mediaUrl);
+    if(!imgR.ok) return null;
+    const mimeType=imgR.headers.get('content-type')||'image/jpeg';
+    const buf=await imgR.arrayBuffer();
+    if(buf.byteLength>15*1024*1024) return null;
+    const base64=engineArrayBufferToBase64(buf);
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[
+        {text:ENGINE_IMAGE_DESCRIBE_PROMPT},
+        {inline_data:{mime_type:mimeType, data:base64}}
+      ]}]})
+    });
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>({}));
+    const parts=data?.candidates?.[0]?.content?.parts||[];
+    const t=parts.map(p=>p.text||'').join('').trim();
+    return t||null;
+  }catch(e){ return null; }
+}
+
+// Domain-vocabulary hint for engineGeminiTranscribeVoice — the business's own name plus its
+// product/service names (same c.services field engineBuildFaqSystemPrompt already reads), since a
+// customer's voice note mentioning these is exactly the kind of term a general-purpose ASR model
+// most commonly mishears (unfamiliar brand/product names it has zero prior context for). Capped
+// short — this rides along on every single voice note, so it stays a lightweight nudge rather than
+// a full catalog dump inflating every transcription call.
+function engineBuildTranscribeVocabHint(c){
+  const terms=[];
+  if(c.client_name) terms.push(c.client_name);
+  const services=engineParseJsonField(c.services, []);
+  for(const s of services){
+    if(s?.name) terms.push(s.name);
+    if(terms.length>=15) break;
+  }
+  return terms.join(', ');
+}
+
+async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
+  if(mediaType==='image' && mediaUrl){
+    const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
+    if(geminiDesc) return geminiDesc;
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:100, messages:[{role:'user', content:[
+          {type:'text', text:ENGINE_IMAGE_DESCRIBE_PROMPT},
+          {type:'image_url', image_url:{url:mediaUrl}}
+        ]}]})
+      });
+      const data=await r.json().catch(()=>({}));
+      return data?.choices?.[0]?.message?.content||'(image received)';
+    }catch(e){ return '(image received)'; }
+  }
+  if(mediaType==='voice' && mediaUrl){
+    const audio=await engineFetchAudioBase64(env, mediaUrl);
+    // A too-short/near-silent recording skips the Gemini call entirely (see
+    // engineFetchAudioBase64) — there's nothing real to transcribe, and asking Gemini anyway risks
+    // it hallucinating plausible-sounding text from noise. Distinct placeholder from the generic
+    // one below so the AI's reply naturally asks the customer to resend, rather than answering a
+    // fabricated question.
+    if(audio?.tooShort) return '(sent a voice note that was too short/silent to make out — ask them to resend)';
+    const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language, engineBuildTranscribeVocabHint(c)):null;
+    return transcript || '(sent a voice note)';
+  }
+  return text || (mediaType==='voice'?'(sent a voice note)':'');
+}
+
+// Mirrors "AI Agent · Sentiment & Intent" + "Code · Intent classify" — structured
+// intent/sentiment/objection/win-probability classification, with the same deterministic regex
+// fast-paths/fallback ladder layered on top (instant, free, and safety-critical for WANTS_HUMAN,
+// so a lead can always reach a human even if the AI call fails, times out, or returns garbage).
+// Tries the shared Gemini credential first (matching engine.json's actual node setup — this
+// classifier ran on a dedicated Google Gemini model, not each client's own OpenRouter key), and
+// only falls back to the client's own OpenRouter key/model if GEMINI_API_KEY isn't configured on
+// this Worker or the Gemini call fails — so classification still works before that secret is set.
+// temperature 0.1 (was 0.3) — observed live, the identical message classified differently on two
+// separate deliveries a moment apart, one of which triggered a false-positive human handover (see
+// engineRouteFlow's humanReason for the actual fix); lower temperature won't make classification
+// perfectly deterministic, but reduces exactly this kind of unforced flip on unambiguous input.
+// Serializes flow_json's configured stages into one consistent block, shared by
+// engineClassifyIntent (asks the model which stage the conversation is now at) and the FAQ/
+// objection reply prompts (lets the model naturally work toward the current stage's point in its
+// own words) — one view of this data feeding whichever LLM call needs it, instead of a separate
+// deterministic dispatcher that owned it exclusively (see SETUP.md's "Conversation Engine" for the
+// designs that preceded this one). Empty string when the client hasn't configured any stages, so
+// a client not using this feature pays nothing extra for it.
+function engineFlowStagesBlock(c, currentStage){
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageIds=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  if(!stageIds.length) return '';
+  const lines=stageIds.map((id,i)=>`${i+1}. "${id}": ${flow.messages?.['msg_'+id]||''}`).join('\n');
+  return `\n\nSales stages configured for this business, in order:\n${lines}\n\nCurrently at stage: "${currentStage||stageIds[0]}".`;
+}
+
+async function engineClassifyIntent(env, c, userText, activeHistory, currentStage){
+  const low=userText.trim().toLowerCase();
+  const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageIds=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  // Folds flow_json's stage progression into this same classification call as one more judgment
+  // call — the model reports next_stage the same way it already reports intent/sentiment/language
+  // — instead of a separate rigid state-machine lookup with its own message-sending path. Same
+  // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
+  // deterministic lookup, validated against the real configured stage ids below before use.
+  const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
+
+  // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
+  // null, customerLanguage below falls back to c.language (usually 'en'), so a classifier failure
+  // silently reads as "reply in English" for a customer who spoke/wrote another language entirely,
+  // with zero trace of why. reportOpsError here closes that blind spot (same fix already applied
+  // to voice transcription and Sarvam TTS above).
+  let aiResult=null;
+  try{
+    const raw=await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'})
+      || await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'});
+    if(raw){
+      try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
+      catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
+    }
+  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier request threw', e); }
+
+  if(!aiResult && c.openrouter_key){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:c.model||'google/gemini-2.5-flash', temperature:0.1, max_tokens:200,
+          messages:[{role:'system', content:systemText}, {role:'user', content:userPrompt}]
+        })
+      });
+      if(!r.ok){
+        const bodyText=await r.text().catch(()=>'');
+        await reportOpsError(env, 'engineClassifyIntent — OpenRouter returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`));
+      }else{
+        const data=await r.json().catch(()=>({}));
+        const raw=data?.choices?.[0]?.message?.content||'';
+        const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+        if(m){
+          try{ aiResult=JSON.parse(m[0]); }
+          catch(e){ await reportOpsError(env, 'engineClassifyIntent — OpenRouter returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
+        }else{
+          await reportOpsError(env, 'engineClassifyIntent — no JSON object in OpenRouter response', new Error(raw.slice(0,500)));
+        }
+      }
+    }catch(e){ await reportOpsError(env, 'engineClassifyIntent — OpenRouter request threw', e); }
+  }
+
+  if(!aiResult) await reportOpsError(env, 'engineClassifyIntent — both Gemini and OpenRouter failed, using keyword/default fallback for intent+language', new Error('no aiResult'), {hasOpenrouterKey:!!c.openrouter_key});
+
+  const VALID_INTENTS=new Set(['DELAY','BOOKING','AFFIRMATIVE','WATCHED','FORM_DONE','QUESTION','WANTS_HUMAN','SHORT_NEUTRAL']);
+  const VALID_SENTIMENT=new Set(['Positive','Neutral','Negative','Frustrated']);
+  const VALID_OBJECTION=new Set(['none','price','competitor','timing','trust']);
+  let intent=null, intentData={};
+
+  if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  if(!intent){
+    const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
+    if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
+  }
+  if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
+    intent=aiResult.intent;
+    if(intent==='BOOKING') intentData={booking_time:userText};
+  }
+  if(!intent && /\b(watched|seen it|already watched|i saw|viewed|i watched|just watched)\b/.test(low)) intent='WATCHED';
+  if(!intent && /\b(filled|submitted|done the form|form done|completed the form|i filled|i submitted)\b/.test(low)) intent='FORM_DONE';
+  if(!intent && /\b(later|not now|busy|maybe later|some other time|not interested yet|remind me|another time|not ready|will think)\b/.test(low)) intent='DELAY';
+  if(!intent && /^(hi|hello|hey|hii|helo|hola|salam|namaste|good morning|good afternoon|good evening|sup|yo)[\.!]*$/.test(low)) intent='SHORT_NEUTRAL';
+  if(!intent && /^(yes|yeah|yep|yup|ok|okay|sure|alright|confirmed|confirm|agreed|agree|proceed|go ahead|done|noted|sounds good|perfect|absolutely|definitely|of course)[\.!]*$/.test(low)) intent='AFFIRMATIVE';
+  if(!intent){ intent='QUESTION'; intentData={question:userText}; }
+
+  const sentiment=(aiResult && VALID_SENTIMENT.has(aiResult.sentiment))?aiResult.sentiment:'Neutral';
+  const objectionCategory=(aiResult && VALID_OBJECTION.has(aiResult.objection))?aiResult.objection:'none';
+  const wpRaw=Number(aiResult?.win_probability);
+  const aiWinProbability=Number.isFinite(wpRaw)?Math.max(0,Math.min(100,Math.round(wpRaw))):null;
+  // Surfaced (not just used internally above to gate whether the AI's own intent is trusted) so
+  // engineRouteFlow can offer a proactive handover when the classifier itself is unsure AND the
+  // customer's sentiment is already negative — a combination the existing WANTS_HUMAN/Frustrated
+  // triggers don't catch, since both require a much clearer signal than "unsure + not going well."
+  const confRaw=Number(aiResult?.confidence);
+  const confidence=Number.isFinite(confRaw)?Math.max(0,Math.min(1,confRaw)):null;
+  // Per-message detected language, not the client's fixed CLIENTS.language setting — a client
+  // configures one default language for their own scripted content (flow_json, qual_questions),
+  // but an actual customer can write in any language, and both the AI-generated replies and (via
+  // engineLocalizeReply) the client's static scripted text should follow the customer, not a
+  // one-size-fits-all default. Null when the model didn't return a recognizable 2-letter code —
+  // callers fall back to CLIENTS.language themselves.
+  const rawLang=typeof aiResult?.language==='string'?aiResult.language.trim().toLowerCase():'';
+  const customerLanguage=/^[a-z]{2}$/.test(rawLang)?rawLang:null;
+  const rawStage=typeof aiResult?.next_stage==='string'?aiResult.next_stage.trim():'';
+  const nextStage=stageIds.includes(rawStage)?rawStage:null;
+  // Brand/category/product this lead has shown interest in, per the Leads table's new
+  // InterestedProduct column (SETUP.md) — a free-text judgment call like sentiment/objection, not
+  // a lookup against the Ecommerce module's own product/category catalog, so it works the same way
+  // for every industry (a "2BHK apartment" or "consultation package" is just as valid an answer as
+  // a specific SKU). Empty string when the model found nothing specific to point to yet — callers
+  // only write it onto the lead when non-blank (see engineBuildLeadUpsertBody), same "sparse
+  // signal, never overwrite with blank" treatment as LastObjectionCategory.
+  const productInterest=typeof aiResult?.product_interest==='string'?aiResult.product_interest.trim().slice(0,120):'';
+  const productCategory=typeof aiResult?.product_category==='string'?aiResult.product_category.trim().slice(0,60):'';
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory};
+}
+
+// Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
+// objection) and what the next stage is. FAQ routing is industry-aware (industryFaqRoute below),
+// matching engine.json's own industry-conditional routing rather than hardcoding one industry's
+// behavior. flow_json's configured stages no longer own a dispatch path of their own — see
+// engineFlowStagesBlock/engineClassifyIntent's own comments for why (two designs that gave stage
+// content its own message-sending path both caused real, observed bugs: a glued-together bubble,
+// then a verbatim message repeating itself every single question a prospect asked in a row).
+// Stage progression is now `cls.nextStage`, the classifier's own judgment call (same reliability
+// trade-off as intent/sentiment/language already are), and stage content only ever reaches the
+// customer as guidance inside the same FAQ/objection reply — see engineBuildFaqSystemPrompt.
+// Every fixed/configured confirmation text the engine can send when handing a lead to a human —
+// used to stop the anti-loop detector below from treating "the bot correctly sent the same
+// handover confirmation 3 times" as evidence it's stuck failing to help. Without this exclusion,
+// once a lead's last 3 bot messages happen to all be this text (any route to 'human' — explicit
+// ask, frustration, low-confidence, final-stage), state.looping stays permanently true: every
+// future turn re-forces effIntent='WANTS_HUMAN' regardless of what the customer actually says,
+// which re-sends this same text, which keeps the last-3-identical condition true forever. Observed
+// live: a lead stuck replying "Sure 🙏 connecting you to our advisor..." to every message
+// including plain "Hi", even after being released back to the bot from Human Deals (release clears
+// Stage/Handover, but never touches ConvHistory, which is what this check actually looks at).
+export function engineHandoverCannedTexts(botConfig){
+  return new Set([
+    'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.',
+    'Sure — connecting you to our team now. Someone will reply here shortly.',
+    'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.',
+    botConfig.callback_msg,
+    botConfig.callback_msg_frustrated,
+    botConfig.callback_msg_lowconf,
+    "I'm sorry about that — connecting you with our team right now so we can help properly.",
+    'I want to make sure you get the right answer — connecting you with a member of our team now.',
+  ].filter(Boolean));
+}
+
+export function engineRouteFlow(c, state, userText, cls){
+  const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
+  const lowText=userText.toLowerCase().trim();
+  const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
+  const isResub=lowText==='start' && state.leadOptOut==='Yes';
+  if(isOptOut) return {route:'qualify_next', next:state.stage, reply:'You have been unsubscribed. Reply START to re-subscribe.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:true, isResub:false};
+  if(isResub) return {route:'qualify_next', next:'new', reply:'Welcome back! You are re-subscribed.', qualAnswers:state.qualAnswers, intentData:{}, intent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:true};
+
+  const botConfig=engineParseJsonField(c.bot_config, {});
+  const qualQuestions=engineParseJsonField(c.qual_questions, []);
+  const flow=engineParseJsonField(c.flow_json, {});
+  // Mirrors engine.json's `industry === 'ecommerce' ? 'ecom_faq' : (industry === 'travel' ?
+  // 'travel_faq' : 'faq')` — which industry-specific FAQ context (if any) this client's grounded
+  // answers should pull in.
+  const industry=c.industry||'general';
+  const industryFaqRoute=industry==='ecommerce'?'ecom_faq':(industry==='travel'?'travel_faq':(industry==='saas_digital_marketing'?'saas_faq':'faq'));
+  let effIntent=intent;
+  // state.looping alone isn't enough — see engineHandoverCannedTexts' comment for why a lead
+  // whose last 3 bot messages are all a prior handover confirmation must NOT re-trigger this, or
+  // it can never leave that state again regardless of Stage/Handover being reset elsewhere.
+  const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]);
+  if(isRealLoop && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+
+  const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
+  const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
+
+  const POSITIVE=new Set(['AFFIRMATIVE','WATCHED','FORM_DONE','BOOKING','SHORT_NEUTRAL']);
+  const NEGATIVE=new Set(['DELAY','WANTS_MORE_INFO']);
+  const allStages=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  // Real observed failure: a client with only ONE stage configured (still finishing their
+  // funnel setup) had every lead auto-escalate to a human on the very first positive reply — a
+  // plain "ok" or even just a greeting — because with just one stage, it's trivially both the
+  // first AND the last stage, so engine.json's own "reached the final stage with a positive
+  // reply → handover" signal (correct for a real, completed multi-stage funnel) fired
+  // immediately for everyone. Requiring at least 2 real stages before honoring that signal means
+  // an unfinished/minimal funnel just gets normal FAQ replies instead of blanket premature
+  // handover, while a genuinely completed funnel (2+ stages) keeps the original behavior exactly.
+  const isFinalStage=allStages.length>1 && state.stage===allStages[allStages.length-1];
+
+  let reply='', route='', humanReason=null;
+  let next=nextStage||state.stage;
+
+  // humanReason distinguishes a genuine "customer wants a human" moment (explicit ask, or real
+  // frustration) from the isFinalStage+POSITIVE branch below — an internal funnel-completion
+  // heuristic ("a positive reply on the last configured stage probably means ready to talk to
+  // someone"), not an actual signal the customer asked for a person. That heuristic can misfire on
+  // AI intent-classification noise: the exact same message ("Red Shirt small size") was observed
+  // live getting classified as AFFIRMATIVE on one delivery and QUESTION on an identical resend a
+  // moment later, sending the first copy to a human-handover reply instead of the product details
+  // the second copy correctly got. handleEngineWebhook's order-signal check (which runs before this
+  // whole dispatch) uses humanReason to still recognize an unambiguous product enquiry/order even
+  // when route ends up 'human' for this non-explicit reason, but never overrides an explicit ask or
+  // real frustration — see that check's own comment.
+  // handover_enabled — a flat CLIENTS field (Settings → Human Handover, matching
+  // handover_silence_enabled's own naming/value convention), NOT the same-named bot_config JSON
+  // flag this used to read: that one never had a dashboard control, so nothing could set it and
+  // every client was silently always-enabled. 'No' here turns off human escalation entirely (every
+  // branch below), so the bot always answers itself and Human Deals has nothing to ever queue —
+  // dashboard.html hides that tab automatically while this is off.
+  if(effIntent==='WANTS_HUMAN' && c.handover_enabled!=='No'){ route='human'; humanReason='explicit'; }
+  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No'){
+    // Reached the end of the funnel with a positive reply — this used to hand straight over to a
+    // human with no order/trial link ever sent. Real product requirement: when a self-serve link
+    // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
+    // convert themselves right here first — 'selfserve' is a plain scripted send (handled in
+    // handleEngineWebhook exactly like qualify_next), not an LLM reply, so this exact link always
+    // goes out. Human handover for this internal heuristic (not an actual request from the
+    // customer) is now reserved for the genuine case: no self-serve link exists at all, so a human
+    // really is the only way forward — see this file's "human handover only when exactly required"
+    // requirement. An explicit WANTS_HUMAN or Frustrated-sentiment handover (both below/above) are
+    // untouched by this — those are real requests, always honored immediately regardless of link.
+    const selfServeLink=(c.external_store_link||c.cal_link||'').trim();
+    if(selfServeLink){
+      route='selfserve';
+      reply=(botConfig.selfserve_msg||"Great, you're all set! Go ahead right here:")+'\n\n👉 '+selfServeLink;
+    } else {
+      route='human'; humanReason='final_stage_positive';
+      const tz=botConfig.timezone||'Asia/Kolkata';
+      const nowLocal=new Date(new Date().toLocaleString('en-US',{timeZone:tz}));
+      const hour=nowLocal.getHours(), day=nowLocal.getDay();
+      let callLabel='tomorrow';
+      if(hour<9 && day>=1 && day<=5) callLabel='today';
+      else if(day===6) callLabel='on Monday';
+      else if(day===0) callLabel='tomorrow (Monday)';
+      reply=botConfig.callback_msg||`Thank you! 🙏 Our team will contact you ${callLabel} at 9am. We look forward to speaking with you!`;
+    }
+  }
+  // Reachable only when a client has opted into CLIENTS.handover_silence_enabled='Yes' (Settings →
+  // Human Handover — off by default, so the bot keeps replying after handover unless a client
+  // explicitly wants it silenced). handleEngineWebhook's own hard-stop already returns before
+  // routing is computed at all in the default (silence-off) case; when that hard-stop IS skipped
+  // (handover_silence_enabled='No'), without this exception every such reply would still get
+  // forced to 'drop' right here regardless.
+  else if(state.stage==='human_handover' && c.industry!=='healthcare' && c.handover_silence_enabled==='Yes') route='drop';
+  // A QUESTION (or NEGATIVE) always gets a clean FAQ answer before qualification even gets a
+  // chance to run — matches the original precedence (a customer asking something mid-qualification
+  // still gets answered, not another qualifying question).
+  else if(effIntent==='QUESTION' || NEGATIVE.has(effIntent)) route=industryFaqRoute;
+  else if(!qualDone && qualStage===null) route='qualify';
+  else if(!qualDone && qualStage!==null) route='qualify_next';
+  else route=industryFaqRoute;
+
+  if(sentiment==='Frustrated' && route!=='human' && c.handover_enabled!=='No'){
+    route='human'; humanReason='explicit';
+    reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
+  }
+  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
+  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
+  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
+  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
+  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
+  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
+  // product/order signal can still override it.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false){
+    route='human'; humanReason='low_confidence';
+    reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
+  } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
+    route='objection';
+  }
+
+  let qualAnswers={...state.qualAnswers};
+  let qualNextOptions=[];
+  if(route==='qualify_next'){
+    const currentIdx=qualStage!==null?qualStage:0;
+    const nextIdx=currentIdx+1;
+    if(qualQuestions[currentIdx]) qualAnswers[engineQualQuestionText(qualQuestions[currentIdx])]=userText;
+    if(nextIdx<qualQuestions.length){
+      // qual_questions entries are plain strings or {text, optional} (see engineQualQuestionText
+      // above) — either way this coerces defensively so a malformed entry (a bare number, etc.)
+      // can never reach the Chatwoot/WhatsApp send as a non-string value.
+      reply=engineQualQuestionText(qualQuestions[nextIdx]);
+      qualNextOptions=engineQualQuestionOptions(qualQuestions[nextIdx]);
+      next='qual_'+nextIdx;
+    } else {
+      // The one place flow_json content is still sent verbatim — the single, one-time transition
+      // from "just finished qualifying" to "now starting the sales stages." Unlike the old
+      // per-question stage dispatch this doesn't re-fire on every turn (it only happens once per
+      // lead, the moment qualification completes), so the verbatim-repetition bug class this file
+      // moved away from elsewhere doesn't apply here.
+      const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
+      const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
+      const vars=flow.variables||{};
+      reply=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
+      next=firstAction.next||firstStage;
+    }
+  }
+
+  if(effIntent==='BOOKING' && c.cal_link && !reply.includes(c.cal_link)){
+    reply=(reply||'Great! You can book your slot here 📅')+'\n\n👉 '+c.cal_link;
+  }
+
+  // Surfaced purely for handleEngineWebhook to log/alert on (see its own call site) — deliberately
+  // NOT folded into humanReason itself: humanBlocksOrderCheck and similar checks elsewhere already
+  // give 'explicit' specific meaning ("a genuine ask or real frustration, never overridden"), and a
+  // loop-forced handover has quietly relied on getting that exact same treatment since the anti-loop
+  // safety net was added — changing what humanReason itself reports here risks changing that
+  // behavior along with it. This is purely additive: the loop was already detected and already
+  // forced effIntent to WANTS_HUMAN above, this just tells the caller it happened.
+  const loopDetected=isRealLoop && botConfig.antiloop_enabled!==false;
+  return {route, next, reply, qualStage, qualAnswers, qualNextOptions, intentData, intent:effIntent, sentiment, objectionCategory, aiWinProbability, customerLanguage, productInterest, productCategory, isOptOut:false, isResub:false, humanReason, loopDetected};
+}
+
+// From-scratch equivalent of the "Leadvyne · Ecom Context" n8n sub-workflow (not in this repo) —
+// live product catalog + this phone's recent order status, built off the same ecom tables
+// ecom.html and /ecom/* already read.
+async function engineBuildEcomContext(env, c, clientId, phone){
+  const lines=[];
+  const productsTable=await ecomResolveTable(env, clientId, 'products');
+  if(productsTable){
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category,style,shade,skin_type,volume_ml,expiry_date,hair_type,concern,ingredient,brand,variant,warranty_period`);
+    const pd=await pr.json().catch(()=>({}));
+    const products=pd?.list||[];
+    if(products.length){
+      lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
+      products.forEach(p=>{
+        const extra=ecomStyleAttributeLines(p).join(', ');
+        lines.push(`- ${p.name}${p.sku?' [sku:'+p.sku+']':''} — ${p.currency||''} ${p.price??''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.category?' category:'+p.category:''}${extra?' '+extra:''} — ${(p.stock>0)?'in stock':'out of stock'}`);
+      });
+    }
+  }
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(ordersTable && phone){
+    const or=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})&limit=5&sort=-order_date`);
+    const od=await or.json().catch(()=>({}));
+    const orders=od?.list||[];
+    if(orders.length){
+      lines.push('## This customer\'s recent orders');
+      orders.forEach(o=>lines.push(`- ${o.order_id}: ${o.items||'(items unspecified)'} — ${o.currency||''} ${o.total??''} — status: ${o.status}`));
+    }
+  }
+  // No product in view here (whole-catalog FAQ context, not a specific matched product) — this can
+  // only ever resolve to the client-wide external_store_link now that the generic store.html/
+  // onshope.com catalog-page fallback is gone, so skip the instruction entirely when that's blank
+  // rather than pointing the model at an empty link.
+  const catalogOrderLink=buildOrderLink(c, clientId);
+  if(catalogOrderLink) lines.push(`## Order Link\nWhen a customer is ready to buy, share this link: ${catalogOrderLink}`);
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// SaaS/Digital-Marketing equivalent of engineBuildEcomContext, for the 'saas_faq' route — pulls
+// this phone's linked Account (the client's own NocoDB customers table — see the SaaS Ops module
+// above) and any competitor battlecards, so the bot can answer plan/billing questions and "how are
+// you different from X" accurately instead of the generic fallback guessing.
+async function engineBuildSaasContext(env, c, clientId, phone){
+  const lines=[];
+  if(phone){
+    const tableId=await saasResolveCustomersTable(env, clientId);
+    if(tableId){
+      const cust=await saasFindCustomerByEmailOrPhone(env, tableId, null, phone);
+      if(cust){
+        lines.push('## This customer\'s account');
+        lines.push(`- Plan: ${cust.saas_plan_tier||cust.saas_plan_name||'(not set)'} — ${cust.saas_currency||''} ${cust.saas_monthly_value||0}/month`);
+        if(cust.saas_trial_end_date) lines.push(`- Trial ends: ${cust.saas_trial_end_date}`);
+        if(cust.saas_renewal_date) lines.push(`- Renews: ${cust.saas_renewal_date}`);
+        if(cust.saas_seat_count) lines.push(`- Seats: ${cust.saas_seat_count}`);
+        if(cust.saas_lifecycle_stage) lines.push(`- Status: ${cust.saas_lifecycle_stage}`);
+      }
+    }
+  }
+  const {results:battlecards}=await env.DB.prepare(`SELECT competitor_name, comparison_json, positioning_notes FROM saas_battlecards WHERE client_id=?`).bind(clientId).all().catch(()=>({results:[]}));
+  if(battlecards?.length){
+    lines.push('## Competitor comparisons (only use what\'s actually here — never invent a comparison point)');
+    battlecards.forEach(b=>{
+      let comparison='';
+      try{ const c2=JSON.parse(b.comparison_json||'{}'); comparison=Object.entries(c2).map(([k,v])=>`${k}: ${v}`).join('; '); }catch(e){}
+      lines.push(`- ${b.competitor_name}${comparison?' — '+comparison:''}${b.positioning_notes?' ('+b.positioning_notes+')':''}`);
+    });
+  }
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+// Same per-client per-kind lookup pattern as ecomResolveTable/apptResolveTable, for the Travel
+// Agency module's own tables (ta_table_ids — see TA_TABLE_TITLES in dashboard.html).
+function taResolveTable(c, kind){
+  try{ return (JSON.parse(c.ta_table_ids||'{}'))[kind]||null; }catch(e){ return null; }
+}
+
+// Shared by every TA list-type field (packages.inclusions/exclusions, cars.features, ...) — all
+// of them are saved as a JSON-stringified array by both the dashboard form and CSV import (see
+// dashboard.html's taParseImportRows / package+car save handlers). Parsing back to a plain list
+// here is what keeps raw ["a","b"] JSON syntax from ever reaching a customer-facing reply.
+function taFormatList(raw){
+  const v=engineParseJsonField(raw, null);
+  if(Array.isArray(v)) return v.filter(Boolean).join(', ');
+  return raw||'';
+}
+
+// Travel-industry equivalent of engineBuildEcomContext, for the 'travel_faq' route — engine.json's
+// "Leadvyne · TA Context" sub-workflow wasn't available to port either, so this is the same
+// from-scratch approach: built directly off the Travel Agency module's own packages/Umrah-group/
+// car-rental tables instead of whatever that sub-workflow used to assemble.
+async function engineBuildTravelContext(env, c, clientId){
+  const lines=[];
+  const today=new Date().toISOString().slice(0,10);
+  const packagesTable=taResolveTable(c, 'packages');
+  if(packagesTable){
+    const pr=await ncFetch(env, `api/v2/tables/${packagesTable}/records?where=(client_id,eq,${clientId})&limit=25&fields=name,type,destination,nights,pax_min,pax_max,currency,sell_price,inclusions,exclusions`);
+    const pd=await pr.json().catch(()=>({}));
+    const pkgs=pd?.list||[];
+    if(pkgs.length){
+      lines.push('## Travel Packages');
+      pkgs.forEach(p=>{
+        const incText=taFormatList(p.inclusions);
+        const excText=taFormatList(p.exclusions);
+        let line=`- ${p.name} (${p.type||'package'}) — ${p.destination||''}, ${p.nights??''} nights, ${p.pax_min??''}-${p.pax_max??''} pax — ${p.currency||''} ${p.sell_price??''}`;
+        if(incText) line+=' — includes: '+incText.slice(0,150);
+        if(excText) line+=' — excludes: '+excText.slice(0,100);
+        lines.push(line);
+      });
+    }
+  }
+  const umrahTable=taResolveTable(c, 'umrah_groups');
+  if(umrahTable){
+    // departure_date filter drops trips that have already left; pilgrims is fetched so remaining
+    // seats (not the gross `seats` capacity) is what actually gets quoted, and groups with no
+    // seats left are excluded rather than being offered as if they were bookable — mirrors the
+    // dashboard's own upcoming-groups filter (generateDealCoach's umrahText) and pilgrims/seats fill math.
+    const ur=await ncFetch(env, `api/v2/tables/${umrahTable}/records?where=(client_id,eq,${clientId})~and(departure_date,gte,${today})&limit=25&fields=name,departure_date,return_date,seats,makkah_hotel,madinah_hotel,makkah_nights,madinah_nights,price_per_pax,currency,pilgrims`);
+    const ud=await ur.json().catch(()=>({}));
+    const groups=(ud?.list||[]).map(g=>{
+      const pilgrims=engineParseJsonField(g.pilgrims, []);
+      const booked=Array.isArray(pilgrims)?pilgrims.length:0;
+      return {...g, remaining:Math.max(0,(g.seats||0)-booked)};
+    }).filter(g=>g.remaining>0).slice(0,15);
+    if(groups.length){
+      lines.push('## Umrah Groups');
+      groups.forEach(g=>{
+        const nightsText=(g.makkah_nights||g.madinah_nights)?`, ${g.makkah_nights??0}N Makkah / ${g.madinah_nights??0}N Madinah`:'';
+        lines.push(`- ${g.name} — departs ${g.departure_date||'TBA'}, returns ${g.return_date||'TBA'}${nightsText}, ${g.remaining} seat(s) left — Makkah: ${g.makkah_hotel||''}, Madinah: ${g.madinah_hotel||''} — price ${g.currency||''} ${g.price_per_pax??''} per pax`);
+      });
+    }
+  }
+  const carsTable=taResolveTable(c, 'cars');
+  if(carsTable){
+    const cr=await ncFetch(env, `api/v2/tables/${carsTable}/records?where=(client_id,eq,${clientId})~and(status,eq,available)&limit=30&fields=Id,name,make,model,year,category,seats,daily_rate,currency,features`);
+    const cd=await cr.json().catch(()=>({}));
+    let cars=cd?.list||[];
+    // The `status` column alone is stale — a car can stay marked "available" while it's out on an
+    // active booking. Cross-check ta_car_bookings the same way dashboard.html's own per-car status
+    // badge does (pickup_date<=today<=dropoff_date on a non-cancelled/completed booking) so the bot
+    // never offers a car that is actually on the road right now.
+    const carBookingsTable=cars.length?taResolveTable(c, 'car_bookings'):null;
+    if(carBookingsTable){
+      const br=await ncFetch(env, `api/v2/tables/${carBookingsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,cancelled)~and(status,neq,completed)~and(pickup_date,lte,${today})~and(dropoff_date,gte,${today})&limit=100&fields=car_id`);
+      const bd=await br.json().catch(()=>({}));
+      const outNow=new Set((bd?.list||[]).map(b=>String(b.car_id)));
+      cars=cars.filter(car=>!outNow.has(String(car.Id)));
+    }
+    cars=cars.slice(0,15);
+    if(cars.length){
+      lines.push('## Rental Cars Available');
+      cars.forEach(car=>{
+        const featText=taFormatList(car.features);
+        lines.push(`- ${car.name||(car.make+' '+car.model)} (${car.year??''}, ${car.category||''}, ${car.seats??''} seats) — ${car.currency||''} ${car.daily_rate??''}/day${featText?' — features: '+featText.slice(0,100):''}`);
+      });
+    }
+  }
+  const {results:attestSvcs}=await env.DB.prepare(
+    `SELECT name,service_type,country,fee,currency,turnaround_time,required_docs FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`
+  ).bind(clientId).all().catch(()=>({results:[]}));
+  if(attestSvcs&&attestSvcs.length){
+    lines.push('## Attestation Services');
+    attestSvcs.forEach(s=>{
+      let line=`- ${s.name}`;
+      if(s.service_type) line+=` (${s.service_type})`;
+      if(s.country) line+=` for ${s.country}`;
+      if(s.fee) line+=` — ${s.currency||'INR'} ${s.fee}`;
+      if(s.turnaround_time) line+=`, turnaround: ${s.turnaround_time}`;
+      if(s.required_docs) line+=` — docs: ${String(s.required_docs).slice(0,120)}`;
+      lines.push(line);
+    });
+  }
+  return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+export function ltChatFlightIntent(text){
+  const value=String(text||'').toLowerCase();
+  if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
+  const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying)\b/.test(value);
+  const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
+  const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
+  // Compact structured searches such as "DXB to COK on 2026-09-20, 1 adult,
+  // economy" are already complete flight requests even when the customer omits
+  // the words flight/ticket/fare. Route them to POOMAS, never to the generic LLM.
+  const compactIataRoute=/\b[A-Z]{3}\s+(?:TO|[-→])\s+[A-Z]{3}\b/i.test(String(text||''));
+  const hasTravelDetail=/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
+  return (explicitFlight&&shopping)||travelTicket||(compactIataRoute&&hasTravelDetail);
+}
+
+export function ltNormalizeChatFlightRequest(raw={}){
+  const code=v=>String(v||'').trim().toUpperCase().match(/^[A-Z]{3}$/)?.[0]||'';
+  const date=v=>String(v||'').trim().match(/^\d{4}-\d{2}-\d{2}$/)?.[0]||'';
+  const clamp=(v,min,max,def)=>Math.max(min,Math.min(max,Number.parseInt(v,10)||def));
+  const trip_type=String(raw.trip_type||'one_way').toLowerCase()==='round_trip'?'round_trip':'one_way';
+  const out={origin:code(raw.origin),destination:code(raw.destination),departure_date:date(raw.departure_date),return_date:date(raw.return_date),trip_type,
+    adults:clamp(raw.adults,1,9,1),children:clamp(raw.children,0,9,0),infants:clamp(raw.infants,0,9,0),
+    cabin:['economy','premium_economy','business','first'].includes(String(raw.cabin||'').toLowerCase())?String(raw.cabin).toLowerCase():'economy',
+    currency:['AED','INR','USD','SAR','EUR','GBP'].includes(String(raw.currency||'').toUpperCase())?String(raw.currency).toUpperCase():'AED'};
+  const missing=[];
+  if(!out.origin) missing.push('origin airport code');
+  if(!out.destination) missing.push('destination airport code');
+  if(!out.departure_date) missing.push('departure date');
+  if(out.trip_type==='round_trip'&&!out.return_date) missing.push('return date');
+  return {...out,missing};
+}
+
+function ltParseConversationalFlightDate(value,now=new Date()){
+  const text=String(value||'').trim();
+  const valid=(y,m,d)=>{const dt=new Date(Date.UTC(y,m-1,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d?dt:null};
+  const iso=(dt)=>dt?.toISOString().slice(0,10)||'';
+  let m=text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+  if(m)return iso(valid(Number(m[1]),Number(m[2]),Number(m[3])));
+  m=text.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
+  if(m){let y=m[3]?Number(m[3]):now.getUTCFullYear();if(y<100)y+=2000;let dt=valid(y,Number(m[2]),Number(m[1]));if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,Number(m[2]),Number(m[1]));return iso(dt);}
+  const months={jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,sept:9,september:9,oct:10,october:10,nov:11,november:11,dec:12,december:12};
+  m=text.match(/\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(20\d{2}))?\b/)||text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})(?:[,\s]+(20\d{2}))?\b/);
+  if(m){const monthFirst=/^[A-Za-z]/.test(m[1]),month=months[String(monthFirst?m[1]:m[2]).toLowerCase()],day=Number(monthFirst?m[2]:m[1]);if(!month)return '';let y=Number(m[3]||now.getUTCFullYear()),dt=valid(y,month,day);if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,month,day);return iso(dt);}
+  return '';
+}
+
+const LT_AIRPORT_ALIASES=[
+  ['DXB',/\b(?:dubai|dxb)\b/i],['AUH',/\b(?:abu\s*dhabi|auh)\b/i],['SHJ',/\b(?:sharjah|shj)\b/i],
+  ['CCJ',/\b(?:calicut|kozhikode|ccj)\b/i],['COK',/\b(?:kochi|cochin|ernakulam|cok)\b/i],['CNN',/\b(?:kannur|cnn)\b/i],['TRV',/\b(?:trivandrum|thiruvananthapuram|trv)\b/i],
+  ['BOM',/\b(?:mumbai|bombay|bom)\b/i],['DEL',/\b(?:new\s*delhi|delhi|del)\b/i],['MAA',/\b(?:chennai|madras|maa)\b/i],['HYD',/\b(?:hyderabad|hyd)\b/i],['BLR',/\b(?:bangalore|bengaluru|blr)\b/i],
+  ['DOH',/\b(?:doha|doh)\b/i],['MCT',/\b(?:muscat|mct)\b/i],['RUH',/\b(?:riyadh|ruh)\b/i],['JED',/\b(?:jeddah|jed)\b/i],['DMM',/\b(?:dammam|dmm)\b/i]
+];
+function ltAirportCodeFromText(value){
+  const text=String(value||'');
+  for(const [code,pattern] of LT_AIRPORT_ALIASES)if(pattern.test(text))return code;
+  return text.match(/\b[A-Z]{3}\b/)?.[0]||'';
+}
+export function ltParseFlightRoute(value){
+  const text=String(value||'').trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
+  if(parts.length<2)return null;
+  const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
+  return origin&&destination&&origin!==destination?{origin,destination}:null;
+}
+
+async function engineExtractChatFlightRequest(env,c,userText,history=[]){
+  const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
+  const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
+  let raw=null;
+  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
+  if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
+  if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
+  raw=raw&&typeof raw==='object'?raw:{};
+  const customerHistory=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).join('\n');
+  const route=ltParseFlightRoute(userText)||ltParseFlightRoute(customerHistory);
+  const latestDate=ltParseConversationalFlightDate(userText),historicDate=ltParseConversationalFlightDate(customerHistory);
+  if(!raw.origin&&route)raw.origin=route.origin;if(!raw.destination&&route)raw.destination=route.destination;
+  if(latestDate)raw.departure_date=latestDate;else if(!raw.departure_date&&historicDate)raw.departure_date=historicDate;
+  if(!raw.trip_type)raw.trip_type=raw.return_date?'round_trip':'one_way';
+  return ltNormalizeChatFlightRequest(raw);
+}
+
+function ltOfferFareId(raw){
+  return ltText(String(raw?.id||raw?.fareId||raw?.fare_id||raw?.offerId||raw?.offer_id||raw?.raw?.id||raw?.raw?.fareId||''),300);
+}
+export function ltBookableChatOffers(offers){
+  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+}
+
+export function ltFormatChatOffers(offers){
+  const top=ltBookableChatOffers(offers);
+  if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
+  const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
+  const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
+  const cabin=String(top[0].cabin||'economy').replace('_',' ');
+  const lines=[`✈️ *${top.length} Live Flight Option${top.length===1?'':'s'}*\n${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?` · ${dateLabel} · ${cabin}`:''}`];
+  top.forEach((o,i)=>{
+    const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
+    const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
+    const time=v=>v?new Date(v).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
+    const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
+    const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
+    let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${o.currency} ${Number(o.total_amount).toFixed(2)}*`;
+    if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
+    lines.push(line);
+  });
+  lines.push('_Fares are live and may change. Contact us to book any of these options._');
+  return lines.join('\n\n');
+}
+
+export function ltExactRouteOffers(offers,origin,destination){
+  const wantedOrigin=String(origin||'').trim().toUpperCase(),wantedDestination=String(destination||'').trim().toUpperCase();
+  return (offers||[]).filter(o=>{const legs=Array.isArray(o?.itinerary)?o.itinerary:[],first=legs[0]||{},last=legs[legs.length-1]||first;return String(first.origin||'').trim().toUpperCase()===wantedOrigin&&String(last.destination||'').trim().toUpperCase()===wantedDestination;});
+}
+
+async function ltEnsureChatSearchDraftSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_search_state (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, draft_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone)
+  )`).run();
+}
+async function ltLoadChatSearchDraft(env,clientId,phone){
+  if(!phone)return null;
+  await ltEnsureChatSearchDraftSchema(env);
+  const row=await env.DB.prepare(`SELECT draft_json FROM live_travel_chat_search_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.draft_json,null):null;
+}
+async function ltSaveChatSearchDraft(env,clientId,phone,draft){
+  if(!phone)return;
+  await ltEnsureChatSearchDraftSchema(env);
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
+  await env.DB.prepare(`INSERT INTO live_travel_chat_search_state (client_id,phone,draft_json,expires_at,updated_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET draft_json=excluded.draft_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(draft||{}),expires,now.toISOString()).run();
+}
+async function ltClearChatSearchDraft(env,clientId,phone){
+  if(phone)await env.DB.prepare(`DELETE FROM live_travel_chat_search_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+}
+function ltMergeChatFlightDraft(draft,input,userText){
+  const old=draft||{},next={...old},text=String(userText||'');
+  const route=ltParseFlightRoute(text);
+  if(route){next.origin=route.origin;next.destination=route.destination}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
+  const date=ltParseConversationalFlightDate(text);next.departure_date=date||old.departure_date||input.departure_date;
+  const adult=text.match(/\b(\d+)\s*adults?\b/i),child=text.match(/\b(\d+)\s*(?:children|child)\b/i),infant=text.match(/\b(\d+)\s*infants?\b/i);
+  next.adults=adult?Number(adult[1]):(old.adults??input.adults??1);
+  next.children=child?Number(child[1]):(old.children??input.children??0);
+  next.infants=infant?Number(infant[1]):(old.infants??input.infants??0);
+  const cabin=text.match(/\b(premium[ _-]?economy|economy|business|first)\b/i);
+  next.cabin=cabin?cabin[1].toLowerCase().replace(/[ -]/g,'_'):(old.cabin||input.cabin||'economy');
+  const currency=text.match(/\b(AED|INR|USD|SAR|EUR|GBP)\b/i);next.currency=currency?currency[1].toUpperCase():(old.currency||input.currency||'AED');
+  next.trip_type=old.trip_type||input.trip_type||'one_way';next.return_date=old.return_date||input.return_date||'';
+  return ltNormalizeChatFlightRequest(next);
+}
+
+export function ltLiveAgencyEnabled(c={}){
+  const industry=String(c.industry||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
+  return industry==='travel'||industry==='travel_agency'||industry==='live_travel'||industry.includes('travel')||String(c.ta_enabled||'').toLowerCase()==='yes';
+}
+
+async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
+  const liveAgencyEnabled=ltLiveAgencyEnabled(c);
+  if(!liveAgencyEnabled)return null;
+  const draft=await ltLoadChatSearchDraft(env,clientId,phone);
+  const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
+  const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
+  if(!ltChatFlightIntent(userText)&&!continuing)return null;
+  if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
+    await ltClearChatSearchDraft(env,clientId,phone);
+    return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
+  }
+  await ltEnsureSchema(env);
+  await ltSeedSuppliers(env,clientId);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+  if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
+  const extracted=await engineExtractChatFlightRequest(env,c,userText,history);
+  const input=ltMergeChatFlightDraft(draft,extracted,userText);
+  if(input.missing.length){
+    await ltSaveChatSearchDraft(env,clientId,phone,input);
+    const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
+    return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
+  }
+  await ltSaveChatSearchDraft(env,clientId,phone,input);
+  try{
+    const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
+    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
+    const data=await ltSupplierSearch(runtime,input,env);
+    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
+    const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
+    const bookingOffers=ltBookableChatOffers(offers);
+    await ltClearChatSearchDraft(env,clientId,phone);
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers)};
+  }catch(e){
+    await reportOpsError(env,'Live ticketing chat search',e,{clientId});
+    return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
+  }
+}
+
+// Builds verified resort property + room data for injection into the LLM system prompt so
+// follow-up questions are answered from real D1 records — no hallucinated prices or names.
+async function engineBuildResortContext(env, clientId){
+  const lines=['\n\n## VERIFIED RESORT DATA (use ONLY these facts for prices, names, descriptions, amenities — never invent or infer anything not listed here)'];
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const propList=properties||[];
+  const unitList=units||[];
+  for(const prop of propList){
+    lines.push(`\n### ${prop.name}`);
+    if(prop.description && String(prop.description).trim()) lines.push(`Description: ${String(prop.description).trim()}`);
+    if(prop.amenities && String(prop.amenities).trim()) lines.push(`Amenities: ${String(prop.amenities).trim()}`);
+    const rooms=unitList.filter(u=>String(u.property_id)===String(prop.id));
+    if(rooms.length){
+      lines.push('Rooms:');
+      for(const r of rooms){
+        let roomLine=`  - **${r.name}**`;
+        if(r.unit_type) roomLine+=` (${r.unit_type})`;
+        roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+        if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+        if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+        if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+        if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+        lines.push(roomLine);
+      }
+    }
+  }
+  const unassigned=unitList.filter(u=>!u.property_id);
+  if(unassigned.length){
+    lines.push('\n### Rooms (no property assigned)');
+    for(const r of unassigned){
+      let roomLine=`  - **${r.name}**`;
+      if(r.unit_type) roomLine+=` (${r.unit_type})`;
+      roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+      if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+      if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+      if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+      if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+      lines.push(roomLine);
+    }
+  }
+  if(propList.length===0 && unassigned.length===0) return '';
+  return lines.join('\n');
+}
+
+// Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
+// "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
+// (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
+export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
+  const history=state.activeHistory||[];
+  const lang=replyLang||c.language||'en';
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  const defaultCurrency=industry==='ecommerce'?'INR':'AED';
+  const defaultUnit=industry==='ecommerce'?'item':'person';
+  // Resort: suppress c.services — all property/room/rate facts come exclusively from VERIFIED RESORT
+  // DATA injected via contextBlock; a services list here would add a second, potentially stale source.
+  const isResort=c.hospitality_enabled==='Yes' && c.hospitality_style==='resort';
+  if(services.length && !isResort){
+    sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
+  }
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  if(c.b2b_stock_json && c.b2b_stock_json.trim()){
+    try{
+      const stockRows=JSON.parse(c.b2b_stock_json);
+      if(Array.isArray(stockRows) && stockRows.length){
+        const cols=Object.keys(stockRows[0]);
+        sys+='\n\n## Current Stock (live — uploaded by business)\n'+stockRows.slice(0,300).map(r=>cols.map(k=>`${k}: ${r[k]??''}`).join(' | ')).join('\n');
+        sys+='\n\nB2B STOCK RULE: When a customer asks about availability or quantity of any product, refer only to the Current Stock table above. Never invent stock levels. If a product is not listed, say it is not in the current stock list and offer to connect them with the sales team.';
+      }
+    }catch(e){}
+  }
+  if(contextBlock) sys+=contextBlock;
+  if(isResort){
+    sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
+  }
+  if(industry==='healthcare'){
+    sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
+    sys+='\n\nHEALTHCARE CONVERSATION STYLE — sound like a calm, attentive clinic receptionist: answer the patient’s latest question first; acknowledge relevant details already shared; never restart with another greeting during an active conversation; never repeat information or a question already answered in the recent conversation; interpret short replies such as “yes”, “okay”, dates, and times using the immediately previous question; ask only one necessary question at a time; do not repeat the patient’s full sentence; use the patient’s name occasionally, never in every reply; keep the response concise and natural; before answering, compare the draft with the last two assistant messages and rewrite it if it repeats the same wording or meaning. Once human handover is requested, do not add more questions or buttons.';
+    if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
+  }
+  if(industry==='ecommerce'){
+    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
+    const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
+    const ecomStyleInstructions={
+      fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
+      shopify:`SHOPIFY / GENERAL STORE COMMUNICATION STYLE — apply to every reply:
+
+PRODUCT ENQUIRY (customer mentions, asks about, or shares a URL for a specific product):
+• Match the product to VERIFIED ECOM PRODUCT DATA by name, category, key ingredient, or brand — never invent or guess details.
+• Reply with: verified product name, price, availability (in stock / out of stock), and 2–3 key attributes from VERIFIED ECOM PRODUCT DATA.
+• Share the Order Link from the ## Order Link section when the customer is ready to purchase.
+• If the product is absent from VERIFIED ECOM PRODUCT DATA, say it is not in the verified catalog and offer to connect them with the team — never guess.
+
+BROWSING / DISCOVERY (customer is exploring, no specific product mentioned):
+• Guide in this order: category → customer requirement → verified matching products from VERIFIED ECOM PRODUCT DATA.
+• When presenting OPTIONS that include both matching products and categories, always list matching products first, then related categories — never categories first.
+• End with OPTIONS: using only verified category or product names — never invent a choice.
+
+REPLY RULES:
+• Sound clear, friendly and conversion-focused.
+• Keep replies compact — one clear answer and one obvious next action.
+• Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
+    };
+    // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
+    if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
+  }
+  if(industry==='education'){
+    sys+=`\n\nEDUCATION ZERO-HALLUCINATION LOCK: Use the configured business prompt for general questions. Use VERIFIED COURSE DATA (injected above) for all course facts. Never invent or infer a course name, category, fee, duration, level, start date, seats, enrollment link, brochure, certificate, scholarship amount, or instructor. Never list courses or scholarships that are not in VERIFIED COURSE DATA. If a requested fact is absent, say "I don't have that confirmed" and offer admissions-team handover — never guess or estimate.
+
+EDUCATION RULES — apply to EVERY reply without exception:
+
+DATA ACCURACY:
+• Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
+• Never invent or infer any detail not explicitly in your data.
+• If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+• Missing duration, fee, date, or another optional fact never blocks enrollment.
+• Mention an unavailable fact once, then continue to the next enrollment action.
+
+FORMAT — every single reply must follow this structure:
+• Write in short bullet points (•) only — NO long paragraphs, ever.
+• Each bullet = one fact or one action, max 15 words.
+• Lead every bullet with a matching emoji:
+  📚 course name  🗓 date/schedule  💰 fee/price  🎯 level  ⏱ duration
+  🪑 seats left  📄 brochure/syllabus  🔗 link  ✅ available  ❌ not available
+  🏆 outcome/certificate  👨‍🏫 instructor  📍 location/mode  🎁 scholarship/offer
+
+BUTTONS — mandatory after EVERY reply:
+• Always end with a row of tappable choice buttons — never skip this.
+• Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
+  — After greeting / general query: Browse Courses · Talk to Advisor · About Us
+  — After listing courses: Enroll Now · Get Brochure · Schedule a Call
+  — After sharing one course detail: Enroll Now · Download Syllabus · Ask a Question
+  — After fee / scholarship question: Check Eligibility · Apply for Scholarship · Enroll Now
+  — After enrollment / application topic: Start Application · Book Consultation · Call Us
+  — After answering any question: Learn More · Enroll Now · Talk to Advisor
+• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Never print "Reply with", square-bracket choices, or button instructions to the customer.\n• When offering choices, append only the internal OPTIONS: marker described below; the system removes it and creates real WhatsApp buttons or a list.\n• When listing 2–10 courses or categories, use those exact verified names as OPTIONS instead of generic navigation choices.\n• Never expose a Google Drive brochure URL in reply text; the system sends the PDF as a direct document attachment.`;
+    const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
+    const eduStyleInstructions={
+      higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
+• Tone: professional, supportive, outcomes-focused — like a university admissions advisor.
+• Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
+• Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
+• Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
+• Preferred choices: View Programme · Check Eligibility · Book Consultation · Download Prospectus`,
+      courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
+• Tone: encouraging, energetic, results-driven — like a personal learning coach.
+• Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
+• Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
+• Never invent module counts, platform features, completion guarantees or discount amounts.
+• Preferred choices: Enroll Now · Watch Free Preview · Get Syllabus · Chat with Advisor`
+    };
+    if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
+  }
+  // First-ever message from this lead — give a short, natural intro to what the business offers
+  // (drawing on Services/Knowledge Base above) before/alongside answering, instead of jumping
+  // straight into an answer with no context on who they're talking to. Short and blended into the
+  // reply, not a separate canned welcome message — the "keep it as short as the customer's own
+  // message" instruction below still applies on top of this.
+  if(isNewLead) sys+='\n\nThis is this customer\'s very first message to you. Before or alongside your answer, briefly introduce what the business offers in one short sentence (from the Services/Knowledge Base above) — a natural, warm opener, not a full catalog dump.';
+  // Last ~10 exchanges (activeHistory is already capped there) — a short attribute-only reply
+  // ("order M size") needs the assistant's own prior product-listing message to still be in view
+  // to resolve against (see the instruction below), and a returning customer's earlier stated
+  // preferences should still be visible several turns later, not just the last couple of messages.
+  sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
+  sys+=engineMemoryBlock(state);
+  // Inject known contact name so the LLM never asks for something Chatwoot already gave us.
+  // state.name is the WhatsApp/Chatwoot profile name set at turn start; state.lead?.Name is the
+  // same value persisted to the lead row on previous turns. Either is authoritative.
+  const _knownName=state.name||state.lead?.Name;
+  if(_knownName) sys+=`\n\nKnown customer name: ${_knownName} — this is already on file from their WhatsApp profile. Never ask for their name or company name again.`;
+  // Hospitality: inject selected property/unit so LLM has booking/availability context
+  const hospSelectedUnit=state.lead?.HospSelectedUnit;
+  const hospSelectedProperty=state.lead?.HospSelectedProperty;
+  if(hospSelectedUnit){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
+  } else if(hospSelectedProperty){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer is interested in the *${hospSelectedProperty}* property. Answer questions about that property's rooms, pricing and availability from VERIFIED RESORT DATA above. If they ask about a specific room, list the rooms available under that property.`;
+  }
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
+
+  // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
+  // package catalog), the model didn't just say it would connect the customer with support — it
+  // fabricated "our human agent is ALREADY looking into this and will be in touch shortly," when
+  // no handover of any kind had actually happened. That's a trust problem independent of whatever
+  // data gap caused it: never imply a human is already engaged unless one genuinely is (this route
+  // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
+  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
+
+  // Observed real failure #1: a customer's plain "Hi" got a long, salesy paragraph back — a full
+  // "welcome to the store, what are you looking for, let me know your size and color" pitch nobody
+  // asked for. Match the customer's own effort/length instead of maximizing how much gets said in
+  // one reply, and never volunteer price unless it's actually asked about or genuinely needed to
+  // answer — a real salesperson doesn't open with a price list either.
+  // Observed real failure #2, the opposite direction: a customer's short, specific question (how
+  // many days is the free trial — info that WAS in main_prompt above) got an equally short reply
+  // that answered wrong rather than giving the real number, seemingly because "match their length"
+  // pushed toward brevity over substance. A short question is about tone/effort, not permission to
+  // skip the actual fact being asked for — so the two failure modes get distinct instructions
+  // instead of one rule that (as observed) can be read as license for either.
+  sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+
+  // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
+  // more about them?", the customer replied "yes", and the reply was essentially the SAME pitch
+  // and question again, reworded — never the actual extra details asked for. Repeated a second
+  // time before the anti-loop safety net (engineGetLeadState's near-duplicate check) caught it.
+  // That safety net is a last resort for when something has already gone wrong; this prevents the
+  // specific, common way it goes wrong in the first place — an affirmative reply to the model's
+  // OWN offer needs to be fulfilled, not repeated.
+  sys+="\n\nCheck whether your own immediately preceding message (in Recent Conversation above) ended by asking the customer's permission to share more — \"would you like to know more\", \"want the details\", \"shall I tell you more\", or similar — and if their reply here is a plain affirmative (yes, sure, ok, please do) with no new question of its own: actually GIVE the additional details you offered, in full, this turn. Do not restate the same summary/pitch and ask the same permission question again — that reads as ignoring the customer's answer.";
+
+  // engineExtractReplyOptions (worker.js) parses this exact marker back out and strips it before
+  // the customer ever sees it, then (where the channel/settings support it) resends the options as
+  // tappable buttons instead of leaving the customer to type one back by hand — see that function's
+  // own comment. Must stay a literal, parseable last line whenever it's used, which is why the
+  // instruction pins the keyword itself to English even when the rest of the reply is not.
+  // Option labels themselves are pinned to English too now (FIXES.md #19) — not just the OPTIONS:
+  // keyword. Real production failure: Chatwoot's own inbound WhatsApp webhook (Meta signature
+  // verification) has been observed rejecting a customer's tap reply outright (401, message never
+  // even reaches this engine) when its body contains non-ASCII UTF-8 bytes — Malayalam text taps
+  // specifically. WhatsApp echoes back exactly the button title we sent when tapped, so a
+  // Malayalam-language option here becomes a Malayalam-byte tap reply, which then has a real chance
+  // of never arriving at all. Keeping button labels English is the one thing this engine can
+  // control on its own side of that bug.
+  sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, and write each option itself in ENGLISH too, even when the rest of your reply is in the customer\'s own language (e.g. reply in Malayalam, but OPTIONS: Mattress | Wooden bed | Something else) — keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
+
+  if(industry==='ecommerce'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
+    // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
+    // L, XL" (one row, no per-size stock breakdown in this data model — the size field just lists
+    // every size that product comes in), and the assistant still told the customer "we don't have
+    // any products in that size" — fabricating a specific-size stock answer the data can't
+    // actually support. Only the whole product's `stock` count is real; there is no per-size
+    // number to check.
+    sys+=' A product\'s size field lists every size it is made in — never claim a size listed there is out of stock or unavailable; only the product\'s overall stock count (available vs. not) is real data you have. If stock is 0 or the product genuinely is not in the catalog, say that honestly instead of guessing.';
+    // General companion to the size/stock and link guardrails above — those close two specific
+    // observed failures, this closes the broader pattern: any product attribute not literally in
+    // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
+    // certification) is not real data, even if it sounds plausible for the category.
+    sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
+    // Closes an observed real failure: a customer replied "Order M size" to a product the
+    // assistant had just shown sizes for, and got "we don't have anything matching" back instead
+    // of the shown product — because a bare size/color reply carries no signal on its own, only in
+    // light of what was just discussed. detectOrderSignal (the separate order-link auto-send) has
+    // its own version of this same instruction; this is the main conversational reply's version.
+    sys+=' A short reply that only mentions a size, color, quantity, or says something like "that one"/"the green one" — with no product name — almost always refers to whichever specific product you (the assistant) most recently described in the Recent Conversation above. Resolve it to that exact product (use its real SKU/price/stock from the catalog above) instead of treating it as a fresh, unscoped catalog search — only ask which product they mean if the recent conversation genuinely doesn\'t make it clear. If specific details are not available even after resolving the product, politely say you will connect them with support.';
+    // Explicit no-hallucination guardrail: the only link this prompt is ever handed is the literal
+    // "## Order Link" line above (client-wide external_store_link, only included when actually
+    // set) — never a per-product URL. Nothing here should ever tempt the model into constructing
+    // a plausible-looking product/store URL out of the product's name/sku itself.
+    sys+=' Never invent, guess, or construct a link/URL of any kind — especially not one built from a product\'s name or SKU. Only ever share a link if one is literally given to you above (an "Order Link" line, or a product\'s own link field); if no link was given, do not output anything that looks like a URL.';
+    // Observed real failure (Cloudnine Beddings): the assistant asked "Which REPOSE mattress are
+    // you interested in?" with no options listed, the customer answered "Only 1" then "Any" (a
+    // real answer — "you choose" — not a product name), and got the exact same clarifying question
+    // back twice more, because nothing told the model a vague non-answer means "stop asking, just
+    // recommend one" rather than "ask again." Paired with the OPTIONS: instruction above so, when
+    // this does need to ask, the customer gets real tappable names instead of a bare question with
+    // nothing to answer with.
+    sys+=' If you already asked the customer to pick a specific product/model in your immediately preceding message (check Recent Conversation above) and their reply does not name one — a vague non-answer like "any", "only 1", "you choose", "whatever", or similar — do NOT ask the same or a similar clarifying question again. Instead pick ONE real product from the Product Catalog above that best fits what has been discussed (their most in-stock or most-mentioned match if nothing else distinguishes them), state its real name, price, and key details, and invite them to confirm or ask for something else. Whenever you do ask the customer to choose between products, name only real products that are literally listed in the Product Catalog above — never a made-up name, and never a bare "which one?" with no options actually named.';
+  } else if(industry==='travel'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
+  } else if(industry==='saas_digital_marketing'){
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
+  } else {
+    sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
+  }
+
+  // Folds flow_json's configured stages into this same reply as guidance instead of a separate
+  // dispatcher with its own message-sending path — see engineFlowStagesBlock/engineClassifyIntent's
+  // own comments for the two prior designs this replaced and the real bugs each one caused.
+  const stagesBlock=engineFlowStagesBlock(c, state.stage);
+  if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
+  return sys;
+}
+
+// A brand-new lead's very first bot reply, when the route is 'qualify' — previously just the raw
+// first qual_questions entry with zero context on who's texting them or what the business does.
+// One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
+// negligible. Falls back to the plain question on any failure — same "never leave the customer
+// with nothing" principle as engineCallLlm's own fallback.
+async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang, knownName){
+  const lang=replyLang||c.language||'en';
+  const services=engineParseJsonField(c.services, []);
+  let sys=c.main_prompt||'';
+  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
+  if(knownName) sys+=`\n\nKnown customer name: ${knownName} — already on file from their WhatsApp profile. Do not ask for their name or company name.`;
+  sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
+  const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
+  return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
+}
+
+// Mirrors "Code · Objection prep".
+function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang){
+  const history=state.activeHistory||[];
+  const lang=replyLang||c.language||'en';
+  const playbook=engineParseJsonField(c.objection_playbook, []);
+  const match=playbook.find(o=>(o.category||'').toLowerCase()===objectionCategory)||null;
+  let sys=c.main_prompt||'';
+  const services=engineParseJsonField(c.services, []);
+  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`).join('\n');
+  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
+  if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
+  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  if(objectionCategory==='price'){
+    sys+=c.quote_validity_days
+      ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
+      : ' Create gentle urgency by encouraging a decision soon rather than leaving it open-ended — do not invent a specific discount or deadline that is not backed by real data above.';
+  }
+  sys+=engineSummaryBlock(state);
+  sys+=engineCustomerFactsBlock(state);
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+  // See engineBuildFaqSystemPrompt's matching comment.
+  const stagesBlock=engineFlowStagesBlock(c, state.stage);
+  if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
+  return sys;
+}
+
+// Real observed failure: a customer-facing reply went out as literal hallucinated tool-call
+// pseudocode — `print(get_product_images(category="SHIRT", ...))` lines — followed by the actual
+// intended reply. Nothing in this file ever declares a `tools`/function-calling schema to Gemini or
+// OpenRouter (no request body anywhere sets `tools:`), so this was never a real function call to
+// parse — the model imagined its own scaffolding (a documented behavior of models trained on
+// agentic/tool-use data: they sometimes narrate a fake tool invocation in a ```tool_code``` block
+// even with no tools actually offered) and that leaked straight into what should have been plain
+// reply text. Stripped here rather than relying solely on a system-prompt instruction not to do
+// this, since that alone isn't reliably followed.
+function engineStripHallucinatedToolCode(text){
+  if(!text) return text;
+  return text
+    .replace(/```(?:tool_code|python|json)?[\s\S]*?```/gi, '')
+    .replace(/^\s*(?:print|[a-zA-Z_][\w.]*)\([^\n]*\)\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// The main conversational agent — every FAQ/objection/product-enquiry reply across every client,
+// any industry, goes through this one function. Gemini-first (shared GEMINI_API_KEY, same pattern
+// as the rest of this engine), falling back to OpenRouter with the client's own openrouter_key/
+// model — deliberately the client's own configured model on this fallback (not a hardcoded Gemini
+// model the way engineGeminiGenerateWithFallback's OpenRouter leg is) so a client who chose a
+// specific model for a reason still gets it as the safety net, not a second Gemini-shaped attempt
+// that would fail the same way during a real Gemini-side outage. Previously OpenRouter-only with
+// no Gemini path at all — a single shared point of failure for every client's core reply text, and
+// on top of that any failure (thrown fetch, non-OK response, empty response body) was swallowed
+// completely silently, collapsing to the same generic "One moment 🙏" with zero logging regardless
+// of client or cause — indistinguishable from a real "let me check" delay to whoever's reading
+// Chatwoot. Only logs (reportOpsError) when BOTH Gemini and OpenRouter have failed, i.e. when a
+// real customer is actually about to receive that generic fallback — matches this file's existing
+// principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
+// single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
+async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
+  if(geminiReply) return geminiReply;
+  // OpenRouter is optional legacy fallback only; never request it with an absent key.
+  if(!c?.openrouter_key){
+    await reportOpsError(env, 'engineCallLlm — shared Gemini returned no usable reply and no OpenRouter fallback exists', new Error('no usable AI reply'), {clientId:c?.Id});
+    return 'One moment 🙏';
+  }
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
+    });
+    const data=await r.json().catch(()=>({}));
+    const text=engineStripHallucinatedToolCode(data?.choices?.[0]?.message?.content?.trim());
+    if(text) return text;
+    await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
+  }catch(e){
+    await reportOpsError(env, 'engineCallLlm — Gemini failed and the OpenRouter fallback threw', e, {clientId:c?.Id});
+  }
+  return 'One moment 🙏';
+}
+
+// Finds a URL in `replyText` that isn't one of the real links the model was actually handed this
+// turn — `allowedLinks` (e.g. the enquiry/checkout link, a product's own configured links, the
+// client's catalog order link). Real observed failure (Wellness Virtue): asked to share a
+// product's checkout link when none was actually configured on that product, the model invented a
+// plausible-looking Shopify collection URL out of thin air ("https://thevirtues.in/collections/
+// glutathione-collection") instead of saying it didn't have one — despite engineBuildFaqSystemPrompt
+// already carrying an explicit "never invent a link" instruction, the same class of "instruction
+// isn't a guarantee" gap engineCallLlmAvoidingRepeat exists to close for repeats. A returned URL
+// counts as allowed if it exactly matches, or is a prefix/suffix match of, one of allowedLinks —
+// tolerates trailing slashes/punctuation without requiring byte-exact equality.
+export function engineFindHallucinatedLink(replyText, allowedLinks){
+  const urls=(replyText.match(/https?:\/\/[^\s)\]]+/g))||[];
+  for(const raw of urls){
+    const url=raw.replace(/[.,;:!?]+$/,'');
+    if(!allowedLinks.some(a=>a && (url===a || url.startsWith(a) || a.startsWith(url)))) return url;
+  }
+  return null;
+}
+
+// Deterministic backstop against a reply-generating LLM call (a) regenerating essentially the same
+// message it just sent, and (b) inventing a link that was never actually given to it — both are
+// cases where a "don't do this" instruction already baked into
+// engineBuildFaqSystemPrompt/engineBuildProductEnquirySystemPrompt is a request, not a guarantee.
+// engineGetLeadState's `looping` flag (engineTextSimilarity, 0.7 threshold) can only ever catch
+// case (a) AFTER it's already happened twice (it looks backward at history at the START of a
+// turn, so it has no way to stop THIS turn's fresh reply from becoming the second half of that
+// very pair) — nothing existed to catch (b) at all. This checks the actual generated text before
+// it goes out and forces at most one retry, with an explicit instruction addressing whichever
+// problem(s) were found, quoting the specific rejected text. `allowedLinks` is optional — omit it
+// (or pass undefined) to skip the link check entirely, same behavior as before this existed;
+// pass `[]` explicitly to mean "no link is legitimate at all this turn." Fully fail-open: if the
+// retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
+// knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks){
+  const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
+  if(!reply) return reply;
+  const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
+  const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
+  if(!isRepeat && !badLink) return reply;
+  let correction='';
+  if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
+  if(badLink){
+    const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
+    correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
+  }
+  const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
+  if(!retryReply) return reply;
+  const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
+  return retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
+}
+
+// Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
+// engineBuildObjectionSystemPrompt) — see engineMaybeSummarizeHistory for how state.summary gets
+// generated/updated. Placed before "## Recent Conversation" in both callers so a returning
+// customer's earlier context (otherwise entirely invisible past the 20-turn activeHistory window)
+// reads in actual chronological order: summary of what came before, then the recent turns.
+function engineSummaryBlock(state){
+  return state.summary?`\n\n## Earlier in This Conversation (summary)\n${state.summary}`:'';
+}
+
+// See engineMaybeExtractCustomerFacts — same "shared by every reply-generating prompt" pairing as
+// engineSummaryBlock above, placed right alongside it everywhere it's used.
+function engineCustomerFactsBlock(state){
+  return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+}
+
+// ── Semantic memory (Tier 2 — SETUP.md "Semantic memory") ──────────────────────────────────────
+// Distinct from Customer Facts above (a short curated list a human would just remember) — this is
+// for pulling back SPECIFIC old context (a particular past exchange, a particular product) by
+// actual relevance to what's being asked right now, via embeddings + Cloudflare Vectorize
+// (MEMORY_INDEX binding, wrangler.toml — requires a one-time `wrangler vectorize create` plus two
+// `create-metadata-index` calls before this does anything useful; see wrangler.toml's own comment
+// and SETUP.md). Every function below checks env.MEMORY_INDEX exists and fails open (returns
+// null/[]/no-op, never throws) so a deployment that hasn't run that setup, or any live API hiccup,
+// degrades straight back to Tier 1 behavior instead of breaking a reply. This is the first use of
+// Vectorize/embeddings anywhere in this file — treat the exact request/response shapes below as
+// worth re-verifying against Cloudflare's current docs before trusting in production, same caveat
+// already flagged for the WhatsApp Business Profile Resumable Upload API elsewhere in this file.
+//
+// Embeddings via the Gemini Generative Language API's text-embedding-004 model (768 dimensions) —
+// reuses the same shared GEMINI_API_KEY already configured for the intent classifier/voice
+// transcription, no separate credential to provision.
+async function engineEmbedText(env, text){
+  if(!env.GEMINI_API_KEY || !text) return null;
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
+    });
+    const data=await r.json().catch(()=>({}));
+    const values=Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+    if(values) console.log('[gemini-call]', JSON.stringify({caller:'embed', model:'text-embedding-004', ts:new Date().toISOString()}));
+    return values;
+  }catch(e){ return null; }
+}
+
+// Embeds `text` and stores it — D1 (migrations/0056_memory_chunks.sql) for the full text, Vectorize
+// for the vector — under a fresh UUID shared between both. Every indexing function below
+// (product/category/conversation) funnels through this one write path.
+async function engineMemoryUpsert(env, {clientId, leadId, kind, refId, text}){
+  if(!env.MEMORY_INDEX || !env.DB || !text) return;
+  try{
+    const values=await engineEmbedText(env, text);
+    if(!values) return;
+    const id=crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO memory_chunks (id, client_id, lead_id, kind, ref_id, text, created_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(id, Number(clientId), leadId?Number(leadId):null, kind, refId?String(refId):null, String(text).slice(0,2000), new Date().toISOString()).run();
+    await env.MEMORY_INDEX.upsert([{id, values, metadata:{client_id:Number(clientId), kind}}]);
+  }catch(e){ console.error('[engineMemoryUpsert] failed', kind, e.message); }
+}
+
+// Called from handleEcomCreate/handleEcomUpdate (kind==='products') right after a successful save
+// — see those call sites.
+async function engineMemoryIndexProduct(env, clientId, product){
+  if(!product?.name) return;
+  const parts=[product.name];
+  if(product.category) parts.push('Category: '+product.category);
+  if(product.description) parts.push(product.description);
+  parts.push(...ecomStyleAttributeLines(product));
+  await engineMemoryUpsert(env, {clientId, kind:'product', refId:product.Id||product.id, text:parts.filter(Boolean).join('. ')});
+}
+
+// Called from handleEcomCategoryCreate/handleEcomCategoryUpdate right after a successful save.
+async function engineMemoryIndexCategory(env, clientId, category){
+  if(!category?.name) return;
+  await engineMemoryUpsert(env, {clientId, kind:'category', refId:category.id||category.Id, text:'Category: '+category.name});
+}
+
+// Called alongside engineMaybeSummarizeHistory/engineMaybeExtractCustomerFacts at the lead-upsert
+// step (both WhatsApp and Instagram handlers) — unlike those two, this runs every turn rather than
+// on a cadence, since fine-grained per-exchange recall is the entire point of this tier (a periodic
+// rollup would defeat it).
+async function engineMemoryIndexConversationTurn(env, clientId, leadId, userText, botText){
+  if(!userText && !botText) return;
+  const text=`Customer: ${userText||''}\nBot: ${botText||''}`.trim();
+  await engineMemoryUpsert(env, {clientId, leadId, kind:'conversation', text});
+}
+
+// Retrieves the topK most relevant chunks to `queryText` for this client — 'conversation' results
+// are further filtered to this specific lead (a client-wide product/category chunk is fair game for
+// every customer, but one customer's past messages are not relevant context for a different one).
+// Requires the `client_id` and `kind` metadata indexes to exist (wrangler.toml one-time setup) —
+// without them Vectorize's own `.query()` call throws, caught here and treated as "no results".
+async function engineMemoryRetrieve(env, clientId, leadId, queryText, {kinds=['conversation','product','category'], topK=5}={}){
+  if(!env.MEMORY_INDEX || !env.DB || !queryText) return [];
+  try{
+    const values=await engineEmbedText(env, queryText);
+    if(!values) return [];
+    const scored=[];
+    for(const kind of kinds){
+      const matches=await env.MEMORY_INDEX.query(values, {topK:topK*2, filter:{client_id:Number(clientId), kind}});
+      for(const m of (matches?.matches||[])) scored.push({id:m.id, score:m.score, kind});
+    }
+    if(!scored.length) return [];
+    scored.sort((a,b)=>b.score-a.score);
+    const ids=scored.map(s=>s.id).slice(0, topK*3);
+    if(!ids.length) return [];
+    const placeholders=ids.map(()=>'?').join(',');
+    const {results:rows}=await env.DB.prepare(`SELECT id, lead_id, kind, text FROM memory_chunks WHERE id IN (${placeholders})`).bind(...ids).all();
+    const byId=new Map((rows||[]).map(r=>[r.id, r]));
+    const chunks=[];
+    for(const s of scored){
+      const row=byId.get(s.id);
+      if(!row) continue;
+      if(row.kind==='conversation' && String(row.lead_id)!==String(leadId)) continue;
+      chunks.push({kind:row.kind, text:row.text, score:s.score});
+      if(chunks.length>=topK) break;
+    }
+    return chunks;
+  }catch(e){ console.error('[engineMemoryRetrieve] failed', e.message); return []; }
+}
+
+// Shared by every reply-generating prompt that opts into semantic memory (see state.memoryChunks,
+// set by the caller right before building the system prompt — same pattern as
+// state.customerFacts/state.summary).
+function engineMemoryBlock(state){
+  const chunks=state.memoryChunks;
+  if(!chunks?.length) return '';
+  const byKind={conversation:[], product:[], category:[]};
+  chunks.forEach(c=>{ if(byKind[c.kind]) byKind[c.kind].push(c.text); });
+  const lines=[];
+  if(byKind.conversation.length) lines.push('### Relevant past exchanges with this customer\n'+byKind.conversation.map(t=>'- '+t.replace(/\n/g,' ')).join('\n'));
+  if(byKind.product.length) lines.push('### Possibly relevant products\n'+byKind.product.map(t=>'- '+t).join('\n'));
+  if(byKind.category.length) lines.push('### Possibly relevant categories\n'+byKind.category.map(t=>'- '+t).join('\n'));
+  return lines.length?`\n\n## Semantic Memory (may or may not be relevant — use only what actually applies, ignore the rest)\n${lines.join('\n\n')}`:'';
+}
+
+// Backfills existing catalog items into semantic memory for a client who had products/categories
+// before this feature shipped — indexing otherwise only happens going forward, on create/update.
+// Deliberately NOT run inline during a live customer reply (this Worker's fetch handler has no
+// ctx.waitUntil — see engineMaybeSummarizeHistory's neighboring functions for the same constraint
+// — so anything run inline is fully awaited and would add real latency to whichever customer's
+// message happened to trigger it first); instead piggybacked on the existing daily 2am cron sweep
+// (see the scheduled() handler) alongside runDailyHealthCheckForAllClients and friends. Capped at
+// 60 products / 30 categories per client per run so a huge catalog can't make one cron tick run
+// long; a client above that cap just backfills the rest on the next day's tick (the COUNT(*) check
+// only skips a client once memory_chunks already has ANY product/category rows for them, so this
+// naturally continues rather than silently topping out at the cap forever — see the loop in
+// runMemoryBackfillForAllClients below).
+async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
+  if(!env.MEMORY_INDEX || !env.DB) return;
+  try{
+    const existing=await env.DB.prepare(`SELECT COUNT(*) as n FROM memory_chunks WHERE client_id=? AND kind IN ('product','category')`).bind(Number(clientId)).first();
+    if(existing?.n>0) return;
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(productsTable){
+      const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=60`);
+      const pd=await pr.json().catch(()=>({}));
+      for(const p of (pd?.list||[])) await engineMemoryIndexProduct(env, clientId, p);
+    }
+    const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=? LIMIT 30`).bind(Number(clientId)).all();
+    for(const cat of (categories||[])) await engineMemoryIndexCategory(env, clientId, cat);
+  }catch(e){ console.error('[engineMemoryBackfillCatalogIfNeeded] failed', clientId, e.message); }
+}
+
+// Daily cron entry point (scheduled() handler, "0 2 * * *" tick) — every ecommerce client with an
+// OpenRouter key (a reasonable proxy for "actively using the engine") gets one backfill check.
+async function runMemoryBackfillForAllClients(env){
+  if(!env.MEMORY_INDEX) return;
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const d=await r.json().catch(()=>({}));
+    for(const c of (d?.list||[])){
+      if(!c.openrouter_key) continue;
+      await engineMemoryBackfillCatalogIfNeeded(env, c.Id);
+    }
+  }catch(e){ console.error('[runMemoryBackfillForAllClients] failed', e.message); }
+}
+
+// Rolling summary of everything ConvHistory's 40-turn cap (engineBuildLeadUpsertBody) has already
+// dropped — without this, a lead whose conversation runs past that cap loses all memory of
+// anything discussed before it, even though the conversation is still ongoing. Regenerates every
+// ENGINE_SUMMARY_EVERY_N_TURNS turns once history first crosses the cap, folding the prior summary
+// together with a BOUNDED slice of the older messages into one short updated summary via a single
+// cheap LLM call — bounding that input (not how often this runs) is what keeps cost flat as a
+// conversation runs arbitrarily long, since it's always summarizing one fixed-size window, never
+// the whole history from scratch. Returns null on a no-op turn (nothing to persist) or on total
+// LLM failure (engineCallLlm's own hard-failure placeholder is never persisted as if it were real).
+const ENGINE_SUMMARY_EVERY_N_TURNS=10;
+async function engineMaybeSummarizeHistory(env, c, fullHistory, priorSummary){
+  if(fullHistory.length<=40 || fullHistory.length%ENGINE_SUMMARY_EVERY_N_TURNS!==0) return null;
+  const olderSlice=fullHistory.slice(0,-20).slice(-30);
+  if(!olderSlice.length) return null;
+  const transcript=olderSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Summarize the following older portion of a WhatsApp sales conversation in 2-4 short sentences — key facts about the customer (their need, preferences, objections raised, anything they committed to), not a turn-by-turn recap.${priorSummary?` Fold in this existing summary of everything even earlier, keeping it concise rather than just appending: "${priorSummary}"`:''} Respond with ONLY the updated summary text, no preamble, no markdown.`;
+  const summary=await engineCallLlm(env, c, system, transcript, 200);
+  if(!summary || summary==='One moment 🙏') return null;
+  // Not scoped to "only the very first time this ever happens for this lead" — an extra NocoDB
+  // meta round-trip on every regeneration tick (once every 10 turns, only for conversations already
+  // long enough to need this at all) is an accepted cost, same trade-off ncEnsureField itself
+  // already makes internally.
+  await ensureLeadsColumns(env, ['ConvSummary']);
+  return summary;
+}
+
+// Durable "what we know about this customer" — distinct from ConvSummary above, which only exists
+// to cover for the 40-turn ConvHistory cap and so never runs on the vast majority of real
+// conversations (most never reach 40 messages). Facts a human rep would just remember — stated
+// preferences (size/color/style/budget), constraints (allergies, must-haves, deal-breakers),
+// preferred language/communication style — are usually said once, early, and are worth recalling
+// from message 5 onward, not just once a conversation has gotten unusually long. Runs every
+// ENGINE_FACTS_EVERY_N_TURNS turns starting almost immediately (see the length<4 floor below, not
+// gated behind the 40-turn ConvSummary threshold), each time re-reading the last 20 messages and
+// merging with whatever was already extracted — so a stated fact survives even after the raw
+// message that stated it ages out of the "Recent Conversation" window, and a later contradiction
+// ("actually I don't want that color anymore") can update/drop it instead of both facts coexisting
+// forever. Persists on the same lead row as ConvSummary/ConvHistory, so it survives a Resolve/
+// Reopen cycle or an opt-out/resub (neither clears ConvHistory or this) — the closest thing this
+// data model has to "the relationship continues even across separate conversation sessions."
+const ENGINE_FACTS_EVERY_N_TURNS=6;
+async function engineMaybeExtractCustomerFacts(env, c, fullHistory, priorFactsJson){
+  if(fullHistory.length<4 || fullHistory.length%ENGINE_FACTS_EVERY_N_TURNS!==0) return null;
+  let priorFacts=[]; try{ priorFacts=JSON.parse(priorFactsJson||'[]'); }catch(e){}
+  const recentSlice=fullHistory.slice(-20);
+  const transcript=recentSlice.map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+  const system=`Extract durable facts about this customer from the WhatsApp conversation below — things worth remembering for future replies, not one-off details that only matter for the current message. Examples of what counts: stated preferences (color/size/style/budget), constraints (allergies, must-haves, deal-breakers), preferred language or communication style, anything they explicitly told you to remember. Examples of what does NOT count: "asked about pricing just now", "said hello" — routine turns, not standing facts.${priorFacts.length?` You already know this about them: ${JSON.stringify(priorFacts)} — update or drop any of these the conversation below contradicts, keep the rest, add anything new. Return the full updated list, not just what's new.`:''} Respond with ONLY a JSON array of short fact strings (max 10), e.g. ["Prefers Malayalam","Budget around ₹2000","Has sensitive skin"]. Empty array if nothing durable was said.`;
+  const raw=await engineCallLlm(env, c, system, transcript, 200);
+  let facts=null; try{ facts=JSON.parse(raw); }catch(e){}
+  if(!Array.isArray(facts)) return null;
+  const merged=facts.filter(f=>typeof f==='string' && f.trim()).slice(0,10);
+  if(!merged.length && !priorFacts.length) return null;
+  await ensureLeadsColumns(env, ['Customer Facts']);
+  return JSON.stringify(merged);
+}
+
+// flow_json stage messages, qual_questions, and callback_msg/callback_msg_frustrated are static
+// text a client typed once (usually in whatever language they themselves work in) — unlike the
+// LLM-generated FAQ/objection/enquiry replies (which take a language directly in their own system
+// prompt), these can't dynamically adapt to whichever language a given customer is actually
+// writing in. Observed live: a customer's FAQ answer correctly matched their language, but the
+// flow's own scripted follow-up stayed in a different one, reading like two different people —
+// this is the same fix applied to scripted content instead of AI-generated content. `targetLang`
+// is the per-message language engineClassifyIntent detected for the CUSTOMER (not
+// CLIENTS.language, a fixed client-wide default) — a no-op when it's English or wasn't confidently
+// detected, so the common English-conversation case never pays for an extra LLM call. No caching:
+// same trade-off as every other per-turn LLM call in this engine — a fixed message translated
+// repeatedly costs a small amount of extra latency/spend, accepted over adding cache
+// infrastructure this file doesn't otherwise have. Always falls back to the original text on any
+// failure — a message in the "wrong" language is a far better outcome than no message at all.
+async function engineLocalizeReply(env, c, text, targetLang){
+  const trimmed=(typeof text==='string'?text:'').trim();
+  if(!trimmed || !targetLang || targetLang==='en') return text;
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  try{
+    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
+    if(geminiRaw) return geminiRaw;
+  }catch(e){}
+  if(c.openrouter_key){
+    try{
+      const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', temperature:0.2, max_tokens:400, messages:[{role:'system',content:system},{role:'user',content:trimmed}]})
+      });
+      const data=await r.json().catch(()=>({}));
+      const out=data?.choices?.[0]?.message?.content?.trim();
+      if(out) return out;
+    }catch(e){}
+  }
+  return text;
+}
+// The one delivery point a customer's reply actually depends on — a silent failure here means
+// the customer gets nothing and nobody finds out, so (unlike most best-effort sends elsewhere in
+// this file) this specifically reports to reportOpsError on both a thrown fetch and a non-OK
+// response. Coerces/trims `text` defensively — a non-string value (e.g. a malformed qual_questions
+// entry) or a whitespace-only string would both pass a bare `!text` truthiness check but shouldn't
+// be forwarded as real content. NOTE a real limit this can't close: Chatwoot accepts a message
+// (200 OK here) and relays it to WhatsApp *asynchronously* — a downstream Meta rejection (e.g.
+// "text.body" schema errors) happens after this function has already returned successfully, and
+// only shows up in Chatwoot's own UI as "Failed to send." That class of failure is invisible to
+// this synchronous check by construction; it isn't something r.ok can catch.
+// Returns true/false — whether the message actually went out, not just whether this function ran
+// without throwing. Real observed gap: Settings → Logs' "✓ Replied" status (engineLogAnalytics,
+// handleEngineWebhook) is written unconditionally at the end of a turn, regardless of whether any
+// of the sends that happened during it actually succeeded — every failure here already called
+// reportOpsError (an operator-only Slack/email alert), but that's invisible in the client-facing
+// Settings → Logs a business owner actually checks, so "Replied" read as confirmed delivery when
+// it only ever meant "didn't crash." logEngineSkip here (reason 'send-failed'/'send-skipped-no-
+// setup') makes an actual delivery failure show up in that same table instead.
+export async function engineSendChatwootReply(env, c, clientId, convId, text){
+  const trimmed=(typeof text==='string'?text:(text==null?'':String(text))).trim();
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed){
+    if(convId && trimmed) await logEngineSkip(env, clientId, null, convId, 'send-skipped-no-setup', 'Chatwoot base/account/token missing for this client');
+    return false;
+  }
+  if(typeof text!=='string'){
+    await reportOpsError(env, 'engineSendChatwootReply — reply was not a string', new Error(`typeof=${typeof text} value=${JSON.stringify(text)?.slice(0,300)}`), {clientId, convId});
+  }
+  try{
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      await logEngineSkip(env, clientId, null, convId, 'send-failed', `Chatwoot rejected the send: HTTP ${r.status}`);
+      return false;
+    }
+    return true;
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootReply — send threw', e, {clientId, convId});
+    await logEngineSkip(env, clientId, null, convId, 'send-failed', `send threw: ${e?.message||e}`);
+    return false;
+  }
+}
+
+// Pulls an optional trailing "OPTIONS: A | B | C" directive back out of an LLM-generated FAQ reply
+// — engineBuildFaqSystemPrompt asks the model to append exactly this line, and only this line,
+// whenever its own reply poses a clarifying question with 2-10 named options ("glowing skin,
+// anti-ageing, or something else?", or a short menu of named categories/products), so it can be
+// resent as tappable buttons/list instead of making the customer type one back. Always strips the
+// marker line from the returned text regardless of whether the caller
+// goes on to use `options` — a caller that ignores them (e.g. the Instagram flow, which can't
+// render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
+export function engineExtractReplyOptions(replyText){
+  const text=(typeof replyText==='string'?replyText:'');
+  const optionsMatch=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  // Backward compatibility for old Education prompts that told the model to print
+  // "Reply with: [A] [B]". Strip that internal syntax and turn it into real interactive choices
+  // instead of ever showing square brackets to a customer.
+  const bracketMatch=!optionsMatch?text.match(/\n?\*?Reply\s+with:\*?\s*((?:\[[^\]\r\n]+\]\s*){2,10})$/i):null;
+  const match=optionsMatch||bracketMatch;
+  if(!match) return {text, options:null};
+  const stripped=text.slice(0,match.index).trimEnd();
+  // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
+  // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
+  // a first-touch reply naming several catalog categories) isn't silently truncated back down.
+  const options=optionsMatch
+    ?match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10)
+    :[...match[1].matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()).filter(Boolean).slice(0,10);
+  return {text:stripped, options:options.length?options:null};
+}
+// Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
+// model didn't add the OPTIONS: marker — real observed failure: unreliable even for the exact
+// "skincare, wellness, or diet plan?"/"glowing skin, anti-ageing, or something else?" phrasing
+// engineBuildFaqSystemPrompt gives as its own textbook example, sent as plain prose with nothing
+// to tap. A small, single-purpose extraction call rather than a hand-rolled regex: real phrasing
+// ("Are you looking for skincare, wellness, or diet plan options today?") has filler words woven
+// around the actual list ("Are you looking for" / "options today") that a naive comma/"or" split
+// can't cleanly strip without also mangling the real options — a short, focused classification
+// call (same reliability trade-off intent/sentiment/language already carry elsewhere in this file)
+// reads it correctly the way a person would, far more reliably than a second attempt at the same
+// formatting instruction the primary reply call already sometimes skips. Only ever the safety net
+// for a reply the model already generated — never invents a question that wasn't there, only
+// extracts one already phrased as a choice; returns null on anything that doesn't confidently read
+// as a real 2-10-way menu, same "no options" fallback as engineExtractReplyOptions's own marker
+// miss.
+export async function engineExtractPlainOptionsFromReply(env, c, replyText){
+  const text=(typeof replyText==='string'?replyText:'').trim();
+  if(!text || (!env.GEMINI_API_KEY && !c.openrouter_key)) return null;
+  // Cheap skip gate before spending an LLM call on the common case (most FAQ replies aren't a
+  // choice question at all): a real clarifying question ends in '?' (or Arabic '؟', for an AED/UAE
+  // client's Arabic-language reply) somewhere near the end — checked within the last 20 characters,
+  // not just the very last one, since a reply can trail an emoji or extra whitespace after the
+  // actual question mark (e.g. the "...today? ✨" case this fallback was added for).
+  if(!/[?؟]/.test(text.slice(-20))) return null;
+  // Extracted options always come back in English, even when replyText itself is in another
+  // language (FIXES.md #19) — these become tappable button/list titles, and WhatsApp echoes a
+  // button's title back verbatim when tapped. Chatwoot's inbound webhook signature check has been
+  // observed rejecting (401) a tap reply that carries non-ASCII UTF-8 bytes before it ever reaches
+  // this engine, so an option label must never be allowed to inherit the reply's own language here.
+  const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
+  try{
+    const raw=(await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'})
+      || await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'}))||'';
+    const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
+    if(!m) return null;
+    const parsed=JSON.parse(m[0]);
+    const options=Array.isArray(parsed.options)?parsed.options.map(o=>String(o||'').trim()).filter(Boolean).slice(0,10):[];
+    return options.length>=2 ? options : null;
+  }catch(e){ return null; }
+}
+// Same message-create endpoint as engineSendChatwootReply, plus the content_type/content_attributes
+// pair Chatwoot's own WhatsApp Cloud provider turns into a real WhatsApp interactive message
+// (confirmed against Chatwoot's own source: MessageBuilder reads content_type/content_attributes —
+// content_attributes accepted as a JSON string over multipart form-data, same as this file already
+// sends content/message_type/private that way — and WhatsappCloudService#create_payload_based_on_items
+// picks button vs list shape off the same items array itself). items is [{title, value}]; WhatsApp's
+// Cloud API caps plain buttons at 3 (20-char titles) and list rows at 10 (24-char titles), so both
+// shapes are enforced defensively here rather than trusting a caller and getting a silent downstream
+// Meta rejection (see engineSendChatwootReply's own comment on that exact class of failure). >3 items
+// now sends as a Chatwoot list message (still content_type input_select — Chatwoot itself decides
+// button vs list off the item count) instead of silently dropping everything past the 3rd.
+// Titles longer than the cap are truncated on the last word boundary with an ellipsis (see
+// engineTruncateButtonTitle) rather than a hard character cut, so a title never ends mid-word.
+// If two different items still truncate down to the exact same visible title, buttons/list rows
+// would look identical on screen — the customer could tap one meaning the other — so that case
+// falls back to a plain text list of the untruncated titles instead of sending ambiguous buttons.
+export function engineTruncateButtonTitle(title, cap){
+  const t=String(title||'').trim();
+  if(t.length<=cap) return t;
+  const slice=t.slice(0, cap-1);
+  const lastSpace=slice.lastIndexOf(' ');
+  // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
+  // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
+  const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
+  return cut.trimEnd();
+}
+// Returns the items actually presented to the customer as tappable buttons — {title, value},
+// title truncated/deduped exactly as sent — or null on every path that fell back to plain text
+// (no valid items, a title collision, missing creds/convId, or the send itself failing). Real
+// observed bug: every call site used to build its OWN `items` array for routing.quickReplies (the
+// history entry the deterministic tap-resolution in handleEngineWebhook later matches an inbound
+// reply's title against) independently of what this function actually truncated/sent — so a title
+// long enough to truncate was stored one way (untruncated) and echoed back by WhatsApp another way
+// (the truncated version actually displayed), meaning the two could never match. A customer's tap
+// on "Semi Orthopedic…" then had nothing to resolve against, fell through to the AI classifier with
+// nothing but that same truncated fragment, and the whole category picker fired again instead of
+// resolving the specific product. Callers now use THIS return value for routing.quickReplies
+// instead of guessing, so what's stored is always exactly what was sent (or null when nothing
+// tappable actually went out, so a failed send doesn't get misrecorded as one that succeeded).
+async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
+  const raw=(items||[]).filter(it=>it && (it.title||it.value));
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  // WhatsApp Cloud API list rows (unlike plain reply buttons, which have no description field at
+  // all) carry a separate ~72-char description line alongside the 24-char title — real observed
+  // complaint: a long option name ("Semi Medicated Orthopedic Mattress") truncates down to "Semi
+  // Medicated…" with no way to fit more, even though the title's 24-char cap is a hard WhatsApp
+  // platform limit we can't raise. Whenever truncation actually happened, carry the fuller
+  // (still-capped, at description's own real limit) text there too, so a list row loses as little
+  // as the platform allows instead of only ever showing the truncated title. Additive and
+  // best-effort: unlike title/value (confirmed read by Chatwoot's own
+  // WhatsappCloudService#create_payload_based_on_items — see this function's own comment below),
+  // whether that same code path forwards a `description` key through to Meta isn't confirmed the
+  // same way, but an unrecognized JSON key is harmless if it's simply ignored downstream.
+  const trimmedItems=raw.slice(0,10).map(it=>{
+    const full=String(it?.title||it?.value||'').trim();
+    const title=engineTruncateButtonTitle(full, titleCap);
+    // value becomes the row/button's own `id` in the real WhatsApp Cloud API payload — Meta caps
+    // that at 200 (list rows) / 256 (reply buttons) characters, same "defensively capped here
+    // rather than trusting a caller and getting a silent downstream Meta rejection" reasoning as
+    // titleCap above. Several callers deliberately build a longer value than the visible title
+    // (e.g. "I want to order <full product name>"), so this is a real risk, not a hypothetical one,
+    // for an unusually long product name — 200 (the smaller of the two real limits) covers both
+    // shapes regardless of which one isList ends up picking.
+    const item={title, value:String(it?.value||it?.title||'').slice(0,200)};
+    if(isList && title.endsWith('…')) item.description=engineTruncateButtonTitle(full, 72);
+    return item;
+  }).filter(it=>it.title);
+  if(!trimmedItems.length){ const sent=await engineSendChatwootReply(env, c, clientId, convId, text); return sent?null:false; }
+  const seenTitles=new Set();
+  // .normalize('NFC') — same reasoning as the tap-resolution comparison in handleEngineWebhook:
+  // two items can be visually identical text (a non-Latin catalog name, or any complex script) made
+  // of different Unicode code point sequences, which would otherwise dodge collision detection here.
+  // Button/list titles built from catalog/config data are not translated into the customer's
+  // language (FIXES.md #19), but this stays as defense-in-depth for content that legitimately does
+  // vary — e.g. two catalog items whose real names are non-Latin script and visually identical.
+  const hasCollision=trimmedItems.some(it=>{
+    const key=it.title.toLowerCase().normalize('NFC');
+    if(seenTitles.has(key)) return true;
+    seenTitles.add(key);
+    return false;
+  });
+  if(hasCollision){
+    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    const sent=await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
+    return sent?null:false;
+  }
+  const trimmed=(typeof text==='string'?text:'').trim();
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed) return null;
+  try{
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('content_type','input_select');
+    fd.append('content_attributes', JSON.stringify({items:trimmedItems}));
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootQuickReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+      return sent?null:false;
+    }
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootQuickReply — send threw', e, {clientId, convId});
+    const sent=await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    return sent?null:false;
+  }
+  return trimmedItems.map(it=>({title:it.title, value:it.value}));
+}
+
+// Ecom catalogue navigation must arrive as a real WhatsApp interactive message. Chatwoot can
+// accept input_select while its downstream provider still emits only the body text, so Ecom uses
+// the connected Cloud API directly first and keeps Chatwoot as a compatibility fallback.
+async function engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text, items){
+  const raw=(items||[]).filter(item=>item&&(item.title||item.value)).slice(0,10);
+  if(!raw.length) return null;
+  const isList=raw.length>3;
+  const titleCap=isList?24:20;
+  const prepared=raw.map(item=>{
+    const full=String(item.title||item.value).trim();
+    return {title:engineTruncateButtonTitle(full,titleCap),value:String(item.value||item.title).slice(0,200),full};
+  });
+  const destination=String(phone||'').replace(/\D/g,'');
+  if(c.wa_phone_id&&c.wa_token&&destination){
+    const action=isList
+      ? {button:'Choose an item',sections:[{title:'Available options',rows:prepared.map(item=>({id:item.value,title:item.title,...(item.title!==item.full?{description:engineTruncateButtonTitle(item.full,72)}:{})}))}]}
+      : {buttons:prepared.map(item=>({type:'reply',reply:{id:item.value,title:item.title}}))};
+    const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:isList?'list':'button',body:{text:String(text||'').trim()},action}};
+    try{
+      const response=await fetch(`https://graph.facebook.com/v24.0/${c.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${c.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(response.ok) return prepared.map(item=>({title:item.title,value:item.value}));
+      const errorBody=await response.text().catch(()=>'');
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta rejected interactive',new Error(`HTTP ${response.status} — ${errorBody.slice(0,500)}`),{clientId,convId});
+    }catch(error){
+      await reportOpsError(env,'engineSendEcomVerifiedPicker — Meta send threw',error,{clientId,convId});
+    }
+  }
+  return engineSendChatwootQuickReply(env,c,clientId,convId,text,raw);
+}
+
+// Best-effort Chatwoot "customer sees {agent} typing…" indicator — pure UX polish covering the
+// 2-4s LLM latency window between the inbound webhook and the actual reply. Unlike
+// engineSendChatwootReply this never calls reportOpsError on failure: a missed typing toggle costs
+// nothing but polish, the customer still gets their real reply either way.
+async function engineSendChatwootTyping(env, c, convId, isTyping){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/toggle_typing_status`, {
+      method:'POST',
+      headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({typing_status:isTyping?'on':'off'})
+    });
+  }catch(e){}
+}
+
+// Mirrors store.html's own toImageUrl() — a Google Drive "share" link
+// (drive.google.com/file/d/<id>/view or ?id=<id>) isn't directly fetchable as raw image bytes;
+// this resolves it to Drive's thumbnail endpoint, which is. Any non-Drive URL (Shopify CDN,
+// direct image host, etc.) passes through unchanged.
+function engineResolveDirectImageUrl(url){
+  if(!url) return '';
+  if(!/drive\.google\.com/.test(url)) return url;
+  const pathMatch=url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  const queryMatch=url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  const id=(pathMatch&&pathMatch[1])||(queryMatch&&queryMatch[1])||null;
+  return id?`https://drive.google.com/thumbnail?id=${id}&sz=w1000`:url;
+}
+
+// Sends a matched product's actual photo as a WhatsApp image attachment (via Chatwoot, the same
+// relay a human agent's own attachments use) with the reply text as its caption, instead of a
+// text-only message that just links to the storefront to see what it looks like. Real observed
+// ask: customers asking about a specific product should see the product, not just a name/price/
+// link. Falls back to a plain text reply (engineSendChatwootReply) whenever there's no image, or
+// fetching/attaching one fails for any reason — a customer getting the text-only reply they'd
+// have gotten before this existed is a far better failure mode than getting nothing at all.
+// Returns true/false — see engineSendChatwootReply's own comment on why this matters (Settings →
+// Logs' "Replied" status needs to reflect whether something was actually delivered, not just
+// whether this function ran without throwing).
+async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, captionText){
+  const directUrl=engineResolveDirectImageUrl(imageUrl);
+  if(!directUrl) return engineSendChatwootReply(env, c, clientId, convId, captionText);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return engineSendChatwootReply(env, c, clientId, convId, captionText);
+  try{
+    const imgR=await fetch(directUrl);
+    if(!imgR.ok) return engineSendChatwootReply(env, c, clientId, convId, captionText);
+    const blob=await imgR.blob();
+    const trimmed=(typeof captionText==='string'?captionText:'').trim();
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'product.jpg');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootImageReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, captionText);
+    }
+    return true;
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootImageReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, captionText);
+  }
+}
+
+
+// Sends a Sarvam AI-generated voice note (female speaker) as the customer's reply attachment,
+// same Chatwoot-attachment relay engineSendChatwootImageReply already uses for product photos.
+// Sent as .ogg/audio+opus (matching engineSarvamTts's output_audio_codec) — that's the one format
+// WhatsApp's Cloud API renders as a native voice-note bubble instead of a generic file attachment.
+// Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
+// the text-only reply they'd have gotten before this existed is a far better failure mode than
+// getting nothing at all, same reasoning as the image-reply fallback above.
+// Returns true/false — see engineSendChatwootReply's own comment.
+async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  try{
+    const blob=new Blob([audioBuf], {type:'audio/ogg; codecs=opus'});
+    const trimmed=(typeof captionText==='string'?captionText:'').trim();
+    const fd=new FormData();
+    fd.append('content', trimmed); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'reply.ogg');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendChatwootAudioReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
+      return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+    }
+    return true;
+  }catch(e){
+    await reportOpsError(env, 'engineSendChatwootAudioReply — send threw', e, {clientId, convId});
+    return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  }
+}
+
+// ISO 639-1 (engineClassifyIntent's `customerLanguage`) → Sarvam's BCP-47 target_language_code.
+// Sarvam AI's TTS is Indic-language-focused — deliberately not a general-purpose fallback for
+// every language this engine can detect (e.g. Arabic customers, common in this product's UAE
+// client base, get a normal text reply instead of voice, not a mistranslated/unsupported one).
+// Endpoint, header, request/response shape, and this language list have been checked against
+// Sarvam's current docs (docs.sarvam.ai) and confirmed correct for bulbul:v2.
+const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'te-IN', kn:'kn-IN', bn:'bn-IN', gu:'gu-IN', mr:'mr-IN', pa:'pa-IN', or:'od-IN'};
+const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'meera' (previously used here) isn't a valid bulbul:v2 speaker, which made every real Sarvam call fail
+
+// Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
+// ArrayBuffer, or null on any failure so callers fall back to text. Text is capped defensively —
+// a long FAQ paragraph shouldn't become a multi-minute voice note even after
+// engineBuildSpokenReply's own shortening.
+// output_audio_codec:'opus' (Ogg/Opus) instead of Sarvam's default WAV — WhatsApp's Cloud API only
+// renders audio as a native voice-note bubble for Ogg/Opus; a WAV attachment either gets rejected
+// outright or arrives as a generic file, not a playable voice note (this was the "message format
+// not suitable" bug). speech_sample_rate:16000 because Opus itself only supports 8/12/16/24/48kHz —
+// Sarvam's general 22050Hz default (valid for its other codecs) isn't a legal Opus rate.
+// Every failure branch reports via reportOpsError instead of just returning null silently, so any
+// future regression (bad speaker name, changed API shape, etc.) surfaces instead of every
+// voice-note customer silently and permanently getting a text reply with zero trace of why.
+// Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
+// just voice-to-voice not being set up yet for this environment, not a bug.
+async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', requestTimeoutMs=0){
+  if(!text || !targetLangCode) return null;
+  const apiKey=String(clientApiKey||env.SARVAM_API_KEY||'').trim();
+  if(!apiKey){ await reportOpsError(env, 'engineSarvamTts — no client or Worker SARVAM_API_KEY configured', new Error('missing secret')); return null; }
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
+  try{
+    const r=await engineFetchWithRetry('https://api.sarvam.ai/text-to-speech', {
+      method:'POST',
+      headers:{'api-subscription-key':apiKey, 'Content-Type':'application/json'},
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'}),
+      ...(controller?{signal:controller.signal}:{})
+    });
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSarvamTts — Sarvam API returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {targetLangCode});
+      return null;
+    }
+    const data=await r.json().catch(()=>({}));
+    const b64=data?.audios?.[0];
+    if(!b64){
+      await reportOpsError(env, 'engineSarvamTts — no audio in Sarvam response', new Error(JSON.stringify(data).slice(0,500)), {targetLangCode});
+      return null;
+    }
+    const bin=atob(b64);
+    const bytes=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    // A well-formed Opus reply is never this small (even a one-word reply is comfortably above a
+    // few hundred bytes) — guards against sending a customer a broken/silent "voice note" that's
+    // actually just container bytes with no real audio, same principle as the too-short-recording
+    // check on the inbound side above.
+    if(bytes.buffer.byteLength<200){
+      await reportOpsError(env, 'engineSarvamTts — decoded audio suspiciously small, treating as failure', new Error(`${bytes.buffer.byteLength} bytes`), {targetLangCode});
+      return null;
+    }
+    return bytes.buffer;
+  }catch(e){
+    await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});
+    return null;
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
+}
+
+const ENGINE_VOICE_REPLY_DEADLINE_MS=10000;
+const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v1';
+
+export function engineResolveSarvamApiKey(env, c){
+  return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
+}
+
+export async function engineWithDeadline(promise, deadlineMs){
+  let timer;
+  try{
+    return await Promise.race([
+      promise,
+      new Promise(resolve=>{ timer=setTimeout(()=>resolve(null),deadlineMs); })
+    ]);
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function engineVoiceCacheKey(clientId, langCode, replyText){
+  const normalized=String(replyText||'').trim().replace(/\s+/g,' ').toLowerCase();
+  const digest=await sha256Hex(`${langCode}|${ENGINE_TTS_SPEAKER}|${normalized}`);
+  return `${ENGINE_VOICE_CACHE_PREFIX}/${clientId}/${langCode}/${digest}.ogg`;
+}
+
+async function engineVoiceCacheGet(env, key){
+  if(!env.HOSPITALITY_MEDIA) return null;
+  try{
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(!obj) return null;
+    const buf=await obj.arrayBuffer();
+    return buf.byteLength>=200?buf:null;
+  }catch(_e){ return null; }
+}
+
+async function engineVoiceCachePut(env, key, audioBuf){
+  if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
+  try{
+    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:'sarvam'}});
+  }catch(_e){}
+}
+
+// Voice-to-voice only: exact generated spoken text is safe to reuse, so check R2 first. On a miss,
+// Sarvam is the sole live provider. The caller races this entire operation against ten seconds and
+// sends the already-generated text if voice is unavailable or late.
+async function engineCachedOrSarvamVoice(env, c, clientId, replyText, langCode){
+  // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
+  // call and Sarvam. The speaker/version remain in the key, making future voice changes safe.
+  const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
+  const cached=await engineVoiceCacheGet(env, cacheKey);
+  if(cached) return cached;
+  const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+  if(!spokenText) return null;
+  const audio=await engineSarvamTts(env, spokenText, ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()], engineResolveSarvamApiKey(env,c), 9000);
+  // Cache writes must never delay the first live send. R2 is best-effort here; the generated
+  // audio remains immediately usable even if this background write is interrupted or fails.
+  if(audio) void engineVoiceCachePut(env, cacheKey, audio);
+  return audio;
+}
+
+async function handleVoiceSettingsGet(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,session.cid);
+  if(!c) return json({error:'Client not found'},404);
+  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY});
+}
+
+async function handleVoiceSettingsUpdate(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const apiKey=String(body.api_key||'').trim();
+  if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
+  await ensureClientColumns(env,['sarvam_api_key']);
+  await patchClientFields(env,session.cid,{sarvam_api_key:apiKey});
+  return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
+}
+
+// Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
+// AI4BHARAT_LANGS / render-pipeline/lib/ai4bharatTts.js's AI4BHARAT_TTS_LANGS) — the languages this
+// app already has an AI4Bharat mapping for elsewhere, not Indic Parler-TTS's full ~21-language
+// coverage. Keyed by plain ISO 639-1 (this app's own convention), unlike ENGINE_TTS_LANG_MAP's
+// BCP-47 values — the two providers need different formats, handled in engineTtsWithFallback below.
+const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
+
+// STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
+// dedicated Coolify voice service (see
+// render-pipeline/lib/ai4bharatTts.js / render-pipeline/tts/synthesize_ai4bharat.py for what is and
+// isn't verified about the model itself — no live test was possible without a real deploy). Sarvam
+// AI (engineSarvamTts above) stays the PRIMARY TTS provider everywhere — this only exists to be
+// called from engineTtsWithFallback below when Sarvam's call already failed or SARVAM_API_KEY isn't
+// configured, so a customer still gets a real voice-note reply instead of silently downgrading
+// straight to text. Requires the voice service configured (the legacy-named
+// MARKETING_RENDER_WEBHOOK_URL/_SECRET settings) AND AI4BHARAT_TTS_ENABLED set on that
+// service. Missing either is the expected/unconfigured case (silent null, no ops report), same
+// convention as engineSarvamTts's own missing-SARVAM_API_KEY case — this feature simply isn't set
+// up yet for this environment, not a bug.
+// Real, honest cost: this calls a self-hosted PyTorch model over HTTP on another server, not a fast
+// managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
+// whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
+// instead of instantly falling back to text", not tuned for low latency.
+async function engineAi4BharatTts(env, text, isoLangCode){
+  if(!text || !isoLangCode) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  if(!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  try{
+    const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
+    // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
+    // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
+      // unconfigured, not worth an ops alert, same as SARVAM_API_KEY missing above.
+      if(r.status!==503) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    // Same "suspiciously small = failure" guard as engineSarvamTts.
+    if(buf.byteLength<200){
+      await reportOpsError(env, 'engineAi4BharatTts — returned audio suspiciously small, treating as failure', new Error(`${buf.byteLength} bytes`), {isoLangCode});
+      return null;
+    }
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'engineAi4BharatTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
+// OPTIONAL voice provider — Gemini Live API (Settings → Voice → 🔧 TTS Provider →
+// CLIENTS.voice_tts_provider==='gemini_live'). Unlike Sarvam/AI4Bharat above this is opt-in ONLY
+// (never an automatic fallback for anyone who hasn't explicitly chosen it) — the Live API is a
+// real-time bidirectional session, a materially heavier/slower mechanism to reach for one turn's
+// worth of speech than a plain TTS REST call, so it stays a deliberate per-client choice rather
+// than folded into the Sarvam→AI4Bharat auto-fallback ladder.
+//
+// GEMINI_API_KEY is the same shared Worker secret the intent classifier/transcriber already use
+// (see engineGeminiGenerateWithFallback) — no new secret needed. Reuses the exact same
+// voice service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
+// one thing only: converting the Live API's raw PCM16 output into the Ogg/Opus format WhatsApp
+// needs for a native voice-note bubble, since Cloudflare Workers have no audio codec available and
+// this repo's own convention is "anything ffmpeg-shaped runs on the render pipeline, not here" —
+// see render-pipeline/server.js's POST /pcm-to-ogg and its own comment.
+//
+// **Not verified against a live call** (no GEMINI_API_KEY with Live API access, and no route to
+// generativelanguage.googleapis.com's WebSocket endpoint, in this dev sandbox) — implemented
+// directly from Google's documented BidiGenerateContent wire protocol (setup → setupComplete →
+// clientContent turn → streamed serverContent.modelTurn.parts[].inlineData chunks →
+// serverContent.turnComplete), same "test before relying on it" caveat this file already gives
+// every other newly-added provider (see engineAi4BharatTts above). Test against a real client
+// before enabling in production.
+const ENGINE_GEMINI_LIVE_MODEL='models/gemini-2.0-flash-live-001';
+async function engineGeminiLiveTts(env, text, isoLangCode){
+  if(!text || !env.GEMINI_API_KEY) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  let ws;
+  try{
+    const pcmChunks=await new Promise((resolve, reject)=>{
+      const chunks=[];
+      let settled=false;
+      const finish=(fn, val)=>{ if(settled) return; settled=true; clearTimeout(timer); try{ ws.close(); }catch(e){} fn(val); };
+      const timer=setTimeout(()=>finish(reject, new Error('Gemini Live: timed out waiting for a full turn')), 20000);
+      const url=`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+      ws=new WebSocket(url);
+      ws.addEventListener('open', ()=>{
+        ws.send(JSON.stringify({setup:{model:ENGINE_GEMINI_LIVE_MODEL, generationConfig:{responseModalities:['AUDIO']}}}));
+      });
+      ws.addEventListener('message', async (evt)=>{
+        try{
+          const raw=typeof evt.data==='string'?evt.data:new TextDecoder().decode(await evt.data.arrayBuffer?.()??evt.data);
+          const msg=JSON.parse(raw);
+          if(msg.setupComplete){
+            ws.send(JSON.stringify({clientContent:{turns:[{role:'user', parts:[{text:text.slice(0,500)}]}], turnComplete:true}}));
+            return;
+          }
+          const parts=msg.serverContent?.modelTurn?.parts||[];
+          for(const p of parts){
+            if(p.inlineData?.data && (p.inlineData.mimeType||'').startsWith('audio/pcm')){
+              chunks.push(p.inlineData.data);
+            }
+          }
+          if(msg.serverContent?.turnComplete) finish(resolve, chunks);
+        }catch(e){ finish(reject, e); }
+      });
+      ws.addEventListener('error', ()=>finish(reject, new Error('Gemini Live: socket error')));
+      ws.addEventListener('close', ()=>finish(reject, new Error('Gemini Live: socket closed before turnComplete')));
+    });
+    if(!chunks.length) return null;
+    // Live API's documented default output: 16-bit PCM, little-endian, mono, 24kHz.
+    const pcmBytes=chunks.map(b64=>{
+      const bin=atob(b64); const arr=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+      return arr;
+    });
+    const totalLen=pcmBytes.reduce((n,a)=>n+a.length,0);
+    const pcm=new Uint8Array(totalLen);
+    let offset=0; for(const a of pcmBytes){ pcm.set(a, offset); offset+=a.length; }
+    let pcmB64=''; const CH=0x8000;
+    for(let i=0;i<pcm.length;i+=CH) pcmB64+=String.fromCharCode(...pcm.subarray(i, i+CH));
+    pcmB64=btoa(pcmB64);
+    const reqBody=JSON.stringify({pcm_base64:pcmB64, sample_rate:24000, channels:1});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/pcm-to-ogg`;
+    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineGeminiLiveTts — render pipeline pcm-to-ogg returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    if(buf.byteLength<200) return null;
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'engineGeminiLiveTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
+// Single entry point every voice-reply call site should use instead of calling engineSarvamTts
+// directly — tries Sarvam (PRIMARY) first, and only reaches for the self-hosted AI4Bharat standby
+// (engineAi4BharatTts above) when Sarvam's own call returns null (missing key, unsupported
+// language, transient failure, whatever). Takes the plain ISO 639-1 langCode (this app's own
+// convention, e.g. lead.Language/CLIENTS.language) rather than Sarvam's BCP-47 code — the two
+// providers need different formats internally, and this is the one place that difference is
+// handled, so callers don't need to know about it. Returns null (caller falls back to text) only
+// if BOTH providers fail or aren't configured.
+//
+// `provider` is CLIENTS.voice_tts_provider (Settings → Voice → 🔧 TTS Provider (testing),
+// dashboard.html) — blank/unset means this normal auto behavior, unchanged. 'ai4bharat'/'sarvam'
+// were added so each standby could be tested against real WhatsApp traffic for one client without
+// touching the shared SARVAM_API_KEY (which affects every client at once). 'gemini_live' is a
+// distinct, fully opt-in third option (see engineGeminiLiveTts above) — chosen explicitly, never
+// reached as an automatic fallback the way AI4Bharat is. 'piper' (below) is the same treatment.
+
+// OPTIONAL voice provider — Piper TTS (Settings → Voice → 🔧 TTS Provider →
+// CLIENTS.voice_tts_provider==='piper'). Free, fully local, no API key, no per-request cost — see
+// render-pipeline/lib/piperTts.js for the full rationale. Explicit opt-in ONLY, never an automatic
+// fallback: unlike AI4Bharat (which covers the same ~10 Indic languages this app targets
+// elsewhere), Piper's language coverage on the render pipeline defaults to English only (see that
+// file's PIPER_VOICE_MAP comment on why more languages aren't guessed at) — auto-falling back to
+// it for an Indic-language customer would silently downgrade them to an English-accented voice.
+// Same voice service as engineAi4BharatTts/engineGeminiLiveTts
+// (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
+async function enginePiperTts(env, text, isoLangCode){
+  if(!text || !isoLangCode) return null;
+  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  try{
+    const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
+    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
+    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      // A 400 here just means no Piper voice is configured for this language — expected/
+      // unconfigured for anything beyond English by default, same convention as the other
+      // providers' "not set up yet" cases above.
+      if(r.status!==400) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      return null;
+    }
+    const buf=await r.arrayBuffer();
+    if(buf.byteLength<200) return null;
+    return buf;
+  }catch(e){
+    await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
+    return null;
+  }
+}
+
+const ENGINE_AI4BHARAT_HEDGE_MS=1500;
+const ENGINE_LIVE_TTS_DEADLINE_MS=8000;
+
+// AI4Bharat is preferred for clients that explicitly select it, but it is self-hosted and can
+// occasionally cold-start or wait behind another synthesis. Start Sarvam after a short hedge
+// delay and return the first *valid* audio result. A null/failed provider never wins the race.
+// Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
+export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
+  const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
+  const early=await Promise.race([
+    ai4bharatPromise.then(audio=>({finished:true,audio})),
+    new Promise(resolve=>setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs))
+  ]);
+  if(early.finished && early.audio) return early.audio;
+  if(early.finished) return sarvamCall();
+
+  // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
+  // and resolves with whichever provider produces usable audio first.
+  const requireAudio=promise=>promise.then(audio=>audio||Promise.reject(new Error('TTS provider returned no audio')));
+  let deadlineTimer;
+  try{
+    const firstValid=Promise.any([
+      requireAudio(ai4bharatPromise),
+      requireAudio(Promise.resolve().then(sarvamCall))
+    ]);
+    return await Promise.race([
+      firstValid,
+      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), deadlineMs); })
+    ]);
+  }catch(_e){
+    return null;
+  }finally{
+    clearTimeout(deadlineTimer);
+  }
+}
+
+async function engineTtsWithFallback(env, text, langCode, provider){
+  const iso=(langCode||'').toLowerCase();
+  const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  const mode=(provider||'').toLowerCase();
+  if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
+  if(mode==='piper') return enginePiperTts(env, text, iso);
+  if(mode==='ai4bharat'){
+    return engineHedgeAi4BharatTts(
+      ()=>engineAi4BharatTts(env, text, iso),
+      ()=>bcp47?engineSarvamTts(env, text, bcp47):null
+    );
+  }
+  if(bcp47){
+    const sarvamBuf=await engineSarvamTts(env, text, bcp47);
+    if(sarvamBuf) return sarvamBuf;
+  }
+  if(mode==='sarvam') return null;
+  return engineAi4BharatTts(env, text, iso);
+}
+
+/* ── NATIVE FORMS (WhatsApp Flows) ────────────────────────────────────────────────────────────
+   OPTIONAL, per-client (Settings → General → 📋 Native Forms — bot_config.native_forms_enabled,
+   dashboard.html). When on, a brand-new lead's qualifying questions (CLIENTS.qual_questions) are
+   collected as ONE native WhatsApp form (a Meta "Flow") instead of the classic one-question-at-a-
+   time chat ladder (engineRouteFlow's qualify/qualify_next routes — unchanged, and still the
+   fallback whenever this is off or not yet synced). Each question can be marked optional
+   (engineQualQuestionOptional, set from the same Settings card) — mapped straight to the Flow
+   field's own `required` property.
+
+   Why this needs its own encrypted endpoint instead of just reading the answer off the normal
+   engine webhook like a button-tap quick-reply: WhatsApp delivers a completed Flow's answers as an
+   `nfm_reply` interactive message over the SAME inbound webhook every other WhatsApp message uses
+   — but Chatwoot (this app's inbox/relay for every other inbound message) is a CONFIRMED case of
+   silently dropping that payload's content (chatwoot/chatwoot#13970 — content:null, content_type
+   stays 'text'; the actual answers never reach anything downstream of Chatwoot, agent UI
+   included). Rather than depend on a fix landing in Chatwoot, this uses WhatsApp Flows' other
+   supported completion mode: a `data_exchange` screen action, which Meta posts DIRECTLY to a
+   business-owned HTTPS endpoint (RSA/AES-encrypted, per Meta's Flow Endpoint spec) — completely
+   bypassing Chatwoot for this one payload. Everything else about the conversation (the Flow's own
+   send, every other message) still goes through the exact same channels as before.
+
+   One SHARED RSA keypair for every client (Worker secrets NATIVE_FORMS_PRIVATE_KEY_PEM /
+   NATIVE_FORMS_PUBLIC_KEY_PEM) — nothing in Meta's spec requires a distinct key per WABA, and
+   reusing one avoids storing a private key per client in NocoDB (a materially weaker secrets store
+   than Worker secrets). handleNativeFormSync uploads the shared public key to each client's own
+   WABA (POST /{waba_id}/whatsapp_business_encryption) the first time that client turns this on.
+
+   **Not verified against a live Meta call** — the crypto (RSA-OAEP key unwrap, AES-128-GCM
+   payload decrypt/encrypt with the response IV flipped per byte, the ping/data_exchange contract)
+   is implemented directly from Meta's published Flow Endpoint spec, same "documented but untested
+   here" caveat this file already carries for engineGeminiLiveTts/AI4Bharat elsewhere — no Meta app
+   with Flows + encryption enabled was reachable from this dev sandbox. Test end-to-end (sync a
+   real Flow, submit it from an actual WhatsApp client) before enabling for a paying client. ── */
+
+const NATIVE_FORM_SCREEN_ID='QUALIFY';
+
+// Builds the Flow JSON Meta expects as the FLOW_JSON asset (handleNativeFormSync uploads this
+// verbatim). One field per qual_questions entry (required unless engineQualQuestionOptional) —
+// a TextInput by default, or a RadioButtonsGroup when the question has real configured choices
+// (engineQualQuestionOptions), same "send a genuine multiple-choice question as tappable choices,
+// not free text" treatment the classic chat ladder gets (see handleEngineWebhook's qualify/
+// qualify_next routes) — handleNativeFormEndpoint reads either shape identically (submitted[name]
+// is just a string either way: the typed text, or the selected option's id). Whose "Submit" button
+// fires a data_exchange action — NOT the simpler 'complete' terminal action — specifically so the
+// answers reach handleNativeFormEndpoint below instead of arriving as an nfm_reply Chatwoot would
+// drop (see block comment above).
+function engineBuildNativeFormFlowJson(qualQuestions){
+  const fields=qualQuestions.map((q,i)=>{
+    const label=engineQualQuestionText(q).slice(0,80)||('Question '+(i+1));
+    const required=!engineQualQuestionOptional(q);
+    const options=engineQualQuestionOptions(q);
+    return options.length
+      ? {type:'RadioButtonsGroup', name:'q'+i, label, required, 'data-source':options.map(o=>({id:o, title:o.slice(0,80)}))}
+      : {type:'TextInput', name:'q'+i, label, 'input-type':'text', required};
+  });
+  return {
+    version:'3.0',
+    screens:[
+      {
+        id:NATIVE_FORM_SCREEN_ID, title:'Quick questions', terminal:false, data:{},
+        layout:{type:'SingleColumnLayout', children:[
+          {type:'Form', name:'form', children:[
+            ...fields,
+            {type:'Footer', label:'Submit', 'on-click-action':{name:'data_exchange', payload:fields.reduce((o,f)=>({...o,[f.name]:'${form.'+f.name+'}'}),{})}}
+          ]}
+        ]}
+      },
+      // Meta's own well-known terminal screen name — handleNativeFormEndpoint's data_exchange
+      // response points here to close the Flow with a success state after the answers are saved.
+      {id:'SUCCESS', title:'All set', terminal:true, success:true, data:{}, layout:{type:'SingleColumnLayout', children:[
+        {type:'TextBody', text:"Thanks — we've got your answers!"}
+      ]}}
+    ]
+  };
+}
+
+async function engineImportNativeFormsPrivateKey(env){
+  const pem=(env.NATIVE_FORMS_PRIVATE_KEY_PEM||'').trim();
+  if(!pem) return null;
+  const b64=pem.replace(/-----BEGIN PRIVATE KEY-----/,'').replace(/-----END PRIVATE KEY-----/,'').replace(/\s+/g,'');
+  const der=Uint8Array.from(atob(b64), ch=>ch.charCodeAt(0));
+  return crypto.subtle.importKey('pkcs8', der, {name:'RSA-OAEP', hash:'SHA-256'}, false, ['decrypt']);
+}
+function engineFlipBytes(bytes){ const out=new Uint8Array(bytes.length); for(let i=0;i<bytes.length;i++) out[i]=bytes[i]^0xFF; return out; }
+function engineB64ToBytes(b64){ const bin=atob(b64); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr; }
+function engineBytesToB64(bytes){ let s=''; const CH=0x8000; for(let i=0;i<bytes.length;i+=CH) s+=String.fromCharCode(...bytes.subarray(i, i+CH)); return btoa(s); }
+
+// Verifies X-Hub-Signature-256 the same way Meta signs every Graph API webhook (hex HMAC-SHA256
+// over the raw body, prefixed 'sha256=') — this endpoint is called directly by Meta, not through
+// requireSession, so this signature is the ONLY auth on it.
+export async function verifyWebhookSignature(secret, rawBody, sigHeader){
+  if(!sigHeader || !secret) return false;
+  const expected='sha256='+await hmacSha256Hex(secret, rawBody);
+  if(expected.length!==sigHeader.length) return false;
+  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
+  return diff===0;
+}
+
+async function verifyMetaWebhookSignature(env, rawBody, sigHeader){
+  return verifyWebhookSignature(env.META_APP_SECRET, rawBody, sigHeader);
+}
+
+// One-time setup, called from Settings when a client turns Native Forms on (or hits "Sync"):
+// uploads the shared encryption public key to this client's WABA (idempotent — safe to re-POST),
+// builds the Flow JSON from their current qual_questions, and creates+publishes it (or, if
+// native_flow_id already exists, re-uploads that same Flow's asset instead of creating a new one —
+// so re-syncing after editing qual_questions doesn't leave orphaned old Flows behind).
+async function handleNativeFormSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account is not connected for this account — connect it from Settings → Channels first.'}, 400);
+  if(!env.NATIVE_FORMS_PUBLIC_KEY_PEM||!env.NATIVE_FORMS_PRIVATE_KEY_PEM) return json({error:'Native Forms encryption keys are not configured on the server.'}, 500);
+  const qualQuestions=engineParseJsonField(c.qual_questions, []);
+  if(!qualQuestions.length) return json({error:'Add at least one qualifying question first.'}, 400);
+
+  const keyR=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/whatsapp_business_encryption`, {
+    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({business_public_key:env.NATIVE_FORMS_PUBLIC_KEY_PEM})
+  });
+  if(!keyR.ok){
+    const errBody=await keyR.text().catch(()=>'');
+    return json({error:'Failed to register the encryption key with Meta: '+errBody.slice(0,300)}, 502);
+  }
+
+  const flowJson=engineBuildNativeFormFlowJson(qualQuestions);
+  let flowId=c.native_flow_id;
+  if(!flowId){
+    const createR=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/flows`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({name:`leadvyne-qualify-${payload.cid}`, categories:['LEAD_GENERATION'], endpoint_uri:`${new URL(request.url).origin}/native-forms/endpoint`})
+    });
+    const createData=await createR.json().catch(()=>({}));
+    if(!createR.ok||!createData.id) return json({error:'Failed to create the WhatsApp Flow: '+(createData?.error?.message||'HTTP '+createR.status)}, 502);
+    flowId=createData.id;
+  }
+
+  const fd=new FormData();
+  fd.append('file', new Blob([JSON.stringify(flowJson)], {type:'application/json'}), 'flow.json');
+  fd.append('name', 'flow.json');
+  fd.append('asset_type', 'FLOW_JSON');
+  const assetR=await fetch(`https://graph.facebook.com/v18.0/${flowId}/assets`, {method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`}, body:fd});
+  if(!assetR.ok){
+    const errBody=await assetR.text().catch(()=>'');
+    return json({error:'Failed to upload the form definition: '+errBody.slice(0,300)}, 502);
+  }
+
+  const pubR=await fetch(`https://graph.facebook.com/v18.0/${flowId}/publish`, {method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`}});
+  if(!pubR.ok){
+    const errBody=await pubR.text().catch(()=>'');
+    // A Flow that fails validation (e.g. a malformed screen) is created but not publishable — the
+    // id is still saved below so a retry re-uses it instead of piling up orphaned draft Flows.
+    await ensureClientColumns(env, ['native_flow_id']);
+    await patchClientFields(env, payload.cid, {native_flow_id:flowId});
+    return json({error:'Flow created but failed to publish: '+errBody.slice(0,300)}, 502);
+  }
+
+  await ensureClientColumns(env, ['native_flow_id']);
+  await patchClientFields(env, payload.cid, {native_flow_id:flowId});
+  return json({ok:true, flow_id:flowId});
+}
+
+// Sends the native form as an interactive Flow message — direct Graph API (same pattern as
+// handleWaSend/handleWaSendTemplate above), bypassing Chatwoot for the SEND side too (Chatwoot's
+// own WhatsApp Cloud provider has no Flow message support to lean on either way). flow_token
+// carries just enough for handleNativeFormEndpoint to act on the eventual submission without a
+// database lookup of its own beyond the lead record itself: clientId (which client/WABA this is),
+// convId (so the completion message can go out through the same Chatwoot conversation as
+// everything else), and the customer's phone (to find/create the lead row, same identity key
+// engineGetLeadState already uses — no leadId yet at send time for a brand-new lead).
+async function engineSendNativeForm(env, c, clientId, convId, phone, replyLang){
+  if(!c.wa_phone_id||!c.wa_token||!c.native_flow_id) return false;
+  const flowToken=btoa(JSON.stringify({clientId:String(clientId), convId:convId||null, phone})).replace(/=+$/,'');
+  const bodyText=await engineLocalizeReply(env, c, 'Just a couple of quick questions to get you the right info — tap below to fill them in.', replyLang);
+  try{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({
+        messaging_product:'whatsapp', to:phone, type:'interactive',
+        interactive:{
+          type:'flow', body:{text:bodyText},
+          action:{
+            name:'flow',
+            parameters:{
+              flow_message_version:'3', flow_token:flowToken, flow_id:c.native_flow_id,
+              flow_cta:'Start', flow_action:'navigate',
+              flow_action_payload:{screen:NATIVE_FORM_SCREEN_ID, data:{}}
+            }
+          }
+        }
+      })
+    });
+    if(!r.ok){
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env, 'engineSendNativeForm — Meta rejected the Flow send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId});
+      return false;
+    }
+    return true;
+  }catch(e){
+    await reportOpsError(env, 'engineSendNativeForm — send threw', e, {clientId});
+    return false;
+  }
+}
+
+// Meta's Flow Endpoint contract (POST, encrypted, called directly by Meta — no session, only
+// X-Hub-Signature-256): every request has {encrypted_flow_data, encrypted_aes_key, initial_vector}
+// (all base64). Health-check pings (action:'ping') arrive the same way and must be answered the
+// same way, not skipped. See block comment above for what's verified vs. not.
+async function handleNativeFormEndpoint(request, env){
+  const rawBody=await request.text();
+  const sig=request.headers.get('X-Hub-Signature-256');
+  if(!await verifyMetaWebhookSignature(env, rawBody, sig)) return new Response('Invalid signature', {status:432});
+
+  let reqData;
+  try{ reqData=JSON.parse(rawBody); }catch(e){ return new Response('Bad request', {status:400}); }
+  const {encrypted_flow_data, encrypted_aes_key, initial_vector}=reqData||{};
+  if(!encrypted_flow_data||!encrypted_aes_key||!initial_vector) return new Response('Bad request', {status:400});
+
+  const privateKey=await engineImportNativeFormsPrivateKey(env);
+  if(!privateKey) return new Response('Not configured', {status:500});
+
+  let aesKeyBytes, ivBytes, decrypted;
+  try{
+    const aesKeyRaw=await crypto.subtle.decrypt({name:'RSA-OAEP'}, privateKey, engineB64ToBytes(encrypted_aes_key));
+    aesKeyBytes=new Uint8Array(aesKeyRaw);
+    ivBytes=engineB64ToBytes(initial_vector);
+    const aesKey=await crypto.subtle.importKey('raw', aesKeyBytes, {name:'AES-GCM'}, false, ['decrypt']);
+    const plainBuf=await crypto.subtle.decrypt({name:'AES-GCM', iv:ivBytes}, aesKey, engineB64ToBytes(encrypted_flow_data));
+    decrypted=JSON.parse(new TextDecoder().decode(plainBuf));
+  }catch(e){
+    await reportOpsError(env, 'handleNativeFormEndpoint — decrypt/parse failed', e, {});
+    return new Response('Decryption failed', {status:421});
+  }
+
+  // Encrypts and returns respObj the way Meta requires: same AES key, but the response IV is the
+  // REQUEST's IV with every byte bitwise-flipped (Meta's documented anti-replay requirement) — a
+  // plain base64 string body (Content-Type text/plain), not JSON.
+  const respond=async(respObj)=>{
+    const aesKey=await crypto.subtle.importKey('raw', aesKeyBytes, {name:'AES-GCM'}, false, ['encrypt']);
+    const cipherBuf=await crypto.subtle.encrypt({name:'AES-GCM', iv:engineFlipBytes(ivBytes)}, aesKey, new TextEncoder().encode(JSON.stringify(respObj)));
+    return new Response(engineBytesToB64(new Uint8Array(cipherBuf)), {status:200, headers:{'Content-Type':'text/plain'}});
+  };
+
+  if(decrypted.action==='ping') return respond({data:{status:'active'}});
+
+  if(decrypted.action==='data_exchange'){
+    let flowMeta={};
+    try{ flowMeta=JSON.parse(atob(decrypted.flow_token||'')); }catch(e){}
+    const clientId=flowMeta.clientId;
+    const c=clientId?await getClientById(env, clientId):null;
+    if(!c) return respond({data:{acknowledged:true}});
+
+    const qualQuestions=engineParseJsonField(c.qual_questions, []);
+    const submitted=decrypted.data||{};
+    const answers={};
+    qualQuestions.forEach((q,i)=>{
+      const val=submitted['q'+i];
+      if(val!=null && String(val).trim()!=='') answers[engineQualQuestionText(q)]=String(val);
+    });
+
+    const state=await engineGetLeadState(env, clientId, flowMeta.phone, 'Phone');
+    const flow=engineParseJsonField(c.flow_json, {});
+    const firstStage=Object.keys(flow.stages||{}).filter(k=>k!=='new')[0]||'new';
+    const firstAction=(flow.stages?.[firstStage]||{})['*']||{next:firstStage, msg:null};
+    const vars=flow.variables||{};
+    const replyLang=state.lead?.Language||c.language||'en';
+    const stageMsg=(flow.messages?.[firstAction.msg]||'Great, thanks! Let me share some information 😊').replace(/\[(\w+)\]/g,(_,k)=>vars[k]??'');
+    const sentText=await engineLocalizeReply(env, c, stageMsg, replyLang);
+    const nextStage=firstAction.next||firstStage;
+
+    const history=(state.history||[]).slice();
+    history.push({role:'assistant', content:sentText});
+    const leadBody={
+      ClientId:String(clientId), Phone:flowMeta.phone||state.phone||'', Name:state.name||'',
+      ConversationID:flowMeta.convId||state.lead?.ConversationID||null,
+      QualAnswers:JSON.stringify({...state.qualAnswers, ...answers}), Stage:nextStage,
+      ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(), Channel:'whatsapp'
+    };
+    const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+    // Dual-write bot message to D1 lead_messages
+    if(resolvedLeadId) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:sentText, ts:new Date().toISOString()});
+    if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
+
+    if(flowMeta.convId){
+      await engineDeliverReply(env, c, clientId, flowMeta.convId, sentText, {langCode:replyLang});
+    } else if(c.wa_phone_id && c.wa_token && flowMeta.phone){
+      // No Chatwoot conversation id was captured at send time — shouldn't normally happen, since
+      // convId is set the moment the customer's first inbound message creates one — but fall back
+      // to a direct Graph API send so the customer still gets the stage-1 message, not silence.
+      await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
+        method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to:flowMeta.phone, type:'text', text:{body:sentText}})
+      }).catch(()=>{});
+    }
+
+    return respond({version:'3.0', screen:'SUCCESS', data:{extension_message_response:{params:{flow_token:decrypted.flow_token||''}}}});
+  }
+
+  return respond({data:{acknowledged:true}});
+}
+
+// Rewrites an already-composed reply into a short, natural, spoken sentence — never the literal
+// reply text, which may be a multi-sentence FAQ answer full of links/prices unsuitable to read
+// aloud. Same shared Gemini credential as the intent classifier/transcriber. Explicitly told to
+// drop links/prices/long numbers rather than speak them — those are preserved separately as a
+// text caption by engineExtractLinkPriceCaption instead.
+async function engineBuildSpokenReply(env, c, replyText, langCode){
+  const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
+  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120, caller:'build-spoken'});
+  if(spoken) return spoken;
+  // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
+  // and cap length, rather than failing the voice reply outright.
+  return replyText.replace(/https?:\/\/\S+/g,'').replace(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi,'').replace(/\s{2,}/g,' ').trim().slice(0,220);
+}
+
+// Pulls any link/price out of the real reply text so it still reaches the customer as a short
+// one-line text caption on the voice message, even though the voice itself is instructed to never
+// say them out loud (engineBuildSpokenReply above). Empty string when the reply has neither.
+function engineExtractLinkPriceCaption(replyText){
+  const links=[...new Set(replyText.match(/https?:\/\/\S+/g)||[])];
+  const prices=[...new Set(replyText.match(/(?:AED|USD|INR|EUR|GBP|₹|\$|€|£)\s?[\d,]+(?:\.\d+)?/gi)||[])];
+  const parts=[];
+  if(prices.length) parts.push('💰 '+prices.join(', '));
+  if(links.length) parts.push('🔗 '+links.join(' '));
+  return parts.join('  ');
+}
+
+// Single reply-delivery dispatcher for handleEngineWebhook — every route (human/qualify/FAQ/
+// objection/order-detected) sends its final reply through here instead of calling
+// engineSendChatwootReply/engineSendChatwootImageReply directly, so voice-to-voice is one code
+// path instead of eight near-duplicate branches. Voice-to-voice reply: when the customer sent a
+// voice note and this client has the paid voice add-on (voice_addon_active), reply with a
+// WhatsApp voice note instead of text — mirrors the customer's own input modality, which is the
+// point of the feature. Falls back to the normal text/image reply whenever voice isn't possible
+// (no add-on, no Sarvam key, unsupported/undetected language, a product-image reply already in
+// play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
+// Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
+// out of scope for now, this only covers live conversational replies.
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies}={}){
+  // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
+  // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
+  // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
+  engineSendChatwootTyping(env, c, convId, false);
+  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
+  // above, this is the ONLY choke point gated by this flag: classification, routing, lead
+  // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
+  // handleEngineWebhook all still run normally. Only the actual outbound WhatsApp message (text,
+  // image caption, or voice) stops going out — for a client who wants their own bot (e.g. a
+  // custom n8n workflow wired to the same Chatwoot inbox) to own the reply, while this CRM keeps
+  // tracking leads/stages/analytics off the same conversation exactly as if the built-in bot were
+  // still replying.
+  // Real observed gap: with this on, nothing below ever sends — but the caller's turn still
+  // finishes normally and engineLogAnalytics (handleEngineWebhook) still logs "✓ Replied" in
+  // Settings → Logs, since that log is written unconditionally at end-of-turn regardless of
+  // whether a reply actually went out (see engineSendChatwootReply's own comment for the same gap
+  // on the failure side). A business owner checking Settings → Logs for "why didn't my customer
+  // get a reply" would see "Replied" and have no way to know this toggle is why. Logging it
+  // explicitly here — distinct from a genuine send failure — closes that.
+  if(c.bot_reply_disabled==='Yes'){
+    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply computed but not sent');
+    return false;
+  }
+  const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
+  if(!trimmed) return;
+  // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
+  // sent through the Instagram Graph API while inbound media remains visible in Chats.
+  if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
+  const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
+  // Voice input automatically receives voice: exact cache first, then Sarvam using the client's
+  // key or Worker-level fallback. No per-client enable/provider/model switch. A hard ten-second
+  // ceiling returns the already-computed text instead of keeping the customer waiting.
+  if(mediaType==='voice' && !imageUrl && bcp47){
+    const audioBuf=await engineWithDeadline(engineCachedOrSarvamVoice(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
+    if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
+  }
+  if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
+  if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
+  return engineSendChatwootReply(env, c, clientId, convId, trimmed);
+}
+
+// Instagram's equivalent of handleWaSend (WhatsApp Cloud API) — sends through the Instagram
+// Graph API using the account's own long-lived token (see handleInstagramOauthCallback), not a
+// WhatsApp send at all. Used both by engineDeliverReply (bot replies) and /instagram/send (a
+// human agent's manual reply from the Chats page).
+export async function engineSendInstagramReply(env, c, igRecipientId, text){
+  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return false;
+  // graph.instagram.com, not graph.facebook.com — "Instagram API with Instagram Login" sends
+  // through its own API host, matching the account-scoped token from handleInstagramOauthCallback.
+  try{
+    const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${c.ig_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
+    });
+    if(r.ok) return true;
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'engineSendInstagramReply', new Error(instagramGraphError(data, `Instagram Graph HTTP ${r.status}`)));
+  }catch(e){ await reportOpsError(env, 'engineSendInstagramReply', e); }
+  return false;
+}
+
+async function engineSendHandoverLabel(c, convId){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return;
+  try{
+    await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/labels`, {
+      method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+      body:JSON.stringify({labels:['human-requested']})
+    });
+  }catch(e){}
+}
+
+export const HEALTHCARE_HANDOVER_SILENCE_MS=5*60*60*1000;
+export function engineHealthcareHandoverSilenceActive(c, state, nowMs=Date.now()){
+  if(String(c?.industry||'').toLowerCase()!=='healthcare' || !state?.lead) return false;
+  if(state.lead.Handover!=='Yes' && state.stage!=='human_handover') return false;
+  const handoverMs=Date.parse(state.lead.HandoverAt||state.lead.LastMsgAt||'');
+  if(!Number.isFinite(handoverMs)) return false;
+  const age=Number(nowMs)-handoverMs;
+  return age>=0 && age<HEALTHCARE_HANDOVER_SILENCE_MS;
+}
+
+// Deterministic phone→country lookup (E.164 calling codes) — no external API, no cost, always
+// on. Sorted longest-code-first so e.g. '971' (UAE) matches before a shorter code some other
+// country shares as a prefix. NANP ('1') covers US/Canada/most Caribbean nations under one
+// calling code with no further public prefix to split them by — genuinely ambiguous without a
+// full area-code table, so it's labeled generically rather than guessed at; every other code below
+// resolves to one real country.
+const PHONE_COUNTRY_CODES = [
+  ['1242','Bahamas'],['1246','Barbados'],['1264','Anguilla'],['1268','Antigua and Barbuda'],
+  ['1284','British Virgin Islands'],['1340','U.S. Virgin Islands'],['1345','Cayman Islands'],
+  ['1441','Bermuda'],['1473','Grenada'],['1649','Turks and Caicos'],['1664','Montserrat'],
+  ['1670','Northern Mariana Islands'],['1671','Guam'],['1684','American Samoa'],
+  ['1758','Saint Lucia'],['1767','Dominica'],['1784','Saint Vincent and the Grenadines'],
+  ['1787','Puerto Rico'],['1809','Dominican Republic'],['1829','Dominican Republic'],
+  ['1849','Dominican Republic'],['1868','Trinidad and Tobago'],['1869','Saint Kitts and Nevis'],
+  ['1876','Jamaica'],['1939','Puerto Rico'],
+  ['20','Egypt'],['211','South Sudan'],['212','Morocco'],['213','Algeria'],['216','Tunisia'],
+  ['218','Libya'],['220','Gambia'],['221','Senegal'],['222','Mauritania'],['223','Mali'],
+  ['224','Guinea'],['225','Ivory Coast'],['226','Burkina Faso'],['227','Niger'],['228','Togo'],
+  ['229','Benin'],['230','Mauritius'],['231','Liberia'],['232','Sierra Leone'],['233','Ghana'],
+  ['234','Nigeria'],['235','Chad'],['236','Central African Republic'],['237','Cameroon'],
+  ['238','Cape Verde'],['239','Sao Tome and Principe'],['240','Equatorial Guinea'],['241','Gabon'],
+  ['242','Republic of the Congo'],['243','DR Congo'],['244','Angola'],['245','Guinea-Bissau'],
+  ['246','British Indian Ocean Territory'],['248','Seychelles'],['249','Sudan'],['250','Rwanda'],
+  ['251','Ethiopia'],['252','Somalia'],['253','Djibouti'],['254','Kenya'],['255','Tanzania'],
+  ['256','Uganda'],['257','Burundi'],['258','Mozambique'],['260','Zambia'],['261','Madagascar'],
+  ['262','Reunion'],['263','Zimbabwe'],['264','Namibia'],['265','Malawi'],['266','Lesotho'],
+  ['267','Botswana'],['268','Eswatini'],['269','Comoros'],['27','South Africa'],
+  ['290','Saint Helena'],['291','Eritrea'],['297','Aruba'],['298','Faroe Islands'],
+  ['299','Greenland'],['30','Greece'],['31','Netherlands'],['32','Belgium'],['33','France'],
+  ['34','Spain'],['350','Gibraltar'],['351','Portugal'],['352','Luxembourg'],['353','Ireland'],
+  ['354','Iceland'],['355','Albania'],['356','Malta'],['357','Cyprus'],['358','Finland'],
+  ['359','Bulgaria'],['36','Hungary'],['370','Lithuania'],['371','Latvia'],['372','Estonia'],
+  ['373','Moldova'],['374','Armenia'],['375','Belarus'],['376','Andorra'],['377','Monaco'],
+  ['378','San Marino'],['380','Ukraine'],['381','Serbia'],['382','Montenegro'],['383','Kosovo'],
+  ['385','Croatia'],['386','Slovenia'],['387','Bosnia and Herzegovina'],['389','North Macedonia'],
+  ['39','Italy'],['40','Romania'],['41','Switzerland'],['420','Czech Republic'],['421','Slovakia'],
+  ['423','Liechtenstein'],['43','Austria'],['44','United Kingdom'],['45','Denmark'],['46','Sweden'],
+  ['47','Norway'],['48','Poland'],['49','Germany'],['500','Falkland Islands'],['501','Belize'],
+  ['502','Guatemala'],['503','El Salvador'],['504','Honduras'],['505','Nicaragua'],
+  ['506','Costa Rica'],['507','Panama'],['508','Saint Pierre and Miquelon'],['509','Haiti'],
+  ['51','Peru'],['52','Mexico'],['53','Cuba'],['54','Argentina'],['55','Brazil'],['56','Chile'],
+  ['57','Colombia'],['58','Venezuela'],['590','Guadeloupe'],['591','Bolivia'],['592','Guyana'],
+  ['593','Ecuador'],['594','French Guiana'],['595','Paraguay'],['596','Martinique'],
+  ['597','Suriname'],['598','Uruguay'],['599','Curacao'],['60','Malaysia'],['61','Australia'],
+  ['62','Indonesia'],['63','Philippines'],['64','New Zealand'],['65','Singapore'],['66','Thailand'],
+  ['670','Timor-Leste'],['672','Norfolk Island'],['673','Brunei'],['674','Nauru'],
+  ['675','Papua New Guinea'],['676','Tonga'],['677','Solomon Islands'],['678','Vanuatu'],
+  ['679','Fiji'],['680','Palau'],['681','Wallis and Futuna'],['682','Cook Islands'],['683','Niue'],
+  ['685','Samoa'],['686','Kiribati'],['687','New Caledonia'],['688','Tuvalu'],
+  ['689','French Polynesia'],['690','Tokelau'],['691','Micronesia'],['692','Marshall Islands'],
+  ['81','Japan'],['82','South Korea'],['84','Vietnam'],['850','North Korea'],['852','Hong Kong'],
+  ['853','Macau'],['855','Cambodia'],['856','Laos'],['86','China'],['880','Bangladesh'],
+  ['886','Taiwan'],['90','Turkey'],['91','India'],['92','Pakistan'],['93','Afghanistan'],
+  ['94','Sri Lanka'],['95','Myanmar'],['960','Maldives'],['961','Lebanon'],['962','Jordan'],
+  ['963','Syria'],['964','Iraq'],['965','Kuwait'],['966','Saudi Arabia'],['967','Yemen'],
+  ['968','Oman'],['970','Palestine'],['971','United Arab Emirates'],['972','Israel'],
+  ['973','Bahrain'],['974','Qatar'],['975','Bhutan'],['976','Mongolia'],['977','Nepal'],
+  ['98','Iran'],['992','Tajikistan'],['993','Turkmenistan'],['994','Azerbaijan'],
+  ['995','Georgia'],['996','Kyrgyzstan'],['998','Uzbekistan'],
+  ['7','Russia/Kazakhstan'],['1','US/Canada/Caribbean (NANP)'],
+].sort((a,b)=>b[0].length-a[0].length);
+function phoneToCountry(phone){
+  const digits=String(phone||'').replace(/[^0-9]/g,'');
+  if(!digits) return null;
+  for(const [code,country] of PHONE_COUNTRY_CODES){
+    if(digits.startsWith(code)) return country;
+  }
+  return null;
+}
+
+// Referral/affiliate tracking — a customer shares a wa.me deep link
+// (https://wa.me/<business number>?text=REF-XXXXXX) that pre-fills a referred friend's very first
+// WhatsApp message with the referrer's own code (generated on demand by the dashboard's "Get
+// Referral Link" button, stored in D1's referral_codes table — see migrations/
+// 0001_reviews_referrals.sql). This is the detection half: given that first message's raw text,
+// resolve the code to a referrer lead id (scoped to this same client — a code only needs to be
+// unique per client, so two different clients' customers could coincidentally share one) and
+// return both that id and the text with the code removed, so the caller can strip it before the
+// AI ever sees it. A pure D1 lookup — no NocoDB round-trip needed here at all, since D1 only
+// needs to resolve a lead *id*, not the referrer's Name/Phone (the dashboard resolves those
+// separately, lazily, only when someone actually opens the lead detail pane — see
+// handleReferralsLeadInfo below). Returns null if there's no code, or the code doesn't match any
+// lead of this client's (a stale/mistyped/foreign code) — silently, since a failed referral match
+// shouldn't block or alter the conversation in any visible way.
+const REFERRAL_CODE_RE=/\bREF-([A-Z0-9]{4,10})\b/i;
+async function engineDetectReferral(env, clientId, text){
+  const m=String(text||'').match(REFERRAL_CODE_RE);
+  if(!m) return null;
+  const code=('REF-'+m[1]).toUpperCase();
+  const row=await env.DB.prepare(`SELECT lead_id FROM referral_codes WHERE client_id=? AND code=?`).bind(Number(clientId), code).first();
+  if(!row) return null;
+  return {referrerLeadId:row.lead_id, strippedText:String(text||'').replace(REFERRAL_CODE_RE,'').trim()};
+}
+
+// Confirms leadId actually belongs to this session's client before any of the three dashboard
+// routes below touch it — same ownership check handleMetaCapiLeadEvent uses, since lead_id here
+// comes from the request (dashboard-supplied), not the trusted session, and D1 has no foreign key
+// into NocoDB to enforce this itself.
+async function engineLeadBelongsToClient(env, leadId, clientId){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=Id,ClientId`);
+  const lead=await r.json().catch(()=>null);
+  return r.ok && lead && String(lead.ClientId)===String(clientId);
+}
+
+// Session-gated dashboard routes for Referral tracking. All three read/write D1 only — Name/Phone
+// for a referral's counterpart lead are fetched fresh from NocoDB here, lazily, only when a rep
+// actually opens a lead's detail pane, never duplicated/cached in D1 itself.
+async function handleReferralsLeadInfo(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=parseInt(url.searchParams.get('lead_id'),10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+
+  const codeRow=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  const referredByRow=await env.DB.prepare(`SELECT referrer_lead_id, referred_at, reward_status FROM referrals WHERE referred_lead_id=?`).bind(leadId).first();
+  const {results:madeRows}=await env.DB.prepare(`SELECT referred_lead_id, referred_at, reward_status FROM referrals WHERE referrer_lead_id=? ORDER BY referred_at DESC`).bind(leadId).all();
+
+  // Resolve just the Name/Phone this response actually needs, in one NocoDB batch fetch — the
+  // referrer (if any) plus every lead this one referred in.
+  const idsToResolve=[...new Set([referredByRow?.referrer_lead_id, ...(madeRows||[]).map(r=>r.referred_lead_id)].filter(Boolean))];
+  const names={};
+  if(idsToResolve.length){
+    const where=idsToResolve.map(id=>`(Id,eq,${id})`).join('~or');
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${idsToResolve.length}&fields=Id,Name,Phone`);
+    const data=await r.json().catch(()=>({}));
+    (data?.list||[]).forEach(l=>{ names[l.Id]=l.Name||l.Phone||('Lead #'+l.Id); });
+  }
+
+  return json({
+    code: codeRow?.code||null,
+    referred_by: referredByRow ? {name:names[referredByRow.referrer_lead_id]||('Lead #'+referredByRow.referrer_lead_id), at:referredByRow.referred_at, reward_status:referredByRow.reward_status} : null,
+    referrals: (madeRows||[]).map(r=>({lead_id:r.referred_lead_id, name:names[r.referred_lead_id]||('Lead #'+r.referred_lead_id), at:r.referred_at, reward_status:r.reward_status})),
+  });
+}
+async function handleReferralsGenerateCode(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  const existing=await env.DB.prepare(`SELECT code FROM referral_codes WHERE lead_id=?`).bind(leadId).first();
+  if(existing) return json({code:existing.code});
+  // Retry on the rare code collision within this client (UNIQUE(client_id, code)) rather than
+  // failing the request — a longer code would also fix it, but a short retry loop needs no format
+  // change and keeps the 6-char codes already shared out in the wild working.
+  for(let attempt=0; attempt<5; attempt++){
+    const code=Math.random().toString(36).slice(2,8).toUpperCase();
+    try{
+      await env.DB.prepare(`INSERT INTO referral_codes (lead_id, client_id, code, created_at) VALUES (?,?,?,?)`)
+        .bind(leadId, Number(payload.cid), code, new Date().toISOString()).run();
+      return json({code});
+    }catch(e){ /* UNIQUE(client_id, code) collision — retry with a new code */ }
+  }
+  return json({error:'Could not generate a unique code, try again.'}, 500);
+}
+async function handleReferralsReward(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  const status=body.status==='Rewarded'?'Rewarded':'Pending';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!(await engineLeadBelongsToClient(env, leadId, payload.cid))) return json({error:'Not your lead'}, 403);
+  await env.DB.prepare(`UPDATE referrals SET reward_status=? WHERE referred_lead_id=? AND client_id=?`)
+    .bind(status, leadId, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+// Mirrors "Code · Prep lead" — hot-moment/qual-score/win-probability/round-robin-owner
+// computation and the LEADS upsert body. See the file-header comment above for the ConvHistory
+// and human-handover-message fixes vs. the source workflow. `messageId` (Chatwoot's own message
+// id, when available) is persisted as LastProcessedMessageId for handleEngineWebhook's
+// idempotency check. `isNewLead` must be the "did this lead already exist" snapshot taken before
+// engineClaimMessage ran (state.leadId itself is no longer reliable for that by this point — a
+// brand-new lead may already have a stub row and leadId from the claim).
+function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead){
+  const {next:routeNext, qualAnswers, intentData, intent, sentiment, objectionCategory, aiWinProbability, productInterest, productCategory, isOptOut, isResub}=routing;
+  const reply=routing.reply;
+  let next=routeNext;
+  const isHuman=routing.route==='human';
+
+  const history=(state.history||[]).slice();
+  if(userText) history.push({role:'user', content:routing.historyUserText||userText,
+    ...(routing.userMedia?{media:routing.userMedia}:{}),
+    ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+  // options — only present on turns that actually offered the customer tappable choices via
+  // engineSendChatwootQuickReply (objection route's next-step buttons, the enquiry route's
+  // category/product picker — both gated on quick_reply_buttons_enabled above). media — only
+  // present when this turn's reply carried an inline product/category photo (routing.media, set
+  // right before the engineDeliverReply/engineSendChatwootImageReply call that actually sent it —
+  // see those call sites in handleEngineWebhook), so the Chats tab can render the real photo
+  // instead of a blank bubble (chats.js chatMergedTimeline). Deliberately scoped to just the
+  // primary inline photo, not every supplementary image/audio/video/pdf a turn might also send
+  // (engineMaybeSendProductMedia and friends run after this history entry is already written) —
+  // every other reply keeps the exact same {role,content} shape ConvHistory has always had.
+  if(reply) history.push({role:'assistant', content:reply,
+    ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{}),
+    ...(routing.media?{media:routing.media}:{})});
+
+  const body={
+    ClientId:String(clientId), Phone:state.phone||'', Name:state.name, ConversationID:state.convId,
+    Date:new Date().toISOString(), Language:routing.customerLanguage||c.language||'en',
+    ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(),
+    Channel:state.channel||'whatsapp'
+  };
+  // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
+  // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
+  // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
+  // rep has no reason to keep checking.
+  if(userText) body.ConvResolved='No';
+  // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
+  // see engineParseInstagramEvents/handleInstagramWebhook.
+  if(state.igId) body.IgId=state.igId;
+  if(messageId) body.LastProcessedMessageId=messageId;
+  if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
+  // OrderCollect — the in-progress item/price seed for the chat-based order collection ladder
+  // (order_collect_items/order_collect_address, see handleEngineWebhook and finalizeChatOrder).
+  // Cleared back to '' once the order is finalized so a later, unrelated order doesn't inherit a
+  // stale seed.
+  if(routing.orderCollectSeed) body.OrderCollect=JSON.stringify(routing.orderCollectSeed);
+  else if(routing.clearOrderCollect) body.OrderCollect='';
+  // See ensureLastProductSkuField's comment — the write side of the "resolve a bare 'yes'/'proceed
+  // with order' back to the product actually being discussed" fallback above.
+  if(routing.matchedProductSku) body['Last Product Sku']=routing.matchedProductSku;
+  if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
+  else body.Stage=next;
+  if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
+  if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
+
+  let score='Cold';
+  if(intent==='BOOKING' || intentData?.booking_time || body.Stage==='consultation_booked') score='Hot';
+  else if(['AFFIRMATIVE','WATCHED','FORM_DONE'].includes(intent) && state.stage!=='new') score='Warm';
+  else if(state.stage!=='new' && (state.history||[]).length>2) score='Warm';
+  body.Score=score;
+  if(state.isDuplicate) body.IsDuplicate='Yes';
+  if(isOptOut) body.OptOut='Yes';
+  if(isResub){ body.OptOut='No'; body.Stage='new'; }
+
+  const HOT_PHRASES=['how much','price','cost','available','when can','book','ready to','interested in','want to','sign up','start','confirm','deposit','payment','package','deal','offer','buy','purchase','enroll','register'];
+  const msgLower=(userText||'').toLowerCase();
+  const hotPhrase=HOT_PHRASES.find(p=>msgLower.includes(p));
+  if(hotPhrase){ body.HotMoment='Yes'; body.HotMomentText=(userText||'').slice(0,200); }
+
+  const flow=engineParseJsonField(c.flow_json, {});
+  const stageKeys=Object.keys(flow.stages||{}).filter(k=>k!=='new');
+  const stageIdx=stageKeys.indexOf(state.stage);
+  const stageProgress=stageKeys.length>0?(stageIdx+1)/stageKeys.length:0;
+  const histLen=(state.history||[]).length;
+  let qualScore=Math.round((stageProgress*4)+(score==='Hot'?3:score==='Warm'?2:0)+(hotPhrase?1.5:0)+Math.min(histLen/20,1.5));
+  qualScore=Math.max(1, Math.min(10, qualScore));
+  body.QualScore=qualScore;
+
+  if(state.winProbabilityManual!=='Yes'){
+    let wp=(typeof aiWinProbability==='number')?aiWinProbability:Math.round(stageProgress*80+(score==='Hot'?20:score==='Warm'?10:0));
+    if(isHuman) wp=Math.max(wp,55);
+    if(isOptOut) wp=0;
+    body.WinProbability=Math.max(0, Math.min(100, wp));
+  }
+  if(c.deal_currency && isNewLead) body.DealCurrency=c.deal_currency;
+  // Data enrichment on capture — the only signal available at this point in a WhatsApp-first
+  // conversation is the phone number itself, so this is deliberately scoped to what a calling
+  // code actually proves true. Never overwrites a rep's own manual edit (isNewLead-only; an
+  // existing lead already has whatever Country a human set or left blank on purpose).
+  if(isNewLead && !state.lead?.Country){
+    const country=phoneToCountry(state.phone);
+    if(country) body.Country=country;
+  }
+  // Referral attribution (state.referrerLeadId, detected earlier in handleEngineWebhook) is
+  // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
+  // first point in this turn a brand-new lead actually has a real id to attribute.
+
+  // Owner assignment is handled externally by engineResolveLeadOwner() after this function
+  // returns, so it can be async (round-robin must persist rrIndex via patchClientFields).
+
+  if(sentiment) body.Sentiment=sentiment;
+  if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
+  // Sparse signal like LastObjectionCategory above — only overwrite when this message actually
+  // pointed to something specific, so a lead's last-known brand/category/product interest survives
+  // in-between messages ("yes", "ok") that have nothing new to add.
+  if(productInterest) body.InterestedProduct=productInterest;
+  // Prefer ecom catalog-matched category (validated against live catalog) over classifier free-text,
+  // but fall back to classifier when no catalog match. Both are sparse-signal writes.
+  const resolvedProductCategory=routing.matchedCategory||productCategory;
+  if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
+  // Catalog-matched brand wins (ecom — validated against live catalog). When no catalog match
+  // exists, fall back to the classifier's free-text product_interest so non-ecom clients (B2B,
+  // general) still get their Brand/Product column populated when a customer names a brand.
+  if(routing.matchedBrand) body.Brand=routing.matchedBrand;
+  else if(productInterest) body.Brand=productInterest;
+  if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
+
+  // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
+  // purely for engineMaybeSummarizeHistory's call site, which needs to know the true turn count to
+  // decide whether/when to regenerate the rolling summary.
+  return {body, method:state.leadId?'PATCH':'POST', leadId:state.leadId, fullHistory:history};
+}
+
+// Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
+// brand-new POST) — needed by the referral-tracking D1 insert at this function's call site, which
+// only learns the new lead's real id once this upsert actually completes.
+async function engineUpsertLead(env, method, leadId, body){
+  if(leadId) body.Id=leadId;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  if(leadId) return leadId;
+  const created=await r.json().catch(()=>null);
+  return created?.Id||null;
+}
+
+// migrations/0033_stage_history.sql — best-effort/fail-open exactly like logEngineSkip above,
+// since this is a sidecar analytics log, not something a real Stage change should ever be blocked
+// by. Called only when engineBuildLeadUpsertBody's own body.Stage actually differs from the lead's
+// prior state.stage — a no-op turn (same stage as before) writes nothing, so this table only ever
+// holds genuine transitions.
+async function engineJournalStageChange(env, clientId, leadId, fromStage, toStage){
+  if(!env.DB||!leadId) return;
+  try{
+    await env.DB.prepare(`INSERT INTO stage_history (client_id, lead_id, from_stage, to_stage, at) VALUES (?,?,?,?,?)`)
+      .bind(Number(clientId)||0, leadId, fromStage||null, toStage, new Date().toISOString()).run();
+  }catch(e){}
+}
+
+// Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
+// comment for why. Best-effort: if this write fails for any reason, falls back to the original
+// leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
+// aborting a real customer message over a claim-step failure.
+async function engineClaimMessage(env, clientId, phone, leadId, messageId){
+  try{
+    if(leadId){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, LastProcessedMessageId:messageId}});
+      return leadId;
+    }
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId}});
+    const d=await r.json().catch(()=>null);
+    return d?.Id||leadId||null;
+  }catch(e){ return leadId||null; }
+}
+
+async function engineLogAnalytics(env, entry){
+  try{ await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records`, {method:'POST', body:entry}); }catch(e){}
+}
+
+// Settings → Logs (SETUP.md "Engine event log") — merges two sources into one per-conversation
+// timeline: skip/error rows from engine_event_log (D1, logEngineSkip above — the turns the bot
+// stayed silent on and why) and successful-turn rows already in ENGINE_ANALYTICS_TABLE (NocoDB,
+// engineLogAnalytics above — unchanged, this just reads what it already writes). No new writer
+// needed for the "replied" half; this is purely additive on the read side.
+async function handleEngineLogsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const phone=(url.searchParams.get('phone')||'').replace(/[^0-9]/g,'');
+  const limit=Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit'))||100));
+
+  let skipRows=[];
+  try{
+    const q=phone
+      ? env.DB.prepare(`SELECT phone, conv_id, reason, detail, created_at FROM engine_event_log WHERE client_id=? AND phone=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), phone, limit)
+      : env.DB.prepare(`SELECT phone, conv_id, reason, detail, created_at FROM engine_event_log WHERE client_id=? ORDER BY created_at DESC LIMIT ?`).bind(Number(payload.cid), limit);
+    const r=await q.all();
+    skipRows=(r.results||[]).map(row=>({type:row.reason==='internal-error'?'error':'skipped', phone:row.phone, convId:row.conv_id, reason:row.reason, detail:row.detail, at:row.created_at}));
+  }catch(e){}
+
+  let repliedRows=[];
+  try{
+    let where=`(ClientId,eq,${payload.cid})`;
+    if(phone) where+=`~and(Phone,eq,${phone})`;
+    const r=await ncFetch(env, `api/v2/tables/${ENGINE_ANALYTICS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${limit}&sort=-Timestamp&fields=Phone,Intent,Route,Stage,NextStage,ResponseMs,IsError,ErrorMsg,Timestamp`);
+    const d=await r.json().catch(()=>({}));
+    repliedRows=(d?.list||[]).map(row=>({
+      type:row.IsError?'error':'replied', phone:row.Phone, convId:null,
+      reason:row.IsError?(row.ErrorMsg||'error'):(row.Route||row.Intent||''),
+      detail:`intent=${row.Intent||'—'} stage=${row.Stage||'—'}→${row.NextStage||'—'} (${row.ResponseMs||0}ms)`,
+      at:row.Timestamp
+    }));
+  }catch(e){}
+
+  const merged=[...skipRows, ...repliedRows].sort((a,b)=>new Date(b.at)-new Date(a.at)).slice(0, limit);
+  return json({ok:true, logs:merged});
+}
+
+// Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
+// this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
+// ── Support Tickets ──────────────────────────────────────────────────────────────────────────────
+// Won/converted leads bypass the AI pipeline entirely and are handled as after-sales support.
+// A new customer message opens a ticket (replied to with a ref number) and creates a pm_tasks row
+// in the client's "Support" project. Subsequent messages on the same open ticket are appended
+// silently and recorded in lead_messages/NocoDB. Resolving a ticket syncs the pm_task to 'done'
+// and fires a WhatsApp template to the customer.
+
+async function supportTicketFindOpen(env, clientId, phone){
+  return env.DB.prepare(
+    `SELECT * FROM support_tickets WHERE client_id=? AND phone=? AND status IN ('open','in_progress') ORDER BY created_at DESC LIMIT 1`
+  ).bind(clientId, phone).first();
+}
+
+async function pmFindOrCreateSupportProject(env, clientId){
+  const existing=await env.DB.prepare(`SELECT id FROM pm_projects WHERE client_id=? AND name=?`).bind(Number(clientId),'Support').first();
+  if(existing) return existing.id;
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(Number(clientId),'Support','After-sales support tickets from won/converted customers.','#7C3AED','active',now).run();
+  return r.meta.last_row_id;
+}
+
+async function supportTicketCreate(env, clientId, lead, message, convId){
+  const now=new Date().toISOString();
+  // Insert ticket row
+  const result=await env.DB.prepare(
+    `INSERT INTO support_tickets (client_id, lead_id, phone, customer_name, source_message, messages, conv_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(
+    clientId,
+    String(lead?.Id||''),
+    lead?.Phone||'',
+    lead?.Name||'',
+    message||'',
+    JSON.stringify([{text:message||'', ts:Date.now()}]),
+    convId||null
+  ).first();
+  const refNumber=`TKT-${String(result.id).padStart(4,'0')}`;
+  // Create a task in the Support project
+  const projectId=await pmFindOrCreateSupportProject(env, clientId);
+  const taskResult=await env.DB.prepare(
+    `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, auto_generated, lead_id, lead_name, created_at, updated_at)
+     VALUES (?,?,?,?,'todo','medium','',null,0,'Support','','',null,1,?,?,?,?) RETURNING id`
+  ).bind(Number(clientId), projectId, `🎫 ${refNumber} — ${lead?.Name||lead?.Phone||'Customer'}`, message||'', String(lead?.Id||''), lead?.Name||lead?.Phone||'', now, now).first().catch(()=>null);
+  const taskId=taskResult?.id||null;
+  // Persist ref_number and task_id
+  await env.DB.prepare(`UPDATE support_tickets SET ref_number=?, task_id=? WHERE id=?`).bind(refNumber, taskId, result.id).run();
+  // Record customer message in lead_messages and update NocoDB LastMsgAt
+  if(lead?.Id){
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), LastMsgAt:now}}).catch(()=>{});
+  }
+  return {id:result.id, ref_number:refNumber};
+}
+
+async function supportTicketAppendMessage(env, ticketId, leadId, clientId, message){
+  const row=await env.DB.prepare(`SELECT messages FROM support_tickets WHERE id=?`).bind(ticketId).first();
+  const msgs=JSON.parse(row?.messages||'[]');
+  const now=new Date().toISOString();
+  msgs.push({text:message||'', ts:Date.now()});
+  await env.DB.prepare(`UPDATE support_tickets SET messages=?, updated_at=unixepoch() WHERE id=?`).bind(JSON.stringify(msgs), ticketId).run();
+  // Record in lead_messages and update NocoDB LastMsgAt
+  if(leadId){
+    await d1InsertLeadMessage(env, leadId, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:now}}).catch(()=>{});
+  }
+}
+
+async function sendSupportTicketResolvedTemplate(env, c, ticket){
+  const templateName=c.support_resolved_template_name||'ticket_resolved';
+  const langCode=c.support_resolved_template_lang||'en';
+  const convId=ticket.conv_id;
+  if(!convId||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{
+    method:'POST',
+    headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},
+    body:JSON.stringify({
+      content:templateName,
+      message_type:'outgoing',
+      private:false,
+      template_params:{
+        name:templateName,
+        category:'UTILITY',
+        language:langCode,
+        processed_params:{1:ticket.customer_name||'Customer',2:ticket.ref_number||''}
+      }
+    })
+  });
+}
+
+async function handleSupportTicketsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const status=url.searchParams.get('status')||null;
+  const {results}=status
+    ? await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? AND status=? ORDER BY created_at DESC LIMIT 200`).bind(clientId, status).all()
+    : await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(clientId).all();
+  return json({ok:true, tickets:results||[]});
+}
+
+async function handleSupportTicketsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const ticketId=url.searchParams.get('id');
+  if(!ticketId) return json({error:'missing id'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const {status, assigned_to}=body;
+  if(!status && assigned_to===undefined) return json({error:'nothing to update'}, 400);
+
+  const ticket=await env.DB.prepare(`SELECT * FROM support_tickets WHERE id=? AND client_id=?`).bind(ticketId, clientId).first();
+  if(!ticket) return json({error:'not found'}, 404);
+
+  const fields=[];
+  const vals=[];
+  if(status){fields.push('status=?'); vals.push(status);}
+  if(assigned_to!==undefined){fields.push('assigned_to=?'); vals.push(assigned_to);}
+  fields.push('updated_at=unixepoch()');
+  if(status==='resolved'||status==='closed'){fields.push('resolved_at=unixepoch()');}
+  vals.push(ticketId, clientId);
+
+  await env.DB.prepare(`UPDATE support_tickets SET ${fields.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+
+  // Sync pm_tasks status so the Projects board reflects the ticket state
+  if(status && ticket.task_id){
+    const taskStatus={open:'todo',in_progress:'in_progress',resolved:'done',closed:'done'}[status];
+    if(taskStatus){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=? WHERE id=? AND client_id=?`).bind(taskStatus, now, ticket.task_id, Number(clientId)).run();
+    }
+  }
+
+  if(status==='resolved'){
+    const c=await getClientById(env, clientId);
+    if(c) await sendSupportTicketResolvedTemplate(env, c, ticket).catch(()=>{});
+  }
+
+  return json({ok:true});
+}
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+// configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
+// signature header, no secret field in its own UI. `secret` is this route's equivalent: a random
+// 192-bit per-client token baked into the URL path itself (`/engine/webhook/<secret>`, same
+// URL-path-token pattern already used by `/calcom/webhook/<clientId>`), registered by
+// engineSyncChatwootWebhook and never exposed anywhere a browser or a client sees it. Without the
+// exact secret, a request is rejected before any client data is touched — same practical
+// unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
+// (both are exposed in various places already) no longer gets an attacker anywhere.
+async function handleEngineWebhook(request, env, secret){
+  const startMs=Date.now();
+  // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
+  // not instant, but a one-line change is still far faster than debugging/reverting code under
+  // pressure). Intentionally goes silent everywhere rather than falling back to some other
+  // behavior: if the engine itself is suspected of causing harm (bad deploy, corrupted data),
+  // "stop replying" is the safer failure mode than "keep executing possibly-broken logic."
+  if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
+  if(!secret) return json({ok:true, skipped:'no-secret'});
+  const c=await findClientByField(env, 'engine_webhook_secret', secret);
+  if(!c) return json({ok:true, skipped:'invalid-secret'});
+  // Attach D1 stock rows so engineBuildFaqSystemPrompt can reference current stock without
+  // an extra NocoDB round trip — just overwrites the (now unused) NocoDB field with the
+  // authoritative D1 value.
+  try{
+    const _sr=await env.DB.prepare('SELECT stock_json FROM b2b_stock WHERE client_id=?').bind(Number(c.Id)).first();
+    if(_sr?.stock_json) c.b2b_stock_json=_sr.stock_json;
+  }catch(e){}
+  const clientId=String(c.Id);
+  if(c.active==='No'){ await logEngineSkip(env, clientId, null, null, 'client-inactive'); return json({ok:true, skipped:'client-inactive'}); }
+  // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
+  // the global one, scoped to one client whose flow_json/data is causing a problem, without
+  // taking down every other client. engineSyncChatwootWebhook also respects this flag (leaves
+  // that client's webhooks alone entirely) so an admin can manually restore their old n8n webhook
+  // in Chatwoot without the next Settings-save sync immediately undoing it.
+  if(c.engine_disabled==='Yes'){ await logEngineSkip(env, clientId, null, null, 'engine-disabled-client'); return json({ok:true, skipped:'engine-disabled-client'}); }
+
+  const body=await request.json().catch(()=>({}));
+  // Defense in depth, not the actual security boundary (the secret already is): if the payload's
+  // own account id disagrees with this client's on-record chatwoot_account_id, something is
+  // wrong (a misconfigured/reused webhook, most likely) — safer to drop it than guess.
+  const accountId=String(body.account?.id||body.conversation?.account_id||'');
+  if(accountId && c.chatwoot_account_id && accountId!==String(c.chatwoot_account_id)){ await logEngineSkip(env, clientId, null, null, 'account-mismatch', `payload account ${accountId}`); return json({ok:true, skipped:'account-mismatch'}); }
+
+  // Fast, near-atomic dedup gate — checked before any NocoDB round trip (state fetch, lead
+  // lookup, etc), to close the race window the LastProcessedMessageId/engineClaimMessage
+  // mechanism further down still has (see its own comment for the full history): that check
+  // reads/writes NocoDB several round trips deep into a turn, so if Chatwoot's Agent Bot
+  // integration times out waiting for this handler (a full turn can be several LLM + NocoDB
+  // round-trips) and redelivers the same message_created event, the redelivery's own state fetch
+  // can race ahead of the first delivery's claim-write and both end up running the full
+  // classify/LLM/reply pipeline independently — observed live as two differently-phrased AI
+  // replies to the same inbound message, right after Chatwoot logs "marked open ... due to an
+  // error with the agent bot" (its own timeout/error signal). A single D1 UNIQUE-indexed INSERT
+  // is one fast write, not several round trips, so this shrinks the window down to essentially
+  // nothing. Doesn't replace the NocoDB-based check below — that's still needed since not every
+  // Chatwoot payload has an id this table can key on, and it also backs the eager
+  // first-lead-row creation engineClaimMessage does.
+  const earlyMessageId=String(body.id||body.message?.id||'');
+  if(earlyMessageId){
+    try{
+      const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
+        .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
+      if(!dedupR.meta.changes){ await logEngineSkip(env, clientId, null, null, 'duplicate-delivery-fast', `message ${earlyMessageId}`); return json({ok:true, skipped:'duplicate-delivery-fast'}); }
+    }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
+  }
+
+  let phone=null;
+  try{
+    const parsed=engineParseChatwootPayload(body);
+    if(!parsed){ await logEngineSkip(env, clientId, null, null, 'not-actionable', engineChatwootPayloadSkipReason(body)); return json({ok:true, skipped:'not-actionable'}); }
+    const {convId, name, mediaType, mediaUrl}=parsed;
+    let text=parsed.text;
+    phone=parsed.phone;
+
+    // Admin-number bookkeeping shortcut (see fpHandleAdminWhatsappMessage's own comment) — checked
+    // before test_mode/openrouter/lead-state/anything else below, so a message from the business
+    // owner's own registered number never enters the customer lead pipeline at all, regardless of
+    // whether this client even has an OpenRouter key configured.
+    if(await fpIsAdminPhone(env, clientId, phone)){
+      await fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType, mediaUrl, text);
+      await logEngineSkip(env, clientId, phone, convId, 'admin-bookkeeping-handled');
+      return json({ok:true, handled:'admin-bookkeeping'});
+    }
+
+    if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
+    if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
+
+    const state=await engineGetLeadState(env, clientId, phone);
+    state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
+
+    // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
+    // retry); without this, a redelivery after this turn already completed would generate and
+    // send a second reply. messageId is Chatwoot's own message id (unverified against a live
+    // payload from this specific Chatwoot version, same honest caveat as elsewhere this repo
+    // parses Chatwoot's shape) — if it's ever absent, dedup is simply skipped rather than falling
+    // back to a fragile content-based guess, since a false-positive skip would silently eat a real
+    // customer message. Persisted as part of the normal lead upsert at the end of a *successful*
+    // turn (engineBuildLeadUpsertBody), never written any earlier — so a genuine mid-processing
+    // crash (after the reply is sent, before the upsert completes) is NOT protected against and
+    // could still double-reply on retry. Accepted trade-off: the alternative (marking "processed"
+    // before work starts) risks silently dropping a real message if processing then fails, which
+    // is worse for a sales/support bot than an occasional duplicate reply.
+    const messageId=String(body.id||body.message?.id||'');
+    if(messageId && state.lead?.LastProcessedMessageId===messageId){ await logEngineSkip(env, clientId, phone, convId, 'duplicate-delivery', `message ${messageId}`); return json({ok:true, skipped:'duplicate-delivery'}); }
+
+    // Healthcare always pauses the bot for five hours after human handover. Repeat button taps
+    // and new patient messages stay silent in that window so the AI never talks over clinic staff.
+    // Other industries retain the existing per-client indefinite-silence setting.
+    const healthcareHandoverSilence=engineHealthcareHandoverSilenceActive(c,state,startMs);
+    const configuredHandoverSilence=c.industry!=='healthcare' && state.lead &&
+      (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
+      c.handover_silence_enabled==='Yes';
+    if(healthcareHandoverSilence||configuredHandoverSilence){
+      await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
+      return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
+    }
+    if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
+
+    // After-sales support: won/converted leads never enter the AI pipeline.
+    // Open ticket → append message silently (no reply). No open ticket → create one and confirm.
+    if(state.stage==='won'||state.stage==='converted'){
+      const openTicket=await supportTicketFindOpen(env, clientId, phone);
+      if(openTicket){
+        await supportTicketAppendMessage(env, openTicket.id, openTicket.lead_id, clientId, text||'');
+      } else {
+        const ticket=await supportTicketCreate(env, clientId, state.lead||{Phone:phone,Name:name}, text||'', convId);
+        await engineDeliverReply(env, c, clientId, convId,
+          `Hi ${name||'there'}, your support request has been received.\nTicket Ref: #${ticket.ref_number}\nWe\'ll get back to you shortly.`
+        );
+      }
+      return json({ok:true, handled:'support-ticket'});
+    }
+
+    const botConfig=engineParseJsonField(c.bot_config, {});
+    const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
+    // lastCustomerMsgAt, NOT lastMsgAt — lastMsgAt (LEADS.LastMsgAt) is stamped with "now" by
+    // BOTH the customer's message AND the bot's own reply (engineBuildLeadUpsertBody writes it
+    // unconditionally after this whole turn finishes, which real logs show taking 8+ seconds for
+    // an LLM turn). That means this check used to measure time since the BOT's last reply, not
+    // since the customer's last message — so a customer tapping a quick-reply button they're
+    // already looking at (no typing needed, often <4s after the bot's message lands) could get
+    // silently rate-limited by the clock the bot's own previous reply had just reset, with zero
+    // response sent and only a `rate-limited` line in Settings → Logs to show for it. See
+    // FIXES.md #18. lastCustomerMsgAt is written only from the customer's own message arrival
+    // time (startMs), never from the bot's reply, so this now measures genuine rapid-fire
+    // customer typing — which is what this limiter is actually for — without misfiring on the
+    // bot's own turnaround time.
+    const lastMsgAt=state.lastCustomerMsgAt?new Date(state.lastCustomerMsgAt).getTime():0;
+    if(Date.now()-lastMsgAt<rateLimitMs){ await logEngineSkip(env, clientId, phone, convId, 'rate-limited', `${Date.now()-lastMsgAt}ms since last, limit ${rateLimitMs}ms`); return json({ok:true, skipped:'rate-limited'}); }
+
+    // Claim this message id now, before the slow classify/LLM/context work below — observed in
+    // production as a genuine duplicate reply (identical product-lookup message sent twice, ~1
+    // minute apart): Chatwoot's webhook delivery times out waiting for a response (this turn can
+    // run several LLM + NocoDB round-trips deep) and redelivers the same message_created event
+    // independently of whatever status this handler eventually returns, so the original
+    // end-of-turn-only idempotency write (engineBuildLeadUpsertBody, below) was still in flight
+    // when the redelivery's own idempotency check ran and found nothing to skip yet. Claiming here
+    // shrinks that race window down to the handful of fast, synchronous checks above instead of
+    // the whole turn. Still not a true atomic compare-and-swap (NocoDB has no such primitive
+    // available here), so it isn't airtight — just far smaller. isNewLead is captured before this
+    // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
+    // Owner/DealCurrency assignment for a genuinely brand-new lead.
+    const isNewLead=!state.leadId;
+    // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
+    // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
+    // code from `text` before it reaches classification/the AI reply, so it never shows up in
+    // ConvHistory or confuses intent. See engineDetectReferral's own comment for the full shape.
+    if(isNewLead && text){
+      try{
+        const referral=await engineDetectReferral(env, clientId, text);
+        if(referral){
+          text=referral.strippedText;
+          state.referrerLeadId=referral.referrerLeadId; // written to D1 once resolvedLeadId is known, below
+        }
+      }catch(e){}
+    }
+    if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+    // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
+    engineSendChatwootTyping(env, c, convId, true);
+
+    // Deterministic quick-reply resolution — WhatsApp/Chatwoot returns the tapped list/button
+    // item's visible title back as the customer's message, not any longer/different `value` a
+    // caller may have set on it (title is capped at 20-24 chars — see
+    // engineSendChatwootQuickReply's own comment — genuinely all the platform gives back on tap).
+    // Real observed failure: a customer tapped a picker option and the resulting message carried
+    // only that short, sometimes-truncated title, leaving the general-purpose classifier below to
+    // re-guess a product from a fragment like "Semi Medicated…" with no guarantee of success.
+    // engineBuildLeadUpsertBody already records the immediately preceding bot turn's own options
+    // (title+value) onto that ConvHistory entry, so a reply that exactly matches one of those
+    // titles is resolved HERE, deterministically, back to the fuller value that option was always
+    // meant to carry — before detectOrderSignal/engineClassifyIntent below ever have to guess from
+    // just the short title text. A no-op whenever title and value were already identical.
+    const lastTurn=state.history?.length?state.history[state.history.length-1]:null;
+    if(lastTurn?.role==='assistant' && Array.isArray(lastTurn.options) && lastTurn.options.length){
+      // .normalize('NFC') on both sides — real observed failure, Malayalam-language options
+      // specifically: a tap on a translated (engineLocalizeOptions) option never resolved, even
+      // though the exact same title was visibly, correctly displayed on screen. Complex scripts
+      // like Malayalam can represent the same visible text as different Unicode code point
+      // sequences (precomposed vs. decomposed conjuncts/vowel signs) — a plain string comparison
+      // sees those as different strings even though a person reading both sees identical text.
+      // English/Latin text has essentially no such ambiguity, so this was invisible until a
+      // non-Latin script round-tripped through Chatwoot/WhatsApp with a different normalization
+      // than what was stored. toLowerCase() is a no-op for Malayalam but still matters for other
+      // scripts this same comparison serves.
+      const tappedLower=(text||'').trim().toLowerCase().normalize('NFC');
+      const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase().normalize('NFC')===tappedLower);
+      if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
+    }
+    const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
+    if(eduAdmissionTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
+    }
+    const matriChatTurn=await handleMatrimonialChatMenu(env,c,clientId,convId,phone,state.leadId,userText,isNewLead);
+    if(matriChatTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
+    }
+    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
+    const routing=engineRouteFlow(c, state, userText, cls);
+    // A generic ad CTA/business-information request must be answered from the client's prompt,
+    // even if the probabilistic intent model guesses that the pronoun "this" means a product.
+    // Explicit human/opt-out routes still win; explicit product language never matches the helper.
+    if(c.industry==='ecommerce' && ecomIsGeneralBusinessInfoQuery(userText) && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.businessInfoOnly=true;
+      routing.reply=null;
+    }
+    // Ecom customer enquiries always receive their conversational answer through the configured
+    // business prompt plus verified Products/categories context. The product/order resolver below
+    // may still handle a confidently identified product or explicit order first; otherwise this
+    // prevents generic flow/qualification copy from replacing the merchant's actual prompt.
+    if(c.industry==='ecommerce' && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
+      routing.route='ecom_faq';
+      routing.reply=null;
+    }
+    // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
+    // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
+    // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
+    // pattern silently. A loop firing at all means this client's prompt/catalog/flow has a real gap
+    // (the bot couldn't answer or advance normally), so it's worth an operator's attention even
+    // though the safety net itself already handed the customer off cleanly. Best-effort, never
+    // blocks the reply — reportOpsError already never throws.
+    if(routing.loopDetected){
+      await reportOpsError(env, 'Anti-loop escalation — bot got stuck repeating itself, handed off to a human', new Error(`client ${clientId} (${c.client_name||'unnamed'}), phone ${phone}, stage ${state.stage||'new'}`));
+    }
+    // Per-message detected language for THIS customer (engineClassifyIntent), not
+    // CLIENTS.language (a fixed client-wide default used only as the fallback when detection
+    // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
+    // this; the AI-generated branches below pass this straight into their own system prompt.
+    const replyLang=routing.customerLanguage||c.language||'en';
+    const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
+    const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
+
+    let sentText=null;
+    let orderHandledInline=false;
+    // Tracked across the order-detection block below (same reasoning as orderHandledInline) so
+    // engineMaybeSendProductTestimonial, called later once resolvedLeadId exists, knows which
+    // product (if any) this turn actually resolved to.
+    let matchedProduct=null;
+    // Chat-based order collection (ecom_order_link_enabled==='No', see the toggle in ecom.html →
+    // Settings) — a dedicated two-step ladder (order_collect_items → order_collect_address →
+    // finalize) that fully overrides whatever engineRouteFlow decided for these two stages only,
+    // the same "override entirely" treatment the order-signal detection below already gives every
+    // other route (see that block's own comment) — deliberately not woven into engineRouteFlow's
+    // own cascade, which already juggles handover/frustration/objection/qualification precedence
+    // with a lot of tuned, order-sensitive logic; a lead only ever enters/exits these two stages
+    // from right here, so a self-contained override is the lowest-risk way to add this without
+    // touching that cascade at all. isOptOut/isResub are still honored (engineRouteFlow itself
+    // already short-circuits those unconditionally, above its own cascade) and an explicit human
+    // ask still wins, so neither is checked again here.
+    if(liveTicketingTurn?.handled && !routing.isOptOut && !routing.isResub && !(routing.route==='human'&&routing.humanReason==='explicit')){
+      sentText=await engineLocalizeReply(env,c,liveTicketingTurn.reply,replyLang);
+      routing.route='travel_live_ticketing'; routing.reply=sentText; routing.next=state.stage;
+      routing.quickReplies=liveTicketingTurn.buttons?.length
+        ?await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,liveTicketingTurn.buttons)
+        :(await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}),null);
+      orderHandledInline=true;
+    } else if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
+        sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
+        routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        orderHandledInline=true;
+      }else if(state.stage==='fashion_order_details'){
+        // Parse a single reply that contains Colour, Size, and Delivery Address.
+        // Accepts "Label: value" lines in any order (case-insensitive) or falls back to
+        // reading the first three non-empty lines as colour, size, address respectively.
+        const lines=String(userText||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+        const extract=(keys)=>{
+          for(const line of lines){
+            for(const key of keys){
+              const m=line.match(new RegExp(`^${key}\\s*[:\\-]\\s*(.+)$`,'i'));
+              if(m&&m[1].trim()) return m[1].trim();
+            }
+          }
+          return null;
+        };
+        const parsedColour=extract(['colou?r','color']);
+        const parsedSize=extract(['size']);
+        const parsedAddress=extract(['(?:delivery\\s*)?address','addr','location','city']);
+        // Positional fallback: lines[0]=colour, lines[1]=size, lines[2]=address
+        const colour=parsedColour||(lines[0]||'');
+        const size=parsedSize||(lines[1]||'');
+        const address=parsedAddress||(lines[2]||'');
+        if(!colour||!size||address.length<3){
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          sentText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+        }else{
+          seed.color=colour; seed.size=size; seed.address=address.slice(0,500);
+          sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nColour: ${seed.color}\nSize: ${seed.size}\nDelivery address: ${seed.address}`,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_confirm'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
+          orderHandledInline=true;
+        }
+      }else if(state.stage==='fashion_order_confirm'){
+        if(/^FASHION_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
+          seed.items=ecomFashionOrderItems(seed);
+          const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
+          sentText=await engineLocalizeReply(env,c,order.ok
+            ? `Order confirmed ✅\nReference: ${order.order_id}`
+            : 'I could not save the order. I will connect you with our team.',replyLang);
+          routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
+          if(!order.ok){routing.route='human';routing.humanReason='fashion_order_save_failed';await engineSendHandoverLabel(c,convId);}
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+        }else{
+          sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
+          orderHandledInline=true;
+        }
+      }
+    }
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(state.stage==='order_collect_items'){
+        seed.items=userText;
+        sentText=await engineLocalizeReply(env, c, "Got it! And what's the delivery address for this order?", replyLang);
+        routing.reply=sentText;
+        routing.next='order_collect_address';
+        routing.orderCollectSeed=seed;
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        orderHandledInline=true;
+      } else if(state.stage==='order_collect_address'){
+        const order=await finalizeChatOrder(env, c, clientId, phone, name, seed, userText);
+        sentText=await engineLocalizeReply(env, c, order.ok
+          ? `Thank you! ✅ Your order is in (Ref: ${order.order_id}). Our team will confirm the details with you shortly.`
+          : "Thanks — I've noted your order details. Our team will follow up shortly to confirm everything.", replyLang);
+        routing.reply=sentText;
+        // Funnel-neutral once finalized — leaves this lead free to fall back into normal FAQ/flow
+        // routing on their next message, exactly like a customer who orders via the checkout link
+        // leaves no lingering stage of its own.
+        routing.next='new';
+        routing.clearOrderCollect=true;
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        orderHandledInline=true;
+      }
+    }
+    // Healthcare is grounded before the general FAQ LLM. Emergency phrases deterministically
+    // hand over; service lookup searches only Healthcare → Services; every picker label is copied
+    // from a real active service/doctor row. A single match gets its stored facts and media only.
+    if(!orderHandledInline && c.industry==='healthcare' && routing.route!=='drop' && !routing.isOptOut && !routing.isResub){
+      const hcSettings=await hcSettingsForClient(env,clientId);
+      const emergency=hcEmergencyMatch(hcSettings,userText);
+      if(emergency){
+        const contact=String(hcSettings?.emergency_contact||'').trim();
+        sentText=String(hcSettings?.emergency_message||'This may require urgent medical attention. Please contact local emergency services or the clinic immediately.').trim();
+        if(contact) sentText+=`\n\nEmergency contact: ${contact}`;
+        if(hcSettings?.handover_message) sentText+=`\n\n${hcSettings.handover_message}`;
+        sentText=await engineLocalizeReply(env,c,sentText,replyLang);
+        routing.reply=sentText; routing.route='human'; routing.humanReason='healthcare_emergency';
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineSendHandoverLabel(c,convId);
+        orderHandledInline=true;
+      }else{
+        const bookingFlow=await hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang);
+        if(bookingFlow.handled){
+          sentText=bookingFlow.text; routing.reply=sentText; routing.quickReplies=bookingFlow.quickReplies||null;
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
+        // ── GREETING ──────────────────────────────────────────────────────────────
+        // For healthcare, greeting shows departments (navigation) when available,
+        // otherwise shows the standard service/booking quick-reply buttons.
+        if(/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+          const clinicName=c.client_name||'our clinic';
+          const prevApt=await env.DB.prepare(`SELECT id FROM healthcare_appointments WHERE client_id=? AND patient_phone=? LIMIT 1`).bind(Number(clientId),String(phone)).first().catch(()=>null);
+          const isReturning=!!prevApt;
+          const greetMsg=isReturning?`Welcome back to ${clinicName}! Which department can we help you with today?`:`Welcome to ${clinicName}! Which department can we help you with today?`;
+          sentText=await engineLocalizeReply(env,c,greetMsg,replyLang);
+          routing.reply=sentText;
+          // Show departments as nav buttons, fallback to standard booking buttons
+          const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
+          let greetBtns;
+          if(depts&&depts.length){
+            greetBtns=[...depts.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+          }else{
+            greetBtns=isReturning
+              ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
+              :[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}];
+          }
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,greetBtns);
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
+        // ── "SEE ALL SERVICES" button tap ─────────────────────────────────────────
+        if(/^see\s+(?:all\s+)?services?$/i.test(userText.trim())||/^all\s+services?$/i.test(userText.trim())){
+          const allSvcs=await hcListActiveServices(env,clientId);
+          if(allSvcs.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(allSvcs));
+          }else{
+            sentText=await engineLocalizeReply(env,c,'No services are listed yet — please contact us directly.',replyLang);
+            routing.reply=sentText;
+            await engineSendChatwootReply(env,c,clientId,convId,sentText);
+          }
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── SERVICE MATCH ─────────────────────────────────────────────────────────
+        let matches=await hcFindBroadServiceMatches(env,clientId,userText);
+        if(matches.length===1){
+          const service=matches[0];
+          const sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          // Build service profile; include doctors offering this service for guidance
+          let svcText=hcVerifiedServiceText(service,userText);
+          const {results:svcDocs}=await env.DB.prepare(`SELECT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+          if(svcDocs&&svcDocs.length){
+            const docNames=svcDocs.map(d=>d.name+(d.specialization?' ('+d.specialization+')':'')).join(', ');
+            svcText+=`\n\nAvailable with: ${docNames}`;
+          }
+          sentText=await engineLocalizeReply(env,c,svcText,replyLang);
+          routing.reply=sentText;
+          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
+          // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
+          const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
+          const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
+          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
+          else routing.quickReplies=bookingChoices.length?delivered:null;
+          orderHandledInline=true;
+        }else if(matches.length>1){
+          // Multiple services matched → let patient pick
+          sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── DOCTOR MATCH ──────────────────────────────────────────────────────────
+        const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+        if(doctorMatches.length>1){
+          sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
+          orderHandledInline=true;
+        }else if(doctorMatches.length===1){
+          const doctor=doctorMatches[0];
+          // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
+          // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
+          const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
+          const nameToks=new Set(hcQueryTokens(doctor.name));
+          const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
+          if(!isNameSelection){
+            // General query ("dental doctor available") → check department first, else show all doctors
+            const deptMatch=doctor.department_id
+              ?await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE id=? AND client_id=?`).bind(Number(doctor.department_id),Number(clientId)).first().catch(()=>null)
+              :null;
+            const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active'${deptMatch?' AND department_id=?':''} ORDER BY name LIMIT 20`).bind(...[Number(clientId),...(deptMatch?[Number(deptMatch.id)]:[])]).all().catch(()=>({results:[]}));
+            const showList=(allDocs&&allDocs.length>1)?allDocs:[doctor];
+            const prompt=deptMatch?`Here are our ${deptMatch.name} doctors:`:'Please choose the doctor you are interested in:';
+            sentText=await engineLocalizeReply(env,c,prompt,replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
+            orderHandledInline=true;
+          }else{
+            // Explicit name selection → show full profile + services this doctor provides
+            let profileText=hcVerifiedDoctorText(doctor,userText);
+            // List services this doctor offers, so patient knows what to book
+            const {results:drSvcs}=await env.DB.prepare(`SELECT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
+            if(drSvcs&&drSvcs.length){
+              profileText+=`\n\nServices offered: ${drSvcs.map(s=>s.name).join(', ')}`;
+            }
+            sentText=await engineLocalizeReply(env,c,profileText,replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url) routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            // If doctor offers multiple services, show them as buttons; otherwise go straight to booking
+            let docActionBtns;
+            if(drSvcs&&drSvcs.length>1){
+              docActionBtns=[...drSvcs.slice(0,2).map(s=>({title:s.name,value:`HC_BOOK_SERVICE:${s.id}`})),{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }else{
+              docActionBtns=[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docActionBtns);
+            orderHandledInline=true;
+          }
+        }
+        }
+        if(!orderHandledInline){
+        // ── DEPARTMENT MATCH ──────────────────────────────────────────────────────
+        // Departments matched by name → show doctors in that dept first, then services.
+        const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+        if(departmentMatches.length){
+          const ids=departmentMatches.map(d=>Number(d.id));
+          const deptName=departmentMatches[0].name;
+          // Prefer showing doctors (patient can then choose and see their profile)
+          const {results:deptDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id IN (${ids.map(()=>'?').join(',')}) ORDER BY name LIMIT 10`).bind(Number(clientId),...ids).all().catch(()=>({results:[]}));
+          if(deptDocs&&deptDocs.length){
+            sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} doctors:`,replyLang);
+            routing.reply=sentText;
+            // Doctor buttons: name as value so tapping triggers the name-selection profile flow
+            const docBtns=[...deptDocs.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docBtns);
+            orderHandledInline=true;
+          }else{
+            // No doctors in dept → show dept services
+            const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+            if(departmentServices.length){
+              sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} services:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+              orderHandledInline=true;
+            }
+          }
+        }
+        }
+        // ── INSURANCE ─────────────────────────────────────────────────────────────
+        if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
+          const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
+          if(providers?.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose your insurance provider. Coverage still needs confirmation by the clinic:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,providers.map(p=>({title:p.provider_name,value:p.provider_name})));
+            orderHandledInline=true;
+          }
+        }
+      }
+    }
+    }
+    // Order-readiness overrides the flow_json state machine's own routing entirely, not just
+    // within the ecom_faq branch — observed real failure: a customer given a product's full detail
+    // card said "Order this" next, and instead of the order link got a scripted, unrelated
+    // flow-stage message, because engineRouteFlow's own intent classification had already picked a
+    // different route before this ever got a chance to run. Checked before the route dispatch
+    // below, for every route except 'drop' (opt-out/dedup-adjacent, nothing should reply) and a
+    // 'human' route caused by an explicit ask or real frustration (routing.humanReason==='explicit')
+    // — that stays a handover even if phrased alongside product talk. A 'human' route caused by the
+    // OTHER trigger (isFinalStage+POSITIVE, an internal "wrap up the funnel" heuristic, not an
+    // actual request for a person) does NOT block this check — observed live: the identical message
+    // "Red Shirt small size" got classified as AFFIRMATIVE on one delivery (triggering that
+    // heuristic → a false "connecting you to our advisor" reply) and correctly as a product
+    // question on an identical resend a moment later — the AI intent classifier isn't perfectly
+    // deterministic, so this heuristic alone isn't reliable enough to override an unambiguous
+    // product match from detectOrderSignal, a purpose-built, catalog-aware classifier.
+    //
+    // Enquiry vs. order intent are handled differently, per an explicit product requirement: never
+    // share the order/checkout link until real order intent is detected — a size/color/stock/price
+    // question ("enquiry" mode) only ever gets product details in text, no link, however
+    // confidently detectOrderSignal matched a product, unless ecom_link_on_enquiry is switched on
+    // (see engineBuildProductEnquirySystemPrompt); only "order" mode (an explicit "order this"/
+    // "buy it"/confirmed yes) gets the checkout link, and only once a specific product is actually
+    // known — an ambiguous "order" with no resolvable product asks a clarifying question instead
+    // of sending a link to nothing in particular. The product photo is sent both when a product is
+    // confidently matched at all (enquiry, so the customer can see what they're asking about) and
+    // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
+    // presence no longer gates the photo, only whether a product was actually identified.
+    const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
+    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && routing.route!=='drop' && !humanBlocksOrderCheck){
+      const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+      const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+      const activeProducts=await ecomListActiveProducts(env, clientId);
+      const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
+      const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
+      // Category buttons are populated from this same Products data, so recognize their returned
+      // value before trusting an LLM interpretation. Without this override, a tap on "Mattress"
+      // can be treated as a product name, fail exact product resolution, and incorrectly trigger
+      // the zero-hallucination SKU fallback instead of showing the category's verified choices.
+      const matchedCategory=await ecomFindMatchedProductCategory(env, clientId, userText);
+      // Fashion greeting is prompt-led, but navigation is database-led. A configured category
+      // image is sent as the visual header; every button is an exact category from active Ecom
+      // Products. Other Ecom styles keep the existing greeting path.
+      if(isFashionEcom&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+        const categories=await ecomListCategories(env,clientId);
+        if(categories.length){
+          // New leads get the personalised first-touch intro; returning customers get a simpler prompt
+          const intro=isNewLead
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang,state.name||state.lead?.Name)
+            : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+          // Send each category's image in sequence before presenting the category buttons
+          let anySent=false;
+          for(const category of categories){
+            const catImg=await ecomFindCategoryImage(env,clientId,category);
+            if(catImg){ await engineSendChatwootImageReply(env,c,clientId,convId,catImg,anySent?'':intro); anySent=true; }
+          }
+          sentText=anySent?await engineLocalizeReply(env,c,'Please choose a category:',replyLang):intro;
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(category=>({title:category,value:category})));
+          orderHandledInline=true;
+        }
+      }
+      if(exactSelectedProduct){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=undefined;
+        detection.sku=exactSelectedProduct.sku||undefined;
+        detection.productName=exactSelectedProduct.name;
+      }else if(matchedCategory){
+        detection.signal=true;
+        detection.mode='enquiry';
+        detection.category=matchedCategory;
+        detection.sku=undefined;
+        detection.productName=undefined;
+        detection.brand=undefined;
+      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !broadMatches.length && !ecomIsGenericProductCatalogueQuery(userText) && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
+        // Follow-up question about the already selected product: answer from the configured prompt
+        // plus verified catalogue context below. Do not restart navigation or invent a new option.
+        detection.signal=false;
+        routing.route='ecom_faq';
+      }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
+        // One self-contained verified catalogue response: active categories plus broad-matched
+        // active products. The same exact rows are included in the message body and interactive
+        // picker, so a provider-side button failure can never leave only a dead-end instruction.
+        const categories=await ecomListCategories(env, clientId);
+        if(isFashionEcom){
+          // Fashion: broad match routes to the category picker with images — keeps the
+          // deterministic Categories → Products → Order flow intact instead of a mixed text list.
+          if(categories.length){
+            for(const category of categories){
+              const catImg=await ecomFindCategoryImage(env,clientId,category);
+              if(catImg) await engineSendChatwootImageReply(env,c,clientId,convId,catImg,'');
+            }
+            sentText=await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(cat=>({title:cat,value:cat})));
+            orderHandledInline=true;
+          }
+        }else{
+          const productChoices=broadMatches.length?broadMatches:activeProducts;
+          const items=ecomAvailableCatalogueItems(categories,productChoices);
+          if(items.length){
+            const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
+            const categoryKeys=new Set(categories.map(category=>ecomNormalizeCatalogueText(category)));
+            const categoryLines=[],productLines=[];
+            for(const item of items){
+              const line=`- ${item.title}`;
+              if(categoryKeys.has(ecomNormalizeCatalogueText(item.value))) categoryLines.push(line);
+              else productLines.push(line);
+            }
+            sentText=[intro,categoryLines.length?`Categories:\n${categoryLines.join('\n')}`:'',productLines.length?`Matching products:\n${productLines.join('\n')}`:''].filter(Boolean).join('\n\n');
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, sentText, items);
+            orderHandledInline=true;
+          }
+        }
+      }
+      if(detection.signal && !orderHandledInline){
+        let product=await ecomResolveProduct(env, clientId, detection.sku, detection.productName);
+        // Fallback for a message with no product detail of its own ("proceed with order", a bare
+        // "yes") where detectOrderSignal's own context-inference (see its system prompt) still came
+        // back empty — try whichever product this lead was last confidently discussing, persisted
+        // in Last Product Sku (write side just below) instead of asking them to repeat themselves.
+        // Not used for the category branch (detection.category) — that's a genuinely different,
+        // still-undecided request, not a short reply to what was already being discussed.
+        if(!product && (detection.mode==='order' || (detection.mode==='enquiry' && !detection.category)) && state.lead?.['Last Product Sku']){
+          product=await ecomFindProductBySku(env, clientId, state.lead['Last Product Sku']);
+        }
+        if(product){
+          matchedProduct=product;
+          if(product.sku){ routing.matchedProductSku=product.sku; await ensureLastProductSkuField(env); }
+        }
+        // Persist catalog-matched category and brand onto routing so engineBuildLeadUpsertBody can
+        // write them to the Leads table — gives Campaign filters a clean, catalog-validated value
+        // to filter on, not just the classifier's free-text product_interest string.
+        if(detection.category) routing.matchedCategory=detection.category;
+        if(detection.brand) routing.matchedBrand=detection.brand;
+        // Claimed once per turn via engineClaimProductSend — 5-hour rolling window, send_count
+        // advances through tiers 1→2→3. Shopify products (shopify_product_url set) get progressive
+        // disclosure on repeat asks; non-Shopify furniture gets random-angle fallback as before.
+        // Explicit re-send keywords (ECOM_RESEND_IMAGE_RE / ECOM_RESEND_LINK_RE) bypass the tier
+        // counter entirely and deliver only what was asked, leaving send_count unchanged.
+        const isShopify=!!(product?.shopify_product_url||'').trim();
+        let sendProductImage=false, sendOnlyPrimaryImage=false, sendRandomImages=false, shopifyTier=0, forceResendLink=false;
+        if(product){
+          const wantsImage=ECOM_RESEND_IMAGE_RE.test(userText||'');
+          const wantsLink=ECOM_RESEND_LINK_RE.test(userText||'');
+          if(wantsImage){
+            sendOnlyPrimaryImage=true;
+          } else if(wantsLink && isShopify){
+            forceResendLink=true;
+          } else {
+            const tier=await engineClaimProductSend(env, clientId, state.leadId, product.Id);
+            if(tier===1){ sendProductImage=true; }
+            else if(isShopify && tier===2){ shopifyTier=2; }
+            else if(isShopify && tier>=3){ shopifyTier=3; }
+            else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
+          }
+        }
+        if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
+          // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
+          // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
+          // order row. See the order_collect_items/order_collect_address handling above.
+          await ensureOrderCollectField(env);
+          sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ Let's get this ordered right here — could you tell me exactly what you'd like (item, size/color, quantity)?", replyLang);
+          routing.reply=sentText;
+          routing.next='order_collect_items';
+          routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+          const _attach1=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach1 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach1?product.image_url:null});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
+          // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
+          // checkout link and the in-chat collection ladder, handing the customer straight to a
+          // human. Reuses the same handover machinery the 'human' route already drives further
+          // down this function (engineSendHandoverLabel tags the Chatwoot conversation,
+          // engineBuildLeadUpsertBody's isHuman check sets Stage='human_handover'/Handover='Yes'
+          // once routing.route is 'human' at that point) rather than inventing a second handover
+          // path — routing.humanReason='order_handoff' is a new value distinct from 'explicit'/
+          // 'final_stage_positive'/'low_confidence' specifically so the safety-net reset just below
+          // this whole block (which un-sets a stale pre-existing 'human' route once a product reply
+          // has been sent instead) knows to leave THIS one alone — it's not stale, it's the point.
+          sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ I'll connect you with our sales team right away — someone will reach out shortly to help you complete this order.", replyLang);
+          routing.reply=sentText;
+          routing.route='human';
+          routing.humanReason='order_handoff';
+          const _attach2=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach2 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach2?product.image_url:null});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
+          await engineSendHandoverLabel(c, convId);
+          await logPendingOrder(env, c, clientId, phone, name, product);
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product){
+          const link=buildCheckoutLink(c, clientId, detection.sku, product);
+          if(link){
+            sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
+            routing.reply=sentText;
+            const _attach3=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach3 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach3?product.image_url:null});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
+            await logPendingOrder(env, c, clientId, phone, name, product);
+          }else{
+            // No product-level link and no client-wide external_store_link configured — nothing to
+            // send, so collect the order conversationally instead of a dead-end message, same as
+            // the ecom_order_link_enabled==='No' path above.
+            await ensureOrderCollectField(env);
+            sentText=await engineLocalizeReply(env, c, "Great choice! 🛍️ Let's get this ordered right here — could you tell me exactly what you'd like (item, size/color, quantity)?", replyLang);
+            routing.reply=sentText;
+            routing.next='order_collect_items';
+            routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
+            const _attach4=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach4 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach4?product.image_url:null});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
+          }
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && !product && !orderHandledInline){
+          sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
+          routing.reply=sentText;
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product && isFashionEcom && exactSelectedProduct){
+          // Selecting an exact Fashion product starts an in-WhatsApp order. Product description
+          // and configured media are shown first, then verified size/colour choices are collected.
+          await ensureOrderCollectField(env);
+          const productLines=[`*${product.name}*`];
+          if(product.description) productLines.push(String(product.description));
+          sentText=productLines.join('\n\n');
+          routing.reply=sentText;
+          const _attach5=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach5&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attach5?product.image_url:null});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env,c,clientId,convId,`🛍️ Here's the product link:\n${_fl}`); }
+          const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
+          const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang});
+          orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product){
+          // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
+          // product name/description/link stay verbatim and absent facts remain absent — a
+          // stronger anti-hallucination guarantee than any prompt instruction or post-hoc check
+          // can give, since there's no LLM call in this branch to hallucinate in the first place
+          // (see engineFindHallucinatedLink/engineCallLlmAvoidingRepeat for the deterministic
+          // backstop still used everywhere else an LLM does generate the reply, e.g. ecom_faq).
+          const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
+          const productLines=[`*${product.name}*`];
+          if(product.description) productLines.push(String(product.description));
+          if(enquiryLink) productLines.push(`Order / product link: ${enquiryLink}`);
+          else productLines.push('An online product link is not available. I’ll connect you with our team.');
+          sentText=productLines.join('\n\n');
+          routing.reply=sentText;
+          // Photo sent whenever a product is confidently identified, link or no link — a customer
+          // asking about size/color/stock should see the actual item, not just read a description
+          // (this was briefly restricted to link-only sends; reverted per explicit product
+          // direction — the photo isn't "extra" media here, it's answering what was asked). Still
+          // gated by sendProductImage though — that direction was about link-presence never
+          // suppressing the photo, not about resending the same photo every time the same product
+          // comes up again the same day.
+          const _attach6=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach6 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null});
+          // Primary image above; additional media follows. Description + link are already in sentText
+          // for this enquiry branch, so Shopify tiers skip both (withDescription:false, withLink:false).
+          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:false, withLink:false});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:false});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
+          if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
+          else{
+            routing.route='human';
+            routing.humanReason='product_link_missing';
+            await engineSendHandoverLabel(c, convId);
+          }
+          orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && !product && detection.category){
+          // Named a category ("shirts"), not one specific product — detectOrderSignal only returns
+          // this when no single product was a confident match. Answer with a representative photo
+          // and ask which variant, instead of the generic FAQ LLM improvising an "I can't send
+          // images" apology with no real data to work from. Prefer the shop-owner-curated category
+          // photo (ecom_categories.image_url_1/2/3, set up in the CRM) over a specific product's
+          // photo — a customer asking "which type of shirt" shouldn't be shown one arbitrary shirt
+          // as if it were the answer; fall back to the first matching product's photo only when the
+          // category itself has no photo configured.
+          let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          if(categoryProducts.length){
+            // One deterministic step only: category -> exact products. Never insert AI-created
+            // brand, material, size, spring type, colour or variant questions between them.
+            if(isFashionEcom){
+              // Fashion: cap at 6 products, send category image then each product's image+video
+              const fashionProducts=categoryProducts.slice(0,6);
+              const categoryImage=await ecomFindCategoryImage(env,clientId,detection.category);
+              if(categoryImage) await engineSendChatwootImageReply(env,c,clientId,convId,categoryImage,'');
+              for(const p of fashionProducts){
+                if(p.image_url) await sendDriveMediaToChatwoot(c,convId,p.image_url,'');
+                if(p.video_url) await sendDriveMediaToChatwoot(c,convId,p.video_url,'');
+              }
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(fashionProducts));
+            }else{
+              const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
+              const remaining=categoryProducts.slice(recommended.length,10);
+              const body=[`Recommended in ${detection.category}:`,...recommended.map(p=>`- ${p.name}`),remaining.length?'More products:':'',...remaining.map(p=>`- ${p.name}`)].filter(Boolean).join('\n');
+              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(categoryProducts));
+            }
+            orderHandledInline=true;
+          }
+          if(!orderHandledInline){
+          let categoryPromptReply=null;
+          if(categoryProducts.length){
+            const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
+            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead)
+              +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
+            const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+            categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
+          }
+          // Brand-level narrowing — same "never leave a multi-way choice as free text" reasoning
+          // as the variant/product picker below, one level up. Real observed failure: a customer
+          // asking about a category with several carried brands got a free-form LLM paragraph
+          // ("Are you interested in our Cloudnine Hybrid range, or perhaps PEPS or REPOSE?") with
+          // no buttons at all, because a bare brand name has no `category` of its own for
+          // detectOrderSignal to key off, so it fell out of this deterministic path entirely; the
+          // customer's next brand-only reply ("REPOSE") then had nothing to narrow the catalog by
+          // either, and got the generic FAQ answer again instead of the actual model picker.
+          // detectOrderSignal now recognizes a bare brand name from recent conversation context
+          // the same way it already resolves a bare size/color reply, so this can filter down to
+          // it deterministically once known, or offer every real brand in this category as
+          // tappable buttons (never invented — only brands actually carried) when it isn't yet.
+          const brandsInCategory=[...new Set(categoryProducts.map(p=>(p.brand||'').trim()).filter(Boolean))];
+          let chosenBrand=null;
+          if(detection.brand){
+            const guess=detection.brand.trim().toLowerCase();
+            chosenBrand=brandsInCategory.find(b=>b.toLowerCase()===guess)
+              || brandsInCategory.find(b=>b.toLowerCase().includes(guess)||guess.includes(b.toLowerCase()))
+              || null;
+          }
+          if(chosenBrand) categoryProducts=categoryProducts.filter(p=>(p.brand||'').trim().toLowerCase()===chosenBrand.toLowerCase());
+          if(categoryProducts.length && brandsInCategory.length>1 && !chosenBrand){
+            const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
+            const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
+            const photoUrl=categoryImage||withImage.image_url;
+            const intro=categoryPromptReply||`Which brand of ${detection.category} are you interested in?`;
+            if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
+            // Ecom catalogue choices are always interactive and come verbatim from Product data.
+            sentText=await engineLocalizeReply(env, c, intro, replyLang);
+            routing.reply=sentText;
+            const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
+            if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+            routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+            orderHandledInline=true;
+          } else if(categoryProducts.length){
+            const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
+            const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
+            const variants=[...new Set(categoryProducts.map(p=>(p.color||'').trim()).filter(Boolean))];
+            // label is what's actually shown to the customer (button/list title or plain-text
+            // line); value is what's sent back and matched against on the next turn — kept as the
+            // real product name even when short_label is set, so tapping/typing a short label still
+            // resolves to the right product the same way the full name always has.
+            const nameChoices=[];
+            for(const p of categoryProducts){
+              if(!p.name || nameChoices.some(ch=>ch.value===p.name)) continue;
+              nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
+            }
+            const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
+            const intro=categoryPromptReply||(variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`);
+            const photoUrl=categoryImage||withImage.image_url;
+            if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
+            // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
+            // instead of a plain text bullet list the customer had to retype by hand — tapping a
+            // choice sends its exact name back as a normal incoming message (Chatwoot's own
+            // behavior for a button/list reply), which the next turn's product/category resolution
+            // already handles the same as if the customer had typed it themselves.
+            if(choices.length){
+              // Always buttons/list rows; every title/value is an exact Ecom Product field.
+              sentText=await engineLocalizeReply(env, c, intro, replyLang);
+              routing.reply=sentText;
+              const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
+              if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
+              routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+            }
+            orderHandledInline=true;
+          }
+          }
+          // No products at all in that category (or that brand within it) — falls through to FAQ
+          // below ("we don't carry that").
+        }
+        // Zero-hallucination fallback: a product/category signal that did not resolve to a real
+        // Products-table row must never fall through to the general FAQ model, which has no
+        // verified product record and could improvise availability or specifications.
+        if(!orderHandledInline && detection.mode==='enquiry' && !product){
+          // Unresolved enquiry is not a dead end. Continue into ecom_faq below, whose LLM receives
+          // the merchant prompt and verified catalogue context; its buttons are added separately
+          // from active Products data only.
+          routing.route='ecom_faq';
+        }
+      }
+      // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
+      // because humanReason wasn't 'explicit'), routing.route is still 'human' at this point —
+      // engineBuildLeadUpsertBody's isHuman check would otherwise force Stage='human_handover'/
+      // Handover='Yes' onto the lead even though no actual handover happened this turn, just a
+      // product reply. Reset it so the lead record matches what was actually sent. Excludes
+      // humanReason==='order_handoff' — that's the "Talk to sales team" order-link-sending branch
+      // above deliberately routing to human just now, not a stale pre-existing classification to
+      // undo.
+      if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
+    }
+
+    // Resort first-inquiry gate — if this lead has never received resort media before, suppress
+    // the LLM reply entirely this turn; the description + images + videos are sent later by
+    // engineMaybeSendHospitalityMedia. Follow-up turns (lead already received media) skip this
+    // gate and continue to the LLM block normally. Hotel/houseboat paths are untouched.
+    if(!orderHandledInline && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+      try{
+        if(await engineCheckResortFirstInquiry(env, c, clientId, state.leadId, userText)) orderHandledInline=true;
+      }catch(e){}
+    }
+
+    // Education enrollment flow — deterministic name/phone collection + D1 insert.
+    // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
+    if(!orderHandledInline && c.industry==='education' && state.leadId){
+      try{
+        if(await engineMaybeEduEnrollFlow(env, c, clientId, convId, state.leadId, userText, state, routing)) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env,'eduEnrollFlow',e,{clientId,convId}); }
+    }
+
+    // A brand-new ecom lead's very first message, when this client has product categories
+    // configured — computed once here (both to gate the branch below and to build it) so the
+    // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
+    // to free-write the same menu as plain-text bullets (real observed case: "Hi" got a long
+    // bulleted category dump with no buttons at all, because that reply wasn't itself a 2-3-way
+    // clarifying question and didn't name one single product, so neither existing button path
+    // fired). Gated behind !orderHandledInline and isNewLead so an order/enquiry/human/qualify
+    // signal already handled above, or a returning customer's "Hi", never gets overridden by this.
+    const newLeadCategories=[];
+
+    if(orderHandledInline){
+      // Reply already sent above — Stage/qualAnswers bookkeeping from engineRouteFlow's own
+      // decision is left untouched so the flow/qualification funnel resumes from wherever it was
+      // on the next turn; only the reply actually sent to the customer this turn changes.
+    } else if(routing.route==='human'){
+      const handoverFallback=c.industry==='healthcare'
+        ? 'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.'
+        : 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      sentText=await engineLocalizeReply(env, c, routing.reply || handoverFallback, replyLang);
+      routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      await engineSendHandoverLabel(c, convId);
+    } else if(routing.route==='selfserve'){
+      // Reached the end of the funnel with a positive reply and a self-serve link is configured —
+      // send the order/booking link itself, a plain scripted send like qualify_next (not an LLM
+      // reply), instead of handing over to a human. See engineRouteFlow's own comment.
+      sentText=await engineLocalizeReply(env, c, routing.reply, replyLang);
+      routing.reply=sentText;
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+    } else if(routing.route==='drop'){
+      // no reply
+    } else if(routing.route==='qualify'){
+      const qualQuestions=engineParseJsonField(c.qual_questions, []);
+      // Native Forms (opt-in, Settings → General → 📋 Native Forms — bot_config.native_forms_enabled)
+      // replaces the one-question-at-a-time chat ladder below with a single WhatsApp Flow
+      // collecting every qual_questions answer in one native form, required/optional per question
+      // — see the "NATIVE FORMS" section above for engineSendNativeForm/handleNativeFormEndpoint.
+      // WhatsApp-only (no Chatwoot-relay/Instagram equivalent) and needs a published Flow
+      // (native_flow_id, set by handleNativeFormSync once a client turns this on) — falls back to
+      // the normal chat ladder whenever either isn't true, so enabling the toggle before syncing
+      // still leaves qualification working, just not yet as a native form.
+      const nativeFormSent=qualQuestions.length && botConfig.native_forms_enabled===true && c.native_flow_id && c.wa_phone_id && c.wa_token
+        ? await engineSendNativeForm(env, c, clientId, convId, phone, replyLang)
+        : false;
+      if(nativeFormSent){
+        routing.next='awaiting_native_form';
+        routing.reply='';
+        sentText=null; // the Flow message itself is what the customer sees — nothing to log as chat text
+      } else {
+        const firstQ=engineQualQuestionText(qualQuestions[0]);
+        routing.next='qual_0';
+        // A brand-new lead gets a short intro to what the business offers ahead of the first
+        // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
+        // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
+        sentText=isNewLead
+          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang, state.name||state.lead?.Name)
+          : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
+        routing.reply=sentText;
+        // engineQualQuestionOptions — a client-configured qualifying question can be a genuine
+        // multiple-choice pick ("Mattress, wooden bed, or something else?"), not just open-ended
+        // free text; when the business owner has listed real choices for it in Settings, send
+        // those as a tappable picker instead of leaving a choice-shaped question as plain text
+        // with nothing to tap (real observed failure — see this function's own comment history on
+        // quick-reply buttons). Falls back to plain text exactly as before when no options are set.
+        let firstQOptions=engineQualQuestionOptions(qualQuestions[0]);
+        // The exact original failure this whole thread started from (Cloudnine Beddings): a
+        // business phrases qual_questions[0] itself as a choice question ("Do you need a mattress,
+        // a wooden bed, or something else?") but never fills in the explicit Choices field above —
+        // that field is opt-in/manual, so an already-choice-shaped question a business owner wrote
+        // before it existed (or just never revisited) still had nothing to fall back on. Same
+        // plain-English extraction safety net the FAQ route uses, applied to firstQ itself (the
+        // pre-localization, business-typed question — normally already English) rather than
+        // sentText (the localized isNewLead intro + question, e.g. Malayalam) — see FIXES.md #19:
+        // button/list titles must stay English, and extracting from the English source is more
+        // reliable than trusting a translation call to translate back correctly every time.
+        if(!firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+          firstQOptions=await engineExtractPlainOptionsFromReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?')||[];
+        }
+        if(firstQOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+          // Deliberately NOT translated into replyLang (previously engineLocalizeOptions did this)
+          // — see FIXES.md #19. Button/list titles must stay English: WhatsApp echoes a button's
+          // title back verbatim on tap, and a Malayalam-language title became a Malayalam-byte tap
+          // reply that Chatwoot's own inbound webhook signature check has been observed silently
+          // rejecting (401, never reaches this engine at all). The question text above it
+          // (sentText) is still localized as always — only the tappable labels are pinned to English.
+          const items=firstQOptions.map(o=>({title:o, value:o}));
+          routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+        } else {
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        }
+      }
+    } else if(routing.route==='qualify_next'){
+      // Captured before routing.reply is overwritten with the localized version below — the
+      // pre-localization text (normally English, engineRouteFlow's own next-question phrasing) is
+      // what the extraction fallback should read from, not the localized sentText. See FIXES.md #19.
+      const nextQPreLocalization=routing.reply;
+      sentText=routing.reply?await engineLocalizeReply(env, c, routing.reply, replyLang):null;
+      routing.reply=sentText;
+      // Same tappable-picker treatment as the first qualifying question above, for the NEXT one
+      // this turn is asking — routing.qualNextOptions (engineRouteFlow) is only ever populated when
+      // that specific question has real configured choices.
+      let qualNextOptions=routing.qualNextOptions||[];
+      // Same "business phrased this as a choice question but never filled in Choices" fallback as
+      // the first qualifying question above — reads the pre-localization (English) text so the
+      // extracted labels don't inherit replyLang.
+      if(sentText && !qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        qualNextOptions=await engineExtractPlainOptionsFromReply(env, c, nextQPreLocalization)||[];
+      }
+      if(sentText && qualNextOptions.length && botConfig.quick_reply_buttons_enabled!==false){
+        // Deliberately NOT translated into replyLang — see fix #19 above (same reasoning as the
+        // first qualifying question's picker). Button/list titles stay English; sentText (the
+        // question itself) is still localized as always.
+        const items=qualNextOptions.map(o=>({title:o, value:o}));
+        routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+      } else if(sentText){
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      }
+    } else if(newLeadCategories.length){
+      const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
+      sentText=await engineLocalizeReply(env, c, intro, replyLang);
+      routing.reply=sentText;
+      const items=newLeadCategories.map(cat=>({title:cat, value:cat}));
+      routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
+    } else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+      let contextBlock=null;
+      if(routing.route==='ecom_faq') contextBlock=await engineBuildEcomContext(env, c, clientId, phone);
+      else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
+      else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
+      else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
+      // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
+      // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
+      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+        const resortCtx=await engineBuildResortContext(env, clientId);
+        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+      }
+      // Product/category recall only makes sense for ecom_faq — other industries have no such
+      // catalog concept indexed into memory_chunks at all, so a query there would just return
+      // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
+      state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
+      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
+      // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
+      // own catalogOrderLink exactly (same pure function, same args), the one real link this
+      // route's prompt was actually handed via "## Order Link" this turn. undefined (not []) for
+      // every other industry, so the check is skipped there rather than treating a link the model
+      // may legitimately reference from Knowledge Base text as a hallucination.
+      const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
+      reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
+      const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
+      reply=cleanReply;
+      routing.reply=reply; sentText=reply;
+      let faqQuickReplies=null;
+      // The LLM never creates Ecom navigation. Exact categories/products are handled before this
+      // branch; general/additional Ecom questions receive prompt text only.
+      if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
+        // Education course/category menus must use the verified D1 names actually shown in the
+        // reply. With 4-10 names, engineSendChatwootQuickReply renders a native WhatsApp list;
+        // this takes priority over generic legacy choices such as "Browse Courses" that the model
+        // may have emitted after already listing the real courses in its message.
+        if(c.industry==='education'){
+          const [courseRows,categoryRows]=await Promise.all([
+            env.DB.prepare("SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60").bind(Number(clientId)).all().then(r=>r.results||[]),
+            env.DB.prepare('SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30').bind(Number(clientId)).all().then(r=>r.results||[]),
+          ]);
+          faqQuickReplies=eduVerifiedChoicesFromReply(courseRows,categoryRows,reply);
+        }
+        if(!faqQuickReplies?.length&&!routing.businessInfoOnly && replyOptions && replyOptions.length){
+          // The LLM's own clarifying question already named these — tapping one sends its exact
+          // text back as a normal message, resolved the same way a customer typing it by hand
+          // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
+          faqQuickReplies=replyOptions.map(o=>({title:o, value:o}));
+        } else if(routing.route==='ecom_faq' && !routing.businessInfoOnly){
+          // No clarifying question this turn, but the answer named exactly one catalog product with
+          // enough confidence to act on — offer the same one-tap next steps the deterministic
+          // category picker gets. Values are phrased to land on existing keyword/classifier matches
+          // (order detection, WANTS_HUMAN) the same way a customer typing them by hand already does
+          // — no new receive-side handling needed. "More details" itself no longer needs a keyword
+          // match to trigger the description send (engineMaybeSendProductDescription now fires
+          // automatically whenever this product resolves and today's per-lead-per-product claim
+          // hasn't already been used) — tapping it just re-asks about the product like any other
+          // enquiry, and gets the description bundled in the same way a first-time ask would,
+          // unless it was already sent today.
+          const mentionedProduct=await ecomDetectMentionedProduct(env, clientId, reply);
+          if(mentionedProduct){
+            faqQuickReplies=[
+              {title:'🛒 Order this', value:`I want to order ${mentionedProduct.name}`},
+              {title:'📋 More details', value:`Tell me more about ${mentionedProduct.name}`},
+              {title:'🙋 Talk to a human', value:'Talk to a human'},
+            ];
+          } else {
+            // No single product either, but the answer named several catalog categories itself
+            // (e.g. a "what do you sell?" or greeting-style reply listing "Mattress, Sofa Set,
+            // Recliner..." as plain prose) — turn those into the same tappable picker instead of
+            // leaving the customer to retype one by hand. Safety net for exactly the free-form case
+            // the OPTIONS: marker doesn't catch (the LLM wasn't asking a "pick one of these"
+            // question, it just happened to enumerate real categories) — see ecomDetectMentionedCategories.
+            const mentionedCategories=await ecomDetectMentionedCategories(env, clientId, reply);
+            if(mentionedCategories.length) faqQuickReplies=mentionedCategories.map(cat=>({title:cat, value:cat}));
+          }
+        }
+        // Last resort, any industry (not just ecom — the mentionedProduct/mentionedCategories
+        // fallbacks above only ever apply to ecom_faq): the OPTIONS: marker is the LLM's OWN choice
+        // to tag a reply as a menu, and it doesn't always remember to, even for a textbook example
+        // straight out of its own instructions. engineExtractPlainOptionsFromReply reads the
+        // already-generated reply text itself for a plain-English "X, Y, or Z?" choice question, so
+        // a clarifying menu still becomes tappable buttons even when nothing above caught it.
+        if(!faqQuickReplies){
+          const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
+          if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
+        }
+        // Every Ecom enquiry keeps the prompt-generated answer above, then adds one verified menu
+        // in the SAME message when the answer did not already provide a choice. No label or value
+        // here comes from the LLM: categories and recommended products are copied from active
+        // Ecom Product rows only.
+        if(!faqQuickReplies && routing.route==='ecom_faq'){
+          const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
+          faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
+        }
+        // Healthcare: when the LLM answered a question but offered no tappable choice, always
+        // surface a "Book Appointment" CTA so the customer can act without typing a command.
+        if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
+          const hcServices=await hcListActiveServices(env,clientId);
+          if(hcServices.length===1){
+            faqQuickReplies=[{title:'Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'Talk to a human',value:'Talk to a human'}];
+          } else if(hcServices.length>1){
+            faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
+          }
+        }
+      }
+      // routing.quickReplies is set from what engineDeliverReply's own quickReplies branch actually
+      // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
+      // branch it might have taken instead, voice/image/plain text, returns something else) — see
+      // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
+      // Auto-send attestation service checklist PDF when the bot's reply names a specific service
+      if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
+    } else if(routing.route==='objection'){
+      const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
+      routing.reply=reply; sentText=reply;
+      // A customer who just raised an objection benefits from explicit, one-tap next steps
+      // alongside the LLM's own answer, rather than only ever reachable by typing something a
+      // classifier happens to catch. Tapping any of these sends its title back as a normal
+      // incoming text message (Chatwoot's own webhook behavior for a button reply — no special
+      // receive-side handling needed): "Talk to a human" is caught by the existing WANTS_HUMAN
+      // keyword match ("talk to a human" contains "talk to"); the other two land as plain text
+      // that the next turn's classifier reads normally (AFFIRMATIVE / QUESTION respectively) — no
+      // new intent handling needed for either. Opt-out via the same bot_config a client already
+      // uses for the other handover/objection toggles.
+      const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
+        {title:"I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'Another question', value:'I have another question'},
+        {title:'Talk to a human', value:'Talk to a human'},
+      ]:null;
+      // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
+      // Chats tab can render this turn with the same button styling the customer actually saw on
+      // WhatsApp — see that function's own history.push for how it lands in ConvHistory. Set from
+      // what engineDeliverReply's own quickReplies branch actually sent (title truncated/deduped as
+      // needed), not the pre-truncation `quickReplies` built above — see
+      // engineSendChatwootQuickReply's own comment for why that distinction matters.
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      routing.quickReplies=quickReplies?.length ? sentReply : null;
+    }
+
+    if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
+    const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
+    // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
+    // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
+    // failure: the rate limiter a few lines up compares against LastMsgAt, which real production
+    // logs show being 8+ seconds stale relative to when THIS message actually arrived (LLM reply
+    // generation time) — but worse, LastMsgAt gets overwritten by the BOT's own reply too, so a
+    // customer tapping a quick-reply button they're already looking at (no reading/typing needed,
+    // often well under 4s after the bot's message lands) can get silently rate-limited by the
+    // clock the bot's own previous reply just reset, with zero response and only a `rate-limited`
+    // skip line in Settings → Logs to show for it. startMs (captured at the very top of this
+    // handler, before any LLM/NocoDB work) is the actual arrival time of THIS message — stamping
+    // it here means next turn's rate-limit check measures time since the CUSTOMER's own last
+    // message, never since the bot's reply to it, while still correctly throttling genuine
+    // rapid-fire customer typing (which is what this limiter is actually for).
+    await ensureLeadsColumns(env, ['LastCustomerMsgAt']).catch(()=>{});
+    leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
+    const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+    if(newSummary) leadBody.ConvSummary=newSummary;
+    const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+    if(newFacts) leadBody['Customer Facts']=newFacts;
+    const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Dual-write new messages to D1 lead_messages for chats.html display
+    if(resolvedLeadId){
+      const userTs=new Date(startMs).toISOString();
+      const botTs=new Date().toISOString();
+      if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'user', content:routing.historyUserText||userText, ts:userTs,
+         ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+      if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'assistant', content:routing.reply, ts:botTs,
+         ...(routing.media?{media:routing.media}:{}),
+         ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    }
+    if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
+    if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
+      await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+    }
+    if(resolvedLeadId){
+      await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
+    }
+    // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
+    // this function) because a brand-new lead has no real id until this exact upsert assigns one.
+    // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
+    // Chatwoot webhook redelivery replaying this same turn can't double-insert the same referral.
+    if(isNewLead && state.referrerLeadId && resolvedLeadId){
+      try{
+        await env.DB.prepare(`INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referred_at, reward_status) VALUES (?,?,?,?, 'Pending')`)
+          .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
+      }catch(e){}
+    }
+    // Smart Follow-ups DO — spawn on new lead creation; notify on customer reply so alarm resets
+    if(resolvedLeadId && c.followup_do_enabled==='Yes' && env.LEAD_AGENT){
+      try{
+        const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
+        const stub=env.LEAD_AGENT.get(doId);
+        if(isNewLead){
+          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1,lastMsgAt:startMs})}).catch(()=>{});
+        } else if(userText){
+          stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+        }
+      }catch(e){}
+    }
+    // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
+    // message from a lead with an outstanding (unreplied) follow-up send counts as that follow-up
+    // having worked, regardless of whether it also happened to change Stage.
+    if(userText && resolvedLeadId){
+      try{
+        await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
+          .bind(new Date().toISOString(), resolvedLeadId).run();
+      }catch(e){}
+    }
+    // Human Deals "🧭 Coach" panel's timeline (migrations/0008_coach_signals.sql) — logs this
+    // turn's Sentiment/LastObjectionCategory even when neither changed, so the timeline reads as a
+    // real per-message history rather than only recording the moments something shifted.
+    if(userText && resolvedLeadId && (leadBody.Sentiment||leadBody.LastObjectionCategory)){
+      try{
+        await env.DB.prepare(`INSERT INTO coach_signals (client_id, lead_id, sentiment, objection_category, at) VALUES (?,?,?,?,?)`)
+          .bind(Number(clientId), resolvedLeadId, leadBody.Sentiment||null, leadBody.LastObjectionCategory||null, new Date().toISOString()).run();
+      }catch(e){}
+    }
+    // Hospitality module (migrations/0009_hospitality.sql/0010_hospitality_media.sql) — the first
+    // time this lead's message mentions a unit by name, send its photos/video straight into the
+    // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
+    // later message that happens to mention the same unit again.
+    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit});
+    // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
+    // the hospitality call just above: the first time this lead's message names a project or
+    // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
+    // ever (re_media_sent).
+    await engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    // Ecommerce categories (migrations/0012_ecom_categories.sql) — separate from and never
+    // overriding the per-product image send above (orderHandledInline gates it out when a
+    // specific product was already handled this turn); see engineMaybeSendEcomCategoryMedia's own
+    // comment for the full split.
+    await engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline);
+    // Promotions & Offers (migrations/0045_ecom_promotions.sql) — see engineMaybeSendPromoOffer's
+    // own comment for the code-match / keyword-match split.
+    await engineMaybeSendPromoOffer(env, c, clientId, convId, userText);
+    // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
+    // product the order-detection block above resolved this turn, if any.
+    await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
+    // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
+    // layering as ecom category media / promo offer above.
+    // A specifically named course also sends its configured Drive media bundle. Brochure,
+    // syllabus, prospectus and PDF requests send the PDF itself as a Chatwoot/WhatsApp document,
+    // not a Drive preview-page link. A button tap can resolve the one course named in the
+    // immediately preceding assistant turn; multiple course names remain intentionally ambiguous.
+    await engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,state.activeHistory,routing.reply);
+    await engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    await engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText);
+    // Full product description — sent inline, right before the photo/media bundle, at each
+    // order-detection branch above (not here) so it goes out in "description, then media" order
+    // rather than trailing the whole turn after testimonials/promos.
+
+    // Awaited, not fire-and-forget — this Worker's fetch handler has no `ctx.waitUntil`, so a
+    // background promise left running past the returned Response risks being cut off mid-flight.
+    await engineLogAnalytics(env, {
+      ClientId:clientId, ClientName:c.client_name||'', Phone:phone, Intent:routing.intent||'', Route:routing.route||'',
+      Stage:state.stage||'', NextStage:leadBody.Stage||'', ResponseMs:Date.now()-startMs, IsError:false, ErrorMsg:'',
+      Timestamp:new Date().toISOString()
+    });
+    await patchClientFields(env, clientId, {last_seen:new Date().toISOString()}).catch(()=>{});
+
+    // Signal auto-send, folded into this same turn — previously a second, independent Chatwoot
+    // webhook (handleChatwootIncomingOrderSignal / handleChatwootIncomingBookingSignal above).
+    // Ecommerce clients are fully handled by the order-check above now (it runs for every
+    // non-human/drop route, not just after other routing already happened), so this block is only
+    // the booking-industry equivalent (healthcare/consultancy/travel/etc) — running it again for
+    // ecommerce here would just re-call detectOrderSignal a second, redundant time, and could
+    // violate the "never send a link before order intent" rule for the one case the order-check
+    // above deliberately leaves unhandled (an enquiry with no confident product match).
+    if(!orderHandledInline && c.bot_reply_disabled!=='Yes' && !['ecommerce','healthcare'].includes(c.industry) && !['human','drop'].includes(routing.route) && !routing.isOptOut && !routing.isResub && c.wa_phone_id && c.wa_token && (c.external_store_link||'').trim()){
+      // Only runs once a booking link is actually configured, and skips a lead already at a
+      // booking-terminal stage or one with a `requested` appointment already pending.
+      const alreadyBooked=BOOKING_TERMINAL_STAGES.includes(state.stage);
+      let alreadyRequested=false;
+      const bookingsTable=apptResolveTable(c, 'bookings');
+      if(!alreadyBooked && bookingsTable){
+        const existR=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(status,eq,requested)&limit=1`);
+        const existD=await existR.json().catch(()=>({}));
+        alreadyRequested=!!existD?.list?.length;
+      }
+      if(!alreadyBooked && !alreadyRequested){
+        const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+        const detection=await detectBookingSignal(env, c, clientId, userText, contextText);
+        if(detection.signal){
+          if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendBookingLinkViaChatwoot(env, c, clientId, convId, phone, name, detection.service_id);
+          else await sendBookingLinkNow(env, c, clientId, phone, name, detection.service_id);
+        }
+      }
+    }
+
+    return json({ok:true, route:routing.route, sent:!!sentText});
+  }catch(e){
+    // Rich context (clientId, phone) beyond what the router's own global catch-all would have —
+    // caught here rather than left to propagate, so the alert carries useful debugging
+    // information and Chatwoot gets a clean 200 (a 500 could trigger a Chatwoot-side retry,
+    // interacting with the idempotency check above in ways worth avoiding on top of an already-
+    // failing turn).
+    await reportOpsError(env, 'handleEngineWebhook', e, {clientId, phone});
+    await logEngineSkip(env, clientId, phone, null, 'internal-error', e?.message||String(e));
+    return json({ok:true, skipped:'internal-error'});
+  }
+}
+
+/* ── Instagram DM webhook (native — no Chatwoot) ───────────────────────────────────────────────
+   Meta's Instagram Messaging webhook, verified/received directly by this Worker (unlike WhatsApp
+   above, which Chatwoot's own channel receives and re-delivers here already normalized) — this
+   repo has never done raw Meta webhook verification itself before this. Deliberately leaner than
+   handleEngineWebhook: reuses the same classify/route/reply/lead-upsert primitives (engineGetLeadState,
+   engineClassifyIntent, engineRouteFlow, engineCallLlm, engineDeliverReply, engineBuildLeadUpsertBody),
+   but only implements the qualify/FAQ/objection/human/drop routes — the ecommerce order-link
+   automation, hospitality/category media sends, and booking-signal auto-send that
+   handleEngineWebhook also does are WhatsApp-only for now (confirmed v1 scope: a text-only,
+   core AI conversation + human handover, not full parity with every WhatsApp business-vertical
+   feature). Human handover reuses the exact same Handover/HandoverAt/SlaAlerted fields
+   engineBuildLeadUpsertBody already sets for WhatsApp — the SLA-breach alert (n8n/notifications.json)
+   polls the Leads table generically, not by channel, so an Instagram handover surfaces there for
+   free; there's no Chatwoot conversation to label (engineSendHandoverLabel), so this simply
+   doesn't call it. ── */
+async function handleInstagramWebhookVerify(request, env){
+  const url=new URL(request.url);
+  if(env.META_IG_VERIFY_TOKEN && url.searchParams.get('hub.mode')==='subscribe' && url.searchParams.get('hub.verify_token')===env.META_IG_VERIFY_TOKEN){
+    return new Response(url.searchParams.get('hub.challenge')||'', {status:200});
+  }
+  return json({error:'Verification failed'}, 403);
+}
+
+async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
+  if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
+  const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
+  const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
+  if(newSummary) leadBody.ConvSummary=newSummary;
+  const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
+  if(newFacts) leadBody['Customer Facts']=newFacts;
+  const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
+  if(resolvedLeadId){
+    const now=new Date().toISOString();
+    if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'user', content:routing.historyUserText||userText, ts:now});
+    if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:routing.reply, ts:now});
+  }
+  if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
+  // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
+  // Verify those identity fields before considering the first inbound turn durable.
+  if(isNewLead&&resolvedLeadId){
+    for(let attempt=1;attempt<=3;attempt++){
+      const checkR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
+      const checkD=await checkR.json().catch(()=>({}));
+      if(String(checkD?.IgId||'')===String(leadBody.IgId||'')&&String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
+      if(attempt===3){ await reportOpsError(env,'persistInstagramTurn',new Error('Instagram lead identity fields were not saved after schema repair')); break; }
+      await new Promise(resolve=>setTimeout(resolve,900*attempt));
+      await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:resolvedLeadId,IgId:leadBody.IgId,Channel:leadBody.Channel}});
+    }
+  }
+  if(resolvedLeadId&&leadBody.Stage&&leadBody.Stage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
+  if(resolvedLeadId) await engineBroadcastUpdate(env, clientId, {type:'message',lead_id:resolvedLeadId,channel:'instagram',at:new Date().toISOString()});
+  return {resolvedLeadId,leadBody};
+}
+
+export async function processInstagramWebhookBody(env, body){
+  const results=[];
+  if(body.object!=='instagram') return [{skipped:'not-instagram'}];
+  for(const entry of (body.entry||[])) for(const parsed of engineParseInstagramEvents(entry)){
+    let recovery=null;
+    try{
+      const c=await findClientByField(env, 'ig_id', parsed.recipientId||entry.id);
+      if(!c){ results.push({skipped:'no client found for ig_id',recipientId:parsed.recipientId||entry.id}); continue; }
+      if(c.active==='No'){ results.push({skipped:'client inactive',clientId:c.Id}); continue; }
+      const clientId=String(c.Id), mid=parsed.mid;
+      if(mid&&env.DB){
+        try{
+          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`).bind(Number(clientId),mid,new Date().toISOString()).run();
+          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery',clientId,mid}); continue; }
+        }catch(e){}
+      }
+      await ensureClientColumns(env,['ig_webhook_debug']);
+      await patchClientFields(env,c.Id,{ig_webhook_debug:'received:'+new Date().toISOString()}).catch(()=>{});
+      await ensureLeadsColumns(env,['IgId','Channel']);
+      const state=await engineGetLeadState(env,clientId,parsed.igId,'IgId');
+      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
+      const isNewLead=!state.leadId;
+      recovery={c,clientId,state,isNewLead};
+      const inboxReason=env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
+      if(inboxReason){
+        const routing={route:'inbox_only',next:state.stage||'new',customerLanguage:c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+        const saved=await persistInstagramTurn(env,c,clientId,state,routing,parsed.text,mid,isNewLead);
+        results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:'inbox_only',reason:inboxReason,sent:false});
+        continue;
+      }
+      let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
+      if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
+      const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
+      const routing=engineRouteFlow(c,state,userText,cls);
+      Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
+      if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
+      const replyLang=routing.customerLanguage||c.language||'en';
+      const deliverOpts={channel:'instagram',igRecipientId:parsed.igId,langCode:replyLang};
+      let sentText=null, deliveryFailed=false;
+      const deliver=async text=>{
+        if(!text) return true;
+        const ok=await engineDeliverReply(env,c,clientId,null,text,deliverOpts);
+        if(!ok){ deliveryFailed=true; routing.reply=null; sentText=null; }
+        return ok;
+      };
+      if(routing.route==='human'){
+        sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify'){
+        const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang,state.name||state.lead?.Name):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='qualify_next'){
+        sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
+      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
+        state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
+        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
+        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
+        routing.reply=sentText; await deliver(sentText);
+      }else if(routing.route==='objection'){
+        sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
+      }
+      const saved=await persistInstagramTurn(env,c,clientId,state,routing,userText,mid,isNewLead);
+      recovery=null; // the inbound turn is durable; later analytics errors must not append it twice
+      await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:'',Intent:routing.intent||'',Route:routing.route||'',Stage:state.stage||'',NextStage:saved.leadBody.Stage||'',ResponseMs:0,IsError:deliveryFailed,ErrorMsg:deliveryFailed?'Instagram delivery failed':'',Timestamp:new Date().toISOString()});
+      results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:routing.route,sent:!!sentText,deliveryFailed});
+    }catch(e){
+      await reportOpsError(env,'processInstagramWebhookBody',e);
+      let recovered=false;
+      if(recovery){
+        try{
+          const routing={route:'inbox_only',next:recovery.state.stage||'new',customerLanguage:recovery.c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
+          await persistInstagramTurn(env,recovery.c,recovery.clientId,recovery.state,routing,parsed.text,parsed.mid,recovery.isNewLead);
+          recovered=true;
+        }catch(saveError){ await reportOpsError(env,'processInstagramWebhookBody inbound recovery',saveError); }
+      }
+      results.push({error:e.message,inboundSaved:recovered});
+    }
+  }
+  return results;
+}
+
+async function handleInstagramWebhook(request, env, ctx){
+  const rawBody=await request.text();
+  if(!await verifyWebhookSignature(env.META_IG_APP_SECRET,rawBody,request.headers.get('X-Hub-Signature-256'))) return new Response('Invalid signature',{status:432});
+  let body; try{ body=JSON.parse(rawBody); }catch(e){ return json({error:'Invalid JSON'},400); }
+  if(body.object!=='instagram') return json({ok:true,skipped:'not-instagram'});
+  const work=processInstagramWebhookBody(env,body);
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true,accepted:true}); }
+  return json({ok:true,results:await work});
+}
+
+// 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
+// comment on handleEngineWebhook above). crypto.getRandomValues is the standard Workers/Web Crypto
+// API, not Math.random, so this is genuinely unguessable, not just "hard to guess."
+function engineGenerateWebhookSecret(){
+  const bytes=new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Generates and persists a client's engine_webhook_secret on first use; a no-op read on every
+// call after that. Requires the `engine_webhook_secret` column to already exist on the CLIENTS
+// table in NocoDB (Single line text — added once by hand, see SETUP.md; not auto-created here,
+// same as most other CLIENTS fields in this codebase). Returns null (rather than throwing) if the
+// column doesn't exist yet or the write otherwise fails, so callers can skip registering a
+// webhook rather than register one with no working secret.
+async function engineEnsureWebhookSecret(env, c){
+  if(c.engine_webhook_secret) return c.engine_webhook_secret;
+  const secret=engineGenerateWebhookSecret();
+  try{ await patchClientFields(env, c.Id, {engine_webhook_secret:secret}); }catch(e){ return null; }
+  c.engine_webhook_secret=secret;
+  return secret;
+}
+
+// Keeps the client's PRIMARY conversational-reply webhook pointed at this Worker's
+// /engine/webhook/<their-secret> — every industry now runs on the Cloudflare engine
+// (handleEngineWebhook has no industry gate), so there's no branching left to do here; this just
+// guarantees the correct URL is registered and cleans up n8n's old per-client webhook_url if it's
+// still sitting there from before migration, so n8n can never reply to the same message a second
+// time. Called from handleChannelsWhatsappConnect (first WhatsApp connect — the normal signup
+// path, fully automatic, no manual Chatwoot step) and handleNocodbPassthrough below (as a safety
+// net after any Settings save that touches this client's own CLIENTS row, in case
+// chatwoot_inbox_id or webhook_url only became available after connect time). Only ever touches a
+// webhook whose URL is under this Worker's own /engine/webhook/ prefix or exactly the client's own
+// (legacy) n8n webhook_url — the separate Auto Order-Tracking webhook
+// (handleEcomEnableOrderTracking) and anything a client registered by hand in Chatwoot are left
+// alone. Best-effort throughout: a failure here never blocks the caller (WhatsApp connect /
+// Settings save), it just means the webhook may need fixing by hand later.
+async function engineSyncChatwootWebhook(env, c){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!c.chatwoot_inbox_id||!env.WORKER_BASE_URL) return;
+  // Per-client kill switch (see handleEngineWebhook) — while disabled, leave this client's
+  // webhooks entirely alone, so an admin can manually restore their old n8n webhook in Chatwoot
+  // without the next Settings-save sync immediately deleting it again.
+  if(c.engine_disabled==='Yes') return;
+  const secret=await engineEnsureWebhookSecret(env, c);
+  if(!secret) return; // no secret to register safely under (e.g. the NocoDB column isn't set up yet)
+  const engineUrl=`${env.WORKER_BASE_URL}/engine/webhook/${secret}`;
+  const engineUrlPrefix=`${env.WORKER_BASE_URL}/engine/webhook/`;
+  const n8nUrl=c.webhook_url||'';
+
+  try{
+    const listR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {headers:{api_access_token:c.chatwoot_token}});
+    if(!listR.ok) return;
+    const listD=await listR.json().catch(()=>null);
+    const existingList=Array.isArray(listD)?listD:(Array.isArray(listD?.payload)?listD.payload:[]);
+
+    // Drop a leftover n8n webhook (pre-migration) so it never replies alongside the engine.
+    if(n8nUrl){
+      const staleN8n=existingList.find(w=>w.url===n8nUrl);
+      if(staleN8n) await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${staleN8n.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+    }
+
+    // Drop any stale engine registration under a since-rotated secret — only relevant if
+    // engine_webhook_secret is ever changed by hand later; harmless no-op otherwise.
+    for(const w of existingList){
+      if(w.url.startsWith(engineUrlPrefix) && w.url!==engineUrl){
+        await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks/${w.id}`, {method:'DELETE', headers:{api_access_token:c.chatwoot_token}}).catch(()=>{});
+      }
+    }
+
+    if(!existingList.some(w=>w.url===engineUrl)){
+      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/webhooks`, {
+        method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+        body:JSON.stringify({inbox_id:Number(c.chatwoot_inbox_id), url:engineUrl, subscriptions:['message_created']})
+      });
+    }
+  }catch(e){}
+}
+
+/* ── ECOMMERCE PUBLIC STOREFRONT (store.html, and onshope.com's onshope-store.html /
+   onshope-home.html) — unlike every /ecom/* route above, these are meant to be opened directly
+   by end customers (shared as a WhatsApp link), so they must not give a customer any of what a
+   client's own staff can do in ecom.html. Three separate cuts enforce that: (1) GET only — no
+   create/update/delete handler exists under this prefix at all, so there's no write path to
+   wire up by mistake; (2) a fixed field whitelist on both the client record and each product
+   row, so columns like NocoDB table ids, sheet URLs, cost price, Meta API tokens, or internal
+   notes can never leak even though the underlying tables hold them; (3) no access to
+   leads/orders/CRM tables whatsoever — this code path never touches them. Client/product lookup
+   accepts either client_id (store.html) or client_slug (onshope.com, so its URLs don't reveal or
+   let visitors enumerate other clients' numeric ids). Closing the last gap — someone guessing
+   another client's slug or id — needs real per-client auth, which neither surface has today. ── */
+const ECOM_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','review_link'];
+const ECOM_PUBLIC_PRODUCT_FIELDS=['Id','name','sku','category','color','size','price','currency','stock','image_url'];
+const ECOM_PUBLIC_MAX_LIMIT=60;
+const ECOM_PUBLIC_STORES_MAX=200;
+
+function ecomPublicPick(row, fields){
+  const out={};
+  fields.forEach(k=>{ out[k]=row[k]===undefined?null:row[k]; });
+  return out;
+}
+// wa_display_phone (the real dialable number, saved when the client connects WhatsApp — see
+// handleChannelsWhatsappConnect) is preferred; support_phone is a manually-entered fallback for
+// clients who haven't connected the native WhatsApp Cloud API integration yet. Never expose
+// wa_phone_id/wa_token themselves — those are Meta API credentials, not a dialable number.
+function ecomPublicClientOut(row){
+  return {...ecomPublicPick(row, ECOM_PUBLIC_CLIENT_FIELDS), whatsapp_phone: row.wa_display_phone||row.support_phone||null};
+}
+
+// Both public endpoints resolve a client by client_id (store.html, already shipped) or by
+// client_slug (onshope.com's onshope-store.html) — same handler, same whitelist either way.
+async function ecomPublicResolveClient(env, url){
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(clientId) return getClientById(env, clientId);
+  const slug=String(url.searchParams.get('slug')||'');
+  if(slug) return getClientBySlug(env, slug);
+  return null;
+}
+
+async function handleEcomPublicClient(request, env){
+  const url=new URL(request.url);
+  const c=await ecomPublicResolveClient(env, url);
+  if(!c) return json({error:'Store not found'},404);
+  return json(ecomPublicClientOut(c));
+}
+
+async function handleEcomPublicProducts(request, env){
+  const url=new URL(request.url);
+  const c=await ecomPublicResolveClient(env, url);
+  if(!c) return json({error:'Store not found'},404);
+  const tableId=await ecomResolveTable(env, c.Id, 'products');
+  if(!tableId) return json({list:[]});
+  // Filtering/search is done client-side against this one fetch — capped well below the admin
+  // endpoint's 1000 so this can't be used to scrape a large catalog quickly.
+  const limit=Math.min(parseInt(url.searchParams.get('limit')||String(ECOM_PUBLIC_MAX_LIMIT),10)||ECOM_PUBLIC_MAX_LIMIT, ECOM_PUBLIC_MAX_LIMIT);
+  const qs=new URLSearchParams({where:`(client_id,eq,${c.Id})~and(status,neq,inactive)`, limit:String(limit), sort:'-stock'});
+  const r=await ncFetch(env, `api/v2/tables/${tableId}/records?${qs.toString()}`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  const list=(data.list||[]).map(row=>ecomPublicPick(row, ECOM_PUBLIC_PRODUCT_FIELDS));
+  return json({list});
+}
+
+// The one write path this public surface has for orders — order.html's checkout form. Same shape
+// as handleApptPublicBook below: always creates a `pending` row, never reads/updates/deletes
+// anything else, so a spammed/malicious submission can only ever add order-page noise for staff to
+// review, not corrupt existing data. This is what actually captures size, delivery address and
+// email — logPendingOrder (handleEngineWebhook's own "order intent detected" row, written the
+// moment the bot sends this checkout link) only ever had product name/price, no space for any of
+// that, by design (it exists so intent leaves a trail even if the customer never opens the link at
+// all). A customer who does complete checkout ends up with two order rows: the bare intent one and
+// this fuller one — an accepted duplicate, not a bug, since staff can tell them apart by `notes`
+// and there's no reliable way to know from here whether they're "the same" order.
+async function handleEcomPublicOrder(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Store not found'}, 404);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'Ordering is not set up for this business yet — please contact us directly.'}, 400);
+
+  const name=String(body.name||'').trim().slice(0,120);
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!phone) return json({error:'Phone number is required.'}, 400);
+  const email=String(body.email||'').trim().slice(0,200);
+  const address=String(body.address||'').trim().slice(0,500);
+  if(!address) return json({error:'Delivery address is required.'}, 400);
+  const size=String(body.size||'').trim().slice(0,40);
+  const notes=String(body.notes||'').trim().slice(0,500);
+  const sku=String(body.sku||'').trim();
+
+  const product=await ecomFindProductBySku(env, clientId, sku);
+  if(!product) return json({error:'That product could not be found — please go back and try again.'}, 404);
+
+  const order_id='ORD-'+Date.now();
+  const items=`${product.name}${product.color?' — '+product.color:''}${size?', Size '+size:''}`;
+  const orderBody={
+    client_id:clientId, order_id,
+    customer_name:name||'', customer_phone:phone, customer_email:email,
+    order_date:new Date().toISOString().slice(0,10),
+    items, total:product.price||0, currency:product.currency||'',
+    delivery_address:address, status:'pending',
+    notes:notes?`Placed via the order page.\n\nCustomer notes: ${notes}`:'Placed via the order page.'
+  };
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
+  if(!r.ok){
+    const data=await r.json().catch(()=>({}));
+    await reportOpsError(env, 'handleEcomPublicOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, ordersTable});
+    return json({error:'Something went wrong saving your order — please try again or contact us directly.'}, 502);
+  }
+  return json({ok:true, order_id});
+}
+
+// Directory/homepage listing for onshope.com — every client that has published a store (has a
+// client_slug set) and has the ecommerce module on. Same whitelist discipline as the two
+// handlers above; still no leads/orders/internal fields.
+async function handleEcomPublicStores(request, env){
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=${ECOM_PUBLIC_STORES_MAX}`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  const stores=(data.list||[])
+    .filter(c=>c.client_slug && c.industry==='ecommerce')
+    .map(c=>({client_slug:c.client_slug, client_name:c.client_name||c.client_slug}));
+  return json({list:stores});
+}
+
+/* ── APPOINTMENT PUBLIC BOOKING PAGE (frontend/book.html) — same three cuts as the ecommerce
+   public storefront above: (1) only one write path exists at all, the booking submission itself,
+   and it can only ever create a `requested` row, never read/update/delete anything; (2) a fixed
+   field whitelist on both the client record and each service row; (3) no access to any other
+   table. This is the manual, customer-self-serve counterpart to the Cal.com sync and the AI
+   auto-send — a client with no Cal.com account (or who just wants a simple always-available link)
+   can hand out `book.html?client=<id>` directly. ── */
+const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','healthcare_enabled'];
+const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
+
+async function apptPublicResolveClient(env, url){
+  const clientId=String(url.searchParams.get('client')||url.searchParams.get('client_id')||'');
+  if(clientId) return getClientById(env, clientId);
+  const slug=String(url.searchParams.get('slug')||'');
+  if(slug) return getClientBySlug(env, slug);
+  return null;
+}
+
+async function handleApptPublicClient(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  // Healthcare clients use D1; non-healthcare clients require appt_enabled
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
+}
+
+async function handleApptPublicServices(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  // Healthcare: serve active services from D1, optionally filtered by doctor_id
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const doctorId=Number(url.searchParams.get('doctor_id')||0);
+    let svcs;
+    if(doctorId){
+      const linked=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
+      svcs=linked.results||[];
+      if(!svcs.length){
+        // Fall back to department-based filtering using the doctor's department_id
+        const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(doctorId,Number(c.Id)).first().catch(()=>null);
+        if(doc?.department_id){
+          const dept=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s WHERE s.client_id=? AND s.status='active' AND s.department_id=? ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doc.department_id).all().catch(()=>({results:[]}));
+          svcs=dept.results||[];
+        }
+        if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+      }
+    }else{
+      svcs=await hcListActiveServices(env, c.Id);
+    }
+    return json({list:svcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
+  }
+  const servicesTable=apptResolveTable(c, 'services');
+  if(!servicesTable) return json({list:[]});
+  const r=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${c.Id})~and(status,neq,inactive)&limit=100`);
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json(data, r.status);
+  return json({list:(data.list||[]).map(row=>ecomPublicPick(row, APPT_PUBLIC_SERVICE_FIELDS))});
+}
+
+// Healthcare-only: returns active doctors so the public booking page can show a doctor picker
+async function handleApptPublicDoctors(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.healthcare_enabled!=='Yes') return json({list:[]});
+  await hcEnsureOperationsSchema(env);
+  const serviceId=Number(url.searchParams.get('service_id')||0);
+  let rows;
+  if(serviceId){
+    // Prefer doctors linked to the selected service; fall back to all active doctors
+    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
+    rows=linked.results||[];
+    if(!rows.length){
+      // Fall back to department-based filtering using the service's department_id
+      const svc=await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(serviceId,Number(c.Id)).first().catch(()=>null);
+      if(svc?.department_id){
+        const dept=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id=? ORDER BY name LIMIT 50`).bind(Number(c.Id),svc.department_id).all().catch(()=>({results:[]}));
+        rows=dept.results||[];
+      }
+      if(!rows.length){
+        const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+        rows=all.results||[];
+      }
+    }
+  }else{
+    const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+    rows=all.results||[];
+  }
+  return json({list:rows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
+}
+
+// The one write path this whole public surface has — always creates a `requested` row (never
+// confirms/updates/deletes), so a spammed or malicious submission can only ever add noise for
+// staff to dismiss, not corrupt existing data.
+async function handleApptPublicBook(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Booking page not found'}, 404);
+
+  const name=String(body.name||'').trim().slice(0,120);
+  const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
+  if(!phone) return json({error:'Phone is required.'}, 400);
+  const date=String(body.date||'').slice(0,10);
+  const time=String(body.time||'').slice(0,5);
+  const notes=String(body.notes||'').trim().slice(0,500);
+
+  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar + CRM lead
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const now=new Date().toISOString();
+    const ins=await env.DB.prepare(
+      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,'',?,?)`
+    ).bind(Number(clientId),name,phone,Number(body.service_id)||0,Number(body.doctor_id)||0,date,time,notes,now,now).run();
+    const row=await hcAppointmentRow(env,clientId,ins.meta.last_row_id);
+    if(row){
+      await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
+      await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
+    }
+    // Save to CRM — best-effort
+    let svc=null;
+    if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
+    advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
+    // Send WhatsApp confirmation via the patient's existing Chatwoot conversation (looked up by phone)
+    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+      (async()=>{
+        try{
+          const srch=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,{headers:{api_access_token:c.chatwoot_token}});
+          const srchData=srch.ok?await srch.json().catch(()=>null):null;
+          const contact=(srchData?.payload||[])[0]||null;
+          if(!contact) return;
+          const convR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,{headers:{api_access_token:c.chatwoot_token}});
+          const convData=convR.ok?await convR.json().catch(()=>null):null;
+          const convId=((convData?.payload||[])[0])?.id||null;
+          if(!convId) return;
+          const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
+          const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
+          const dateLine=date?`\n📅 *Date:* ${date}`:'';
+          const timeLine=time?`\n⏰ *Time:* ${time}`:'';
+          const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
+          await sendFlowWhatsappDm(c, convId, confirmMsg);
+        }catch(e){}
+      })();
+    }
+    return json({ok:true});
+  }
+
+  // Non-healthcare (NocoDB) path
+  if(c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
+
+  let service=null;
+  if(body.service_id){
+    const servicesTable=apptResolveTable(c, 'services');
+    if(servicesTable){
+      const sr=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${clientId})~and(Id,eq,${Number(body.service_id)})&limit=1`);
+      const sd=await sr.json().catch(()=>({}));
+      service=sd?.list?.[0]||null;
+    }
+  }
+
+  const {lead_id, stage_advanced}=await advanceLeadBookingAndTask(env, c, clientId, phone, name, service, {date, time});
+  // notes from the public form aren't in advanceLeadBookingAndTask's fixed shape — patch them
+  // onto the row it just inserted rather than threading a free-text field through that helper.
+  if(notes){
+    const r=await ncFetch(env, `api/v2/tables/${bookingsTable}/records?where=(client_id,eq,${clientId})~and(customer_phone,eq,${encodeURIComponent(phone)})~and(source,eq,public)&sort=-created_at&limit=1`);
+    const d=await r.json().catch(()=>({}));
+    const row=d?.list?.[0];
+    if(row) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:row.Id, notes:`Booked via the public booking page — awaiting confirmation.\n\nCustomer notes: ${notes}`}}).catch(()=>{});
+  }
+
+  return json({ok:true, lead_id, stage_advanced});
+}
+
+/* ── B2B MODULE (frontend/b2b.html) — Smart Documents (quotes/catalogs) with trackable public
+   links and click-to-accept. Smart Lists (saved segment rules) live as a plain b2b_segments_json
+   CLIENTS column, and Brand/Country classification live as plain LEADS columns — both stay on
+   NocoDB, read/written straight through the existing /nocodb/* passthrough from b2b.html, exactly
+   like every other CLIENTS/LEADS field in dashboard.html, since every existing lead view (kanban,
+   lead list, exports, Team Performance, B2B's own Brand/Country analytics) already reads those out
+   of NocoDB. Documents are the one part of this module that moved to Cloudflare D1 (env.DB, see
+   migrations/0002_accounting_b2b_documents.sql) — that data (quote/catalog line items, public
+   tracking state) has no other reader anywhere else in the app, the same "sidecar data" reasoning
+   as the Review Request/Referral tracking modules. Every route here keeps its exact pre-D1 request/
+   response shape (in particular, still returning "Id" capitalized) so frontend/b2b.html needed no
+   changes at all. ── */
+
+// Auto-creates the Brand/Country/b2b_events Leads columns the first time the B2B module touches
+// them — mirrors ensureFlowStateField above (memoized per Worker isolate, best-effort). Unrelated
+// to the D1 migration below — these three stay NocoDB LEADS columns.
+let _b2bLeadFieldsEnsured=false;
+async function ensureB2bLeadFields(env){
+  if(_b2bLeadFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('Brand')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Brand', uidt:'SingleLineText'}});
+    if(!names.has('Country')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'Country', uidt:'SingleLineText'}});
+    if(!names.has('b2b_events')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'b2b_events', uidt:'LongText'}});
+    _b2bLeadFieldsEnsured=true;
+  }catch(e){ console.error('[b2b] ensureB2bLeadFields failed', e.message); }
+}
+
+// Called once by b2b.html on load — ensures the Leads columns Brand/Country/b2b_events exist
+// before the page starts writing to them directly through /nocodb/*.
+// Mirrors ensureB2bLeadFields but for the CLIENTS table — b2b_enabled already gets its own
+// check-and-create step in dashboard.html's Settings save handler (same pattern as ta_enabled),
+// but b2b_segments_json is only ever written from b2b.html's Smart Lists save, which had no such
+// step — on a fresh NocoDB base that PATCH would just fail with "Save didn't take effect" the
+// first time a Smart List was created. Ensuring it here, on every b2b.html load, closes that gap.
+let _b2bClientFieldsEnsured=false;
+async function ensureB2bClientFields(env){
+  if(_b2bClientFieldsEnsured) return;
+  try{
+    const existingR=await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`);
+    const existing=await existingR.json().catch(()=>({}));
+    const names=new Set((existing.list||[]).map(f=>f.title));
+    if(!names.has('b2b_segments_json')) await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{title:'b2b_segments_json', uidt:'LongText'}});
+    _b2bClientFieldsEnsured=true;
+  }catch(e){ console.error('[b2b] ensureB2bClientFields failed', e.message); }
+}
+
+async function handleB2bInit(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureB2bLeadFields(env);
+  await ensureB2bClientFields(env);
+  return json({ok:true});
+}
+
+async function handleB2bStockGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS b2b_stock (client_id INTEGER PRIMARY KEY, stock_json TEXT NOT NULL DEFAULT \'[]\', updated_at TEXT NOT NULL)').run().catch(()=>{});
+  const row=await env.DB.prepare('SELECT stock_json, updated_at FROM b2b_stock WHERE client_id=?').bind(Number(payload.cid)).first().catch(()=>null);
+  let rows=[]; try{ rows=JSON.parse(row?.stock_json||'[]'); }catch(e){}
+  return json({rows, updated_at:row?.updated_at||null});
+}
+
+async function handleB2bStockSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!Array.isArray(body.rows)) return json({error:'rows array required'}, 400);
+  const stockJson=JSON.stringify(body.rows.slice(0,5000));
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO b2b_stock (client_id, stock_json, updated_at) VALUES (?,?,?) ON CONFLICT(client_id) DO UPDATE SET stock_json=excluded.stock_json, updated_at=excluded.updated_at')
+    .bind(Number(payload.cid), stockJson, now).run();
+  return json({ok:true, saved:body.rows.length});
+}
+
+function computeB2bDocSubtotal(lineItems){
+  let subtotal=0;
+  (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
+  return subtotal;
+}
+// Maps a D1 row (lowercase `id`) onto the exact shape b2b.html already expects (capitalized `Id`,
+// matching NocoDB's own auto-id field name from before this migration) — the one difference
+// between a raw D1 row and this module's public JSON contract.
+function b2bDocOut(row){ return row ? {...row, Id:row.id} : null; }
+async function findB2bDocument(env, id){
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE id=?`).bind(Number(id)).first();
+}
+async function findB2bDocumentBySlug(env, slug){
+  return await env.DB.prepare(`SELECT * FROM b2b_documents WHERE public_slug=?`).bind(slug).first();
+}
+// Appends one event to a lead's b2b_events log (capped at the last 50) — feeds Smart Lists'
+// "viewed/accepted a document in the last N days" rule. Still a NocoDB LEADS field (b2b_events
+// wasn't moved — every existing lead view already reads leads out of NocoDB), so this is unchanged
+// by the D1 migration. Best-effort: never blocks the public view/accept response on this
+// bookkeeping succeeding.
+async function appendB2bLeadEvent(env, leadId, type, meta){
+  if(!leadId) return;
+  try{
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!leadR.ok) return;
+    const lead=await leadR.json();
+    let events=[]; try{ events=JSON.parse(lead.b2b_events||'[]'); }catch(e){}
+    events.push({type, at:new Date().toISOString(), meta:meta||{}});
+    if(events.length>50) events=events.slice(-50);
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), b2b_events:JSON.stringify(events)}});
+  }catch(e){}
+}
+
+async function handleB2bDocumentsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM b2b_documents WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(b2bDocOut)});
+}
+
+async function handleB2bDocumentCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const type=body.type==='catalog'?'catalog':'quote';
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  const subtotal=computeB2bDocSubtotal(lineItems);
+  const taxPct=Number(body.tax_pct)||0;
+  const total=subtotal + subtotal*(taxPct/100);
+  const fields={
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
+    type, title:String(body.title||'').trim().slice(0,200), brand:String(body.brand||'').trim().slice(0,100),
+    line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
+    subtotal, tax_pct:taxPct, total, status:'draft',
+    public_slug:crypto.randomUUID().replace(/-/g,''), view_count:0, last_viewed_at:null, accepted_at:null,
+    created_at:new Date().toISOString(), expires_at:body.expires_at||null, notes:String(body.notes||'').trim().slice(0,1000)
+  };
+  const r=await env.DB.prepare(`INSERT INTO b2b_documents
+    (client_id, lead_id, type, title, brand, line_items_json, currency, subtotal, tax_pct, total, status, public_slug, view_count, last_viewed_at, accepted_at, created_at, expires_at, notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.brand, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.total, fields.status, fields.public_slug, fields.view_count, fields.last_viewed_at, fields.accepted_at, fields.created_at, fields.expires_at, fields.notes)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+
+async function handleB2bDocumentUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findB2bDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.brand!==undefined){ sets.push('brand=?'); vals.push(String(body.brand).trim().slice(0,100)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.expires_at!==undefined){ sets.push('expires_at=?'); vals.push(body.expires_at||null); }
+  if(Array.isArray(body.line_items)){
+    const subtotal=computeB2bDocSubtotal(body.line_items);
+    const taxPct=body.tax_pct!==undefined?(Number(body.tax_pct)||0):(Number(existing.tax_pct)||0);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','total=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, taxPct, subtotal+subtotal*(taxPct/100));
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE b2b_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleB2bDocumentDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findB2bDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM b2b_documents WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Public — no session, by design: hit by the B2B client's own customer opening a trackable
+// quote/catalog link (b2b.html?slug=...). Logs a view and appends a b2b_events entry on the
+// linked lead so Smart Lists can target "viewed a document in the last N days".
+const B2B_PUBLIC_DOC_FIELDS=['id','type','title','brand','line_items_json','currency','subtotal','tax_pct','total','status','view_count','accepted_at','expires_at'];
+async function handleB2bDocPublicGet(request, env, slug){
+  const doc=await findB2bDocumentBySlug(env, slug);
+  if(!doc) return json({error:'Not found'}, 404);
+  const viewCount=(Number(doc.view_count)||0)+1;
+  const lastViewedAt=new Date().toISOString();
+  const nextStatus=(doc.status==='draft'||doc.status==='sent')?'viewed':doc.status;
+  await env.DB.prepare(`UPDATE b2b_documents SET view_count=?, last_viewed_at=?, status=? WHERE id=?`)
+    .bind(viewCount, lastViewedAt, nextStatus, doc.id).run();
+  await appendB2bLeadEvent(env, doc.lead_id, 'doc_view', {slug});
+  const out={};
+  B2B_PUBLIC_DOC_FIELDS.forEach(k=>{ out[k==='id'?'Id':k]=doc[k]; });
+  out.view_count=viewCount; out.status=nextStatus;
+  return json(out);
+}
+
+// Public — no session. Click-to-accept only (no e-signature) — records an acceptance timestamp,
+// nothing more.
+async function handleB2bDocPublicAccept(request, env, slug){
+  const doc=await findB2bDocumentBySlug(env, slug);
+  if(!doc) return json({error:'Not found'}, 404);
+  if(doc.status==='accepted') return json({ok:true, already:true});
+  const acceptedAt=new Date().toISOString();
+  await env.DB.prepare(`UPDATE b2b_documents SET status='accepted', accepted_at=? WHERE id=?`).bind(acceptedAt, doc.id).run();
+  await appendB2bLeadEvent(env, doc.lead_id, 'doc_accepted', {slug});
+  return json({ok:true, accepted_at:acceptedAt});
+}
+
+/* ── ACCOUNTING MODULE (frontend/accounting.html) — Quotation → Invoice → Receipt lifecycle for
+   any client's existing leads, with optional one-way push to a client's own ERPNext (Frappe Cloud)
+   site. Documents live in Cloudflare D1 (env.DB, see migrations/0002_accounting_b2b_documents.sql)
+   — same "sidecar data with no other NocoDB reader" reasoning as the B2B module's Documents above.
+   Every route here keeps its exact pre-D1 request/response shape (in particular, still returning
+   "Id" capitalized) so frontend/accounting.html needed no changes at all. Deliberately
+   industry-agnostic (not gated behind b2b_enabled or any industry flag) — any client's lead can be
+   quoted/invoiced regardless of what they sell. ── */
+
+function computeAccountingDocTotals(lineItems, taxPct){
+  let subtotal=0;
+  (Array.isArray(lineItems)?lineItems:[]).forEach(li=>{ subtotal += (Number(li.qty)||0) * (Number(li.price)||0); });
+  const pct=Number(taxPct)||0;
+  const taxAmount=subtotal*(pct/100);
+  return {subtotal, taxAmount, total:subtotal+taxAmount};
+}
+// GST split: intra-state (supplier state === place of supply) → CGST+SGST (half each);
+// inter-state (or blank supplier state) → IGST (full rate). Returns zeros when gstRatePct=0.
+function computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply){
+  const rate=Number(gstRatePct)||0;
+  if(!rate) return {cgst:0, sgst:0, igst:0, totalGst:0};
+  const gstAmt=subtotal*(rate/100);
+  const intraState=supplierStateCode && placeOfSupply && String(supplierStateCode).trim().toUpperCase()===String(placeOfSupply).trim().toUpperCase();
+  if(intraState){ const half=Math.round(gstAmt*100/2)/100; return {cgst:half, sgst:half, igst:0, totalGst:half+half}; }
+  return {cgst:0, sgst:0, igst:Math.round(gstAmt*100)/100, totalGst:Math.round(gstAmt*100)/100};
+}
+
+// Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
+// `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
+function acctDocOut(row){ return row ? {...row, Id:row.id} : null; }
+async function findAccountingDocument(env, id){
+  return await env.DB.prepare(`SELECT * FROM accounting_documents WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleAccountingDocumentsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const leadId=url.searchParams.get('lead_id');
+  let sql=`SELECT * FROM accounting_documents WHERE client_id=?`;
+  const binds=[Number(payload.cid)];
+  if(leadId){ sql+=` AND lead_id=?`; binds.push(Number(leadId)); }
+  sql+=` ORDER BY doc_created_at DESC LIMIT 500`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(acctDocOut)});
+}
+
+const ACCOUNTING_VALID_STATUS=new Set(['draft','sent','paid','void','accepted']);
+async function handleAccountingDocumentCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const VALID_TYPES=new Set(['quotation','invoice','receipt']);
+  const type=VALID_TYPES.has(body.type)?body.type:'quotation';
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  const gstRatePct=Number(body.gst_rate_pct)||0;
+  const supplierGstin=body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null;
+  const placeOfSupply=body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null;
+  const supplierStateCode=body.supplier_state_code?String(body.supplier_state_code).trim().toUpperCase():null;
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, gstRatePct);
+  const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
+  const fields={
+    client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
+    type, title:String(body.title||'').trim().slice(0,200),
+    line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
+    subtotal, tax_pct:gstRatePct, tax_amount:taxAmount, total,
+    status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
+    linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
+    notes:String(body.notes||'').trim().slice(0,1000),
+    customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
+    customer_id:body.customer_id?Number(body.customer_id):null,
+    valid_until:body.valid_until?String(body.valid_until).slice(0,10):null,
+    due_date:body.due_date?String(body.due_date).slice(0,10):null,
+    erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
+    company:body.company?String(body.company).trim().slice(0,140):null,
+    erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
+    // GST fields (migration 0075)
+    is_tax_invoice:body.is_tax_invoice?1:0,
+    gst_rate_pct:gstRatePct,
+    cgst_amount:cgst, sgst_amount:sgst, igst_amount:igst,
+    supplier_gstin:supplierGstin,
+    recipient_gstin:body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null,
+    place_of_supply:placeOfSupply,
+    supply_type:['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)?body.supply_type:'B2C',
+    reverse_charge:body.reverse_charge?1:0,
+    doc_created_at:new Date().toISOString(),
+  };
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, is_tax_invoice, gst_rate_pct, cgst_amount, sgst_amount, igst_amount, supplier_gstin, recipient_gstin, place_of_supply, supply_type, reverse_charge, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.is_tax_invoice, fields.gst_rate_pct, fields.cgst_amount, fields.sgst_amount, fields.igst_amount, fields.supplier_gstin, fields.recipient_gstin, fields.place_of_supply, fields.supply_type, fields.reverse_charge, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+
+// "Mark as Paid" on an Invoice automatically records the two things "money actually came in"
+// means elsewhere in this app: the income (a linked Receipt document — the same shape
+// handleAccountingDocumentConvert already creates for a manual Quotation→Invoice→Receipt
+// conversion, so P&L/Sales Summary count it exactly the same way) and the collection (an
+// fp_collections row, so it shows in Financial Planning → Collections and counts toward the
+// Dashboard's Collected total). paid_recorded_at (migration 0037) guards against double-booking
+// if the status is flipped away from and back to 'paid'.
+async function fpRecordInvoicePaidSideEffects(env, clientId, invoice){
+  const now=new Date().toISOString();
+  const existingReceipt=await env.DB.prepare(`SELECT id FROM accounting_documents WHERE client_id=? AND linked_doc_id=? AND type='receipt'`).bind(clientId, invoice.id).first();
+  if(!existingReceipt){
+    await env.DB.prepare(`INSERT INTO accounting_documents
+      (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, doc_created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, invoice.lead_id||null, 'receipt', invoice.title||'', invoice.line_items_json||'[]', invoice.currency||'',
+        invoice.subtotal||0, invoice.tax_pct||0, invoice.tax_amount||0, invoice.total||0, 'paid', invoice.id,
+        invoice.notes||'', invoice.customer_name||null, invoice.customer_id||null, now).run();
+  }
+
+  let customerId=invoice.customer_id||null;
+  if(!customerId){
+    let name=invoice.customer_name||'', phone='';
+    if(invoice.lead_id){
+      try{
+        const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${invoice.lead_id}?fields=Name,Phone`);
+        const lead=await leadR.json().catch(()=>null);
+        if(lead){ name=lead.Name||name; phone=lead.Phone||''; }
+      }catch(e){}
+    }
+    if(name){
+      const cust=await fpEnsureCustomerByName(env, clientId, name, {leadId:invoice.lead_id, phone, currency:invoice.currency});
+      customerId=cust?.Id||null;
+    }
+  }
+  if(customerId){
+    await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, collected_at, notes, created_at) VALUES (?,?,NULL,?,?,?,?,?,?)`)
+      .bind(clientId, customerId, invoice.total||0, invoice.currency||'', 'other', now, `Auto-recorded from Invoice #${invoice.id} marked paid`, now).run();
+  }
+
+  await env.DB.prepare(`UPDATE accounting_documents SET paid_recorded_at=? WHERE id=?`).bind(now, invoice.id).run();
+}
+
+async function handleAccountingDocumentUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findAccountingDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.title!==undefined){ sets.push('title=?'); vals.push(String(body.title).trim().slice(0,200)); }
+  if(body.status!==undefined){ sets.push('status=?'); vals.push(String(body.status)); }
+  if(body.notes!==undefined){ sets.push('notes=?'); vals.push(String(body.notes).trim().slice(0,1000)); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).trim().slice(0,10)); }
+  if(body.customer_name!==undefined){ sets.push('customer_name=?'); vals.push(body.customer_name?String(body.customer_name).trim().slice(0,200):null); }
+  if(body.customer_id!==undefined){ sets.push('customer_id=?'); vals.push(body.customer_id?Number(body.customer_id):null); }
+  if(body.valid_until!==undefined){ sets.push('valid_until=?'); vals.push(body.valid_until?String(body.valid_until).slice(0,10):null); }
+  if(body.due_date!==undefined){ sets.push('due_date=?'); vals.push(body.due_date?String(body.due_date).slice(0,10):null); }
+  if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
+  if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
+  if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
+  if(body.is_tax_invoice!==undefined){ sets.push('is_tax_invoice=?'); vals.push(body.is_tax_invoice?1:0); }
+  if(body.gst_rate_pct!==undefined){ sets.push('gst_rate_pct=?'); vals.push(Number(body.gst_rate_pct)||0); }
+  if(body.supplier_gstin!==undefined){ sets.push('supplier_gstin=?'); vals.push(body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null); }
+  if(body.recipient_gstin!==undefined){ sets.push('recipient_gstin=?'); vals.push(body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null); }
+  if(body.place_of_supply!==undefined){ sets.push('place_of_supply=?'); vals.push(body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null); }
+  if(body.supply_type!==undefined && ['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)){ sets.push('supply_type=?'); vals.push(body.supply_type); }
+  if(body.reverse_charge!==undefined){ sets.push('reverse_charge=?'); vals.push(body.reverse_charge?1:0); }
+  if(Array.isArray(body.line_items)){
+    const gstRatePct=body.gst_rate_pct!==undefined?Number(body.gst_rate_pct)||0:Number(existing.gst_rate_pct)||0;
+    const supplierStateCode=body.supplier_state_code||null;
+    const placeOfSupply=body.place_of_supply!==undefined?body.place_of_supply:existing.place_of_supply;
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, gstRatePct);
+    const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?','cgst_amount=?','sgst_amount=?','igst_amount=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, gstRatePct, taxAmount, total, cgst, sgst, igst);
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE accounting_documents SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  // See fpRecordInvoicePaidSideEffects's own comment — only on a genuine draft/sent→paid
+  // transition for an Invoice, and only once (paid_recorded_at guards a later flip-back-and-forth).
+  if(body.status==='paid' && existing.status!=='paid' && existing.type==='invoice' && !existing.paid_recorded_at){
+    try{ await fpRecordInvoicePaidSideEffects(env, Number(payload.cid), {...existing, ...body}); }
+    catch(e){ await reportOpsError(env, 'fpRecordInvoicePaidSideEffects failed', e, {clientId:payload.cid, docId:existing.id}); }
+  }
+  return json({ok:true});
+}
+
+async function handleAccountingDocumentDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await findAccountingDocument(env, body.id);
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM accounting_documents WHERE id=?`).bind(Number(body.id)).run();
+  return json({ok:true});
+}
+
+// Quotation → Invoice → Receipt — a new draft document in the next stage, pre-filled from the
+// source (line items, totals, lead), linked back via linked_doc_id. Deliberately a new record
+// rather than mutating the source in place — the original quotation/invoice should stay exactly as
+// it was sent, since that's what the customer actually saw/agreed to.
+const ACCOUNTING_CONVERT_MAP={quotation:'invoice', invoice:'receipt'};
+async function handleAccountingDocumentConvert(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const src=await findAccountingDocument(env, body.id);
+  if(!src || String(src.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const toType=ACCOUNTING_CONVERT_MAP[src.type];
+  if(!toType) return json({error:`Cannot convert a ${src.type} — only quotation→invoice and invoice→receipt are supported`}, 400);
+  const fields={
+    client_id:Number(payload.cid), lead_id:src.lead_id||null,
+    type:toType, title:src.title||'', line_items_json:src.line_items_json||'[]',
+    currency:src.currency||'', subtotal:src.subtotal||0, tax_pct:src.tax_pct||0, tax_amount:src.tax_amount||0, total:src.total||0,
+    status:'draft', linked_doc_id:src.id, notes:src.notes||'',
+    customer_name:src.customer_name||null, customer_id:src.customer_id||null,
+    erpnext_customer:src.erpnext_customer||null, company:src.company||null, erpnext_debtors_account:src.erpnext_debtors_account||null,
+    erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
+    doc_created_at:new Date().toISOString(),
+  };
+  const r=await env.DB.prepare(`INSERT INTO accounting_documents
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    .run();
+  return json({...fields, Id:r.meta.last_row_id});
+}
+
+// ── ERPNext (Frappe) push integration — per-client credentials (erpnext_base_url/
+// erpnext_api_key/erpnext_api_secret, CLIENTS fields, same plaintext-on-CLIENTS convention as
+// wa_token/chatwoot_token/openrouter_key elsewhere in this file), since each of THIS app's clients
+// runs their own separate ERPNext/Frappe Cloud site — one-way push only (create in ERPNext when a
+// document is created here), never pulled back. Frappe's REST API uses token auth
+// (`Authorization: token {api_key}:{api_secret}`) — see https://frappeframework.com/docs for the
+// resource API shape assumed below (POST /api/resource/<Doctype>, filters as a JSON array).
+function erpnextConfigured(c){ return !!(c.erpnext_base_url && c.erpnext_api_key && c.erpnext_api_secret); }
+async function erpnextFetch(c, path, options={}){
+  const base=(c.erpnext_base_url||'').trim().replace(/\/+$/,'');
+  return fetch(`${base}${path}`, {
+    ...options,
+    headers:{Authorization:`token ${c.erpnext_api_key}:${c.erpnext_api_secret}`, 'Content-Type':'application/json', ...(options.headers||{})}
+  });
+}
+function erpnextErrorMessage(data, status){
+  // Frappe's error shape varies — validation errors come back as `exception` (a formatted string)
+  // or `_server_messages` (a JSON-encoded array of {message} objects); neither is guaranteed.
+  if(data?.exception) return String(data.exception).slice(0,500);
+  if(data?._server_messages){
+    try{ const msgs=JSON.parse(data._server_messages); return msgs.map(m=>{ try{ return JSON.parse(m).message; }catch(e){ return m; } }).join('; ').slice(0,500); }
+    catch(e){ /* fall through */ }
+  }
+  return `HTTP ${status}`;
+}
+
+// Finds an existing Customer by name, or creates a minimal one. ERPNext's Quotation/Sales
+// Invoice/Payment Entry doctypes all require a real Customer record to exist first — there's no
+// way to post a sales document against a bare name string.
+async function erpnextResolveCustomer(c, leadName, leadPhone, leadEmail){
+  const name=String(leadName||leadPhone||'Customer').trim().slice(0,140)||'Customer';
+  const filters=encodeURIComponent(JSON.stringify([['customer_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Customer?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createPayload={customer_name:name, customer_type:'Individual'};
+  if(leadEmail) createPayload.email_id=String(leadEmail).trim().slice(0,200);
+  if(leadPhone) createPayload.mobile_no=String(leadPhone).trim().slice(0,40);
+  const createR=await erpnextFetch(c, '/api/resource/Customer', {method:'POST', body:JSON.stringify(createPayload)});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Customer — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+// Search-only variant — never creates. Used where an ERPNext side-effect (disabling a Customer on
+// churn) only makes sense if that Customer already exists; a churned account that was never synced
+// to ERPNext in the first place has nothing to disable, so this returns null rather than creating
+// one just to immediately disable it.
+async function erpnextFindCustomer(c, name){
+  if(!name) return null;
+  const filters=encodeURIComponent(JSON.stringify([['customer_name','=',String(name).trim().slice(0,140)]]));
+  const r=await erpnextFetch(c, `/api/resource/Customer?filters=${filters}&limit_page_length=1`);
+  const data=await r.json().catch(()=>({}));
+  return (r.ok && data?.data?.[0]?.name) || null;
+}
+async function erpnextSetCustomerDisabled(c, customerName, disabled){
+  await erpnextFetch(c, `/api/resource/Customer/${encodeURIComponent(customerName)}`, {method:'PUT', body:JSON.stringify({disabled:disabled?1:0})});
+}
+
+// Supplier counterpart of erpnextResolveCustomer, for Vendor Bills — ERPNext's Purchase Invoice
+// doctype requires a real Supplier record to exist first, same "must exist before you can post
+// against it" constraint as Customer.
+async function erpnextResolveSupplier(c, supplierName){
+  const name=String(supplierName||'Supplier').trim().slice(0,140)||'Supplier';
+  const filters=encodeURIComponent(JSON.stringify([['supplier_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Supplier?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createR=await erpnextFetch(c, '/api/resource/Supplier', {method:'POST', body:JSON.stringify({supplier_name:name, supplier_group:'All Supplier Groups', supplier_type:'Individual'})});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Supplier — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+
+// Finds an existing Item by name, or creates a minimal non-stock service item. Same "must exist
+// first" constraint as Customer above — a line item's `item_code` has to reference a real Item.
+// Auto-creating on first use (rather than requiring the client to pre-map every service to an
+// ERPNext item code) trades some chart-of-accounts tidiness for the document actually syncing
+// instead of hard-failing on the first unmapped line item — a client who wants tighter control can
+// still pre-create the exact Item names in ERPNext themselves, since this only creates one when no
+// matching name is found.
+async function erpnextResolveItem(c, itemName){
+  const name=String(itemName||'Service').trim().slice(0,140)||'Service';
+  const filters=encodeURIComponent(JSON.stringify([['item_name','=',name]]));
+  const searchR=await erpnextFetch(c, `/api/resource/Item?filters=${filters}&limit_page_length=1`);
+  const searchData=await searchR.json().catch(()=>({}));
+  if(searchR.ok && searchData?.data?.[0]?.name) return searchData.data[0].name;
+  const createR=await erpnextFetch(c, '/api/resource/Item', {method:'POST', body:JSON.stringify({item_code:name, item_name:name, item_group:'Services', is_stock_item:0, stock_uom:'Nos'})});
+  const createData=await createR.json().catch(()=>({}));
+  if(!createR.ok) throw new Error('Item — '+erpnextErrorMessage(createData, createR.status));
+  return createData?.data?.name;
+}
+
+// Pushes a quotation/invoice as a real ERPNext Quotation or Sales Invoice — resolves the customer
+// and every line item's Item first (both required to exist before the parent document can be
+// created), then posts the document. No GST/tax line is ever added — this module doesn't charge
+// tax, full stop, so accounting_documents.tax_pct is always 0 (see handleAccountingDocumentCreate/
+// Update) and nothing here needs to look at it. `company` is passed through when set (required by
+// Frappe once a site has more than one Company); `debit_to` (the Sales Invoice doctype's own name
+// for its receivable/debtors account) is set from erpnext_debtors_account when picked, otherwise
+// left for ERPNext to default from the Customer/Company as it normally would. Returns the new
+// document's ERPNext name (e.g. "SINV-2026-00001").
+async function erpnextPushSalesDoc(c, erpDoctype, doc, lead){
+  const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const lineItems=engineParseJsonField(doc.line_items_json, []);
+  const items=[];
+  for(const li of lineItems){
+    // item_code: set when the line was picked from the live ERPNext item list (accounting.html's
+    // Documents modal) — skips the by-name search/create round-trip and can't ever mismatch it.
+    const itemCode=li.item_code||await erpnextResolveItem(c, li.name);
+    items.push({item_code:itemCode, qty:Number(li.qty)||1, rate:Number(li.price)||0});
+  }
+  if(!items.length) throw new Error('No line items to send');
+  const payload={customer, items};
+  if(doc.company) payload.company=doc.company;
+  if(erpDoctype==='Sales Invoice' && doc.erpnext_debtors_account) payload.debit_to=doc.erpnext_debtors_account;
+  const r=await erpnextFetch(c, `/api/resource/${encodeURIComponent(erpDoctype)}`, {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+// Pushes a receipt as an ERPNext Payment Entry — a "Receive" payment from the customer, linked
+// back to the source invoice's own ERPNext document if one was pushed (allocates the payment
+// against that invoice; without a linked/synced invoice it's still recorded as an unallocated
+// receipt against the customer rather than blocking the sync entirely). `paid_from` is Payment
+// Entry's own name for the source account on a Receive payment (normally the customer's
+// receivable/debtors account) — set from erpnext_debtors_account when picked, otherwise left for
+// ERPNext to default as it normally would.
+async function erpnextPushPaymentEntry(c, doc, lead, invoiceErpnextName){
+  const customer=doc.erpnext_customer||await erpnextResolveCustomer(c, lead?.Name, lead?.Phone);
+  const amount=Number(doc.total)||0;
+  const payload={
+    payment_type:'Receive', party_type:'Customer', party:customer,
+    paid_amount:amount, received_amount:amount,
+    references:invoiceErpnextName?[{reference_doctype:'Sales Invoice', reference_name:invoiceErpnextName, allocated_amount:amount}]:[],
+  };
+  if(doc.company) payload.company=doc.company;
+  if(doc.erpnext_debtors_account) payload.paid_from=doc.erpnext_debtors_account;
+  const r=await erpnextFetch(c, '/api/resource/Payment Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+// Pushes an Expense Entry as a real ERPNext Journal Entry — debits the picked Expense Account,
+// credits the picked (or company-default) cash/bank Account, for the same amount, which is all a
+// Journal Entry needs to balance. Chosen over Purchase Invoice/Expense Claim specifically because
+// neither of those can post from just a Company + a GL Account: a Purchase Invoice needs a Supplier
+// master record, an Expense Claim needs an Employee + "Expense Claim Type" (not a real Chart-of-
+// Accounts Account) — a Journal Entry is the one ERPNext doctype that matches "pick a company, pick
+// an expense account, enter an amount" with no other master data required to exist first.
+async function erpnextPushExpenseEntry(c, expense){
+  if(!expense.paid_from_account) throw new Error('No "Paid From" account set — pick one, or set a default Cash/Bank Account on the Company in ERPNext.');
+  const amount=Number(expense.amount)||0;
+  const payload={
+    voucher_type:'Journal Entry',
+    posting_date:expense.expense_date,
+    user_remark:expense.description||expense.category||'Expense',
+    accounts:[
+      {account:expense.expense_account, debit_in_account_currency:amount, cost_center:expense.cost_center||undefined},
+      {account:expense.paid_from_account, credit_in_account_currency:amount},
+    ],
+  };
+  if(expense.company) payload.company=expense.company;
+  const r=await erpnextFetch(c, '/api/resource/Journal Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+// Pushes a Vendor Bill as a real ERPNext Purchase Invoice — the accounts-payable counterpart of
+// erpnextPushSalesDoc. Resolves the Supplier and every line item's Item first (both required to
+// exist before the parent document can be created, same constraint as the sales-side push).
+// `bill_no`/`bill_date` carry the vendor's own invoice reference through to ERPNext's own "Bill No"/
+// "Bill Date" fields; `credit_to` is Purchase Invoice's own field name for the payable account
+// (the accounts-payable equivalent of Sales Invoice's `debit_to`), set from erpnext_payable_account
+// when picked, otherwise left for ERPNext to default from the Supplier/Company as it normally would.
+async function erpnextPushVendorBill(c, bill){
+  const supplier=await erpnextResolveSupplier(c, bill.supplier);
+  const lineItems=engineParseJsonField(bill.line_items_json, []);
+  const items=[];
+  for(const li of lineItems){
+    const itemCode=li.item_code||await erpnextResolveItem(c, li.name);
+    items.push({item_code:itemCode, qty:Number(li.qty)||1, rate:Number(li.price)||0});
+  }
+  if(!items.length) throw new Error('No line items to send');
+  const payload={supplier, items, bill_date:bill.bill_date};
+  if(bill.vendor_invoice_no) payload.bill_no=String(bill.vendor_invoice_no).slice(0,140);
+  if(bill.due_date) payload.due_date=bill.due_date;
+  if(bill.company) payload.company=bill.company;
+  if(bill.erpnext_payable_account) payload.credit_to=bill.erpnext_payable_account;
+  const r=await erpnextFetch(c, '/api/resource/Purchase Invoice', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return {name:data?.data?.name, supplier};
+}
+
+// Records a Vendor Bill as paid — an ERPNext Payment Entry with payment_type:'Pay' (the
+// accounts-payable mirror of erpnextPushPaymentEntry's 'Receive'), allocated against the bill's own
+// submitted Purchase Invoice. `paid_to` is Payment Entry's own field name for the target account on
+// a Pay payment (normally the supplier's payable account) — set from erpnext_payable_account when
+// picked, otherwise left for ERPNext to default as it normally would.
+async function erpnextPushVendorBillPayment(c, bill){
+  const amount=Number(bill.total)||0;
+  const payload={
+    payment_type:'Pay', party_type:'Supplier', party:bill.erpnext_supplier,
+    paid_amount:amount, received_amount:amount,
+    references:bill.erpnext_doc_name?[{reference_doctype:'Purchase Invoice', reference_name:bill.erpnext_doc_name, allocated_amount:amount}]:[],
+  };
+  if(bill.company) payload.company=bill.company;
+  if(bill.erpnext_payable_account) payload.paid_to=bill.erpnext_payable_account;
+  const r=await erpnextFetch(c, '/api/resource/Payment Entry', {method:'POST', body:JSON.stringify(payload)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(erpnextErrorMessage(data, r.status));
+  return data?.data?.name;
+}
+
+const ACCOUNTING_ERPNEXT_DOCTYPE_MAP={quotation:'Quotation', invoice:'Sales Invoice', receipt:'Payment Entry'};
+async function handleAccountingDocumentSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const doc=await findAccountingDocument(env, body.id);
+  if(!doc || String(doc.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const erpDoctype=ACCOUNTING_ERPNEXT_DOCTYPE_MAP[doc.type];
+  if(!erpDoctype) return json({error:'Unknown document type'}, 400);
+
+  let lead=null;
+  if(doc.lead_id){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${doc.lead_id}`);
+    if(leadR.ok) lead=await leadR.json().catch(()=>null);
+  }
+
+  try{
+    let erpName;
+    if(doc.type==='receipt'){
+      let invoiceErpName=null;
+      if(doc.linked_doc_id){
+        const linked=await findAccountingDocument(env, doc.linked_doc_id);
+        invoiceErpName=linked?.erpnext_doc_name||null;
+      }
+      erpName=await erpnextPushPaymentEntry(c, doc, lead, invoiceErpName);
+    }else{
+      erpName=await erpnextPushSalesDoc(c, erpDoctype, doc, lead);
+    }
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_doctype=?, erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_sync_error='', erpnext_synced_at=? WHERE id=?`)
+      .bind(erpDoctype, erpName||'', new Date().toISOString(), doc.id).run();
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, doc.id).run();
+    await reportOpsError(env, 'handleAccountingDocumentSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+
+// "Publish" — submits the already-synced ERPNext document (Frappe's docstatus 0→1), the action
+// that actually posts it to the ledger; a merely-synced document just sits as an editable Draft in
+// ERPNext and doesn't count anywhere yet. A separate, explicit step from Sync since submitting is
+// effectively one-way (a submitted Frappe document can't go back to Draft without a Cancel first,
+// which this integration doesn't do). Uses the documented `frappe.client.submit` whitelisted
+// method (needs the full current doc, not just its name) rather than trying to PATCH docstatus
+// directly on the resource endpoint, which isn't reliably supported across Frappe versions — not
+// live-verified against a real Frappe Cloud site in this session, same honest caveat as the rest
+// of this ERPNext integration.
+// Raw GET-then-frappe.client.submit sequence, factored out of handleAccountingDocumentSubmitErpnext
+// below so a fully-automated caller (no human clicking "Publish") can reuse the exact same Frappe
+// call shape — e.g. saasApplyBillingEvent's billing-webhook-driven invoices, which have no human in
+// the loop to click Publish and would otherwise sit as unsubmitted Drafts in ERPNext forever.
+async function erpnextSubmitDocByName(c, doctype, docName){
+  const getR=await erpnextFetch(c, `/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(docName)}`);
+  const getData=await getR.json().catch(()=>({}));
+  if(!getR.ok) throw new Error(erpnextErrorMessage(getData, getR.status));
+  const submitR=await erpnextFetch(c, '/api/method/frappe.client.submit', {method:'POST', body:JSON.stringify({doc:JSON.stringify(getData.data)})});
+  const submitData=await submitR.json().catch(()=>({}));
+  if(!submitR.ok) throw new Error(erpnextErrorMessage(submitData, submitR.status));
+}
+async function handleAccountingDocumentSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const doc=await findAccountingDocument(env, body.id);
+  if(!doc || String(doc.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!doc.erpnext_doc_name || !doc.erpnext_doctype) return json({error:'Sync this document to ERPNext first.'}, 400);
+  if(doc.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    await erpnextSubmitDocByName(c, doc.erpnext_doctype, doc.erpnext_doc_name);
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_documents SET erpnext_submitted_at=? WHERE id=?`).bind(submittedAt, doc.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleAccountingDocumentSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, docId:doc.id, type:doc.type});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+
+// ── Expense Entry (migration 0028) — a general "book an expense against ERPNext" flow for the
+// Accounting module, separate from Financial Planning's fp_expenses (which is local-only recurring/
+// fixed-cost bookkeeping, never pushed anywhere — see SETUP.md). Same create-then-sync-then-submit
+// shape as accounting_documents above, just its own table/routes since an expense isn't a
+// quotation/invoice/receipt and doesn't fit ACCOUNTING_ERPNEXT_DOCTYPE_MAP.
+function acctExpenseOut(row){ return {...row, Id:row.id}; }
+async function findAccountingExpense(env, id){ return await env.DB.prepare(`SELECT * FROM accounting_expenses WHERE id=?`).bind(id).first(); }
+async function handleAccountingExpensesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM accounting_expenses WHERE client_id=? ORDER BY expense_date DESC, id DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(acctExpenseOut)});
+}
+async function handleAccountingExpenseCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.expense_account || !body.amount || !body.expense_date) return json({error:'expense_account, amount and expense_date required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO accounting_expenses (client_id, company, expense_account, expense_account_name, paid_from_account, paid_from_account_name, amount, currency, expense_date, category, vendor, supplier_id, description, cost_center, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.expense_account).slice(0,140), String(body.expense_account_name||'').slice(0,140),
+      String(body.paid_from_account||'').slice(0,140), String(body.paid_from_account_name||'').slice(0,140), Number(body.amount)||0, String(body.currency||'USD').slice(0,10).toUpperCase(),
+      String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
+      'unsynced', now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleAccountingExpenseUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(exp.erpnext_doc_name) return json({error:'Already synced to ERPNext — delete and re-create instead of editing a synced expense.'}, 400);
+  const sets=[], vals=[];
+  for(const f of ['company','expense_account','expense_account_name','paid_from_account','paid_from_account_name','currency','expense_date','category','vendor','description','cost_center']){
+    if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
+  }
+  if(body.amount!==undefined){ sets.push('amount=?'); vals.push(Number(body.amount)||0); }
+  if(body.supplier_id!==undefined){ sets.push('supplier_id=?'); vals.push(body.supplier_id?Number(body.supplier_id):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id), Number(payload.cid));
+  await env.DB.prepare(`UPDATE accounting_expenses SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleAccountingExpenseDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM accounting_expenses WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+async function handleAccountingExpenseSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  try{
+    const erpName=await erpnextPushExpenseEntry(c, exp);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_doctype='Journal Entry', erpnext_doc_name=?, erpnext_sync_status='synced', erpnext_sync_error=NULL, erpnext_synced_at=?, status='synced' WHERE id=?`).bind(erpName||'', now, exp.id).run();
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, exp.id).run();
+    await reportOpsError(env, 'handleAccountingExpenseSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, expenseId:exp.id});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+async function handleAccountingExpenseSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const exp=await findAccountingExpense(env, Number(body.id));
+  if(!exp || String(exp.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!exp.erpnext_doc_name) return json({error:'Sync this expense to ERPNext first.'}, 400);
+  if(exp.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    await erpnextSubmitDocByName(c, 'Journal Entry', exp.erpnext_doc_name);
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_expenses SET erpnext_submitted_at=?, status='submitted' WHERE id=?`).bind(submittedAt, exp.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleAccountingExpenseSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, expenseId:exp.id});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+
+// ── Vendor Bills (migration 0029) — accounts-payable counterpart to accounting_documents: what a
+// client's own supplier billed them, pushed as an ERPNext Purchase Invoice, then optionally a
+// Payment Entry once it's paid. Same create→sync→submit shape as Documents/Expenses above, plus a
+// 4th "record payment" step (Documents' Receipt achieves the sales-side equivalent by being its own
+// separate document; a vendor bill tracks paid/unpaid directly on the one row instead, since there's
+// no reason to model "bill" and "payment" as two separate list rows the way quotation/invoice/
+// receipt are for the sales side).
+function acctVendorBillOut(row){ return {...row, Id:row.id, line_items:engineParseJsonField(row.line_items_json, [])}; }
+async function findVendorBill(env, id){ return await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE id=?`).bind(id).first(); }
+async function handleVendorBillsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM accounting_vendor_bills WHERE client_id=? ORDER BY bill_date DESC, id DESC LIMIT 500`).bind(Number(payload.cid)).all();
+  return json({list:(results||[]).map(acctVendorBillOut)});
+}
+async function handleVendorBillCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.supplier || !body.bill_date) return json({error:'supplier and bill_date required'}, 400);
+  const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+  if(!lineItems.length) return json({error:'At least one line item required'}, 400);
+  const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO accounting_vendor_bills (client_id, company, supplier, supplier_id, vendor_invoice_no, bill_date, due_date, line_items_json, currency, subtotal, total, notes, erpnext_payable_account, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(Number(payload.cid), String(body.company||'').slice(0,140), String(body.supplier).slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.vendor_invoice_no||'').slice(0,140),
+      String(body.bill_date).slice(0,10), body.due_date?String(body.due_date).slice(0,10):null, JSON.stringify(lineItems), String(body.currency||'USD').slice(0,10).toUpperCase(),
+      subtotal, subtotal, String(body.notes||'').slice(0,1000), String(body.erpnext_payable_account||'').slice(0,140), 'unpaid', now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleVendorBillUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(bill.erpnext_doc_name) return json({error:'Already synced to ERPNext — delete and re-create instead of editing a synced bill.'}, 400);
+  const sets=[], vals=[];
+  for(const f of ['company','supplier','vendor_invoice_no','bill_date','due_date','currency','notes','erpnext_payable_account']){
+    if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,1000)); }
+  }
+  if(body.supplier_id!==undefined){ sets.push('supplier_id=?'); vals.push(body.supplier_id?Number(body.supplier_id):null); }
+  if(body.line_items!==undefined){
+    const lineItems=Array.isArray(body.line_items)?body.line_items:[];
+    const subtotal=lineItems.reduce((s,li)=>s+((Number(li.qty)||0)*(Number(li.price)||0)),0);
+    sets.push('line_items_json=?', 'subtotal=?', 'total=?'); vals.push(JSON.stringify(lineItems), subtotal, subtotal);
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id), Number(payload.cid));
+  await env.DB.prepare(`UPDATE accounting_vendor_bills SET ${sets.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleVendorBillDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  await env.DB.prepare(`DELETE FROM accounting_vendor_bills WHERE id=? AND client_id=?`).bind(Number(body.id), Number(payload.cid)).run();
+  return json({ok:true});
+}
+async function handleVendorBillSyncErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  try{
+    const {name:erpName, supplier}=await erpnextPushVendorBill(c, bill);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_doctype='Purchase Invoice', erpnext_doc_name=?, erpnext_supplier=?, erpnext_sync_status='synced', erpnext_sync_error=NULL, erpnext_synced_at=? WHERE id=?`).bind(erpName||'', supplier||'', now, bill.id).run();
+    return json({ok:true, erpnext_doc_name:erpName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_sync_status='failed', erpnext_sync_error=? WHERE id=?`).bind(msg, bill.id).run();
+    await reportOpsError(env, 'handleVendorBillSyncErpnext — ERPNext push failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext sync failed: '+msg}, 502);
+  }
+}
+async function handleVendorBillSubmitErpnext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!bill.erpnext_doc_name) return json({error:'Sync this bill to ERPNext first.'}, 400);
+  if(bill.erpnext_submitted_at) return json({ok:true, already:true});
+  try{
+    await erpnextSubmitDocByName(c, 'Purchase Invoice', bill.erpnext_doc_name);
+    const submittedAt=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_submitted_at=? WHERE id=?`).bind(submittedAt, bill.id).run();
+    return json({ok:true, erpnext_submitted_at:submittedAt});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleVendorBillSubmitErpnext — ERPNext submit failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext submit failed: '+msg}, 502);
+  }
+}
+// Records payment against an already-submitted bill — a submitted (not merely synced) Purchase
+// Invoice is required, same reasoning as the sales-side Receipt only ever allocating against an
+// invoice that's actually posted: ERPNext doesn't let a Payment Entry allocate against a Draft.
+async function handleVendorBillRecordPayment(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c || !erpnextConfigured(c)) return json({error:'ERPNext is not connected for this account — add your Frappe Cloud site URL and API key/secret in Settings → Accounting.'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(!bill.erpnext_submitted_at) return json({error:'Publish (submit) this bill in ERPNext first.'}, 400);
+  if(bill.erpnext_paid_at) return json({ok:true, already:true});
+  try{
+    const paymentName=await erpnextPushVendorBillPayment(c, bill);
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET erpnext_payment_doc_name=?, erpnext_paid_at=?, status='paid' WHERE id=?`).bind(paymentName||'', now, bill.id).run();
+    return json({ok:true, erpnext_payment_doc_name:paymentName});
+  }catch(e){
+    const msg=String(e.message||e).slice(0,500);
+    await reportOpsError(env, 'handleVendorBillRecordPayment — ERPNext payment push failed', e, {clientId:payload.cid, billId:bill.id});
+    return json({error:'ERPNext payment failed: '+msg}, 502);
+  }
+}
+// Standalone equivalent of handleVendorBillRecordPayment above (migration 0035's paid_at column) —
+// no ERPNext connection required, just marks the bill paid directly. This is the mark-paid action
+// the Vendor Bills tab actually uses now; the ERPNext-pushed version stays available for anyone who
+// still wants a real Payment Entry posted to a connected site.
+async function handleVendorBillMarkPaid(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const bill=await findVendorBill(env, Number(body.id));
+  if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`UPDATE accounting_vendor_bills SET status='paid', paid_at=? WHERE id=?`).bind(now, bill.id).run();
+  return json({ok:true, paid_at:now});
+}
+
+/* ── RECRUITMENT MODULE (frontend/dashboard.html — 💼 Recruit tab, migrations/0032_recruitment.sql)
+   Jobs/Candidates/Placements, one shared D1 table each (client_id-scoped), replacing the old
+   per-client dynamic NocoDB tables the browser used to provision for itself on first use — same
+   "one shared table, not one table per client" shape as Hospitality/Financial Planning/SaaS Ops.
+   One generic list/create/update/delete per entity kind instead of 12 near-identical handlers,
+   driven by RECRUIT_TABLES below; `id AS Id` in every SELECT keeps the JSON shape identical to
+   what dashboard.html's existing rc* render functions already expect (c.Id/j.Id/p.Id throughout),
+   so only the fetch layer (rcLoad/rcCreate/rcUpdate/rcDelete) needed to change, not every render
+   function reading the records. ── */
+const RECRUIT_TABLES={
+  jobs:{
+    table:'recruit_jobs', requiredField:'title', orderBy:'created_at DESC',
+    fields:{
+      title:{type:'str', max:200}, company:{type:'str', max:200}, location:{type:'str', max:200},
+      job_type:{type:'str', max:40, def:'fulltime'}, category:{type:'str', max:80},
+      min_salary:{type:'num'}, max_salary:{type:'num'}, currency:{type:'str', max:10, def:'AED'},
+      status:{type:'str', max:20, def:'open'}, min_age:{type:'int'}, max_age:{type:'int'},
+      min_experience:{type:'int'}, required_qualifications:{type:'text'}, requirements:{type:'text'},
+      description:{type:'text'}, notes:{type:'text'},
+    }
+  },
+  candidates:{
+    table:'recruit_candidates', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      name:{type:'str', max:200}, phone:{type:'str', max:40}, email:{type:'str', max:140},
+      role_applied:{type:'str', max:200}, years_experience:{type:'num'}, skills:{type:'text'},
+      current_salary:{type:'num'}, expected_salary:{type:'num'}, age:{type:'int'},
+      job_id:{type:'int'}, currency:{type:'str', max:10, def:'AED'}, status:{type:'str', max:30, def:'new'},
+      source:{type:'str', max:40, def:'whatsapp'}, owner:{type:'str', max:140},
+      qualification_status:{type:'str', max:20}, screening_notes:{type:'text'}, notes:{type:'text'},
+      resume_notes:{type:'text'}, interview_date:{type:'str', max:10},
+    }
+  },
+  placements:{
+    table:'recruit_placements', requiredField:'candidate_name', orderBy:'created_at DESC',
+    fields:{
+      candidate_name:{type:'str', max:200}, candidate_phone:{type:'str', max:40},
+      job_title:{type:'str', max:200}, client_company:{type:'str', max:200},
+      placement_date:{type:'str', max:10}, fee_amount:{type:'num'}, currency:{type:'str', max:10, def:'AED'},
+      fee_type:{type:'str', max:20, def:'fixed'}, percentage:{type:'num'}, status:{type:'str', max:20, def:'pending'},
+      notes:{type:'text'},
+    }
+  },
+};
+function recruitCoerce(spec, raw){
+  if(raw===undefined||raw===null||raw===''){
+    if(spec.type==='num'||spec.type==='int') return null;
+    return spec.def!==undefined?spec.def:null;
+  }
+  if(spec.type==='num') return Number(raw)||0;
+  if(spec.type==='int') return parseInt(raw,10)||null;
+  if(spec.type==='text') return String(raw);
+  return String(raw).trim().slice(0, spec.max||255);
+}
+async function handleRecruitList(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const {results}=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleRecruitCreate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
+  const cols=Object.keys(cfg.fields);
+  const vals=cols.map(k=>recruitCoerce(cfg.fields[k], body[k]));
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO ${cfg.table} (client_id, ${cols.join(', ')}, created_at) VALUES (?, ${cols.map(()=>'?').join(', ')}, ?)`
+  ).bind(Number(payload.cid), ...vals, now).run();
+  const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  return json(row);
+}
+async function handleRecruitUpdate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  for(const k of Object.keys(cfg.fields)){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`); vals.push(recruitCoerce(cfg.fields[k], body[k]));
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleRecruitDelete(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=RECRUIT_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── MATRIMONIAL SERVICE MODULE (frontend/matrimonial.html, migrations/0071_matrimonial.sql)
+   Profile management, match tracking, shortlists, success stories.
+   All tables are client_id-scoped; reads/writes go through session auth. ── */
+
+const MATRIMONIAL_PROFILE_FIELDS=['serial_number','profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id','age','gender','phone','whatsapp','guardian_phone','marriage_status','required_education','body_type','district','job_place','expected_partner_age','expected_partner_dob','other_conditions','payment_amount','payment_link','whatsapp_filled','plan_label','remarks'];
+const MATRIMONIAL_MATCH_FIELDS=['profile_id_1','profile_id_2','match_score','status','interest_sent_by','notes','family_meeting_date','family_meeting_venue','outcome_notes'];
+const MATRIMONIAL_SHORTLIST_FIELDS=['profile_id','shortlisted_profile_id','notes'];
+const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groom_name','wedding_date','testimonial','photo_url','featured'];
+const MATRIMONIAL_SETTINGS_FIELDS=['service_name','membership_plans','horoscope_matching_enabled','auto_suggest_matches','match_criteria_weights','privacy_note','success_story_template'];
+
+function matriCoerce(k,v){
+  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches','age','chat_enabled','chat_profiles_per_msg']);
+  if(intFields.has(k)) return v===null||v===undefined||v===''?null:parseInt(v,10)||0;
+  return v===null||v===undefined?null:String(v).trim().slice(0,2000);
+}
+
+let matrimonialSerialSchemaReady=false;
+async function ensureMatrimonialSerialSchema(env){
+  if(matrimonialSerialSchemaReady) return;
+  // serial_number column added by migration 0083_matrimonial_serial_number.sql
+  try{ await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_matri_profiles_serial ON matrimonial_profiles(client_id, serial_number)').run(); }catch(e){}
+  matrimonialSerialSchemaReady=true;
+}
+
+async function handleMatriList(request, env, table, fields, orderBy='id DESC'){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM ${table} WHERE client_id=? ORDER BY ${orderBy}`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriCreate(request, env, table, fields, required){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(required && !String(body[required]||'').trim()) return json({error:`${required} required`}, 400);
+  const now=new Date().toISOString();
+  const cols=fields.filter(k=>body[k]!==undefined);
+  const vals=cols.map(k=>matriCoerce(k,body[k]));
+  const r=await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(Number(payload.cid),...vals,now,now).run();
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json(row);
+}
+async function handleMatriUpdate(request, env, table, fields){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[],vals=[];
+  for(const k of fields){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?');vals.push(new Date().toISOString());vals.push(id);
+  await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json({ok:true});
+}
+async function handleMatriDelete(request, env, table){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json({ok:true});
+}
+async function handleMatriSettingsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  return json(row||{});
+}
+async function handleMatriSettingsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(existing){
+    const sets=[],vals=[];
+    for(const k of MATRIMONIAL_SETTINGS_FIELDS){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+    sets.push('updated_at=?');vals.push(now);vals.push(String(payload.cid));
+    if(sets.length>1) await env.DB.prepare(`UPDATE matrimonial_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  }else{
+    const cols=MATRIMONIAL_SETTINGS_FIELDS.filter(k=>body[k]!==undefined);
+    const vals=cols.map(k=>matriCoerce(k,body[k]));
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(String(payload.cid),...vals,now,now).run();
+  }
+  return json({ok:true});
+}
+
+// Extend MATRIMONIAL_SETTINGS_FIELDS with webhook columns so the generic update handler saves them
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'profiles_webhook_token','matches_webhook_token','shortlists_webhook_token','stories_webhook_token',
+  'profiles_col_map','matches_col_map','shortlists_col_map','stories_col_map',
+  'profiles_dedup_key','matches_dedup_key','shortlists_dedup_key','stories_dedup_key'
+);
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
+  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
+  'chat_keyword_subscribe','chat_keyword_plans'
+);
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'paid_plans','razorpay_key_id','razorpay_key_secret','razorpay_webhook_secret'
+);
+
+// ── Matrimonial profile KV cache helpers ─────────────────────────────────────
+// Cache key: matri_profiles:{clientId} — stores all active profiles as a JSON array (TTL 7200 s).
+// All write paths (create/update/delete/webhook/chat-listing) call matriProfilesCacheInvalidate so
+// sendProfiles always sees fresh data on the next request after any change.
+// Every function is a no-op when env.MATRI_CACHE is absent (binding not yet configured).
+async function matriProfilesCacheGet(env,clientId){
+  if(!env.MATRI_CACHE) return null;
+  try{ const v=await env.MATRI_CACHE.get(`matri_profiles:${clientId}`); return v?JSON.parse(v):null; }catch(e){ return null; }
+}
+async function matriProfilesCacheSet(env,clientId,profiles){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.put(`matri_profiles:${clientId}`,JSON.stringify(profiles),{expirationTtl:7200}); }catch(e){}
+}
+async function matriProfilesCacheInvalidate(env,clientId){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.delete(`matri_profiles:${clientId}`); }catch(e){}
+}
+
+// Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
+// paginated profile delivery. Returns {handled:true, step} when it owns the turn, or null to
+// fall through to the normal LLM routing (e.g. when "3" / talk-to-agent is typed, or when
+// no state matches the incoming text).
+async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,userText,isNewLead){
+  await ensureMatrimonialSerialSchema(env);
+  let settings;
+  try{ settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first(); }catch(e){ return null; }
+  if(!settings||!settings.chat_enabled) return null;
+
+  const text=String(userText||'').trim();
+  const textLower=text.toLowerCase();
+
+  const kwView      =String(settings.chat_keyword_view      ||'1').trim().toLowerCase();
+  const kwList      =String(settings.chat_keyword_list      ||'2').trim().toLowerCase();
+  const kwAgent     =String(settings.chat_keyword_agent     ||'3').trim().toLowerCase();
+  const kwSubscribe =String(settings.chat_keyword_subscribe ||'4').trim().toLowerCase();
+  const kwPlans    =String(settings.chat_keyword_plans    ||'5').trim().toLowerCase();
+
+  const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
+
+  let st;
+  try{ st=await env.DB.prepare('SELECT * FROM matrimonial_chat_state WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){ st=null; }
+
+  const setState=async (fields)=>{
+    const now=new Date().toISOString();
+    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null,...(st||{}),...fields};
+    try{
+      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,listing_data,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,m.listing_data||null,now).run();
+    }catch(e){
+      // Fallback if migration 0085 not yet applied — persists state without listing_data column
+      try{
+        await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+          .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,now).run();
+      }catch(e2){
+        // Fallback if migration 0079 not yet applied — persists basic state without filter columns
+        try{ await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)').bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run(); }catch(e3){}
+      }
+    }
+    st=m;
+  };
+
+  const buildWelcome=()=>{
+    const svc=settings.service_name||'Matrimonial Service';
+    const v=settings.chat_keyword_view||'1';
+    const l=settings.chat_keyword_list||'2';
+    const a=settings.chat_keyword_agent||'3';
+    const s=settings.chat_keyword_subscribe||'4';
+    const p=settings.chat_keyword_plans||'5';
+    let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
+    // Strip any menu option lines the admin may have saved inside the welcome message
+    // to prevent the options block from appearing twice.
+    const lines=intro.split('\n');
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s)||t.startsWith(p); });
+    if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
+    let hasPaidPlans=false;
+    try{ hasPaidPlans=(JSON.parse(settings.paid_plans||'[]')||[]).length>0&&!!settings.razorpay_key_id; }catch(e){}
+    const plansLine=hasPaidPlans?`\n${p}️⃣  Paid Plans – Premium subscription options`:'';
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views${plansLine}\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+  };
+
+  const sendProfiles=async (profileType,profileRef=null)=>{
+    // Activation gate — check if this phone has been granted profile-view access
+    let activated=null;
+    try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(!activated){
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('⚠️ Your number is not yet activated for profile viewing.\n\n🎁 *Get a Free Subscription instantly — no payment needed!*\n\nWhat is your *name*? (We\'ll activate your account right away)');
+      return {handled:true,step:'not_activated_auto_subscribe'};
+    }
+    if(activated.status!=='active'){
+      await send(`⚠️ Your profile view access has been *${activated.status}*.\n\nPlease contact us for assistance.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_'+activated.status};
+    }
+    const today=new Date().toISOString().slice(0,10);
+    const thisMonth=new Date().toISOString().slice(0,7);
+    if(activated.expiry_date&&activated.expiry_date<today){
+      await env.DB.prepare("UPDATE matrimonial_activated_leads SET status='expired',updated_at=? WHERE id=?").bind(new Date().toISOString(),activated.id).run().catch(()=>{});
+      await send(`⚠️ Your profile view access expired on *${activated.expiry_date}*.\n\nPlease contact us to renew.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_expired'};
+    }
+    const canView=activated.can_view||'both';
+    if(canView!=='both'&&profileType!==canView){
+      await send(`ℹ️ Your access is limited to *${canView}* profiles only. Switching for you.`);
+      profileType=canView;
+    }
+    const vToday=activated.last_daily_reset===today?(activated.views_today||0):0;
+    const vMonth=activated.last_monthly_reset===thisMonth?(activated.views_month||0):0;
+    const dLimit=activated.daily_limit||10, mLimit=activated.monthly_limit||50;
+    if(vToday>=dLimit){
+      await send(`📊 Daily limit reached (${vToday}/${dLimit} profiles viewed today).\n\nCome back tomorrow!`);
+      return {handled:true,step:'daily_limit'};
+    }
+    if(vMonth>=mLimit){
+      await send(`📊 Monthly limit reached (${vMonth}/${mLimit} profiles this month).\n\nYour limit resets next month.`);
+      return {handled:true,step:'monthly_limit'};
+    }
+
+    let sentIds=[];
+    try{ sentIds=JSON.parse(st?.sent_ids||'[]'); }catch(e){}
+
+    let plans=['gold','silver','platinum'];
+    try{ const pf=JSON.parse(settings.chat_plan_filter||'[]'); if(pf.length) plans=pf; }catch(e){}
+
+    const perMsg=Math.max(2,parseInt(settings.chat_profiles_per_msg)||3);
+
+    let previewFields=['full_name','age','city','plan_label'];
+    try{ const pf=JSON.parse(settings.chat_preview_fields||'[]'); if(pf.length) previewFields=pf; }catch(e){}
+
+    const cityFilter=st?.city_filter||null;
+    const maxAge=st?.max_age?parseInt(st.max_age):null;
+    let rows;
+    try{
+      // KV-first: cache holds all active profiles for this client; JS filtering keeps a single cache
+      // key per client so any write path only needs to delete one entry to keep data in sync.
+      let allProfiles=await matriProfilesCacheGet(env,clientId);
+      if(!allProfiles){
+        const d1=await env.DB.prepare(
+          `SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' ORDER BY id ASC`
+        ).bind(String(clientId)).all();
+        allProfiles=d1.results||[];
+        await matriProfilesCacheSet(env,clientId,allProfiles);
+      }
+      // Type + already-sent filter
+      let filtered=allProfiles.filter(p=>p.profile_type===profileType&&!sentIds.includes(p.id));
+      // Plan filter — fall back to all when nothing matches (mirrors original two-query fallback)
+      const planSet=new Set(plans);
+      const planFiltered=filtered.filter(p=>planSet.has(String(p.membership_plan||'').toLowerCase())||planSet.has(String(p.plan_label||'').toLowerCase()));
+      if(planFiltered.length) filtered=planFiltered;
+      // City filter
+      if(cityFilter){ const cf=cityFilter.toLowerCase(); filtered=filtered.filter(p=>String(p.city||'').toLowerCase().includes(cf)||String(p.district||'').toLowerCase().includes(cf)); }
+      // Max-age filter
+      if(maxAge) filtered=filtered.filter(p=>{ const a=parseInt(p.age||0); return a>0&&a<=maxAge; });
+      // Profile-ref filter
+      if(profileRef){ const ref=String(profileRef); filtered=filtered.filter(p=>String(p.id)===ref||String(p.lead_id||'').toLowerCase()===ref.toLowerCase()); }
+      rows={results:filtered.slice(0,perMsg+1)};
+    }catch(e){ rows={results:[]}; }
+
+    const all=rows.results||[];
+    const hasMore=all.length>perMsg;
+    const batch=hasMore?all.slice(0,perMsg):all;
+
+    if(!batch.length){
+      await send(sentIds.length
+        ?'🔄 No more profiles at this time.\n\nReply *menu* to go back to the main menu.'
+        :'📭 No profiles are currently available.\n\nReply *menu* to go back to the main menu.');
+      await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:'[]'});
+      return {handled:true,step:'no_profiles'};
+    }
+
+    const newSentIds=[...sentIds,...batch.map(p=>p.id)];
+    await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:JSON.stringify(newSentIds)});
+    // Increment view counters
+    await env.DB.prepare('UPDATE matrimonial_activated_leads SET views_today=?,views_month=?,last_daily_reset=?,last_monthly_reset=?,updated_at=? WHERE id=?')
+      .bind(vToday+batch.length,vMonth+batch.length,today,thisMonth,new Date().toISOString(),activated.id).run().catch(()=>{});
+
+    const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',job_place:'Job place',plan_label:'Plan',religion:'Religion',caste:'Caste',mother_tongue:'Mother tongue',height_cm:'Height',annual_income:'Income',marriage_status:'Marital status',about:'About'};
+    // Show useful fields exactly as saved in Matrimony Profiles. Admin-selected preview
+    // fields are appended and de-duplicated; plan, private contact, and payment fields stay hidden.
+    const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])].filter(f=>f!=='plan_label'&&f!=='membership_plan');
+    for(const p of batch){
+      let card='──────────────\n';
+      if(p.serial_number) card+=`#️⃣ *${p.serial_number}*\n`;
+      for(const f of cardFields){
+        let val=p[f];
+        if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
+        if(val) card+=`${fLabel[f]||f}: ${val}\n`;
+      }
+      card+='──────────────';
+      await send(card);
+    }
+    await send(hasMore
+      ?`✅ ${batch.length} profile(s) sent.\n\nReply *next* to see more.\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* for the main menu.`
+      :`✅ ${batch.length} profile(s) sent.\n\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* to go back to the main menu.`);
+    return {handled:true,step:'profiles_sent'};
+  };
+
+  // "menu" — always resets to welcome
+  if(/^menu$/i.test(text)){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null});
+    await send(buildWelcome());
+    return {handled:true,step:'menu'};
+  }
+
+  // ── CONVERSATIONAL PROFILE LISTING FLOW ──────────────────────────────────────
+  // Handles each step of the "List My Profile" registration (menu option "2").
+  // State is stored as listing_data JSON in matrimonial_chat_state.
+  // Completes by inserting a pending/free profile into matrimonial_profiles.
+  const menuStateEarly=st?.menu_state;
+  if(menuStateEarly&&menuStateEarly.startsWith('listing_')){
+    let ld={};
+    try{ ld=JSON.parse(st?.listing_data||'{}'); }catch(e){}
+
+    if(menuStateEarly==='listing_asked_type'){
+      let pType=null;
+      if(/^b(ride)?$/i.test(text)) pType='bride';
+      else if(/^g(room)?$/i.test(text)) pType='groom';
+      if(!pType){
+        await send('Please reply *B* for Bride or *G* for Groom.');
+        return {handled:true,step:'listing_asked_type_reprompt'};
+      }
+      ld.profile_type=pType;
+      await setState({menu_state:'listing_asked_name',listing_data:JSON.stringify(ld)});
+      await send('What is your *full name*?');
+      return {handled:true,step:'listing_asked_name'};
+    }
+
+    if(menuStateEarly==='listing_asked_name'){
+      const name=text.trim();
+      if(name.length<2){
+        await send('Please enter your full name.');
+        return {handled:true,step:'listing_asked_name_reprompt'};
+      }
+      ld.full_name=name;
+      await setState({menu_state:'listing_asked_age',listing_data:JSON.stringify(ld)});
+      await send(`Thanks, *${name}*! 😊\n\nHow old are you? (e.g. *25*)`);
+      return {handled:true,step:'listing_asked_age'};
+    }
+
+    if(menuStateEarly==='listing_asked_age'){
+      const age=parseInt(text,10);
+      if(!age||age<18||age>80){
+        await send('Please enter a valid age between 18 and 80.');
+        return {handled:true,step:'listing_asked_age_reprompt'};
+      }
+      ld.age=String(age);
+      await setState({menu_state:'listing_asked_city',listing_data:JSON.stringify(ld)});
+      await send('Which *city or district* are you from?');
+      return {handled:true,step:'listing_asked_city'};
+    }
+
+    if(menuStateEarly==='listing_asked_city'){
+      const city=text.trim();
+      if(city.length<2){
+        await send('Please enter your city or district name.');
+        return {handled:true,step:'listing_asked_city_reprompt'};
+      }
+      ld.city=city;
+      await setState({menu_state:'listing_asked_education',listing_data:JSON.stringify(ld)});
+      await send('What is your *highest education*? (e.g. B.Tech, MBA, HSC, SSLC)');
+      return {handled:true,step:'listing_asked_education'};
+    }
+
+    if(menuStateEarly==='listing_asked_education'){
+      const edu=text.trim();
+      if(edu.length<2){
+        await send('Please enter your education qualification.');
+        return {handled:true,step:'listing_asked_education_reprompt'};
+      }
+      ld.education=edu;
+      await setState({menu_state:'listing_asked_occupation',listing_data:JSON.stringify(ld)});
+      await send('What is your *occupation*? (e.g. Software Engineer, Teacher, Business, Doctor)');
+      return {handled:true,step:'listing_asked_occupation'};
+    }
+
+    if(menuStateEarly==='listing_asked_occupation'){
+      const occ=text.trim();
+      if(occ.length<2){
+        await send('Please enter your occupation.');
+        return {handled:true,step:'listing_asked_occupation_reprompt'};
+      }
+      ld.occupation=occ;
+      await setState({menu_state:'listing_asked_phone',listing_data:JSON.stringify(ld)});
+      await send(`What *contact number* should we list for you?\n\nReply *same* to use your WhatsApp number (*${phone}*), or type a different number.`);
+      return {handled:true,step:'listing_asked_phone'};
+    }
+
+    if(menuStateEarly==='listing_asked_phone'){
+      const contactPhone=/^same$/i.test(text)?String(phone):text.replace(/[^\d+]/g,'').trim()||text.trim();
+      ld.phone=contactPhone;
+      const now=new Date().toISOString();
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_profiles (client_id,profile_type,full_name,age,city,education,occupation,phone,whatsapp,membership_plan,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),ld.profile_type||'',ld.full_name||'',ld.age||null,ld.city||'',ld.education||'',ld.occupation||'',contactPhone,String(phone),'free','pending',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriListingFlowInsert',e,{clientId,phone}); }
+      await matriProfilesCacheInvalidate(env,clientId);
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      const typeLabel=ld.profile_type==='bride'?'Bride 👰':'Groom 🤵';
+      await send(`✅ Your profile has been submitted!\n\n📋 *Summary:*\n• Type: ${typeLabel}\n• Name: ${ld.full_name}\n• Age: ${ld.age}\n• City: ${ld.city}\n• Education: ${ld.education}\n• Occupation: ${ld.occupation}\n• Contact: ${contactPhone}\n\n💜 Our team will review and activate your profile shortly.\n\nReply *menu* to go back to the main menu.`);
+      return {handled:true,step:'listing_submitted'};
+    }
+  }
+
+  // ── PAID PLANS FLOW ──────────────────────────────────────────────────────────
+  // subscribe_plans_menu: bot showed list of paid plans, waiting for selection.
+  if(menuStateEarly==='subscribe_plans_menu'){
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const paidPlans=ld.plans||[];
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'plans_menu_cancelled'};
+    }
+    const choice=parseInt(text,10);
+    if(choice===0){
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_from_plans'};
+    }
+    const plan=paidPlans[choice-1];
+    if(!plan){
+      await send(`Please reply with a plan number (0 to ${paidPlans.length}).\n\n_(Reply *menu* to go back)_`);
+      return {handled:true,step:'subscribe_plans_menu_invalid'};
+    }
+    await setState({menu_state:'subscribe_plan_asked_name',listing_data:JSON.stringify({plan_key:plan.key,plan_label:plan.label,plan_price:plan.price}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *${plan.label} Plan* selected — ₹${plan.price}\n\nPlease enter your *name* to generate the payment link.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plan_asked_name'};
+  }
+
+  // subscribe_plan_asked_name: collected plan selection, now asking for customer's name.
+  if(menuStateEarly==='subscribe_plan_asked_name'){
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'subscribe_plan_name_cancelled'};
+    }
+    const name=text.trim();
+    if(name.length<2){
+      await send('Please enter your full name to continue.');
+      return {handled:true,step:'subscribe_plan_name_short'};
+    }
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const planKey=ld.plan_key;
+    if(!planKey||!settings.razorpay_key_id||!settings.razorpay_key_secret){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Payment is not configured. Please contact our team to subscribe.');
+      return {handled:true,step:'subscribe_plan_razorpay_missing'};
+    }
+    let plans=[];
+    try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    const plan=plans.find(p=>p.key===planKey);
+    if(!plan){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Plan not found. Please contact our team.');
+      return {handled:true,step:'subscribe_plan_not_found'};
+    }
+    try{
+      const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+      const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+        body:JSON.stringify({
+          amount:Math.round(plan.price*100),
+          currency:'INR',
+          description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+          customer:{name:name.slice(0,50),contact:String(phone)},
+          notes:{plan_key:planKey,phone:String(phone),client_id:String(clientId)},
+          expire_by:Math.floor(Date.now()/1000)+86400,
+          reminder_enable:false,
+        })
+      });
+      if(!r.ok){
+        const re=await r.json().catch(()=>({}));
+        await setState({menu_state:'menu',listing_data:null});
+        await send(`⚠️ Could not generate payment link. Please try again or contact our team.${re?.error?.description?'\n\n'+re.error.description:''}`);
+        return {handled:true,step:'subscribe_plan_link_error'};
+      }
+      const data=await r.json();
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      const expiryLine=plan.expiry_days?`\n• Validity: ${plan.expiry_days} days`:'';
+      const viewsLine=`\n• ${plan.daily_limit||50} profile views/day`;
+      await send(`✅ Hi *${name}*! Your payment link is ready.\n\n💎 *${plan.label} Plan* — ₹${plan.price}${viewsLine}${expiryLine}\n\n🔗 *Click to pay securely:*\n${data.short_url}\n\n⏳ Link expires in 24 hours. Once payment is confirmed, your account will be activated automatically!\n\n_(Reply *menu* for main menu)_`);
+      return {handled:true,step:'subscribe_plan_link_sent'};
+    }catch(e){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Network error. Please try again later or contact our team.');
+      return {handled:true,step:'subscribe_plan_link_exception'};
+    }
+  }
+
+  // ── FREE SUBSCRIPTION FLOW ───────────────────────────────────────────────────
+  // subscribe_asked_name: bot asked for customer's name before activating.
+  if(menuStateEarly==='subscribe_asked_name'){
+    const name=text.trim();
+    const now=new Date().toISOString();
+    const displayName=name.length>=2?name:String(phone);
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing){
+      if(existing.status==='active'){
+        await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+        await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+        return {handled:true,step:'subscribe_already_active'};
+      }
+      // Reactivate suspended/expired record
+      try{
+        await env.DB.prepare("UPDATE matrimonial_activated_leads SET name=?,status='active',daily_limit=10,monthly_limit=10,can_view='both',expiry_date=NULL,views_today=0,views_month=0,updated_at=? WHERE id=?")
+          .bind(displayName,now,existing.id).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeReactivate',e,{clientId,phone}); }
+    } else {
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),String(phone),displayName,'both',10,10,'active','free subscription via WhatsApp',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeInsert',e,{clientId,phone}); }
+    }
+    await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`🎉 *You're now subscribed!*\n\nHi *${displayName}*, your free subscription is active.\n\n📊 *Your plan:*\n• 10 profile views per day\n• Access to all profiles\n• No expiry\n\nReply *1* to start browsing profiles now!\nReply *menu* for the main menu.`);
+    return {handled:true,step:'subscribe_activated'};
+  }
+
+  const findProfileBySerial=async (ref)=>{
+    try{
+      return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (LOWER(COALESCE(serial_number,''))=LOWER(?) OR CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
+        .bind(String(clientId),String(ref),String(ref),String(ref)).first();
+    }catch(e){ return null; }
+  };
+  const askProfileConfirmation=async (profile)=>{
+    await setState({menu_state:'awaiting_profile_confirmation',profile_type:profile.profile_type,sent_ids:JSON.stringify([profile.id]),city_filter:null,max_age:null});
+    const place=profile.city||profile.district||profile.state||'—';
+    await send(`Please confirm this is the profile you mean:\n\nName: *${profile.full_name||'—'}*\nPlace: *${place}*\nFather's name: *${profile.father_name||'—'}*\n\nIs this the correct person? Reply *Yes* or *No*.`);
+    return {handled:true,step:'profile_confirmation'};
+  };
+
+  // "Profile number" without a number starts the serial-number lookup flow.
+  const asksForProfileNumber=/\b(?:profile|serial)\s*(?:id|no|number)\b/i.test(text);
+  // Matches: "serial 001", "profile id 5", "profile number 209", "profile 209", "#209", "show me profile 5"
+  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile\s*(?:id|no|number)?|#)\s*[:#-]?\s*["']?([a-z0-9_-]+)["']?/i)||text.match(/\b(?:looking\s+for|find|show\s+me)\s+(?:profile\s*)?["']?#?(\d+)["']?/i);
+  if(asksForProfileNumber&&!serialMatch){
+    await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('Please type the *profile serial number*.');
+    return {handled:true,step:'asked_profile_serial'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_serial'){
+    const ref=text.replace(/^#\s*/,'').trim();
+    const exact=ref?await findProfileBySerial(ref):null;
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref||text}*.\n\nPlease check the number and type it again.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  // A serial supplied in the first message goes straight to identity confirmation.
+  if(serialMatch){
+    const ref=serialMatch[1];
+    const exact=await findProfileBySerial(ref);
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref}*.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_confirmation'){
+    let pendingIds=[];
+    try{ pendingIds=JSON.parse(st.sent_ids||'[]'); }catch(e){}
+    const yes=/^(?:y|yes|ok|okay|correct|confirm|അതെ|ഓക്കെ|ശരി)[.!\s]*$/i.test(text);
+    const no=/^(?:n|no|wrong|not this|അല്ല)[.!\s]*$/i.test(text);
+    if(no){
+      await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]'});
+      await send('Okay. Please type the correct *profile serial number*.');
+      return {handled:true,step:'profile_rejected'};
+    }
+    if(!yes){
+      await send('Please reply *Yes* if this is the correct person, or *No* to enter another serial number.');
+      return {handled:true,step:'profile_confirmation_reprompt'};
+    }
+
+    const profileId=parseInt(pendingIds[0],10);
+    let profile=null,access=null;
+    try{
+      profile=await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND id=? AND status='active'").bind(String(clientId),profileId).first();
+      access=await env.DB.prepare("SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?").bind(String(clientId),String(phone)).first();
+    }catch(e){}
+    const today=new Date().toISOString().slice(0,10);
+    const permitted=access&&access.status==='active'&&(!access.expiry_date||access.expiry_date>=today)&&(access.can_view==='both'||access.can_view===profile?.profile_type);
+    if(!permitted){
+      await send('⚠️ Your number is not activated to receive this profile’s contact details. Please contact our team for access.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'contact_access_denied'};
+    }
+    if(!profile){
+      await send('📭 This profile is no longer available.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'profile_unavailable'};
+    }
+    const contacts=[];
+    if(profile.phone) contacts.push(`Personal number: *${profile.phone}*`);
+    if(profile.guardian_phone) contacts.push(`Guardian number: *${profile.guardian_phone}*`);
+    if(profile.whatsapp) contacts.push(`WhatsApp number: *${profile.whatsapp}*`);
+    await send(contacts.length?`✅ Contact details for *${profile.full_name}*:\n\n${contacts.join('\n')}`:'ℹ️ No contact numbers are saved for this profile.');
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    return {handled:true,step:'profile_contacts_sent'};
+  }
+
+  // A complete natural-language request should search immediately instead of
+  // asking again for gender, city, or age already provided by the customer.
+  const directType=/\bbrides?\b/i.test(text)?'bride':(/\bgrooms?\b/i.test(text)?'groom':null);
+  if(directType&&/\b(show|view|see|browse|find|search|give|send)\b/i.test(text)){
+    const directAge=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const directCity=text.match(/\b(?:in|from)\s+([a-z][a-z .'-]{1,40}?)(?=\s+(?:under|below|max(?:imum)?|up\s*to)\b|[,.!?]|$)/i);
+    const age=directAge?parseInt(directAge[1],10):null;
+    const city=directCity?directCity[1].trim():null;
+    await setState({menu_state:'viewing_profiles',profile_type:directType,sent_ids:'[]',city_filter:city,max_age:age});
+    const filters=[];
+    if(city) filters.push(`📍 ${city}`);
+    if(age) filters.push(`🎂 Under ${age}`);
+    await send(`Searching *${directType}* profiles${filters.length?' — '+filters.join(', '):''}…`);
+    return await sendProfiles(directType);
+  }
+
+  // Natural-language phrase matching — treat as keyword "1" (view profiles)
+  const isViewPhrase=textLower!==kwView&&/\b(show|view|see|browse|find|search)\b.*\bprofiles?\b|\bprofiles?\b$/i.test(text);
+
+  // View profiles keyword (default "1") or natural-language phrase
+  if(textLower===kwView||isViewPhrase){
+    await setState({menu_state:'asked_gender',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('Do you want *Bride* or *Groom* profiles?\n\nReply *B* for Bride or *G* for Groom');
+    return {handled:true,step:'asked_gender'};
+  }
+
+  // List profile keyword (default "2") — start conversational registration flow
+  if(textLower===kwList){
+    await setState({menu_state:'listing_asked_type',listing_data:'{}',sent_ids:'[]',city_filter:null,max_age:null});
+    await send('📋 *List Your Profile*\n\nAre you registering as a *Bride* or *Groom*?\n\nReply *B* for Bride or *G* for Groom\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'listing_asked_type'};
+  }
+
+  // Natural-language phrase matching — treat as keyword "4" (free subscription)
+  const isSubscribePhrase=textLower!==kwSubscribe&&/\b(free\s*sub(?:scription)?|free\s*plan|free\s*access|free\s*(?:now|today)|subscribe\s*free|get\s*free|start\s*free|activate\s*free|free\s*register|free\s*membership)\b/i.test(text);
+
+  // Free subscription keyword (default "4") or natural-language phrase
+  if(textLower===kwSubscribe||isSubscribePhrase){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+      return {handled:true,step:'subscribe_already_active'};
+    }
+    await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'subscribe_asked_name'};
+  }
+
+  // Paid plans keyword (default "5")
+  if(textLower===kwPlans){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status,plan_type FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      const planLabel=(existing.plan_type&&existing.plan_type!=='free')?existing.plan_type:'free';
+      await send(`✅ You already have an active *${planLabel}* subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.`);
+      return {handled:true,step:'plans_already_active'};
+    }
+    let paidPlans=[];
+    try{ paidPlans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    if(!paidPlans.length||!settings.razorpay_key_id){
+      // No paid plans configured — fall through to free subscribe
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_plans_fallback'};
+    }
+    const lines=paidPlans.map((p,i)=>`${i+1}. 💎 *${p.label}* — ₹${p.price}${p.expiry_days?` / ${p.expiry_days} days`:''}  (${p.daily_limit||50} views/day)`).join('\n');
+    await setState({menu_state:'subscribe_plans_menu',listing_data:JSON.stringify({plans:paidPlans}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *Subscription Plans*\n\n${lines}\n\n0. 🎁 Free – 10 views/day (no payment)\n\nReply with the plan number to subscribe.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plans_menu'};
+  }
+
+  // Talk to agent keyword (default "3") — let normal LLM routing handle it
+  if(textLower===kwAgent) return null;
+
+  // State-driven responses
+  const menuState=st?.menu_state;
+
+  if(menuState==='asked_gender'){
+    let pType=null;
+    if(/^b(ride)?$/i.test(text)) pType='bride';
+    else if(/^g(room)?$/i.test(text)) pType='groom';
+    if(pType){
+      await setState({menu_state:'asked_city',profile_type:pType,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('Which district or city? (e.g. *Malappuram*, *Kozhikode*)\n\nOr reply *all* to see all locations.');
+      return {handled:true,step:'asked_city'};
+    }
+    await send('Please reply *B* for Bride profiles or *G* for Groom profiles.\n\nOr reply *menu* to go back.');
+    return {handled:true,step:'asked_gender_reprompt'};
+  }
+
+  if(menuState==='asked_city'){
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nWhich district or city? (or reply *all*)`);
+      return {handled:true,step:'serial_not_found_city'};
+    }
+    const cityInput=/^all$/i.test(text)?null:text.trim();
+    await setState({menu_state:'asked_age',city_filter:cityInput});
+    await send('Maximum age? (e.g. *25*)\n\nOr reply *any* for no age limit.');
+    return {handled:true,step:'asked_age'};
+  }
+
+  if(menuState==='asked_age'){
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nMaximum age? (or reply *any*)`);
+      return {handled:true,step:'serial_not_found_age'};
+    }
+    const ageInput=/^(?:any|no\s*(?:age\s*)?limit)$/i.test(text)?null:(parseInt(text)||null);
+    await setState({menu_state:'viewing_profiles',max_age:ageInput});
+    const cityLabel=st.city_filter||null;
+    const filterLine=[];
+    if(cityLabel) filterLine.push(`📍 ${cityLabel}`);
+    if(ageInput) filterLine.push(`🎂 Under ${ageInput}`);
+    if(filterLine.length) await send(`Searching *${st.profile_type}* profiles — ${filterLine.join(', ')}…`);
+    return await sendProfiles(st.profile_type||'bride');
+  }
+
+  if(menuState==='viewing_profiles'&&/^next$/i.test(text)){
+    return await sendProfiles(st.profile_type||'bride');
+  }
+
+  // Refine a previous search naturally and query saved profiles immediately.
+  if(menuState==='viewing_profiles'){
+    const ageMatch=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const bareAge=textLower.match(/^\s*(\d{2})\s*$/);
+    const wantsAnyAge=/^(?:any|any age|no age limit)$/i.test(text);
+    const requestedAge=wantsAnyAge?null:parseInt((ageMatch||bareAge||[])[1],10)||null;
+    if(wantsAnyAge||requestedAge){
+      await setState({max_age:requestedAge,sent_ids:'[]'});
+      await send(requestedAge?`Searching *${st.profile_type||'bride'}* profiles — 🎂 Under ${requestedAge}…`:`Searching *${st.profile_type||'bride'}* profiles — any age…`);
+      return await sendProfiles(st.profile_type||'bride');
+    }
+    // Plain serial number typed while browsing — look it up directly.
+    const plainRef=text.replace(/^#\s*/,'').trim();
+    if(plainRef&&!/^\d{1,2}$/.test(plainRef)){
+      const bySerial=await findProfileBySerial(plainRef);
+      if(bySerial) return await askProfileConfirmation(bySerial);
+    }
+  }
+
+  // Brand-new lead — show welcome automatically
+  if(isNewLead){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    await send(buildWelcome());
+    return {handled:true,step:'welcome'};
+  }
+
+  return null;
+}
+
+// Canonical DB columns for each table (used to validate incoming field names from n8n)
+const MATRI_WEBHOOK_COLS={
+  profiles: new Set(MATRIMONIAL_PROFILE_FIELDS),
+  matches:  new Set(MATRIMONIAL_MATCH_FIELDS),
+  shortlists:new Set(MATRIMONIAL_SHORTLIST_FIELDS),
+  stories:  new Set(MATRIMONIAL_STORY_FIELDS),
+};
+const MATRI_WEBHOOK_TABLE={
+  profiles:'matrimonial_profiles', matches:'matrimonial_matches',
+  shortlists:'matrimonial_shortlists', stories:'matrimonial_success_stories',
+};
+const MATRI_TOKEN_COL={
+  profiles:'profiles_webhook_token', matches:'matches_webhook_token',
+  shortlists:'shortlists_webhook_token', stories:'stories_webhook_token',
+};
+const MATRI_MAP_COL={
+  profiles:'profiles_col_map', matches:'matches_col_map',
+  shortlists:'shortlists_col_map', stories:'stories_col_map',
+};
+const MATRI_DEDUP_COL={
+  profiles:'profiles_dedup_key', matches:'matches_dedup_key',
+  shortlists:'shortlists_dedup_key', stories:'stories_dedup_key',
+};
+
+// CRUD for activated leads — customers allowed to view profiles via the WhatsApp chat menu.
+const MATRIMONIAL_ACTIVATED_FIELDS=['phone','name','can_view','daily_limit','monthly_limit','expiry_date','status','notes','plan_type'];
+async function handleMatriActivatedList(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const {results}=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? ORDER BY id DESC').bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriActivatedCreate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.phone) return json({error:'phone required'},400);
+  const phone=String(body.phone).replace(/[^0-9]/g,'');
+  const now=new Date().toISOString();
+  try{
+    await env.DB.prepare('INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(String(payload.cid),phone,body.name||null,body.can_view||'both',parseInt(body.daily_limit)||10,parseInt(body.monthly_limit)||50,body.expiry_date||null,body.status||'active',body.notes||null,now,now).run();
+  }catch(e){
+    if(String(e.message||e).includes('UNIQUE')) return json({error:'This phone is already activated'},409);
+    throw e;
+  }
+  return json({ok:true});
+}
+async function handleMatriActivatedUpdate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  const now=new Date().toISOString();
+  const sets=[],vals=[];
+  for(const k of MATRIMONIAL_ACTIVATED_FIELDS){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`);
+    vals.push(k==='daily_limit'||k==='monthly_limit'?parseInt(body[k])||0:(body[k]===null?null:String(body[k])));
+  }
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(now); vals.push(String(payload.cid)); vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE matrimonial_activated_leads SET ${sets.join(',')} WHERE client_id=? AND id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleMatriActivatedDelete(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  await env.DB.prepare('DELETE FROM matrimonial_activated_leads WHERE client_id=? AND id=?').bind(String(payload.cid),Number(body.id)).run();
+  return json({ok:true});
+}
+
+// POST /matrimonial/razorpay/create-link — session-gated; creates a Razorpay Payment Link for a given
+// phone and plan. Used by the dashboard to manually generate a payment link for a customer.
+async function handleMatriCreatePaymentLink(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const {phone,plan_key,name}=body;
+  if(!phone||!plan_key) return json({error:'phone and plan_key required'},400);
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(!settings?.razorpay_key_id||!settings?.razorpay_key_secret) return json({error:'Razorpay not configured — add key_id and key_secret in Settings'},400);
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===plan_key);
+  if(!plan) return json({error:'Plan not found'},400);
+  const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+  const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+    body:JSON.stringify({
+      amount:Math.round(plan.price*100),
+      currency:'INR',
+      description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+      customer:{name:(name||String(phone)).slice(0,50),contact:String(phone)},
+      notes:{plan_key,phone:String(phone),client_id:String(payload.cid)},
+      expire_by:Math.floor(Date.now()/1000)+86400,
+      reminder_enable:false,
+    })
+  });
+  if(!r.ok){
+    const e=await r.json().catch(()=>({}));
+    return json({error:e?.error?.description||'Razorpay error'},502);
+  }
+  const data=await r.json();
+  return json({payment_url:data.short_url,payment_link_id:data.id});
+}
+
+// POST /matrimonial/razorpay/webhook — public endpoint called by Razorpay on payment events.
+// Reads client_id from payment notes, verifies HMAC-SHA256 signature, and on payment_link.paid
+// activates the customer's account with the plan limits and expiry.
+async function handleMatriPaymentWebhook(request,env){
+  const rawBody=await request.text();
+  const sig=request.headers.get('X-Razorpay-Signature')||'';
+  let evt;
+  try{ evt=JSON.parse(rawBody); }catch(e){ return new Response('bad json',{status:400}); }
+  const plNotes=evt?.payload?.payment_link?.entity?.notes||{};
+  const pyNotes=evt?.payload?.payment?.entity?.notes||{};
+  const notes={...pyNotes,...plNotes};
+  const clientId=notes.client_id;
+  if(!clientId) return new Response('no client_id in notes',{status:400});
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first().catch(()=>null);
+  if(!settings?.razorpay_webhook_secret) return new Response('webhook_secret not configured',{status:400});
+  // Verify HMAC-SHA256
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey('raw',enc.encode(settings.razorpay_webhook_secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const mac=await crypto.subtle.sign('HMAC',key,enc.encode(rawBody));
+  const expected=Array.from(new Uint8Array(mac)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected!==sig) return new Response('invalid signature',{status:400});
+  if(evt.event!=='payment_link.paid') return new Response('ok',{status:200});
+  const planKey=notes.plan_key;
+  const phone=notes.phone;
+  const paymentId=evt?.payload?.payment?.entity?.id||evt?.payload?.payment_link?.entity?.id||'';
+  if(!planKey||!phone) return new Response('missing plan_key or phone in notes',{status:400});
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===planKey);
+  if(!plan) return new Response('unknown plan',{status:400});
+  const now=new Date().toISOString();
+  const expiryDate=plan.expiry_days?new Date(Date.now()+plan.expiry_days*86400000).toISOString().slice(0,10):null;
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first().catch(()=>null);
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_activated_leads SET status='active',plan_type=?,daily_limit=?,monthly_limit=?,can_view=?,expiry_date=?,razorpay_payment_id=?,views_today=0,views_month=0,updated_at=? WHERE id=?`)
+      .bind(planKey,plan.daily_limit||50,plan.monthly_limit||500,plan.can_view||'both',expiryDate,paymentId,now,existing.id).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,plan_type,razorpay_payment_id,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(String(clientId),String(phone),String(phone),plan.can_view||'both',plan.daily_limit||50,plan.monthly_limit||500,expiryDate,'active',planKey,paymentId,`${plan.label} plan via Razorpay`,now,now).run();
+  }
+  return new Response('ok',{status:200});
+}
+
+// POST /matrimonial/webhook/:kind — public endpoint called by n8n; authenticated by per-table token.
+// Accepts a JSON array (or a single object) of rows. Each row's keys are mapped through the saved
+// column map (if set) and then validated against the table's canonical field list; unknown keys
+// are silently dropped. If a dedup key is configured and the table has a matching row for this
+// client_id, the row is updated; otherwise it is inserted. Returns a summary of rows processed.
+async function handleMatriWebhook(request, env, kind){
+  if(kind==='profiles') await ensureMatrimonialSerialSchema(env);
+  const url=new URL(request.url);
+  const token=url.searchParams.get('token')||'';
+  if(!token) return json({error:'token required'}, 401);
+
+  // Look up the client that owns this token
+  const tokenCol=MATRI_TOKEN_COL[kind];
+  if(!tokenCol) return json({error:'Unknown table'}, 404);
+  const settings=await env.DB.prepare(`SELECT * FROM matrimonial_settings WHERE ${tokenCol}=?`).bind(token).first();
+  if(!settings) return json({error:'Invalid token'}, 401);
+  const clientId=Number(settings.client_id);
+
+  // Parse body — accept array or single object
+  let rows;
+  try{ const b=await request.json(); rows=Array.isArray(b)?b:[b]; }catch(e){ return json({error:'Invalid JSON body'}, 400); }
+  if(!rows.length) return json({ok:true, rows_received:0, rows_inserted:0, rows_updated:0, rows_skipped:0});
+
+  // Column map: external header → DB column
+  let colMap={};
+  try{ colMap=JSON.parse(settings[MATRI_MAP_COL[kind]]||'{}'); }catch(e){}
+  const dedupKey=settings[MATRI_DEDUP_COL[kind]]||'';
+  const validCols=MATRI_WEBHOOK_COLS[kind];
+  const table=MATRI_WEBHOOK_TABLE[kind];
+  const now=new Date().toISOString();
+
+  let inserted=0,updated=0,skipped=0;
+  for(const raw of rows){
+    // Apply column map then drop unknown keys
+    const row={};
+    for(const [k,v] of Object.entries(raw)){
+      const mapped=colMap[k]||k;
+      if(validCols.has(mapped)) row[mapped]=v;
+    }
+    const cols=Object.keys(row);
+    if(!cols.length){ skipped++; continue; }
+    const vals=cols.map(k=>matriCoerce(k,row[k]));
+
+    try{
+      if(dedupKey && row[dedupKey]!==undefined && String(row[dedupKey]||'').trim()){
+        const existing=await env.DB.prepare(`SELECT id FROM ${table} WHERE client_id=? AND ${dedupKey}=? LIMIT 1`)
+          .bind(clientId, String(row[dedupKey]).trim()).first();
+        if(existing){
+          const sets=cols.map(c=>`${c}=?`); sets.push('updated_at=?'); vals.push(now);
+          await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals, existing.id).run();
+          updated++;
+        }else{
+          await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+            .bind(clientId,...vals,now,now).run();
+          inserted++;
+        }
+      }else{
+        await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+          .bind(clientId,...vals,now,now).run();
+        inserted++;
+      }
+    }catch(e){ skipped++; }
+  }
+
+  // Write sync log
+  await env.DB.prepare(`INSERT INTO matrimonial_webhook_log (client_id,table_name,rows_received,rows_inserted,rows_updated,rows_skipped,status,fired_at) VALUES (?,?,?,?,?,?,'ok',?)`)
+    .bind(clientId, kind, rows.length, inserted, updated, skipped, now).run().catch(()=>{});
+
+  if(kind==='profiles'&&(inserted||updated)) await matriProfilesCacheInvalidate(env,clientId);
+
+  return json({ok:true, rows_received:rows.length, rows_inserted:inserted, rows_updated:updated, rows_skipped:skipped});
+}
+
+// POST /matrimonial/tokens/regenerate — session-gated; re-rolls all four webhook tokens at once.
+// Returns the new tokens so the dashboard can display them immediately.
+async function handleMatriTokensRegenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cid=String(payload.cid);
+  const tokens={
+    profiles_webhook_token: crypto.randomUUID(),
+    matches_webhook_token:  crypto.randomUUID(),
+    shortlists_webhook_token: crypto.randomUUID(),
+    stories_webhook_token:  crypto.randomUUID(),
+  };
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(cid).first();
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_settings SET profiles_webhook_token=?,matches_webhook_token=?,shortlists_webhook_token=?,stories_webhook_token=?,updated_at=? WHERE client_id=?`)
+      .bind(tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,cid).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,profiles_webhook_token,matches_webhook_token,shortlists_webhook_token,stories_webhook_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(cid,tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,now).run();
+  }
+  return json({ok:true, tokens});
+}
+
+// GET /matrimonial/webhook/log — session-gated; last 50 sync events for this client.
+async function handleMatriWebhookLog(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM matrimonial_webhook_log WHERE client_id=? ORDER BY id DESC LIMIT 50`)
+    .bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+
+/* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
+   0051_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
+   entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
+   login/session as the CRM (a Leadvyne account gets both), but its own tables: a different
+   product on the same account, not a CRM feature. Special cases the generic Recruit handlers
+   don't need: tasks/sprints/time/automations all reference a project_id that has to be verified
+   as belonging to this client (projectScopedKinds below); tasks carry `updated_at` (touched on
+   every write) and `position` (a float for cheap kanban drag-reorder — see the migration's own
+   comment); `time` entries derive their project_id server-side from the task rather than trusting
+   the client's own copy; deleting a project cascades to its tasks; a task's `done_at` is
+   maintained by the server on status transitions, not directly writable, and a task status change
+   or creation runs any matching automations (see PM automation engine below). ── */
+let _pmSchemaEnsured=false;
+async function pmEnsureSchema(env){
+  if(_pmSchemaEnsured)return;
+  // Create all tables with full current schema (CREATE TABLE IF NOT EXISTS is idempotent)
+  await env.DB.batch([
+    `CREATE TABLE IF NOT EXISTS pm_projects (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,color TEXT NOT NULL DEFAULT '#0D9C93',status TEXT NOT NULL DEFAULT 'active',budget_amount REAL,budget_currency TEXT NOT NULL DEFAULT 'USD',default_hourly_rate REAL,client_email TEXT,ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0,task_reminders_enabled INTEGER NOT NULL DEFAULT 0,overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_projects_client ON pm_projects(client_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_client ON pm_tasks(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_project ON pm_tasks(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_sprint ON pm_tasks(client_id,sprint_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_task_dependencies (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,predecessor_id INTEGER NOT NULL,successor_id INTEGER NOT NULL,lag_days INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,UNIQUE(predecessor_id,successor_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_client ON pm_task_dependencies(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_project ON pm_task_dependencies(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,task_id INTEGER NOT NULL,project_id INTEGER NOT NULL,user_email TEXT,entry_date TEXT NOT NULL,hours REAL NOT NULL DEFAULT 0,note TEXT,billable INTEGER NOT NULL DEFAULT 1,hourly_rate REAL,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_client ON pm_time_entries(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_project ON pm_time_entries(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_task ON pm_time_entries(client_id,task_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_sprints (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,start_date TEXT,end_date TEXT,status TEXT NOT NULL DEFAULT 'planned',created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_client ON pm_sprints(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_project ON pm_sprints(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_automations (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,trigger_type TEXT NOT NULL,trigger_config TEXT,action_type TEXT NOT NULL,action_config TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_client ON pm_automations(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_project ON pm_automations(client_id,project_id)`,
+  ].map(s=>env.DB.prepare(s)));
+  // Phase-2/3 columns for pm_tasks and pm_projects are added by migrations
+  // 0051_pm_phase2.sql, 0052_pm_merge_legacy_tasks.sql, and 0058_project_automation.sql.
+  _pmSchemaEnsured=true;
+}
+const PM_TABLES={
+  projects:{
+    table:'pm_projects', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      name:{type:'str', max:200}, description:{type:'text'},
+      color:{type:'str', max:20, def:'#0D9C93'}, status:{type:'str', max:20, def:'active'},
+      budget_amount:{type:'num'}, budget_currency:{type:'str', max:10, def:'USD'}, default_hourly_rate:{type:'num'},
+      client_email:{type:'str', max:200}, ai_auto_stage_enabled:{type:'int', def:0},
+      task_reminders_enabled:{type:'int', def:0}, overdue_escalation_enabled:{type:'int', def:0},
+    }
+  },
+  tasks:{
+    table:'pm_tasks', requiredField:'title', orderBy:'position ASC, created_at ASC', hasUpdatedAt:true,
+    fields:{
+      project_id:{type:'int', def:0}, title:{type:'str', max:300}, description:{type:'text'},
+      status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
+      assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
+      position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
+      story_points:{type:'int'}, sprint_id:{type:'int'}, link_url:{type:'str', max:500}, link_label:{type:'str', max:100},
+      // Merged in from the legacy manual_tasks blob system (see migrations/0052_pm_merge_legacy_tasks.sql)
+      lead_id:{type:'int'}, lead_name:{type:'str', max:200}, category:{type:'str', max:40},
+      channel:{type:'str', max:20}, mode:{type:'str', max:20}, followup_step:{type:'int'},
+      notify_customer:{type:'int', def:0}, ai_created:{type:'int', def:0}, auto_generated:{type:'int', def:0},
+      gcal_event_id:{type:'str', max:200},
+    }
+  },
+  sprints:{
+    table:'pm_sprints', requiredField:'name', orderBy:'start_date ASC, created_at ASC',
+    fields:{
+      project_id:{type:'int'}, name:{type:'str', max:200}, start_date:{type:'str', max:10},
+      end_date:{type:'str', max:10}, status:{type:'str', max:20, def:'planned'},
+    }
+  },
+  time:{
+    table:'pm_time_entries', requiredField:'entry_date', orderBy:'entry_date DESC, created_at DESC',
+    fields:{
+      task_id:{type:'int'}, project_id:{type:'int'}, user_email:{type:'str', max:140},
+      entry_date:{type:'str', max:10}, hours:{type:'num'}, note:{type:'text'},
+      billable:{type:'int', def:1}, hourly_rate:{type:'num'},
+    }
+  },
+  automations:{
+    table:'pm_automations', requiredField:'name', orderBy:'created_at DESC',
+    fields:{
+      project_id:{type:'int'}, name:{type:'str', max:200}, trigger_type:{type:'str', max:40},
+      trigger_config:{type:'text'}, action_type:{type:'str', max:40}, action_config:{type:'text'},
+      enabled:{type:'int', def:1},
+    }
+  },
+};
+// Entity kinds whose project_id must be verified as belonging to this client before a write —
+// everything project-scoped except `projects` itself and `time` (time entries derive project_id
+// from their task instead, see handlePmCreate).
+const PM_PROJECT_SCOPED=['tasks','sprints','automations'];
+const pmAutomationSchemaReady=new WeakMap();
+const PM_AUTOMATION_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS pm_task_automation (
+    client_id INTEGER NOT NULL, project_id INTEGER NOT NULL, task_id INTEGER NOT NULL,
+    task_version TEXT NOT NULL DEFAULT '', workflow_instance_id TEXT NOT NULL DEFAULT '',
+    workflow_status TEXT NOT NULL DEFAULT 'pending', reminder_status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_task_notifications (
+    client_id INTEGER NOT NULL, task_id INTEGER NOT NULL, task_version TEXT NOT NULL, kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'processing', sent_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, task_id, task_version, kind)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pm_queue_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL DEFAULT 0,
+    project_id INTEGER NOT NULL DEFAULT 0, task_id INTEGER NOT NULL DEFAULT 0,
+    job_type TEXT NOT NULL DEFAULT '', failure_reason TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_task_automation_status
+    ON pm_task_automation(client_id, project_id, workflow_status, reminder_status)`,
+  `CREATE INDEX IF NOT EXISTS idx_pm_queue_failures_client ON pm_queue_failures(client_id, created_at)`
+];
+export async function pmEnsureAutomationSchema(env){
+  if(!env?.DB) throw new Error('D1 DB binding is not configured');
+  const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
+  const pending=(async()=>{
+    // task_reminders_enabled + overdue_escalation_enabled added by migration 0058_project_automation.sql
+    for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
+  })();
+  pmAutomationSchemaReady.set(env.DB,pending);
+  try{ await pending; }catch(error){ pmAutomationSchemaReady.delete(env.DB); throw error; }
+}
+function pmCoerce(spec, raw){
+  if(raw===undefined||raw===null||raw===''){
+    return spec.def!==undefined?spec.def:null;
+  }
+  // NaN-checked, not `||` — a real 0 (an unchecked flag like ai_auto_stage_enabled, an explicit
+  // billable:0/enabled:0) must survive coercion, not collapse to null/def just because 0 is falsy.
+  if(spec.type==='num'){ const n=Number(raw); return Number.isNaN(n)?(spec.def!==undefined?spec.def:0):n; }
+  if(spec.type==='int'){ const n=parseInt(raw,10); return Number.isNaN(n)?(spec.def!==undefined?spec.def:null):n; }
+  if(spec.type==='text') return String(raw);
+  return String(raw).trim().slice(0, spec.max||255);
+}
+async function pmVerifyProject(env, cid, projectId){
+  const proj=await env.DB.prepare(`SELECT client_id FROM pm_projects WHERE id=?`).bind(parseInt(projectId,10)).first();
+  return proj && String(proj.client_id)===String(cid);
+}
+async function handlePmList(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
+  const cfg=PM_TABLES[kind];
+  const url=new URL(request.url);
+  const projectId=parseInt(url.searchParams.get('project_id'),10);
+  // projects/time-without-a-filter have no project_id-filtered path; every other kind supports it.
+  const {results}=await (projectId
+    ? env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? AND project_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid), projectId)
+    : env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid))
+  ).all();
+  return json({list:results||[]});
+}
+async function handlePmCreate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id){
+    if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
+  }
+  if(kind==='time'){
+    // project_id is never trusted from the client here — derived from the task itself, so a time
+    // entry can't be filed against a project it doesn't actually belong to.
+    const task=await env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(parseInt(body.task_id,10)).first();
+    if(!task || String(task.client_id)!==String(payload.cid)) return json({error:'task_id not found'}, 400);
+    body.project_id=task.project_id;
+  }
+  const cols=Object.keys(cfg.fields);
+  const vals=cols.map(k=>pmCoerce(cfg.fields[k], body[k]));
+  const now=new Date().toISOString();
+  const extraCols=cfg.hasUpdatedAt?', updated_at':'';
+  const extraVals=cfg.hasUpdatedAt?', ?':'';
+  const r=await env.DB.prepare(
+    `INSERT INTO ${cfg.table} (client_id, ${cols.join(', ')}, created_at${extraCols}) VALUES (?, ${cols.map(()=>'?').join(', ')}, ?${extraVals})`
+  ).bind(Number(payload.cid), ...vals, now, ...(cfg.hasUpdatedAt?[now]:[])).run();
+  const row=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  if(kind==='tasks'){
+    if(row.status==='done') await env.DB.prepare(`UPDATE pm_tasks SET done_at=? WHERE id=?`).bind(now, row.id).run();
+    const fresh=await pmTaskRow(env,payload.cid,row.id);
+    row.automation=await pmQueueTaskLifecycle(env,fresh,{event:'created'});
+  }
+  return json(row);
+}
+async function handlePmUpdate(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id!==undefined){
+    if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
+  }
+  if(kind==='time' && (body.task_id!==undefined || body.project_id!==undefined)){
+    // Same rule as handlePmCreate — project_id always derives from the task, never trusted
+    // directly, so a time entry can't end up claiming a project its task doesn't belong to.
+    const task=await env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(parseInt(body.task_id??existing.task_id,10)).first();
+    if(!task || String(task.client_id)!==String(payload.cid)) return json({error:'task_id not found'}, 400);
+    body.project_id=task.project_id;
+  }
+  const sets=[], vals=[];
+  for(const k of Object.keys(cfg.fields)){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`); vals.push(pmCoerce(cfg.fields[k], body[k]));
+  }
+  const now=new Date().toISOString();
+  const statusChanged=kind==='tasks' && body.status!==undefined && body.status!==existing.status;
+  if(statusChanged){ sets.push('done_at=?'); vals.push(body.status==='done'?now:null); }
+  if(!sets.length) return json({ok:true});
+  if(cfg.hasUpdatedAt){ sets.push('updated_at=?'); vals.push(now); }
+  vals.push(id);
+  await env.DB.prepare(`UPDATE ${cfg.table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(kind==='tasks'){
+    const fresh=await pmTaskRow(env,payload.cid,id);
+    return json({ok:true,automation:await pmQueueTaskLifecycle(env,fresh,{event:statusChanged?'status_changed':'',prevStatus:existing.status})});
+  }
+  if(kind==='projects'&&(body.task_reminders_enabled!==undefined||body.overdue_escalation_enabled!==undefined)){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_refresh',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectRefresh',error,{clientId:payload.cid,projectId:id}); }
+  }
+  return json({ok:true});
+}
+async function handlePmDelete(request, env, kind){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
+  const cfg=PM_TABLES[kind];
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM ${cfg.table} WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  if(kind==='projects'){
+    try{ await pmDispatchJobs(env,[{type:'pm_project_terminate',client_id:Number(payload.cid),project_id:id}]); }
+    catch(error){ await reportOpsError(env,'pmProjectTerminate',error,{clientId:payload.cid,projectId:id}); }
+    await env.DB.prepare(`DELETE FROM pm_tasks WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_sprints WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_time_entries WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_automations WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+    await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE project_id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  }
+  if(kind==='tasks'){
+    try{ await pmDispatchJobs(env,[{type:'pm_workflow_terminate',client_id:Number(payload.cid),project_id:Number(existing.project_id),task_id:id,task_version:String(existing.updated_at||'')}]); }
+    catch(error){ await reportOpsError(env,'pmTaskTerminate',error,{clientId:payload.cid,taskId:id}); }
+    await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE client_id=? AND (predecessor_id=? OR successor_id=?)`).bind(Number(payload.cid), id, id).run();
+    await env.DB.prepare(`DELETE FROM pm_time_entries WHERE client_id=? AND task_id=?`).bind(Number(payload.cid), id).run();
+  }
+  await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ── PM dependencies (finish-to-start task links) ──
+   Not in PM_TABLES/generic CRUD — creating a dependency needs a real cycle check (a DAG walk),
+   which the generic handlers have no place for. List/delete are simple enough to stay dedicated
+   too, for symmetry with create rather than splitting the entity across two code paths. Critical
+   path itself is computed client-side in projects.html from this edge list plus the tasks already
+   loaded there — no separate server endpoint for it. ── */
+async function pmHasPath(env, cid, fromId, toId){
+  // BFS from `fromId` following successor edges — true if `toId` is reachable, meaning adding
+  // fromId->toId as a new edge would close a cycle.
+  const {results}=await env.DB.prepare(`SELECT predecessor_id, successor_id FROM pm_task_dependencies WHERE client_id=?`).bind(Number(cid)).all();
+  const edges=results||[];
+  const seen=new Set([fromId]); const queue=[fromId];
+  while(queue.length){
+    const cur=queue.shift();
+    if(cur===toId) return true;
+    for(const e of edges){
+      if(e.predecessor_id===cur && !seen.has(e.successor_id)){ seen.add(e.successor_id); queue.push(e.successor_id); }
+    }
+  }
+  return false;
+}
+async function handlePmDependenciesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const projectId=parseInt(url.searchParams.get('project_id'),10);
+  if(!projectId) return json({error:'project_id required'}, 400);
+  const {results}=await env.DB.prepare(`SELECT *, id AS Id FROM pm_task_dependencies WHERE client_id=? AND project_id=?`).bind(Number(payload.cid), projectId).all();
+  return json({list:results||[]});
+}
+async function handlePmDependencyCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const predecessorId=parseInt(body.predecessor_id,10), successorId=parseInt(body.successor_id,10);
+  const lagDays=parseInt(body.lag_days,10)||0;
+  if(!predecessorId || !successorId) return json({error:'predecessor_id and successor_id required'}, 400);
+  if(predecessorId===successorId) return json({error:'A task cannot depend on itself'}, 400);
+  const [pred, succ]=await Promise.all([
+    env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(predecessorId).first(),
+    env.DB.prepare(`SELECT client_id, project_id FROM pm_tasks WHERE id=?`).bind(successorId).first(),
+  ]);
+  if(!pred || String(pred.client_id)!==String(payload.cid) || !succ || String(succ.client_id)!==String(payload.cid)){
+    return json({error:'Task not found'}, 400);
+  }
+  if(String(pred.project_id)!==String(succ.project_id)) return json({error:'Both tasks must be in the same project'}, 400);
+  // Would adding predecessor->successor let you follow edges from successor back to predecessor?
+  // If so this link closes a cycle (A depends on B which already, directly or transitively,
+  // depends on A) — reject instead of silently creating a Gantt that can never resolve.
+  if(await pmHasPath(env, payload.cid, successorId, predecessorId)) return json({error:'That would create a circular dependency'}, 400);
+  const now=new Date().toISOString();
+  try{
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_task_dependencies (client_id, project_id, predecessor_id, successor_id, lag_days, created_at) VALUES (?,?,?,?,?,?)`
+    ).bind(Number(payload.cid), pred.project_id, predecessorId, successorId, lagDays, now).run();
+    const row=await env.DB.prepare(`SELECT *, id AS Id FROM pm_task_dependencies WHERE id=?`).bind(r.meta.last_row_id).first();
+    return json(row);
+  }catch(e){ return json({error:'That dependency already exists'}, 400); }
+}
+async function handlePmDependencyDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.Id,10);
+  if(!id) return json({error:'Id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM pm_task_dependencies WHERE id=?`).bind(id).first();
+  if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM pm_task_dependencies WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+// "Link to Lead" picker (projects.html Task modal) — a plain name/phone search scoped to this
+// client's own Leads, same NocoDB where-clause shape getClientByAuthentikEmail already uses
+// elsewhere in this file. Read-only, capped at 8 results; the frontend only needs enough to pick
+// the right one, not a full search UI.
+async function handlePmLeadSearch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const q=(url.searchParams.get('q')||'').trim();
+  if(q.length<2) return json({list:[]});
+  const qSafe=q.replace(/[%()]/g,'');
+  const where=`(ClientId,eq,${Number(payload.cid)})~and((Name,like,%${qSafe}%)~or(Phone,like,%${qSafe}%))`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?limit=8&fields=Id,Name,Phone,Stage,Email&where=${encodeURIComponent(where)}`);
+  if(!r.ok) return json({list:[]});
+  const data=await r.json().catch(()=>({}));
+  return json({list:(data?.list||[]).map(l=>({Id:l.Id, Name:l.Name||'', Phone:l.Phone||'', Stage:l.Stage||'', Email:l.Email||''}))});
+}
+// Single-lead lookup by id, scoped to this client — used to resolve a linked lead's email at
+// task-completion-notification time (notifyClientOnDone in projects.html), separate from the
+// search-as-you-type route above since that one is capped/fuzzy-matched and this needs exactly
+// one specific row.
+async function handlePmLeadGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const id=parseInt(url.searchParams.get('id'),10);
+  if(!id) return json({error:'id required'}, 400);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,Name,Phone,Stage,Email,ClientId`);
+  if(!r.ok) return json({error:'Not found'}, 404);
+  const lead=await r.json().catch(()=>null);
+  if(!lead || String(lead.ClientId)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  return json({Id:lead.Id, Name:lead.Name||'', Phone:lead.Phone||'', Stage:lead.Stage||'', Email:lead.Email||''});
+}
+
+/* ── One-time legacy migration: CLIENTS.manual_tasks blob → pm_projects/pm_tasks/pm_task_dependencies
+   (SETUP.md "Projects module" — merging the legacy Tasks page). The source blob is never deleted
+   or modified — this only ever reads it and writes new D1 rows — so a bad migration is always
+   safe to just not re-run rather than needing a rollback. Idempotent per client via
+   pm_task_migrations (see migrations/0052_pm_merge_legacy_tasks.sql). Admin-gated since this
+   operates across any/every client's data, not just the caller's own. ── */
+async function pmMigrateClientLegacyTasks(env, c){
+  const clientId=c.Id;
+  const already=await env.DB.prepare(`SELECT client_id FROM pm_task_migrations WHERE client_id=?`).bind(Number(clientId)).first();
+  if(already) return {migrated:false, skipped:'already-migrated'};
+  let state={items:[], projects:[]};
+  try{
+    const parsed=JSON.parse(c.manual_tasks||'{}');
+    state={items:Array.isArray(parsed.items)?parsed.items:[], projects:Array.isArray(parsed.projects)?parsed.projects:[]};
+  }catch(e){ /* unparseable/empty blob — nothing to migrate, still records the attempt below */ }
+  if(!state.items.length && !state.projects.length){
+    await env.DB.prepare(`INSERT INTO pm_task_migrations (client_id, migrated_at, projects_count, tasks_count, deps_count) VALUES (?,?,0,0,0)`)
+      .bind(Number(clientId), new Date().toISOString()).run();
+    return {migrated:true, projects:0, tasks:0, dependencies:0};
+  }
+  const now=new Date().toISOString();
+
+  const projectIdMap=new Map(); // old blob project id (string, e.g. 'p_...') -> new pm_projects.id
+  for(const p of state.projects){
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_projects (client_id, name, description, color, status, client_email, ai_auto_stage_enabled, created_at) VALUES (?,?,?,?,'active',?,?,?)`
+    ).bind(Number(clientId), p.name||'Untitled Project', '', p.color||'#0D9C93', p.client_email||'', p.ai_auto_stage_enabled?1:0, p.created_at||now).run();
+    projectIdMap.set(p.id, r.meta.last_row_id);
+  }
+  // pm_tasks.project_id is NOT NULL, unlike the old blob where a task's project link was
+  // optional — anything with no project (or one whose id wasn't in the blob's own projects list)
+  // lands in one shared catch-all, created lazily so a client with no unlinked tasks never gets
+  // an empty extra project.
+  let fallbackProjectId=null;
+  async function fallbackProject(){
+    if(fallbackProjectId) return fallbackProjectId;
+    const r=await env.DB.prepare(`INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,'active',?)`)
+      .bind(Number(clientId), 'Migrated Tasks', 'Tasks that had no project in the old Tasks page.', '#5C7873', now).run();
+    fallbackProjectId=r.meta.last_row_id;
+    return fallbackProjectId;
+  }
+  const statusMap={open:'todo', in_progress:'in_progress', blocked:'blocked', done:'done'};
+  const taskIdMap=new Map(); // old blob task id (string, e.g. 't_...'/'pf_...') -> new pm_tasks.id
+  const dependsPending=[];
+  let position=0;
+  for(const t of state.items){
+    const projectId = (t.project_id && projectIdMap.has(t.project_id)) ? projectIdMap.get(t.project_id) : await fallbackProject();
+    const r=await env.DB.prepare(
+      `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, notify_customer, ai_created, auto_generated, lead_id, lead_name, gcal_event_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,'medium',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      Number(clientId), projectId, t.title||'Untitled task', t.notes||'', statusMap[t.status]||'todo',
+      t.assignee_email||'', t.due_date||null, position++, t.category||null, t.channel||null, t.mode||null,
+      t.followup_step||null, t.notify_customer?1:0, t.ai_created?1:0, t.auto_generated?1:0,
+      t.lead_id||null, t.lead_name||null, t.gcal_event_id||null, t.created_at||now, t.created_at||now
+    ).run();
+    taskIdMap.set(t.id, r.meta.last_row_id);
+    if(Array.isArray(t.depends_on) && t.depends_on.length) dependsPending.push({newId:r.meta.last_row_id, oldDeps:t.depends_on});
+  }
+  // Same same-project rule handlePmDependencyCreate enforces on every new dependency going
+  // forward — a depends_on pointing at a task that landed in a different pm_project (e.g. one
+  // task had a project link and its dependency didn't, so one went to the fallback project) is
+  // silently dropped rather than creating an edge the rest of this module can't represent.
+  let depCount=0;
+  for(const {newId, oldDeps} of dependsPending){
+    const succRow=await env.DB.prepare(`SELECT project_id FROM pm_tasks WHERE id=?`).bind(newId).first();
+    for(const oldDep of oldDeps){
+      const predId=taskIdMap.get(oldDep);
+      if(!predId || predId===newId) continue;
+      const predRow=await env.DB.prepare(`SELECT project_id FROM pm_tasks WHERE id=?`).bind(predId).first();
+      if(!predRow || predRow.project_id!==succRow.project_id) continue;
+      try{
+        await env.DB.prepare(`INSERT INTO pm_task_dependencies (client_id, project_id, predecessor_id, successor_id, lag_days, created_at) VALUES (?,?,?,?,0,?)`)
+          .bind(Number(clientId), succRow.project_id, predId, newId, now).run();
+        depCount++;
+      }catch(e){ /* duplicate edge — fine, skip */ }
+    }
+  }
+  await env.DB.prepare(`INSERT INTO pm_task_migrations (client_id, migrated_at, projects_count, tasks_count, deps_count) VALUES (?,?,?,?,?)`)
+    .bind(Number(clientId), now, state.projects.length, state.items.length, depCount).run();
+  return {migrated:true, projects:state.projects.length, tasks:state.items.length, dependencies:depCount};
+}
+// POST /admin/pm/migrate-legacy-tasks — body {} migrates every client not yet migrated (paginated
+// same as runPipelineFollowupsForAllClients above); body {client_id} migrates just that one, safe
+// to call repeatedly (a second call for an already-migrated client is a no-op, see
+// pm_task_migrations above) — useful for re-running on one account after fixing something, without
+// re-sweeping the whole platform.
+async function handlePmMigrateLegacyTasks(request, env){
+  const isAdmin=await requireAdminSession(request, env);
+  if(!isAdmin) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id}=await request.json().catch(()=>({}));
+  if(client_id){
+    const c=await getClientById(env, client_id);
+    if(!c) return json({error:'Client not found'}, 404);
+    const result=await pmMigrateClientLegacyTasks(env, c);
+    return json({ok:true, client_id:String(client_id), ...result});
+  }
+  let page=1; const results=[];
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}&fields=Id,client_name,manual_tasks`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      try{
+        const res=await pmMigrateClientLegacyTasks(env, c);
+        if(res.migrated) results.push({client_id:c.Id, client_name:c.client_name, ...res});
+      }catch(e){ results.push({client_id:c.Id, client_name:c.client_name, error:e.message}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+  return json({ok:true, clients_migrated:results.length, results});
+}
+
+/* ── Durable Project automations ──
+   Task writes publish ID-only jobs. Consumers re-read client-scoped D1 rows before every action,
+   and Workflow notification jobs carry the task's updated_at version so an edit makes every old
+   sleep/job harmless. This keeps request latency low while Queue retries and the DLQ make delivery
+   failures visible instead of silently losing them. ── */
+async function pmTaskRow(env,clientId,taskId){
+  return env.DB.prepare(`SELECT t.*,p.name project_name,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+function pmWorkflowInstanceId(row){
+  const version=Number.isFinite(Date.parse(row.updated_at))?Date.parse(row.updated_at):Date.now();
+  return `pm-${Number(row.client_id)}-${Number(row.id)}-${version}`.slice(0,100);
+}
+export function pmTaskDueUtcMs(date,timezone='Asia/Dubai',dayOffset=0){
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  if(!match) return NaN;
+  const shifted=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])+Number(dayOffset||0)));
+  return hcAppointmentUtcMs(shifted.toISOString().slice(0,10),'09:00',timezone);
+}
+async function pmAutomationState(env,clientId,taskId){
+  return env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND task_id=?`).bind(Number(clientId),Number(taskId)).first();
+}
+async function pmUpsertAutomationState(env,row,fields={}){
+  await env.DB.prepare(`INSERT INTO pm_task_automation
+    (client_id,project_id,task_id,task_version,workflow_instance_id,workflow_status,reminder_status,last_error,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(client_id,task_id) DO UPDATE SET
+      project_id=CASE WHEN excluded.project_id!=0 THEN excluded.project_id ELSE project_id END,
+      task_version=CASE WHEN excluded.task_version!='' THEN excluded.task_version ELSE task_version END,
+      workflow_instance_id=CASE WHEN excluded.workflow_instance_id!='' THEN excluded.workflow_instance_id ELSE workflow_instance_id END,
+      workflow_status=CASE WHEN excluded.workflow_status!='' THEN excluded.workflow_status ELSE workflow_status END,
+      reminder_status=CASE WHEN excluded.reminder_status!='' THEN excluded.reminder_status ELSE reminder_status END,
+      last_error=excluded.last_error,updated_at=excluded.updated_at`)
+    .bind(Number(row.client_id),Number(row.project_id)||0,Number(row.id||row.task_id),String(row.updated_at||row.task_version||''),
+      String(fields.workflow_instance_id||''),String(fields.workflow_status||''),String(fields.reminder_status||''),
+      String(fields.last_error||'').slice(0,1000),new Date().toISOString()).run();
+}
+async function pmRecordAutomationError(env,job,error){
+  if(!Number(job?.client_id)||!Number(job?.task_id)) return;
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'failed',last_error:String(error?.message||error)}).catch(()=>{});
+}
+async function pmDispatchJobs(env,jobs){
+  if(!jobs.length) return;
+  if(env.PROJECT_JOBS){
+    if(jobs.length===1) await env.PROJECT_JOBS.send(jobs[0]);
+    else await env.PROJECT_JOBS.sendBatch(jobs.map(body=>({body})));
+    return;
+  }
+  for(const job of jobs) await pmProcessQueueJob(env,job);
+}
+async function pmQueueTaskLifecycle(env,row,{event='',prevStatus='',runAutomations=true}={}){
+  const base={client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at)};
+  const active=row.status!=='done'&&!!row.due_date&&(Number(row.task_reminders_enabled)===1||Number(row.overdue_escalation_enabled)===1);
+  const jobs=[];
+  if(runAutomations&&event) jobs.push({...base,type:'pm_automation_event',event,prev_status:String(prevStatus||'')});
+  jobs.push({...base,type:active?'pm_workflow_start':'pm_workflow_terminate'});
+  await pmUpsertAutomationState(env,row,{workflow_status:active?'queued':'terminating',reminder_status:active?'queued':'cancelled',last_error:''});
+  try{ await pmDispatchJobs(env,jobs); return {queued:true}; }
+  catch(error){ await pmRecordAutomationError(env,jobs[0]||base,error); await reportOpsError(env,'pmQueueTaskLifecycle',error,{clientId:row.client_id,taskId:row.id}); return {queued:false,error:String(error?.message||error)}; }
+}
+async function pmSendEmail(env,to,subject,bodyText){
+  if(!env.RESEND_API_KEY) throw new Error('Resend API key is not configured');
+  const recipients=[...new Set((Array.isArray(to)?to:[to]).map(x=>String(x||'').trim().toLowerCase()).filter(Boolean))];
+  if(!recipients.length) throw new Error('Project notification has no recipient');
+  const response=await fetch('https://api.resend.com/emails',{
+    method:'POST',headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Projects <projects@leadvyne.com>',to:recipients,subject,html:`<p>${esc(bodyText).replace(/\n/g,'<br>')}</p>`})
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data?.message||`Resend HTTP ${response.status}`);
+}
+async function pmClaimNotification(env,job){
+  const now=new Date().toISOString();
+  const claim=await env.DB.prepare(`INSERT OR IGNORE INTO pm_task_notifications
+    (client_id,task_id,task_version,kind,status,sent_at,created_at) VALUES (?,?,?,?,?,'',?)`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind),'processing',now).run();
+  return !!claim?.meta?.changes;
+}
+async function pmReleaseNotification(env,job){
+  await env.DB.prepare(`DELETE FROM pm_task_notifications WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+    .bind(Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+}
+async function pmSendTaskNotification(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done') return;
+  if((job.kind==='reminder_48h'||job.kind==='due_today')&&Number(row.task_reminders_enabled)!==1) return;
+  if(job.kind==='overdue'&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!await pmClaimNotification(env,job)) return;
+  try{
+    const client=await getClientById(env,job.client_id); if(!client) throw new Error('Project client not found');
+    const owner=String(client.authentik_email||'').trim();
+    const assignee=String(row.assignee_email||'').trim();
+    const recipients=job.kind==='overdue'?[assignee,owner]:[assignee||owner];
+    const prefix=job.kind==='reminder_48h'?'Due in 2 days':job.kind==='due_today'?'Due today':'Overdue';
+    await pmSendEmail(env,recipients,`${prefix}: ${row.title}`,`${row.title}\nProject: ${row.project_name}\nDue date: ${row.due_date}\nStatus: ${row.status}`);
+    await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+      .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),String(job.kind)).run();
+    await pmUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
+  }catch(error){ await pmReleaseNotification(env,job); throw error; }
+}
+async function pmRunAutomationEvent(env,job){
+  const task=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!task||String(task.updated_at)!==String(job.task_version)) return;
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_automations WHERE client_id=? AND project_id=? AND enabled=1`).bind(Number(job.client_id),Number(job.project_id)).all();
+  const matching=[];
+  for(const rule of results||[]){
+    let trigger={}; try{ trigger=JSON.parse(rule.trigger_config||'{}'); }catch(e){}
+    const matches=(rule.trigger_type==='task_created'&&job.event==='created')||
+      (rule.trigger_type==='status_changed_to'&&job.event==='status_changed'&&trigger.status===task.status&&task.status!==job.prev_status);
+    if(!matches) continue;
+    let action={}; try{ action=JSON.parse(rule.action_config||'{}'); }catch(e){}
+    matching.push({rule,action});
+  }
+  // Deliver retryable notifications before idempotent D1 mutations. If an email fails, a retry
+  // still sees the original task version instead of treating the whole event as stale.
+  matching.sort((a,b)=>Number(b.rule.action_type==='notify_email')-Number(a.rule.action_type==='notify_email'));
+  let mutated=false;
+  for(const {rule,action} of matching){
+    if(rule.action_type==='set_status'&&action.status&&action.status!==task.status){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?,updated_at=?,done_at=? WHERE id=? AND client_id=?`)
+        .bind(action.status,now,action.status==='done'?now:null,task.id,Number(job.client_id)).run();
+      task.status=action.status; mutated=true;
+    }else if(rule.action_type==='set_assignee'&&String(action.assignee_email||'')!==String(task.assignee_email||'')){
+      await env.DB.prepare(`UPDATE pm_tasks SET assignee_email=?,updated_at=? WHERE id=? AND client_id=?`)
+        .bind(action.assignee_email||'',new Date().toISOString(),task.id,Number(job.client_id)).run();
+      task.assignee_email=action.assignee_email||''; mutated=true;
+    }else if(rule.action_type==='notify_email'&&action.to_email){
+      const emailJob={...job,kind:`automation_${rule.id}_${job.event}`};
+      if(!await pmClaimNotification(env,emailJob)) continue;
+      try{
+        const subject=String(action.subject||'Task update: {{title}}').replaceAll('{{title}}',task.title||'');
+        const body=String(action.body||'Task "{{title}}" changed.').replaceAll('{{title}}',task.title||'');
+        await pmSendEmail(env,action.to_email,subject,body);
+        await env.DB.prepare(`UPDATE pm_task_notifications SET status='sent',sent_at=? WHERE client_id=? AND task_id=? AND task_version=? AND kind=?`)
+          .bind(new Date().toISOString(),Number(job.client_id),Number(job.task_id),String(job.task_version),emailJob.kind).run();
+      }catch(error){ await pmReleaseNotification(env,emailJob); throw error; }
+    }
+  }
+  if(mutated){ const fresh=await pmTaskRow(env,job.client_id,job.task_id); if(fresh) await pmQueueTaskLifecycle(env,fresh,{runAutomations:false}); }
+}
+async function pmStartTaskWorkflow(env,job){
+  const row=await pmTaskRow(env,job.client_id,job.task_id);
+  if(!row||String(row.updated_at)!==String(job.task_version)||row.status==='done'||!row.due_date) return;
+  if(Number(row.task_reminders_enabled)!==1&&Number(row.overdue_escalation_enabled)!==1) return;
+  if(!env.PROJECT_TASK_WORKFLOW) throw new Error('Project Task Workflow binding is not configured');
+  const previous=await pmAutomationState(env,job.client_id,job.task_id), instanceId=pmWorkflowInstanceId(row);
+  if(previous?.workflow_instance_id&&previous.workflow_instance_id!==instanceId){
+    try{ const old=await env.PROJECT_TASK_WORKFLOW.get(previous.workflow_instance_id); await old.terminate(); }catch(e){}
+  }
+  const client=await getClientById(env,job.client_id), timezone=hcClientTimezone(client);
+  const dueAt=pmTaskDueUtcMs(row.due_date,timezone), overdueAt=pmTaskDueUtcMs(row.due_date,timezone,1);
+  if(!Number.isFinite(dueAt)||!Number.isFinite(overdueAt)) throw new Error('Task due date is invalid');
+  try{
+    await env.PROJECT_TASK_WORKFLOW.create({id:instanceId,params:{
+      client_id:Number(row.client_id),project_id:Number(row.project_id),task_id:Number(row.id),task_version:String(row.updated_at),
+      due_at_ms:dueAt,overdue_at_ms:overdueAt,workflow_started_at_ms:Date.now(),
+      reminders_enabled:Number(row.task_reminders_enabled)===1,overdue_enabled:Number(row.overdue_escalation_enabled)===1
+    }});
+  }catch(error){ if(!/already|exist|used/i.test(String(error?.message||error))) throw error; }
+  await pmUpsertAutomationState(env,row,{workflow_instance_id:instanceId,workflow_status:'running',reminder_status:'scheduled',last_error:''});
+}
+async function pmTerminateTaskWorkflow(env,job){
+  const state=await pmAutomationState(env,job.client_id,job.task_id);
+  if(state?.workflow_instance_id&&env.PROJECT_TASK_WORKFLOW){
+    try{ const instance=await env.PROJECT_TASK_WORKFLOW.get(state.workflow_instance_id); await instance.terminate(); }catch(e){}
+  }
+  await pmUpsertAutomationState(env,{client_id:job.client_id,project_id:job.project_id,task_id:job.task_id,task_version:job.task_version},
+    {workflow_status:'terminated',reminder_status:'cancelled',last_error:''});
+}
+async function pmRefreshProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT t.*,p.task_reminders_enabled,p.overdue_escalation_enabled
+    FROM pm_tasks t JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+    WHERE t.client_id=? AND t.project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const row of results||[]) await pmQueueTaskLifecycle(env,row,{runAutomations:false});
+}
+async function pmTerminateProjectWorkflows(env,job){
+  const {results}=await env.DB.prepare(`SELECT * FROM pm_task_automation WHERE client_id=? AND project_id=?`).bind(Number(job.client_id),Number(job.project_id)).all();
+  for(const state of results||[]) await pmTerminateTaskWorkflow(env,{client_id:state.client_id,project_id:state.project_id,task_id:state.task_id,task_version:state.task_version});
+}
+export async function pmProcessQueueJob(env,job){
+  if(!job?.type) throw new Error('Project queue job type is required');
+  if(job.type==='pm_workflow_start') return pmStartTaskWorkflow(env,job);
+  if(job.type==='pm_workflow_terminate') return pmTerminateTaskWorkflow(env,job);
+  if(job.type==='pm_project_refresh') return pmRefreshProjectWorkflows(env,job);
+  if(job.type==='pm_project_terminate') return pmTerminateProjectWorkflows(env,job);
+  if(job.type==='pm_automation_event') return pmRunAutomationEvent(env,job);
+  if(job.type==='pm_notification') return pmSendTaskNotification(env,job);
+  throw new Error(`Unknown Project queue job: ${job.type}`);
 }
 async function pmRecordDeadLetter(env,message){
   const job=message.body||{},state=await pmAutomationState(env,job.client_id,job.task_id).catch(()=>null);
