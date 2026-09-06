@@ -1,18 +1,34 @@
 FROM node:20-bookworm-slim
 
+# Keep the normal Coolify image small and reliable. Piper is the primary local voice engine;
+# AI4Bharat's multi-GB PyTorch stack is opt-in for a separate, sufficiently large host.
+ARG INSTALL_AI4BHARAT_TTS=false
+ENV AI4BHARAT_TTS_INSTALLED=${INSTALL_AI4BHARAT_TTS}
+
 # Voice-only runtime: ffmpeg converts generated PCM/WAV into WhatsApp-compatible Ogg/Opus.
-# CPU-only PyTorch avoids downloading several gigabytes of unused CUDA libraries on the VPS.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl git python3 python3-pip \
-  && rm -rf /var/lib/apt/lists/* \
-  && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch \
-  && pip3 install --no-cache-dir --break-system-packages transformers soundfile git+https://github.com/huggingface/parler-tts.git
+  && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+# CPU-only PyTorch avoids the several-GB CUDA dependency set. Pin Parler-TTS to a known commit so
+# a future upstream change cannot unexpectedly break a production image build.
+RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends git python3 python3-pip \
+      && rm -rf /var/lib/apt/lists/* \
+      && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch \
+      && pip3 install --no-cache-dir --break-system-packages soundfile "git+https://github.com/huggingface/parler-tts.git@d108732cd57788ec86bc857d99a6cabd66663d68"; \
+    else \
+      echo "Skipping optional AI4Bharat/PyTorch layer"; \
+    fi
 
 # Download AI4Bharat TTS during the image build so the first customer request never triggers a
 # network cold start. Configure HF_TOKEN as a Coolify build variable when access requires it.
 ARG HF_TOKEN
 ENV HF_TOKEN=${HF_TOKEN}
-RUN python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('AI4Bharat TTS cached')"
+RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
+      python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('AI4Bharat TTS cached')"; \
+    fi
 
 # Keep the small local Piper tier used before AI4Bharat. English, Malayalam and Hindi are baked
 # into the image so a fresh Coolify deployment is ready without manually populating its volume.
