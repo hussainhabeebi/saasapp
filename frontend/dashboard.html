@@ -4740,12 +4740,27 @@ function hideResumingGate(){
   $id('gPanelLogin').style.display='';
 }
 
+// A session resume may still be waiting on the network when the user presses Sign out.
+// Abort that request and invalidate its result so a late /session/me response can never
+// put the user back into the dashboard after logout.
+let _resumeSessionController=null;
+let _authGeneration=0;
+
 async function resumeSession(id){
   if(!sessionToken){ localStorage.removeItem('lv_cid'); return; }
+  const generation=_authGeneration;
+  const token=sessionToken;
+  if(_resumeSessionController) _resumeSessionController.abort();
+  const controller=new AbortController();
+  _resumeSessionController=controller;
   showResumingGate();
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{headers:{'Authorization':'Bearer '+sessionToken}});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/session/me`,{
+      headers:{'Authorization':'Bearer '+token},
+      signal:controller.signal
+    });
     const data=await r.json().catch(()=>({}));
+    if(generation!==_authGeneration || controller.signal.aborted || token!==sessionToken) return;
     if(!r.ok||!data.client_id) throw new Error();
     clientId=data.client_id; clientRecord=data.client;
     // Sliding-window refresh — handleSessionMe reissues a fresh, full-length token on every
@@ -4755,15 +4770,21 @@ async function resumeSession(id){
     if(clientRecord?.client_name) localStorage.setItem('lv_cached_name',clientRecord.client_name);
     showApp();
   }catch(e){
+    if(e?.name==='AbortError' || generation!==_authGeneration) return;
     localStorage.removeItem('lv_cid'); localStorage.removeItem('lv_session'); localStorage.removeItem('lv_me_email'); sessionToken=''; myEmail='';
     hideResumingGate();
+  }finally{
+    if(_resumeSessionController===controller) _resumeSessionController=null;
   }
 }
 
 $id('hLogout').addEventListener('click',()=>{
+  _authGeneration++;
+  if(_resumeSessionController){ _resumeSessionController.abort(); _resumeSessionController=null; }
   localStorage.removeItem('lv_cid');
   localStorage.removeItem('lv_session');
   localStorage.removeItem('lv_me_email');
+  localStorage.removeItem('lv_cached_name');
   if(clientId) sessionStorage.removeItem(_CACHE_KEY());
   clientId=null; clientRecord=null; sessionToken=''; allLeads=[];
   clearInterval(refreshTimer);
@@ -4774,6 +4795,7 @@ $id('hLogout').addEventListener('click',()=>{
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
+  hideResumingGate();
   setGBtnState(false, 'Sign in with Authentik');
   // This app's own logout never ends Authentik's separate SSO session (no RP-initiated logout
   // call — this app doesn't have Authentik's exact end-session endpoint verified against a live
