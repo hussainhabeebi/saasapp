@@ -702,6 +702,19 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <div class="preview-bubble" id="createPreview" style="font-size:12px">Your message will appear here</div>
         </div>
       </div>
+      <div class="form-field" id="tplButtonsSection">
+        <label style="display:flex;align-items:center;gap:8px">
+          Quick Reply Buttons
+          <span id="tplRecruitBadge" style="display:none;font-size:11px;background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-weight:600">🏢 Recruiting — Pre-filled</span>
+          <span style="font-size:11px;color:var(--muted);font-weight:400">max 3 · 20 chars each</span>
+        </label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="text" id="tplBtn0" maxlength="20" placeholder="Button 1" style="flex:1;min-width:120px">
+          <input type="text" id="tplBtn1" maxlength="20" placeholder="Button 2" style="flex:1;min-width:120px">
+          <input type="text" id="tplBtn2" maxlength="20" placeholder="Button 3" style="flex:1;min-width:120px">
+        </div>
+        <span style="font-size:11px;color:var(--muted)">Leave all blank to create a template without buttons.</span>
+      </div>
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-primary" onclick="submitTemplate()">Submit to Meta</button>
         <span id="createMsg" style="font-size:13px"></span>
@@ -962,6 +975,11 @@ async function initApp(){
   // else so the toolbar doesn't grow five extra selects nobody else's leads populate.
   if(clientRecord.industry==='real_estate'){
     [$id('dmReFilters'),$id('metaReFilters')].forEach(el=>{ if(el) el.style.display='contents'; });
+  }
+  if(clientRecord.recruit_enabled==='Yes'){
+    const RECRUIT_BTNS=['Apply Now','Schedule Interview','Not Interested'];
+    RECRUIT_BTNS.forEach((txt,i)=>{ const el=$id(`tplBtn${i}`); if(el){ el.value=txt; el.readOnly=true; } });
+    const badge=$id('tplRecruitBadge'); if(badge) badge.style.display='inline-block';
   }
   await Promise.all([loadLeads(), loadConnectedInboxes(), fuLoadLadderStepsQuiet()]);
   loadTemplates();
@@ -1626,6 +1644,7 @@ async function submitTemplate(){
   const language=$id('newTplLang').value;
   const header=$id('newTplHeader').value.trim();
   const footer=$id('newTplFooter').value.trim();
+  const buttons=[0,1,2].map(i=>$id(`tplBtn${i}`)?.value.trim()).filter(Boolean);
 
   if(!name||!body){ $id('createMsg').textContent='Name and body are required.'; $id('createMsg').style.color='var(--red)'; return; }
 
@@ -1634,7 +1653,7 @@ async function submitTemplate(){
     const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{
       method:'POST',
       headers:ncAuthHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name,category,language,body,header,footer,...(inboxId?{inbox_id:inboxId}:{})})
+      body:JSON.stringify({name,category,language,body,header,footer,...(inboxId?{inbox_id:inboxId}:{}),...(buttons.length?{buttons}:{})})
     });
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
