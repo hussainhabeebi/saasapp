@@ -22,6 +22,9 @@ import {
   engineIsGreetingOnly,
   engineNormalizeIntroButtons,
   engineResolveIntroInternalAction,
+  engineIndustryFlowEnabled,
+  engineBuildIndustryFlowButtons,
+  engineResolveIndustryFlowTurn,
   engineRouteFlow,
   engineFindHallucinatedLink,
   engineSendChatwootReply,
@@ -90,6 +93,49 @@ import {
   engineResolveSarvamApiKey,
   engineWithDeadline,
 } from './worker.js';
+
+describe('Opt-in industry flow engine',()=>{
+  const flow={
+    flow_engine:{enabled:true,published:true},
+    stages:{new:{},stage_1:{},stage_2:{}},
+    messages:{msg_stage_1:'Choose a service',msg_stage_2:'Selected {{service_label}}'},
+    stage_config:{
+      stage_1:{ai_mode:'fallback',answers:[{id:'dental',title:'Dental Care',next:'stage_2',entity_type:'service',entity_id:'svc_18',link_url:'https://example.com/dental',media_url:'https://drive.google.com/file/d/demo/view'}]},
+      stage_2:{ai_mode:'off',answers:[]}
+    }
+  };
+  const client={Id:7,industry:'healthcare',language:'en',flow_json:JSON.stringify(flow)};
+
+  test('does nothing until a flow is both enabled and published',()=>{
+    assert.equal(engineIndustryFlowEnabled({flow_json:JSON.stringify({...flow,flow_engine:{enabled:false,published:false}})}),false);
+    assert.equal(engineIndustryFlowEnabled({flow_json:JSON.stringify({...flow,flow_engine:{enabled:true,published:false}})}),false);
+    assert.equal(engineResolveIndustryFlowTurn({flow_json:'{}'},{stage:'new',qualAnswers:{}},'hello'),null);
+  });
+
+  test('builds stable internal actions instead of using visible button text as routing',()=>{
+    assert.deepEqual(engineBuildIndustryFlowButtons(flow,'stage_1'),[
+      {title:'Dental Care',value:'FLOW_ANSWER:stage_1:dental'}
+    ]);
+  });
+
+  test('branches by answer and stores linked industry entity variables',()=>{
+    const turn=engineResolveIndustryFlowTurn(client,{stage:'stage_1',qualAnswers:{}},'FLOW_ANSWER:stage_1:dental');
+    assert.equal(turn.route,'industry_flow');
+    assert.equal(turn.next,'stage_2');
+    assert.equal(turn.qualAnswers._flow_variables.service_id,'svc_18');
+    assert.equal(turn.qualAnswers._flow_variables.service_label,'Dental Care');
+    assert.match(turn.reply,/Selected Dental Care/);
+    assert.match(turn.reply,/https:\/\/example\.com\/dental/);
+    assert.match(turn.mediaUrl,/drive\.google\.com/);
+  });
+
+  test('uses prompt fallback unless a stage explicitly turns AI off',()=>{
+    assert.equal(engineResolveIndustryFlowTurn(client,{stage:'stage_1',qualAnswers:{}},'an unusual question'),null);
+    const controlled=engineResolveIndustryFlowTurn(client,{stage:'stage_2',qualAnswers:{}},'anything');
+    assert.equal(controlled.route,'industry_flow');
+    assert.equal(controlled.next,'stage_2');
+  });
+});
 
 describe('Global Stage 1 greeting introduction',()=>{
   test('only intercepts a short greeting, not a real customer question',()=>{
