@@ -22321,46 +22321,83 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 // hospContext = { selectedProperty, selectedUnit } from the lead's stored NocoDB values — passed in
 // by handleEngineWebhook so we don't need an extra NocoDB read here.
 
-// Sends 3 random showcase images from the client's resort properties/units immediately after the
-// AI greeting on a brand-new lead's very first message — the first visual impression before the
-// lead has asked about any specific room or property. Pulls images from both hospitality_properties
-// and hospitality_units, shuffles the pool, and sends up to 3 unique images via Chatwoot.
-// Only called when isNewLead===true so it fires at most once per lead's lifetime; no dedup table
-// needed beyond the isNewLead guard in the caller.
+// On a brand-new resort lead's first message, sends a warm welcome showcase:
+//   1. One randomly-chosen property's description + amenities as context text
+//   2. 2–3 random images from that property (supplemented from its rooms if the property
+//      has fewer than 3 images configured)
+//   3. Property-picker quick-reply buttons for all properties so the lead can dive in
+// Falls back to random unit images + unit picker when no properties are configured.
+// Only called when isNewLead===true — fires at most once per lead's lifetime.
 async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
-    const imageUrls=[];
-    const {results:properties}=await env.DB.prepare(
-      `SELECT image_url_1,image_url_2,image_url_3,image_url_4,image_url_5 FROM hospitality_properties WHERE client_id=? AND active=1`
-    ).bind(Number(clientId)).all();
-    for(const p of (properties||[])){
-      [p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).forEach(u=>imageUrls.push(u));
-    }
-    const {results:units}=await env.DB.prepare(
-      `SELECT image_url_1,image_url_2,image_url_3,image_url_4,image_url_5 FROM hospitality_units WHERE client_id=? AND active=1`
-    ).bind(Number(clientId)).all();
-    for(const u of (units||[])){
-      [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean).forEach(url=>imageUrls.push(url));
-    }
-    if(!imageUrls.length) return;
-    // Fisher-Yates shuffle, then pick up to 3
-    for(let i=imageUrls.length-1;i>0;i--){
-      const j=Math.floor(Math.random()*(i+1));
-      [imageUrls[i],imageUrls[j]]=[imageUrls[j],imageUrls[i]];
-    }
-    const selected=imageUrls.slice(0,3);
-    let captionSent=false;
-    for(let i=0;i<selected.length;i++){
-      const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
-      if(!blob) continue;
-      const fd=new FormData();
-      fd.append('content', captionSent?'':`Here's a glimpse of our completed projects 🏖️`);
-      fd.append('message_type','outgoing'); fd.append('private','false');
-      fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
-      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
-        {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-      if(r.ok) captionSent=true;
+    const [{results:properties},{results:units}]=await Promise.all([
+      env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+      env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    ]);
+    const propList=properties||[];
+    const unitList=units||[];
+    const shuffle=arr=>{ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; };
+
+    if(propList.length){
+      // Pick a random property for the greeting showcase
+      const prop=propList[Math.floor(Math.random()*propList.length)];
+      // Property description + amenities as context text before the images
+      const descParts=[];
+      if(prop.description && String(prop.description).trim()) descParts.push(String(prop.description).trim());
+      if(prop.amenities && String(prop.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(prop.amenities).trim()}`);
+      if(descParts.length) await hospitalityChatwootText(c, convId, `*${prop.name}*\n\n${descParts.join('\n\n')}`);
+      // Collect this property's images; supplement from its rooms if fewer than 3
+      const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean);
+      if(imgUrls.length<3){
+        const linked=unitList.filter(u=>Number(u.property_id)===Number(prop.id));
+        const pool=linked.length?linked:unitList;
+        for(const u of pool){
+          [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean)
+            .forEach(url=>{ if(!imgUrls.includes(url)) imgUrls.push(url); });
+          if(imgUrls.length>=3) break;
+        }
+      }
+      const selected=shuffle(imgUrls).slice(0,3);
+      let captionSent=false;
+      for(let i=0;i<selected.length;i++){
+        const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
+        if(!blob) continue;
+        const fd=new FormData();
+        fd.append('content', captionSent?'':`Welcome to ${prop.name}! 🏨`);
+        fd.append('message_type','outgoing'); fd.append('private','false');
+        fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+          {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+        if(r.ok) captionSent=true;
+      }
+      // Property-picker buttons — all properties so the lead can jump to any of them
+      if(engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+        const btns=propList.length>1
+          ? propList.map(p=>({title:p.name, value:p.name}))
+          : unitList.map(u=>({title:u.name, value:u.name}));
+        const prompt=propList.length>1?'Which property would you like to explore? 🏨':'Which room would you like to explore? 🛏️';
+        if(btns.length) await engineSendChatwootQuickReply(env, c, clientId, convId, prompt, btns);
+      }
+    } else if(unitList.length){
+      // No properties configured — showcase a random unit
+      const unit=unitList[Math.floor(Math.random()*unitList.length)];
+      const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,3);
+      let captionSent=false;
+      for(let i=0;i<imgUrls.length;i++){
+        const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
+        if(!blob) continue;
+        const fd=new FormData();
+        fd.append('content', captionSent?'':`Here's a glimpse of our resort 🏖️`);
+        fd.append('message_type','outgoing'); fd.append('private','false');
+        fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+          {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+        if(r.ok) captionSent=true;
+      }
+      if(unitList.length>1 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+        await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 🛏️', unitList.map(u=>({title:u.name, value:u.name})));
+      }
     }
   }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
 }
