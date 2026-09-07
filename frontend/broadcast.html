@@ -1053,17 +1053,74 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
        TAB 5: TRACKING
   ══════════════════════════════════════ -->
   <div id="view-tracking" style="display:none">
+
+    <!-- KPI tiles -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:4px">
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Total Leads</div>
+        <div id="tkTotalLeads" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">🔥 Hot Leads</div>
+        <div id="tkHotLeads" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:#DC2626">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">In Follow-up</div>
+        <div id="tkInSeq" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--accent)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Contacted 24 h</div>
+        <div id="tkContacted24h" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Campaigns Sent</div>
+        <div id="tkCampaignsSent" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+    </div>
+
+    <!-- Pipeline + Engagement row -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px">
+      <div class="card" style="margin:0">
+        <div class="card-title">📊 Pipeline by Stage</div>
+        <div id="tkPipelineChart" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-title">🎯 Engagement Breakdown</div>
+        <div id="tkEngagementChart" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
+      </div>
+    </div>
+
+    <!-- Send history -->
     <div class="card">
-      <div class="card-title">📊 Send History</div>
-      <div class="msg info">Every Direct Message and Template Broadcast run from this page, logged automatically — recipients, sent/failed counts, and when it ran.</div>
+      <div class="card-title">📤 Campaign Send History</div>
+      <div class="msg info" style="margin-bottom:8px">Every broadcast sent from this page — template sends, bulk DMs, and sequences.</div>
       <div class="tbl-wrap">
         <table class="tbl">
-          <thead><tr><th>When</th><th>Type</th><th>Recipients</th><th>Sent</th><th>Failed</th></tr></thead>
+          <thead><tr><th>When</th><th>Type</th><th>Recipients</th><th>Sent</th><th>Failed</th><th>Rate</th></tr></thead>
           <tbody id="trackTbody"></tbody>
         </table>
       </div>
-      <div id="trackEmpty" class="msg info hidden">No campaigns sent yet.</div>
+      <div id="trackEmpty" class="msg info hidden">No campaigns sent yet. Sends from the Templates and DM tabs appear here automatically.</div>
     </div>
+
+    <!-- Recent activity -->
+    <div class="card">
+      <div class="card-title">🕐 Recent Lead Activity
+        <select id="tkActivityFilter" style="margin-left:auto;font-size:12px;padding:5px 8px" onchange="renderTrackingTab()">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Lead</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last contact</th><th>Follow-up step</th></tr></thead>
+          <tbody id="tkRecentTbody"></tbody>
+        </table>
+      </div>
+      <div id="tkRecentEmpty" class="msg info hidden">No recent activity in this window.</div>
+    </div>
+
   </div><!-- /view-tracking -->
 
   <!-- ══════════════════════════════════════
@@ -1357,52 +1414,58 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       </div>
       <div class="msg info">These attributes are scoped to Campaign Management only — they don't alter the main Leads page. Use them for campaign-level context: source, engagement bucket, fallback values for template variables, and custom segmentation fields.</div>
 
-      <!-- Standard attributes -->
+      <!-- Standard attributes — values populated by selectAttrLead() -->
       <div class="attr-group">
         <div class="attr-group-head">
-          📌 Standard Attributes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">— read-only, sourced from Leads</span>
+          📌 Standard Attributes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">— read-only, sourced from Leads · select a lead above to see values</span>
         </div>
         <div class="attr-row">
           <span class="attr-key">first_name</span>
-          <span class="attr-val">—</span>
+          <span class="attr-val" id="stdAttrFirstName" style="color:var(--muted)">—</span>
           <span class="attr-type-pill">text</span>
           <span class="attr-fallback">Fallback: "there"</span>
         </div>
         <div class="attr-row">
           <span class="attr-key">phone</span>
-          <span class="attr-val">—</span>
+          <span class="attr-val" id="stdAttrPhone" style="color:var(--muted)">—</span>
           <span class="attr-type-pill">text</span>
           <span class="attr-fallback">Required</span>
         </div>
         <div class="attr-row">
           <span class="attr-key">lifecycle_stage</span>
-          <span class="attr-val">—</span>
+          <span class="attr-val" id="stdAttrStage" style="color:var(--muted)">—</span>
           <span class="attr-type-pill">dropdown</span>
           <span class="attr-fallback">New / Contacted / Engaged / Converted / Churned</span>
         </div>
         <div class="attr-row">
           <span class="attr-key">lead_score</span>
-          <span class="attr-val">—</span>
-          <span class="attr-type-pill">number</span>
-          <span class="attr-fallback">0–100</span>
+          <span class="attr-val" id="stdAttrScore" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback">Hot / Warm / Cold</span>
         </div>
         <div class="attr-row">
-          <span class="attr-key">source</span>
-          <span class="attr-val">—</span>
+          <span class="attr-key">brand</span>
+          <span class="attr-val" id="stdAttrBrand" style="color:var(--muted)">—</span>
           <span class="attr-type-pill">text</span>
-          <span class="attr-fallback">Ad / Referral / Organic / Import</span>
+          <span class="attr-fallback"></span>
         </div>
         <div class="attr-row">
           <span class="attr-key">last_contacted</span>
-          <span class="attr-val">—</span>
+          <span class="attr-val" id="stdAttrLastContacted" style="color:var(--muted)">—</span>
           <span class="attr-type-pill">date</span>
           <span class="attr-fallback">Auto-updated on send</span>
         </div>
         <div class="attr-row">
-          <span class="attr-key">do_not_contact</span>
-          <span class="attr-val">—</span>
-          <span class="attr-type-pill">boolean</span>
-          <span class="attr-required">⚠ Blocks sends if true</span>
+          <span class="attr-key">followup_step</span>
+          <span class="attr-val" id="stdAttrFollowupStep" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">number</span>
+          <span class="attr-fallback">0 = not in sequence</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">country</span>
+          <span class="attr-val" id="stdAttrCountry" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback"></span>
         </div>
       </div>
 
@@ -2110,6 +2173,18 @@ function selectAttrLead(id){
 
   $id('attrSaveStatus').textContent='';
   $id('attrLeadDetail').style.display='';
+
+  // Populate standard attributes panel with real values
+  const firstName=(lead.Name||'').split(' ')[0]||'—';
+  const setStd=(id,v)=>{ const el=$id(id); if(!el) return; el.textContent=v||'—'; el.style.color=v?'var(--fg)':'var(--muted)'; };
+  setStd('stdAttrFirstName', firstName);
+  setStd('stdAttrPhone', lead.Phone||lead.phone);
+  setStd('stdAttrStage', lead.Stage);
+  setStd('stdAttrScore', lead.Score);
+  setStd('stdAttrBrand', lead.Brand);
+  setStd('stdAttrLastContacted', lead.LastMsgAt?new Date(lead.LastMsgAt).toLocaleString():null);
+  setStd('stdAttrFollowupStep', lead.followup_step!=null&&lead.followup_step!==''?String(lead.followup_step):null);
+  setStd('stdAttrCountry', lead.Country);
 }
 
 function refreshAttrScoreBadge(){
@@ -3239,20 +3314,115 @@ function renderFollowupEngineStats(rows){
 }
 
 // ── TRACKING ──
-// A capped run log (most recent 50) stored on the CLIENTS row — same pattern as
-// fulfilled_addon_events elsewhere in this app. Written after every DM/template/follow-up run.
 function renderTrackingTab(){
-  let log=[]; try{ log=JSON.parse(clientRecord.broadcast_log||'[]'); }catch(e){}
+  const leads=allLeads||[];
+  const now=Date.now();
+  const MS_24H=86400000, MS_7D=604800000;
+
+  // KPI tiles
+  const hot=leads.filter(l=>(l.Score||'').toLowerCase()==='hot').length;
+  const inSeq=leads.filter(l=>l.followup_step&&Number(l.followup_step)>0).length;
+  const contacted24h=leads.filter(l=>l.LastMsgAt&&(now-new Date(l.LastMsgAt).getTime())<MS_24H).length;
+  const set=(id,v)=>{ const el=$id(id); if(el) el.textContent=v; };
+  set('tkTotalLeads',leads.length||'0');
+  set('tkHotLeads',hot||'0');
+  set('tkInSeq',inSeq||'0');
+  set('tkContacted24h',contacted24h||'0');
+
+  // Campaign send count from log
+  let log=[]; try{ log=JSON.parse(clientRecord?.broadcast_log||'[]'); }catch(e){}
+  set('tkCampaignsSent',log.length||'0');
+
+  // Pipeline chart
+  const stageMap={};
+  leads.forEach(l=>{ const s=l.Stage||'Unknown'; stageMap[s]=(stageMap[s]||0)+1; });
+  const stageEntries=Object.entries(stageMap).sort((a,b)=>b[1]-a[1]);
+  const maxStage=stageEntries[0]?.[1]||1;
+  const pipeEl=$id('tkPipelineChart');
+  if(pipeEl){
+    if(!stageEntries.length){ pipeEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No stage data yet.</div>'; }
+    else { pipeEl.innerHTML=stageEntries.slice(0,8).map(([s,n])=>{
+      const pct=Math.round(n/maxStage*100);
+      return `<div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s)}</span>
+          <span style="color:var(--muted);font-variant-numeric:tabular-nums">${n}</span>
+        </div>
+        <div style="background:var(--line);border-radius:4px;height:8px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px;transition:width .4s"></div>
+        </div>
+      </div>`;
+    }).join(''); }
+  }
+
+  // Engagement breakdown
+  const scoreOrder=['Hot','Warm','Cold','Nurture','Disqualified'];
+  const scoreColors={hot:'#DC2626',warm:'#D97706',cold:'#2563EB',nurture:'#7C3AED',disqualified:'#6B7280'};
+  const scoreMap={};
+  leads.forEach(l=>{ const s=(l.Score||'Unknown'); scoreMap[s]=(scoreMap[s]||0)+1; });
+  const scoreEntries=scoreOrder.map(s=>[s,scoreMap[s]||0]).filter(([,n])=>n>0);
+  const unclassed=leads.filter(l=>!l.Score||!scoreOrder.includes(l.Score)).length;
+  if(unclassed>0) scoreEntries.push(['Unclassified',unclassed]);
+  const maxScore=Math.max(...scoreEntries.map(([,n])=>n),1);
+  const engEl=$id('tkEngagementChart');
+  if(engEl){
+    if(!scoreEntries.length){ engEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No score data yet.</div>'; }
+    else { engEl.innerHTML=scoreEntries.map(([s,n])=>{
+      const pct=Math.round(n/maxScore*100);
+      const col=scoreColors[s.toLowerCase()]||'var(--muted)';
+      return `<div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:600">${escHtml(s)}</span>
+          <span style="color:var(--muted);font-variant-numeric:tabular-nums">${n} (${Math.round(n/leads.length*100)||0}%)</span>
+        </div>
+        <div style="background:var(--line);border-radius:4px;height:8px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${col};border-radius:4px;transition:width .4s"></div>
+        </div>
+      </div>`;
+    }).join(''); }
+  }
+
+  // Send history
   const tbody=$id('trackTbody');
-  if(!log.length){ tbody.innerHTML=''; $id('trackEmpty').classList.remove('hidden'); return; }
-  $id('trackEmpty').classList.add('hidden');
-  tbody.innerHTML=log.slice().reverse().map(r=>`<tr>
-    <td>${esc(new Date(r.ts).toLocaleString())}</td>
-    <td>${esc(r.type)}</td>
-    <td>${r.total}</td>
-    <td>${r.sent}</td>
-    <td>${r.failed}</td>
-  </tr>`).join('');
+  if(tbody){
+    if(!log.length){ $id('trackEmpty')?.classList.remove('hidden'); tbody.innerHTML=''; }
+    else {
+      $id('trackEmpty')?.classList.add('hidden');
+      tbody.innerHTML=log.slice().reverse().map(r=>{
+        const rate=r.total?Math.round((r.sent||0)/r.total*100):0;
+        return `<tr>
+          <td>${esc(new Date(r.ts).toLocaleString())}</td>
+          <td><span class="badge">${esc(r.type)}</span></td>
+          <td style="font-variant-numeric:tabular-nums">${r.total}</td>
+          <td style="font-variant-numeric:tabular-nums;color:#16A34A">${r.sent}</td>
+          <td style="font-variant-numeric:tabular-nums;color:${r.failed?'#DC2626':'var(--muted)'}">${r.failed||0}</td>
+          <td style="font-variant-numeric:tabular-nums">${rate}%</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  // Recent activity
+  const window=($id('tkActivityFilter')?.value)||'24h';
+  const cutoff=window==='24h'?now-MS_24H:window==='7d'?now-MS_7D:0;
+  const recent=leads.filter(l=>l.LastMsgAt&&new Date(l.LastMsgAt).getTime()>=cutoff)
+    .sort((a,b)=>new Date(b.LastMsgAt)-new Date(a.LastMsgAt)).slice(0,50);
+  const recentTbody=$id('tkRecentTbody');
+  if(recentTbody){
+    if(!recent.length){ $id('tkRecentEmpty')?.classList.remove('hidden'); recentTbody.innerHTML=''; }
+    else {
+      $id('tkRecentEmpty')?.classList.add('hidden');
+      const scoreColor=s=>s==='Hot'?'#DC2626':s==='Warm'?'#D97706':s==='Cold'?'#2563EB':'var(--muted)';
+      recentTbody.innerHTML=recent.map(l=>`<tr>
+        <td style="font-weight:600">${escHtml(l.Name||'—')}</td>
+        <td style="font-size:12px;color:var(--muted)">${escHtml(l.Phone||'—')}</td>
+        <td>${escHtml(l.Stage||'—')}</td>
+        <td style="font-weight:700;color:${scoreColor(l.Score)}">${escHtml(l.Score||'—')}</td>
+        <td style="font-size:12px">${timeSince(l.LastMsgAt)}</td>
+        <td style="font-variant-numeric:tabular-nums;color:${l.followup_step>0?'var(--accent)':'var(--muted)'}">${l.followup_step>0?'Step '+l.followup_step:'—'}</td>
+      </tr>`).join('');
+    }
+  }
 }
 
 async function logBroadcastRun(type,total,sent,failed){
