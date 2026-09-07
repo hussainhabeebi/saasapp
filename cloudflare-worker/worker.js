@@ -22349,36 +22349,32 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
     const shuffle=arr=>{ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; };
 
     if(propList.length){
-      // Pick a random property for the greeting showcase
-      const prop=propList[Math.floor(Math.random()*propList.length)];
-      // Property description + amenities as context text before the images
-      const descParts=[];
-      if(prop.description && String(prop.description).trim()) descParts.push(String(prop.description).trim());
-      if(prop.amenities && String(prop.amenities).trim()) descParts.push(`✨ *Amenities:* ${String(prop.amenities).trim()}`);
-      if(descParts.length) await hospitalityChatwootText(c, convId, `*${prop.name}*\n\n${descParts.join('\n\n')}`);
-      // Collect this property's images; supplement from its rooms if fewer than 3
-      const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean);
-      if(imgUrls.length<3){
-        const linked=unitList.filter(u=>Number(u.property_id)===Number(prop.id));
-        const pool=linked.length?linked:unitList;
-        for(const u of pool){
-          [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean)
-            .forEach(url=>{ if(!imgUrls.includes(url)) imgUrls.push(url); });
-          if(imgUrls.length>=3) break;
+      // Showcase 2 random properties — images only, no description text in the greeting
+      const showcaseProps=shuffle([...propList]).slice(0,2);
+      for(const prop of showcaseProps){
+        const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean);
+        if(imgUrls.length<2){
+          const linked=unitList.filter(u=>Number(u.property_id)===Number(prop.id));
+          const pool=linked.length?linked:unitList;
+          for(const u of pool){
+            [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean)
+              .forEach(url=>{ if(!imgUrls.includes(url)) imgUrls.push(url); });
+            if(imgUrls.length>=2) break;
+          }
         }
-      }
-      const selected=shuffle(imgUrls).slice(0,3);
-      let captionSent=false;
-      for(let i=0;i<selected.length;i++){
-        const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
-        if(!blob) continue;
-        const fd=new FormData();
-        fd.append('content', captionSent?'':`Welcome to ${prop.name}! 🏨`);
-        fd.append('message_type','outgoing'); fd.append('private','false');
-        fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
-        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
-          {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-        if(r.ok) captionSent=true;
+        const selected=shuffle(imgUrls).slice(0,2);
+        let captionSent=false;
+        for(let i=0;i<selected.length;i++){
+          const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
+          if(!blob) continue;
+          const fd=new FormData();
+          fd.append('content', captionSent?'':`*${prop.name}* 🏨`);
+          fd.append('message_type','outgoing'); fd.append('private','false');
+          fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+          const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+            {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+          if(r.ok) captionSent=true;
+        }
       }
       // Property-picker buttons — always shown as part of the hospitality greeting navigation
       {
@@ -22389,20 +22385,22 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
         if(btns.length) await engineSendChatwootQuickReply(env, c, clientId, convId, prompt, btns);
       }
     } else if(unitList.length){
-      // No properties configured — showcase a random unit
-      const unit=unitList[Math.floor(Math.random()*unitList.length)];
-      const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,3);
-      let captionSent=false;
-      for(let i=0;i<imgUrls.length;i++){
-        const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
-        if(!blob) continue;
-        const fd=new FormData();
-        fd.append('content', captionSent?'':`Here's a glimpse of our resort 🏖️`);
-        fd.append('message_type','outgoing'); fd.append('private','false');
-        fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
-        const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
-          {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-        if(r.ok) captionSent=true;
+      // No properties configured — showcase 2 random units, images only
+      const showcaseUnits=shuffle([...unitList]).slice(0,2);
+      for(const unit of showcaseUnits){
+        const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,2);
+        let captionSent=false;
+        for(let i=0;i<imgUrls.length;i++){
+          const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
+          if(!blob) continue;
+          const fd=new FormData();
+          fd.append('content', captionSent?'':`*${unit.name}* 🏖️`);
+          fd.append('message_type','outgoing'); fd.append('private','false');
+          fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+          const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+            {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+          if(r.ok) captionSent=true;
+        }
       }
       if(unitList.length>1){
         await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 🛏️', unitList.map(u=>({title:u.name, value:u.name})));
@@ -22491,25 +22489,9 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
           }catch(e){}
           return;
         }
-        // 3. General enquiry → send all properties overview (no room-picker per property), then ONE
-        // property-picker button so the lead can dive into a specific property cleanly.
-        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
-        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-        if(alreadyAny) return;
-        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, false);
-        if(properties.length>=1 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 🏨', properties.map(p=>({title:p.name, value:p.name})));
-        }
+        // After the greeting showcase, only send media on explicit property/room selection (handled above)
       } else {
-        // No properties configured — fall back to sending all rooms directly, then a room-picker
-        // button so the lead can tap a room name to revisit or ask follow-up questions.
-        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
-        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-        if(alreadyAny) return;
-        for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
-        if(units.length>=2 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room interests you? 🛏️', units.map(u=>({title:u.name, value:u.name})));
-        }
+        // No properties configured — only send unit media on explicit room name match or ordinal selection (handled above)
       }
       return;
     }
