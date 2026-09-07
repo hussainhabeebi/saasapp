@@ -12523,6 +12523,18 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
   const raw=String(userText||'').trim();
   const actionMatch=raw.match(/^FLOW_ANSWER:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/);
   const memory=engineIndustryFlowMemory(c,state);
+  if(raw==='FLOW_CONTINUE'&&memory){
+    const resumeStage=memory.current_stage;
+    const resumeConfig=engineFlowStageConfig(flow,resumeStage);
+    const resumedMemory={...memory,interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,resumeStage),updated_at:new Date().toISOString()};
+    return {
+      route:'industry_flow',next:resumeStage,preserveCrmStage:true,
+      reply:engineFlowInterpolate(resumeConfig.resume_message||flow.messages?.['msg_'+resumeStage]||'Let’s continue.',memory.variables||{},c),
+      quickReplies:engineBuildIndustryFlowButtons(flow,resumeStage),mediaUrl:'',
+      qualAnswers:engineFlowQualAnswers(state,resumedMemory),intent:'FLOW_CONTINUE',intentData:{},
+      sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
+    };
+  }
   // A button contains its source stage, so it can recover even if this is the first persisted tap.
   let currentStage=actionMatch?.[1]||memory?.current_stage||'';
   if(!currentStage) return null;
@@ -12574,6 +12586,9 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
 }
 
 async function engineBuildIndustryFlowInterruptionTurn(env,c,state,userText){
+  const raw=String(userText||'').trim();
+  // Global safety/navigation intents must continue to the existing deterministic router.
+  if(/\b(?:human|agent|representative|person|staff|receptionist|unsubscribe|stop|cancel)\b/i.test(raw)) return null;
   const memory=engineIndustryFlowMemory(c,state);
   if(!memory) return null;
   const flow=engineParseJsonField(c.flow_json,{});
