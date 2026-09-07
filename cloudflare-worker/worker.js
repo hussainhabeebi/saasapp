@@ -12143,7 +12143,7 @@ REPLY RULES:
 • Sound clear, friendly and conversion-focused.
 • Keep replies compact — one clear answer and one obvious next action.
 • Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
-      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.\n\nPRICING RULE (strict — no exceptions): Never calculate, estimate, derive, or infer a price from a product\'s size, dimensions, or inches. Only quote the exact price that appears in the VERIFIED ECOM PRODUCT DATA for that specific product entry. If a customer asks about pricing for a size, dimension, or configuration that is not explicitly priced in the Product Catalog, say you do not have a confirmed price for that specific option and offer to connect them with a team member who can help — never guess, extrapolate, or compute a number.'
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
@@ -12283,6 +12283,13 @@ BUTTONS — mandatory after EVERY reply:
     // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
     // certification) is not real data, even if it sounds plausible for the category.
     sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
+    // Observed real failure (home appliances / mattress clients): the bot was computing estimated
+    // prices by multiplying or scaling from a known size (e.g. inferring a 72x60 mattress price
+    // from a 72x36 listing) — a calculation the product catalog never authorised. Price must only
+    // ever come verbatim from the catalog entry for that exact product; if the requested size or
+    // configuration has no listed price, escalate to a human.
+    sys+=' PRICE INTEGRITY: Never calculate, derive, estimate, or extrapolate a price from a product\'s size, dimensions, inches, or any other attribute. The only valid price is the exact figure shown in the Product Catalog for that specific product. If a customer asks about a size or configuration whose price is not explicitly listed, tell them you do not have a confirmed price for that option and offer to connect them with a team member for accurate pricing — never compute or approximate a number.';
+
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
