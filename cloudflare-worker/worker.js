@@ -12115,6 +12115,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   if(contextBlock) sys+=contextBlock;
   if(isResort){
     sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
+    sys+='\n\nPHOTO/MEDIA RULE: The system automatically sends actual photos and images — you must NEVER write text like "(send Classic Room photos)", "(send photos)", "(send images)" or any parenthetical placeholder suggesting a photo action. Never announce or describe that photos are being sent. Simply answer the customer\'s question in words; the system handles all media delivery.';
   }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
@@ -21923,7 +21924,7 @@ async function handleHospitalityMediaServe(env, key){
 // LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
-const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury)\b/i;
+const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury|photos?|pictures?|images?|gallery|pics?|view|show)\b/i;
 const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|backwaters?|canal|river|cabins?|rooms?|available|availability|stays?|nights?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
 // Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
