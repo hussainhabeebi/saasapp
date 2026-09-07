@@ -22113,6 +22113,20 @@ function hospUnitNameMatch(lower, unitName){
   if(lower.length>=4 && name.startsWith(lower)) return true;
   // Truncated button tap: strip trailing "..." from customer text
   if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
+  // Fuzzy match: normalize both strings (remove punctuation/parens, collapse spaces) then compare
+  // Handles "premium deluxe 2pax" matching "Premium Deluxe (2 Pax)"
+  function norm(s){ return s.replace(/[^a-z0-9\s]/g,'').replace(/\s+/g,' ').trim(); }
+  const normName=norm(name);
+  const normLower=norm(lower);
+  if(normLower.length>=4 && (normName.includes(normLower) || normName.startsWith(normLower))) return true;
+  if(normLower.endsWith('...') && normName.startsWith(norm(normLower.slice(0,-3)))) return true;
+  // Word-overlap: if user typed 3+ words and ≥75% of those words appear in the unit name
+  const userWords=normLower.split(' ').filter(w=>w.length>1);
+  if(userWords.length>=2){
+    const nameWords=new Set(normName.split(' '));
+    const matched=userWords.filter(w=>nameWords.has(w)).length;
+    if(matched/userWords.length>=0.75) return true;
+  }
   return false;
 }
 
