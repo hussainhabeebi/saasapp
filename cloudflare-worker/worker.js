@@ -12460,6 +12460,78 @@ export function engineIsGreetingOnly(text){
   return /^(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|assalamu\s+alaikum|salaam|namaste)[!. ,🙏👋]*$/iu.test(String(text||'').trim());
 }
 
+export function engineIndustryFlowEnabled(c){
+  const flow=engineParseJsonField(c?.flow_json,{});
+  return flow.flow_engine?.enabled===true&&flow.flow_engine?.published===true;
+}
+function engineFlowStageConfig(flow,stageId){
+  const config=flow.stage_config?.[stageId];
+  return config&&typeof config==='object'?config:{};
+}
+function engineFlowAnswerValue(stageId,answerId){
+  return `FLOW_ANSWER:${String(stageId||'').replace(/[^a-zA-Z0-9_-]/g,'')}:${String(answerId||'').replace(/[^a-zA-Z0-9_-]/g,'')}`.slice(0,200);
+}
+function engineFlowAnswers(config){
+  return (Array.isArray(config?.answers)?config.answers:[]).filter(answer=>answer&&answer.id&&answer.title).slice(0,10);
+}
+export function engineBuildIndustryFlowButtons(flow,stageId){
+  return engineFlowAnswers(engineFlowStageConfig(flow,stageId)).map(answer=>({
+    title:String(answer.title).trim(),
+    value:engineFlowAnswerValue(stageId,answer.id)
+  }));
+}
+function engineFlowInterpolate(text,variables,c){
+  return String(text||'').replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,(_,key)=>{
+    if(key==='business_name'||key==='company_name') return String(c.client_name||'our team');
+    const value=String(key).split('.').reduce((current,part)=>current&&current[part],variables);
+    return value==null?'':String(value);
+  }).trim();
+}
+export function engineResolveIndustryFlowTurn(c,state,userText){
+  if(!engineIndustryFlowEnabled(c)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const raw=String(userText||'').trim();
+  const match=raw.match(/^FLOW_ANSWER:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/);
+  let currentStage=match?.[1]||String(state.stage||'');
+  let config=engineFlowStageConfig(flow,currentStage);
+  const qualAnswers={...(state.qualAnswers||{})};
+  const variables={...(qualAnswers._flow_variables||{})};
+  let answer=null,nextStage='',mediaUrl='',linkUrl='';
+
+  if(match){
+    answer=engineFlowAnswers(config).find(item=>String(item.id)===match[2]);
+    if(!answer) return null;
+    nextStage=String(answer.next||config.default_next||currentStage);
+    if(config.capture_variable) variables[config.capture_variable]=answer.entity_id||answer.value||answer.title;
+    if(answer.set_variable) variables[answer.set_variable]=answer.entity_id||answer.value||answer.title;
+    if(answer.entity_type){
+      variables[answer.entity_type+'_id']=answer.entity_id||answer.value||answer.title;
+      variables[answer.entity_type+'_label']=answer.title;
+    }
+    mediaUrl=String(answer.media_url||'').trim();
+    linkUrl=String(answer.link_url||'').trim();
+  }else if(config.input_type==='free_text'&&config.capture_variable&&raw){
+    variables[config.capture_variable]=raw;
+    nextStage=String(config.default_next||currentStage);
+  }else if(config.ai_mode==='off'&&currentStage&&flow.stages?.[currentStage]){
+    nextStage=currentStage;
+  }else{
+    return null;
+  }
+
+  const nextConfig=engineFlowStageConfig(flow,nextStage);
+  let reply=engineFlowInterpolate(flow.messages?.['msg_'+nextStage]||nextConfig.message||config.retry_message||'Please choose one of the available options.',variables,c);
+  if(linkUrl) reply+=(reply?'\n\n':'')+linkUrl;
+  qualAnswers._flow_variables=variables;
+  return {
+    route:'industry_flow',next:nextStage,reply,
+    quickReplies:engineBuildIndustryFlowButtons(flow,nextStage),
+    mediaUrl:mediaUrl||String(nextConfig.media_url||'').trim(),
+    qualAnswers,intent:'FLOW_ANSWER',intentData:{},sentiment:'Neutral',
+    objectionCategory:'none',customerLanguage:c.language||'en'
+  };
+}
+
 const ENGINE_INTRO_ACTIONS={
   INTRO_SERVICES:{text:'Show me your services',intent:'QUESTION'},
   INTRO_BOOK:{text:'I want to book an appointment',intent:'BOOKING'},
@@ -12522,11 +12594,12 @@ function engineFillIntroTokens(text,c,knownName){
     .trim();
 }
 async function engineBuildFirstGreetingTurn(env,c,userText,replyLang,knownName){
-  if(!engineIsGreetingOnly(userText)) return null;
+  if(!engineIsGreetingOnly(userText)||!engineIndustryFlowEnabled(c)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
   if(intro.enabled===false) return null;
   const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
+  if(!stageIds.length) return null;
   const firstStage=stageIds[0]||'new';
   const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
   let text=engineFillIntroTokens(intro.text,c,knownName);
@@ -12536,21 +12609,26 @@ async function engineBuildFirstGreetingTurn(env,c,userText,replyLang,knownName){
     text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
   }
   const botConfig=engineParseJsonField(c.bot_config,{});
-  const buttons=botConfig.quick_reply_buttons_enabled===false?[]:engineNormalizeIntroButtons(intro.buttons,c);
-  return {text,next:firstStage,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim()};
+  const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
+  const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
+  const firstConfig=engineFlowStageConfig(flow,firstStage);
+  return {route:'industry_flow',text,next:firstStage,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:state?.qualAnswers||{}};
 }
 
 async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
   const routing={
-    route:'intro',next:turn.next,reply:turn.text,quickReplies:null,
-    qualAnswers:state.qualAnswers||{},intentData:{},intent:'SHORT_NEUTRAL',
+    route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,
+    qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
     sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
   };
+  const replyText=turn.text||turn.reply||'';
+  const replyLang=turn.lang||turn.customerLanguage||c.language||'en';
+  const replyButtons=turn.buttons||turn.quickReplies||[];
   if(c.bot_reply_disabled!=='Yes'&&turn.mediaUrl&&state.convId){
     await sendDriveMediaToChatwoot(c,state.convId,turn.mediaUrl,'').catch(()=>false);
   }
-  const sentOptions=await engineDeliverReply(env,c,clientId,state.convId,turn.text,{
-    mediaType,langCode:turn.lang,quickReplies:turn.buttons
+  const sentOptions=await engineDeliverReply(env,c,clientId,state.convId,replyText,{
+    mediaType,langCode:replyLang,quickReplies:replyButtons
   });
   routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
   const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
@@ -12560,8 +12638,8 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
   if(resolvedLeadId){
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
-    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:turn.text,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
-    await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,turn.text);
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,replyText);
     if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
     await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
     if(isNewLead) await engineBroadcastUpdate(env,clientId,{type:'new_lead',lead_id:resolvedLeadId,lead_name:built.body.Name||built.body.Phone||'New Enquiry',at:new Date().toISOString()});
@@ -12569,7 +12647,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
       try{ await env.DB.prepare('INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referral_code, status, created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),Number(state.referrerLeadId),Number(resolvedLeadId),'','pending',new Date().toISOString()).run(); }catch(e){}
     }
   }
-  await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:state.phone,Intent:'SHORT_NEUTRAL',Route:'intro',Stage:state.stage||'',NextStage:built.body.Stage||'',ResponseMs:Date.now()-startMs,IsError:false,ErrorMsg:'',Timestamp:new Date().toISOString()});
+  await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:state.phone,Intent:routing.intent,Route:routing.route,Stage:state.stage||'',NextStage:built.body.Stage||'',ResponseMs:Date.now()-startMs,IsError:false,ErrorMsg:'',Timestamp:new Date().toISOString()});
   await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(()=>{});
   return resolvedLeadId;
 }
@@ -14955,6 +15033,11 @@ async function handleEngineWebhook(request, env, secret){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    const industryFlowTurn=engineResolveIndustryFlowTurn(c,state,userText);
+    if(industryFlowTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType);
+      return json({ok:true,route:'industry_flow',sent:c.bot_reply_disabled!=='Yes'});
+    }
     const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
     if(liveCheckoutTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});

@@ -9971,6 +9971,7 @@ function populateSettings(){
   let stages=[],flowConfig={};
   try{flowConfig=JSON.parse(clientRecord.flow_json||'{}');stages=flowJsonToStages(flowConfig);}catch(e){}
   _flowIntro=normalizeFlowIntro(flowConfig.intro);
+  _flowEngine=normalizeFlowEngine(flowConfig.flow_engine);
   renderStages(stages);
   // Module toggles (Travel Agency/Recruitment/Appointments/B2B) moved to their own "🧩 Modules"
   // settings page — see populateModulesPage() — since this page no longer has that markup.
@@ -11045,6 +11046,99 @@ async function saveField(btnId,msgId,fields){
 
 /* stage builder */
 let _flowIntro={enabled:true,text:'',media_type:'none',media_url:'',buttons:[]};
+let _flowEngine={enabled:false,published:false,template:''};
+function normalizeFlowEngine(raw){
+  const engine=raw&&typeof raw==='object'?raw:{};
+  return {enabled:engine.enabled===true,published:engine.published===true,template:String(engine.template||'')};
+}
+function setFlowEngineEnabled(enabled){
+  _flowEngine.enabled=!!enabled;
+  _flowEngine.published=!!enabled;
+  renderStages(_stages);
+}
+function flowEnginePanel(){
+  const industry=String(clientRecord?.industry||'general').replaceAll('_',' ');
+  return `
+    <div class="stage-card" style="border:2px solid ${_flowEngine.enabled?'#16A34A':'var(--ls)'};background:${_flowEngine.enabled?'#F0FDF4':'var(--bg)'}">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Industry Flow Module</div>
+          <div class="s-note" style="margin:4px 0 0">${_flowEngine.enabled?'Enabled — saved flow steps will control matching conversations.':'Disabled — existing prompt-based replies continue without any change.'}</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700">
+          <input type="checkbox" ${_flowEngine.enabled?'checked':''} onchange="setFlowEngineEnabled(this.checked)"> Enable flow
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+        <button type="button" class="save-btn" onclick="loadIndustryFlowTemplate()">Load ${esc(industry)} template</button>
+        <span style="font-size:12px;color:var(--muted)">Loading a template replaces the stages currently shown here. It does not affect customers until you save with Enable flow switched on.</span>
+      </div>
+    </div>`;
+}
+function industryFlowTemplate(industry){
+  const kind=String(industry||'general').toLowerCase();
+  const stage=(id,label,message,config)=>({id,label,message,config:{input_type:'buttons',capture_variable:'',ai_mode:'fallback',media_url:'',data_source:'none',default_next:id,answers:[],...config}});
+  if(kind==='healthcare') return [
+    stage('stage_1','Patient Intent','How can we help you today?',{answers:[
+      {id:'services',title:'View Services',entity_type:'service',next:'stage_2'},
+      {id:'book',title:'Book Appointment',entity_type:'doctor',next:'stage_3'},
+      {id:'human',title:'Talk to Human',next:'stage_4'}]}),
+    stage('stage_2','Choose Service','Please choose the healthcare service you need.',{capture_variable:'service_id',data_source:'services',answers:[],default_next:'stage_3'}),
+    stage('stage_3','Appointment','Choose a doctor or appointment option to continue.',{capture_variable:'doctor_id',data_source:'doctors',answers:[],default_next:'stage_3'}),
+    stage('stage_4','Clinic Team','I’ll connect you with our clinic team for assistance.',{ai_mode:'off'})
+  ];
+  if(kind==='ecommerce') return [
+    stage('stage_1','Shopping Intent','What would you like to do?',{answers:[
+      {id:'browse',title:'Browse Products',entity_type:'product',next:'stage_2'},
+      {id:'order',title:'Place Order',entity_type:'product',next:'stage_2'},
+      {id:'human',title:'Talk to Sales',next:'stage_4'}]}),
+    stage('stage_2','Choose Product','Please choose a product or category.',{capture_variable:'product_id',data_source:'products',default_next:'stage_3'}),
+    stage('stage_3','Order Details','Please choose the required variant and continue to checkout.',{capture_variable:'variant_id',data_source:'products'}),
+    stage('stage_4','Sales Team','I’ll connect you with our sales team.',{ai_mode:'off'})
+  ];
+  if(kind==='travel') return [
+    stage('stage_1','Travel Intent','How can we help with your travel?',{answers:[
+      {id:'flight',title:'Search Flights',entity_type:'flight',next:'stage_2'},
+      {id:'package',title:'View Packages',entity_type:'service',next:'stage_3'},
+      {id:'human',title:'Talk to Agent',next:'stage_4'}]}),
+    stage('stage_2','Flight Search','Please share your route and travel date.',{input_type:'free_text',capture_variable:'travel_request',data_source:'flights',default_next:'stage_2'}),
+    stage('stage_3','Travel Package','Choose a package or destination.',{capture_variable:'service_id',data_source:'services'}),
+    stage('stage_4','Travel Agent','I’ll connect you with our travel team.',{ai_mode:'off'})
+  ];
+  if(kind==='education') return [
+    stage('stage_1','Student Intent','How can we help with your education plans?',{answers:[
+      {id:'courses',title:'Browse Courses',entity_type:'course',next:'stage_2'},
+      {id:'apply',title:'Apply Now',entity_type:'course',next:'stage_3'},
+      {id:'advisor',title:'Talk to Advisor',next:'stage_4'}]}),
+    stage('stage_2','Choose Course','Please choose a course or programme.',{capture_variable:'course_id',data_source:'courses',default_next:'stage_3'}),
+    stage('stage_3','Application','Please share the requested application information.',{input_type:'free_text',capture_variable:'application_detail'}),
+    stage('stage_4','Advisor','I’ll connect you with an admissions advisor.',{ai_mode:'off'})
+  ];
+  if(kind==='hospitality'||kind==='real_estate') return [
+    stage('stage_1','Property Intent','What would you like to explore?',{answers:[
+      {id:'properties',title:'View Properties',entity_type:'property',next:'stage_2'},
+      {id:'units',title:'Available Units',entity_type:'unit',next:'stage_3'},
+      {id:'human',title:'Talk to Advisor',next:'stage_4'}]}),
+    stage('stage_2','Choose Property','Please choose a property.',{capture_variable:'property_id',data_source:'properties',default_next:'stage_3'}),
+    stage('stage_3','Choose Unit','Please choose an available unit.',{capture_variable:'unit_id',data_source:'units'}),
+    stage('stage_4','Advisor','I’ll connect you with our property team.',{ai_mode:'off'})
+  ];
+  return [
+    stage('stage_1','Customer Intent','How can we help you today?',{answers:[
+      {id:'services',title:'View Services',entity_type:'service',next:'stage_2'},
+      {id:'more',title:'Tell Me More',next:'stage_3'},
+      {id:'human',title:'Talk to Human',next:'stage_4'}]}),
+    stage('stage_2','Choose Service','Please choose the service you need.',{capture_variable:'service_id',data_source:'services',default_next:'stage_3'}),
+    stage('stage_3','Requirement','Please tell us a little more about your requirement.',{input_type:'free_text',capture_variable:'requirement'}),
+    stage('stage_4','Team Handover','I’ll connect you with our team.',{ai_mode:'off'})
+  ];
+}
+function loadIndustryFlowTemplate(){
+  if(_stages.length&&!confirm('Replace the currently displayed stages with the industry template?')) return;
+  _stages=industryFlowTemplate(clientRecord?.industry);
+  _flowEngine.template=String(clientRecord?.industry||'general');
+  renderStages(_stages);
+}
 const INTRO_ACTION_OPTIONS=[
   ['INTRO_SERVICES','View services'],
   ['INTRO_BOOK','Book appointment'],
@@ -11097,16 +11191,30 @@ function renderIntroCard(fallback){
       <div class="s-note" style="margin:8px 0 0">The customer sees the title; Leadvyne receives the selected internal action. Blank titles are ignored.</div>
     </div>`;
 }
+function defaultStageConfig(id){
+  return {input_type:'buttons',capture_variable:'',ai_mode:'fallback',media_url:'',data_source:'none',default_next:id,answers:[]};
+}
 function flowJsonToStages(fj){
-  return Object.keys(fj.stages||{}).filter(k=>k!=='new').map((id,i)=>({id,label:fj.labels?.[id]||`Stage ${i+1}`,message:fj.messages?.['msg_'+id]||''}));
+  return Object.keys(fj.stages||{}).filter(k=>k!=='new').map((id,i)=>({
+    id,label:fj.labels?.[id]||`Stage ${i+1}`,message:fj.messages?.['msg_'+id]||'',
+    config:{...defaultStageConfig(id),...(fj.stage_config?.[id]||{}),answers:Array.isArray(fj.stage_config?.[id]?.answers)?fj.stage_config[id].answers:[]}
+  }));
 }
 function stagesToFlowJson(stages,intro){
-  const messages={},flowStages={},labels={};
+  const messages={},flowStages={},labels={},stageConfig={};
   stages.forEach((s,i)=>{
     const next=stages[i+1]?stages[i+1].id:s.id;
     const nextMsg=stages[i+1]?'msg_'+stages[i+1].id:'msg_'+s.id;
     messages['msg_'+s.id]=s.message;
     labels[s.id]=String(s.label||`Stage ${i+1}`).trim().slice(0,60);
+    const cfg={...defaultStageConfig(s.id),...(s.config||{})};
+    cfg.answers=(Array.isArray(cfg.answers)?cfg.answers:[]).filter(a=>a.title?.trim()).map((a,j)=>({
+      id:String(a.id||'answer_'+(j+1)).replace(/[^a-zA-Z0-9_-]/g,'_'),
+      title:String(a.title).trim().slice(0,24),next:String(a.next||s.id),
+      entity_type:String(a.entity_type||''),entity_id:String(a.entity_id||''),
+      set_variable:String(a.set_variable||''),link_url:String(a.link_url||''),media_url:String(a.media_url||'')
+    }));
+    stageConfig[s.id]=cfg;
     flowStages[s.id]={'AFFIRMATIVE':{next,msg:nextMsg},'WATCHED':{next,msg:nextMsg},'FORM_DONE':{next,msg:nextMsg},'BOOKING':{next,msg:nextMsg},'WANTS_MORE_INFO':{next:s.id,msg:'msg_'+s.id},'QUESTION':{next:s.id,msg:null},'SHORT_NEUTRAL':{next,msg:nextMsg},'*':{next:s.id,msg:'msg_'+s.id}};
   });
   const firstId=stages[0]?.id;
@@ -11114,23 +11222,84 @@ function stagesToFlowJson(stages,intro){
   const cleanIntro=normalizeFlowIntro(intro);
   cleanIntro.buttons=cleanIntro.buttons.filter(b=>b.title.trim()).map(b=>({title:b.title.trim().slice(0,20),action:b.action}));
   if(!cleanIntro.media_url){cleanIntro.media_type='none';cleanIntro.media_url='';}
-  return{stages:flowStages,messages,labels,variables:{},intro:cleanIntro};
+  return{stages:flowStages,messages,labels,variables:{},intro:cleanIntro,stage_config:stageConfig,flow_engine:{..._flowEngine,published:_flowEngine.enabled===true}};
+}
+function flowStageOptions(selected){
+  return _stages.map((stage,i)=>`<option value="${escAttr(stage.id)}"${selected===stage.id?' selected':''}>Stage ${i+1}: ${esc(stage.label||stage.id)}</option>`).join('');
+}
+function stageAnswerRows(stage,index){
+  const answers=Array.isArray(stage.config?.answers)?stage.config.answers:[];
+  if(!answers.length) return '<div class="s-note">No answer branches yet. Free-text can fall back to the business prompt.</div>';
+  return answers.map((answer,j)=>`
+    <div style="border:1px solid var(--ls);border-radius:8px;padding:9px;margin-top:7px">
+      <div style="display:grid;grid-template-columns:1fr 150px 170px auto;gap:7px;align-items:end">
+        <div><label class="form-label">Button / matched answer</label><input class="form-input" maxlength="24" value="${escAttr(answer.title||'')}" oninput="_stages[${index}].config.answers[${j}].title=this.value"></div>
+        <div><label class="form-label">Entity</label><select class="form-input" onchange="_stages[${index}].config.answers[${j}].entity_type=this.value">
+          ${['','service','doctor','product','property','unit','course','flight'].map(v=>`<option value="${v}"${(answer.entity_type||'')===v?' selected':''}>${v||'None'}</option>`).join('')}
+        </select></div>
+        <div><label class="form-label">Next stage</label><select class="form-input" onchange="_stages[${index}].config.answers[${j}].next=this.value">${flowStageOptions(answer.next||stage.id)}</select></div>
+        <button type="button" class="svc-del" onclick="removeStageAnswer(${index},${j})">✕</button>
+      </div>
+      <div style="display:grid;grid-template-columns:160px 1fr 1fr;gap:7px;margin-top:7px">
+        <div><label class="form-label">Entity ID/value</label><input class="form-input" value="${escAttr(answer.entity_id||'')}" oninput="_stages[${index}].config.answers[${j}].entity_id=this.value" placeholder="Optional record ID"></div>
+        <div><label class="form-label">Destination link</label><input class="form-input" value="${escAttr(answer.link_url||'')}" oninput="_stages[${index}].config.answers[${j}].link_url=this.value" placeholder="Product, booking or checkout URL"></div>
+        <div><label class="form-label">Answer media</label><input class="form-input" value="${escAttr(answer.media_url||'')}" oninput="_stages[${index}].config.answers[${j}].media_url=this.value" placeholder="Google Drive link"></div>
+      </div>
+      <div class="s-note" style="margin:6px 0 0">Internal action: FLOW_ANSWER:${esc(stage.id)}:${esc(answer.id||'answer_'+(j+1))}</div>
+    </div>`).join('');
+}
+function addStageAnswer(index){
+  const stage=_stages[index]; stage.config=stage.config||defaultStageConfig(stage.id);
+  stage.config.answers=stage.config.answers||[];
+  stage.config.answers.push({id:'answer_'+(stage.config.answers.length+1),title:'',next:stage.id,entity_type:'',entity_id:'',set_variable:'',link_url:'',media_url:''});
+  renderStages(_stages);
+}
+function removeStageAnswer(index,answerIndex){
+  _stages[index].config.answers.splice(answerIndex,1);
+  renderStages(_stages);
 }
 function renderStages(stages){
-  _stages=stages;
-  const stageCards=stages.map((s,i)=>`
-    <div class="stage-card">
+  _stages=stages.map(stage=>({...stage,config:{...defaultStageConfig(stage.id),...(stage.config||{}),answers:Array.isArray(stage.config?.answers)?stage.config.answers:[]}}));
+  const stageCards=_stages.map((s,i)=>`
+    <div class="stage-card" style="${_flowEngine.enabled?'':'opacity:.72'}">
       <span style="font-family:var(--mono);font-size:10px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px;display:inline-block;margin-bottom:8px">Stage ${i+1}</span>
       <button class="stage-del" onclick="removeStage(${i})">✕</button>
       <label class="form-label">Custom Stage Name</label>
-      <input class="form-input" value="${esc(s.label||`Stage ${i+1}`)}" maxlength="60" oninput="_stages[${i}].label=this.value" placeholder="e.g. Qualified, Demo Booked, Documents Pending" style="margin-bottom:10px">
-      <label class="form-label">Message</label>
-      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="e.g. Would you like to see our pricing? — avoid naming one specific product/service">${esc(s.message)}</textarea>
+      <input class="form-input" value="${esc(s.label||`Stage ${i+1}`)}" maxlength="60" oninput="_stages[${i}].label=this.value" placeholder="e.g. Qualified, Demo Booked" style="margin-bottom:10px">
+      <label class="form-label">Controlled message</label>
+      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="Use variables such as {{service_label}} or {{customer_name}}">${esc(s.message)}</textarea>
+      <div style="display:grid;grid-template-columns:150px 1fr 150px;gap:8px;margin-top:9px">
+        <div><label class="form-label">Answer type</label><select class="form-input" onchange="_stages[${i}].config.input_type=this.value">
+          <option value="buttons"${s.config.input_type==='buttons'?' selected':''}>Buttons</option><option value="free_text"${s.config.input_type==='free_text'?' selected':''}>Free text</option>
+        </select></div>
+        <div><label class="form-label">Save answer variable</label><input class="form-input" value="${escAttr(s.config.capture_variable||'')}" oninput="_stages[${i}].config.capture_variable=this.value" placeholder="e.g. doctor_id, destination"></div>
+        <div><label class="form-label">AI mode</label><select class="form-input" onchange="_stages[${i}].config.ai_mode=this.value">
+          <option value="fallback"${s.config.ai_mode==='fallback'?' selected':''}>Fallback only</option><option value="off"${s.config.ai_mode==='off'?' selected':''}>Off</option>
+        </select></div>
+      </div>
+      <div style="display:grid;grid-template-columns:170px 1fr 180px;gap:8px;margin-top:8px">
+        <div><label class="form-label">Industry records</label><select class="form-input" onchange="_stages[${i}].config.data_source=this.value">
+          ${['none','services','doctors','products','properties','units','courses','flights'].map(v=>`<option value="${v}"${s.config.data_source===v?' selected':''}>${cap(v)}</option>`).join('')}
+        </select></div>
+        <div><label class="form-label">Stage media</label><input class="form-input" value="${escAttr(s.config.media_url||'')}" oninput="_stages[${i}].config.media_url=this.value" placeholder="Google Drive image/video/audio"></div>
+        <div><label class="form-label">Default next stage</label><select class="form-input" onchange="_stages[${i}].config.default_next=this.value">${flowStageOptions(s.config.default_next||s.id)}</select></div>
+      </div>
+      <div style="margin-top:12px;font-weight:700;font-size:12px">Variable answer branches</div>
+      ${stageAnswerRows(s,i)}
+      <button type="button" onclick="addStageAnswer(${i})" style="margin-top:8px;padding:7px 10px;border:1px dashed var(--ls);border-radius:7px;background:none;cursor:pointer;color:var(--muted)">+ Add answer branch</button>
     </div>`).join('');
-  $id('stageList').innerHTML=renderIntroCard(!stages.length)+stageCards;
+  $id('stageList').innerHTML=flowEnginePanel()+renderIntroCard(!_stages.length)+stageCards;
 }
-function addStage(){_stages.push({id:'stage_'+(_stages.length+1),label:'Stage '+(_stages.length+1),message:''});renderStages(_stages);}
-function removeStage(i){_stages.splice(i,1);_stages=_stages.map((s,j)=>({...s,id:'stage_'+(j+1)}));renderStages(_stages);}
+function addStage(){
+  const id='stage_'+(_stages.length+1);
+  _stages.push({id,label:'Stage '+(_stages.length+1),message:'',config:defaultStageConfig(id)});
+  renderStages(_stages);
+}
+function removeStage(i){
+  _stages.splice(i,1);
+  _stages=_stages.map((s,j)=>({...s,id:'stage_'+(j+1),config:{...s.config,default_next:s.config?.default_next||'stage_'+(j+1)}}));
+  renderStages(_stages);
+}
 
 /* ── MODAL SYSTEM ── */
 function openModal(id){
