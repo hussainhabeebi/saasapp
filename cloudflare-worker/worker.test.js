@@ -75,6 +75,7 @@ import {
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
   ltBookableChatOffers,
+  ltMatchBookingSelection,
   ltExactRouteOffers,
   ltLiveAgencyEnabled,
   ltParseFlightRoute,
@@ -161,6 +162,32 @@ describe('Live Travel ticketing in chat',()=>{
     assert.match(text,/→ \*AED 425\.50\* · 3 seats left/);
     assert.doesNotMatch(text,/📍|📅|💺|🕒|🧳|💰|1️⃣|👇/);
     assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
+  });
+
+  test('includes checkout URL in formatted offer when present',()=>{
+    const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',checkout_url:'https://flypoomas.com/book?fareId=fare-1&supplier=poomas&source=leadvyne&client=7',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
+    assert.match(text,/🔗 \*Book now:\* https:\/\/flypoomas\.com\/book\?fareId=fare-1/);
+    assert.doesNotMatch(text,/Contact us to book/);
+  });
+
+  test('omits booking link line when checkout_url is missing',()=>{
+    const text=ltFormatChatOffers([{airline_name:'No Link Air',flight_numbers:'NL1',currency:'AED',total_amount:300,bookable:true,supplier_offer_id:'fare-x',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{}}]);
+    assert.doesNotMatch(text,/🔗/);
+    assert.doesNotMatch(text,/Book now/);
+  });
+
+  test('ltMatchBookingSelection matches by number',()=>{
+    const offers=[{airline_name:'Air India',checkout_url:'https://flypoomas.com/book?fareId=1'},{airline_name:'Etihad Airways',checkout_url:'https://flypoomas.com/book?fareId=2'}];
+    assert.equal(ltMatchBookingSelection('Book option 2',offers)?.airline_name,'Etihad Airways');
+    assert.equal(ltMatchBookingSelection('option 1',offers)?.airline_name,'Air India');
+    assert.equal(ltMatchBookingSelection('#2',offers)?.airline_name,'Etihad Airways');
+  });
+
+  test('ltMatchBookingSelection matches by airline name',()=>{
+    const offers=[{airline_name:'Air India',checkout_url:'https://flypoomas.com/book?fareId=1'},{airline_name:'Etihad Airways',checkout_url:'https://flypoomas.com/book?fareId=2'}];
+    assert.equal(ltMatchBookingSelection('Book air india',offers)?.airline_name,'Air India');
+    assert.equal(ltMatchBookingSelection('I want etihad',offers)?.airline_name,'Etihad Airways');
+    assert.equal(ltMatchBookingSelection('book flydubai',offers),null);
   });
 
   test('displayed options use only the validated fare list',()=>{

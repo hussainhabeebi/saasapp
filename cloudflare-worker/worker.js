@@ -11930,6 +11930,18 @@ export function ltBookableChatOffers(offers){
   return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
 }
 
+export function ltMatchBookingSelection(text,offers){
+  const lower=String(text||'').toLowerCase();
+  const numMatch=lower.match(/\b(?:option|no\.?|#)?\s*([1-3])\b/);
+  if(numMatch){const idx=Number(numMatch[1])-1;if(idx>=0&&idx<(offers||[]).length)return offers[idx];}
+  for(const o of(offers||[])){
+    const name=String(o.airline_name||o.airline_code||'').toLowerCase();
+    const firstWord=name.split(/\s+/)[0];
+    if(firstWord&&lower.includes(firstWord))return o;
+  }
+  return null;
+}
+
 export function ltFormatChatOffers(offers){
   const top=ltBookableChatOffers(offers);
   if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
@@ -11946,9 +11958,10 @@ export function ltFormatChatOffers(offers){
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
     let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${o.currency} ${Number(o.total_amount).toFixed(2)}*`;
     if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
+    if(o.checkout_url)line+=`\n→ 🔗 *Book now:* ${o.checkout_url}`;
     lines.push(line);
   });
-  lines.push('_Fares are live and may change. Contact us to book any of these options._');
+  lines.push('_Fares are live and may change. Reply with the option number or airline name to get the booking link again._');
   return lines.join('\n\n');
 }
 
@@ -12012,6 +12025,15 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     await ltClearChatSearchDraft(env,clientId,phone);
     return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
   }
+  if(draft?.last_offers?.length){
+    const sel=ltMatchBookingSelection(userText,draft.last_offers);
+    if(sel?.checkout_url){
+      await ltClearChatSearchDraft(env,clientId,phone);
+      return {handled:true,reply:`Here is your *${sel.airline_name||sel.airline_code||'flight'}* booking link:\n${sel.checkout_url}\n\n_Complete your booking on the secure checkout page. Fares are live and may change._`};
+    }
+    if(!ltChatFlightIntent(userText)){await ltClearChatSearchDraft(env,clientId,phone);return null;}
+    await ltClearChatSearchDraft(env,clientId,phone);
+  }
   await ltEnsureSchema(env);
   await ltSeedSuppliers(env,clientId);
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
@@ -12031,7 +12053,8 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
     const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
     const bookingOffers=ltBookableChatOffers(offers);
-    await ltClearChatSearchDraft(env,clientId,phone);
+    const offersSnapshot=bookingOffers.map(o=>({airline_name:o.airline_name,airline_code:o.airline_code,checkout_url:o.checkout_url}));
+    await ltSaveChatSearchDraft(env,clientId,phone,{last_offers:offersSnapshot});
     return {handled:true,reply:ltFormatChatOffers(bookingOffers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
