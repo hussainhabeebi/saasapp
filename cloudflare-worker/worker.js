@@ -22376,16 +22376,9 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           if(r.ok) captionSent=true;
         }
       }
-      // Property-picker buttons — always shown as part of the hospitality greeting navigation
-      {
-        const btns=propList.length>1
-          ? propList.map(p=>({title:p.name, value:p.name}))
-          : unitList.map(u=>({title:u.name, value:u.name}));
-        const prompt=propList.length>1?'Which property would you like to explore? 🏨':'Which room would you like to explore? 🛏️';
-        if(btns.length) await engineSendChatwootQuickReply(env, c, clientId, convId, prompt, btns);
-      }
+      // No buttons in greeting — property picker appears when lead explicitly selects a property
     } else if(unitList.length){
-      // No properties configured — showcase 2 random units, images only
+      // No properties configured — showcase 2 random units, images only, no buttons
       const showcaseUnits=shuffle([...unitList]).slice(0,2);
       for(const unit of showcaseUnits){
         const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,2);
@@ -22401,9 +22394,6 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
             {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
           if(r.ok) captionSent=true;
         }
-      }
-      if(unitList.length>1){
-        await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 🛏️', unitList.map(u=>({title:u.name, value:u.name})));
       }
     }
   }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
