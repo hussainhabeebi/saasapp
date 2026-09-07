@@ -19,6 +19,9 @@ import {
   engineHandoverCannedTexts,
   engineHealthcareHandoverSilenceActive,
   HEALTHCARE_HANDOVER_SILENCE_MS,
+  engineIsGreetingOnly,
+  engineNormalizeIntroButtons,
+  engineResolveIntroInternalAction,
   engineRouteFlow,
   engineFindHallucinatedLink,
   engineSendChatwootReply,
@@ -87,6 +90,41 @@ import {
   engineResolveSarvamApiKey,
   engineWithDeadline,
 } from './worker.js';
+
+describe('Global Stage 1 greeting introduction',()=>{
+  test('only intercepts a short greeting, not a real customer question',()=>{
+    assert.equal(engineIsGreetingOnly('Hello 👋'),true);
+    assert.equal(engineIsGreetingOnly('Good morning!'),true);
+    assert.equal(engineIsGreetingOnly('Hello, what services do you offer?'),false);
+  });
+
+  test('uses only allow-listed internal action values and caps buttons at three',()=>{
+    const buttons=engineNormalizeIntroButtons([
+      {title:'Services',action:'INTRO_SERVICES'},
+      {title:'Book now',action:'INTRO_BOOK'},
+      {title:'Unsafe',action:'DELETE_ACCOUNT'},
+      {title:'Human',action:'INTRO_HUMAN'}
+    ],{industry:'healthcare'});
+    assert.deepEqual(buttons,[
+      {title:'Services',value:'INTRO_SERVICES'},
+      {title:'Book now',value:'INTRO_BOOK'},
+      {title:'Human',value:'INTRO_HUMAN'}
+    ]);
+  });
+
+  test('maps internal actions deterministically without an AI classifier',()=>{
+    assert.deepEqual(engineResolveIntroInternalAction('INTRO_BOOK','en'),{
+      text:'I want to book an appointment',intent:'BOOKING',customerLanguage:'en'
+    });
+    assert.equal(engineResolveIntroInternalAction('DELETE_ACCOUNT'),null);
+  });
+
+  test('supplies safe industry defaults when buttons are not configured',()=>{
+    assert.deepEqual(engineNormalizeIntroButtons([],{industry:'healthcare',handover_enabled:'Yes'}).map(x=>x.value),[
+      'INTRO_SERVICES','INTRO_BOOK','INTRO_HUMAN'
+    ]);
+  });
+});
 
 describe('Fast voice-to-voice TTS',()=>{
   test('prefers a client Sarvam key and otherwise uses the Worker key',()=>{
