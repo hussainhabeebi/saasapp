@@ -12464,6 +12464,11 @@ export function engineIndustryFlowEnabled(c){
   const flow=engineParseJsonField(c?.flow_json,{});
   return flow.flow_engine?.enabled===true&&flow.flow_engine?.published===true;
 }
+export function engineShouldUseConfiguredFlowIntro(c,userText,mediaType='text'){
+  if(mediaType!=='text'||!engineIsGreetingOnly(userText)||!engineIndustryFlowEnabled(c))return false;
+  const flow=engineParseJsonField(c?.flow_json,{}),intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
+  return intro.enabled!==false&&Boolean(String(intro.text||'').trim());
+}
 function engineFlowStageConfig(flow,stageId){
   const config=flow.stage_config?.[stageId];
   return config&&typeof config==='object'?config:{};
@@ -15001,7 +15006,8 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
-    if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
+    const configuredIntroCanRun=engineShouldUseConfiguredFlowIntro(c,text,mediaType);
+    if(!env.GEMINI_API_KEY && !c.openrouter_key&&!configuredIntroCanRun){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
@@ -15127,6 +15133,16 @@ async function handleEngineWebhook(request, env, secret){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // A saved Flow introduction is deterministic configuration, not AI content. Run it for
+    // every greeting (including an existing/returning contact) before interruption/classifier
+    // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
+    const configuredGreetingTurn=engineShouldUseConfiguredFlowIntro(c,userText,mediaType)
+      ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name)
+      :null;
+    if(configuredGreetingTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType);
+      return json({ok:true,route:'intro_saved',sent:c.bot_reply_disabled!=='Yes',cached:true});
+    }
     const industryFlowTurn=engineResolveIndustryFlowTurn(c,state,userText);
     if(industryFlowTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType);
