@@ -22154,6 +22154,10 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
+  // Photo/image keyword ("photos", "pictures", "images", "gallery", "pics") — always suppress LLM
+  // so the worker dispatches actual media or a property/unit picker. The LLM saying "here are
+  // some images" without sending any is worse than the bot showing a picker.
+  if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -22331,6 +22335,8 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 // message that happens to mention the same unit (or ask about availability) again.
 // hospContext = { selectedProperty, selectedUnit, selectedLocation } from the lead's stored NocoDB
 // values — passed in by handleEngineWebhook so we don't need an extra NocoDB read here.
+// Photo/image keywords always suppress the LLM (see engineCheckResortFirstInquiry) so this
+// function is the sole responder for those requests.
 
 // On a brand-new resort lead's first message, sends a warm welcome showcase:
 //   1. One randomly-chosen property's description + amenities as context text
@@ -22448,27 +22454,26 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         ? (properties||[]).filter(p=>p.location && p.location.toLowerCase()===selectedLocation.toLowerCase())
         : (properties||[]);
 
-      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — send the already-selected
-      // property's or unit's images on demand, regardless of intro-images setting. The LLM also
-      // runs (engineCheckResortFirstInquiry returns false once any media has been sent) so the
-      // customer gets both a text reply and the actual images. When no selection exists yet, show
-      // the property/unit picker so they can choose before seeing any images.
+      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — engineCheckResortFirstInquiry
+      // always suppresses the LLM for these, so this path is the sole responder. Send the
+      // already-selected property's or unit's images; if nothing is selected yet, show a picker.
+      // Uses hospUnitNameMatch for case-insensitive lookups so stored names always resolve.
       if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)){
         const selectedUnit=hospContext.selectedUnit;
         const selectedProp=hospContext.selectedProperty;
         if(selectedUnit){
-          const unit=units.find(u=>u.name===selectedUnit);
+          const unit=units.find(u=>hospUnitNameMatch(selectedUnit.toLowerCase(), u.name));
           if(unit){ await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit); return; }
         }
         if(selectedProp && properties){
-          const prop=properties.find(p=>p.name===selectedProp);
+          const prop=properties.find(p=>hospUnitNameMatch(selectedProp.toLowerCase(), p.name));
           if(prop){ await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, false); return; }
         }
         // No selection yet — show picker filtered to selected location (or all if no location set)
         if(filteredProps.length){
           const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
           await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to see photos of? 👇', propButtons);
-        } else {
+        } else if(units.length){
           const unitButtons=units.map(u=>({title:u.name, value:u.name}));
           await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to see photos of? 👇', unitButtons);
         }
