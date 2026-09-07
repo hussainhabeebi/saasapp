@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   engineTruncateButtonTitle,
   engineTextSimilarity,
+  engineCombineBufferedChatwootBodies,
   engineQualQuestionText,
   engineQualQuestionOptional,
   engineQualQuestionOptions,
@@ -1006,5 +1007,51 @@ describe('Healthcare human handover silence and natural communication', () => {
     const state={stage:'human_handover',qualAnswers:{},leadOptOut:'No',looping:false,botMsgs:[]};
     const cls={intent:'QUESTION',sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:'en',nextStage:null,confidence:1,productInterest:'',productCategory:''};
     assert.equal(engineRouteFlow(c,state,'What time do you open?',cls).route,'faq');
+  });
+});
+
+
+describe('Global consecutive-message aggregation', () => {
+  const makeBody=(id,content,conversationId=77)=>({
+    id,
+    message_type:'incoming',
+    private:false,
+    content,
+    conversation:{
+      id:conversationId,
+      inbox_id:5,
+      meta:{sender:{phone_number:'+971500000000',name:'Customer'}}
+    }
+  });
+
+  test('combines consecutive text messages in arrival order into one AI turn', () => {
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:300,body:makeBody('m3','How much?')},
+      {receivedAt:100,body:makeBody('m1','Hi')},
+      {receivedAt:200,body:makeBody('m2','Need dental cleaning tomorrow')}
+    ]);
+    assert.equal(body.content,'Hi\nNeed dental cleaning tomorrow\nHow much?');
+    assert.equal(body.id,'m3');
+    assert.equal(body.conversation.id,77);
+  });
+
+  test('deduplicates webhook retries while combining different messages', () => {
+    const repeated=makeBody('m1','Hello');
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:100,body:repeated},
+      {receivedAt:110,body:structuredClone(repeated)},
+      {receivedAt:200,body:makeBody('m2','I need support')}
+    ]);
+    assert.equal(body.content,'Hello\nI need support');
+  });
+
+  test('does not mutate the original latest webhook payload', () => {
+    const latest=makeBody('m2','Tomorrow');
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:100,body:makeBody('m1','Book dental cleaning')},
+      {receivedAt:200,body:latest}
+    ]);
+    assert.equal(latest.content,'Tomorrow');
+    assert.equal(body.content,'Book dental cleaning\nTomorrow');
   });
 });

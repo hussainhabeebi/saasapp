@@ -25529,10 +25529,84 @@ async function handleInternalChatClear(request, env){
   return json({ok:true});
 }
 
+const ENGINE_MESSAGE_AGGREGATION_MS=5000;
+const ENGINE_MESSAGE_AGGREGATION_MAX_MS=15000;
+
+function engineWebhookMessageId(body){
+  return String(body?.id||body?.message?.id||'');
+}
+
+export function engineCombineBufferedChatwootBodies(entries){
+  const ordered=(Array.isArray(entries)?entries:[])
+    .filter(x=>x?.body)
+    .sort((a,b)=>Number(a.receivedAt||0)-Number(b.receivedAt||0));
+  if(!ordered.length) return null;
+  const unique=[];
+  const seen=new Set();
+  for(const entry of ordered){
+    const id=engineWebhookMessageId(entry.body);
+    if(id&&seen.has(id)) continue;
+    if(id) seen.add(id);
+    unique.push(entry);
+  }
+  const latest=unique[unique.length-1];
+  const combined=unique.map(entry=>engineParseChatwootPayload(entry.body)?.text||'').map(x=>String(x).trim()).filter(Boolean).join('\n');
+  const body=structuredClone(latest.body);
+  if(combined){
+    body.content=combined;
+    if(body.message&&typeof body.message==='object') body.message.content=combined;
+  }
+  return body;
+}
+
+async function handleEngineWebhookBuffered(request,env,secret){
+  const raw=await request.text();
+  let body; try{ body=JSON.parse(raw); }catch(e){ return json({error:'Invalid JSON'},400); }
+  if(!env.CLIENT_UPDATES) return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+  const c=secret?await findClientByField(env,'engine_webhook_secret',secret):null;
+  if(!c) return json({ok:true,skipped:secret?'invalid-secret':'no-secret'});
+  const parsed=engineParseChatwootPayload(body);
+  // Media needs its own transcription/download path and is never folded into adjacent text.
+  if(!parsed||parsed.mediaUrl||!String(parsed.text||'').trim()){
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+  }
+  try{
+    const id=env.CLIENT_UPDATES.idFromName(String(c.Id));
+    return await env.CLIENT_UPDATES.get(id).fetch('https://internal/aggregate',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,body,conversationId:String(parsed.convId||parsed.phone),receivedAt:Date.now()})
+    });
+  }catch(e){
+    await reportOpsError(env,'message aggregation failed open',e,{clientId:c.Id,convId:parsed.convId});
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+  }
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
     const url=new URL(request.url);
+    if(request.method==='POST' && url.pathname==='/aggregate'){
+      const item=await request.json().catch(()=>null);
+      if(!item?.secret||!item?.body||!item?.conversationId) return new Response('invalid',{status:400});
+      const now=Number(item.receivedAt)||Date.now();
+      const messageId=engineWebhookMessageId(item.body);
+      const seen=await this.state.storage.get('aggregateSeen')||{};
+      for(const [id,at] of Object.entries(seen)) if(now-Number(at)>10*60*1000) delete seen[id];
+      if(messageId&&seen[messageId]) return json({ok:true,accepted:true,duplicate:true});
+      if(messageId) seen[messageId]=now;
+      const buffers=await this.state.storage.get('messageBuffers')||{};
+      const key=String(item.conversationId);
+      const current=buffers[key]||{firstAt:now,items:[]};
+      current.items.push({body:item.body,secret:item.secret,receivedAt:now});
+      current.items=current.items.slice(-20);
+      current.dueAt=Math.min(now+ENGINE_MESSAGE_AGGREGATION_MS,Number(current.firstAt)+ENGINE_MESSAGE_AGGREGATION_MAX_MS);
+      buffers[key]=current;
+      await this.state.storage.put({messageBuffers:buffers,aggregateSeen:seen});
+      const nextDue=Math.min(...Object.values(buffers).map(x=>Number(x.dueAt)||now));
+      await this.state.storage.setAlarm(nextDue);
+      return json({ok:true,accepted:true,aggregation_ms:ENGINE_MESSAGE_AGGREGATION_MS});
+    }
     if(request.method==='POST' && url.pathname==='/broadcast'){
       const body=await request.text();
       for(const ws of this.state.getWebSockets()){
@@ -25577,6 +25651,25 @@ export class ClientUpdatesHub{
       if(other===ws) continue;
       try{ other.send(out); }catch(e){}
     }
+  }
+  async alarm(){
+    const now=Date.now();
+    const buffers=await this.state.storage.get('messageBuffers')||{};
+    const due=[];
+    for(const [key,value] of Object.entries(buffers)){
+      if(Number(value.dueAt)<=now+100){ due.push(value); delete buffers[key]; }
+    }
+    await this.state.storage.put('messageBuffers',buffers);
+    const remaining=Object.values(buffers);
+    if(remaining.length) await this.state.storage.setAlarm(Math.min(...remaining.map(x=>Number(x.dueAt)||now+ENGINE_MESSAGE_AGGREGATION_MS)));
+    await Promise.all(due.map(async group=>{
+      const body=engineCombineBufferedChatwootBodies(group.items);
+      const secret=group.items?.[group.items.length-1]?.secret;
+      if(!body||!secret) return;
+      try{
+        await handleEngineWebhook(new Request(`https://internal/engine/webhook/${secret}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),this.env,secret);
+      }catch(e){ await reportOpsError(this.env,'aggregated conversation processing failed',e); }
+    }));
   }
   async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
   async webSocketError(ws, error){}
@@ -25811,7 +25904,7 @@ export default {
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
       else if(url.pathname==='/support/tickets' && request.method==='GET'){ res=await handleSupportTicketsList(request, env); }
       else if(url.pathname==='/support/tickets' && request.method==='PATCH'){ res=await handleSupportTicketsUpdate(request, env); }
-      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
+      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhookBuffered(request, env, url.pathname.slice('/engine/webhook/'.length)); }
       else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
       else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
       else if(url.pathname==='/public/chat/history' && request.method==='GET'){  res=await handlePublicChatHistory(request, env); }
