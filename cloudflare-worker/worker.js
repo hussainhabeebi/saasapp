@@ -15839,7 +15839,10 @@ async function handleEngineWebhook(request, env, secret){
       const prevMsgAt=state.lead?.LastCustomerMsgAt ? new Date(state.lead.LastCustomerMsgAt).getTime() : 0;
       const isSessionStart=isNewLead || !prevMsgAt || (startMs-prevMsgAt)>6*3600*1000;
       if(isSessionStart){
-        hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
+        // Awaited (not fire-and-forget) — this fetch handler has no ctx.waitUntil, so a
+        // background promise risks being killed when the Response returns before the R2/image
+        // fetches and Chatwoot uploads complete. Text sends fast; images need the await.
+        await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
       }
     }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
