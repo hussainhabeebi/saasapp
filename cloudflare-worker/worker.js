@@ -22151,14 +22151,6 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
-  // Numeric/ordinal selection ("1", "option 2") — suppress LLM only while still in property/unit
-  // selection context (no unit media sent yet). Once a unit's media has been shown the customer,
-  // numbered replies are for the LLM's follow-up menus (room rates, facilities, policies, etc.).
-  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length)){
-    if(!leadId) return true;
-    const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
-    if(!sentUnit) return true;
-  }
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -22454,56 +22446,6 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
           await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to see photos of? 👇', unitButtons);
         }
         return;
-      }
-
-      // 2b. Numeric/ordinal selection ("1", "option 2") — map to property or room by position.
-      // If the lead already has a property selected (HospSelectedProperty), "1" = Nth room of that
-      // property; otherwise "1" = Nth property (or Nth unit if no properties configured).
-      // Active only while in property/unit selection context — once a unit's media has been shown,
-      // numbered replies are for the LLM's follow-up menus (room rates, facilities, etc.).
-      const ordinalIdx=resortOrdinalFromText(lower);
-      if(ordinalIdx!==null){
-        const sentUnitForOrdinal=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-        if(!sentUnitForOrdinal){
-          const selectedPropName=hospContext.selectedProperty;
-          if(selectedPropName && properties && properties.length){
-            const selectedProp=properties.find(p=>p.name===selectedPropName);
-            if(selectedProp){
-              const linkedRooms=units.filter(u=>Number(u.property_id)===Number(selectedProp.id));
-              const roomList=linkedRooms.length?linkedRooms:units;
-              const target=roomList[ordinalIdx-1];
-              if(target){
-                await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
-                try{
-                  await ensureLeadsColumns(env, ['HospSelectedUnit']);
-                  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
-                }catch(e){}
-                return;
-              }
-            }
-          }
-          if(properties && properties.length){
-            const target=properties[ordinalIdx-1];
-            if(target){
-              await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, target, units, true);
-              try{
-                await ensureLeadsColumns(env, ['HospSelectedProperty']);
-                await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:target.name}});
-              }catch(e){}
-              return;
-            }
-          } else {
-            const target=units[ordinalIdx-1];
-            if(target){
-              await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
-              try{
-                await ensureLeadsColumns(env, ['HospSelectedUnit']);
-                await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
-              }catch(e){}
-              return;
-            }
-          }
-        }
       }
 
       if(properties && properties.length){
