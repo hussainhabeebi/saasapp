@@ -23,6 +23,7 @@ import {
   engineNormalizeIntroButtons,
   engineResolveIntroInternalAction,
   engineIndustryFlowEnabled,
+  engineIndustryFlowMemory,
   engineBuildIndustryFlowButtons,
   engineResolveIndustryFlowTurn,
   engineRouteFlow,
@@ -134,6 +135,35 @@ describe('Opt-in industry flow engine',()=>{
     const controlled=engineResolveIndustryFlowTurn(client,{stage:'stage_2',qualAnswers:{}},'anything');
     assert.equal(controlled.route,'industry_flow');
     assert.equal(controlled.next,'stage_2');
+  });
+
+  test('keeps flow stage and CRM stage separate in structured memory',()=>{
+    const turn=engineResolveIndustryFlowTurn(client,{stage:'qualified',qualAnswers:{
+      _flow_state:{status:'active',current_stage:'stage_1',previous_stage:null,variables:{},stage_history:[],interruption_count:0}
+    }},'FLOW_ANSWER:stage_1:dental');
+    assert.equal(turn.preserveCrmStage,true);
+    assert.equal(turn.qualAnswers._flow_state.current_stage,'stage_2');
+    assert.equal(turn.qualAnswers._flow_state.previous_stage,'stage_1');
+    assert.equal(turn.qualAnswers._flow_state.stage_history.length,1);
+    assert.equal(turn.next,'stage_2');
+  });
+
+  test('migrates a lead already on an existing configured stage when flow is enabled',()=>{
+    const memory=engineIndustryFlowMemory(client,{stage:'stage_1',qualAnswers:{legacy_answer:'kept'}});
+    assert.equal(memory.status,'active');
+    assert.equal(memory.current_stage,'stage_1');
+    assert.deepEqual(memory.variables,{});
+  });
+
+  test('continue returns to the exact remembered stage and resets interruption count',()=>{
+    const state={stage:'qualified',qualAnswers:{_flow_state:{
+      status:'active',current_stage:'stage_2',previous_stage:'stage_1',variables:{service_label:'Dental Care'},stage_history:[],interruption_count:3
+    }}};
+    const turn=engineResolveIndustryFlowTurn(client,state,'FLOW_CONTINUE');
+    assert.equal(turn.route,'industry_flow');
+    assert.equal(turn.next,'stage_2');
+    assert.equal(turn.qualAnswers._flow_state.interruption_count,0);
+    assert.equal(turn.preserveCrmStage,true);
   });
 });
 
