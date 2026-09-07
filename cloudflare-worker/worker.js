@@ -15817,6 +15817,17 @@ async function handleEngineWebhook(request, env, secret){
     if(resolvedLeadId){
       await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
     }
+    // New-lead events: CRM push notification + hospitality greeting images
+    if(isNewLead && resolvedLeadId){
+      // Broadcast to all connected dashboard tabs so agents see the new enquiry instantly
+      await engineBroadcastUpdate(env, clientId, {type:'new_lead', lead_id:resolvedLeadId,
+        lead_name:leadBody.Name||leadBody.Phone||'New Enquiry', at:new Date().toISOString()});
+      // Resort clients: send 3 random showcase images right after the greeting so the lead's
+      // first impression is visual. Fire-and-forget so it doesn't block the response.
+      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId){
+        hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
+      }
+    }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
     // INSERT OR IGNORE: referred_lead_id is UNIQUE (migrations/0001_reviews_referrals.sql), so a
@@ -22301,6 +22312,51 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 // message that happens to mention the same unit (or ask about availability) again.
 // hospContext = { selectedProperty, selectedUnit } from the lead's stored NocoDB values — passed in
 // by handleEngineWebhook so we don't need an extra NocoDB read here.
+
+// Sends 3 random showcase images from the client's resort properties/units immediately after the
+// AI greeting on a brand-new lead's very first message — the first visual impression before the
+// lead has asked about any specific room or property. Pulls images from both hospitality_properties
+// and hospitality_units, shuffles the pool, and sends up to 3 unique images via Chatwoot.
+// Only called when isNewLead===true so it fires at most once per lead's lifetime; no dedup table
+// needed beyond the isNewLead guard in the caller.
+async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const imageUrls=[];
+    const {results:properties}=await env.DB.prepare(
+      `SELECT image_url_1,image_url_2,image_url_3,image_url_4,image_url_5 FROM hospitality_properties WHERE client_id=? AND active=1`
+    ).bind(Number(clientId)).all();
+    for(const p of (properties||[])){
+      [p.image_url_1,p.image_url_2,p.image_url_3,p.image_url_4,p.image_url_5].filter(Boolean).forEach(u=>imageUrls.push(u));
+    }
+    const {results:units}=await env.DB.prepare(
+      `SELECT image_url_1,image_url_2,image_url_3,image_url_4,image_url_5 FROM hospitality_units WHERE client_id=? AND active=1`
+    ).bind(Number(clientId)).all();
+    for(const u of (units||[])){
+      [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean).forEach(url=>imageUrls.push(url));
+    }
+    if(!imageUrls.length) return;
+    // Fisher-Yates shuffle, then pick up to 3
+    for(let i=imageUrls.length-1;i>0;i--){
+      const j=Math.floor(Math.random()*(i+1));
+      [imageUrls[i],imageUrls[j]]=[imageUrls[j],imageUrls[i]];
+    }
+    const selected=imageUrls.slice(0,3);
+    let captionSent=false;
+    for(let i=0;i<selected.length;i++){
+      const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
+      if(!blob) continue;
+      const fd=new FormData();
+      fd.append('content', captionSent?'':`Here's a glimpse of our completed projects 🏖️`);
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+        {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) captionSent=true;
+    }
+  }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
+}
+
 async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;

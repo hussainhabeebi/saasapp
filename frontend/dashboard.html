@@ -5047,6 +5047,7 @@ function connectLiveUpdates(){
     // Chats tab "seen by" heartbeat relay (worker.js ClientUpdatesHub.webSocketMessage) — never
     // touches allLeads/loadAll, purely a presence overlay on whatever's already rendered.
     else if(msg?.type==='viewing') onLiveViewingEvent(msg);
+    else if(msg?.type==='new_lead') onLiveNewLeadEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -5100,6 +5101,41 @@ function notifyNewMessage(msg){
     try{
       const n=new Notification(`💬 ${lead?.Name||'New message'}`, {body:'Tap to view in Leadvyne', tag:'lv-chat-'+msg.lead_id});
       n.onclick=()=>{ window.focus(); navigate('chats'); setChatChannel(msg.channel==='instagram'?'instagram':'whatsapp'); chatSelectLead(msg.lead_id); };
+    }catch(e){}
+  }
+}
+// Fired when a brand-new lead's first message arrives (worker.js broadcasts type:'new_lead').
+// Refreshes the leads list, updates the notification bell, and surfaces an OS notification so
+// the rep knows instantly even if the Leads tab is not the active page.
+async function onLiveNewLeadEvent(msg){
+  await loadAll(true, true);
+  pollNotifications();
+  notifyNewLead(msg);
+}
+function notifyNewLead(msg){
+  // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
+  // chat reply purely by sound — no visual required when heads-down in another window.
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    [660, 880].forEach((freq, i)=>{
+      const osc=ctx.createOscillator(), gain=ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value=freq;
+      gain.gain.setValueAtTime(0.18, ctx.currentTime+i*0.18);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime+i*0.18+0.25);
+      osc.start(ctx.currentTime+i*0.18);
+      osc.stop(ctx.currentTime+i*0.18+0.25);
+    });
+  }catch(e){}
+  // OS browser notification — only fires when the rep has granted permission (same opt-in path
+  // as requestChatNotifyPermission; never auto-prompted on load).
+  if('Notification' in window && Notification.permission==='granted'){
+    try{
+      const n=new Notification(`🏨 New Enquiry: ${msg.lead_name||'New Lead'}`, {
+        body:'A new lead just arrived — tap to view in Leadvyne',
+        tag:'lv-new-lead-'+msg.lead_id
+      });
+      n.onclick=()=>{ window.focus(); navigate('leads'); };
     }catch(e){}
   }
 }
