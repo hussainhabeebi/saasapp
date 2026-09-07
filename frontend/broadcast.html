@@ -1232,64 +1232,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         </div>
       </div>
       <div id="clsQueue">
-        <!-- Example static cards (will be JS-driven in production) -->
-        <div class="cls-card">
-          <div style="flex:1;min-width:0">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-              <span class="cls-lead-name">Arun Kumar</span>
-              <span class="cls-tag warm">🌤 Warm</span>
-              <span style="font-size:10px;color:var(--muted);margin-left:auto">2h ago · Template Broadcast</span>
-            </div>
-            <div class="cls-lead-meta">+91 98400 12345 · Replied: "Yes interested, can we talk tomorrow?"</div>
-            <div class="cls-actions">
-              <span onclick="setClassification(this,'hot')" class="cls-tag hot" style="cursor:pointer">🔥 Hot</span>
-              <span onclick="setClassification(this,'warm')" class="cls-tag warm" style="cursor:pointer;outline:2px solid #D97706">🌤 Warm</span>
-              <span onclick="setClassification(this,'cold')" class="cls-tag cold" style="cursor:pointer">🧊 Cold</span>
-              <span onclick="setClassification(this,'nurture')" class="cls-tag nurture" style="cursor:pointer">🌱 Nurture</span>
-              <span onclick="setClassification(this,'disqualified')" class="cls-tag disqualified" style="cursor:pointer">❌ Disq.</span>
-            </div>
-            <div class="cls-history">
-              <span style="color:var(--muted2)">Timeline:</span>
-              Sourced → Contacted (Template Broadcast) → <b>Warm</b> (auto-classified)
-            </div>
-          </div>
-        </div>
-        <div class="cls-card">
-          <div style="flex:1;min-width:0">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-              <span class="cls-lead-name">Meera Nair</span>
-              <span class="cls-tag hot">🔥 Hot</span>
-              <span style="font-size:10px;color:var(--muted);margin-left:auto">5h ago · Direct Message</span>
-            </div>
-            <div class="cls-lead-meta">+91 99000 54321 · Replied: "Please send the brochure, we'll sign this week!"</div>
-            <div class="cls-actions">
-              <span onclick="setClassification(this,'hot')" class="cls-tag hot" style="cursor:pointer;outline:2px solid #991B1B">🔥 Hot</span>
-              <span onclick="setClassification(this,'warm')" class="cls-tag warm" style="cursor:pointer">🌤 Warm</span>
-              <span onclick="setClassification(this,'cold')" class="cls-tag cold" style="cursor:pointer">🧊 Cold</span>
-              <span onclick="setClassification(this,'nurture')" class="cls-tag nurture" style="cursor:pointer">🌱 Nurture</span>
-              <span onclick="setClassification(this,'disqualified')" class="cls-tag disqualified" style="cursor:pointer">❌ Disq.</span>
-            </div>
-            <div class="cls-history">Timeline: Contacted → <b>Hot</b> (auto: confidence High) → Assigned to Rahul</div>
-          </div>
-        </div>
-        <div class="cls-card">
-          <div style="flex:1;min-width:0">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
-              <span class="cls-lead-name">Suresh Pillai</span>
-              <span class="cls-tag cold">🧊 Cold</span>
-              <span style="font-size:10px;color:var(--muted);margin-left:auto">1d ago · Template Broadcast</span>
-            </div>
-            <div class="cls-lead-meta">+91 97400 98765 · No reply after 48h (auto-tagged Cold)</div>
-            <div class="cls-actions">
-              <span onclick="setClassification(this,'hot')" class="cls-tag hot" style="cursor:pointer">🔥 Hot</span>
-              <span onclick="setClassification(this,'warm')" class="cls-tag warm" style="cursor:pointer">🌤 Warm</span>
-              <span onclick="setClassification(this,'cold')" class="cls-tag cold" style="cursor:pointer;outline:2px solid #1D4ED8">🧊 Cold</span>
-              <span onclick="setClassification(this,'nurture')" class="cls-tag nurture" style="cursor:pointer">🌱 Nurture</span>
-              <span onclick="setClassification(this,'disqualified')" class="cls-tag disqualified" style="cursor:pointer">❌ Disq.</span>
-            </div>
-            <div class="cls-history">Timeline: Contacted → <b>Cold</b> (48h no-reply auto-tag) → Follow-up sent</div>
-          </div>
-        </div>
+        <div style="text-align:center;padding:32px;color:var(--muted)">Loading leads…</div>
       </div>
     </div>
 
@@ -1352,6 +1295,60 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
        TAB: LEAD ATTRIBUTES
   ══════════════════════════════════════ -->
   <div id="view-attributes" style="display:none">
+
+    <!-- Lead selector for per-lead attribute editing -->
+    <div class="card">
+      <div class="card-title">👤 Select Lead to View / Edit Attributes</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="attrLeadSearch" placeholder="Search by name or phone…"
+          style="flex:1;min-width:200px;padding:8px 12px;font-size:13px"
+          oninput="searchAttrLeads()">
+        <button class="btn btn-ghost btn-sm" onclick="clearAttrLeadSelection()">Clear</button>
+      </div>
+      <div id="attrLeadResults" style="margin-top:8px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;display:none"></div>
+      <div id="attrLeadDetail" style="display:none;margin-top:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <span id="attrLeadName" style="font-weight:700;font-size:15px"></span>
+          <span id="attrLeadScore" class="cls-tag" style="cursor:default"></span>
+          <button class="btn btn-primary btn-sm" onclick="saveAttrLead()">💾 Save changes</button>
+          <span id="attrSaveStatus" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div class="form-row" style="flex-wrap:wrap;gap:12px">
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Name</label>
+            <input type="text" id="attrFldName" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Phone</label>
+            <input type="text" id="attrFldPhone" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Stage</label>
+            <select id="attrFldStage" style="font-size:13px;padding:8px 10px"></select>
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Score / Classification</label>
+            <select id="attrFldScore" style="font-size:13px;padding:8px 10px" onchange="refreshAttrScoreBadge()">
+              <option value="">— unset —</option>
+              <option value="Hot">🔥 Hot</option>
+              <option value="Warm">🌤 Warm</option>
+              <option value="Cold">🧊 Cold</option>
+              <option value="Nurture">🌱 Nurture</option>
+              <option value="Disqualified">❌ Disqualified</option>
+            </select>
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Brand</label>
+            <input type="text" id="attrFldBrand" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Country</label>
+            <input type="text" id="attrFldCountry" style="font-size:13px">
+          </div>
+        </div>
+        <input type="hidden" id="attrLeadId">
+      </div>
+    </div>
 
     <div class="card">
       <div class="card-title">🗂️ Campaign Lead Attributes
@@ -1585,8 +1582,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div class="form-field">
         <label>Filter recipients by stage / attribute</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <select id="modalStageFilter" style="flex:1;min-width:130px"><option value="">All stages</option></select>
-          <select id="modalBucketFilter" style="flex:1;min-width:130px">
+          <select id="modalStageFilter" style="flex:1;min-width:130px" onchange="updateModalRecipientCount()"><option value="">All stages</option></select>
+          <select id="modalBucketFilter" style="flex:1;min-width:130px" onchange="updateModalRecipientCount()">
             <option value="">Any engagement bucket</option>
             <option value="hot">🔥 Hot only</option>
             <option value="warm">🌤 Warm only</option>
@@ -1760,6 +1757,7 @@ function showTab(tab){
   if(tab==='automations') loadFlows();
   if(tab==='reviews') loadReviewsConfig();
   if(tab==='templates') renderRichTemplateCards();
+  if(tab==='classification') renderClassificationTab();
 }
 
 // ── SIDEBAR STATS ──
@@ -1890,12 +1888,23 @@ function openVariantManager(tplName){
 function closeVariantManager(){ $id('variantManagerCard').style.display='none'; }
 
 // ── SEND BROADCAST MODAL ──
+function updateModalRecipientCount(){
+  const stage=($id('modalStageFilter')?.value)||'';
+  const bucket=($id('modalBucketFilter')?.value)||'';
+  let leads=(allLeads||[]);
+  if(stage) leads=leads.filter(l=>l.Stage===stage);
+  if(bucket) leads=leads.filter(l=>(l.Score||'').toLowerCase()===bucket);
+  const prev=$id('modalRecipientPreview');
+  if(prev) prev.textContent=`📊 Estimated recipients: ${leads.length} lead${leads.length!==1?'s':''} match the filter (DNC exclusion applies at send time).`;
+}
+
 function openSendModal(tplName){
   const sel=$id('modalTplSelect');
   if(sel && tplName){
     for(let o of sel.options){ if(o.text.startsWith(tplName)){ sel.value=o.value; break; } }
   }
   checkBlackoutHours();
+  updateModalRecipientCount();
   $id('sendBroadcastModal').classList.remove('hidden');
 }
 function closeSendModal(){ $id('sendBroadcastModal').classList.add('hidden'); }
@@ -1924,11 +1933,7 @@ function modalTplChanged(){
       <span class="fallback-arrow">→ fallback:</span>
       <input type="text" class="fallback-input" placeholder="${defaults[i]}" value="${defaults[i]}">
     </div>`).join('');
-  $id('modalRecipientPreview').textContent='Estimated recipients: checking…';
-  setTimeout(()=>{
-    const est=Math.floor(Math.random()*200+50);
-    $id('modalRecipientPreview').textContent=`📊 Estimated recipients: ${est} leads match the filter (DNC excluded).`;
-  },600);
+  updateModalRecipientCount();
 }
 function confirmBroadcastSend(){
   const btn=$id('modalSendBtn');
@@ -1945,15 +1950,221 @@ function confirmBroadcastSend(){
 function filterByIntent(intent, el){
   document.querySelectorAll('.intent-card').forEach(c=>c.classList.remove('active'));
   el.classList.add('active');
+  renderClassificationTab();
 }
-function setClassification(clickedTag, cls){
+
+const _clsScoreMap = {hot:'Hot',warm:'Warm',cold:'Cold',nurture:'Nurture',disqualified:'Disqualified'};
+const _clsTagLabel  = {hot:'🔥 Hot',warm:'🌤 Warm',cold:'🧊 Cold',nurture:'🌱 Nurture',disqualified:'❌ Disq.'};
+const _clsOutline   = {hot:'#991B1B',warm:'#D97706',cold:'#1D4ED8',nurture:'#7C3AED',disqualified:'var(--muted2)'};
+
+function _scoreToIntent(score){
+  const s=(score||'').toLowerCase();
+  if(s==='hot') return 'hot';
+  if(s==='warm') return 'warm';
+  if(s==='cold') return 'cold';
+  if(s==='nurture') return 'nurture';
+  if(s==='disqualified') return 'disqualified';
+  return 'cold';
+}
+
+function renderClassificationTab(){
+  const q=$id('clsQueue');
+  if(!q) return;
+  const search=($id('clsSearch')?.value||'').toLowerCase().trim();
+  const activeIntent=document.querySelector('.intent-card.active')?.dataset?.intent||'all';
+
+  let leads=(allLeads||[]).filter(l=>{
+    if(search){
+      const name=(l.Name||'').toLowerCase();
+      const phone=(l.Phone||l.phone||'').toLowerCase();
+      if(!name.includes(search)&&!phone.includes(search)) return false;
+    }
+    if(activeIntent&&activeIntent!=='all'){
+      if(_scoreToIntent(l.Score)!==activeIntent) return false;
+    }
+    return true;
+  });
+
+  // Update intent filter counts
+  ['hot','warm','cold','nurture','disqualified'].forEach(intent=>{
+    const card=document.querySelector(`.intent-card[data-intent="${intent}"]`);
+    if(!card) return;
+    const cnt=(allLeads||[]).filter(l=>_scoreToIntent(l.Score)===intent).length;
+    let desc=card.querySelector('.intent-desc');
+    if(desc) desc.textContent=cnt+' lead'+(cnt!==1?'s':'');
+  });
+
+  if(!leads.length){
+    q.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted)">No leads match this filter.</div>';
+    return;
+  }
+
+  q.innerHTML=leads.slice(0,100).map(l=>{
+    const intent=_scoreToIntent(l.Score);
+    const tags=['hot','warm','cold','nurture','disqualified'].map(c=>{
+      const isActive=c===intent;
+      const outline=isActive?`style="outline:2px solid ${_clsOutline[c]}"` :'';
+      return `<span onclick="setClassification(this,'${c}')" class="cls-tag ${c}" style="cursor:pointer" ${outline}>${_clsTagLabel[c]}</span>`;
+    }).join('');
+    const stage=l.Stage||'—';
+    const phone=l.Phone||l.phone||'—';
+    const brand=l.Brand?` · ${escHtml(l.Brand)}`:'';
+    const fupStep=l.followup_step&&Number(l.followup_step)>0?` · Follow-up #${l.followup_step}`:'';
+    return `<div class="cls-card" data-lead-id="${l.Id}">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+          <span class="cls-lead-name">${escHtml(l.Name||'Unknown')}</span>
+          <span class="cls-tag ${intent}">${_clsTagLabel[intent]}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:auto">${escHtml(stage)}</span>
+        </div>
+        <div class="cls-lead-meta">${escHtml(phone)}${brand}${fupStep}</div>
+        <div class="cls-actions">${tags}</div>
+        <div class="cls-history">Score: <b>${escHtml(l.Score||'—')}</b></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function setClassification(clickedTag, cls){
   const card=clickedTag.closest('.cls-card');
   if(!card) return;
+  const leadId=card.dataset.leadId;
+
+  // Visual update immediately
   card.querySelectorAll('.cls-actions .cls-tag').forEach(t=>t.style.outline='');
-  const mapOutline={hot:'2px solid #991B1B',warm:'2px solid #D97706',cold:'2px solid #1D4ED8',nurture:'2px solid #7C3AED',disqualified:'2px solid var(--muted)'};
-  if(clickedTag.classList.contains(cls)) clickedTag.style.outline=mapOutline[cls]||'';
+  clickedTag.style.outline=`2px solid ${_clsOutline[cls]||'var(--muted)'}`;
+
+  // Update badge in card header
+  const badge=card.querySelector('.cls-lead-name + .cls-tag');
+  if(badge){ badge.className='cls-tag '+cls; badge.textContent=_clsTagLabel[cls]; }
+
+  // Update in-memory allLeads
+  const newScore=_clsScoreMap[cls]||cls;
+  const lead=(allLeads||[]).find(l=>String(l.Id)===String(leadId));
+  if(lead) lead.Score=newScore;
+
+  updateSidebarStats();
+  updateModalRecipientCount();
+
+  // Persist to NocoDB
+  if(leadId){
+    try{
+      const leadsTable=(clientRecord?.nocodb_leads_table||CONFIG.LEADS_TABLE_ID);
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records`,{Id:Number(leadId),Score:newScore});
+    }catch(e){console.error('setClassification save error',e);}
+  }
 }
-function renderClassificationTab(){ /* live filtering hook — wired via oninput on search */ }
+
+// ── LEAD ATTRIBUTES — lead selector ──
+let _attrSelectedLead = null;
+
+function searchAttrLeads(){
+  const q=($id('attrLeadSearch')?.value||'').toLowerCase().trim();
+  const res=$id('attrLeadResults');
+  if(!res) return;
+  if(!q){ res.style.display='none'; res.innerHTML=''; return; }
+  const matches=(allLeads||[]).filter(l=>{
+    return (l.Name||'').toLowerCase().includes(q)||(l.Phone||'').toLowerCase().includes(q);
+  }).slice(0,20);
+  if(!matches.length){ res.style.display='none'; return; }
+  res.style.display='block';
+  res.innerHTML=matches.map(l=>`
+    <div onclick="selectAttrLead(${l.Id})" style="padding:9px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <span style="font-weight:600;font-size:13px">${escHtml(l.Name||'Unknown')}</span>
+      <span style="font-size:12px;color:var(--muted)">${escHtml(l.Phone||'—')}</span>
+      <span class="cls-tag ${(l.Score||'cold').toLowerCase()}" style="cursor:default;font-size:11px;margin-left:auto">${_clsTagLabel[(l.Score||'cold').toLowerCase()]||escHtml(l.Score||'—')}</span>
+    </div>`).join('');
+}
+
+function selectAttrLead(id){
+  const lead=(allLeads||[]).find(l=>l.Id===id||String(l.Id)===String(id));
+  if(!lead) return;
+  _attrSelectedLead=lead;
+  $id('attrLeadResults').style.display='none';
+  $id('attrLeadSearch').value=lead.Name||'';
+
+  // Populate header
+  $id('attrLeadName').textContent=lead.Name||'Unknown';
+  const scoreCls=(lead.Score||'cold').toLowerCase();
+  const badge=$id('attrLeadScore');
+  badge.className='cls-tag '+scoreCls;
+  badge.textContent=_clsTagLabel[scoreCls]||lead.Score||'—';
+
+  // Populate fields
+  $id('attrFldName').value=lead.Name||'';
+  $id('attrFldPhone').value=lead.Phone||lead.phone||'';
+  $id('attrFldBrand').value=lead.Brand||'';
+  $id('attrFldCountry').value=lead.Country||'';
+  $id('attrLeadId').value=lead.Id;
+
+  // Populate stage dropdown
+  const stageSel=$id('attrFldStage');
+  stageSel.innerHTML='<option value="">— unset —</option>'+(knownStages||[]).map(s=>`<option value="${escHtml(s)}"${lead.Stage===s?' selected':''}>${escHtml(s)}</option>`).join('');
+  if(lead.Stage&&!knownStages.includes(lead.Stage)){
+    stageSel.innerHTML+=`<option value="${escHtml(lead.Stage)}" selected>${escHtml(lead.Stage)}</option>`;
+  }
+  stageSel.value=lead.Stage||'';
+
+  // Score dropdown
+  $id('attrFldScore').value=lead.Score||'';
+
+  $id('attrSaveStatus').textContent='';
+  $id('attrLeadDetail').style.display='';
+}
+
+function refreshAttrScoreBadge(){
+  const val=$id('attrFldScore').value;
+  const cls=(val||'cold').toLowerCase();
+  const badge=$id('attrLeadScore');
+  badge.className='cls-tag '+cls;
+  badge.textContent=_clsTagLabel[cls]||val||'—';
+}
+
+async function saveAttrLead(){
+  const leadId=$id('attrLeadId').value;
+  if(!leadId||!_attrSelectedLead) return;
+  const name=($id('attrFldName').value||'').trim();
+  const phone=($id('attrFldPhone').value||'').trim();
+  const stage=$id('attrFldStage').value;
+  const score=$id('attrFldScore').value;
+  const brand=($id('attrFldBrand').value||'').trim();
+  const country=($id('attrFldCountry').value||'').trim();
+  const statusEl=$id('attrSaveStatus');
+  if(statusEl) statusEl.textContent='Saving…';
+  try{
+    const leadsTable=clientRecord?.nocodb_leads_table||CONFIG.LEADS_TABLE_ID;
+    const patch={Id:Number(leadId)};
+    if(name) patch.Name=name;
+    if(phone) patch.Phone=phone;
+    if(stage!==undefined) patch.Stage=stage;
+    if(score!==undefined) patch.Score=score;
+    if(brand!==undefined) patch.Brand=brand;
+    if(country!==undefined) patch.Country=country;
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records`,patch);
+    // Update in-memory lead
+    Object.assign(_attrSelectedLead,{Name:name||_attrSelectedLead.Name,Phone:phone||_attrSelectedLead.Phone,Stage:stage,Score:score,Brand:brand,Country:country});
+    // Update score badge
+    const cls=(score||'cold').toLowerCase();
+    const badge=$id('attrLeadScore');
+    badge.className='cls-tag '+cls;
+    badge.textContent=_clsTagLabel[cls]||score||'—';
+    $id('attrLeadName').textContent=name||_attrSelectedLead.Name||'Unknown';
+    updateSidebarStats();
+    updateModalRecipientCount();
+    if(statusEl) statusEl.textContent='✅ Saved';
+    setTimeout(()=>{ if(statusEl) statusEl.textContent=''; },3000);
+  }catch(e){
+    console.error('saveAttrLead',e);
+    if(statusEl) statusEl.textContent='❌ Save failed';
+  }
+}
+
+function clearAttrLeadSelection(){
+  _attrSelectedLead=null;
+  const s=$id('attrLeadSearch'); if(s) s.value='';
+  const r=$id('attrLeadResults'); if(r){ r.style.display='none'; r.innerHTML=''; }
+  const d=$id('attrLeadDetail'); if(d) d.style.display='none';
+}
 
 // ── LEAD ATTRIBUTES UI ──
 function openNewAttrForm(){
@@ -2081,6 +2292,7 @@ async function loadLeads(){
     const data=await ncGet(url);
     allLeads=data.list||[];
     updateSidebarStats();
+    renderClassificationTab();
 
     // Populate stage/brand/category/country filters
     const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
