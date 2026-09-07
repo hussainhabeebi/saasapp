@@ -12456,16 +12456,122 @@ BUTTONS — mandatory after EVERY reply:
 // One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
 // negligible. Falls back to the plain question on any failure — same "never leave the customer
 // with nothing" principle as engineCallLlm's own fallback.
-async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang, knownName){
+export function engineIsGreetingOnly(text){
+  return /^(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|assalamu\s+alaikum|salaam|namaste)[!. ,🙏👋]*$/iu.test(String(text||'').trim());
+}
+
+const ENGINE_INTRO_ACTIONS={
+  INTRO_SERVICES:{text:'Show me your services',intent:'QUESTION'},
+  INTRO_BOOK:{text:'I want to book an appointment',intent:'BOOKING'},
+  INTRO_MORE:{text:'Tell me more',intent:'QUESTION'},
+  INTRO_HUMAN:{text:'Talk to a human',intent:'WANTS_HUMAN'}
+};
+export function engineResolveIntroInternalAction(value,language='en'){
+  const action=ENGINE_INTRO_ACTIONS[String(value||'').trim().toUpperCase()];
+  if(!action) return null;
+  return {...action,customerLanguage:language||'en'};
+}
+export function engineNormalizeIntroButtons(buttons,c={}){
+  const allowed=new Set(Object.keys(ENGINE_INTRO_ACTIONS));
+  const configured=(Array.isArray(buttons)?buttons:[])
+    .map(button=>({title:String(button?.title||'').trim().slice(0,20),value:String(button?.action||button?.value||'').trim().toUpperCase()}))
+    .filter(button=>button.title&&allowed.has(button.value))
+    .slice(0,3);
+  if(configured.length) return configured;
+  const industry=String(c.industry||'general').toLowerCase();
+  const defaults=industry==='healthcare'
+    ? [{title:'View Services',value:'INTRO_SERVICES'},{title:'Book Appointment',value:'INTRO_BOOK'}]
+    : [{title:'View Services',value:'INTRO_SERVICES'},{title:'Tell Me More',value:'INTRO_MORE'}];
+  if(c.handover_enabled!=='No') defaults.push({title:'Talk to Human',value:'INTRO_HUMAN'});
+  return defaults.slice(0,3);
+}
+function engineIntroCacheKey(c,lang,firstQuestion){
+  const seed=[c.main_prompt||'',c.services||'',c.kb_summary||'',firstQuestion||''].join('|');
+  let hash=2166136261;
+  for(let i=0;i<seed.length;i++){ hash^=seed.charCodeAt(i); hash=Math.imul(hash,16777619); }
+  return `greeting-intro:v1:${c.Id||'client'}:${lang}:${hash>>>0}`;
+}
+
+// Generates a prompt-led introduction once, then reuses it for later new leads. The cache key
+// changes automatically when the prompt, services, KB summary, language, or first-stage message
+// changes, so clients get fresh copy after editing settings without spending tokens per greeting.
+async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   const lang=replyLang||c.language||'en';
+  const cache=env.MATRI_CACHE;
+  const cacheKey=engineIntroCacheKey(c,lang,firstQuestion);
+  if(cache){
+    try{ const hit=await cache.get(cacheKey); if(hit&&hit.trim()) return hit.trim(); }catch(e){}
+  }
   const services=engineParseJsonField(c.services, []);
-  let sys=c.main_prompt||'';
-  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
+  let sys=String(c.main_prompt||'').slice(0,5000);
+  if(services.length) sys+='\n\n## Services\n'+services.slice(0,12).map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
-  if(knownName) sys+=`\n\nKnown customer name: ${knownName} — already on file from their WhatsApp profile. Do not ask for their name or company name.`;
-  sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
-  const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
-  return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
+  sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
+  const out=await engineCallLlm(env, c, sys, '(new conversation)', 120);
+  const resolved=out && out.trim() && out!=='One moment 🙏' ? out.trim() : firstQuestion;
+  if(cache&&resolved){
+    try{ await cache.put(cacheKey,resolved,{expirationTtl:2592000}); }catch(e){}
+  }
+  return resolved;
+}
+
+function engineFillIntroTokens(text,c,knownName){
+  return String(text||'')
+    .replace(/\{\{\s*(?:business_name|company_name)\s*\}\}/gi,String(c.client_name||'our team'))
+    .replace(/\{\{\s*(?:customer_name|name)\s*\}\}/gi,String(knownName||'there'))
+    .trim();
+}
+async function engineBuildFirstGreetingTurn(env,c,userText,replyLang,knownName){
+  if(!engineIsGreetingOnly(userText)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
+  if(intro.enabled===false) return null;
+  const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
+  const firstStage=stageIds[0]||'new';
+  const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
+  let text=engineFillIntroTokens(intro.text,c,knownName);
+  if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
+  if(!text){
+    const question=firstStageMessage||'How can we help you today?';
+    text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+  }
+  const botConfig=engineParseJsonField(c.bot_config,{});
+  const buttons=botConfig.quick_reply_buttons_enabled===false?[]:engineNormalizeIntroButtons(intro.buttons,c);
+  return {text,next:firstStage,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim()};
+}
+
+async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
+  const routing={
+    route:'intro',next:turn.next,reply:turn.text,quickReplies:null,
+    qualAnswers:state.qualAnswers||{},intentData:{},intent:'SHORT_NEUTRAL',
+    sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
+  };
+  if(c.bot_reply_disabled!=='Yes'&&turn.mediaUrl&&state.convId){
+    await sendDriveMediaToChatwoot(c,state.convId,turn.mediaUrl,'').catch(()=>false);
+  }
+  const sentOptions=await engineDeliverReply(env,c,clientId,state.convId,turn.text,{
+    mediaType,langCode:turn.lang,quickReplies:turn.buttons
+  });
+  routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
+  const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
+  await engineResolveLeadOwner(env,c,clientId,built.body,state,isNewLead);
+  await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
+  built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
+  const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
+  if(resolvedLeadId){
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:turn.text,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,turn.text);
+    if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
+    await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
+    if(isNewLead) await engineBroadcastUpdate(env,clientId,{type:'new_lead',lead_id:resolvedLeadId,lead_name:built.body.Name||built.body.Phone||'New Enquiry',at:new Date().toISOString()});
+    if(isNewLead&&state.referrerLeadId){
+      try{ await env.DB.prepare('INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referral_code, status, created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),Number(state.referrerLeadId),Number(resolvedLeadId),'','pending',new Date().toISOString()).run(); }catch(e){}
+    }
+  }
+  await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:state.phone,Intent:'SHORT_NEUTRAL',Route:'intro',Stage:state.stage||'',NextStage:built.body.Stage||'',ResponseMs:Date.now()-startMs,IsError:false,ErrorMsg:'',Timestamp:new Date().toISOString()});
+  await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(()=>{});
+  return resolvedLeadId;
 }
 
 // Mirrors "Code · Objection prep".
@@ -14846,7 +14952,9 @@ async function handleEngineWebhook(request, env, secret){
       const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase().normalize('NFC')===tappedLower);
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
-    const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
+    if(introAction) userText=introAction.text;
     const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
     if(liveCheckoutTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
@@ -14862,8 +14970,18 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
+    const greetingTurn=isNewLead&&mediaType==='text'
+      ? await engineBuildFirstGreetingTurn(env,c,userText,c.language||'en',state.name||state.lead?.Name)
+      : null;
+    if(greetingTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
+      return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
+    }
+    const cls=introAction
+      ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+      : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls);
+    if(introAction) routing.historyUserText=parsed.text;
     // A generic ad CTA/business-information request must be answered from the client's prompt,
     // even if the probabilistic intent model guesses that the pronoun "this" means a product.
     // Explicit human/opt-out routes still win; explicit product language never matches the helper.
