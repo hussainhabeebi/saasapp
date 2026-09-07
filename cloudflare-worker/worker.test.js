@@ -23,6 +23,7 @@ import {
   engineNormalizeIntroButtons,
   engineResolveIntroInternalAction,
   engineIndustryFlowEnabled,
+  engineShouldUseConfiguredFlowIntro,
   engineIndustryFlowMemory,
   engineBuildIndustryFlowButtons,
   engineResolveIndustryFlowTurn,
@@ -172,6 +173,24 @@ describe('Global Stage 1 greeting introduction',()=>{
     assert.equal(engineIsGreetingOnly('Hello 👋'),true);
     assert.equal(engineIsGreetingOnly('Good morning!'),true);
     assert.equal(engineIsGreetingOnly('Hello, what services do you offer?'),false);
+  });
+
+  test('uses a saved published intro for returning contacts without AI',()=>{
+    const client={flow_json:JSON.stringify({
+      flow_engine:{enabled:true,published:true},
+      intro:{enabled:true,text:'Thank you for contacting Sahara Medical Centre.'},
+      stages:{new:{},stage_1:{}}
+    })};
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'hi','text'),true);
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'What are your timings?','text'),false);
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'hi','image'),false);
+  });
+
+  test('does not intercept greetings when the intro is empty or the Flow is off',()=>{
+    const empty={flow_json:JSON.stringify({flow_engine:{enabled:true,published:true},intro:{text:''}})};
+    const disabled={flow_json:JSON.stringify({flow_engine:{enabled:false,published:false},intro:{text:'Saved intro'}})};
+    assert.equal(engineShouldUseConfiguredFlowIntro(empty,'hello'),false);
+    assert.equal(engineShouldUseConfiguredFlowIntro(disabled,'hello'),false);
   });
 
   test('uses only allow-listed internal action values and caps buttons at three',()=>{
