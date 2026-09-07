@@ -12487,20 +12487,60 @@ function engineFlowInterpolate(text,variables,c){
     return value==null?'':String(value);
   }).trim();
 }
+export function engineIndustryFlowMemory(c,state){
+  if(!engineIndustryFlowEnabled(c)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
+  const saved=state?.qualAnswers?._flow_state;
+  if(saved?.status==='active'&&stageIds.includes(saved.current_stage)){
+    return {...saved,variables:{...(saved.variables||state.qualAnswers?._flow_variables||{})}};
+  }
+  // Migration path for leads already sitting on one of the client's old configured stages:
+  // the same stage id becomes their flow-stage id when the client enables the module.
+  if(stageIds.includes(String(state?.stage||''))){
+    return {flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:String(state.stage),previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},stage_history:[],interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,String(state.stage))};
+  }
+  return null;
+}
+function engineFlowQualAnswers(state,memory){
+  const qualAnswers={...(state.qualAnswers||{})};
+  qualAnswers._flow_variables={...(memory.variables||{})};
+  qualAnswers._flow_state={...memory,variables:{...(memory.variables||{})}};
+  return qualAnswers;
+}
+function engineFlowAdvanceMemory(flow,memory,currentStage,nextStage,answer,variables){
+  const history=Array.isArray(memory.stage_history)?memory.stage_history.slice(-19):[];
+  if(answer) history.push({stage:currentStage,answer_id:String(answer.id),answer:String(answer.title),completed_at:new Date().toISOString()});
+  return {
+    ...memory,status:'active',previous_stage:currentStage,current_stage:nextStage,variables,
+    stage_history:history,interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,nextStage),
+    updated_at:new Date().toISOString()
+  };
+}
 export function engineResolveIndustryFlowTurn(c,state,userText){
   if(!engineIndustryFlowEnabled(c)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const raw=String(userText||'').trim();
-  const match=raw.match(/^FLOW_ANSWER:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/);
-  let currentStage=match?.[1]||String(state.stage||'');
-  let config=engineFlowStageConfig(flow,currentStage);
-  const qualAnswers={...(state.qualAnswers||{})};
-  const variables={...(qualAnswers._flow_variables||{})};
+  const actionMatch=raw.match(/^FLOW_ANSWER:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/);
+  const memory=engineIndustryFlowMemory(c,state);
+  // A button contains its source stage, so it can recover even if this is the first persisted tap.
+  let currentStage=actionMatch?.[1]||memory?.current_stage||'';
+  if(!currentStage) return null;
+  const config=engineFlowStageConfig(flow,currentStage);
+  const variables={...(memory?.variables||state.qualAnswers?._flow_variables||{})};
   let answer=null,nextStage='',mediaUrl='',linkUrl='';
 
-  if(match){
-    answer=engineFlowAnswers(config).find(item=>String(item.id)===match[2]);
+  if(actionMatch){
+    answer=engineFlowAnswers(config).find(item=>String(item.id)===actionMatch[2]);
     if(!answer) return null;
+  }else{
+    // A customer may type a visible option instead of tapping it. Exact title matching remains
+    // deterministic and converts it to the same stored internal answer.
+    const normalized=raw.toLowerCase().normalize('NFC');
+    answer=engineFlowAnswers(config).find(item=>String(item.title).trim().toLowerCase().normalize('NFC')===normalized)||null;
+  }
+
+  if(answer){
     nextStage=String(answer.next||config.default_next||currentStage);
     if(config.capture_variable) variables[config.capture_variable]=answer.entity_id||answer.value||answer.title;
     if(answer.set_variable) variables[answer.set_variable]=answer.entity_id||answer.value||answer.title;
@@ -12513,22 +12553,55 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
   }else if(config.input_type==='free_text'&&config.capture_variable&&raw){
     variables[config.capture_variable]=raw;
     nextStage=String(config.default_next||currentStage);
-  }else if(config.ai_mode==='off'&&currentStage&&flow.stages?.[currentStage]){
+  }else if(config.ai_mode==='off'&&flow.stages?.[currentStage]){
     nextStage=currentStage;
   }else{
     return null;
   }
 
+  const baseMemory=memory||{flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:currentStage,previous_stage:null,variables:{},stage_history:[],interruption_count:0,last_options:[]};
+  const nextMemory=engineFlowAdvanceMemory(flow,baseMemory,currentStage,nextStage,answer,variables);
   const nextConfig=engineFlowStageConfig(flow,nextStage);
   let reply=engineFlowInterpolate(flow.messages?.['msg_'+nextStage]||nextConfig.message||config.retry_message||'Please choose one of the available options.',variables,c);
   if(linkUrl) reply+=(reply?'\n\n':'')+linkUrl;
-  qualAnswers._flow_variables=variables;
   return {
-    route:'industry_flow',next:nextStage,reply,
+    route:'industry_flow',next:nextStage,reply,preserveCrmStage:true,
     quickReplies:engineBuildIndustryFlowButtons(flow,nextStage),
     mediaUrl:mediaUrl||String(nextConfig.media_url||'').trim(),
-    qualAnswers,intent:'FLOW_ANSWER',intentData:{},sentiment:'Neutral',
+    qualAnswers:engineFlowQualAnswers(state,nextMemory),intent:'FLOW_ANSWER',intentData:{},sentiment:'Neutral',
     objectionCategory:'none',customerLanguage:c.language||'en'
+  };
+}
+
+async function engineBuildIndustryFlowInterruptionTurn(env,c,state,userText){
+  const memory=engineIndustryFlowMemory(c,state);
+  if(!memory) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const currentStage=memory.current_stage;
+  const config=engineFlowStageConfig(flow,currentStage);
+  if(config.ai_mode!=='fallback') return null;
+  const stageLabel=String(flow.labels?.[currentStage]||currentStage);
+  const variables=memory.variables||{};
+  const resumeMessage=engineFlowInterpolate(config.resume_message||`Would you like to continue with ${stageLabel}?`,variables,c);
+  const context=[
+    String(c.main_prompt||'').slice(0,3500),
+    c.kb_summary?'\nRelevant business knowledge:\n'+String(c.kb_summary).slice(0,1400):'',
+    `\nThe customer temporarily interrupted an active "${stageLabel}" flow step. Answer only their immediate question. Do not change the flow stage, do not ask for information already present in Saved flow variables, and do not repeat the stage message. Keep the answer concise and factual. Never invent products, services, prices, doctors, properties, units, availability, stock, schedules, flights or links. For healthcare, never diagnose or prescribe.`,
+    '\nSaved flow variables:\n'+JSON.stringify(variables).slice(0,1200)
+  ].join('');
+  const answer=await engineCallLlmAvoidingRepeat(env,c,context,String(userText||''),180,state.botMsgs?.[state.botMsgs.length-1]);
+  if(!answer||!answer.trim()) return null;
+  const interruptionCount=Number(memory.interruption_count||0)+1;
+  const buttons=interruptionCount<=2?engineBuildIndustryFlowButtons(flow,currentStage):[
+    {title:'Continue',value:'FLOW_CONTINUE'},
+    ...(c.handover_enabled!=='No'?[{title:'Talk to Human',value:'INTRO_HUMAN'}]:[])
+  ];
+  const updatedMemory={...memory,status:'active',current_stage:currentStage,variables,interruption_count:interruptionCount,last_options:buttons,updated_at:new Date().toISOString()};
+  return {
+    route:'industry_flow_ai',next:currentStage,preserveCrmStage:true,
+    reply:answer.trim()+'\n\n'+resumeMessage,quickReplies:buttons,mediaUrl:'',
+    qualAnswers:engineFlowQualAnswers(state,updatedMemory),intent:'FLOW_INTERRUPTION',intentData:{},
+    sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
   };
 }
 
@@ -12593,14 +12666,14 @@ function engineFillIntroTokens(text,c,knownName){
     .replace(/\{\{\s*(?:customer_name|name)\s*\}\}/gi,String(knownName||'there'))
     .trim();
 }
-async function engineBuildFirstGreetingTurn(env,c,userText,replyLang,knownName){
+async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName){
   if(!engineIsGreetingOnly(userText)||!engineIndustryFlowEnabled(c)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
   if(intro.enabled===false) return null;
   const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
   if(!stageIds.length) return null;
-  const firstStage=stageIds[0]||'new';
+  const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
   const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
   let text=engineFillIntroTokens(intro.text,c,knownName);
   if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
@@ -12612,12 +12685,17 @@ async function engineBuildFirstGreetingTurn(env,c,userText,replyLang,knownName){
   const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
   const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
   const firstConfig=engineFlowStageConfig(flow,firstStage);
-  return {route:'industry_flow',text,next:firstStage,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:state?.qualAnswers||{}};
+  const memory={
+    flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
+    status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
+    stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
+  };
+  return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
 }
 
 async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
   const routing={
-    route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,
+    route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,preserveCrmStage:turn.preserveCrmStage===true,
     qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
     sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
   };
@@ -14521,6 +14599,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // with order' back to the product actually being discussed" fallback above.
   if(routing.matchedProductSku) body['Last Product Sku']=routing.matchedProductSku;
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
+  else if(routing.preserveCrmStage) body.Stage=state.stage||'new';
   else body.Stage=next;
   if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
   if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
@@ -15038,6 +15117,11 @@ async function handleEngineWebhook(request, env, secret){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType);
       return json({ok:true,route:'industry_flow',sent:c.bot_reply_disabled!=='Yes'});
     }
+    const flowInterruptionTurn=await engineBuildIndustryFlowInterruptionTurn(env,c,state,userText);
+    if(flowInterruptionTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,flowInterruptionTurn,startMs,mediaType);
+      return json({ok:true,route:'industry_flow_ai',resumed_stage:flowInterruptionTurn.next,sent:c.bot_reply_disabled!=='Yes'});
+    }
     const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
     if(liveCheckoutTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
@@ -15054,7 +15138,7 @@ async function handleEngineWebhook(request, env, secret){
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
     const greetingTurn=isNewLead&&mediaType==='text'
-      ? await engineBuildFirstGreetingTurn(env,c,userText,c.language||'en',state.name||state.lead?.Name)
+      ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name)
       : null;
     if(greetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
