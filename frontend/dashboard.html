@@ -3092,6 +3092,16 @@ const ROLES = {
               <span class="save-msg" id="saveHospitalityStyleMsg"></span>
             </div>
 
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ Intro Images</b><div class="s-note" style="margin:2px 0 0">Send 2–3 showcase images automatically when a new or returning customer starts a session. Images are still shared on property selection or when the customer asks.</div></div>
+              <select class="form-input" id="cfgHospitalityGreetingImages" style="max-width:160px">
+                <option value="on">Enabled</option>
+                <option value="off">Disabled</option>
+              </select>
+              <button class="save-btn" id="saveHospitalityGreetingImages">Save</button>
+              <span class="save-msg" id="saveHospitalityGreetingImagesMsg"></span>
+            </div>
+
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>🏘️ Real Estate</b><div class="s-note" style="margin:2px 0 0">Multi-source lead capture &amp; scoring, tower/floor/unit inventory, site visits, bookings &amp; payment schedules, channel partners, and RERA document compliance.</div></div>
               <select class="form-input" id="cfgRealEstateEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
@@ -10195,6 +10205,14 @@ async function ensureHospitalityStyleColumn(){
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes('hospitality_style')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_style',title:'hospitality_style',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+async function ensureHospitalityGreetingImagesColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_greeting_images')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_greeting_images',title:'hospitality_greeting_images',uidt:'SingleLineText'}).catch(()=>{});
   }catch(e){}
 }
 
@@ -17573,6 +17591,7 @@ function initHospitalitySettings(){
   const sel=$id('cfgHospitalityEnabled'); if(sel) sel.value=(clientRecord.hospitality_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
   const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
+  const greetSel=$id('cfgHospitalityGreetingImages'); if(greetSel) greetSel.value=clientRecord.hospitality_greeting_images||'on';
   updateHospitalityTabVisibility();
 }
 
@@ -17601,6 +17620,19 @@ $id('saveHospitalityStyle').addEventListener('click',async()=>{
     _hospLoaded=false; hospProperties=[];
     const propTab=$id('hospPropertiesTab');
     if(propTab) propTab.style.display=val==='resort'?'':'none';
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+$id('saveHospitalityGreetingImages').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityGreetingImages'),msg=$id('saveHospitalityGreetingImagesMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityGreetingImages').value;
+  try{
+    await ensureHospitalityGreetingImagesColumn();
+    await patchClient({hospitality_greeting_images:val});
+    clientRecord.hospitality_greeting_images=val;
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}

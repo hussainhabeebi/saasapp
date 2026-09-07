@@ -15835,7 +15835,7 @@ async function handleEngineWebhook(request, env, secret){
     // Fires on the first message of any session (new leads AND returning customers coming back
     // after 6+ hours). Uses LastCustomerMsgAt from the lead state snapshot taken BEFORE this
     // turn's upsert to detect session gaps without an extra DB read.
-    if(resolvedLeadId && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId){
+    if(resolvedLeadId && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
       const prevMsgAt=state.lead?.LastCustomerMsgAt ? new Date(state.lead.LastCustomerMsgAt).getTime() : 0;
       const isSessionStart=isNewLead || !prevMsgAt || (startMs-prevMsgAt)>6*3600*1000;
       if(isSessionStart){
