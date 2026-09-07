@@ -11049,11 +11049,25 @@ let _flowIntro={enabled:true,text:'',media_type:'none',media_url:'',buttons:[]};
 let _flowEngine={enabled:false,published:false,template:''};
 function normalizeFlowEngine(raw){
   const engine=raw&&typeof raw==='object'?raw:{};
-  return {enabled:engine.enabled===true,published:engine.published===true,template:String(engine.template||'')};
+  return {enabled:engine.enabled===true,published:engine.published===true,template:String(engine.template||''),version:Number(engine.version||1),entry_stage:String(engine.entry_stage||''),migrated_from_stages:engine.migrated_from_stages===true};
 }
 function setFlowEngineEnabled(enabled){
   _flowEngine.enabled=!!enabled;
   _flowEngine.published=!!enabled;
+  if(enabled){
+    // Upgrade the client's existing stages in place: preserve ids/messages, add flow memory
+    // configuration, and default each stage to the next existing stage.
+    _stages=_stages.map((stage,index)=>{
+      const next=_stages[index+1]?.id||stage.id;
+      return {...stage,config:{...defaultStageConfig(stage.id),...(stage.config||{}),
+        default_next:stage.config?.default_next&&stage.config.default_next!==stage.id?stage.config.default_next:next,
+        resume_message:stage.config?.resume_message||`Would you like to continue with ${stage.label||'this step'}?`,
+        answers:Array.isArray(stage.config?.answers)?stage.config.answers:[]
+      }};
+    });
+    _flowEngine.entry_stage=_flowEngine.entry_stage||_stages[0]?.id||'';
+    _flowEngine.migrated_from_stages=true;
+  }
   renderStages(_stages);
 }
 function flowEnginePanel(){
@@ -11071,7 +11085,7 @@ function flowEnginePanel(){
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
         <button type="button" class="save-btn" onclick="loadIndustryFlowTemplate()">Load ${esc(industry)} template</button>
-        <span style="font-size:12px;color:var(--muted)">Loading a template replaces the stages currently shown here. It does not affect customers until you save with Enable flow switched on.</span>
+        <span style="font-size:12px;color:var(--muted)">Existing stages are upgraded in place when enabled. Stage memory keeps collected answers while AI handles side questions and returns to the same step.</span>
       </div>
     </div>`;
 }
@@ -11192,7 +11206,7 @@ function renderIntroCard(fallback){
     </div>`;
 }
 function defaultStageConfig(id){
-  return {input_type:'buttons',capture_variable:'',ai_mode:'fallback',media_url:'',data_source:'none',default_next:id,answers:[]};
+  return {input_type:'buttons',capture_variable:'',ai_mode:'fallback',media_url:'',resume_message:'',data_source:'none',default_next:id,answers:[]};
 }
 function flowJsonToStages(fj){
   return Object.keys(fj.stages||{}).filter(k=>k!=='new').map((id,i)=>({
@@ -11214,6 +11228,7 @@ function stagesToFlowJson(stages,intro){
       entity_type:String(a.entity_type||''),entity_id:String(a.entity_id||''),
       set_variable:String(a.set_variable||''),link_url:String(a.link_url||''),media_url:String(a.media_url||'')
     }));
+    cfg.resume_message=String(cfg.resume_message||'').trim().slice(0,300);
     stageConfig[s.id]=cfg;
     flowStages[s.id]={'AFFIRMATIVE':{next,msg:nextMsg},'WATCHED':{next,msg:nextMsg},'FORM_DONE':{next,msg:nextMsg},'BOOKING':{next,msg:nextMsg},'WANTS_MORE_INFO':{next:s.id,msg:'msg_'+s.id},'QUESTION':{next:s.id,msg:null},'SHORT_NEUTRAL':{next,msg:nextMsg},'*':{next:s.id,msg:'msg_'+s.id}};
   });
@@ -11222,7 +11237,7 @@ function stagesToFlowJson(stages,intro){
   const cleanIntro=normalizeFlowIntro(intro);
   cleanIntro.buttons=cleanIntro.buttons.filter(b=>b.title.trim()).map(b=>({title:b.title.trim().slice(0,20),action:b.action}));
   if(!cleanIntro.media_url){cleanIntro.media_type='none';cleanIntro.media_url='';}
-  return{stages:flowStages,messages,labels,variables:{},intro:cleanIntro,stage_config:stageConfig,flow_engine:{..._flowEngine,published:_flowEngine.enabled===true}};
+  return{stages:flowStages,messages,labels,variables:{},intro:cleanIntro,stage_config:stageConfig,flow_engine:{..._flowEngine,entry_stage:_flowEngine.entry_stage||firstId||'',version:Number(_flowEngine.version||1),migrated_from_stages:true,published:_flowEngine.enabled===true}};
 }
 function flowStageOptions(selected){
   return _stages.map((stage,i)=>`<option value="${escAttr(stage.id)}"${selected===stage.id?' selected':''}>Stage ${i+1}: ${esc(stage.label||stage.id)}</option>`).join('');
@@ -11268,6 +11283,8 @@ function renderStages(stages){
       <input class="form-input" value="${esc(s.label||`Stage ${i+1}`)}" maxlength="60" oninput="_stages[${i}].label=this.value" placeholder="e.g. Qualified, Demo Booked" style="margin-bottom:10px">
       <label class="form-label">Controlled message</label>
       <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="Use variables such as {{service_label}} or {{customer_name}}">${esc(s.message)}</textarea>
+      <label class="form-label" style="margin-top:8px">Resume after an AI question</label>
+      <input class="form-input" value="${escAttr(s.config.resume_message||'')}" oninput="_stages[${i}].config.resume_message=this.value" placeholder="e.g. Would you like to continue choosing a doctor?">
       <div style="display:grid;grid-template-columns:150px 1fr 150px;gap:8px;margin-top:9px">
         <div><label class="form-label">Answer type</label><select class="form-input" onchange="_stages[${i}].config.input_type=this.value">
           <option value="buttons"${s.config.input_type==='buttons'?' selected':''}>Buttons</option><option value="free_text"${s.config.input_type==='free_text'?' selected':''}>Free text</option>
