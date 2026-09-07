@@ -20418,13 +20418,14 @@ async function fpAiComputeSnapshotData(env, clientId){
 async function handleFpAiAsk(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  if(!env.AI && !env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
   const body=await request.json().catch(()=>({}));
   const question=String(body.question||'').trim().slice(0,300);
   if(!question) return json({error:'question required'}, 400);
   const data=await fpAiComputeSnapshotData(env, Number(payload.cid));
   const system=`You are a friendly bookkeeping assistant for a small business owner who has no accounting background. Answer their question using ONLY the JSON data below — never invent or estimate a number that isn't in it. If the data doesn't cover what they're asking, say so plainly and suggest what to check instead. Keep the answer to 2-4 short sentences, warm and jargon-free (say "money customers owe you" not "receivables", "profit" not "net position"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const answer=await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220});
+  const answer=await engineCfAiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'})
+    || await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'});
   if(!answer) return json({error:"Couldn't reach the AI assistant just now — try again in a moment."}, 502);
   return json({answer, data});
 }
@@ -20531,11 +20532,12 @@ function fpDefaultReminderText(due, balance){
 async function fpAiDraftReminder(env, due){
   const balance=Math.round((due.amount-due.collected_amount)*100)/100;
   const fallback=fpDefaultReminderText(due, balance);
-  if(!env.GEMINI_API_KEY) return fallback;
+  if(!env.AI && !env.GEMINI_API_KEY) return fallback;
   const overdueDays=Math.max(0, Math.floor((Date.now()-new Date(due.due_date).getTime())/86400000));
   const system=`Write one short, warm WhatsApp message to a customer reminding them a payment is due. Not robotic or threatening — this is a small business owner following up personally. Use the customer's name naturally. 1-3 sentences, end with a light thank-you. No subject line, no signature block, plain message text only.`;
   const userPrompt=`Customer: ${due.customer_name||'the customer'}\nAmount due: ${due.currency} ${balance.toFixed(2)}\nBilling period: ${due.period_key}\nDays overdue: ${overdueDays>0?overdueDays:'not yet overdue, due soon'}`;
-  const drafted=await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'});
+  const drafted=await engineCfAiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'})
+    || await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'});
   return drafted||fallback;
 }
 async function handleFpAiDraftReminder(request, env){
@@ -25387,7 +25389,8 @@ ${snapshot}`;
   if(prior.length) ctx='[Prior conversation]\n'+prior.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('\n')+'\n\n[New question]\n';
 
   await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
-  const reply=await engineCallLlm(env,c,sys,ctx+userText,900);
+  const reply=await engineCfAiGenerate(env,sys,ctx+userText,{maxOutputTokens:900,caller:'saas-ops'})
+    || await engineCallLlm(env,c,sys,ctx+userText,900);
   const botText=reply||"I couldn't retrieve an answer right now. Please try again.";
   await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',botText,new Date().toISOString()).run().catch(()=>{});
   return json({reply:botText});
