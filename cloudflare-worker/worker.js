@@ -12116,6 +12116,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   if(isResort){
     sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, or availability from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
     sys+='\n\nPHOTO/MEDIA RULE: The system automatically sends actual photos and images — you must NEVER write text like "(send Classic Room photos)", "(send photos)", "(send images)" or any parenthetical placeholder suggesting a photo action. Never announce or describe that photos are being sent. Simply answer the customer\'s question in words; the system handles all media delivery.';
+    sys+=`\n\nCURRENT DATE: Today is ${new Date().toISOString().slice(0,10)}. CRITICAL DATE RULE: Dates that appear in conversation history may be from a previous session and are no longer valid as the customer's current intent. NEVER carry forward a booking date from history without the customer explicitly stating it again in their latest message. If dates look stale or were not mentioned in the current session, ask the customer to confirm their check-in and check-out dates afresh.`;
   }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
@@ -15825,14 +15826,19 @@ async function handleEngineWebhook(request, env, secret){
     if(resolvedLeadId){
       await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
     }
-    // New-lead events: CRM push notification + hospitality greeting images
+    // New-lead CRM push notification
     if(isNewLead && resolvedLeadId){
-      // Broadcast to all connected dashboard tabs so agents see the new enquiry instantly
       await engineBroadcastUpdate(env, clientId, {type:'new_lead', lead_id:resolvedLeadId,
         lead_name:leadBody.Name||leadBody.Phone||'New Enquiry', at:new Date().toISOString()});
-      // Resort clients: send 3 random showcase images right after the greeting so the lead's
-      // first impression is visual. Fire-and-forget so it doesn't block the response.
-      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId){
+    }
+    // Resort greeting showcase: property description + 2–3 images + property-picker buttons.
+    // Fires on the first message of any session (new leads AND returning customers coming back
+    // after 6+ hours). Uses LastCustomerMsgAt from the lead state snapshot taken BEFORE this
+    // turn's upsert to detect session gaps without an extra DB read.
+    if(resolvedLeadId && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId){
+      const prevMsgAt=state.lead?.LastCustomerMsgAt ? new Date(state.lead.LastCustomerMsgAt).getTime() : 0;
+      const isSessionStart=isNewLead || !prevMsgAt || (startMs-prevMsgAt)>6*3600*1000;
+      if(isSessionStart){
         hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
       }
     }
@@ -22327,7 +22333,7 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 //      has fewer than 3 images configured)
 //   3. Property-picker quick-reply buttons for all properties so the lead can dive in
 // Falls back to random unit images + unit picker when no properties are configured.
-// Only called when isNewLead===true — fires at most once per lead's lifetime.
+// Called at session start (new leads AND returning customers after a 6-hour gap).
 async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
