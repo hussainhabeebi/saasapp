@@ -22151,8 +22151,10 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
-  // Numeric/ordinal selection ("1", "option 2") — suppress LLM if there are selectable items
-  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length)) return true;
+  // Numeric/ordinal selection ("1", "option 2") — suppress LLM if there are selectable items.
+  // When intro images are off, ordinals are part of the LLM's own prompt flow (e.g. destination
+  // picker), so let the LLM handle them rather than intercepting as a property/unit selector.
+  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length) && c.hospitality_greeting_images!=='off') return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -22426,8 +22428,10 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       // 2b. Numeric/ordinal selection ("1", "option 2") — map to property or room by position.
       // If the lead already has a property selected (HospSelectedProperty), "1" = Nth room of that
       // property; otherwise "1" = Nth property (or Nth unit if no properties configured).
+      // Skipped when intro images are off: ordinals belong to the LLM's own prompt flow in that
+      // mode, so the LLM handles them instead of the media-dispatch system.
       const ordinalIdx=resortOrdinalFromText(lower);
-      if(ordinalIdx!==null){
+      if(ordinalIdx!==null && c.hospitality_greeting_images!=='off'){
         const selectedPropName=hospContext.selectedProperty;
         if(selectedPropName && properties && properties.length){
           const selectedProp=properties.find(p=>p.name===selectedPropName);
