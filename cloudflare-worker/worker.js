@@ -22151,10 +22151,14 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
-  // Numeric/ordinal selection ("1", "option 2") — suppress LLM if there are selectable items.
-  // When intro images are off, ordinals are part of the LLM's own prompt flow (e.g. destination
-  // picker), so let the LLM handle them rather than intercepting as a property/unit selector.
-  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length) && c.hospitality_greeting_images!=='off') return true;
+  // Numeric/ordinal selection ("1", "option 2") — suppress LLM only while still in property/unit
+  // selection context (no unit media sent yet). Once a unit's media has been shown the customer,
+  // numbered replies are for the LLM's follow-up menus (room rates, facilities, policies, etc.).
+  if(resortOrdinalFromText(lower)!==null && (units?.length||props?.length)){
+    if(!leadId) return true;
+    const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
+    if(!sentUnit) return true;
+  }
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -22425,20 +22429,71 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
       // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
 
+      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — send the already-selected
+      // property's or unit's images on demand, regardless of intro-images setting. The LLM also
+      // runs (engineCheckResortFirstInquiry returns false once any media has been sent) so the
+      // customer gets both a text reply and the actual images. When no selection exists yet, show
+      // the property/unit picker so they can choose before seeing any images.
+      if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)){
+        const selectedUnit=hospContext.selectedUnit;
+        const selectedProp=hospContext.selectedProperty;
+        if(selectedUnit){
+          const unit=units.find(u=>u.name===selectedUnit);
+          if(unit){ await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit); return; }
+        }
+        if(selectedProp && properties){
+          const prop=properties.find(p=>p.name===selectedProp);
+          if(prop){ await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, false); return; }
+        }
+        // No selection yet — show picker so customer chooses which property/unit to see
+        if(properties && properties.length){
+          const propButtons=properties.map(p=>({title:p.name, value:p.name}));
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to see photos of? 👇', propButtons);
+        } else {
+          const unitButtons=units.map(u=>({title:u.name, value:u.name}));
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to see photos of? 👇', unitButtons);
+        }
+        return;
+      }
+
       // 2b. Numeric/ordinal selection ("1", "option 2") — map to property or room by position.
       // If the lead already has a property selected (HospSelectedProperty), "1" = Nth room of that
       // property; otherwise "1" = Nth property (or Nth unit if no properties configured).
-      // Skipped when intro images are off: ordinals belong to the LLM's own prompt flow in that
-      // mode, so the LLM handles them instead of the media-dispatch system.
+      // Active only while in property/unit selection context — once a unit's media has been shown,
+      // numbered replies are for the LLM's follow-up menus (room rates, facilities, etc.).
       const ordinalIdx=resortOrdinalFromText(lower);
-      if(ordinalIdx!==null && c.hospitality_greeting_images!=='off'){
-        const selectedPropName=hospContext.selectedProperty;
-        if(selectedPropName && properties && properties.length){
-          const selectedProp=properties.find(p=>p.name===selectedPropName);
-          if(selectedProp){
-            const linkedRooms=units.filter(u=>Number(u.property_id)===Number(selectedProp.id));
-            const roomList=linkedRooms.length?linkedRooms:units;
-            const target=roomList[ordinalIdx-1];
+      if(ordinalIdx!==null){
+        const sentUnitForOrdinal=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+        if(!sentUnitForOrdinal){
+          const selectedPropName=hospContext.selectedProperty;
+          if(selectedPropName && properties && properties.length){
+            const selectedProp=properties.find(p=>p.name===selectedPropName);
+            if(selectedProp){
+              const linkedRooms=units.filter(u=>Number(u.property_id)===Number(selectedProp.id));
+              const roomList=linkedRooms.length?linkedRooms:units;
+              const target=roomList[ordinalIdx-1];
+              if(target){
+                await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
+                try{
+                  await ensureLeadsColumns(env, ['HospSelectedUnit']);
+                  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
+                }catch(e){}
+                return;
+              }
+            }
+          }
+          if(properties && properties.length){
+            const target=properties[ordinalIdx-1];
+            if(target){
+              await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, target, units, true);
+              try{
+                await ensureLeadsColumns(env, ['HospSelectedProperty']);
+                await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:target.name}});
+              }catch(e){}
+              return;
+            }
+          } else {
+            const target=units[ordinalIdx-1];
             if(target){
               await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
               try{
@@ -22447,27 +22502,6 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
               }catch(e){}
               return;
             }
-          }
-        }
-        if(properties && properties.length){
-          const target=properties[ordinalIdx-1];
-          if(target){
-            await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, target, units, true);
-            try{
-              await ensureLeadsColumns(env, ['HospSelectedProperty']);
-              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:target.name}});
-            }catch(e){}
-            return;
-          }
-        } else {
-          const target=units[ordinalIdx-1];
-          if(target){
-            await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, target);
-            try{
-              await ensureLeadsColumns(env, ['HospSelectedUnit']);
-              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedUnit:target.name}});
-            }catch(e){}
-            return;
           }
         }
       }
