@@ -22479,9 +22479,27 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
           }catch(e){}
           return;
         }
-        // After the greeting showcase, only send media on explicit property/room selection (handled above)
+        // When intro images are off there is no session-start greeting — send a property-picker on
+        // the first general enquiry so the customer can choose without seeing images/details yet.
+        if(c.hospitality_greeting_images==='off' && HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)){
+          const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          const alreadySentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          if(!alreadySentMedia && !alreadySentProp){
+            const propButtons=properties.map(p=>({title:p.name, value:p.name}));
+            await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', propButtons);
+          }
+        }
       } else {
-        // No properties configured — only send unit media on explicit room name match or ordinal selection (handled above)
+        // No properties configured — only send unit media on explicit room name match or ordinal
+        // selection (handled above). When intro images are off, send a unit-picker on the first
+        // general enquiry so the customer can choose without seeing images/details yet.
+        if(c.hospitality_greeting_images==='off' && HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)){
+          const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          if(!alreadySentMedia){
+            const unitButtons=units.map(u=>({title:u.name, value:u.name}));
+            await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+          }
+        }
       }
       return;
     }
