@@ -22433,15 +22433,24 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         ? (properties||[]).filter(p=>p.location && p.location.toLowerCase()===selectedLocation.toLowerCase())
         : (properties||[]);
 
-      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — show a picker so the
-      // lead explicitly picks which property or room they want images of.
+      // 2a. Photo/image keyword — use stored conversation context to decide what to send.
+      // Priority: already-selected unit → already-selected property → picker.
       if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)){
+        if(hospContext.selectedUnit){
+          const unit=units.find(u=>hospUnitNameMatch(hospContext.selectedUnit.toLowerCase(), u.name));
+          if(unit){ await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit); return; }
+        }
+        if(hospContext.selectedProperty){
+          const prop=(properties||[]).find(p=>hospUnitNameMatch(hospContext.selectedProperty.toLowerCase(), p.name));
+          if(prop){ await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, true); return; }
+        }
+        // No unit or property selected yet — ask which one they'd like to see
         if(filteredProps.length){
           const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to see photos of? 👇', propButtons);
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which property would you like to see images of? 👇', propButtons);
         } else if(units.length){
           const unitButtons=units.map(u=>({title:u.name, value:u.name}));
-          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to see photos of? 👇', unitButtons);
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which room would you like to see images of? 👇', unitButtons);
         }
         return;
       }
