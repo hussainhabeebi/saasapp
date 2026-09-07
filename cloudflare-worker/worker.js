@@ -12086,10 +12086,31 @@ async function engineBuildResortContext(env, clientId){
   return lines.join('\n');
 }
 
+// Returns the slice of kb_summary that is relevant to the current intent/objection.
+// If kb has no "## Header" sections, returns the full text (no regression for unstructured KBs).
+// Intents that carry no question (AFFIRMATIVE/SHORT_NEUTRAL/WATCHED) get an empty string so the
+// KB is not injected at all — saves ~500 tokens per turn for those common, question-free messages.
+function engineSelectKb(kb, intent, objection){
+  if(!kb || !kb.trim()) return '';
+  const full=kb.slice(0,2000);
+  if(['AFFIRMATIVE','SHORT_NEUTRAL','WATCHED'].includes(intent)) return '';
+  const sections=full.split(/(?=^## )/m).filter(s=>s.trim());
+  if(sections.length<=1) return full; // no structured headers — full KB as fallback
+  let keywords=[];
+  if(objection==='price') keywords=['price','pricing','discount','offer','cost','fee','payment'];
+  else if(objection==='competitor') keywords=['comparison','compare','competitor','why us','why choose','differ','advantage','benefit'];
+  else if(objection==='trust') keywords=['review','guarantee','testimonial','trust','certif','accredit','refund','warranty'];
+  else if(objection==='timing') keywords=['time','when','availab','schedul','deadline','urgent','ready'];
+  else if(intent==='BOOKING'||intent==='DELAY') keywords=['price','pricing','payment','booking','process','step','how to','delivery','schedule','deposit'];
+  else return full; // QUESTION, WANTS_HUMAN, no intent → full KB
+  const matched=sections.filter(s=>keywords.some(k=>s.split('\n')[0].toLowerCase().includes(k)));
+  return matched.length ? matched.join('\n').slice(0,2000) : full;
+}
+
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
+export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead, intent){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
@@ -12102,7 +12123,8 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   if(services.length && !isResort){
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
-  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  const kbText=engineSelectKb(c.kb_summary, intent, null);
+  if(kbText) sys+='\n\n## Knowledge Base\n'+kbText;
   if(c.b2b_stock_json && c.b2b_stock_json.trim()){
     try{
       const stockRows=JSON.parse(c.b2b_stock_json);
@@ -12358,7 +12380,8 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   let sys=c.main_prompt||'';
   const services=engineParseJsonField(c.services, []);
   if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`).join('\n');
-  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  const kbText=engineSelectKb(c.kb_summary, 'OBJECTION', objectionCategory);
+  if(kbText) sys+='\n\n## Knowledge Base\n'+kbText;
   sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
   if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
   else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
@@ -15406,7 +15429,7 @@ async function handleEngineWebhook(request, env, secret){
           let categoryPromptReply=null;
           if(categoryProducts.length){
             const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
-            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead)
+            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
               +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
             const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
             categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
@@ -15660,7 +15683,7 @@ async function handleEngineWebhook(request, env, secret){
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this
@@ -16080,7 +16103,7 @@ export async function processInstagramWebhookBody(env, body){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
+        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead,routing.intent);
         const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
         sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
         routing.reply=sentText; await deliver(sentText);
