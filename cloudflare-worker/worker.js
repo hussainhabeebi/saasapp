@@ -15834,19 +15834,12 @@ async function handleEngineWebhook(request, env, secret){
       await engineBroadcastUpdate(env, clientId, {type:'new_lead', lead_id:resolvedLeadId,
         lead_name:leadBody.Name||leadBody.Phone||'New Enquiry', at:new Date().toISOString()});
     }
-    // Resort greeting showcase: property description + 2–3 images + property-picker buttons.
-    // Fires on the first message of any session (new leads AND returning customers coming back
-    // after 6+ hours). Uses LastCustomerMsgAt from the lead state snapshot taken BEFORE this
-    // turn's upsert to detect session gaps without an extra DB read.
-    if(resolvedLeadId && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
-      const prevMsgAt=state.lead?.LastCustomerMsgAt ? new Date(state.lead.LastCustomerMsgAt).getTime() : 0;
-      const isSessionStart=isNewLead || !prevMsgAt || (startMs-prevMsgAt)>6*3600*1000;
-      if(isSessionStart){
-        // Awaited (not fire-and-forget) — this fetch handler has no ctx.waitUntil, so a
-        // background promise risks being killed when the Response returns before the R2/image
-        // fetches and Chatwoot uploads complete. Text sends fast; images need the await.
-        await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
-      }
+    // Resort greeting showcase: up to 3 images per property + property-picker buttons.
+    // Fires only for brand-new leads (isNewLead). Returning customers follow the normal flow.
+    if(isNewLead && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
+      // Awaited (not fire-and-forget) — this fetch handler has no ctx.waitUntil, so a
+      // background promise risks being killed before R2/image fetches and Chatwoot uploads finish.
+      await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
     }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
@@ -22338,13 +22331,11 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 // Photo/image keywords always suppress the LLM (see engineCheckResortFirstInquiry) so this
 // function is the sole responder for those requests.
 
-// On a brand-new resort lead's first message, sends a warm welcome showcase:
-//   1. One randomly-chosen property's description + amenities as context text
-//   2. 2–3 random images from that property (supplemented from its rooms if the property
-//      has fewer than 3 images configured)
-//   3. Property-picker quick-reply buttons for all properties so the lead can dive in
-// Falls back to random unit images + unit picker when no properties are configured.
-// Called at session start (new leads AND returning customers after a 6-hour gap).
+// Sends a welcome showcase on a new lead's first message:
+//   - For each active property (in name order): up to 3 images with property name caption,
+//     followed by property-picker quick-reply buttons
+//   - Falls back to same pattern for units when no properties are configured
+// Only fires for brand-new leads (caller gates on isNewLead).
 async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -22354,44 +22345,28 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
     ]);
     const propList=properties||[];
     const unitList=units||[];
-    const shuffle=arr=>{ for(let i=arr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]]; } return arr; };
 
     if(propList.length){
-      // Showcase 2 random properties — images only, no description text in the greeting
-      const showcaseProps=shuffle([...propList]).slice(0,2);
-      for(const prop of showcaseProps){
-        const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean);
-        if(imgUrls.length<2){
-          const linked=unitList.filter(u=>Number(u.property_id)===Number(prop.id));
-          const pool=linked.length?linked:unitList;
-          for(const u of pool){
-            [u.image_url_1,u.image_url_2,u.image_url_3,u.image_url_4,u.image_url_5].filter(Boolean)
-              .forEach(url=>{ if(!imgUrls.includes(url)) imgUrls.push(url); });
-            if(imgUrls.length>=2) break;
-          }
-        }
-        const selected=shuffle(imgUrls).slice(0,2);
+      for(const prop of propList){
+        const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean).slice(0,3);
         let captionSent=false;
-        for(let i=0;i<selected.length;i++){
-          const blob=await hospitalityFetchMediaBlob(env, selected[i], false);
+        for(let i=0;i<imgUrls.length;i++){
+          const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
           if(!blob) continue;
           const fd=new FormData();
           fd.append('content', captionSent?'':`*${prop.name}* 🏨`);
           fd.append('message_type','outgoing'); fd.append('private','false');
-          fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+          fd.append('attachments[]', blob, `property-${i+1}.jpg`);
           const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
             {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
           if(r.ok) captionSent=true;
         }
       }
-      // After greeting images, offer property-picker buttons so the lead can explore a specific property
       const propButtons=propList.map(p=>({title:p.name, value:p.name}));
       if(propButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', propButtons);
     } else if(unitList.length){
-      // No properties configured — showcase 2 random units then offer unit-picker buttons
-      const showcaseUnits=shuffle([...unitList]).slice(0,2);
-      for(const unit of showcaseUnits){
-        const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,3);
+      for(const unit of unitList){
+        const imgUrls=[unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean).slice(0,3);
         let captionSent=false;
         for(let i=0;i<imgUrls.length;i++){
           const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
@@ -22399,13 +22374,12 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           const fd=new FormData();
           fd.append('content', captionSent?'':`*${unit.name}* 🏖️`);
           fd.append('message_type','outgoing'); fd.append('private','false');
-          fd.append('attachments[]', blob, `showcase-${i+1}.jpg`);
+          fd.append('attachments[]', blob, `unit-${i+1}.jpg`);
           const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
             {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
           if(r.ok) captionSent=true;
         }
       }
-      // After greeting images, offer unit-picker buttons so the lead can dive into a specific room
       const unitButtons=unitList.map(u=>({title:u.name, value:u.name}));
       if(unitButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
     }
@@ -22459,22 +22433,9 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         ? (properties||[]).filter(p=>p.location && p.location.toLowerCase()===selectedLocation.toLowerCase())
         : (properties||[]);
 
-      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — engineCheckResortFirstInquiry
-      // always suppresses the LLM for these, so this path is the sole responder. Send the
-      // already-selected property's or unit's images; if nothing is selected yet, show a picker.
-      // Uses hospUnitNameMatch for case-insensitive lookups so stored names always resolve.
+      // 2a. Photo/image keyword ("photos", "pictures", "gallery", etc.) — show a picker so the
+      // lead explicitly picks which property or room they want images of.
       if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)){
-        const selectedUnit=hospContext.selectedUnit;
-        const selectedProp=hospContext.selectedProperty;
-        if(selectedUnit){
-          const unit=units.find(u=>hospUnitNameMatch(selectedUnit.toLowerCase(), u.name));
-          if(unit){ await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit); return; }
-        }
-        if(selectedProp && properties){
-          const prop=properties.find(p=>hospUnitNameMatch(selectedProp.toLowerCase(), p.name));
-          if(prop){ await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, false); return; }
-        }
-        // No selection yet — show picker filtered to selected location (or all if no location set)
         if(filteredProps.length){
           const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
           await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to see photos of? 👇', propButtons);
