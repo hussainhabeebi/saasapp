@@ -22171,7 +22171,15 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
     {url:unit.video_url, name:'video.mp4', isVideo:true},
     {url:unit.video_url_2, name:'video2.mp4', isVideo:true},
   ].filter(m=>m.url && !m.isVideo).slice(0,3);
-  if(!items.length) return false;
+  if(!items.length){
+    // No images configured — for resort still send the booking button so the lead has a next step
+    if(c.hospitality_style==='resort'){
+      await engineSendChatwootQuickReply(env, c, clientId, convId,
+        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
+    }
+    return false;
+  }
   // For resort units, send description text first so the lead reads context before the media burst.
   if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
     await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
@@ -22191,14 +22199,12 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
-    // Resort: after unit media, offer a booking/availability button so the customer can connect
-    // with the team in one tap. The button value is a generic phrase so it routes to human handover
-    // via intent classification without re-triggering unit name matching.
-    if(c.hospitality_style==='resort'){
-      await engineSendChatwootQuickReply(env, c, clientId, convId,
-        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
-        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
-    }
+  }
+  // Resort: always offer the booking button — even if image uploads failed the lead still needs a next step.
+  if(c.hospitality_style==='resort'){
+    await engineSendChatwootQuickReply(env, c, clientId, convId,
+      `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+      [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
   }
   return sentAny;
 }
