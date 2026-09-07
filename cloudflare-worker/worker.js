@@ -22380,8 +22380,8 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
         if(r.ok) captionSent=true;
       }
-      // Property-picker buttons — all properties so the lead can jump to any of them
-      if(engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+      // Property-picker buttons — always shown as part of the hospitality greeting navigation
+      {
         const btns=propList.length>1
           ? propList.map(p=>({title:p.name, value:p.name}))
           : unitList.map(u=>({title:u.name, value:u.name}));
@@ -22404,7 +22404,7 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
         if(r.ok) captionSent=true;
       }
-      if(unitList.length>1 && engineParseJsonField(c.bot_config,{}).quick_reply_buttons_enabled!==false){
+      if(unitList.length>1){
         await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 🛏️', unitList.map(u=>({title:u.name, value:u.name})));
       }
     }
