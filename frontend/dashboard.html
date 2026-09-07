@@ -2419,13 +2419,13 @@ const ROLES = {
           <hr class="div">
 
           <div class="settings-section">
-            <div class="s-head">Conversation Stages & Custom Names</div>
-            <div class="s-note">Give every stage a customer-friendly name for your dashboard, then configure the exact message the bot sends at each stage — sent only when the customer gives a genuine reply that moves the conversation forward (e.g. "yes", a booking time), never mixed into an answer to a question. Keep these generic ("Would you like to see pricing?") rather than naming a specific product or service — if you sell multiple, the bot already pulls in live details for whichever one the customer is actually asking about when they ask, from your Products/Services data. A stage message naming one specific product will read oddly to a customer asking about a different one.</div>
+            <div class="s-head">Conversation Stages & Greeting Introduction</div>
+            <div class="s-note">Stage 1 can send one warm greeting, an optional Google Drive image/video/audio attachment, and up to three tappable buttons. Button taps use verified internal actions, never free-text instructions. If no stages are configured, the greeting is generated once from your Main Prompt and cached for future leads to reduce AI token usage.</div>
             <div id="stageList" style="margin-bottom:12px"></div>
             <button type="button" onclick="addStage()" style="width:100%;padding:10px;border:2px dashed var(--ls);border-radius:8px;background:none;cursor:pointer;color:var(--muted);font-size:13px">+ Add Stage</button>
             <div style="color:#B23A2E;font-size:12px;margin-top:6px;min-height:16px" id="flowErr"></div>
             <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
-              <button class="save-btn" id="saveFlow">Save Stages</button>
+              <button class="save-btn" id="saveFlow">Save Stages & Introduction</button>
               <span class="save-msg" id="saveFlowMsg"></span>
             </div>
           </div>
@@ -9967,9 +9967,10 @@ function populateSettings(){
   // services
   loadServices();
   loadCrossSellRules();
-  // stages
-  let stages=[];
-  try{stages=flowJsonToStages(JSON.parse(clientRecord.flow_json||'{}'));}catch(e){}
+  // stages + the global first-contact introduction stored alongside Stage 1
+  let stages=[],flowConfig={};
+  try{flowConfig=JSON.parse(clientRecord.flow_json||'{}');stages=flowJsonToStages(flowConfig);}catch(e){}
+  _flowIntro=normalizeFlowIntro(flowConfig.intro);
   renderStages(stages);
   // Module toggles (Travel Agency/Recruitment/Appointments/B2B) moved to their own "🧩 Modules"
   // settings page — see populateModulesPage() — since this page no longer has that markup.
@@ -11026,10 +11027,12 @@ async function syncNativeForm(){
 
 $id('saveFlow').addEventListener('click',async()=>{
   const err=$id('flowErr');
-  if(!_stages.length){err.textContent='Add at least one stage.';return;}
-  if(_stages.find(s=>!s.message.trim())){err.textContent='All stages need a message.';return;}
+  if(_stages.find(s=>!s.message.trim())){err.textContent='All configured stages need a message.';return;}
+  if(_flowIntro.media_url&&!/drive\.google\.com\//i.test(_flowIntro.media_url)){
+    err.textContent='Introduction media must be a Google Drive share link.';return;
+  }
   err.textContent='';
-  await saveField('saveFlow','saveFlowMsg',{flow_json:JSON.stringify(stagesToFlowJson(_stages))});
+  await saveField('saveFlow','saveFlowMsg',{flow_json:JSON.stringify(stagesToFlowJson(_stages,_flowIntro))});
 });
 
 async function saveField(btnId,msgId,fields){
@@ -11041,10 +11044,63 @@ async function saveField(btnId,msgId,fields){
 }
 
 /* stage builder */
+let _flowIntro={enabled:true,text:'',media_type:'none',media_url:'',buttons:[]};
+const INTRO_ACTION_OPTIONS=[
+  ['INTRO_SERVICES','View services'],
+  ['INTRO_BOOK','Book appointment'],
+  ['INTRO_MORE','Tell me more'],
+  ['INTRO_HUMAN','Talk to human']
+];
+function normalizeFlowIntro(raw){
+  const intro=raw&&typeof raw==='object'?raw:{};
+  return {
+    enabled:intro.enabled!==false,
+    text:String(intro.text||''),
+    media_type:['image','video','audio'].includes(intro.media_type)?intro.media_type:'none',
+    media_url:String(intro.media_url||''),
+    buttons:(Array.isArray(intro.buttons)?intro.buttons:[]).slice(0,3).map(b=>({
+      title:String(b?.title||''),
+      action:String(b?.action||b?.value||'INTRO_SERVICES')
+    }))
+  };
+}
+function introActionOptions(selected){
+  return INTRO_ACTION_OPTIONS.map(([value,label])=>`<option value="${value}"${selected===value?' selected':''}>${label}</option>`).join('');
+}
+function setIntroButton(index,key,value){
+  while(_flowIntro.buttons.length<=index) _flowIntro.buttons.push({title:'',action:'INTRO_SERVICES'});
+  _flowIntro.buttons[index][key]=value;
+}
+function renderIntroCard(fallback){
+  const buttons=Array.from({length:3},(_,i)=>_flowIntro.buttons[i]||{title:'',action:i===1?'INTRO_BOOK':i===2?'INTRO_HUMAN':'INTRO_SERVICES'});
+  return `
+    <div class="stage-card" style="border-color:var(--accent)">
+      <span style="font-family:var(--mono);font-size:10px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px;display:inline-block;margin-bottom:8px">${fallback?'PROMPT-CACHED FALLBACK':'STAGE 1 INTRO'}</span>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px;font-weight:600;margin-bottom:10px">
+        <input type="checkbox" ${_flowIntro.enabled?'checked':''} onchange="_flowIntro.enabled=this.checked"> Send greeting introduction to new leads
+      </label>
+      <label class="form-label">Greeting text <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+      <textarea class="form-input" rows="3" oninput="_flowIntro.text=this.value" placeholder="Leave blank to generate once from Main Prompt and reuse from cache. You can use {{business_name}} and {{customer_name}}.">${esc(_flowIntro.text)}</textarea>
+      <div style="display:grid;grid-template-columns:150px 1fr;gap:10px;margin-top:10px">
+        <div><label class="form-label">Media type</label><select class="form-input" onchange="_flowIntro.media_type=this.value">
+          ${[['none','No media'],['image','Image'],['video','Video'],['audio','Audio']].map(([v,l])=>`<option value="${v}"${_flowIntro.media_type===v?' selected':''}>${l}</option>`).join('')}
+        </select></div>
+        <div><label class="form-label">Google Drive share link</label><input class="form-input" value="${escAttr(_flowIntro.media_url)}" oninput="_flowIntro.media_url=this.value" placeholder="https://drive.google.com/file/d/.../view"></div>
+      </div>
+      <label class="form-label" style="margin-top:12px">Greeting buttons <span style="font-weight:400;color:var(--muted)">(up to 3)</span></label>
+      <div style="display:grid;gap:7px">
+        ${buttons.map((b,i)=>`<div style="display:grid;grid-template-columns:1fr 180px;gap:8px">
+          <input class="form-input" maxlength="20" value="${escAttr(b.title)}" oninput="setIntroButton(${i},'title',this.value)" placeholder="${i===0?'e.g. View Services':'Optional button'}">
+          <select class="form-input" onchange="setIntroButton(${i},'action',this.value)">${introActionOptions(b.action)}</select>
+        </div>`).join('')}
+      </div>
+      <div class="s-note" style="margin:8px 0 0">The customer sees the title; Leadvyne receives the selected internal action. Blank titles are ignored.</div>
+    </div>`;
+}
 function flowJsonToStages(fj){
   return Object.keys(fj.stages||{}).filter(k=>k!=='new').map((id,i)=>({id,label:fj.labels?.[id]||`Stage ${i+1}`,message:fj.messages?.['msg_'+id]||''}));
 }
-function stagesToFlowJson(stages){
+function stagesToFlowJson(stages,intro){
   const messages={},flowStages={},labels={};
   stages.forEach((s,i)=>{
     const next=stages[i+1]?stages[i+1].id:s.id;
@@ -11055,19 +11111,23 @@ function stagesToFlowJson(stages){
   });
   const firstId=stages[0]?.id;
   flowStages['new']=firstId?{'*':{next:firstId,msg:'msg_'+firstId}}:{'*':{next:'new',msg:null}};
-  return{stages:flowStages,messages,labels,variables:{}};
+  const cleanIntro=normalizeFlowIntro(intro);
+  cleanIntro.buttons=cleanIntro.buttons.filter(b=>b.title.trim()).map(b=>({title:b.title.trim().slice(0,20),action:b.action}));
+  if(!cleanIntro.media_url){cleanIntro.media_type='none';cleanIntro.media_url='';}
+  return{stages:flowStages,messages,labels,variables:{},intro:cleanIntro};
 }
 function renderStages(stages){
   _stages=stages;
-  $id('stageList').innerHTML=stages.map((s,i)=>`
+  const stageCards=stages.map((s,i)=>`
     <div class="stage-card">
       <span style="font-family:var(--mono);font-size:10px;color:var(--accent-ink);background:var(--accent-soft);padding:2px 8px;border-radius:5px;display:inline-block;margin-bottom:8px">Stage ${i+1}</span>
       <button class="stage-del" onclick="removeStage(${i})">✕</button>
       <label class="form-label">Custom Stage Name</label>
       <input class="form-input" value="${esc(s.label||`Stage ${i+1}`)}" maxlength="60" oninput="_stages[${i}].label=this.value" placeholder="e.g. Qualified, Demo Booked, Documents Pending" style="margin-bottom:10px">
       <label class="form-label">Message</label>
-      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="e.g. Would you like to see our pricing? — avoid naming one specific product/service">${s.message}</textarea>
+      <textarea class="form-input" oninput="_stages[${i}].message=this.value" rows="3" placeholder="e.g. Would you like to see our pricing? — avoid naming one specific product/service">${esc(s.message)}</textarea>
     </div>`).join('');
+  $id('stageList').innerHTML=renderIntroCard(!stages.length)+stageCards;
 }
 function addStage(){_stages.push({id:'stage_'+(_stages.length+1),label:'Stage '+(_stages.length+1),message:''});renderStages(_stages);}
 function removeStage(i){_stages.splice(i,1);_stages=_stages.map((s,j)=>({...s,id:'stage_'+(j+1)}));renderStages(_stages);}
