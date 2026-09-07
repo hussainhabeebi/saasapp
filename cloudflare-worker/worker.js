@@ -22177,7 +22177,7 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
     {url:unit.image_url_5, name:'photo5.jpg', isVideo:false},
     {url:unit.video_url, name:'video.mp4', isVideo:true},
     {url:unit.video_url_2, name:'video2.mp4', isVideo:true},
-  ].filter(m=>m.url);
+  ].filter(m=>m.url && !m.isVideo).slice(0,3);
   if(!items.length) return false;
   // For resort units, send description text first so the lead reads context before the media burst.
   if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
@@ -22289,7 +22289,7 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
     {url:property.image_url_5, name:'property-photo5.jpg', isVideo:false},
     {url:property.video_url_1, name:'property-video1.mp4', isVideo:true},
     {url:property.video_url_2, name:'property-video2.mp4', isVideo:true},
-  ].filter(m=>m.url);
+  ].filter(m=>m.url && !m.isVideo).slice(0,3);
   let sentAny=false;
   let captionSent=false;
   for(const item of items){
@@ -22384,12 +22384,14 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           if(r.ok) captionSent=true;
         }
       }
-      // No buttons in greeting — property picker appears when lead explicitly selects a property
+      // After greeting images, offer property-picker buttons so the lead can explore a specific property
+      const propButtons=propList.map(p=>({title:p.name, value:p.name}));
+      if(propButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', propButtons);
     } else if(unitList.length){
-      // No properties configured — showcase 2 random units, images only, no buttons
+      // No properties configured — showcase 2 random units then offer unit-picker buttons
       const showcaseUnits=shuffle([...unitList]).slice(0,2);
       for(const unit of showcaseUnits){
-        const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,2);
+        const imgUrls=shuffle([unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean)).slice(0,3);
         let captionSent=false;
         for(let i=0;i<imgUrls.length;i++){
           const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
@@ -22403,6 +22405,9 @@ async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
           if(r.ok) captionSent=true;
         }
       }
+      // After greeting images, offer unit-picker buttons so the lead can dive into a specific room
+      const unitButtons=unitList.map(u=>({title:u.name, value:u.name}));
+      if(unitButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
     }
   }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
 }
@@ -22546,13 +22551,19 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 // (see engineMaybeSendRealEstateMedia's existence check below) rather than never again — an upsert
 // so a later send refreshes sent_at instead of being silently dropped by the (lead_id, unit_id)
 // unique index the way a plain INSERT OR IGNORE would.
-async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit){
-  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5, unit.video_url, unit.pdf_url].filter(Boolean);
+async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit, showButtons=false){
+  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5].filter(Boolean).slice(0,3);
   if(!items.length) return false;
   let sentAny=false;
   for(let i=0;i<items.length;i++){
     const caption=i===0?`Here's a look at ${unit.unit_no}${unit.tower?(' — Tower '+unit.tower):''} 📸`:'';
     if(await sendDriveMediaToChatwoot(c, convId, items[i], caption)) sentAny=true;
+  }
+  if(sentAny && showButtons){
+    await engineSendChatwootQuickReply(env, c, clientId, convId,
+      `Interested in *${unit.unit_no}*? 👇`,
+      [{title:'📅 Schedule Site Visit', value:'I want to schedule a site visit'},
+       {title:'💰 Get Pricing Details', value:'I want to know the pricing details'}]);
   }
   if(sentAny){
     await env.DB.prepare(
@@ -22599,10 +22610,12 @@ async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolved
     else if(typeMatch) candidates=units.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
     if(candidates){
       if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
-      for(const unit of candidates.slice(0,5)){
+      const candidateSlice=candidates.slice(0,5);
+      for(let ci=0;ci<candidateSlice.length;ci++){
+        const unit=candidateSlice[ci];
         const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=? AND sent_at>?`).bind(resolvedLeadId, unit.id, resendCutoff).first();
         if(already) continue;
-        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit, ci===0);
       }
       return;
     }
