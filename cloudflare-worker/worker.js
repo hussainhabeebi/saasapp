@@ -11926,8 +11926,64 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
 function ltOfferFareId(raw){
   return ltText(String(raw?.id||raw?.fareId||raw?.fare_id||raw?.offerId||raw?.offer_id||raw?.raw?.id||raw?.raw?.fareId||''),300);
 }
+async function ltEnsureChatCheckoutSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_checkout_state (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'select',
+    offers_json TEXT NOT NULL DEFAULT '[]', selected_offer_json TEXT, passenger_json TEXT,
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id, phone)
+  )`).run();
+}
 export function ltBookableChatOffers(offers){
   return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+}
+async function ltSaveChatOffers(env,clientId,phone,offers){
+  if(!phone)return;
+  await ltEnsureChatCheckoutSchema(env);
+  const top=ltBookableChatOffers(offers);
+  if(!top.length){
+    await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+    return;
+  }
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
+  await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
+    VALUES (?,?,'select',?,NULL,NULL,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET step='select',offers_json=excluded.offers_json,selected_offer_json=NULL,passenger_json=NULL,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(safe),expires,now.toISOString()).run();
+}
+export function ltCheckoutCtaPayload(phone,url){
+  return {messaging_product:'whatsapp',to:String(phone||'').replace(/\D/g,''),type:'interactive',interactive:{type:'cta_url',body:{text:'Your selected flight is ready. Complete passenger details securely on POOMAS.'},action:{name:'cta_url',parameters:{display_text:'Book Now',url:String(url)}}}};
+}
+async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId){
+  const creds=resolveMetaCredentials(c,{inbox_id:inboxId});
+  if(creds?.wa_phone_id&&creds?.wa_token&&phone){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(ltCheckoutCtaPayload(phone,url))});
+      if(r.ok)return true;
+      const body=await r.text().catch(()=>'');
+      await reportOpsError(env,'Travel checkout CTA rejected by Meta',new Error(`HTTP ${r.status} — ${body.slice(0,500)}`),{clientId,convId});
+    }catch(e){await reportOpsError(env,'Travel checkout CTA send failed',e,{clientId,convId});}
+  }
+  return engineSendChatwootReply(env,c,clientId,convId,`Book now: ${url}`);
+}
+function ltStoredOfferText(offers){
+  const rows=(offers||[]).slice(0,3).map((o,i)=>`${i+1}. ${o.airline||'Flight'}${o.flightNumber?' · '+o.flightNumber:''} — ${o.currency||''} ${Number(o.total||0).toFixed(2)}\n${o.origin||'—'} → ${o.destination||'—'}`);
+  return `Previous live flight options:\n\n${rows.join('\n\n')}\n\nSelect a flight below.`;
+}
+export function ltBookButtons(offers){
+  return (offers||[]).slice(0,3).map((_,i)=>({title:`Book Option ${i+1}`,value:`book ${['first','second','third'][i]}`}));
+}
+export function ltStoredOfferSelectionIndex(offers,input){
+  const list=Array.isArray(offers)?offers:[],text=String(input||'').trim();
+  const numbered=text.match(/^(?:book\s+(?:option\s+)?)?([1-3])$/i);
+  if(numbered){const idx=Number(numbered[1])-1;return idx<list.length?idx:-1;}
+  const ordinals={first:0,one:0,second:1,two:1,third:2,three:2};
+  const ordinal=text.match(/\b(first|one|second|two|third|three)\b/i);
+  if(ordinal){const idx=ordinals[ordinal[1].toLowerCase()];return idx<list.length?idx:-1;}
+  const normalize=v=>String(v||'').toLowerCase().replace(/\b(?:book|booking|please|ticket|flight|option)\b/g,'').replace(/[^a-z0-9]/g,'');
+  const query=normalize(text);if(query.length<3)return -1;
+  const matches=list.map((o,i)=>({i,airline:normalize(o?.airline),number:normalize(o?.flightNumber)})).filter(o=>(o.airline.length>=3&&query.includes(o.airline))||(o.number.length>=3&&query.includes(o.number)));
+  return matches.length===1?matches[0].i:-1;
 }
 
 export function ltFormatChatOffers(offers){
@@ -11948,7 +12004,7 @@ export function ltFormatChatOffers(offers){
     if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
     lines.push(line);
   });
-  lines.push('_Fares are live and may change. Contact us to book any of these options._');
+  lines.push('Select a flight below.\n_Fares may change until checkout._');
   return lines.join('\n\n');
 }
 
@@ -11979,6 +12035,46 @@ async function ltSaveChatSearchDraft(env,clientId,phone,draft){
 }
 async function ltClearChatSearchDraft(env,clientId,phone){
   if(phone)await env.DB.prepare(`DELETE FROM live_travel_chat_search_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+}
+async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,inboxId){
+  await ltEnsureChatCheckoutSchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  if(!row)return null;
+  const send=async(reply,buttons=null)=>{if(buttons?.length)await engineSendChatwootQuickReply(env,c,clientId,convId,reply,buttons);else await engineDeliverReply(env,c,clientId,convId,reply,{mediaType:'text',langCode:c.language||'en'});return {handled:true,step:row.step}};
+  const input=String(text||'').trim();
+  if(/^(new search|search again|new flight)$/i.test(input)){
+    await Promise.all([env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run(),ltClearChatSearchDraft(env,clientId,phone)]);
+    return send('Send route, date and passengers.\nExample: CCJ to SHJ on 2026-09-15, 1 adult, economy.');
+  }
+  if(/^(continue previous|continue old|previous search|old search)$/i.test(input)){
+    const offers=ltJson(row.offers_json,[]);
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',updated_at=? WHERE client_id=? AND phone=?`).bind(new Date().toISOString(),Number(clientId),String(phone)).run();
+    return send(ltStoredOfferText(offers),ltBookButtons(offers));
+  }
+  if(row.step==='select'){
+    const offers=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(offers,input);
+    if(idx<0){
+      if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(offers));
+      return null;
+    }
+    const selected=offers[idx];
+    if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'—';
+    const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}`;
+    await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  if(row.step==='checkout_ready'&&/^(open checkout|checkout|book now|continue booking)$/i.test(input)){
+    const selected=ltJson(row.selected_offer_json,{});
+    if(!selected.fareId)return send('This fare has expired. Please run a new search.');
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  return null;
 }
 function ltMergeChatFlightDraft(draft,input,userText){
   const old=draft||{},next={...old},text=String(userText||'');
@@ -12031,8 +12127,9 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
     const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
     const bookingOffers=ltBookableChatOffers(offers);
+    await ltSaveChatOffers(env,clientId,phone,bookingOffers);
     await ltClearChatSearchDraft(env,clientId,phone);
-    return {handled:true,reply:ltFormatChatOffers(bookingOffers)};
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers),buttons:ltBookButtons(bookingOffers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
     return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
@@ -14750,6 +14847,11 @@ async function handleEngineWebhook(request, env, secret){
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
     const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
+    if(liveCheckoutTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'travel_live_checkout',sent:true,step:liveCheckoutTurn.step});
+    }
     const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
     if(eduAdmissionTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
