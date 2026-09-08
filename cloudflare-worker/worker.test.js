@@ -280,6 +280,33 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
     assert.equal(ltChatFlightIntent('Please update my support ticket'),false);
     assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    // Compact hyphenated IATA routes (no spaces around dash)
+    assert.equal(ltChatFlightIntent('COK-DXB ON 15 SEP'),true);
+    assert.equal(ltChatFlightIntent('DXB-COK 20 sep 1 adult'),true);
+    assert.equal(ltChatFlightIntent('COK - DXB on 2026-09-15'),true);
+    // Ordinal date formats (10th sep, 1st oct, 3rd nov)
+    assert.equal(ltChatFlightIntent('Get fare for 10th sep dxb-trv'),true);
+    assert.equal(ltChatFlightIntent('flight dxb to cok 1st october'),true);
+    assert.equal(ltChatFlightIntent('need ticket cok-dxb 3rd nov'),true);
+    // City-name routes without IATA codes
+    assert.equal(ltChatFlightIntent('Dubai to Kochi on 20 sep'),true);
+    assert.equal(ltChatFlightIntent('Mumbai to Dubai 15th december economy'),true);
+    assert.equal(ltChatFlightIntent('fare from Dubai to Kochi'),true);
+    assert.equal(ltChatFlightIntent('ticket from Riyadh to Kochi'),true);
+    // Relative dates (tomorrow, next Friday, next week, this weekend)
+    assert.equal(ltChatFlightIntent('flight from DXB to COK tomorrow'),true);
+    assert.equal(ltChatFlightIntent('DXB to COK next Friday'),true);
+    assert.equal(ltChatFlightIntent('Dubai to Kochi next week economy'),true);
+    assert.equal(ltChatFlightIntent('COK-DXB this weekend'),true);
+    assert.equal(ltChatFlightIntent('flight Dubai to Kochi next month'),true);
+    // plane ticket phrasing
+    assert.equal(ltChatFlightIntent('need plane tickets from Dubai to Kochi'),true);
+    // looking for phrasing
+    assert.equal(ltChatFlightIntent('looking for flights from Dubai to Kochi 20 sep'),true);
+    // Non-flight queries that must NOT trigger
+    assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    assert.equal(ltChatFlightIntent('Dubai to Kochi tour package'),false);
+    assert.equal(ltChatFlightIntent('What visa do I need to travel from India to Dubai'),false);
   });
 
   test('normalizes safe search defaults and reports required missing fields',()=>{
