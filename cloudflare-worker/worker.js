@@ -12464,6 +12464,10 @@ BUTTONS — mandatory after EVERY reply:
 export function engineIsGreetingOnly(text){
   return /^(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|assalamu\s+alaikum|salaam|namaste)[!. ,🙏👋]*$/iu.test(String(text||'').trim());
 }
+export function engineIsRevisitAfterSilence(state,thresholdMs=4*60*60*1000){
+  const lastAt=state?.lastCustomerMsgAt?new Date(state.lastCustomerMsgAt).getTime():0;
+  return lastAt>0&&Date.now()-lastAt>thresholdMs;
+}
 
 export function engineIndustryFlowEnabled(c){
   const flow=engineParseJsonField(c?.flow_json,{});
@@ -12701,8 +12705,8 @@ function engineFillIntroTokens(text,c,knownName){
     .replace(/\{\{\s*(?:customer_name|name)\s*\}\}/gi,String(knownName||'there'))
     .trim();
 }
-async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName){
-  if(!engineIsGreetingOnly(userText)||!engineIndustryFlowEnabled(c)) return null;
+async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName,force=false){
+  if((!force&&!engineIsGreetingOnly(userText))||!engineIndustryFlowEnabled(c)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
   if(intro.enabled===false) return null;
@@ -15100,6 +15104,7 @@ async function handleEngineWebhook(request, env, secret){
     // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
     // Owner/DealCurrency assignment for a genuinely brand-new lead.
     const isNewLead=!state.leadId;
+    const isRevisit=!isNewLead&&engineIsRevisitAfterSilence(state,4*60*60*1000);
     // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
     // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
     // code from `text` before it reaches classification/the AI reply, so it never shows up in
@@ -15163,8 +15168,12 @@ async function handleEngineWebhook(request, env, secret){
     // A saved Flow introduction is deterministic configuration, not AI content. Run it for
     // every greeting (including an existing/returning contact) before interruption/classifier
     // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
-    const configuredGreetingTurn=engineShouldUseConfiguredFlowIntro(c,userText,mediaType)
-      ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name)
+    // Also fires for brand-new leads and leads returning after 4 h of silence — so the intro
+    // is shown whenever the conversation is effectively starting fresh, regardless of whether
+    // the opening message happens to be a formal greeting keyword.
+    const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
+      ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType);
@@ -15202,8 +15211,8 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=isNewLead&&mediaType==='text'
-      ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name)
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
+      ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
