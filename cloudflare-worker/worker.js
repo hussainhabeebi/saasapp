@@ -11998,6 +11998,25 @@ export function ltStoredOfferSelectionIndex(offers,input){
   return matches.length===1?matches[0].i:-1;
 }
 
+export function ltBookButtons(offers){
+  const choices=['first','second','third'];
+  return (offers||[]).slice(0,3).map((_,i)=>({title:`Book Option ${i+1}`,value:`book ${choices[i]}`}));
+}
+
+export function ltCheckoutCtaPayload(phone,url){
+  return {
+    messaging_product:'whatsapp',
+    recipient_type:'individual',
+    to:String(phone||'').replace(/\D/g,''),
+    type:'interactive',
+    interactive:{
+      type:'cta_url',
+      body:{text:'Continue securely to complete your booking.'},
+      action:{name:'cta_url',parameters:{display_text:'Book Now',url:String(url||'')}}
+    }
+  };
+}
+
 export function ltFormatChatOffers(offers){
   const top=ltBookableChatOffers(offers);
   if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
