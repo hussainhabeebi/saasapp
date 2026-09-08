@@ -11852,12 +11852,12 @@ export function ltChatFlightIntent(text){
   if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
   const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying)\b/.test(value);
   const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
-  const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
+  const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|get|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
   // Compact structured searches such as "DXB to COK on 2026-09-20, 1 adult,
   // economy" are already complete flight requests even when the customer omits
   // the words flight/ticket/fare. Route them to POOMAS, never to the generic LLM.
   const compactIataRoute=/\b[A-Z]{3}(?:\s+TO\s+|\s*[-→]\s*)[A-Z]{3}\b/i.test(String(text||''));
-  const hasTravelDetail=/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
+  const hasTravelDetail=/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b/i.test(String(text||''));
   return (explicitFlight&&shopping)||travelTicket||(compactIataRoute&&hasTravelDetail);
 }
 

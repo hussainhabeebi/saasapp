@@ -284,6 +284,10 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltChatFlightIntent('COK-DXB ON 15 SEP'),true);
     assert.equal(ltChatFlightIntent('DXB-COK 20 sep 1 adult'),true);
     assert.equal(ltChatFlightIntent('COK - DXB on 2026-09-15'),true);
+    // Ordinal date formats (10th sep, 1st oct) must trigger live search
+    assert.equal(ltChatFlightIntent('Get fare for 10th sep dxb-trv'),true);
+    assert.equal(ltChatFlightIntent('flight dxb to cok 1st october'),true);
+    assert.equal(ltChatFlightIntent('need ticket cok-dxb 3rd nov'),true);
   });
 
   test('normalizes safe search defaults and reports required missing fields',()=>{
