@@ -12559,8 +12559,8 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
 
   if(answer){
     nextStage=String(answer.next||config.default_next||'');
-    // Next stage not configured on this answer — let full AI pipeline handle the turn.
-    if(!nextStage) return null;
+    // No next stage, or button loops back to same stage → let AI handle the turn.
+    if(!nextStage||nextStage===currentStage) return null;
     if(config.capture_variable) variables[config.capture_variable]=answer.entity_id||answer.value||answer.title;
     if(answer.set_variable) variables[answer.set_variable]=answer.entity_id||answer.value||answer.title;
     if(answer.entity_type){
@@ -12580,7 +12580,11 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
   const baseMemory=memory||{flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:currentStage,previous_stage:null,variables:{},stage_history:[],interruption_count:0,last_options:[]};
   const nextMemory=engineFlowAdvanceMemory(flow,baseMemory,currentStage,nextStage,answer,variables);
   const nextConfig=engineFlowStageConfig(flow,nextStage);
-  let reply=engineFlowInterpolate(flow.messages?.['msg_'+nextStage]||nextConfig.message||config.retry_message||'Please choose one of the available options.',variables,c);
+  const nextMsg=flow.messages?.['msg_'+nextStage]||nextConfig.message;
+  const nextButtons=engineBuildIndustryFlowButtons(flow,nextStage);
+  // Next stage has no message and no buttons — nothing to show, let AI handle.
+  if(!nextMsg&&!nextButtons.length) return null;
+  let reply=engineFlowInterpolate(nextMsg||config.retry_message||'Please choose one of the available options.',variables,c);
   if(linkUrl) reply+=(reply?'\n\n':'')+linkUrl;
   return {
     route:'industry_flow',next:nextStage,reply,preserveCrmStage:true,
