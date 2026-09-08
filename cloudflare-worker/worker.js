@@ -12558,7 +12558,9 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
   }
 
   if(answer){
-    nextStage=String(answer.next||config.default_next||currentStage);
+    nextStage=String(answer.next||config.default_next||'');
+    // Next stage not configured on this answer — let full AI pipeline handle the turn.
+    if(!nextStage) return null;
     if(config.capture_variable) variables[config.capture_variable]=answer.entity_id||answer.value||answer.title;
     if(answer.set_variable) variables[answer.set_variable]=answer.entity_id||answer.value||answer.title;
     if(answer.entity_type){
@@ -12570,9 +12572,8 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
   }else if(config.input_type==='free_text'&&config.capture_variable&&raw){
     variables[config.capture_variable]=raw;
     nextStage=String(config.default_next||currentStage);
-  }else if(config.ai_mode==='off'&&flow.stages?.[currentStage]){
-    nextStage=currentStage;
   }else{
+    // No button match and not a free-text capture stage — let AI answer.
     return null;
   }
 
