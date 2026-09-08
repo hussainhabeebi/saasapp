@@ -15138,6 +15138,18 @@ async function handleEngineWebhook(request, env, secret){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // HC service/doctor booking button taps carry internal values like HC_BOOK_SERVICE:<id>.
+    // Restore human-readable names before any classifier runs so AI gets natural context.
+    const hcSvcTap=/^HC_BOOK_SERVICE:(\d+)$/i.exec(userText);
+    if(hcSvcTap){
+      const svc=await env.DB.prepare('SELECT name FROM healthcare_services WHERE id=? AND client_id=? LIMIT 1').bind(Number(hcSvcTap[1]),clientId).first().catch(()=>null);
+      if(svc?.name) userText=`I want to book ${svc.name}`;
+    }
+    const hcDocTap=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(userText);
+    if(hcDocTap){
+      const doc=await env.DB.prepare('SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1').bind(Number(hcDocTap[1]),clientId).first().catch(()=>null);
+      if(doc?.name) userText=`I want to book with ${doc.name}`;
+    }
     // A saved Flow introduction is deterministic configuration, not AI content. Run it for
     // every greeting (including an existing/returning contact) before interruption/classifier
     // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
@@ -15152,6 +15164,13 @@ async function handleEngineWebhook(request, env, secret){
     if(industryFlowTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType);
       return json({ok:true,route:'industry_flow',sent:c.bot_reply_disabled!=='Yes'});
+    }
+    // When a flow button tap had no configured next stage and fell through, recover the human-readable
+    // title so the AI gets natural context instead of the internal FLOW_ANSWER:stageId:answerId value.
+    if(/^FLOW_ANSWER:/.test(userText)){
+      const lastOpts=state.history?.length?state.history[state.history.length-1]?.options:null;
+      const matched=Array.isArray(lastOpts)?lastOpts.find(o=>o?.value===userText):null;
+      if(matched?.title) userText=matched.title;
     }
     const flowInterruptionTurn=await engineBuildIndustryFlowInterruptionTurn(env,c,state,userText);
     if(flowInterruptionTurn){
