@@ -280,6 +280,10 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
     assert.equal(ltChatFlightIntent('Please update my support ticket'),false);
     assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    // Compact hyphenated IATA routes (no spaces around dash) must trigger live search
+    assert.equal(ltChatFlightIntent('COK-DXB ON 15 SEP'),true);
+    assert.equal(ltChatFlightIntent('DXB-COK 20 sep 1 adult'),true);
+    assert.equal(ltChatFlightIntent('COK - DXB on 2026-09-15'),true);
   });
 
   test('normalizes safe search defaults and reports required missing fields',()=>{
