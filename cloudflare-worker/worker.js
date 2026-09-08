@@ -12576,7 +12576,10 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
     linkUrl=String(answer.link_url||'').trim();
   }else if(config.input_type==='free_text'&&config.capture_variable&&raw){
     variables[config.capture_variable]=raw;
-    nextStage=String(config.default_next||currentStage);
+    nextStage=String(config.default_next||'');
+    // No configured next stage — capture the value but let AI answer naturally
+    // rather than looping back to the same stage.
+    if(!nextStage||nextStage===currentStage) return null;
   }else{
     // No button match and not a free-text capture stage — let AI answer.
     return null;
