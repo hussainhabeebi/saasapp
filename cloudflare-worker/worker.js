@@ -12612,7 +12612,9 @@ async function engineBuildIndustryFlowInterruptionTurn(env,c,state,userText){
   const flow=engineParseJsonField(c.flow_json,{});
   const currentStage=memory.current_stage;
   const config=engineFlowStageConfig(flow,currentStage);
-  if(config.ai_mode!=='fallback') return null;
+  // Default: AI handles general questions during any active flow stage.
+  // Only skip when the stage explicitly opts out with ai_mode:'disabled' or ai_mode:'off'.
+  if(config.ai_mode==='disabled'||config.ai_mode==='off') return null;
   const stageLabel=String(flow.labels?.[currentStage]||currentStage);
   const variables=memory.variables||{};
   const resumeMessage=engineFlowInterpolate(config.resume_message||`Would you like to continue with ${stageLabel}?`,variables,c);
@@ -12623,7 +12625,7 @@ async function engineBuildIndustryFlowInterruptionTurn(env,c,state,userText){
     '\nSaved flow variables:\n'+JSON.stringify(variables).slice(0,1200)
   ].join('');
   const answer=await engineCallLlmAvoidingRepeat(env,c,context,String(userText||''),180,state.botMsgs?.[state.botMsgs.length-1]);
-  if(!answer||!answer.trim()) return null;
+  if(!answer||!answer.trim()||answer.trim()==='One moment 🙏') return null;
   const interruptionCount=Number(memory.interruption_count||0)+1;
   const buttons=interruptionCount<=2?engineBuildIndustryFlowButtons(flow,currentStage):[
     {title:'Continue',value:'FLOW_CONTINUE'},
