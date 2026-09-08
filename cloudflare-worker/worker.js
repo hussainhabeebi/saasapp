@@ -9878,6 +9878,11 @@ async function hcFindBroadServiceMatches(env,clientId,message){
   }
   if(!scored.length)return [];
   scored.sort((a,b)=>b.score-a.score||String(a.service.name).localeCompare(String(b.service.name)));
+  // Exact service name match (e.g. customer tapped a flow button titled "General Medicine") —
+  // return only that one service so the bot shows its info + Book Now rather than re-displaying
+  // the full services list, which would create a loop.
+  const exactNameMatch=scored.find(x=>hcNormalizeText(x.service.name)===query);
+  if(exactNameMatch) return [exactNameMatch.service];
   const best=scored[0].score;
   return scored.filter(x=>x.score>=Math.max(80,best*.55)).slice(0,10).map(x=>x.service);
 }
