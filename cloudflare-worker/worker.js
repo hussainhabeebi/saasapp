@@ -1138,28 +1138,27 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
     // Channel-specific lead visibility: leads from an assigned inbox are visible only to the
     // assigned user — not to other team members or even the account owner.
+    // Rule: show a lead if InboxId is blank/null (old leads, unassigned channels) OR
+    //       InboxId is NOT assigned to someone other than the current user.
     if(isLeadsList && requesterEmail && env.DB){
       try{
         await ensureInboxAssignmentsTable(env);
+        await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
         const asgns=await env.DB.prepare(
           `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
         ).bind(payload.cid).all();
         const allAssigned=asgns.results||[];
         if(allAssigned.length>0){
-          const myInboxIds=allAssigned
-            .filter(a=>a.assigned_email.toLowerCase()===requesterEmail)
+          // Inboxes assigned to users OTHER than the current requester
+          const othersInboxIds=allAssigned
+            .filter(a=>a.assigned_email.toLowerCase()!==requesterEmail)
             .map(a=>String(a.inbox_id));
-          let clause;
-          if(myInboxIds.length>0){
-            // Assigned user: show only leads from their channel(s)
-            clause='('+myInboxIds.map(id=>`(InboxId,eq,${id})`).join('~or')+')';
-          } else {
-            // Everyone else (including admin): hide leads from any exclusively-assigned inbox
-            const allIds=allAssigned.map(a=>String(a.inbox_id));
-            const notOthers=allIds.map(id=>`(InboxId,neq,${id})`).join('~and');
-            clause=`((InboxId,blank)~or(${notOthers}))`;
+          if(othersInboxIds.length>0){
+            // Hide leads from other users' channels; show blank (old/unassigned) and own channels
+            const notOthersParts=othersInboxIds.map(id=>`(InboxId,neq,${id})`).join('~and');
+            const clause=`(InboxId,blank)~or(${notOthersParts})`;
+            qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
           }
-          qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
         }
       }catch(e){}
     }
