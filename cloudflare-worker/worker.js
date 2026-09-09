@@ -2962,7 +2962,7 @@ async function handleFollowupLadderGet(request, env){
   const list=FOLLOWUP_LADDER_STEP_SHAPE.map(shape=>{
     const r=bySt[shape.step];
     return r
-      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b,
+      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b, ai_mode:!!r.ai_mode,
          template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars,
          template_name_b:r.template_name_b, template_language_b:r.template_language_b, template_category_b:r.template_category_b, template_body_vars_b:r.template_body_vars_b}
       : followupLadderDefaultStep(shape.step, legacyHours, legacyMessages);
@@ -2980,11 +2980,14 @@ async function handleFollowupLadderSave(request, env){
     if(!s) continue;
     if(shape.type==='session'){
       const hours=Math.min(23, Math.max(1, parseInt(s.hours)||shape.defaultHours));
-      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, updated_at=excluded.updated_at`)
+      const aiMode=s.ai_mode?1:0;
+      // Ensure ai_mode column exists (idempotent — no-ops after first run)
+      await env.DB.prepare(`ALTER TABLE followup_ladder_steps ADD COLUMN ai_mode INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, ai_mode, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, ai_mode=excluded.ai_mode, updated_at=excluded.updated_at`)
         .bind(Number(payload.cid), shape.step, 'session', hours, null,
-          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000),
+          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000), aiMode,
           '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
         .run();
     } else {
@@ -2998,6 +3001,105 @@ async function handleFollowupLadderSave(request, env){
           now)
         .run();
     }
+  }
+  return json({ok:true});
+}
+
+// ── Dedicated endpoints for the two halves of the follow-up ladder ──────────────────────────────
+// The dashboard shows them in two separate panels:
+//   "Within 24h — Session messages" (steps 1-2, GET/POST /followups/session-steps)
+//   "After 24h — WhatsApp Templates" (steps 3-5, GET/POST /followups/template-steps)
+// Both read/write the same followup_ladder_steps table as /followups/ladder — splitting the API
+// surface gives the frontend a cleaner contract and makes it obvious in the UI that the two
+// halves have different constraints (session vs approved template, editable hours vs fixed days).
+
+const SESSION_STEPS=[1,2];
+const TEMPLATE_STEPS=[3,4,5];
+
+async function handleFollowupSessionStepsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=? AND step IN (1,2)`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  const legacyHours=(c?.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
+  const legacyMessages=(c?.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const list=SESSION_STEPS.map(step=>{
+    const r=bySt[step];
+    return r
+      ? {step:r.step, type:'session', hours:r.hours, message:r.message||'', message_b:r.message_b||'', ai_mode:!!r.ai_mode}
+      : {...followupLadderDefaultStep(step, legacyHours, legacyMessages), ai_mode:false};
+  });
+  return json({list});
+}
+
+async function handleFollowupSessionStepsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  await env.DB.prepare(`ALTER TABLE followup_ladder_steps ADD COLUMN ai_mode INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+  for(const step of SESSION_STEPS){
+    const s=steps.find(x=>parseInt(x.step)===step);
+    if(!s) continue;
+    const hours=Math.min(23, Math.max(1, parseInt(s.hours)||FOLLOWUP_LADDER_STEP_SHAPE.find(sh=>sh.step===step).defaultHours));
+    const aiMode=s.ai_mode?1:0;
+    await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, ai_mode, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, ai_mode=excluded.ai_mode, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), step, 'session', hours, null,
+        String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000), aiMode,
+        '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
+      .run();
+  }
+  return json({ok:true});
+}
+
+async function handleFollowupTemplateStepsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=? AND step IN (3,4,5)`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  const list=TEMPLATE_STEPS.map(step=>{
+    const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
+    const r=bySt[step];
+    return r
+      ? {step:r.step, type:'template', defaultHours:shape.defaultHours,
+         template_name:r.template_name||'', template_language:r.template_language||'en_US',
+         template_category:r.template_category||'MARKETING', template_body_vars:r.template_body_vars||0,
+         template_name_b:r.template_name_b||'', template_language_b:r.template_language_b||'en_US',
+         template_category_b:r.template_category_b||'MARKETING', template_body_vars_b:r.template_body_vars_b||0}
+      : {step, type:'template', defaultHours:shape.defaultHours,
+         template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+         template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
+  });
+  // Include human-readable delay labels so the UI can show "Day 1 / Day 3 / Day 7" without hardcoding
+  const labels={3:'After 25h (Day 1)', 4:'After 3 days', 5:'After 7 days'};
+  return json({list, labels});
+}
+
+async function handleFollowupTemplateStepsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  for(const step of TEMPLATE_STEPS){
+    const s=steps.find(x=>parseInt(x.step)===step);
+    if(!s) continue;
+    const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(sh=>sh.step===step);
+    await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+        template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), step, 'template', shape.defaultHours, null, '', '',
+        String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20),
+        String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
+        String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20),
+        String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
+        now)
+      .run();
   }
   return json({ok:true});
 }
@@ -3094,7 +3196,19 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) throw new Error('Chatwoot is not configured for this account.');
     const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
     if(!convId) throw new Error('This lead has no conversation yet.');
-    sentText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    // AI-generated mode (ai_mode=1): generate a personalised follow-up using the lead's name,
+    // interested product and business prompt instead of the static template. Falls back to the
+    // static message if the AI call produces nothing so the follow-up still goes out.
+    let staticText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    if(stepCfg.ai_mode){
+      try{
+        const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
+        const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
+        const generated=await engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'});
+        if(generated) staticText=generated;
+      }catch(e){ /* AI failed — send static message */ }
+    }
+    sentText=staticText;
     // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
     // comment on why a template step can't carry this).
     sentText+=await ecomFollowupScarcityLine(env, c, lead);
@@ -3232,7 +3346,7 @@ async function classicFollowupProcessClient(env, c){
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
   while(true){
-    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,LastAgentMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,InterestedProduct,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
     if(!leadsR.ok) break;
     const data=await leadsR.json().catch(()=>({}));
     const leadRows=data?.list||[];
@@ -3241,6 +3355,10 @@ async function classicFollowupProcessClient(env, c){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
+      // Skip leads where a human agent replied more recently than the customer — the rep is
+      // already handling this conversation (closed a sale, sent a quote, etc.) and auto
+      // follow-ups firing on top would be embarrassing and confusing.
+      if(lead.LastAgentMsgAt && new Date(lead.LastAgentMsgAt)>new Date(lastRealMs)) continue;
       const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
       let nextStep=-1;
       for(let s=1; s<=5; s++){
@@ -15086,6 +15204,36 @@ async function handleEngineWebhook(request, env, secret){
     }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
   }
 
+  // Human agent reply tracking — fires when a real human (not the bot) sends an outgoing
+  // message from inside Chatwoot. Chatwoot's sender.type is 'agent_bot' for bot-sent messages
+  // and 'agent' (or 'user') for human agents. When a rep closes a sale in chat without
+  // updating the CRM stage, this records LastAgentMsgAt so the follow-up ladder skips the lead
+  // rather than firing auto-messages the rep already rendered unnecessary.
+  if(body.message_type==='outgoing' && !body.private){
+    const senderType=body.sender?.type||'';
+    if(senderType!=='agent_bot'){
+      const convId=String(body.conversation?.id||'');
+      if(convId){
+        try{
+          await ensureLeadsColumns(env, ['LastAgentMsgAt']);
+          const convField='ConversationID'; // NocoDB field name for Chatwoot conv id
+          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id`);
+          const ld=await leadsR.json().catch(()=>({}));
+          const leadId=ld?.list?.[0]?.Id;
+          if(leadId){
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:new Date().toISOString()}});
+            // Also reset the Durable Object cadence so it doesn't fire while the human is active
+            try{
+              const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${leadId}`));
+              if(stub) await stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+            }catch(e){}
+          }
+        }catch(e){ /* best-effort — don't block on tracking */ }
+      }
+      return json({ok:true, handled:'agent-reply-tracked'});
+    }
+  }
+
   let phone=null;
   try{
     const parsed=engineParseChatwootPayload(body);
@@ -25655,6 +25803,9 @@ export class LeadFollowupAgent{
     if(!leadR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
     const lead=await leadR.json().catch(()=>null);
     if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
+    // Skip if a human agent replied more recently than the customer — rep is already in contact.
+    const lastCustomerMs=new Date(lead.LastMsgAt||lead.Date||0).getTime();
+    if(lead.LastAgentMsgAt && new Date(lead.LastAgentMsgAt).getTime()>lastCustomerMs){ await this._arm(); return; }
 
     // Fetch client — needed for quiet-hours + WA credentials
     const cR=await ncFetch(this.env,`api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(Id,eq,${clientId})`)}&limit=1`);
@@ -26522,6 +26673,10 @@ export default {
       else if(url.pathname==='/human-deals/coach' && request.method==='GET'){ res=await handleHumanDealsCoach(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
+      else if(url.pathname==='/followups/session-steps' && request.method==='GET'){ res=await handleFollowupSessionStepsGet(request, env); }
+      else if(url.pathname==='/followups/session-steps' && request.method==='POST'){ res=await handleFollowupSessionStepsSave(request, env); }
+      else if(url.pathname==='/followups/template-steps' && request.method==='GET'){ res=await handleFollowupTemplateStepsGet(request, env); }
+      else if(url.pathname==='/followups/template-steps' && request.method==='POST'){ res=await handleFollowupTemplateStepsSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
       else if(url.pathname==='/followups/smart' && request.method==='GET'){ res=await handleFollowupSmartGet(request, env); }
       else if(url.pathname==='/followups/smart' && request.method==='PATCH'){ res=await handleFollowupSmartPatch(request, env); }
