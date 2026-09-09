@@ -134,7 +134,7 @@ export async function handleNativePoomas(req,env,ctx,legacy){
     }
 
     if(path==='/live-travel/poomas/search'&&req.method==='POST'){
-      const s=await enabledSetting(env,auth.clientId);
+      const s=await setting(env,auth.clientId)||{};
       const b=await req.json().catch(()=>({}));
       const requestedCurrency=String(b.currency||'AED').toUpperCase();
       const currency=['AED','INR','USD','SAR','EUR','GBP'].includes(requestedCurrency)?requestedCurrency:'AED';
