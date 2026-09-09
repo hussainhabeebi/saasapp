@@ -1173,7 +1173,7 @@ const ROLES = {
     <button class="dnTab" data-page="knowledgebase" id="dnKbTab">📚 Knowledge Base</button>
     <button class="dnTab" data-page="accounting" id="dnAccountingTab">💰 Accounting</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab industry-tab" data-industry="ecommerce" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
+    <button class="dnTab" id="dnEcomTab" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
     <button class="dnTab industry-tab" data-industry="saas_digital_marketing" style="display:none" data-page="saasops">🚀 SaaS Ops</button>
     <button class="dnTab" data-page="b2b" id="dnB2bTab" style="display:none">🤝 B2B</button>
     <button class="dnTab" data-page="agency" id="dnAgencyTab" style="display:none">🏢 Agency</button>
@@ -3147,6 +3147,14 @@ const ROLES = {
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>🛒 Ecommerce</b><div class="s-note" style="margin:2px 0 0">Product catalog, orders, checkout links, category media, repeat customers — can be combined with any industry (e.g. a healthcare clinic that also sells products).</div></div>
+              <select class="form-input" id="cfgEcomEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveEcomEnabled">Save</button>
+              <span class="save-msg" id="saveEcomEnabledMsg"></span>
+              <span id="ecomModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>💍 Matrimonial Service</b><div class="s-note" style="margin:2px 0 0">Profile management for brides &amp; grooms, match search &amp; shortlisting, horoscope notes, family meeting tracking, success stories, and membership plans.</div></div>
               <select class="form-input" id="cfgMatrimonialEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
               <button class="save-btn" id="saveMatrimonialEnabled">Save</button>
@@ -4971,6 +4979,7 @@ function showApp(){
   updateRealEstateTabVisibility();
   updateHealthcareTabVisibility();
   updateMatrimonialTabVisibility();
+  updateEcomTabVisibility();
   updateB2bTabVisibility();
   updateFeatureTabVisibility();
   applyUserModulePermissions();
@@ -9949,7 +9958,7 @@ function populateSettings(){
   catch(e){ $id('cfgQuickReplyButtons').value='Yes'; }
   let ecomBotConfig={};
   try{ ecomBotConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
-  $id('ecomCommunicationStyleCard').style.display=clientRecord.industry==='ecommerce'?'block':'none';
+  $id('ecomCommunicationStyleCard').style.display=(clientRecord.ecom_enabled==='Yes')?'block':'none';
   $id('cfgEcomCommunicationStyle').value=ecomBotConfig.ecom_communication_style||'';
   $id('eduCommunicationStyleCard').style.display=clientRecord.industry==='education'?'block':'none';
   $id('cfgEduCommunicationStyle').value=ecomBotConfig.edu_communication_style||'';
@@ -10143,13 +10152,19 @@ async function applyIndustryChange(ind, extraPatch){
   else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
   if(ind==='matrimonial'){patch.matrimonial_enabled='Yes';clientRecord.matrimonial_enabled='Yes';}
   else{patch.matrimonial_enabled='No';clientRecord.matrimonial_enabled='No';}
+  // ecom_enabled is a cross-industry module flag — auto-enable for the ecommerce industry,
+  // but never auto-disable when switching to another industry (e.g. healthcare clients may have
+  // it manually enabled). Use Settings → Modules → Ecommerce to explicitly disable it.
+  if(ind==='ecommerce' && clientRecord.ecom_enabled!=='Yes'){patch.ecom_enabled='Yes';clientRecord.ecom_enabled='Yes';}
   await ensureHospitalityEnabledColumn();
   await ensureRealEstateEnabledColumn();
   await ensureHealthcareEnabledColumn();
   await ensureMatrimonialEnabledColumn();
+  await ensureEcomEnabledColumn();
   await patchClient(patch);
   clientRecord.industry=ind;
-  if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ind==='ecommerce'?'block':'none';
+  const ecomOn=clientRecord.ecom_enabled==='Yes';
+  if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=ecomOn?'block':'none';
   if($id('eduCommunicationStyleCard')) $id('eduCommunicationStyleCard').style.display=ind==='education'?'block':'none';
   applyTheme(ind);
   updateRecruitTabVisibility();
@@ -10157,8 +10172,10 @@ async function applyIndustryChange(ind, extraPatch){
   updateRealEstateTabVisibility();
   updateHealthcareTabVisibility();
   updateMatrimonialTabVisibility();
+  updateEcomTabVisibility();
   _renderModuleBadge('taModuleStatusBadge',ind==='travel');
   _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
+  _renderModuleBadge('ecomModuleStatusBadge',ecomOn);
 }
 async function saveIndustry(){
   const btn=$id('saveIndustryBtn'),msg=$id('saveIndustryMsg');
@@ -10266,10 +10283,12 @@ $id('saveGeneral').addEventListener('click',async()=>{
     else{patch.healthcare_enabled='No';clientRecord.healthcare_enabled='No';}
     if(ind==='matrimonial'){patch.matrimonial_enabled='Yes';clientRecord.matrimonial_enabled='Yes';}
     else{patch.matrimonial_enabled='No';clientRecord.matrimonial_enabled='No';}
+    if(ind==='ecommerce' && clientRecord.ecom_enabled!=='Yes'){patch.ecom_enabled='Yes';clientRecord.ecom_enabled='Yes';}
     await ensureHospitalityEnabledColumn();
     await ensureRealEstateEnabledColumn();
     await ensureHealthcareEnabledColumn();
     await ensureMatrimonialEnabledColumn();
+    await ensureEcomEnabledColumn();
     await patchClient(patch);
     clientRecord.industry=ind;
     applyTheme(ind);
@@ -10278,6 +10297,7 @@ $id('saveGeneral').addEventListener('click',async()=>{
     updateRealEstateTabVisibility();
     updateHealthcareTabVisibility();
     updateMatrimonialTabVisibility();
+    updateEcomTabVisibility();
     _renderModuleBadge('taModuleStatusBadge',ind==='travel');
     _renderModuleBadge('rcModuleStatusBadge',ind==='consultancy');
     msg.textContent='✓ Saved — theme applied';
@@ -17130,6 +17150,7 @@ function populateModulesPage(){
   initRealEstateSettings();
   initHealthcareSettings();
   initMatrimonialSettings();
+  initEcomSettings();
   updateFeatureTabVisibility();
 }
 
@@ -18076,6 +18097,41 @@ $id('saveMatrimonialEnabled').addEventListener('click',async()=>{
     await patchClient({matrimonial_enabled:val});
     updateMatrimonialTabVisibility();
     _renderModuleBadge('matrimonialModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+function updateEcomTabVisibility(){
+  const enabled=(clientRecord.ecom_enabled==='Yes');
+  const el=$id('dnEcomTab'); if(el) el.style.display=enabled?'':'none';
+}
+
+async function ensureEcomEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('ecom_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ecom_enabled',title:'ecom_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+function initEcomSettings(){
+  const sel=$id('cfgEcomEnabled'); if(sel) sel.value=(clientRecord.ecom_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('ecomModuleStatusBadge',clientRecord.ecom_enabled==='Yes');
+  updateEcomTabVisibility();
+}
+
+$id('saveEcomEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveEcomEnabled'),msg=$id('saveEcomEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgEcomEnabled').value;
+  try{
+    await ensureEcomEnabledColumn();
+    await patchClient({ecom_enabled:val});
+    clientRecord.ecom_enabled=val;
+    updateEcomTabVisibility();
+    if($id('ecomCommunicationStyleCard')) $id('ecomCommunicationStyleCard').style.display=val==='Yes'?'block':'none';
+    _renderModuleBadge('ecomModuleStatusBadge',val==='Yes');
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}

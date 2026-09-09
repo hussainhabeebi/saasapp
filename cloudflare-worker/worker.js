@@ -84,6 +84,8 @@ const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled'];
 function getPlanLimits(planTier){
   return PLAN_TIERS[String(planTier||'').trim()] || null;
 }
+// True for pure ecommerce clients AND any other industry that has opted in via the ecom_enabled flag.
+function isEcomEnabled(c){ return c.industry==='ecommerce' || c.ecom_enabled==='Yes'; }
 function countClientTeamUsers(c){
   let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
   return Object.keys(teamUsers).length + 1; // +1 for the account owner, who has no entry of their own
@@ -3043,7 +3045,7 @@ function ladderVariantContent(stepCfg, variant){
 // real number — never a fabricated countdown or "hurry" line with nothing behind it.
 const FOLLOWUP_LOW_STOCK_THRESHOLD=5;
 async function ecomFollowupScarcityLine(env, c, lead){
-  if(c.industry!=='ecommerce' || !lead.InterestedProduct) return '';
+  if(!isEcomEnabled(c) || !lead.InterestedProduct) return '';
   try{
     const product=await ecomResolveProduct(env, c.Id, '', lead.InterestedProduct);
     const stock=Number(product?.stock);
@@ -6029,7 +6031,7 @@ async function handleAiRepeatCustomers(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
-  if(c.industry!=='ecommerce') return json({has_orders_table:false, customers:[]});
+  if(!isEcomEnabled(c)) return json({has_orders_table:false, customers:[]});
   const tableId=await ecomResolveTable(env, payload.cid, 'orders');
   if(!tableId) return json({has_orders_table:false, customers:[]});
 
@@ -8765,7 +8767,7 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
 // reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
 // re-sent on every later message that happens to mention the same category again.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  if(c.industry!=='ecommerce' || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  if(!isEcomEnabled(c) || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
@@ -10222,7 +10224,7 @@ function buildCheckoutLink(c, clientId, sku, product){
 // out entirely rather than leaving a dangling "click here: " with nothing after it — cleaner than
 // echoing the literal bracket text back at the customer.
 function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku, product){
-  if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
+  if(!text || !isEcomEnabled(c) || !/\[order_link\]/i.test(text)) return text;
   const link=buildCheckoutLink(c, clientId, sku||'', product);
   if(!link) return text.split('\n').filter(line=>!/\[order_link\]/i.test(line)).join('\n');
   return text.replace(/\[order_link\]/gi, link);
@@ -13143,7 +13145,7 @@ async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
 async function runMemoryBackfillForAllClients(env){
   if(!env.MEMORY_INDEX) return;
   try{
-    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)~or(ecom_enabled,eq,Yes)&limit=500&fields=Id,openrouter_key`);
     const d=await r.json().catch(()=>({}));
     for(const c of (d?.list||[])){
       if(!c.openrouter_key) continue;
@@ -15723,7 +15725,7 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       const activeProducts=await ecomListActiveProducts(env, clientId);
