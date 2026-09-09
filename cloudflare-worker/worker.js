@@ -10011,7 +10011,7 @@ export async function hcEnsureOperationsSchema(env){
 async function hcListActiveServices(env, clientId){
   await hcEnsureOperationsSchema(env);
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
-  return results||[];
+  return hcDedupeServices(results||[]);
 }
 function hcDedupeServices(services){
   const seen=new Set(), out=[];
@@ -10023,11 +10023,12 @@ function hcDedupeServices(services){
   return out;
 }
 export function hcServiceChoiceItems(services){
-  const seen=new Set(), items=[];
+  const seenNames=new Set(), seenLabels=new Set(), items=[];
   for(const s of services||[]){
     const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
-    if(!name||seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase()); items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
+    if(!name||seenNames.has(name.toLowerCase())||seenLabels.has(label.toLowerCase())) continue;
+    seenNames.add(name.toLowerCase()); seenLabels.add(label.toLowerCase());
+    items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
   }
   return items.slice(0,10);
 }
@@ -13565,7 +13566,9 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     return false;
   });
   if(hasCollision){
-    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    const seenFallback=new Set();
+    const uniqueRaw=raw.filter(it=>{const k=String(it.title||it.value||'').toLowerCase().normalize('NFC');if(seenFallback.has(k))return false;seenFallback.add(k);return true;});
+    const listText=uniqueRaw.map(it=>`- ${it.title||it.value}`).join('\n');
     const sent=await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
     return sent?null:false;
   }
@@ -15707,7 +15710,7 @@ async function handleEngineWebhook(request, env, secret){
           const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
           let greetBtns;
           if(depts&&depts.length){
-            greetBtns=[...depts.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            greetBtns=[...hcDedupeServices(depts).map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
           }else{
             greetBtns=isReturning
               ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
