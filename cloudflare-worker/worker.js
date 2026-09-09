@@ -23896,6 +23896,60 @@ async function hcRequireSessionClient(request, env){
   const c=await getClientById(env, payload.cid);
   return c?{payload,c}:null;
 }
+// ── Flowvyne plugin settings ──────────────────────────────────────────────
+// GET  /flowvyne/settings — returns whether Flowvyne is enabled for this client
+//                          and their published flows (fetched from Flowvyne via Service Binding)
+// POST /flowvyne/settings — { enabled: true|false } to enroll or remove the client
+// DELETE /flowvyne/contacts — reset all contacts' flow state (use after breaking flow changes)
+
+async function handleFlowvyneSettingsGet(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  if(!env.FLOWVYNE) return json({enabled:false, flows:[], unavailable:true});
+  try{
+    const [statusResp, flowsResp]=await Promise.all([
+      env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`)),
+      env.FLOWVYNE.fetch(new Request('https://flowvyne/api/flows', {headers:{'X-Tenant-Id':clientId}})),
+    ]);
+    const enabled=statusResp.ok && statusResp.status!==404;
+    const flows=flowsResp.ok?await flowsResp.json():[];
+    return json({enabled, flows});
+  }catch(e){
+    return json({enabled:false, flows:[], error:'Flowvyne unavailable'});
+  }
+}
+
+async function handleFlowvyneSettingsUpdate(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  if(!env.FLOWVYNE) return json({error:'Flowvyne binding not configured'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const enable=body.enabled===true||body.enabled==='true';
+  let fvResp;
+  if(enable){
+    fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/api/tenants',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tenant_id:clientId, note:String(body.note||'').slice(0,200)||undefined}),
+    }));
+  } else {
+    fvResp=await env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`,{method:'DELETE'}));
+  }
+  return json({ok:fvResp.ok, enabled:enable});
+}
+
+async function handleFlowvyneContactsReset(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  const {meta}=await env.DB.prepare(
+    'UPDATE flowvyne_conversation_state SET flow_current_node=NULL, flow_variables=\'{}\', updated_at=? WHERE client_id=?'
+  ).bind(new Date().toISOString(), Number(clientId)).run();
+  return json({ok:true, reset_count:meta.changes});
+}
+
 async function handleHcSettingsGet(request, env){
   const auth=await hcRequireSessionClient(request, env);
   if(!auth) return json({error:'Invalid or expired session'}, 401);
@@ -26689,6 +26743,10 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
+      // FLOWVYNE PLUGIN
+      else if(url.pathname==='/flowvyne/settings' && request.method==='GET'){ res=await handleFlowvyneSettingsGet(request,env); }
+      else if(url.pathname==='/flowvyne/settings' && request.method==='POST'){ res=await handleFlowvyneSettingsUpdate(request,env); }
+      else if(url.pathname==='/flowvyne/contacts' && request.method==='DELETE'){ res=await handleFlowvyneContactsReset(request,env); }
       // Marketing Studio has been retired. Keep the old paths explicitly closed so stale browser
       // tabs cannot submit render, image-generation or content-calendar work after deployment.
       else if(url.pathname.startsWith('/marketing/')){ res=json({error:'Marketing Studio has been removed.'}, 410); }
