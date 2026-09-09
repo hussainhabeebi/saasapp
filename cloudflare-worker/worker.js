@@ -16466,7 +16466,11 @@ async function handleEngineWebhook(request, env, secret){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
-      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
+      if(!reply||reply.trim()==='One moment 🙏'){
+        reply=isNewLead&&engineIsGreetingOnly(userText)
+          ?await engineLocalizeReply(env,c,`Hi! Welcome to ${c.client_name||'us'}! 😊 How can I help you today?`,replyLang)
+          :await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
+      }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
