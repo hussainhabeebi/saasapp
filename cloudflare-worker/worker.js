@@ -15477,11 +15477,13 @@ async function handleEngineWebhook(request, env, secret){
     // A saved Flow introduction is deterministic configuration, not AI content. Run it for
     // every greeting (including an existing/returning contact) before interruption/classifier
     // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
-    // Also fires for brand-new leads and leads returning after 4 h of silence — so the intro
-    // is shown whenever the conversation is effectively starting fresh, regardless of whether
-    // the opening message happens to be a formal greeting keyword.
+    // Also fires for brand-new leads and leads returning after 4 h of silence — but only when
+    // the opening message is a greeting keyword. When a new lead's first message is an actual
+    // question (e.g. "Where is the shop?"), the intro is skipped so the AI can answer the
+    // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
+    // new leads in that path.
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&engineIsGreetingOnly(userText)))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -15520,7 +15522,7 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&engineIsGreetingOnly(userText)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
