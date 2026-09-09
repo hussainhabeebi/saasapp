@@ -1138,28 +1138,31 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
     // Channel-specific lead visibility: leads from an assigned inbox are visible only to the
     // assigned user — not to other team members or even the account owner.
+    // Rule: show a lead if InboxId is blank/null (old/unassigned leads) OR
+    //       InboxId is NOT assigned to someone other than the current user.
     if(isLeadsList && requesterEmail && env.DB){
       try{
         await ensureInboxAssignmentsTable(env);
+        // Ensure InboxId column exists — a one-time migration for clients who had assignments
+        // created before this column was added to the leads table.
+        await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
         const asgns=await env.DB.prepare(
           `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
         ).bind(payload.cid).all();
         const allAssigned=asgns.results||[];
         if(allAssigned.length>0){
-          const myInboxIds=allAssigned
-            .filter(a=>a.assigned_email.toLowerCase()===requesterEmail)
+          // Inboxes assigned to users OTHER than the current requester
+          const othersInboxIds=allAssigned
+            .filter(a=>a.assigned_email.toLowerCase()!==requesterEmail)
             .map(a=>String(a.inbox_id));
-          let clause;
-          if(myInboxIds.length>0){
-            // Assigned user: show only leads from their channel(s)
-            clause='('+myInboxIds.map(id=>`(InboxId,eq,${id})`).join('~or')+')';
-          } else {
-            // Everyone else (including admin): hide leads from any exclusively-assigned inbox
-            const allIds=allAssigned.map(a=>String(a.inbox_id));
-            const notOthers=allIds.map(id=>`(InboxId,neq,${id})`).join('~and');
-            clause=`((InboxId,blank)~or(${notOthers}))`;
+          if(othersInboxIds.length>0){
+            // Hide other users' channel leads; show blank (old/unassigned) and own channel leads.
+            // Use ~and for "not in list"; wrap in parens only when multiple conditions need grouping.
+            const neqParts=othersInboxIds.map(id=>`(InboxId,neq,${id})`).join('~and');
+            const notOthers=othersInboxIds.length>1?`(${neqParts})`:neqParts;
+            const clause=`(InboxId,blank)~or${notOthers}`;
+            qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
           }
-          qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
         }
       }catch(e){}
     }
@@ -4638,6 +4641,7 @@ async function handleChannelsChatwootSso(request, env){
 
 async function ensureInboxAssignmentsTable(env){
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_inbox_assignments (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,assigned_email TEXT NOT NULL DEFAULT '',chatwoot_user_id INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
+  await env.DB.prepare(`ALTER TABLE channel_inbox_assignments ADD COLUMN bot_reply_disabled INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
 }
 
 // GET /channels/agents — list Chatwoot agents for this account (for the assignment picker)
@@ -4658,11 +4662,11 @@ async function handleChannelsInboxAssignmentsGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   await ensureInboxAssignmentsTable(env);
-  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
+  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
   return json({ok:true, assignments:rows.results||[]});
 }
 
-// PUT /channels/inbox-assignment — set or clear exclusive agent for a specific inbox
+// PUT /channels/inbox-assignment — set agent assignment and/or bot-reply toggle for a specific inbox
 async function handleChannelsInboxAssignmentPut(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -4671,23 +4675,35 @@ async function handleChannelsInboxAssignmentPut(request, env){
   const body=await request.json().catch(()=>({}));
   const inboxId=Number(body.inbox_id||0);
   if(!inboxId) return json({error:'inbox_id is required'}, 400);
-  const clear=body.clear===true||body.chatwoot_user_id===null;
   await ensureInboxAssignmentsTable(env);
   const now=new Date().toISOString();
+  const clear=body.clear===true||body.chatwoot_user_id===null;
   if(clear){
     await env.DB.prepare(`DELETE FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=?`).bind(payload.cid, inboxId).run();
-  } else {
-    const agentId=Number(body.chatwoot_user_id||0);
-    const email=String(body.assigned_email||'').trim().toLowerCase();
-    if(!email) return json({error:'assigned_email is required'}, 400);
-    await env.DB.prepare(`INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,updated_at=excluded.updated_at`).bind(payload.cid,inboxId,email,agentId,now,now).run();
-    // Ensure InboxId column exists on the leads table so channel-visibility filters work
-    await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
-    // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
-    if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
-      .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
+    return json({ok:true, inbox_id:inboxId, cleared:true});
   }
-  return json({ok:true, inbox_id:inboxId, cleared:clear});
+  // Pure bot-reply toggle (no agent change): just upsert the bot_reply_disabled flag
+  if('bot_reply_disabled' in body && !('assigned_email' in body)){
+    const disabled=body.bot_reply_disabled?1:0;
+    await env.DB.prepare(
+      `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,0,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
+    ).bind(payload.cid,inboxId,'',disabled,now,now).run();
+    return json({ok:true, inbox_id:inboxId, bot_reply_disabled:!!disabled});
+  }
+  // Agent assignment (may also include bot_reply_disabled)
+  const agentId=Number(body.chatwoot_user_id||0);
+  const email=String(body.assigned_email||'').trim().toLowerCase();
+  if(!email) return json({error:'assigned_email is required'}, 400);
+  const disabled='bot_reply_disabled' in body ? (body.bot_reply_disabled?1:0) : 0;
+  await env.DB.prepare(
+    `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
+  ).bind(payload.cid,inboxId,email,agentId,disabled,now,now).run();
+  // Ensure InboxId column exists on the leads table so channel-visibility filters work
+  await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
+  // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
+  if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
+    .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
+  return json({ok:true, inbox_id:inboxId, cleared:false});
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
@@ -15084,6 +15100,30 @@ async function handleEngineWebhook(request, env, secret){
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
+
+    // Per-inbox AI reply toggle — if this inbox is marked bot_reply_disabled in channel_inbox_assignments,
+    // still collect/upsert the lead (so the CRM stays current) but skip the AI reply entirely,
+    // same shape as the global bot_reply_disabled check in engineDeliverReply.
+    if(state.inboxId && env.DB){
+      try{
+        await ensureInboxAssignmentsTable(env);
+        const ibRow=await env.DB.prepare(
+          `SELECT bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND bot_reply_disabled=1`
+        ).bind(Number(clientId), Number(state.inboxId)).first();
+        if(ibRow){
+          // Collect lead then exit — no AI processing, no reply
+          const earlyMsgId=String(body.id||body.message?.id||'');
+          const isFirstMsg=!state.leadId;
+          if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+          const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
+            Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',InboxId:String(state.inboxId)};
+          if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+          await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+          await logEngineSkip(env, clientId, phone, convId, 'inbox-bot-disabled', `inbox ${state.inboxId} — AI reply off, lead collected`);
+          return json({ok:true, skipped:'inbox-bot-disabled', lead_collected:true});
+        }
+      }catch(e){}
+    }
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and

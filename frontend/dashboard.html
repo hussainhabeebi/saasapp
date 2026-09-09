@@ -11628,6 +11628,8 @@ async function chLoadAndRenderInboxList(list){
         (isWA?`<button class="save-btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="autoDetectMetaCreds(${ib.id},this)">${detected?'Re-detect credentials':'Detect credentials'}</button>`:'')+
         `<select style="flex:1;min-width:120px;font-size:12px;padding:6px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value)">`+
         `<option value="">— Unassigned —</option>${opts}</select>`+
+        `<label title="Toggle AI auto-reply for this channel" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;flex-shrink:0;color:var(--muted,#6b7280);white-space:nowrap">`+
+        `<input type="checkbox" ${!assignments[ib.id]?.bot_reply_disabled?'checked':''} onchange="chToggleBotReply(${ib.id},!this.checked)"> AI Reply</label>`+
       `</div>`+
     `</div>`;
   }).join('');
@@ -11641,6 +11643,12 @@ async function chSaveInboxAssignmentInline(inboxId, email){
       await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
     }
   }catch(e){alert('Failed to save assignment: '+e.message);await loadChannelsStatus();}
+}
+
+async function chToggleBotReply(inboxId, disabled){
+  try{
+    await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,bot_reply_disabled:disabled});
+  }catch(e){alert('Failed to update AI reply setting: '+e.message);}
 }
 
 async function chClearAssignment(inboxId){
