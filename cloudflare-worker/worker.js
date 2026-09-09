@@ -12284,7 +12284,15 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
   const kbText=engineSelectKb(c.kb_summary, intent, null);
-  if(kbText) sys+='\n\n## Knowledge Base\n'+kbText;
+  if(kbText){
+    sys+='\n\n## Knowledge Base\n'+kbText;
+    // Observed real failure (Cloudnine Beddings / home appliances): the KB contained product
+    // descriptions with prices that were different from the actual Ecom catalog. The AI was
+    // reading those KB prices instead of the verified Product Catalog prices. This disclaimer
+    // prevents that: for ecommerce clients, the KB is general context only — all product
+    // pricing and availability must come from the Product Catalog (VERIFIED ECOM PRODUCT DATA).
+    if(industry==='ecommerce') sys+='\n\nKB PRICING OVERRIDE: The Knowledge Base section above is for general business context and FAQs only. It is NOT an authoritative source for product names, prices, availability, or specifications. For all product facts — especially prices — use ONLY the Product Catalog in the VERIFIED ECOM PRODUCT DATA section below. If the KB mentions a price that differs from the Product Catalog, the Product Catalog price is the only correct one.';
+  }
   if(c.b2b_stock_json && c.b2b_stock_json.trim()){
     try{
       const stockRows=JSON.parse(c.b2b_stock_json);
