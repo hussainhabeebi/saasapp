@@ -9889,11 +9889,13 @@ async function hcFindBroadServiceMatches(env,clientId,message){
 async function hcFindDoctorMatches(env,clientId,message){
   const tokens=hcQueryTokens(message).filter(t=>t!=='dr'); if(!tokens.length)return [];
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  const seen=new Set();
   return (results||[]).map(doctor=>{
     const text=hcNormalizeText([doctor.name,doctor.specialization,doctor.qualification,doctor.description].join(' '));
     const hits=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text));
     return {doctor,score:hits.length/tokens.length};
-  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor);
+  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor)
+    .filter(d=>{ const k=d.name.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true; });
 }
 async function hcFindDepartmentMatches(env,clientId,message){
   const tokens=hcQueryTokens(message); if(!tokens.length)return [];
@@ -15489,7 +15491,7 @@ async function handleEngineWebhook(request, env, secret){
           const sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
           // Build service profile; include doctors offering this service for guidance
           let svcText=hcVerifiedServiceText(service,userText);
-          const {results:svcDocs}=await env.DB.prepare(`SELECT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+          const {results:svcDocs}=await env.DB.prepare(`SELECT DISTINCT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
           if(svcDocs&&svcDocs.length){
             const docNames=svcDocs.map(d=>d.name+(d.specialization?' ('+d.specialization+')':'')).join(', ');
             svcText+=`\n\nAvailable with: ${docNames}`;
@@ -15534,7 +15536,8 @@ async function handleEngineWebhook(request, env, secret){
               ?await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE id=? AND client_id=?`).bind(Number(doctor.department_id),Number(clientId)).first().catch(()=>null)
               :null;
             const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active'${deptMatch?' AND department_id=?':''} ORDER BY name LIMIT 20`).bind(...[Number(clientId),...(deptMatch?[Number(deptMatch.id)]:[])]).all().catch(()=>({results:[]}));
-            const showList=(allDocs&&allDocs.length>1)?allDocs:[doctor];
+            const allDocsUniq=[...new Map((allDocs||[]).map(d=>[d.name.toLowerCase(),d])).values()];
+            const showList=(allDocsUniq.length>1)?allDocsUniq:[doctor];
             const prompt=deptMatch?`Here are our ${deptMatch.name} doctors:`:'Please choose the doctor you are interested in:';
             sentText=await engineLocalizeReply(env,c,prompt,replyLang);
             routing.reply=sentText;
@@ -15544,7 +15547,7 @@ async function handleEngineWebhook(request, env, secret){
             // Explicit name selection → show full profile + services this doctor provides
             let profileText=hcVerifiedDoctorText(doctor,userText);
             // List services this doctor offers, so patient knows what to book
-            const {results:drSvcs}=await env.DB.prepare(`SELECT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
+            const {results:drSvcs}=await env.DB.prepare(`SELECT DISTINCT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
             if(drSvcs&&drSvcs.length){
               profileText+=`\n\nServices offered: ${drSvcs.map(s=>s.name).join(', ')}`;
             }
@@ -15574,11 +15577,12 @@ async function handleEngineWebhook(request, env, secret){
           const deptName=departmentMatches[0].name;
           // Prefer showing doctors (patient can then choose and see their profile)
           const {results:deptDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id IN (${ids.map(()=>'?').join(',')}) ORDER BY name LIMIT 10`).bind(Number(clientId),...ids).all().catch(()=>({results:[]}));
-          if(deptDocs&&deptDocs.length){
+          const deptDocsUniq=[...new Map((deptDocs||[]).map(d=>[d.name.toLowerCase(),d])).values()];
+          if(deptDocsUniq.length){
             sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} doctors:`,replyLang);
             routing.reply=sentText;
             // Doctor buttons: name as value so tapping triggers the name-selection profile flow
-            const docBtns=[...deptDocs.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            const docBtns=[...deptDocsUniq.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
             routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docBtns);
             orderHandledInline=true;
           }else{
@@ -16900,7 +16904,7 @@ async function handleApptPublicServices(request, env){
     const doctorId=Number(url.searchParams.get('doctor_id')||0);
     let svcs;
     if(doctorId){
-      const linked=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
+      const linked=await env.DB.prepare(`SELECT DISTINCT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
       svcs=linked.results||[];
       if(!svcs.length){
         // Fall back to department-based filtering using the doctor's department_id
@@ -16914,7 +16918,8 @@ async function handleApptPublicServices(request, env){
     }else{
       svcs=await hcListActiveServices(env, c.Id);
     }
-    return json({list:svcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
+    const uniqueSvcs=[...new Map(svcs.map(s=>[s.name.toLowerCase(),s])).values()];
+    return json({list:uniqueSvcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
   }
   const servicesTable=apptResolveTable(c, 'services');
   if(!servicesTable) return json({list:[]});
@@ -16934,7 +16939,7 @@ async function handleApptPublicDoctors(request, env){
   let rows;
   if(serviceId){
     // Prefer doctors linked to the selected service; fall back to all active doctors
-    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
+    const linked=await env.DB.prepare(`SELECT DISTINCT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
     rows=linked.results||[];
     if(!rows.length){
       // Fall back to department-based filtering using the service's department_id
@@ -16952,7 +16957,8 @@ async function handleApptPublicDoctors(request, env){
     const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
     rows=all.results||[];
   }
-  return json({list:rows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
+  const uniqueRows=[...new Map(rows.map(d=>[d.name.toLowerCase(),d])).values()];
+  return json({list:uniqueRows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
 }
 
 // The one write path this whole public surface has — always creates a `requested` row (never
