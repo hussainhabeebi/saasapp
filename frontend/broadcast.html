@@ -721,23 +721,31 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <div class="card">
       <div class="card-title">💪 Follow-up Engine</div>
       <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the 25-hour/3-day/7-day re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot). For ecommerce clients, a session-step message automatically gets a real low-stock line appended (e.g. "Only 3 left in…") whenever the lead's last-shown product is genuinely running low — never a fabricated countdown.</div>
-
       <div style="font-weight:700;font-size:14px;margin:14px 0 8px">📱 Before 24 Hours — Session Messages</div>
       <div id="fuLadderSession"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 25 Hours — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 25 Hours — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">Sent via WhatsApp Cloud API using a pre-approved template. WhatsApp requires a template once the 24-hour session window closes.</div>
       <div id="fuLadderStep3"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 3 Days — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 3 Days — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">A second re-engagement attempt 3 days after the last customer reply.</div>
       <div id="fuLadderStep4"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 7 Days — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 7 Days — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">Final re-engagement attempt 7 days after the last customer reply.</div>
       <div id="fuLadderStep5"></div>
+    </div>
 
-      <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
-        <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
-        <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
-      </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+      <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
+      <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
     </div>
     <div class="card">
       <div class="card-title">📊 Step Performance</div>
@@ -2995,14 +3003,12 @@ function fuLadderTemplateSelectHtml(step, variantSuffix, selectedName){
 }
 function renderFollowupLadderTemplateStep(step, containerId){
   const s=fuLadderStepById(step);
-  $id(containerId).innerHTML=`<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
-    ${fuLadderTemplates.length
-      ? `<div class="form-field"><label>Template (Variant A)</label>${fuLadderTemplateSelectHtml(step,'',s.template_name)}</div>
-         <div class="msg info" style="margin-top:6px;margin-bottom:10px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>
-         <div class="form-field"><label>Variant B (optional) — leave as "none" to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label>${fuLadderTemplateSelectHtml(step,'_b',s.template_name_b)}</div>
-         <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info_b')}">${s.template_name_b?`This template's body has ${s.template_body_vars_b||0} variable(s) — each is filled with the customer's name.`:'Optional — pick a template above to test against Variant A.'}</div>`
-      : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`}
-  </div>`;
+  $id(containerId).innerHTML=fuLadderTemplates.length
+    ? `<div class="form-field"><label>Template (Variant A)</label>${fuLadderTemplateSelectHtml(step,'',s.template_name)}</div>
+       <div class="msg info" style="margin-top:6px;margin-bottom:10px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>
+       <div class="form-field"><label>Variant B (optional) — leave as "none" to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label>${fuLadderTemplateSelectHtml(step,'_b',s.template_name_b)}</div>
+       <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info_b')}">${s.template_name_b?`This template's body has ${s.template_body_vars_b||0} variable(s) — each is filled with the customer's name.`:'Optional — pick a template above to test against Variant A.'}</div>`
+    : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`;
 }
 function fuLadderOnTemplateChange(step, variantSuffix){
   const sel=$id(fuLadderFieldId(step,'template'+variantSuffix));
