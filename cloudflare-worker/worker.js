@@ -78,7 +78,7 @@ const PLAN_GATED_MODULES = {
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
 // passthrough that saves every other Settings field. See handleNocodbPassthrough.
-const PLAN_MANAGED_FIELDS = ['plan_tier'];
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled'];
 // Returns null for an empty/unset/unrecognized tier — callers treat null as "unlimited", which is
 // what makes every pre-existing client (and any typo'd/future tier name) fail open, not closed.
 function getPlanLimits(planTier){
@@ -2485,6 +2485,7 @@ async function handleAiBusinessChat(request, env){
   if(!question) return json({error:'question required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
+  if(c.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'}, 403);
   if(!env.GEMINI_API_KEY&&!c.openrouter_key) return json({error:'No AI provider configured.'}, 503);
 
   // Daily limit tracking per user email in D1
@@ -25800,6 +25801,8 @@ async function handleChatTokensDelete(request, env){
 async function handleInternalChatHistory(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Unauthorized'},401);
+  const _hc=await getClientById(env, String(Number(payload.cid)));
+  if(!_hc||_hc.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
   const rows=await env.DB.prepare(
     'SELECT role,content,created_at FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 40'
   ).bind(Number(payload.cid)).all().catch(()=>({results:[]}));
@@ -25817,6 +25820,7 @@ async function handleInternalChatMessage(request, env){
   const cid=Number(payload.cid);
   const c=await getClientById(env, String(cid));
   if(!c) return json({error:'Client not found'},404);
+  if(c.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
   const now=new Date().toISOString();
   const today=now.slice(0,10);
 
@@ -25999,6 +26003,8 @@ ${snapshot}`;
 async function handleInternalChatClear(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Unauthorized'},401);
+  const _cc=await getClientById(env, String(Number(payload.cid)));
+  if(!_cc||_cc.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
   await env.DB.prepare('DELETE FROM internal_chat WHERE client_id=?').bind(Number(payload.cid)).run().catch(()=>{});
   return json({ok:true});
 }
