@@ -16466,6 +16466,7 @@ async function handleEngineWebhook(request, env, secret){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -16559,6 +16560,7 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
