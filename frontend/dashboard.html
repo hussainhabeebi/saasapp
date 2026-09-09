@@ -255,6 +255,25 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .recovery-chip-stage{display:inline-block;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700;font-family:var(--disp);margin-bottom:6px;background:#EDE9FE;color:#5B21B6}
 .glabel{color:rgba(255,255,255,.45);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:-6px;font-family:var(--disp)}
 /* Chats tab styles moved to frontend/chats.css (linked in <head> above). */
+/* ── SKELETON LOADERS ── */
+@keyframes sk-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.sk{background:linear-gradient(90deg,var(--line) 25%,var(--bg) 50%,var(--line) 75%);background-size:200% 100%;animation:sk-shimmer 1.4s infinite;border-radius:8px}
+.sk-row{height:42px;margin-bottom:9px}.sk-row:last-child{margin-bottom:0}
+.sk-row-sm{height:30px;margin-bottom:8px}.sk-row-sm:last-child{margin-bottom:0}
+.sk-bar{height:120px;border-radius:10px}
+/* ── HOME MOBILE FIXES ── */
+@media(max-width:700px){
+  .home-hero{padding:20px 18px}
+  .home-hero-inner{flex-direction:column;align-items:flex-start;gap:12px}
+  .home-greeting{font-size:22px}
+  .home-actions{width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .home-actions::-webkit-scrollbar{display:none}
+  .hact-btn{flex-shrink:0}
+  .home-ai-row{padding:10px 18px 14px}
+  .home-body{padding:16px 14px}
+  .biz-briefing-items{gap:14px}
+  .biz-bi{min-width:130px}
+}
 
 /* ── APP SHELL ── */
 #app{position:fixed;inset:0;display:none;flex-direction:column}
@@ -1215,7 +1234,7 @@ const ROLES = {
         <div class="home-hero-inner">
           <div>
             <div class="home-greeting" id="homeGreeting">Good morning</div>
-            <div class="home-sub" id="homeSubLine">Loading your workspace…</div>
+            <div class="home-sub" id="homeSubLine"></div>
             <div class="home-trust-row" id="homeTrustRow"></div>
           </div>
           <div class="home-actions">
@@ -1285,7 +1304,7 @@ const ROLES = {
               <div class="section-title">🕐 Recent Activity
                 <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">View all →</button>
               </div>
-              <div id="activityFeed"><div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Loading…</div></div>
+              <div id="activityFeed"><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row" style="margin-bottom:0"></div></div>
             </div>
 
             <!-- Leads Over Time Chart -->
@@ -1302,7 +1321,7 @@ const ROLES = {
             <!-- Pipeline Funnel -->
             <div class="section-card" id="homeFunnelCard">
               <div class="section-title">📊 Pipeline Funnel</div>
-              <div id="funnelChart"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
+              <div id="funnelChart"><div class="sk sk-bar"></div></div>
             </div>
           </div>
 
@@ -1313,19 +1332,19 @@ const ROLES = {
               <div class="section-title">⏰ Follow-ups Due
                 <button class="btn-ghost" onclick="navigate('leads')" style="font-size:12px;font-weight:500">All →</button>
               </div>
-              <div id="homeFollowUps"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+              <div id="homeFollowUps"><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div></div>
             </div>
 
             <!-- Hot Moments -->
             <div class="section-card" id="homeHotLeadsCard">
               <div class="section-title">🔥 Hot Moments</div>
-              <div id="homeHotLeads"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+              <div id="homeHotLeads"><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div></div>
             </div>
 
             <!-- Agent Leaderboard -->
             <div class="section-card" id="homeAgentCard">
               <div class="section-title">🏆 Agent Leaderboard</div>
-              <div id="homeAgents"><div style="color:var(--muted);font-size:13px;padding:8px 0">Loading…</div></div>
+              <div id="homeAgents"><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div><div class="sk sk-row-sm"></div></div>
             </div>
 
             <!-- Real Estate Snapshot — only shown when the module is enabled (see
