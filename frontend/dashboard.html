@@ -296,6 +296,21 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
 #pageAgency:not(.hidden){display:flex;flex-direction:column}
+/* Settings sidebar layout */
+.s-page{overflow:hidden;padding-bottom:0}
+.s-page:not(.hidden){display:flex;flex-direction:column}
+@media(min-width:768px){.s-page:not(.hidden){flex-direction:row}}
+.s-nav{display:flex;flex-direction:row;overflow-x:auto;gap:2px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.s-nav::-webkit-scrollbar{display:none}
+@media(min-width:768px){.s-nav{flex-direction:column;width:176px;min-width:176px;border-bottom:none;border-right:1px solid var(--line);padding:16px 8px;gap:2px;overflow-x:visible;overflow-y:auto}}
+.s-content{flex:1;min-width:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
+@media(min-width:768px){.s-content{padding-bottom:28px}}
+.ssnav-btn{display:flex;align-items:center;gap:8px;padding:7px 10px;border:none;background:none;cursor:pointer;border-radius:7px;font-size:13px;font-weight:500;color:var(--muted);text-align:left;white-space:nowrap;transition:background .15s,color .15s;flex-shrink:0}
+.ssnav-btn:hover{background:var(--accent-soft);color:var(--accent-ink)}
+.ssnav-btn.active{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.ssnav-icon{font-size:14px;line-height:1;flex-shrink:0}
+.ssnav-label{overflow:hidden;text-overflow:ellipsis}
+@media(min-width:768px){.ssnav-btn{width:100%;padding:9px 12px}}
 .page-pad{padding:16px}
 /* Was capped at max-width:1200px, centered — left large empty margins on every desktop page
    except Home (1800px) and Agency (which had its own max-width:none override), even though
@@ -2023,21 +2038,18 @@ const ROLES = {
     </div>
 
     <!-- SETTINGS -->
-    <div class="page hidden" id="pageSettings">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV (Settings / Channels / Billing) -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageSettings">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
 
         <!-- BUSINESS SETUP — Industry, shown first: it drives labels/theme/terminology throughout
              the CRM and which module auto-enables, so a new client should set it before anything
@@ -2439,20 +2451,18 @@ const ROLES = {
     </div>
 
     <!-- CHANNELS -->
-    <div class="page hidden" id="pageChannels">
-      <div class="page-pad">
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageChannels">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
         <div class="card-title" style="margin-bottom:14px">🔌 Channels</div>
 
         <!-- STEP 1: Chatwoot account -->
@@ -2602,20 +2612,18 @@ const ROLES = {
 
     <!-- INTEGRATIONS (Bulk Marketing module: WhatsApp/Meta status, Resend email, Google Sheets,
          and the automated health check for all of the above) -->
-    <div class="page hidden" id="pageIntegrations">
-      <div class="page-pad">
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageIntegrations">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
         <div class="card-title" style="margin-bottom:14px">🧩 Integrations</div>
 
         <!-- WhatsApp (Meta) — read-only summary, connect flow stays in Channels -->
@@ -2970,21 +2978,18 @@ const ROLES = {
          reply toggle was one card buried inside Integrations, with no home for the follow-up
          option at all — a dedicated sub-page makes both settings the one obvious place a client
          looks for "does this account talk back with a voice, and when." -->
-    <div class="page hidden" id="pageVoice">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV (Settings / Channels / Integrations / Voice) -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageVoice">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
 
         <!-- Voice-to-voice is automatic for inbound voice notes. Sarvam is the only live provider;
@@ -3047,21 +3052,18 @@ const ROLES = {
          Accounting — existing general-purpose tabs every client already has, just individually
          hideable now; defaults to shown, see setupFeatureTabToggle's own comment for why that
          default direction is the opposite of the Industry Modules below). -->
-    <div class="page hidden" id="pageModules">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageModules">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
 
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3214,21 +3216,18 @@ const ROLES = {
     </div>
 
     <!-- USER MANAGEMENT -->
-    <div class="page hidden" id="pageUsermanagement">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageUsermanagement">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
 
         <!-- id="userMgmtCard2" mirrors the pulse-highlight target used to be userMgmtCard on the
              General page (see renderOnboardingChecklist/highlightCard) — that pointer now lands
@@ -3279,21 +3278,18 @@ const ROLES = {
          GET /engine/logs (engine_event_log, D1); successful-turn rows are the existing
          ENGINE_ANALYTICS_TABLE data the Reports → WhatsApp tab already reads — merged server-side
          into one timeline so this needed no second data source of its own. -->
-    <div class="page hidden" id="pageLogs">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageLogs">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
         <div class="card-title" style="margin-bottom:14px">🪵 Conversation Logs</div>
         <div class="s-note" style="margin-bottom:14px">Every WhatsApp turn the bot handled or stayed silent on, most recent first — including the exact reason whenever it didn't reply (rate-limited, duplicate delivery, handed over to a human, etc). Filter by phone number to see one conversation's full history.</div>
 
@@ -3311,59 +3307,21 @@ const ROLES = {
       </div>
     </div>
 
-    <!-- CHAT PAGE TOKENS -->
-    <div class="page hidden" id="pageChatpage">
-      <div class="page-pad">
-        <!-- SETTINGS SUB-NAV -->
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
-        <div class="card-title" style="margin-bottom:6px">💬 Chat Page</div>
-        <div class="s-note" style="margin-bottom:14px">Share <strong>chat.leadvyne.com?t=TOKEN</strong> with any customer — they land on a branded chat page powered by your bot. Each token is a separate shareable link. Revoke one anytime without affecting others.</div>
 
-        <!-- Create new token -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">New Chat Link</div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-              <input type="text" class="form-input" id="chatpageLabelInput" placeholder="Label (e.g. Main Website, Dubai Office)" style="max-width:280px">
-              <button class="save-btn" id="chatpageCreateBtn" onclick="chatpageCreateToken()">Generate Link</button>
-              <span class="save-msg" id="chatpageCreateMsg"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Token list -->
-        <div class="card">
-          <div id="chatpageTokenList"><div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Loading…</div></div>
-        </div>
-      </div>
-    </div>
 
     <!-- BILLING -->
-    <div class="page hidden" id="pageBilling">
-      <div class="page-pad">
-        <div class="card" style="margin-bottom:14px;padding:10px 14px">
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="save-btn settings-subnav-btn" data-subpage="settings" onclick="navigate('settings')">⚙️ General</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="channels" onclick="navigate('channels')">🔌 Channels</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="integrations" onclick="navigate('integrations')">🧩 Integrations</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="voice" onclick="navigate('voice')">🎙️ Voice</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="modules" onclick="navigate('modules')">🧩 Modules</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')">👥 User Management</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="logs" onclick="navigate('logs')">🪵 Logs</button>
-            <button class="save-btn settings-subnav-btn" data-subpage="chatpage" onclick="navigate('chatpage')">💬 Chat Page</button>
-          </div>
-        </div>
+    <div class="page s-page hidden" id="pageBilling">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+      </nav>
+      <div class="page-pad s-content">
+
         <div class="card-title" style="margin-bottom:14px">💳 Billing</div>
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
@@ -4841,7 +4799,7 @@ function toggleDarkMode(){
 initDarkMode();
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','chatpage']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
@@ -4850,8 +4808,8 @@ const HUMANDEALS_GROUP=['humandeals','quotation'];
 const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','billing'];
 
 function renderSettingsSubnav(active){
-  document.querySelectorAll('.settings-subnav-btn').forEach(b=>{
-    b.style.opacity=b.dataset.subpage===active?'1':'.55';
+  document.querySelectorAll('.ssnav-btn').forEach(b=>{
+    b.classList.toggle('active',b.dataset.subpage===active);
   });
 }
 
@@ -4904,7 +4862,6 @@ function navigate(page){
   if(page==='modules') populateModulesPage();
   if(page==='usermanagement') populateUserManagementPage();
   if(page==='logs') logsInit();
-  if(page==='chatpage') renderChatPage();
   if(page==='bizai') bizaiInit();
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
@@ -11095,7 +11052,7 @@ async function saveField(btnId,msgId,fields){
 }
 
 /* greeting introduction */
-let _flowIntro={enabled:true,text:’’,media_type:’none’,media_url:’’,buttons:[]};
+let _flowIntro={enabled:true,text:'',media_type:'none',media_url:'',buttons:[]};
 const INTRO_ACTION_OPTIONS=[
   ['INTRO_SERVICES','View services'],
   ['INTRO_BOOK','Book appointment'],
@@ -11740,65 +11697,6 @@ async function bizaiClear(){
   await fetch(`${CONFIG.WORKER_BASE}/internal-chat/history`,{method:'DELETE',headers:ncAuthHeaders()}).catch(()=>{});
   _bizaiLoaded=false;
   bizaiInit();
-}
-
-// ── Chat Page token management ──
-const CHAT_BASE='https://chat.leadvyne.com';
-async function renderChatPage(){
-  const el=$id('chatpageTokenList');
-  if(!el) return;
-  el.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">Loading…</div>';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{headers:ncAuthHeaders()});
-    const d=await r.json().catch(()=>({}));
-    const tokens=d.tokens||[];
-    if(!tokens.length){
-      el.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted);font-size:13px">No chat links yet — generate one above.</div>';
-      return;
-    }
-    el.innerHTML=tokens.map(t=>{
-      const link=`${CHAT_BASE}?t=${t.token}`;
-      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:13px;margin-bottom:2px">${t.label||'<em>Unlabelled</em>'}</div>
-          <div style="font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${link}</div>
-        </div>
-        <button class="save-btn" onclick="chatpageCopyLink('${link}',this)" style="flex-shrink:0">Copy Link</button>
-        <button class="save-btn" onclick="window.open('${link}','_blank')" style="flex-shrink:0">Preview</button>
-        <button class="save-btn" onclick="chatpageDeleteToken('${t.token}')" style="flex-shrink:0;opacity:.7">Revoke</button>
-      </div>`;
-    }).join('');
-  }catch(e){el.innerHTML='<div style="color:var(--danger);padding:16px;font-size:13px">Failed to load: '+e.message+'</div>';}
-}
-
-async function chatpageCreateToken(){
-  const btn=$id('chatpageCreateBtn'), msg=$id('chatpageCreateMsg');
-  const label=($id('chatpageLabelInput')?.value||'').trim();
-  btn.disabled=true; msg.textContent='Creating…'; msg.className='save-msg';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({label})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
-    msg.textContent='✓ Created!'; msg.className='save-msg';
-    if($id('chatpageLabelInput')) $id('chatpageLabelInput').value='';
-    await renderChatPage();
-  }catch(e){msg.textContent='Error: '+e.message; msg.className='save-msg err';}
-  finally{btn.disabled=false; setTimeout(()=>{msg.textContent=''; msg.className='save-msg';},4000);}
-}
-
-async function chatpageDeleteToken(token){
-  if(!confirm('Revoke this chat link? Anyone with the link will lose access.')) return;
-  try{
-    await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'DELETE',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({token})});
-    renderChatPage();
-  }catch(e){alert('Failed to revoke: '+e.message);}
-}
-
-function chatpageCopyLink(link, btn){
-  navigator.clipboard.writeText(link).then(()=>{
-    const orig=btn.textContent; btn.textContent='Copied!';
-    setTimeout(()=>{btn.textContent=orig;},2000);
-  }).catch(()=>prompt('Copy this link:',link));
 }
 
 async function logsInit(){
