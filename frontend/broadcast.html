@@ -2979,6 +2979,10 @@ function renderFollowupLadderSession(){
     return `<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px;margin-bottom:12px">
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
         <div class="form-field" style="width:140px"><label>Step ${step} — hours of silence</label><input type="number" min="1" max="23" id="${fuLadderFieldId(step,'hours')}" value="${esc(s.hours||(step===1?1:6))}"></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;padding-bottom:4px">
+          <input type="checkbox" id="${fuLadderFieldId(step,'ai_mode')}" style="width:auto;cursor:pointer" ${s.ai_mode?'checked':''}>
+          🤖 AI generates message (uses your text below as fallback)
+        </label>
       </div>
       <div class="form-field"><label>Message (Variant A) — use {name} for the customer's name</label><textarea id="${fuLadderFieldId(step,'message')}" rows="3">${esc(s.message||'')}</textarea></div>
       <div class="form-field"><label>Variant B (optional) — leave blank to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label><textarea id="${fuLadderFieldId(step,'message_b')}" rows="3" placeholder="Optional second wording to test against Variant A">${esc(s.message_b||'')}</textarea></div>
@@ -3147,6 +3151,7 @@ async function saveFollowupEngine(){
     hours:parseInt($id(fuLadderFieldId(step,'hours')).value)||(step===1?1:6),
     message:$id(fuLadderFieldId(step,'message')).value.trim(),
     message_b:$id(fuLadderFieldId(step,'message_b')).value.trim(),
+    ai_mode:!!$id(fuLadderFieldId(step,'ai_mode'))?.checked,
   }));
   [3,4,5].forEach(step=>{
     const s=fuLadderStepById(step);
