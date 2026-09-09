@@ -18111,7 +18111,13 @@ async function ensureEcomEnabledColumn(){
   try{
     const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
     const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes('ecom_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ecom_enabled',title:'ecom_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    if(!cols.includes('ecom_enabled')){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ecom_enabled',title:'ecom_enabled',uidt:'SingleLineText'}).catch(()=>{});
+      // NocoDB schema-cache lag: a freshly created column can silently no-op writes for several
+      // seconds even after the POST succeeds — same root cause as hospitality/healthcare/real-estate
+      // columns. Wait here so patchClient's first attempt lands after the cache clears.
+      await new Promise(r=>setTimeout(r,3000));
+    }
   }catch(e){}
 }
 
