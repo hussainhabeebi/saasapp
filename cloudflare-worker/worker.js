@@ -23947,17 +23947,25 @@ async function handleFlowvyneSettingsUpdate(request, env){
   if(!env.FLOWVYNE) return json({error:'Flowvyne binding not configured'}, 503);
   const body=await request.json().catch(()=>({}));
   const enable=body.enabled===true||body.enabled==='true';
-  let fvResp;
-  if(enable){
-    fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/api/tenants',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({tenant_id:clientId, note:String(body.note||'').slice(0,200)||undefined}),
-    }));
-  } else {
-    fvResp=await env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`,{method:'DELETE'}));
+  try{
+    let fvResp;
+    if(enable){
+      fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/api/tenants',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({tenant_id:clientId, note:String(body.note||'').slice(0,200)||undefined}),
+      }));
+    } else {
+      fvResp=await env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`,{method:'DELETE'}));
+    }
+    if(!fvResp.ok){
+      const errText=await fvResp.text().catch(()=>'');
+      return json({ok:false, error:`Flowvyne API error ${fvResp.status}: ${errText.slice(0,200)}`});
+    }
+    return json({ok:true, enabled:enable});
+  }catch(e){
+    return json({ok:false, error:`Flowvyne unreachable: ${String(e).slice(0,200)}`});
   }
-  return json({ok:fvResp.ok, enabled:enable});
 }
 
 async function handleFlowvyneContactsReset(request, env){
