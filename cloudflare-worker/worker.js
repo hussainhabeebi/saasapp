@@ -15160,6 +15160,54 @@ async function handleEngineWebhook(request, env, secret){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+
+    // ── Flowvyne scripted flows ──────────────────────────────────────────────
+    // Runs before AI classification. Flowvyne's own tenant allowlist decides
+    // per-client enrollment; it returns handled:false for non-enrolled clients
+    // so this block is always safe to attempt whenever the binding is present.
+    if(env.FLOWVYNE && mediaType==='text'){
+      try{
+        const fvRow=await env.DB.prepare(
+          'SELECT flow_current_node,flow_variables FROM flowvyne_conversation_state WHERE client_id=? AND phone=?'
+        ).bind(Number(clientId),phone||'').first().catch(()=>null);
+        const recentHistory=(state.activeHistory||[]).slice(-6).map(h=>({role:h.role==='assistant'?'assistant':'user',text:String(h.content||h.text||'').slice(0,500)}));
+        const fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/handle',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            tenant_id:clientId,
+            contact_id:phone||convId,
+            message_text:userText||text||'',
+            current_node:fvRow?.flow_current_node||null,
+            variables:fvRow?.flow_variables?JSON.parse(fvRow.flow_variables):{},
+            recent_history:recentHistory,
+          }),
+        }));
+        if(fvResp.ok){
+          const fvResult=await fvResp.json();
+          if(fvResult.handled){
+            // Persist updated flow state so next message resumes the right node.
+            await env.DB.prepare(
+              'INSERT OR REPLACE INTO flowvyne_conversation_state (client_id,phone,flow_current_node,flow_variables,updated_at) VALUES (?,?,?,?,?)'
+            ).bind(Number(clientId),phone||'',fvResult.next_node||null,JSON.stringify(fvResult.variables||{}),new Date().toISOString()).run().catch(()=>{});
+            if(fvResult.reply_text){
+              const fvButtons=(fvResult.reply_buttons||[]).map(b=>({title:String(b.label||b.title||'').slice(0,24),value:String(b.value||b.label||'')}));
+              if(fvButtons.length){
+                await engineSendChatwootQuickReply(env,c,clientId,convId,fvResult.reply_text,fvButtons);
+              } else {
+                await engineDeliverReply(env,c,clientId,convId,fvResult.reply_text,{mediaType:'text',langCode:c.language||'en'});
+              }
+            }
+            return json({ok:true,route:'flowvyne',kind:fvResult.kind||'reply'});
+          }
+        }
+      }catch(fvErr){
+        console.error('Flowvyne error:',String(fvErr));
+        // Fall through to existing AI path.
+      }
+    }
+    // ── End Flowvyne ─────────────────────────────────────────────────────────
+
     // HC service/doctor booking button taps carry internal values like HC_BOOK_SERVICE:<id>.
     // Restore human-readable names before any classifier runs so AI gets natural context.
     const hcSvcTap=/^HC_BOOK_SERVICE:(\d+)$/i.exec(userText);

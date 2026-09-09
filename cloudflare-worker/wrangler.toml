@@ -202,3 +202,10 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 binding = "AI"
 # Secrets are configured in Cloudflare dashboard / wrangler secret put.
 # POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
+
+# Flowvyne — visual flow builder plugin for scripted WhatsApp conversations.
+# Deployed as a separate Worker under the same Cloudflare account.
+# One-time setup: wrangler deploy in the flowvyne repo, then redeploy this Worker.
+[[services]]
+binding = "FLOWVYNE"
+service  = "flowvyne"
