@@ -12595,6 +12595,19 @@ export function engineResolveIndustryFlowTurn(c,state,userText){
     // rather than looping back to the same stage.
     if(!nextStage||nextStage===currentStage) return null;
   }else{
+    // When ai_mode is 'off', block AI entirely — re-present the current stage instead of deferring.
+    if(config.ai_mode==='off'){
+      const stayMsg=flow.messages?.['msg_'+currentStage]||config.message||config.retry_message||'';
+      const stayButtons=engineBuildIndustryFlowButtons(flow,currentStage);
+      const stayMemory=memory||{flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:currentStage,previous_stage:null,variables,stage_history:[],interruption_count:0,last_options:stayButtons};
+      return {
+        route:'industry_flow',next:currentStage,preserveCrmStage:true,
+        reply:engineFlowInterpolate(stayMsg,variables,c),
+        quickReplies:stayButtons,mediaUrl:String(config.media_url||'').trim(),
+        qualAnswers:engineFlowQualAnswers(state,stayMemory),intent:'FLOW_STAY',intentData:{},
+        sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
+      };
+    }
     // No button match and not a free-text capture stage — let AI answer.
     return null;
   }
