@@ -14530,23 +14530,13 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
   // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
   engineSendChatwootTyping(env, c, convId, false);
-  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
-  // above, this is the ONLY choke point gated by this flag: classification, routing, lead
-  // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
-  // handleEngineWebhook all still run normally. Only the actual outbound WhatsApp message (text,
-  // image caption, or voice) stops going out — for a client who wants their own bot (e.g. a
-  // custom n8n workflow wired to the same Chatwoot inbox) to own the reply, while this CRM keeps
-  // tracking leads/stages/analytics off the same conversation exactly as if the built-in bot were
-  // still replying.
-  // Real observed gap: with this on, nothing below ever sends — but the caller's turn still
-  // finishes normally and engineLogAnalytics (handleEngineWebhook) still logs "✓ Replied" in
-  // Settings → Logs, since that log is written unconditionally at end-of-turn regardless of
-  // whether a reply actually went out (see engineSendChatwootReply's own comment for the same gap
-  // on the failure side). A business owner checking Settings → Logs for "why didn't my customer
-  // get a reply" would see "Replied" and have no way to know this toggle is why. Logging it
-  // explicitly here — distinct from a genuine send failure — closes that.
+  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — the primary gate for
+  // this flag is now the early-exit in handleEngineWebhook (WhatsApp) and the inboxReason check
+  // (Instagram), which both short-circuit before any AI classification or LLM call so no tokens
+  // are consumed. This check here is a safety net for any call-site that bypasses those paths
+  // (e.g. follow-up flows, intro turns) and still reaches engineDeliverReply directly.
   if(c.bot_reply_disabled==='Yes'){
-    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply computed but not sent');
+    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply not sent');
     return false;
   }
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
@@ -15259,9 +15249,25 @@ async function handleEngineWebhook(request, env, secret){
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
 
+    // Global bot-reply toggle (CLIENTS.bot_reply_disabled='Yes', Settings → Bot Auto-Reply).
+    // Exit before any AI classification or LLM call so no tokens are consumed — collect/upsert
+    // the lead so the CRM stays current, then return. Mirrors the per-inbox check below.
+    if(c.bot_reply_disabled==='Yes'){
+      const earlyMsgId=String(body.id||body.message?.id||'');
+      const isFirstMsg=!state.leadId;
+      if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+      const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
+        Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',
+        ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
+      if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+      await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+      await logEngineSkip(env, clientId, phone, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off — lead collected, no AI reply');
+      return json({ok:true, skipped:'bot-reply-disabled', lead_collected:true});
+    }
+
     // Per-inbox AI reply toggle — if this inbox is marked bot_reply_disabled in channel_inbox_assignments,
     // still collect/upsert the lead (so the CRM stays current) but skip the AI reply entirely,
-    // same shape as the global bot_reply_disabled check in engineDeliverReply.
+    // same shape as the global bot_reply_disabled check above.
     if(state.inboxId && env.DB){
       try{
         await ensureInboxAssignmentsTable(env);
