@@ -1135,6 +1135,34 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
         qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
       }
     }
+
+    // Channel-specific lead visibility: leads from an assigned inbox are visible only to the
+    // assigned user — not to other team members or even the account owner.
+    if(isLeadsList && requesterEmail && env.DB){
+      try{
+        await ensureInboxAssignmentsTable(env);
+        const asgns=await env.DB.prepare(
+          `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
+        ).bind(payload.cid).all();
+        const allAssigned=asgns.results||[];
+        if(allAssigned.length>0){
+          const myInboxIds=allAssigned
+            .filter(a=>a.assigned_email.toLowerCase()===requesterEmail)
+            .map(a=>String(a.inbox_id));
+          let clause;
+          if(myInboxIds.length>0){
+            // Assigned user: show only leads from their channel(s)
+            clause='('+myInboxIds.map(id=>`(InboxId,eq,${id})`).join('~or')+')';
+          } else {
+            // Everyone else (including admin): hide leads from any exclusively-assigned inbox
+            const allIds=allAssigned.map(a=>String(a.inbox_id));
+            const notOthers=allIds.map(id=>`(InboxId,neq,${id})`).join('~and');
+            clause=`((InboxId,blank)~or(${notOthers}))`;
+          }
+          qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
+        }
+      }catch(e){}
+    }
   }
 
   const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
@@ -4653,6 +4681,8 @@ async function handleChannelsInboxAssignmentPut(request, env){
     const email=String(body.assigned_email||'').trim().toLowerCase();
     if(!email) return json({error:'assigned_email is required'}, 400);
     await env.DB.prepare(`INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,updated_at=excluded.updated_at`).bind(payload.cid,inboxId,email,agentId,now,now).run();
+    // Ensure InboxId column exists on the leads table so channel-visibility filters work
+    await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
     // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
     if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
       .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
@@ -14641,6 +14671,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(),
     Channel:state.channel||'whatsapp'
   };
+  if(state.inboxId) body.InboxId=String(state.inboxId);
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -16362,6 +16393,7 @@ async function handleEngineWebhook(request, env, secret){
     // message, never since the bot's reply to it, while still correctly throttling genuine
     // rapid-fire customer typing (which is what this limiter is actually for).
     await ensureLeadsColumns(env, ['LastCustomerMsgAt']).catch(()=>{});
+    if(leadBody.InboxId) await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
     leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
