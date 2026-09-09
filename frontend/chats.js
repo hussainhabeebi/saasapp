@@ -35,6 +35,9 @@ function openChatsTab(){
     token:String(sessionToken||'')
   });
   window.open('chats.html?'+qs.toString(),'_blank');
+  // Return dashboard to home so the stub "#pageChats" (Loading contacts…) isn't
+  // left visible when the user presses "← Dashboard" back in the chats window.
+  if(typeof navigate==='function') navigate('home');
 }
 
 // Kept as lightweight compatibility hooks for the dashboard's existing live-notification handler.
