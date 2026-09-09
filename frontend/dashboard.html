@@ -2941,7 +2941,7 @@ const ROLES = {
               </div>
               <div id="flowvyneFlowsList" style="font-size:13px;color:var(--muted);margin-bottom:10px"></div>
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <a href="https://flowvyne.leadvyne.workers.dev" target="_blank" class="save-btn">🔀 Open Flow Builder</a>
+                <a id="flowvyneBuilderLink" href="https://flowvyne.leadvyne.workers.dev" target="_blank" class="save-btn">🔀 Open Flow Builder</a>
                 <button class="save-btn" style="background:var(--muted)" onclick="flowvyneResetContacts()">Reset Contact States</button>
                 <span class="save-msg" id="flowvyneResetMsg"></span>
               </div>
@@ -11759,6 +11759,8 @@ async function flowvyneInit(){
     badge.textContent=d.enabled?'Enabled':'Disabled';
     badge.style.background=d.enabled?'#d1fae5':'#fee2e2';
     badge.style.color=d.enabled?'#065f46':'#991b1b';
+    const builderLink=$id('flowvyneBuilderLink');
+    if(builderLink&&clientId) builderLink.href=`https://flowvyne.leadvyne.workers.dev?tenant=${encodeURIComponent(clientId)}`;
     const flowsList=$id('flowvyneFlowsList');
     if(d.flows&&d.flows.length){
       flowsList.innerHTML='<b>Published flows:</b> '+d.flows.map(f=>`<span style="background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:2px 8px;margin:2px;display:inline-block">${f.name||f.id}</span>`).join('');
