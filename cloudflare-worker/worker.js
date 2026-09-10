@@ -11793,20 +11793,18 @@ export function engineRouteFlow(c, state, userText, cls){
   else if(!qualDone && qualStage!==null) route='qualify_next';
   else route=industryFaqRoute;
 
-  if(sentiment==='Frustrated' && route!=='human' && c.handover_enabled!=='No'){
+  // Require at least one genuine frustration signal in the text before escalating on
+  // Frustrated sentiment — guards against the LLM mislabelling terse product queries
+  // ("stock details pls", "more info?") as Frustrated and sending an unwanted handover.
+  const FRUSTRATED_SIGNAL=/\b(frustrated|annoyed|angry|upset|ridiculous|useless|pathetic|terrible|awful|horrible|not working|doesn't work|waste|cheated|scam|disappointed|fed up|sick of|unacceptable|worst|rubbish|nonsense|stupid)\b|!{2,}|\?{3,}|[A-Z]{4,}/;
+  if(sentiment==='Frustrated' && FRUSTRATED_SIGNAL.test(userText) && route!=='human' && c.handover_enabled!=='No'){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   }
-  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
-  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
-  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
-  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
-  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
-  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
-  // product/order signal can still override it.
-  // Explicit "more info" requests are never routed to human on low-confidence sentiment alone —
-  // a customer asking for information should always get an answer from the business prompt.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false && !/\b(more info|more information|tell me more|get more info|know more|more details|learn more|give me info|give me more|want more info|need more info)\b/.test(lowText)){
+  // Proactive escalation for Negative sentiment + low classifier confidence. Changed to genuine
+  // opt-in (===true) — the comment always described it as opt-in but the original code used
+  // !==false which is opt-OUT, causing false positives on all ambiguous/terse queries.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled===true){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
@@ -12915,30 +12913,40 @@ function engineFillIntroTokens(text,c,knownName){
     .trim();
 }
 async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName,force=false){
-  if((!force&&!engineIsGreetingOnly(userText))||!engineIndustryFlowEnabled(c)) return null;
+  if(!force&&!engineIsGreetingOnly(userText)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
   if(intro.enabled===false) return null;
   const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
-  if(!stageIds.length) return null;
-  const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
-  const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
-  let text=engineFillIntroTokens(intro.text,c,knownName);
-  if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
-  if(!text){
-    const question=firstStageMessage||'How can we help you today?';
-    text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+  const hasStages=engineIndustryFlowEnabled(c)&&stageIds.length>0;
+  const introText=String(intro.text||'').trim();
+  if(hasStages){
+    // Full industry-flow path: attach flow memory and advance into the first stage
+    const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
+    const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
+    let text=engineFillIntroTokens(introText,c,knownName);
+    if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
+    if(!text){
+      const question=firstStageMessage||'How can we help you today?';
+      text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+    }
+    const botConfig=engineParseJsonField(c.bot_config,{});
+    const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
+    const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
+    const firstConfig=engineFlowStageConfig(flow,firstStage);
+    const memory={
+      flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
+      status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
+      stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
+    };
+    return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
   }
-  const botConfig=engineParseJsonField(c.bot_config,{});
-  const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
-  const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
-  const firstConfig=engineFlowStageConfig(flow,firstStage);
-  const memory={
-    flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
-    status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
-    stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
-  };
-  return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
+  // Plain intro (no flow stages): send the configured greeting + buttons; normal routing resumes next turn
+  if(!introText) return null;
+  const botConfigPlain=engineParseJsonField(c.bot_config,{});
+  const text=engineFillIntroTokens(introText,c,knownName);
+  const buttons=botConfigPlain.quick_reply_buttons_enabled===false?[]:engineNormalizeIntroButtons(intro.buttons,c);
+  return {route:'intro',text,next:state.stage||'new',preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim(),qualAnswers:state.qualAnswers||{}};
 }
 
 async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
