@@ -15535,6 +15535,21 @@ async function handleEngineWebhook(request, env, secret){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
       return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
     }
+    // New lead, no published flow: every first message — whether a greeting, a generic "more info"
+    // opener, or any other first turn — should receive the business-prompt intro rather than going
+    // through the full classification/routing/LLM pipeline (which can mis-route to human handover
+    // or fail and fall back to the handover message). engineBuildFirstTouchIntro builds this once
+    // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
+    // If the LLM call inside it fails, it returns the plain question which is still better than
+    // "I'll connect you with our team shortly." on a first contact.
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text'){
+      const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
+      if(_noFlowIntro && _noFlowIntro.trim()){
+        const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType);
+        return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
