@@ -15594,7 +15594,14 @@ async function handleEngineWebhook(request, env, secret){
     if(routing.route==='human' && routing.humanReason!=='explicit' && !routing.isOptOut && !routing.isResub && (ecomIsGeneralBusinessInfoQuery(userText)||isNewLead)){
       const _ind=c.industry||'general';
       routing.route=_ind==='ecommerce'?'ecom_faq':(_ind==='travel'?'travel_faq':(_ind==='saas_digital_marketing'?'saas_faq':'faq'));
+      if(ecomIsGeneralBusinessInfoQuery(userText)) routing.businessInfoOnly=true;
       routing.reply=null;
+    }
+    // Also catch general business-info queries that arrive directly as QUESTION intent (not via
+    // human-route redirect above) — Meta ad CTAs land as QUESTION from the regex guard, but the
+    // FAQ LLM still needs the businessInfoOnly instruction or it returns a vague/empty reply.
+    if(!routing.businessInfoOnly && ecomIsGeneralBusinessInfoQuery(userText) && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && !(routing.route==='human' && routing.humanReason==='explicit')){
+      routing.businessInfoOnly=true;
     }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
@@ -16512,7 +16519,7 @@ async function handleEngineWebhook(request, env, secret){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
-      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,c.handover_enabled==='No'?(botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?"):(botConfig.callback_msg||"I'll connect you with our team shortly."),replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -16606,7 +16613,7 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,c.handover_enabled==='No'?(botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?"):(botConfig.callback_msg||"I'll connect you with our team shortly."),replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
