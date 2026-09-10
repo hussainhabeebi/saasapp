@@ -10011,7 +10011,7 @@ export async function hcEnsureOperationsSchema(env){
 async function hcListActiveServices(env, clientId){
   await hcEnsureOperationsSchema(env);
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
-  return results||[];
+  return hcDedupeServices(results||[]);
 }
 function hcDedupeServices(services){
   const seen=new Set(), out=[];
@@ -10023,11 +10023,12 @@ function hcDedupeServices(services){
   return out;
 }
 export function hcServiceChoiceItems(services){
-  const seen=new Set(), items=[];
+  const seenNames=new Set(), seenLabels=new Set(), items=[];
   for(const s of services||[]){
     const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
-    if(!name||seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase()); items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
+    if(!name||seenNames.has(name.toLowerCase())||seenLabels.has(label.toLowerCase())) continue;
+    seenNames.add(name.toLowerCase()); seenLabels.add(label.toLowerCase());
+    items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
   }
   return items.slice(0,10);
 }
@@ -11601,6 +11602,10 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   let intent=null, intentData={};
 
   if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  // "can i get more info", "tell me more", "more details" etc. are explicit information requests —
+  // force QUESTION so they always route to the FAQ path and get answered from the business prompt,
+  // regardless of how the AI classifies sentiment or confidence on an ambiguous short message.
+  if(!intent && /\b(more info|more information|tell me more|get more info|know more|more details|learn more|give me info|give me more|want more info|need more info)\b/.test(low)){ intent='QUESTION'; intentData={question:userText}; }
   if(!intent){
     const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
     if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
@@ -13580,7 +13585,9 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     return false;
   });
   if(hasCollision){
-    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    const seenFallback=new Set();
+    const uniqueRaw=raw.filter(it=>{const k=String(it.title||it.value||'').toLowerCase().normalize('NFC');if(seenFallback.has(k))return false;seenFallback.add(k);return true;});
+    const listText=uniqueRaw.map(it=>`- ${it.title||it.value}`).join('\n');
     const sent=await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
     return sent?null:false;
   }
@@ -15489,11 +15496,13 @@ async function handleEngineWebhook(request, env, secret){
     // A saved Flow introduction is deterministic configuration, not AI content. Run it for
     // every greeting (including an existing/returning contact) before interruption/classifier
     // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
-    // Also fires for brand-new leads and leads returning after 4 h of silence — so the intro
-    // is shown whenever the conversation is effectively starting fresh, regardless of whether
-    // the opening message happens to be a formal greeting keyword.
+    // Also fires for brand-new leads and leads returning after 4 h of silence — but only when
+    // the opening message is a greeting keyword. When a new lead's first message is an actual
+    // question (e.g. "Where is the shop?"), the intro is skipped so the AI can answer the
+    // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
+    // new leads in that path.
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&engineIsGreetingOnly(userText)))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -15532,12 +15541,27 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&engineIsGreetingOnly(userText)
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
       return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
+    }
+    // New lead, no published flow: every first message — whether a greeting, a generic "more info"
+    // opener, or any other first turn — should receive the business-prompt intro rather than going
+    // through the full classification/routing/LLM pipeline (which can mis-route to human handover
+    // or fail and fall back to the handover message). engineBuildFirstTouchIntro builds this once
+    // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
+    // If the LLM call inside it fails, it returns the plain question which is still better than
+    // "I'll connect you with our team shortly." on a first contact.
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text'){
+      const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
+      if(_noFlowIntro && _noFlowIntro.trim()){
+        const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType);
+        return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
+      }
     }
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
@@ -15558,6 +15582,18 @@ async function handleEngineWebhook(request, env, secret){
     // prevents generic flow/qualification copy from replacing the merchant's actual prompt.
     if(c.industry==='ecommerce' && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
       routing.route='ecom_faq';
+      routing.reply=null;
+    }
+    // All industries: a generic business-information opener ("can i get more info on this",
+    // "tell me about your company" etc.) must always be answered from the configured business
+    // prompt — the same pattern the ecommerce businessInfoOnly check above handles. Click-to-
+    // WhatsApp ads prefill exactly this kind of opener and it is not ecommerce-specific.
+    // Also: a brand-new lead's very first message should never reach human handover via heuristics
+    // alone (isFinalStage on an empty history, low-confidence sentiment, anti-loop) — only an
+    // explicit WANTS_HUMAN intent or a genuinely Frustrated-sentiment turn is a real signal.
+    if(routing.route==='human' && routing.humanReason!=='explicit' && !routing.isOptOut && !routing.isResub && (ecomIsGeneralBusinessInfoQuery(userText)||isNewLead)){
+      const _ind=c.industry||'general';
+      routing.route=_ind==='ecommerce'?'ecom_faq':(_ind==='travel'?'travel_faq':(_ind==='saas_digital_marketing'?'saas_faq':'faq'));
       routing.reply=null;
     }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
@@ -15722,7 +15758,7 @@ async function handleEngineWebhook(request, env, secret){
           const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
           let greetBtns;
           if(depts&&depts.length){
-            greetBtns=[...depts.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            greetBtns=[...hcDedupeServices(depts).map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
           }else{
             greetBtns=isReturning
               ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
@@ -16476,6 +16512,7 @@ async function handleEngineWebhook(request, env, secret){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -16569,6 +16606,7 @@ async function handleEngineWebhook(request, env, secret){
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,botConfig.callback_msg||"I'll connect you with our team shortly.",replyLang);
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
