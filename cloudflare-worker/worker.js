@@ -12908,30 +12908,40 @@ function engineFillIntroTokens(text,c,knownName){
     .trim();
 }
 async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName,force=false){
-  if((!force&&!engineIsGreetingOnly(userText))||!engineIndustryFlowEnabled(c)) return null;
+  if(!force&&!engineIsGreetingOnly(userText)) return null;
   const flow=engineParseJsonField(c.flow_json,{});
   const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
   if(intro.enabled===false) return null;
   const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
-  if(!stageIds.length) return null;
-  const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
-  const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
-  let text=engineFillIntroTokens(intro.text,c,knownName);
-  if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
-  if(!text){
-    const question=firstStageMessage||'How can we help you today?';
-    text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+  const hasStages=engineIndustryFlowEnabled(c)&&stageIds.length>0;
+  const introText=String(intro.text||'').trim();
+  if(hasStages){
+    // Full industry-flow path: attach flow memory and advance into the first stage
+    const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
+    const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
+    let text=engineFillIntroTokens(introText,c,knownName);
+    if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
+    if(!text){
+      const question=firstStageMessage||'How can we help you today?';
+      text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+    }
+    const botConfig=engineParseJsonField(c.bot_config,{});
+    const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
+    const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
+    const firstConfig=engineFlowStageConfig(flow,firstStage);
+    const memory={
+      flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
+      status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
+      stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
+    };
+    return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
   }
-  const botConfig=engineParseJsonField(c.bot_config,{});
-  const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
-  const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
-  const firstConfig=engineFlowStageConfig(flow,firstStage);
-  const memory={
-    flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
-    status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
-    stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
-  };
-  return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
+  // Plain intro (no flow stages): send the configured greeting + buttons; normal routing resumes next turn
+  if(!introText) return null;
+  const botConfigPlain=engineParseJsonField(c.bot_config,{});
+  const text=engineFillIntroTokens(introText,c,knownName);
+  const buttons=botConfigPlain.quick_reply_buttons_enabled===false?[]:engineNormalizeIntroButtons(intro.buttons,c);
+  return {route:'intro',text,next:state.stage||'new',preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim(),qualAnswers:state.qualAnswers||{}};
 }
 
 async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
