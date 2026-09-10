@@ -15502,7 +15502,7 @@ async function handleEngineWebhook(request, env, secret){
     // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
     // new leads in that path.
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&engineIsGreetingOnly(userText)))
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&(engineIsGreetingOnly(userText)||ecomIsGeneralBusinessInfoQuery(userText))))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -15541,7 +15541,7 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&engineIsGreetingOnly(userText)
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&(engineIsGreetingOnly(userText)||ecomIsGeneralBusinessInfoQuery(userText))
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
