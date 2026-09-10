@@ -11610,6 +11610,11 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
     const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
     if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
   }
+  // Explicit information-request phrases are always QUESTION regardless of AI classification.
+  // Guards against the LLM misreading "Can I get more info on this?" as WANTS_HUMAN.
+  if(!intent && /\b(more info(?:rmation)?|more detail|tell me more|know more|what is|what are|how does|how do|how much|how to|can (?:i|you) (?:get|see|have|know)|please (?:explain|clarify)|explain (?:this|that|it)|what about|tell me about)\b/.test(low)){
+    intent='QUESTION'; intentData={question:userText};
+  }
   if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
     intent=aiResult.intent;
     if(intent==='BOOKING') intentData={booking_time:userText};
