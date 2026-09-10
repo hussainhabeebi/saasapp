@@ -11712,7 +11712,9 @@ export function engineRouteFlow(c, state, userText, cls){
   // whose last 3 bot messages are all a prior handover confirmation must NOT re-trigger this, or
   // it can never leave that state again regardless of Stage/Handover being reset elsewhere.
   const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]);
-  if(isRealLoop && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+  // Anti-loop: only escalate to human when handover is actually enabled — otherwise route to FAQ
+  // so the bot keeps trying to answer rather than promising a human that never comes.
+  if(isRealLoop && botConfig.antiloop_enabled!==false && c.handover_enabled!=='No') effIntent='WANTS_HUMAN';
 
   const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
   const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
@@ -12554,7 +12556,7 @@ BUTTONS — mandatory after EVERY reply:
   // no handover of any kind had actually happened. That's a trust problem independent of whatever
   // data gap caused it: never imply a human is already engaged unless one genuinely is (this route
   // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
-  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
+  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. Never offer to "connect" or "transfer" the customer to a team, agent, or person in this reply — that decision is made by the system, not by you. If you cannot answer a question from the data above, say plainly that you do not have that specific information and ask the customer for more details so you can help them better.';
 
   // Observed real failure #1: a customer's plain "Hi" got a long, salesy paragraph back — a full
   // "welcome to the store, what are you looking for, let me know your size and color" pitch nobody
@@ -15502,7 +15504,7 @@ async function handleEngineWebhook(request, env, secret){
     // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
     // new leads in that path.
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&(engineIsGreetingOnly(userText)||ecomIsGeneralBusinessInfoQuery(userText))))
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -15541,7 +15543,7 @@ async function handleEngineWebhook(request, env, secret){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&(engineIsGreetingOnly(userText)||ecomIsGeneralBusinessInfoQuery(userText))
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
