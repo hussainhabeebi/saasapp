@@ -11602,6 +11602,10 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   let intent=null, intentData={};
 
   if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  // "can i get more info", "tell me more", "more details" etc. are explicit information requests —
+  // force QUESTION so they always route to the FAQ path and get answered from the business prompt,
+  // regardless of how the AI classifies sentiment or confidence on an ambiguous short message.
+  if(!intent && /\b(more info|more information|tell me more|get more info|know more|more details|learn more|give me info|give me more|want more info|need more info)\b/.test(low)){ intent='QUESTION'; intentData={question:userText}; }
   if(!intent){
     const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
     if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
@@ -11795,7 +11799,9 @@ export function engineRouteFlow(c, state, userText, cls){
   // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
   // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
   // product/order signal can still override it.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false){
+  // Explicit "more info" requests are never routed to human on low-confidence sentiment alone —
+  // a customer asking for information should always get an answer from the business prompt.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false && !/\b(more info|more information|tell me more|get more info|know more|more details|learn more|give me info|give me more|want more info|need more info)\b/.test(lowText)){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
