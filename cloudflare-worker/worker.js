@@ -15556,6 +15556,18 @@ async function handleEngineWebhook(request, env, secret){
       routing.route='ecom_faq';
       routing.reply=null;
     }
+    // All industries: a generic business-information opener ("can i get more info on this",
+    // "tell me about your company" etc.) must always be answered from the configured business
+    // prompt — the same pattern the ecommerce businessInfoOnly check above handles. Click-to-
+    // WhatsApp ads prefill exactly this kind of opener and it is not ecommerce-specific.
+    // Also: a brand-new lead's very first message should never reach human handover via heuristics
+    // alone (isFinalStage on an empty history, low-confidence sentiment, anti-loop) — only an
+    // explicit WANTS_HUMAN intent or a genuinely Frustrated-sentiment turn is a real signal.
+    if(routing.route==='human' && routing.humanReason!=='explicit' && !routing.isOptOut && !routing.isResub && (ecomIsGeneralBusinessInfoQuery(userText)||isNewLead)){
+      const _ind=c.industry||'general';
+      routing.route=_ind==='ecommerce'?'ecom_faq':(_ind==='travel'?'travel_faq':(_ind==='saas_digital_marketing'?'saas_faq':'faq'));
+      routing.reply=null;
+    }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
     // by the time that happens, an unknown number of OTHER customers may have hit the same stuck
