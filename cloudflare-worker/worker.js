@@ -11788,18 +11788,18 @@ export function engineRouteFlow(c, state, userText, cls){
   else if(!qualDone && qualStage!==null) route='qualify_next';
   else route=industryFaqRoute;
 
-  if(sentiment==='Frustrated' && route!=='human' && c.handover_enabled!=='No'){
+  // Require at least one genuine frustration signal in the text before escalating on
+  // Frustrated sentiment — guards against the LLM mislabelling terse product queries
+  // ("stock details pls", "more info?") as Frustrated and sending an unwanted handover.
+  const FRUSTRATED_SIGNAL=/\b(frustrated|annoyed|angry|upset|ridiculous|useless|pathetic|terrible|awful|horrible|not working|doesn't work|waste|cheated|scam|disappointed|fed up|sick of|unacceptable|worst|rubbish|nonsense|stupid)\b|!{2,}|\?{3,}|[A-Z]{4,}/;
+  if(sentiment==='Frustrated' && FRUSTRATED_SIGNAL.test(userText) && route!=='human' && c.handover_enabled!=='No'){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   }
-  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
-  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
-  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
-  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
-  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
-  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
-  // product/order signal can still override it.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false){
+  // Proactive escalation for Negative sentiment + low classifier confidence. Changed to genuine
+  // opt-in (===true) — the comment always described it as opt-in but the original code used
+  // !==false which is opt-OUT, causing false positives on all ambiguous/terse queries.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled===true){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
