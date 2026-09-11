@@ -14005,13 +14005,9 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     const bcp47=ENGINE_TTS_LANG_MAP[iso];
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
-    if(audio){ provider='piper'; }
-    if(!audio){
-      // requestTimeoutMs=0 → no AbortController → VITS model runs until the Worker's I/O limit.
-      audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
-      if(audio) provider='ai4bharat';
-    }
+    // requestTimeoutMs=0 → no AbortController → VITS model runs until the Worker's I/O limit.
+    audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+    if(audio) provider='ai4bharat';
     if(!audio && bcp47){
       const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
       if(credential){
