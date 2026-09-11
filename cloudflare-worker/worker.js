@@ -11825,6 +11825,21 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
     route='objection';
   }
 
+  // Initial-phase rule: the bot must handle the first 5 conversation turns through its own
+  // configured prompt and industry module (FAQ, travel_faq, ecom_faq, etc.) before any automatic
+  // human handoff is allowed. Counts assistant turns already in history — a lead with 0-4 bot
+  // replies still hasn't had a meaningful engagement, so non-explicit handoff routes (final-stage
+  // heuristic, low-confidence escalation, frustrated sentiment) are overridden back to the
+  // industry FAQ route. Only a genuine, explicit customer request (WANTS_HUMAN intent, which sets
+  // humanReason='explicit') bypasses this — if someone says "connect me to a human" on turn 1,
+  // that signal is always honored regardless of where the conversation stands.
+  const botTurnCount=(state.history||[]).filter(m=>m.role==='assistant').length;
+  if(botTurnCount<5 && route==='human' && humanReason!=='explicit'){
+    route=industryFaqRoute;
+    humanReason=null;
+    reply='';
+  }
+
   let qualAnswers={...state.qualAnswers};
   let qualNextOptions=[];
   if(route==='qualify_next'){

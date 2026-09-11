@@ -413,7 +413,25 @@ through.
 final stage, which was observed triggering the `human-requested` Chatwoot label and pulling a
 human agent into the conversation prematurely.
 **Tested:** `worker.test.js` → `engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff`
-(three cases: text affirmative still hands off, voice note does not, explicit WANTS_HUMAN from voice still hands off).
+(three cases: text affirmative after 5 turns still hands off, voice note does not, explicit WANTS_HUMAN from voice still hands off).
+
+### 23 — [backend] Initial phase of conversation must be handled by bot prompt/industry module
+**Area:** `engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** The bot was automatically routing to human too early — final-stage-positive heuristic,
+low-confidence escalation, or frustrated-sentiment detection could all trigger human handoff in
+the very first few exchanges, before the bot had a chance to engage the customer through its
+configured prompt and industry module (travel_faq, ecom_faq, faq, etc.).
+**Fix:** After all routing decisions are resolved, a final guard checks `botTurnCount` — the number
+of assistant turns already in `state.history`. If fewer than 5, any non-explicit human route is
+overridden back to the industry FAQ route. Only `humanReason='explicit'` (a genuine
+`WANTS_HUMAN` intent from the customer) bypasses this gate — customers who explicitly ask for a
+human are always connected regardless of where the conversation stands. After 5 bot turns, all
+handoff paths proceed as before.
+**Don't revert:** Removing this guard restores premature automatic handoffs during the initial
+phase of every conversation, bypassing the configured bot prompt and industry knowledge base
+before the customer has even been engaged properly.
+**Tested:** `worker.test.js` → `engineRouteFlow — initial phase (< 5 bot turns) handled by industry module`
+(four cases: 0 turns → FAQ, 4 turns → FAQ, 5 turns → human allowed, explicit WANTS_HUMAN on turn 1 → human).
 
 ---
 
