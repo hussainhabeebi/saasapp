@@ -12404,6 +12404,11 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
+  // Inject Google Maps URL so the LLM can share the actual link when a customer asks for
+  // directions or the shop location — without this, it knows the address text but has no URL.
+  if(c.google_maps_url && c.google_maps_url.trim()){
+    sys+=`\n\n## Location\nGoogle Maps: ${c.google_maps_url.trim()}`;
+  }
   const services=engineParseJsonField(c.services, []);
   const defaultCurrency=industry==='ecommerce'?'INR':'AED';
   const defaultUnit=industry==='ecommerce'?'item':'person';
@@ -12897,6 +12902,7 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   }
   const services=engineParseJsonField(c.services, []);
   let sys=String(c.main_prompt||'').slice(0,5000);
+  if(c.google_maps_url && c.google_maps_url.trim()) sys+=`\n\n## Location\nGoogle Maps: ${c.google_maps_url.trim()}`;
   if(services.length) sys+='\n\n## Services\n'+services.slice(0,12).map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
   sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;

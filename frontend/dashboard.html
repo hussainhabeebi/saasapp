@@ -2767,6 +2767,21 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- Google Maps URL — injected into the FAQ system prompt so the bot can share
+             the actual link when a customer asks for directions or the shop location. -->
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📍 Google Maps Link</div>
+            <div class="s-note">Paste your Google Maps share link here. The bot will send it when customers ask for your location or directions.</div>
+            <label class="form-label">Google Maps URL</label>
+            <input class="form-input" id="cfgGoogleMapsUrl" type="url" placeholder="e.g. https://maps.app.goo.gl/xxxx" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveGoogleMapsUrl">Save</button>
+              <span class="save-msg" id="saveGoogleMapsUrlMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Public Booking Page (book.html) — the manual, always-available counterpart to Cal.com
              sync and the AI auto-send: a plain link customers can use to submit a booking request
              themselves (name, phone, service, preferred date/time), landing as a `requested` row
@@ -9957,6 +9972,8 @@ function populateSettings(){
   $id('cfgPolicyCancellation').value=_pol.cancellation;
   // order link
   $id('cfgExternalStoreLink').value=clientRecord.external_store_link||'';
+  // google maps url
+  $id('cfgGoogleMapsUrl').value=clientRecord.google_maps_url||'';
   if(isBookingIndustry()){
     $id('orderLinkHead').textContent='🔗 Booking Link';
     $id('orderLinkNote').textContent="Where customers actually book — Calendly, Cal.com, your own scheduling page. It's what gets shared whenever a rep or the bot pushes a booking link (Push to Order, Trust Signals, order-intent automation), and what /leads/booking-link sends when it detects booking intent.";
@@ -10309,6 +10326,10 @@ $id('cfgKbText').addEventListener('input',kbUpdateCount);
 
 $id('saveExternalStoreLink').addEventListener('click',async()=>{
   await saveField('saveExternalStoreLink','saveExternalStoreLinkMsg',{external_store_link:$id('cfgExternalStoreLink').value.trim()});
+});
+
+$id('saveGoogleMapsUrl').addEventListener('click',async()=>{
+  await saveField('saveGoogleMapsUrl','saveGoogleMapsUrlMsg',{google_maps_url:$id('cfgGoogleMapsUrl').value.trim()});
 });
 
 $id('saveCalcomSecret').addEventListener('click',async()=>{
