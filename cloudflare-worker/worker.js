@@ -12901,9 +12901,17 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
   sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
   const out=await engineCallLlm(env, c, sys, '(new conversation)', 120);
-  const resolved=out && out.trim() && out!=='One moment 🙏' ? out.trim() : firstQuestion;
+  // When the LLM fails, build a minimal intro from the business name so the customer sees
+  // "Welcome to [Name]! How can I help you today?" instead of a bare unanswered question.
+  const _bizName=String(c.client_name||'').trim();
+  const _llmFallback=_bizName?`Welcome to ${_bizName}! ${firstQuestion}`:firstQuestion;
+  const resolved=out && out.trim() && out!=='One moment 🙏' ? out.trim() : _llmFallback;
   if(cache&&resolved){
-    try{ await cache.put(cacheKey,resolved,{expirationTtl:2592000}); }catch(e){}
+    // Only cache LLM-generated replies — the name-based fallback should not be cached
+    // because it would persist even after the LLM recovers and could serve stale copy.
+    if(out && out.trim() && out!=='One moment 🙏'){
+      try{ await cache.put(cacheKey,resolved,{expirationTtl:2592000}); }catch(e){}
+    }
   }
   return resolved;
 }
