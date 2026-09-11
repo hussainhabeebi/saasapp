@@ -9515,6 +9515,14 @@ export function ecomIsGeneralBusinessInfoQuery(text){
   return /^(?:(?:hi|hello|hey)[,! .-]*)?(?:(?:can|could|may) i (?:get|have) (?:some )?more (?:info|information)(?: (?:on|about))? (?:this|your business|your company|your store)?|tell me (?:more )?about (?:your business|your company|your store|what you do)|what (?:does your (?:business|company) do|do you do)|(?:business|company|store) (?:info|information|details))[?!. ]*$/i.test(normalized);
 }
 
+// Detects messages asking about the physical location, address, or directions to the business.
+// Used to decide whether to follow a bot reply with a Google Maps CTA button.
+function isLocationDirectionsQuery(text){
+  const t=String(text||'').toLowerCase().replace(/['']/g,"'").replace(/\s+/g,' ').trim();
+  if(!t) return false;
+  return /\b(location|address|directions?|how (?:do i|can i|to) (?:get|find|reach|visit|come)|where (?:are you|is (?:your|the) (?:shop|store|office|branch|place|location|showroom))|find (?:you|your (?:shop|store|office|location))|visit you|come to (?:you|your)|google map|gmaps|maps? link|navigate|gps|way to (?:your|the)|near(?:by|est)|your (?:shop|store|office|showroom|branch) (?:address|location))\b/i.test(t);
+}
+
 // The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
 // generated reply, not the customer's message), find whether it confidently names exactly one
 // catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
@@ -12158,6 +12166,26 @@ async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inbox
     }catch(e){await reportOpsError(env,'Travel checkout CTA send failed',e,{clientId,convId});}
   }
   return engineSendChatwootReply(env,c,clientId,convId,`Book now: ${url}`);
+}
+// Sends the client's Google Maps URL as a tappable "Get Directions" CTA button after any reply
+// that answers a location/directions question. Tries the WhatsApp Cloud API cta_url interactive
+// type first (requires wa_phone_id + wa_token); falls back to a plain URL message via Chatwoot
+// (WhatsApp still renders bare URLs as tappable links with a preview card).
+async function engineSendGoogleMapsButton(env,c,clientId,convId,phone,inboxId){
+  const mapsUrl=String(c.google_maps_url||'').trim();
+  if(!mapsUrl) return;
+  const destination=String(phone||'').replace(/\D/g,'');
+  const creds=resolveMetaCredentials(c,{inbox_id:inboxId});
+  if(creds?.wa_phone_id&&creds?.wa_token&&destination){
+    try{
+      const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:'cta_url',body:{text:'📍 Here\'s our location on Google Maps:'},action:{name:'cta_url',parameters:{display_text:'Get Directions',url:mapsUrl}}}};
+      const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(r.ok) return;
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env,'engineSendGoogleMapsButton — Meta rejected cta_url',new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`),{clientId,convId});
+    }catch(e){await reportOpsError(env,'engineSendGoogleMapsButton — send threw',e,{clientId,convId});}
+  }
+  await engineSendChatwootReply(env,c,clientId,convId,`📍 Google Maps: ${mapsUrl}`);
 }
 function ltStoredOfferText(offers){
   const rows=(offers||[]).slice(0,3).map((o,i)=>`${i+1}. ${o.airline||'Flight'}${o.flightNumber?' · '+o.flightNumber:''} — ${o.currency||''} ${Number(o.total||0).toFixed(2)}\n${o.origin||'—'} → ${o.destination||'—'}`);
@@ -16626,6 +16654,7 @@ async function handleEngineWebhook(request, env, secret){
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
       // Auto-send attestation service checklist PDF when the bot's reply names a specific service
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
+      if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
@@ -16654,6 +16683,7 @@ async function handleEngineWebhook(request, env, secret){
       // engineSendChatwootQuickReply's own comment for why that distinction matters.
       const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
       routing.quickReplies=quickReplies?.length ? sentReply : null;
+      if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     }
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
