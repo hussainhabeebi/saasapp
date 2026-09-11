@@ -15,7 +15,8 @@ RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends python3 python3-pip \
       && rm -rf /var/lib/apt/lists/* \
-      && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch \
+      && pip3 install --no-cache-dir --break-system-packages typing_extensions \
+      && pip3 install --no-cache-dir --break-system-packages --extra-index-url https://download.pytorch.org/whl/cpu torch \
       && pip3 install --no-cache-dir --break-system-packages soundfile transformers accelerate; \
     else \
       echo "Skipping optional AI4Bharat/PyTorch layer"; \
