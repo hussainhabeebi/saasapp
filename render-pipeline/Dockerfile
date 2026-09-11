@@ -26,12 +26,7 @@ RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
 ARG HF_TOKEN
 ENV HF_TOKEN=${HF_TOKEN}
 RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
-      python3 -c "\
-from transformers import VitsModel, AutoTokenizer; \
-models = ['facebook/mms-tts-hin','facebook/mms-tts-mal','facebook/mms-tts-tam', \
-          'facebook/mms-tts-tel','facebook/mms-tts-ben','facebook/mms-tts-eng']; \
-[VitsModel.from_pretrained(m) and AutoTokenizer.from_pretrained(m) for m in models]; \
-print('VITS models cached')"; \
+      python3 -c "from transformers import VitsModel, AutoTokenizer; models=['facebook/mms-tts-hin','facebook/mms-tts-mal','facebook/mms-tts-tam','facebook/mms-tts-tel','facebook/mms-tts-ben','facebook/mms-tts-eng']; [VitsModel.from_pretrained(m) or AutoTokenizer.from_pretrained(m) for m in models]; print('VITS models cached')"; \
     fi
 
 # Keep the small local Piper tier used before AI4Bharat. English, Malayalam and Hindi are baked
