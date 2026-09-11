@@ -11699,7 +11699,7 @@ export function engineHandoverCannedTexts(botConfig){
   ].filter(Boolean));
 }
 
-export function engineRouteFlow(c, state, userText, cls){
+export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
@@ -11761,7 +11761,11 @@ export function engineRouteFlow(c, state, userText, cls){
   // branch below), so the bot always answers itself and Human Deals has nothing to ever queue —
   // dashboard.html hides that tab automatically while this is off.
   if(effIntent==='WANTS_HUMAN' && c.handover_enabled!=='No'){ route='human'; humanReason='explicit'; }
-  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No'){
+  // Voice notes have ambiguous intent — a customer sending a voice note at the final stage
+  // (e.g. in reply to "are you free tomorrow?") may or may not be saying something positive.
+  // Skip the isFinalStage+POSITIVE heuristic for voice inputs; only an explicit WANTS_HUMAN
+  // signal (resolved from a successful transcription) triggers handoff for voice.
+  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No' && mediaType!=='voice'){
     // Reached the end of the funnel with a positive reply — this used to hand straight over to a
     // human with no order/trial link ever sent. Real product requirement: when a self-serve link
     // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
@@ -15610,7 +15614,7 @@ async function handleEngineWebhook(request, env, secret){
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
-    const routing=engineRouteFlow(c, state, userText, cls);
+    const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
     // A generic ad CTA/business-information request must be answered from the client's prompt,
     // even if the probabilistic intent model guesses that the pronoun "this" means a product.
@@ -16957,7 +16961,7 @@ export async function processInstagramWebhookBody(env, body){
       let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
       if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
       const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
-      const routing=engineRouteFlow(c,state,userText,cls);
+      const routing=engineRouteFlow(c,state,userText,cls,parsed.mediaType);
       Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
       if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
       const replyLang=routing.customerLanguage||c.language||'en';

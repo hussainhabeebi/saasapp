@@ -1013,6 +1013,33 @@ describe('engineRouteFlow — anti-loop escalation (FIXES.md #1, #13, #14)', () 
   });
 });
 
+describe('engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff', () => {
+  const twoStageFlow = JSON.stringify({ stages: { intro: { msg: 'Hi' }, closing: { msg: 'Ready?' } } });
+  const baseC = { bot_config: '{}', qual_questions: '[]', flow_json: twoStageFlow, industry: 'travel' };
+  const affirmativeCls = { intent: 'AFFIRMATIVE', sentiment: 'Positive', objectionCategory: 'none', aiWinProbability: null, customerLanguage: 'en', nextStage: null, confidence: 0.9, productInterest: '' };
+
+  test('text affirmative at final stage routes to human (existing behaviour)', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No' };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls, 'text');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'final_stage_positive');
+  });
+
+  test('voice note affirmative at final stage does NOT route to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No' };
+    const result = engineRouteFlow(baseC, state, '(sent a voice note)', affirmativeCls, 'voice');
+    assert.notEqual(result.route, 'human', 'voice note should not trigger isFinalStage+POSITIVE human handoff');
+  });
+
+  test('explicit WANTS_HUMAN intent from voice note still routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No' };
+    const wantsCls = { ...affirmativeCls, intent: 'WANTS_HUMAN' };
+    const result = engineRouteFlow(baseC, state, 'please connect me with someone', wantsCls, 'voice');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'explicit');
+  });
+});
+
 describe('engineRouteFlow — qualifying-question choices carry through (FIXES.md #8)', () => {
   test('qualify_next surfaces the next question\'s configured options', () => {
     const c = {

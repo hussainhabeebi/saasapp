@@ -395,6 +395,26 @@ instructions still in place.
 **Tested:** `worker.test.js` → `engineFindHallucinatedLink`, including the exact Wellness Virtue
 case as a named test.
 
+### 22 — [backend] Voice notes at the final funnel stage wrongly triggered human handoff
+**Area:** `engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** A customer who sent a voice note in reply to the bot's final-stage question (e.g. "Are
+you free tomorrow evening?") received "Sure 🙏 connecting you to our advisor now" immediately —
+even when the voice note couldn't be transcribed (returned the `(sent a voice note)` placeholder).
+The `isFinalStage + POSITIVE` heuristic was firing because the AI classifier, given the context
+of the previous yes/no question, was returning `AFFIRMATIVE` or `SHORT_NEUTRAL` for the opaque
+placeholder text, and both are in the `POSITIVE` set that triggers the heuristic.
+**Fix:** `engineRouteFlow` now accepts an optional `mediaType` parameter (default `'text'`).
+The `isFinalStage + POSITIVE` human-handoff heuristic is skipped entirely when `mediaType ===
+'voice'`. Only an explicit `WANTS_HUMAN` intent (resolved from a successful transcription) still
+routes voice-note senders to a human — the ambiguous-intent heuristic no longer fires on them.
+Both main call sites (`handleEngineWebhook` and the Instagram batch handler) pass `mediaType`
+through.
+**Don't revert:** Reverting restores the false-positive handoff for every voice note sent at the
+final stage, which was observed triggering the `human-requested` Chatwoot label and pulling a
+human agent into the conversation prematurely.
+**Tested:** `worker.test.js` → `engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff`
+(three cases: text affirmative still hands off, voice note does not, explicit WANTS_HUMAN from voice still hands off).
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
