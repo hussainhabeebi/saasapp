@@ -13992,6 +13992,41 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   return result.audio;
 }
 
+// Two-phase voice follow-up — called via ctx.waitUntil after the text reply has already been
+// sent. Tries Piper (fast local), then AI4Bharat with no request timeout (the Worker stays alive
+// on the I/O wait however long the VITS model needs), then Sarvam as final fallback. On success
+// sends a voice-note follow-up on the same conversation. Errors are silently swallowed since the
+// customer already received the text reply.
+async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
+  try{
+    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+    if(!spokenText) return;
+    const iso=(langCode||'').toLowerCase();
+    const bcp47=ENGINE_TTS_LANG_MAP[iso];
+    let audio=null, provider='';
+    const safe=p=>Promise.resolve(p).catch(()=>null);
+    audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
+    if(audio){ provider='piper'; }
+    if(!audio){
+      // requestTimeoutMs=0 → no AbortController → VITS model runs until the Worker's I/O limit.
+      audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+      if(audio) provider='ai4bharat';
+    }
+    if(!audio && bcp47){
+      const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
+      if(credential){
+        audio=await safe(engineSarvamTts(env,spokenText,bcp47,credential.apiKey,30000));
+        if(audio) provider='sarvam';
+      }
+    }
+    if(audio){
+      const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
+      if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
+      await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
+    }
+  }catch(e){}
+}
+
 async function handleVoiceSettingsGet(request, env){
   const session=await requireSession(request,env);
   if(!session) return json({error:'Invalid or expired session'},401);
@@ -14611,7 +14646,7 @@ function engineExtractLinkPriceCaption(replyText){
 // play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
-async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies}={}){
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
   // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
@@ -14631,12 +14666,16 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // Voice input automatically receives voice: exact cache, free local Piper, warm AI4Bharat,
-  // quota-limited Sarvam, then text. No per-client enable/provider/model switch. A hard ten-second
-  // ceiling returns the already-computed text instead of keeping the customer waiting.
+  // Voice messages: cache hit → instant voice reply; otherwise → text immediately + voice follow-up
+  // via ctx.waitUntil. AI4Bharat has no request timeout in the background path — it runs until the
+  // Worker's own I/O limit instead of an arbitrary ceiling that would abort mid-generation.
   if(mediaType==='voice' && !imageUrl && bcp47){
-    const audioBuf=await engineWithDeadline(engineCachedVoiceRotation(env,c,clientId,trimmed,langCode),ENGINE_VOICE_REPLY_DEADLINE_MS);
-    if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
+    const cacheKey=await engineVoiceCacheKey(clientId, langCode, trimmed).catch(()=>null);
+    const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
+    if(cached) return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, langCode));
+    return;
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
   if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
@@ -15223,7 +15262,7 @@ async function handleSupportTicketsUpdate(request, env){
 // exact secret, a request is rejected before any client data is touched — same practical
 // unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
 // (both are exposed in various places already) no longer gets an attacker anywhere.
-async function handleEngineWebhook(request, env, secret){
+async function handleEngineWebhook(request, env, secret, ctx=null){
   const startMs=Date.now();
   // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
   // not instant, but a one-line change is still far faster than debugging/reverting code under
@@ -15707,14 +15746,14 @@ async function handleEngineWebhook(request, env, secret){
       routing.route='travel_live_ticketing'; routing.reply=sentText; routing.next=state.stage;
       routing.quickReplies=liveTicketingTurn.buttons?.length
         ?await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,liveTicketingTurn.buttons)
-        :(await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}),null);
+        :(await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}),null);
       orderHandledInline=true;
     } else if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
-        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       }else if(state.stage==='fashion_order_details'){
         // Parse a single reply that contains Colour, Size, and Delivery Address.
@@ -15741,7 +15780,7 @@ async function handleEngineWebhook(request, env, secret){
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           sentText=await engineLocalizeReply(env,c,orderFormText,replyLang);
           routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }else{
           seed.color=colour; seed.size=size; seed.address=address.slice(0,500);
           sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nColour: ${seed.color}\nSize: ${seed.size}\nDelivery address: ${seed.address}`,replyLang);
@@ -15758,7 +15797,7 @@ async function handleEngineWebhook(request, env, secret){
             : 'I could not save the order. I will connect you with our team.',replyLang);
           routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
           if(!order.ok){routing.route='human';routing.humanReason='fashion_order_save_failed';await engineSendHandoverLabel(c,convId);}
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }else{
           sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
           routing.reply=sentText;
@@ -15775,7 +15814,7 @@ async function handleEngineWebhook(request, env, secret){
         routing.reply=sentText;
         routing.next='order_collect_address';
         routing.orderCollectSeed=seed;
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
       } else if(state.stage==='order_collect_address'){
         const order=await finalizeChatOrder(env, c, clientId, phone, name, seed, userText);
@@ -15788,7 +15827,7 @@ async function handleEngineWebhook(request, env, secret){
         // leaves no lingering stage of its own.
         routing.next='new';
         routing.clearOrderCollect=true;
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
       }
     }
@@ -15805,7 +15844,7 @@ async function handleEngineWebhook(request, env, secret){
         if(hcSettings?.handover_message) sentText+=`\n\n${hcSettings.handover_message}`;
         sentText=await engineLocalizeReply(env,c,sentText,replyLang);
         routing.reply=sentText; routing.route='human'; routing.humanReason='healthcare_emergency';
-        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         await engineSendHandoverLabel(c,convId);
         orderHandledInline=true;
       }else{
@@ -15873,7 +15912,7 @@ async function handleEngineWebhook(request, env, secret){
           // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
           const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
           const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
-          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices,ctx});
           if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
           if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
           else routing.quickReplies=bookingChoices.length?delivered:null;
@@ -16219,7 +16258,7 @@ async function handleEngineWebhook(request, env, secret){
         } else if(detection.mode==='order' && !product && !orderHandledInline){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product && isFashionEcom && exactSelectedProduct){
           // Selecting an exact Fashion product starts an in-WhatsApp order. Product description
@@ -16241,7 +16280,7 @@ async function handleEngineWebhook(request, env, secret){
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
           routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang});
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
@@ -16454,7 +16493,7 @@ async function handleEngineWebhook(request, env, secret){
         : 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
       sentText=await engineLocalizeReply(env, c, routing.reply || handoverFallback, replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
     } else if(routing.route==='selfserve'){
       // Reached the end of the funnel with a positive reply and a self-serve link is configured —
@@ -16462,7 +16501,7 @@ async function handleEngineWebhook(request, env, secret){
       // reply), instead of handing over to a human. See engineRouteFlow's own comment.
       sentText=await engineLocalizeReply(env, c, routing.reply, replyLang);
       routing.reply=sentText;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
     } else if(routing.route==='drop'){
       // no reply
     } else if(routing.route==='qualify'){
@@ -16522,7 +16561,7 @@ async function handleEngineWebhook(request, env, secret){
           const items=firstQOptions.map(o=>({title:o, value:o}));
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         }
       }
     } else if(routing.route==='qualify_next'){
@@ -16549,7 +16588,7 @@ async function handleEngineWebhook(request, env, secret){
         const items=qualNextOptions.map(o=>({title:o, value:o}));
         routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       }
     } else if(newLeadCategories.length){
       const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
@@ -16670,7 +16709,7 @@ async function handleEngineWebhook(request, env, secret){
       // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
       // branch it might have taken instead, voice/image/plain text, returns something else) — see
       // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
-      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies, ctx});
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
       // Auto-send attestation service checklist PDF when the bot's reply names a specific service
       if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
@@ -16701,7 +16740,7 @@ async function handleEngineWebhook(request, env, secret){
       // what engineDeliverReply's own quickReplies branch actually sent (title truncated/deduped as
       // needed), not the pre-truncation `quickReplies` built above — see
       // engineSendChatwootQuickReply's own comment for why that distinction matters.
-      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies, ctx});
       routing.quickReplies=quickReplies?.length ? sentReply : null;
       if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     }
@@ -26425,16 +26464,16 @@ export function engineCombineBufferedChatwootBodies(entries){
   return body;
 }
 
-async function handleEngineWebhookBuffered(request,env,secret){
+async function handleEngineWebhookBuffered(request,env,secret,ctx=null){
   const raw=await request.text();
   let body; try{ body=JSON.parse(raw); }catch(e){ return json({error:'Invalid JSON'},400); }
-  if(!env.CLIENT_UPDATES) return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+  if(!env.CLIENT_UPDATES) return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
   const c=secret?await findClientByField(env,'engine_webhook_secret',secret):null;
   if(!c) return json({ok:true,skipped:secret?'invalid-secret':'no-secret'});
   const parsed=engineParseChatwootPayload(body);
   // Media needs its own transcription/download path and is never folded into adjacent text.
   if(!parsed||parsed.mediaUrl||!String(parsed.text||'').trim()){
-    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
   }
   try{
     const id=env.CLIENT_UPDATES.idFromName(String(c.Id));
@@ -26444,7 +26483,7 @@ async function handleEngineWebhookBuffered(request,env,secret){
     });
   }catch(e){
     await reportOpsError(env,'message aggregation failed open',e,{clientId:c.Id,convId:parsed.convId});
-    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret);
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
   }
 }
 
@@ -26770,7 +26809,7 @@ export default {
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
       else if(url.pathname==='/support/tickets' && request.method==='GET'){ res=await handleSupportTicketsList(request, env); }
       else if(url.pathname==='/support/tickets' && request.method==='PATCH'){ res=await handleSupportTicketsUpdate(request, env); }
-      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhookBuffered(request, env, url.pathname.slice('/engine/webhook/'.length)); }
+      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhookBuffered(request, env, url.pathname.slice('/engine/webhook/'.length), ctx); }
       else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
       else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
       else if(url.pathname==='/public/chat/history' && request.method==='GET'){  res=await handlePublicChatHistory(request, env); }
