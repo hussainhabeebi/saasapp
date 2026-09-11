@@ -1013,6 +1013,83 @@ describe('engineRouteFlow — anti-loop escalation (FIXES.md #1, #13, #14)', () 
   });
 });
 
+describe('engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff', () => {
+  const twoStageFlow = JSON.stringify({ stages: { intro: { msg: 'Hi' }, closing: { msg: 'Ready?' } } });
+  const baseC = { bot_config: '{}', qual_questions: '[]', flow_json: twoStageFlow, industry: 'travel' };
+  const affirmativeCls = { intent: 'AFFIRMATIVE', sentiment: 'Positive', objectionCategory: 'none', aiWinProbability: null, customerLanguage: 'en', nextStage: null, confidence: 0.9, productInterest: '' };
+
+  function engagedHistory(n = 5) {
+    const h = [];
+    for (let i = 0; i < n; i++) { h.push({ role: 'user', content: 'hi' }); h.push({ role: 'assistant', content: 'reply' }); }
+    return h;
+  }
+
+  test('text affirmative at final stage (after 5 bot turns) routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: engagedHistory(5) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls, 'text');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'final_stage_positive');
+  });
+
+  test('voice note affirmative at final stage does NOT route to human (even after 5 turns)', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: engagedHistory(5) };
+    const result = engineRouteFlow(baseC, state, '(sent a voice note)', affirmativeCls, 'voice');
+    assert.notEqual(result.route, 'human', 'voice note should not trigger isFinalStage+POSITIVE human handoff');
+  });
+
+  test('explicit WANTS_HUMAN intent from voice note still routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const wantsCls = { ...affirmativeCls, intent: 'WANTS_HUMAN' };
+    const result = engineRouteFlow(baseC, state, 'please connect me with someone', wantsCls, 'voice');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'explicit');
+  });
+});
+
+describe('engineRouteFlow — initial phase (< 5 bot turns) handled by industry module', () => {
+  const twoStageFlow = JSON.stringify({ stages: { intro: { msg: 'Hi' }, closing: { msg: 'Ready?' } } });
+  const baseC = { bot_config: '{}', qual_questions: '[]', flow_json: twoStageFlow, industry: 'travel' };
+  const affirmativeCls = { intent: 'AFFIRMATIVE', sentiment: 'Positive', objectionCategory: 'none', aiWinProbability: null, customerLanguage: 'en', nextStage: null, confidence: 0.9, productInterest: '' };
+  const wantsCls = { ...affirmativeCls, intent: 'WANTS_HUMAN' };
+
+  function historyWithBotTurns(n) {
+    const h = [];
+    for (let i = 0; i < n; i++) {
+      h.push({ role: 'user', content: 'hi' });
+      h.push({ role: 'assistant', content: 'reply' });
+    }
+    return h;
+  }
+
+  test('final-stage positive with 0 bot turns routes to industry FAQ, not human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.notEqual(result.route, 'human', 'no handoff before 5 bot turns');
+    assert.equal(result.route, 'travel_faq');
+  });
+
+  test('final-stage positive with 4 bot turns still routes to industry FAQ', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: historyWithBotTurns(4) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.notEqual(result.route, 'human');
+    assert.equal(result.route, 'travel_faq');
+  });
+
+  test('final-stage positive with exactly 5 bot turns allows handoff', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: historyWithBotTurns(5) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'final_stage_positive');
+  });
+
+  test('explicit WANTS_HUMAN on turn 1 always routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const result = engineRouteFlow(baseC, state, 'speak to a human please', wantsCls);
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'explicit');
+  });
+});
+
 describe('engineRouteFlow — qualifying-question choices carry through (FIXES.md #8)', () => {
   test('qualify_next surfaces the next question\'s configured options', () => {
     const c = {
