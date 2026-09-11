@@ -47,13 +47,14 @@ function ensureWorker() {
     const proc = spawn('python3', [SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
     child = proc;
     let settled = false;
+    // VITS worker emits {ready} immediately — 30 s is generous; Parler-TTS needed 180 s.
     const startupTimer = setTimeout(() => {
       if (!settled) {
         settled = true;
         reject(new Error('AI4Bharat model startup timed out'));
         stopWorker(new Error('AI4Bharat model startup timed out'));
       }
-    }, Math.max(30000, Number(process.env.AI4BHARAT_STARTUP_TIMEOUT_MS || 180000)));
+    }, Math.max(10000, Number(process.env.AI4BHARAT_STARTUP_TIMEOUT_MS || 30000)));
 
     readline.createInterface({ input: proc.stdout }).on('line', line => {
       let message;
@@ -97,7 +98,7 @@ function ensureWorker() {
 async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
-  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 6500));
+  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 30000));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);

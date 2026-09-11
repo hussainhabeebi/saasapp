@@ -13866,11 +13866,11 @@ async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', reque
   }
 }
 
-const ENGINE_VOICE_REPLY_DEADLINE_MS=10000;
+const ENGINE_VOICE_REPLY_DEADLINE_MS=65000;  // Piper 2.5s + AI4Bharat up to 30s + Sarvam up to 30s + 2.5s buffer
 const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
 const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
-const ENGINE_AI4BHARAT_HEDGE_MS=1500;
-const ENGINE_LIVE_TTS_DEADLINE_MS=6500;
+const ENGINE_AI4BHARAT_HEDGE_MS=30000;  // wait 30s for AI4Bharat VITS before starting Sarvam
+const ENGINE_LIVE_TTS_DEADLINE_MS=60000;  // 30s AI4Bharat + 30s Sarvam total budget
 const ENGINE_SARVAM_DAILY_FALLBACK_LIMIT=25;
 
 export function engineResolveSarvamApiKey(env, c){
@@ -13948,8 +13948,9 @@ async function engineVoiceCachePut(env, key, audioBuf, provider){
   }catch(_e){}
 }
 
-// Free Piper gets a short first attempt. If it is unavailable/unsupported, warm AI4Bharat starts;
-// Sarvam is hedged 1.5s later and only runs when a client key or a Worker quota slot is available.
+// Free Piper gets a short first attempt (2.5s). If it is unavailable/unsupported, AI4Bharat VITS
+// starts and is the primary provider — Sarvam only fires after 30s if AI4Bharat hasn't responded.
+// Sarvam is the strong backup: it requires a client key or a Worker quota slot.
 // Kept as an injectable coordinator so ordering and deadlines are covered without live APIs.
 export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sarvamCall, piperDeadlineMs=ENGINE_PIPER_TTS_DEADLINE_MS){
   const safeCall=call=>Promise.resolve().then(call).catch(()=>null);
@@ -13982,7 +13983,7 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
     async()=>{
       if(!bcp47) return null;
       const credential=await engineClaimSarvamCredential(env,c,clientId);
-      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,4500):null;
+      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,15000):null;  // 15s — fires only after AI4Bharat 30s wait
     }
   );
   // Cache writes must never delay the first live send. R2 is best-effort here; the generated

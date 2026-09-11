@@ -10,24 +10,28 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
-# CPU-only PyTorch avoids the several-GB CUDA dependency set. Pin Parler-TTS to a known commit so
-# a future upstream change cannot unexpectedly break a production image build.
+# CPU-only PyTorch + transformers for lightweight VITS models (~50 MB each, vs ~4 GB Parler-TTS).
 RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
       apt-get update \
-      && apt-get install -y --no-install-recommends git python3 python3-pip \
+      && apt-get install -y --no-install-recommends python3 python3-pip \
       && rm -rf /var/lib/apt/lists/* \
       && pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cpu torch \
-      && pip3 install --no-cache-dir --break-system-packages soundfile "git+https://github.com/huggingface/parler-tts.git@d108732cd57788ec86bc857d99a6cabd66663d68"; \
+      && pip3 install --no-cache-dir --break-system-packages soundfile transformers accelerate; \
     else \
       echo "Skipping optional AI4Bharat/PyTorch layer"; \
     fi
 
-# Download AI4Bharat TTS during the image build so the first customer request never triggers a
-# network cold start. Configure HF_TOKEN as a Coolify build variable when access requires it.
+# Pre-cache the six most common Indic language VITS models so the first request per language is
+# instant. Other languages load lazily on first use. No HF_TOKEN needed — these are public models.
 ARG HF_TOKEN
 ENV HF_TOKEN=${HF_TOKEN}
 RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
-      python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('AI4Bharat TTS cached')"; \
+      python3 -c "\
+from transformers import VitsModel, AutoTokenizer; \
+models = ['facebook/mms-tts-hin','facebook/mms-tts-mal','facebook/mms-tts-tam', \
+          'facebook/mms-tts-tel','facebook/mms-tts-ben','facebook/mms-tts-eng']; \
+[VitsModel.from_pretrained(m) and AutoTokenizer.from_pretrained(m) for m in models]; \
+print('VITS models cached')"; \
     fi
 
 # Keep the small local Piper tier used before AI4Bharat. English, Malayalam and Hindi are baked
