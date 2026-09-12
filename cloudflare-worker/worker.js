@@ -14015,10 +14015,13 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     // Prefer the fast local Piper tier for the background follow-up. This prevents a long
     // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages
     // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.
+    // Prefer the fast local Piper tier for the background follow-up. For languages without a
+    // configured Piper voice, fall through to AI4Bharat and then Sarvam.
     audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
     if(audio) provider='piper';
     if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
-    if(audio) provider='ai4bharat';
+    if(!audio) provider='';
+
     if(!audio && bcp47){
       const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
       if(credential){
