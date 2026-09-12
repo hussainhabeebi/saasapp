@@ -11061,7 +11061,7 @@ async function engineFetchWithRetry(url, options){
 
 const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
 
-// gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
+// gemini-2.5-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
 // measurably under-transcribes audio next to Gemini's newer models, and that gap is worse for
 // lower-resource Indic languages (Malayalam, etc.) than for English — accuracy, not just speed, is
 // what matters for a customer's actual words, so transcription gets its own, stronger model rather
@@ -14005,24 +14005,31 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
 // customer already received the text reply.
 async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
   try{
-    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-    if(!spokenText) return;
     const iso=(langCode||'').toLowerCase();
     const bcp47=ENGINE_TTS_LANG_MAP[iso];
+    // Pre-flight: if neither the render pipeline nor a Sarvam credential is reachable at all,
+    // skip synthesis immediately and alert ops with specific fix instructions rather than letting
+    // all three providers fail one-by-one before reporting. The text reply was already sent.
+    const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
+    const sarvamCredential=engineResolveSarvamCredential(env,c);
+    if(!hasRenderPipeline&&!sarvamCredential){
+      await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
+        new Error('No voice provider reachable. Fix: go to Settings → Voice in the dashboard and enter your Sarvam API key (fastest fix, no redeploy needed), OR add SARVAM_API_KEY to Cloudflare Worker secrets, OR configure MARKETING_RENDER_WEBHOOK_URL+MARKETING_RENDER_WEBHOOK_SECRET for Piper/AI4Bharat.'),
+        {clientId,convId,iso,bcp47:bcp47||'none'}).catch(()=>{});
+      return;
+    }
+    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+    if(!spokenText) return;
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    // Prefer the fast local Piper tier for the background follow-up. This prevents a long
-    // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages
-    // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.
-    // Prefer the fast local Piper tier for the background follow-up. For languages without a
-    // configured Piper voice, fall through to AI4Bharat and then Sarvam.
+    // Piper (fast, local) → AI4Bharat (self-hosted VITS, unlimited bg timeout) → Sarvam (API fallback)
     audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
     if(audio) provider='piper';
     if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
-    if(audio && !provider) provider='ai4bharat';
+    if(audio&&!provider) provider='ai4bharat';
     if(!audio) provider='';
 
-    if(!audio && bcp47){
+    if(!audio&&bcp47){
       const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
       if(credential){
         audio=await safe(engineSarvamTts(env,spokenText,bcp47,credential.apiKey,30000));
@@ -14030,9 +14037,14 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
       }
     }
     if(audio){
-      const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
-      if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
-      await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
+      const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
+      if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
+      await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
+    }else{
+      // At least one provider was configured but all failed — text reply was already sent.
+      await reportOpsError(env,'engineBackgroundSendVoice — all TTS providers failed, no voice note sent',
+        new Error(`iso=${iso}, bcp47=${bcp47||'none'}, render_url=${!!env.MARKETING_RENDER_WEBHOOK_URL}, sarvam_key=${!!sarvamCredential}`),
+        {clientId,convId}).catch(()=>{});
     }
   }catch(e){}
 }
@@ -14094,9 +14106,11 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
-      // unconfigured, not worth an ops alert, same as SARVAM_API_KEY missing above.
-      if(r.status!==503) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 503 whose body says "not installed and enabled" means AI4BHARAT_TTS_ENABLED isn't set —
+      // expected/unconfigured, silent. Any other 503 (render pipeline crashed, nginx upstream down)
+      // is unexpected and must be reported so the team knows voice synthesis is broken.
+      const isExpectedDisabled=r.status===503&&bodyText.includes('not installed and enabled');
+      if(!isExpectedDisabled) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
@@ -14240,10 +14254,11 @@ async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 400 here just means no Piper voice is configured for this language — expected/
-      // unconfigured for anything beyond English by default, same convention as the other
-      // providers' "not set up yet" cases above.
-      if(r.status!==400) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 400 means no Piper voice is configured for this language — expected/unconfigured, silent.
+      // A 503 whose body says "not installed" or similar means render pipeline not set up — silent.
+      // Any other status (502, 500, unexpected 503) is reported so the team knows.
+      const isExpectedPiper=r.status===400||(r.status===503&&(bodyText.includes('not installed')||bodyText.includes('not found')));
+      if(!isExpectedPiper) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
