@@ -98,18 +98,8 @@ function ensureWorker() {
 async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
-  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 30000));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      pending.delete(id);
-      const error = new Error(`AI4Bharat synthesis exceeded ${timeoutMs}ms`);
-      reject(error);
-      // Model generation cannot be cancelled safely in-process. Restart it so a timed-out job
-      // cannot continue consuming the VPS while later requests arrive. A cooldown prevents a
-      // burst of slow requests from repeatedly reloading several gigabytes of model.
-      retryAfterMs = Date.now() + Math.max(10000, Number(process.env.AI4BHARAT_RESTART_COOLDOWN_MS || 60000));
-      stopWorker(error);
-    }, timeoutMs);
+    const timer = null; // No synthesis timeout — VITS on CPU runs until complete.
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, text: text.slice(0, 500), language, output_path: outputPath }) + '\n');
   });
