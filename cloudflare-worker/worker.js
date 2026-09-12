@@ -13018,7 +13018,7 @@ async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,known
   return {route:'intro',text,next:state.stage||'new',preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim(),qualAnswers:state.qualAnswers||{}};
 }
 
-async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType){
+async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType,ctx){
   const routing={
     route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,preserveCrmStage:turn.preserveCrmStage===true,
     qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
@@ -13031,7 +13031,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
     await sendDriveMediaToChatwoot(c,state.convId,turn.mediaUrl,'').catch(()=>false);
   }
   const sentOptions=await engineDeliverReply(env,c,clientId,state.convId,replyText,{
-    mediaType,langCode:replyLang,quickReplies:replyButtons
+    mediaType,langCode:replyLang,quickReplies:replyButtons,ctx
   });
   routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
   const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
@@ -14019,6 +14019,7 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
     if(audio) provider='piper';
     if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+    if(audio && !provider) provider='ai4bharat';
     if(!audio) provider='';
 
     if(!audio && bcp47){
@@ -15618,12 +15619,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
-      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType);
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro_saved',sent:c.bot_reply_disabled!=='Yes',cached:true});
     }
     const industryFlowTurn=engineResolveIndustryFlowTurn(c,state,userText);
     if(industryFlowTurn){
-      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType);
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'industry_flow',sent:c.bot_reply_disabled!=='Yes'});
     }
     // When a flow button tap had no configured next stage and fell through, recover the human-readable
@@ -15635,7 +15636,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     const flowInterruptionTurn=await engineBuildIndustryFlowInterruptionTurn(env,c,state,userText);
     if(flowInterruptionTurn){
-      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,flowInterruptionTurn,startMs,mediaType);
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,flowInterruptionTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'industry_flow_ai',resumed_stage:flowInterruptionTurn.next,sent:c.bot_reply_disabled!=='Yes'});
     }
     const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
@@ -15657,7 +15658,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
-      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType);
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
     }
     // New lead, no published flow: every first message — whether a greeting, a generic "more info"
@@ -15671,7 +15672,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
       if(_noFlowIntro && _noFlowIntro.trim()){
         const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
-        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType);
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType,ctx);
         return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
@@ -16279,7 +16280,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=sentText;
           const _attach5=sendProductImage||sendOnlyPrimaryImage;
           if(_attach5&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attach5?product.image_url:null});
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attach5?product.image_url:null,ctx});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
           else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:true});
           else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:true});
