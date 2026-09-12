@@ -98,21 +98,8 @@ function ensureWorker() {
 async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
-  // CPU-only VITS synthesis on a standard VPS takes 40–90 s. Default to 120 s so a single
-  // slow sentence doesn't kill the worker; set AI4BHARAT_TTS_TIMEOUT_MS=0 to disable entirely.
-  const rawTimeout = Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS ?? 120000);
-  const timeoutMs = rawTimeout === 0 ? 0 : Math.max(5000, rawTimeout);
   return new Promise((resolve, reject) => {
-    const timer = timeoutMs > 0 ? setTimeout(() => {
-      pending.delete(id);
-      const error = new Error(`AI4Bharat synthesis exceeded ${timeoutMs}ms`);
-      reject(error);
-      // Model generation cannot be cancelled safely in-process. Restart it so a timed-out job
-      // cannot continue consuming the VPS while later requests arrive. A cooldown prevents a
-      // burst of slow requests from repeatedly reloading several gigabytes of model.
-      retryAfterMs = Date.now() + Math.max(10000, Number(process.env.AI4BHARAT_RESTART_COOLDOWN_MS || 60000));
-      stopWorker(error);
-    }, timeoutMs) : null;
+    const timer = null; // No synthesis timeout — VITS on CPU runs until complete.
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, text: text.slice(0, 500), language, output_path: outputPath }) + '\n');
   });
