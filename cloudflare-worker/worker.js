@@ -14033,6 +14033,10 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
       const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
       if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
       await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
+    } else {
+      // All three providers (Piper → AI4Bharat → Sarvam) returned null — text reply was already
+      // sent, but alert ops so the team can investigate TTS configuration.
+      await reportOpsError(env, 'engineBackgroundSendVoice — all TTS providers failed, no voice note sent', new Error(`iso=${iso}, bcp47=${bcp47||'none'}, render_url=${!!env.MARKETING_RENDER_WEBHOOK_URL}, sarvam_key=${!!engineResolveSarvamCredential(env,c)}`), {clientId, convId}).catch(()=>{});
     }
   }catch(e){}
 }
@@ -14094,9 +14098,11 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
-      // unconfigured, not worth an ops alert, same as SARVAM_API_KEY missing above.
-      if(r.status!==503) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 503 whose body says "not installed and enabled" means AI4BHARAT_TTS_ENABLED isn't set —
+      // expected/unconfigured, silent. Any other 503 (render pipeline crashed, nginx upstream down)
+      // is unexpected and must be reported so the team knows voice synthesis is broken.
+      const isExpectedDisabled=r.status===503&&bodyText.includes('not installed and enabled');
+      if(!isExpectedDisabled) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
@@ -14240,10 +14246,11 @@ async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 400 here just means no Piper voice is configured for this language — expected/
-      // unconfigured for anything beyond English by default, same convention as the other
-      // providers' "not set up yet" cases above.
-      if(r.status!==400) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 400 means no Piper voice is configured for this language — expected/unconfigured, silent.
+      // A 503 whose body says "not installed" or similar means render pipeline not set up — silent.
+      // Any other status (502, 500, unexpected 503) is reported so the team knows.
+      const isExpectedPiper=r.status===400||(r.status===503&&(bodyText.includes('not installed')||bodyText.includes('not found')));
+      if(!isExpectedPiper) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
