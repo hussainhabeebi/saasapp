@@ -407,7 +407,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
           <option value="basic">Basic — 1 user, 1 channel</option>
           <option value="standard">Standard — 3 users, 2 channels</option>
           <option value="business_intelligence">Business Intelligence — 8 users, 5 channels</option>
-          <option value="marketing_pro">Marketing Pro — 15 users, 10 channels</option>
+          <option value="marketing_pro">Enterprise — 15 users, 10 channels</option>
         </select>
         <div class="field-note">Moving a client off "Legacy" applies real limits immediately — only do this for a client who's actually on a paid tier. This field can't be changed by the client themselves.</div>
       </div>
@@ -448,6 +448,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
         <textarea id="e-followup-messages" style="min-height:100px"></textarea>
       </div>
 
+      <div class="modal-form-group">
+        <label>AI Assistant</label>
+        <select id="e-ai-assistant-enabled">
+          <option value="No">Disabled (default)</option>
+          <option value="Yes">Enabled</option>
+        </select>
+        <small style="color:var(--muted);display:block;margin-top:4px">Only admin can enable this. When disabled, no AI tokens are consumed.</small>
+      </div>
+
       <div id="save-status"></div>
     </div>
     <div class="edit-modal-footer">
@@ -479,7 +488,7 @@ const CONFIG = {
 // grandfathered) both here and in getPlanLimits.
 const PLAN_TIER_LABELS = {
   basic: 'Basic', standard: 'Standard',
-  business_intelligence: 'Business Intelligence', marketing_pro: 'Marketing Pro',
+  business_intelligence: 'Business Intelligence', marketing_pro: 'Enterprise',
 };
 
 let adminSessionToken = sessionStorage.getItem('lv_admin_session') || '';
@@ -825,6 +834,7 @@ function openEditModal(clientId) {
   document.getElementById('e-followup-count').value = c.followup_count || '';
   document.getElementById('e-followup-hours').value = c.followup_hours || '';
   document.getElementById('e-followup-messages').value = c.followup_messages || '';
+  document.getElementById('e-ai-assistant-enabled').value = c.ai_assistant_enabled === 'Yes' ? 'Yes' : 'No';
 
   const status = document.getElementById('save-status');
   status.style.display = 'none';
@@ -860,6 +870,7 @@ document.getElementById('btn-save-modal').addEventListener('click', async () => 
     followup_count: parseInt(document.getElementById('e-followup-count').value) || 0,
     followup_hours: parseInt(document.getElementById('e-followup-hours').value) || 0,
     followup_messages: document.getElementById('e-followup-messages').value,
+    ai_assistant_enabled: document.getElementById('e-ai-assistant-enabled').value,
   };
 
   try {

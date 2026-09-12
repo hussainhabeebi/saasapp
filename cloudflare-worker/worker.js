@@ -64,8 +64,8 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 const PLAN_TIERS = {
   basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
   standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
-  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled'] },
-  marketing_pro:{ label:'Marketing Pro', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','feat_marketing_studio_enabled'] }
+  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] },
+  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] }
 };
 // Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
 // (so dashboard.html can render a modules grid without hardcoding this list twice) and the
@@ -73,17 +73,19 @@ const PLAN_TIERS = {
 const PLAN_GATED_MODULES = {
   ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
   b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
-  feat_marketing_studio_enabled:'Marketing Studio'
+  matrimonial_enabled:'Matrimonial Service'
 };
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
 // passthrough that saves every other Settings field. See handleNocodbPassthrough.
-const PLAN_MANAGED_FIELDS = ['plan_tier'];
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled'];
 // Returns null for an empty/unset/unrecognized tier — callers treat null as "unlimited", which is
 // what makes every pre-existing client (and any typo'd/future tier name) fail open, not closed.
 function getPlanLimits(planTier){
   return PLAN_TIERS[String(planTier||'').trim()] || null;
 }
+// True for pure ecommerce clients AND any other industry that has opted in via the ecom_enabled flag.
+function isEcomEnabled(c){ return c.industry==='ecommerce' || c.ecom_enabled==='Yes'; }
 function countClientTeamUsers(c){
   let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
   return Object.keys(teamUsers).length + 1; // +1 for the account owner, who has no entry of their own
@@ -111,7 +113,7 @@ function corsHeaders(origin, env){
   if(origin && allowed.includes(origin)){
     headers['Access-Control-Allow-Origin']=origin;
     headers['Access-Control-Allow-Headers']='Content-Type, Authorization';
-    headers['Access-Control-Allow-Methods']='GET, POST, PATCH, DELETE, OPTIONS';
+    headers['Access-Control-Allow-Methods']='GET, POST, PUT, PATCH, DELETE, OPTIONS';
   }
   return headers;
 }
@@ -141,10 +143,12 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/appt/public/book'&&m==='POST', bucket:'appt-book', limit:20, windowSec:600},
   {test:(p,m)=>p.startsWith('/b2b/doc/')&&p.endsWith('/accept')&&m==='POST', bucket:'b2b-doc-accept', limit:20, windowSec:600},
   {test:(p,m)=>m==='GET'&&(p==='/ecom/public/products'||p==='/ecom/public/client'||p==='/ecom/public/stores'), bucket:'ecom-public-read', limit:120, windowSec:60},
-  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'), bucket:'appt-public-read', limit:120, windowSec:60},
+  {test:(p,m)=>m==='GET'&&(p==='/appt/public/client'||p==='/appt/public/services'||p==='/appt/public/doctors'), bucket:'appt-public-read', limit:120, windowSec:60},
   {test:(p,m)=>p==='/re/webhook/lead'&&m==='POST', bucket:'re-lead-webhook', limit:60, windowSec:600},
   {test:(p,m)=>p.startsWith('/re/cp-portal/')&&p.endsWith('/leads')&&m==='POST', bucket:'re-cp-portal-lead', limit:30, windowSec:600},
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
+  {test:(p,m)=>p==='/public/chat/message'&&m==='POST', bucket:'public-chat-msg', limit:30, windowSec:60},
+  {test:(p,m)=>p==='/public/chat/config'&&m==='GET', bucket:'public-chat-cfg', limit:60, windowSec:60},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -170,6 +174,7 @@ async function checkRateLimit(env, bucket, ip, limit, windowSec){
 async function cleanupRateLimitCounters(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
+  try{ await env.DB.prepare(`DELETE FROM voice_sarvam_daily_usage WHERE usage_date < date('now','-30 days')`).run(); }catch(e){}
 }
 
 /* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
@@ -314,6 +319,100 @@ async function patchClientFields(env, clientId, fields){
   if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
   return r.json().catch(()=>({}));
 }
+
+// Meta credentials are scoped to a Chatwoot WhatsApp inbox. Keep this JSON server-side: it
+// contains live access tokens and must never be returned by safeClient or /channels/status.
+const META_CHANNEL_CREDENTIALS_FIELD='meta_channel_credentials';
+export function parseMetaChannelCredentials(c){
+  try{
+    const list=JSON.parse(c?.[META_CHANNEL_CREDENTIALS_FIELD]||'[]');
+    return Array.isArray(list)?list.filter(x=>x&&x.inbox_id):[];
+  }catch(e){ return []; }
+}
+export function metaCredentialSummary(c){
+  return parseMetaChannelCredentials(c).map(x=>({inbox_id:String(x.inbox_id),configured:!!(x.wa_token&&(x.wa_phone_id||x.waba_id)),has_phone_id:!!x.wa_phone_id,has_waba_id:!!x.waba_id,display_phone:String(x.display_phone||'')}));
+}
+export function resolveMetaCredentials(c, selector={}){
+  const list=parseMetaChannelCredentials(c);
+  const inboxId=String(selector.inbox_id||'');
+  const phoneId=String(selector.wa_phone_id||selector.phone_number_id||'');
+  let found=inboxId?list.find(x=>String(x.inbox_id)===inboxId)||null:null;
+  if(!found&&phoneId) found=list.find(x=>String(x.wa_phone_id)===phoneId)||null;
+  if(!found&&!inboxId&&!phoneId&&list.length===1) found=list[0];
+  if(found) return found;
+  // Backward compatibility for accounts created before per-channel storage existed.
+  const legacyInbox=String(c?.chatwoot_inbox_id||'');
+  if(c?.wa_token&&(c.wa_phone_id||c.waba_id)&&(!inboxId||inboxId===legacyInbox)) return {inbox_id:legacyInbox,waba_id:c.waba_id,wa_phone_id:c.wa_phone_id,wa_token:c.wa_token,legacy:true};
+  return null;
+}
+export function mergeMetaChannelCredential(c, credential){
+  const list=parseMetaChannelCredentials(c);
+  const key=String(credential.inbox_id||'');
+  const idx=list.findIndex(x=>String(x.inbox_id)===key);
+  const next={...(idx>=0?list[idx]:{}),...credential,inbox_id:key};
+  if(idx>=0) list[idx]=next; else list.push(next);
+  return list;
+}
+export function metaCredentialFromInbox(data, inboxId){
+  // Chatwoot versions/proxies differ here: inbox-show is normally a flat object, while some
+  // installations wrap it in payload/data and some expose the WhatsApp config below channel.
+  const inbox=data?.payload?.id?data.payload:(data?.data?.payload?.id?data.data.payload:(data?.data?.id?data.data:data));
+  const channel=inbox?.channel||inbox?.channel_config||{};
+  const cfg=inbox?.provider_config||channel?.provider_config||channel?.channel_config||inbox?.channel_config||{};
+  return {inbox_id:String(inboxId||inbox?.id||''),waba_id:String(cfg.business_account_id||cfg.waba_id||inbox?.business_account_id||'').trim(),wa_token:String(cfg.api_key||cfg.access_token||cfg.token||'').trim(),wa_phone_id:String(cfg.phone_number_id||inbox?.phone_number_id||'').trim(),display_phone:String(inbox?.phone_number||inbox?.name||'').trim()};
+}
+function metaPhoneDigits(value){ return String(value||'').replace(/\D/g,'').replace(/^00/,''); }
+export function matchMetaPhoneNumber(displayPhone,rows=[]){
+  const wanted=metaPhoneDigits(displayPhone);
+  if(!wanted) return null;
+  const exact=rows.filter(x=>metaPhoneDigits(x?.display_phone_number)===wanted);
+  if(exact.length===1) return exact[0];
+  // Formatting/country-prefix differences are common in Chatwoot. Use a long suffix only when
+  // it identifies exactly one accessible Meta number, so we never associate an ambiguous inbox.
+  const suffix=wanted.slice(-10);
+  const near=suffix.length>=8?rows.filter(x=>metaPhoneDigits(x?.display_phone_number).endsWith(suffix)||wanted.endsWith(metaPhoneDigits(x?.display_phone_number).slice(-10))):[];
+  return near.length===1?near[0]:null;
+}
+async function detectMetaCredentialFromAccessibleAccounts(env,c,inboxCredential){
+  if(!inboxCredential?.display_phone) return null;
+  const stored=parseMetaChannelCredentials(c);
+  const tokens=[inboxCredential.wa_token,...stored.map(x=>x.wa_token),c?.wa_token].filter((x,i,a)=>x&&a.indexOf(x)===i);
+  for(const token of tokens){
+    const wabaIds=new Set([inboxCredential.waba_id,...stored.map(x=>x.waba_id),c?.waba_id].filter(Boolean).map(String));
+    if(env.META_APP_ID&&env.META_APP_SECRET){
+      try{
+        const debugR=await fetch('https://graph.facebook.com/v18.0/debug_token',{method:'POST',headers:{Authorization:`Bearer ${env.META_APP_ID}|${env.META_APP_SECRET}`,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({input_token:token})});
+        const debug=await debugR.json().catch(()=>({}));
+        for(const scope of (debug?.data?.granular_scopes||[])) if(String(scope?.scope||'').includes('whatsapp_business')) for(const id of (scope.target_ids||[])) wabaIds.add(String(id));
+      }catch(e){}
+    }
+    for(const wabaId of wabaIds){
+      try{
+        const phoneR=await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(wabaId)}/phone_numbers?fields=id,display_phone_number&limit=100`,{headers:{Authorization:`Bearer ${token}`}});
+        if(!phoneR.ok) continue;
+        const match=matchMetaPhoneNumber(inboxCredential.display_phone,(await phoneR.json().catch(()=>({})))?.data||[]);
+        if(match?.id) return {...inboxCredential,waba_id:wabaId,wa_phone_id:String(match.id),wa_token:token,display_phone:match.display_phone_number||inboxCredential.display_phone};
+      }catch(e){}
+    }
+  }
+  return null;
+}
+async function resolveOrDetectMetaCredentials(env,c,clientId,selector={}){
+  const existing=resolveMetaCredentials(c,selector);
+  if(existing?.wa_token&&existing.wa_phone_id&&existing.waba_id) return existing;
+  const inboxId=String(selector.inbox_id||c?.chatwoot_inbox_id||'');
+  if(!inboxId||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return existing;
+  try{
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`,{headers:{api_access_token:c.chatwoot_token}});
+    if(!r.ok) return existing;
+    let credential=metaCredentialFromInbox(await r.json().catch(()=>({})),inboxId);
+    if(!credential.wa_token||!credential.wa_phone_id||!credential.waba_id) credential=await detectMetaCredentialFromAccessibleAccounts(env,c,{...credential,...(existing||{}),display_phone:credential.display_phone||existing?.display_phone||''})||credential;
+    if(!credential.wa_token||(!credential.wa_phone_id&&!credential.waba_id)) return existing;
+    await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+    await patchClientFields(env,clientId,{[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))});
+    return credential;
+  }catch(e){ return existing; }
+}
 async function findOtherClientByField(env, field, value, excludeId){
   if(!value) return null;
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(${field},eq,${encodeURIComponent(value)})&limit=5`);
@@ -378,9 +477,9 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // resend_api_key, smtp_pass and shopify_access_token are live send-capable credentials too, and
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
-function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
+export function safeClient(rec){
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, ...safe}=rec;
+  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -698,8 +797,22 @@ async function handleSignup(request, env){
     if(recR.ok){ const d=await recR.json().catch(()=>({})); inviteLink=d?.link||null; }
   }catch(e){}
 
-  // Send invite email (reuses existing Resend helper)
-  if(inviteLink) await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+  if(inviteLink){
+    await sendTeamInviteEmail(env, {to:emailNorm, name:deriveBusinessNameServer(emailNorm), inviteUrl:inviteLink, clientName:'Leadvyne'});
+  } else if(env.RESEND_API_KEY){
+    // Recovery link unavailable — send a plain welcome email pointing to the login page so
+    // the user can use "Forgot password" to set their own password and reach their account.
+    const from=env.TEAM_INVITE_FROM_EMAIL||'Leadvyne <team@leadvyne.com>';
+    const loginUrl='https://app.leadvyne.com';
+    const bodyHtml=`<p>Hi ${esc(deriveBusinessNameServer(emailNorm)||'there')},</p>
+      <p>Your Leadvyne account has been created for <b>${esc(emailNorm)}</b>.</p>
+      <p>Visit the link below and use <b>Forgot password</b> to set your password and sign in.</p>`;
+    await fetch('https://api.resend.com/emails',{
+      method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+      body:JSON.stringify({from, to:[emailNorm], subject:'Your Leadvyne account is ready',
+        html:renderBillingEmailHtml({heading:'Account created',bodyHtml,ctaLabel:'Go to Leadvyne',ctaUrl:loginUrl})})
+    }).catch(()=>{});
+  }
 
   return json({ok:true, message:'Check your email to set up your account.'});
 }
@@ -978,6 +1091,8 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // handler, which is also the only place a client-side bypass (calling this endpoint directly)
   // would show up, so the check has to live here rather than only in the Settings UI.
   if(isClientPatch && parsedBody){
+    if(META_CHANNEL_CREDENTIALS_FIELD in parsedBody) return json({error:'Per-channel credentials are managed by the secure channel connection flow.'},403);
+    if('sarvam_api_key' in parsedBody) return json({error:'Sarvam credentials are managed by the secure Voice settings flow.'},403);
     // plan_tier is billing-controlled — never something a client's own session can set, no matter
     // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
     // client-writable) because this one has no legitimate client-side writer at all.
@@ -1022,6 +1137,37 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
         qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and${clause}`) : (qs?qs+'&':'')+'where='+clause;
       }
     }
+
+    // Channel-specific lead visibility: leads from an assigned inbox are visible only to the
+    // assigned user — not to other team members or even the account owner.
+    // Rule: show a lead if InboxId is blank/null (old/unassigned leads) OR
+    //       InboxId is NOT assigned to someone other than the current user.
+    if(isLeadsList && requesterEmail && env.DB){
+      try{
+        await ensureInboxAssignmentsTable(env);
+        // Ensure InboxId column exists — a one-time migration for clients who had assignments
+        // created before this column was added to the leads table.
+        await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
+        const asgns=await env.DB.prepare(
+          `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
+        ).bind(payload.cid).all();
+        const allAssigned=asgns.results||[];
+        if(allAssigned.length>0){
+          // Inboxes assigned to users OTHER than the current requester
+          const othersInboxIds=allAssigned
+            .filter(a=>a.assigned_email.toLowerCase()!==requesterEmail)
+            .map(a=>String(a.inbox_id));
+          if(othersInboxIds.length>0){
+            // Hide other users' channel leads; show blank (old/unassigned) and own channel leads.
+            // Use ~and for "not in list"; wrap in parens only when multiple conditions need grouping.
+            const neqParts=othersInboxIds.map(id=>`(InboxId,neq,${id})`).join('~and');
+            const notOthers=othersInboxIds.length>1?`(${neqParts})`:neqParts;
+            const clause=`(InboxId,blank)~or${notOthers}`;
+            qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
+          }
+        }
+      }catch(e){}
+    }
   }
 
   const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
@@ -1029,7 +1175,19 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
     body
   });
-  const data=await r.text();
+  let data=await r.text();
+
+  // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
+  // browser after unrelated saves. Only the dedicated /voice/settings endpoint exposes a boolean.
+  if(r.ok && method==='GET' && singleClientRecord){
+    try{
+      const rec=JSON.parse(data);
+      const configured=!!rec.sarvam_api_key;
+      delete rec.sarvam_api_key;
+      rec.sarvam_api_key_configured=configured;
+      data=JSON.stringify(rec);
+    }catch(_e){}
+  }
 
   // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
   // passthrough (no dedicated handler per field). Any successful PATCH to the client's own row is
@@ -1048,10 +1206,73 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   return new Response(data, {status:r.status, headers:{'Content-Type':'application/json'}});
 }
 
+// Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
+// (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
+async function d1InsertLeadMessage(env, leadId, clientId, msg){
+  if(!msg?.role) return;
+  try{
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(
+      Number(leadId), Number(clientId),
+      msg.role,
+      msg.content||'',
+      (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
+      (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
+      msg.ts||new Date().toISOString()
+    ).run();
+  }catch(e){}
+}
+
+// GET /chat/messages?lead_id=X[&after=ISO] — returns messages from D1.
+// First call for a lead auto-seeds D1 from NocoDB ConvHistory (lazy migration).
+async function handleGetChatMessages(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const u=new URL(request.url);
+  const leadId=u.searchParams.get('lead_id');
+  const after=u.searchParams.get('after')||'';
+  if(!leadId) return json({error:'lead_id required'}, 400);
+
+  // Ownership check
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+
+  // Auto-seed D1 from ConvHistory on first request for this lead
+  const countRow=await env.DB.prepare('SELECT COUNT(*) as n FROM lead_messages WHERE lead_id=?')
+    .bind(Number(leadId)).first().catch(()=>null);
+  if(!countRow||!countRow.n){
+    let history=[];
+    try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    for(const msg of history){
+      await d1InsertLeadMessage(env, leadId, payload.cid, msg);
+    }
+  }
+
+  // Read from D1 — incremental if `after` is provided
+  const rows=after
+    ?await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? AND ts>? ORDER BY ts ASC')
+        .bind(Number(leadId), after).all().catch(()=>({results:[]}))
+    :await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY ts ASC')
+        .bind(Number(leadId)).all().catch(()=>({results:[]}));
+
+  const messages=(rows.results||[]).map(r=>{
+    const m={role:r.role, content:r.content, ts:r.ts};
+    try{const a=JSON.parse(r.attachment||'{}');if(Object.keys(a).length)m.attachment=a;}catch(e){}
+    try{const rt=JSON.parse(r.reply_to||'{}');if(Object.keys(rt).length)m.reply_to=rt;}catch(e){}
+    return m;
+  });
+
+  return json({messages, lead_id:Number(leadId)});
+}
+
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, text}=await request.json().catch(()=>({}));
+  const {conv_id, text, lead_id}=await request.json().catch(()=>({}));
   if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
@@ -1059,6 +1280,13 @@ async function handleChatSend(request, env){
   fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
+  if(lead_id){
+    const ts=new Date().toISOString();
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
+      {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
+  }
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
@@ -1145,8 +1373,9 @@ async function handleWaTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${c.wa_token}`}});
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id:new URL(request.url).searchParams.get('inbox_id')});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates?fields=name,status,language,category,components&limit=200`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
   const data=await r.json();
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
   return json(data);
@@ -1155,12 +1384,13 @@ async function handleWaTemplatesGet(request, env){
 async function handleWaTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body}=await request.json().catch(()=>({}));
+  const {name, category, language, body, inbox_id}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components:[{type:'BODY', text:body}]})
   });
   const data=await r.json();
@@ -1171,7 +1401,7 @@ async function handleWaTemplatesCreate(request, env){
 async function handleWaSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {phone, text}=await request.json().catch(()=>({}));
+  const {phone, text, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!text) return json({error:'phone and text required'}, 400);
   // Meta rejects a non-string text.body with a cryptic JSON-schema error instead of a clear one —
   // catch it here so a caller that (accidentally) sends {"text":{"body":"..."}} instead of a plain
@@ -1179,9 +1409,10 @@ async function handleWaSend(request, env){
   const textBody=typeof text==='string'?text:(text&&typeof text==='object'&&typeof text.body==='string'?text.body:null);
   if(!textBody) return json({error:'text must be a non-empty string'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
+  if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp phone / token not configured for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'text', text:{body:textBody}})
   });
   const data=await r.json();
@@ -1195,12 +1426,13 @@ async function handleWaSend(request, env){
 async function handleWaSendTemplate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {phone, template_name, language, components}=await request.json().catch(()=>({}));
+  const {phone, template_name, language, components, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp Business API is not connected for this account — connect it from Settings → Channels.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
+  if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API credentials were not detected for the selected channel.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'template', template:{name:template_name, language:{code:language||'en'}, components:components||[]}})
   });
   const data=await r.json().catch(()=>({}));
@@ -2273,6 +2505,88 @@ async function handleAiComplete(request, env){
   return json({choices:[{message:{role:'assistant',content:text}}]});
 }
 
+// Business AI chat — natural language questions answered from a compact data snapshot the
+// dashboard sends alongside the question. Never fetches raw PII; the frontend computes
+// aggregates client-side and sends only the summary. Daily limit: 10 per user (email) per day,
+// tracked in D1. All answers are grounded in the sent snapshot — AI cannot invent numbers.
+async function handleAiBusinessChat(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const question=String(body.question||'').trim();
+  const summary=body.summary||{};
+  if(!question) return json({error:'question required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(c.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'}, 403);
+  if(!env.GEMINI_API_KEY&&!c.openrouter_key) return json({error:'No AI provider configured.'}, 503);
+
+  // Daily limit tracking per user email in D1
+  const DAILY_LIMIT=10;
+  const userKey=String(payload.email||payload.cid||'').toLowerCase()||String(payload.cid);
+  const today=new Date().toISOString().slice(0,10);
+  let usedToday=0;
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ai_chat_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL, user_key TEXT NOT NULL, date TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(client_id, user_key, date)
+    )`).run().catch(()=>{});
+    const row=await env.DB.prepare(`SELECT count FROM ai_chat_usage WHERE client_id=? AND user_key=? AND date=?`)
+      .bind(Number(payload.cid), userKey, today).first().catch(()=>null);
+    usedToday=Number(row?.count||0);
+  }catch(e){}
+
+  if(usedToday>=DAILY_LIMIT){
+    return json({error:'daily_limit_reached', remaining:0, limit:DAILY_LIMIT}, 429);
+  }
+
+  // Build context from the summary the frontend sent (no PII, only aggregates)
+  const ctx=[];
+  if(summary.totalLeads!=null) ctx.push(`Total leads: ${summary.totalLeads}`);
+  if(summary.newToday!=null)   ctx.push(`New leads today: ${summary.newToday}`);
+  if(summary.hot!=null)        ctx.push(`Hot leads: ${summary.hot}`);
+  if(summary.warm!=null)       ctx.push(`Warm leads: ${summary.warm}`);
+  if(summary.converted!=null)  ctx.push(`Converted/booked: ${summary.converted}`);
+  if(summary.convRate!=null)   ctx.push(`Conversion rate: ${summary.convRate}%`);
+  if(summary.botPct!=null)     ctx.push(`Leads engaged by bot: ${summary.botPct}%`);
+  if(summary.tasksOverdue!=null) ctx.push(`Overdue tasks: ${summary.tasksOverdue}`);
+  if(summary.tasksDueToday!=null) ctx.push(`Tasks due today: ${summary.tasksDueToday}`);
+  if(summary.newThisWeek!=null) ctx.push(`New leads this week: ${summary.newThisWeek}`);
+  if(summary.stages&&typeof summary.stages==='object'){
+    const top=Object.entries(summary.stages).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Pipeline stages: ${top}`);
+  }
+  if(summary.sources&&typeof summary.sources==='object'){
+    const top=Object.entries(summary.sources).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Lead sources: ${top}`);
+  }
+  if(summary.agents&&typeof summary.agents==='object'){
+    const top=Object.entries(summary.agents).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,n])=>`${s}:${n}`).join(', ');
+    ctx.push(`Agents (leads handled): ${top}`);
+  }
+
+  const system=`You are a business intelligence assistant for "${String(c.client_name||'this business').slice(0,60)}" on Leadvyne CRM. Answer the user's question using ONLY the data snapshot below — never invent numbers, never reference data not shown. Keep answers concise, specific, and actionable. Use plain text with short bullet points where helpful. If the question cannot be answered from the snapshot, say so clearly and suggest what data would help.
+
+BUSINESS DATA SNAPSHOT (today ${today}):
+${ctx.length?ctx.join('\n'):'No data available yet.'}`;
+
+  const answer=await engineGeminiGenerateWithFallback(env, c, system, question, {
+    temperature:0.3, maxOutputTokens:350
+  });
+  if(!answer) return json({error:'AI generation failed.'}, 502);
+
+  // Increment usage counter
+  try{
+    await env.DB.prepare(`INSERT INTO ai_chat_usage(client_id,user_key,date,count) VALUES(?,?,?,1)
+      ON CONFLICT(client_id,user_key,date) DO UPDATE SET count=count+1`)
+      .bind(Number(payload.cid), userKey, today).run();
+  }catch(e){}
+
+  const remaining=Math.max(0, DAILY_LIMIT-usedToday-1);
+  return json({answer, remaining, limit:DAILY_LIMIT});
+}
+
 // Automation entry point for objection/trust-signal handling — meant to be called by the
 // external n8n bot as ONE step inside its own reply flow (not an independent Chatwoot webhook
 // listener), so n8n stays the single point of truth for what actually gets sent to the customer
@@ -2504,8 +2818,11 @@ async function handleBroadcastTemplatesGet(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}`, {headers:{api_access_token:c.chatwoot_token}});
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const url=new URL(request.url);
+  const inboxId=Number(url.searchParams.get('inbox_id')||0)||Number(c.chatwoot_inbox_id)||0;
+  if(!inboxId) return json({error:'No WhatsApp inbox configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.message||'Chatwoot API '+r.status}, 502);
   return json({ok:true, templates:data?.message_templates||[], last_updated:data?.message_templates_last_updated||null});
@@ -2518,8 +2835,11 @@ async function handleBroadcastTemplatesSync(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_inbox_id) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
-  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${c.chatwoot_inbox_id}/sync_templates`, {
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not fully configured for this account.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=Number(body.inbox_id||0)||Number(c.chatwoot_inbox_id)||0;
+  if(!inboxId) return json({error:'No WhatsApp inbox configured for this account.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}/sync_templates`, {
     method:'POST', headers:{api_access_token:c.chatwoot_token}
   });
   const data=await r.json().catch(()=>({}));
@@ -2534,15 +2854,18 @@ async function handleBroadcastTemplatesSync(request, env){
 async function handleBroadcastTemplatesCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {name, category, language, body, header, footer}=await request.json().catch(()=>({}));
+  const {name, category, language, body, header, footer, inbox_id, buttons}=await request.json().catch(()=>({}));
   if(!name||!body) return json({error:'name and body required'}, 400);
+  if(buttons&&(!Array.isArray(buttons)||buttons.length>3)) return json({error:'buttons must be an array of up to 3 items'}, 400);
   const c=await getClientById(env, payload.cid);
-  if(!c?.waba_id||!c?.wa_token) return json({error:'Creating a new template requires connecting your Meta WhatsApp Business API — Chatwoot can only sync templates that already exist on Meta, not create new ones. Go to Settings → Channels and either run "Connect WhatsApp" (Embedded Signup), or, if WhatsApp is already connected another way, open "Wire Meta credentials directly" and paste your WABA ID + System User access token. Alternatively, create the template directly in Meta Business Manager, then use Refresh to pull it in.'}, 400);
+  const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
+  if(!creds?.waba_id||!creds?.wa_token) return json({error:'Creating a template requires Meta credentials for the selected WhatsApp channel. Use Detect credentials beside that channel in Settings → Channels.'}, 400);
   const components=[{type:'BODY', text:body}];
   if(header) components.unshift({type:'HEADER', format:'TEXT', text:header});
   if(footer) components.push({type:'FOOTER', text:footer});
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.waba_id}/message_templates`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+  if(buttons&&buttons.length) components.push({type:'BUTTONS', buttons:buttons.map(text=>({type:'QUICK_REPLY', text:String(text).slice(0,20)}))});
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
     body:JSON.stringify({name, category, language, components})
   });
   const data=await r.json().catch(()=>({}));
@@ -2601,9 +2924,9 @@ async function handleBroadcastSendTemplate(request, env){
 const FOLLOWUP_LADDER_STEP_SHAPE=[
   {step:1, type:'session', defaultHours:1},
   {step:2, type:'session', defaultHours:6},
-  {step:3, type:'template', days:2},
-  {step:4, type:'template', days:4},
-  {step:5, type:'template', days:7},
+  {step:3, type:'template', defaultHours:25},
+  {step:4, type:'template', defaultHours:72},
+  {step:5, type:'template', defaultHours:168},
 ];
 function followupLadderDefaultStep(step, legacyHours, legacyMessages){
   const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
@@ -2614,7 +2937,7 @@ function followupLadderDefaultStep(step, legacyHours, legacyMessages){
       message:legacyMessages[legacyIdx]||'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
       template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
   }
-  return {step, type:'template', hours:null, days:shape.days,
+  return {step, type:'template', hours:shape.defaultHours, days:null,
     message:'', message_b:'', template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
     template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
 }
@@ -2639,7 +2962,7 @@ async function handleFollowupLadderGet(request, env){
   const list=FOLLOWUP_LADDER_STEP_SHAPE.map(shape=>{
     const r=bySt[shape.step];
     return r
-      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b,
+      ? {step:r.step, type:r.type, hours:r.hours, days:r.days, message:r.message, message_b:r.message_b, ai_mode:!!r.ai_mode,
          template_name:r.template_name, template_language:r.template_language, template_category:r.template_category, template_body_vars:r.template_body_vars,
          template_name_b:r.template_name_b, template_language_b:r.template_language_b, template_category_b:r.template_category_b, template_body_vars_b:r.template_body_vars_b}
       : followupLadderDefaultStep(shape.step, legacyHours, legacyMessages);
@@ -2657,24 +2980,126 @@ async function handleFollowupLadderSave(request, env){
     if(!s) continue;
     if(shape.type==='session'){
       const hours=Math.min(23, Math.max(1, parseInt(s.hours)||shape.defaultHours));
-      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, updated_at=excluded.updated_at`)
+      const aiMode=s.ai_mode?1:0;
+      // Ensure ai_mode column exists (idempotent — no-ops after first run)
+      await env.DB.prepare(`ALTER TABLE followup_ladder_steps ADD COLUMN ai_mode INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+      await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, ai_mode, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, ai_mode=excluded.ai_mode, updated_at=excluded.updated_at`)
         .bind(Number(payload.cid), shape.step, 'session', hours, null,
-          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000),
+          String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000), aiMode,
           '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
         .run();
     } else {
       await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+        ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, days=excluded.days, template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
           template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
-        .bind(Number(payload.cid), shape.step, 'template', null, shape.days, '', '',
+        .bind(Number(payload.cid), shape.step, 'template', shape.defaultHours, null, '', '',
           String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20), String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
           String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20), String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
           now)
         .run();
     }
+  }
+  return json({ok:true});
+}
+
+// ── Dedicated endpoints for the two halves of the follow-up ladder ──────────────────────────────
+// The dashboard shows them in two separate panels:
+//   "Within 24h — Session messages" (steps 1-2, GET/POST /followups/session-steps)
+//   "After 24h — WhatsApp Templates" (steps 3-5, GET/POST /followups/template-steps)
+// Both read/write the same followup_ladder_steps table as /followups/ladder — splitting the API
+// surface gives the frontend a cleaner contract and makes it obvious in the UI that the two
+// halves have different constraints (session vs approved template, editable hours vs fixed days).
+
+const SESSION_STEPS=[1,2];
+const TEMPLATE_STEPS=[3,4,5];
+
+async function handleFollowupSessionStepsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=? AND step IN (1,2)`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  const legacyHours=(c?.followup_hours||'').split(',').map(s=>parseFloat(s.trim())).filter(n=>n>0);
+  const legacyMessages=(c?.followup_messages||'').split('\n').map(s=>s.trim()).filter(Boolean);
+  const list=SESSION_STEPS.map(step=>{
+    const r=bySt[step];
+    return r
+      ? {step:r.step, type:'session', hours:r.hours, message:r.message||'', message_b:r.message_b||'', ai_mode:!!r.ai_mode}
+      : {...followupLadderDefaultStep(step, legacyHours, legacyMessages), ai_mode:false};
+  });
+  return json({list});
+}
+
+async function handleFollowupSessionStepsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  await env.DB.prepare(`ALTER TABLE followup_ladder_steps ADD COLUMN ai_mode INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+  for(const step of SESSION_STEPS){
+    const s=steps.find(x=>parseInt(x.step)===step);
+    if(!s) continue;
+    const hours=Math.min(23, Math.max(1, parseInt(s.hours)||FOLLOWUP_LADDER_STEP_SHAPE.find(sh=>sh.step===step).defaultHours));
+    const aiMode=s.ai_mode?1:0;
+    await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, ai_mode, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step) DO UPDATE SET hours=excluded.hours, message=excluded.message, message_b=excluded.message_b, ai_mode=excluded.ai_mode, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), step, 'session', hours, null,
+        String(s.message||'').trim().slice(0,1000), String(s.message_b||'').trim().slice(0,1000), aiMode,
+        '', 'en_US', 'MARKETING', 0, '', 'en_US', 'MARKETING', 0, now)
+      .run();
+  }
+  return json({ok:true});
+}
+
+async function handleFollowupTemplateStepsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=? AND step IN (3,4,5)`).bind(Number(payload.cid)).all();
+  const bySt={}; (results||[]).forEach(r=>{ bySt[r.step]=r; });
+  const list=TEMPLATE_STEPS.map(step=>{
+    const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(s=>s.step===step);
+    const r=bySt[step];
+    return r
+      ? {step:r.step, type:'template', defaultHours:shape.defaultHours,
+         template_name:r.template_name||'', template_language:r.template_language||'en_US',
+         template_category:r.template_category||'MARKETING', template_body_vars:r.template_body_vars||0,
+         template_name_b:r.template_name_b||'', template_language_b:r.template_language_b||'en_US',
+         template_category_b:r.template_category_b||'MARKETING', template_body_vars_b:r.template_body_vars_b||0}
+      : {step, type:'template', defaultHours:shape.defaultHours,
+         template_name:'', template_language:'en_US', template_category:'MARKETING', template_body_vars:0,
+         template_name_b:'', template_language_b:'en_US', template_category_b:'MARKETING', template_body_vars_b:0};
+  });
+  // Include human-readable delay labels so the UI can show "Day 1 / Day 3 / Day 7" without hardcoding
+  const labels={3:'After 25h (Day 1)', 4:'After 3 days', 5:'After 7 days'};
+  return json({list, labels});
+}
+
+async function handleFollowupTemplateStepsSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const now=new Date().toISOString();
+  for(const step of TEMPLATE_STEPS){
+    const s=steps.find(x=>parseInt(x.step)===step);
+    if(!s) continue;
+    const shape=FOLLOWUP_LADDER_STEP_SHAPE.find(sh=>sh.step===step);
+    await env.DB.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, days, message, message_b, template_name, template_language, template_category, template_body_vars, template_name_b, template_language_b, template_category_b, template_body_vars_b, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(client_id, step) DO UPDATE SET template_name=excluded.template_name, template_language=excluded.template_language, template_category=excluded.template_category, template_body_vars=excluded.template_body_vars,
+        template_name_b=excluded.template_name_b, template_language_b=excluded.template_language_b, template_category_b=excluded.template_category_b, template_body_vars_b=excluded.template_body_vars_b, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), step, 'template', shape.defaultHours, null, '', '',
+        String(s.template_name||'').trim().slice(0,200), String(s.template_language||'en_US').trim().slice(0,20),
+        String(s.template_category||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars)||0),
+        String(s.template_name_b||'').trim().slice(0,200), String(s.template_language_b||'en_US').trim().slice(0,20),
+        String(s.template_category_b||'MARKETING').trim().slice(0,20), Math.max(0, parseInt(s.template_body_vars_b)||0),
+        now)
+      .run();
   }
   return json({ok:true});
 }
@@ -2722,7 +3147,7 @@ function ladderVariantContent(stepCfg, variant){
 // real number — never a fabricated countdown or "hurry" line with nothing behind it.
 const FOLLOWUP_LOW_STOCK_THRESHOLD=5;
 async function ecomFollowupScarcityLine(env, c, lead){
-  if(c.industry!=='ecommerce' || !lead.InterestedProduct) return '';
+  if(!isEcomEnabled(c) || !lead.InterestedProduct) return '';
   try{
     const product=await ecomResolveProduct(env, c.Id, '', lead.InterestedProduct);
     const stock=Number(product?.stock);
@@ -2771,7 +3196,19 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) throw new Error('Chatwoot is not configured for this account.');
     const convId=lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id;
     if(!convId) throw new Error('This lead has no conversation yet.');
-    sentText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    // AI-generated mode (ai_mode=1): generate a personalised follow-up using the lead's name,
+    // interested product and business prompt instead of the static template. Falls back to the
+    // static message if the AI call produces nothing so the follow-up still goes out.
+    let staticText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    if(stepCfg.ai_mode){
+      try{
+        const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
+        const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
+        const generated=await engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'});
+        if(generated) staticText=generated;
+      }catch(e){ /* AI failed — send static message */ }
+    }
+    sentText=staticText;
     // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
     // comment on why a template step can't carry this).
     sentText+=await ecomFollowupScarcityLine(env, c, lead);
@@ -2818,7 +3255,11 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     sentText=`[template: ${content.template_name}]`;
   }
 
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  // Mark the step as sent. If this PATCH fails the message still went out, so we log the failure
+  // rather than throwing — throwing here would leave `Follow up N` unset and cause the next cron
+  // tick to send the same message again (double-send).
+  const patchRes=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+  if(!patchRes.ok) console.error('[followup] PATCH Follow up',step,'failed for lead',lead.Id,'HTTP',patchRes.status);
   try{
     await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
       .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
@@ -2845,8 +3286,14 @@ async function handleBroadcastFollowupSend(request, env){
   await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(payload.cid)).all();
   const steps={}; (stepRows||[]).forEach(r=>{ steps[r.step]=r; });
+  const silentHoursManual=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
   let nextStep=-1;
-  for(let s=1; s<=5; s++){ if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; } }
+  for(let s=1; s<=5; s++){
+    if(lead['Follow up '+s]==='Yes') continue;
+    const stepCfg=steps[s];
+    if(stepCfg?.type==='session' && silentHoursManual>=24) continue; // WhatsApp 24h session window closed
+    nextStep=s; break;
+  }
   if(nextStep===-1) return json({error:'No follow-up steps left to send for this lead.'}, 400);
   const stepCfg=steps[nextStep];
   if(!stepCfg) return json({error:`Step ${nextStep} isn't set up yet — configure it in Campaigns → Follow-up Engine.`}, 400);
@@ -2880,6 +3327,7 @@ async function runClassicFollowupsForAllClients(env){
   }
 }
 async function classicFollowupProcessClient(env, c){
+  if(c.followup_do_enabled==='Yes') return; // handed off to LeadFollowupAgent Durable Objects
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
   // Checked once per client per tick, not per lead — it's the same answer for every lead of this
@@ -2889,33 +3337,61 @@ async function classicFollowupProcessClient(env, c){
   const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
   // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
   // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
-  const thresholdHours=step=>steps[step].type==='session'?(steps[step].hours||24):((steps[step].days||0)*24);
+  const thresholdHours=step=>{
+    const cfg=steps[step];
+    if(cfg.type==='session') return cfg.hours||24;
+    return FOLLOWUP_LADDER_STEP_SHAPE.find(shape=>shape.step===step)?.defaultHours||((cfg.days||0)*24);
+  };
   await ensureLeadsColumns(env, ['Follow up 4','Follow up 5']);
   const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
   let page=1;
   while(true){
-    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+    const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent('Id,Name,Phone,Stage,LastMsgAt,LastAgentMsgAt,Date,Language,ConversationID,conv_id,ConversationId,chatwoot_conv_id,InterestedProduct,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
     if(!leadsR.ok) break;
     const data=await leadsR.json().catch(()=>({}));
     const leadRows=data?.list||[];
     if(!leadRows.length) break;
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      const lastRealMs=lead.LastMsgAt||lead.Date;
+      if(!lastRealMs) continue;
+      // Skip leads where a human agent replied more recently than the customer — the rep is
+      // already handling this conversation (closed a sale, sent a quote, etc.) and auto
+      // follow-ups firing on top would be embarrassing and confusing.
+      if(lead.LastAgentMsgAt && new Date(lead.LastAgentMsgAt)>new Date(lastRealMs)) continue;
+      const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
       let nextStep=-1;
       for(let s=1; s<=5; s++){
         if(!steps[s]) continue; // step not configured yet — transparently skipped, not blocking
-        if(lead['Follow up '+s]!=='Yes'){ nextStep=s; break; }
+        if(lead['Follow up '+s]==='Yes') continue; // already sent
+        // session steps are only valid inside WhatsApp's 24h customer-service window; once
+        // that window has closed, skip past them so template steps further down can still fire.
+        if(steps[s].type==='session' && silentHours>=24) continue;
+        nextStep=s; break;
       }
-      if(nextStep===-1) continue; // sequence exhausted, or fully sent
+      if(nextStep===-1) continue; // sequence exhausted, or all remaining session steps expired
       const stepCfg=steps[nextStep];
       if(stepCfg.type==='session' && !stepCfg.message) continue;
-      if(stepCfg.type==='template' && !stepCfg.template_name) continue;
-      const lastRealMs=lead.LastMsgAt||lead.Date;
-      if(!lastRealMs) continue;
-      const silentHours=(Date.now()-new Date(lastRealMs).getTime())/3600000;
+      if(stepCfg.type==='template' && !stepCfg.template_name){
+        console.warn('[classic-followups] step',nextStep,'for lead',lead.Id,'has no template_name configured');
+        env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, source, failed_at) VALUES (?,?,?,?,?,?)`)
+          .bind(Number(c.Id), Number(lead.Id), nextStep, 'No template_name configured for this step', 'cron', new Date().toISOString())
+          .run().catch(()=>{});
+        continue;
+      }
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
       try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
-      catch(e){ console.error('[classic-followups] send failed for lead', lead.Id, e.message); }
+      catch(e){
+        console.error('[classic-followups] send failed for lead', lead.Id, 'step', nextStep, e.message);
+        if(stepCfg.type==='template'){
+          // Write to followup_send_failures so the dashboard can show WHY the after-24h template send
+          // failed (expired token, unapproved template, missing WA credentials, etc.) instead of silently swallowing it.
+          const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
+          env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
+            .bind(Number(c.Id), Number(lead.Id), nextStep, String(e.message).slice(0,500), errCode?Number(errCode):null, 'cron', new Date().toISOString())
+            .run().catch(()=>{});
+        }
+      }
       await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
     }
     if(leadRows.length<200) break;
@@ -3779,8 +4255,6 @@ async function handleChannelsWhatsappConnect(request, env){
   if(!code||!waba_id||!phone_number_id) return json({error:'code, waba_id and phone_number_id are required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_account_id||!c?.chatwoot_token||!c?.chatwoot_base) return json({error:'Connect a Chatwoot account first.'}, 400);
-  if(c.chatwoot_inbox_id && c.wa_phone_id) return json({error:'WhatsApp is already connected for this client.'}, 400);
-
   const collision=await findOtherClientByField(env, 'waba_id', waba_id, payload.cid) || await findOtherClientByField(env, 'wa_phone_id', phone_number_id, payload.cid);
   if(collision) return json({error:'This WhatsApp Business Account / number is already connected to a different client.'}, 409);
 
@@ -3824,8 +4298,62 @@ async function handleChannelsWhatsappConnect(request, env){
   // customer can dial — wa_display_phone is the actual number (e.g. "+91 94969 71950") and is
   // what the public storefront's "Order on WhatsApp" links use, so they open the exact same
   // WhatsApp thread this bot/inbox replies from instead of a different, unrelated number.
-  await patchClientFields(env, payload.cid, {chatwoot_inbox_id:String(inbox.id), waba_id, wa_token, wa_phone_id:phone_number_id, wa_display_phone:phone_number});
+  await ensureClientColumns(env, [META_CHANNEL_CREDENTIALS_FIELD]);
+  const credential={inbox_id:String(inbox.id),waba_id,wa_token,wa_phone_id:phone_number_id,display_phone:phone_number};
+  const patch={[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))};
+  // Keep legacy fields pinned to the first connection so old callers and single-channel accounts
+  // behave exactly as before. New callers select from the per-inbox map.
+  if(!c.chatwoot_inbox_id) Object.assign(patch,{chatwoot_inbox_id:String(inbox.id),waba_id,wa_token,wa_phone_id:phone_number_id,wa_display_phone:phone_number});
+  await patchClientFields(env, payload.cid, patch);
   return json({ok:true, chatwoot_inbox_id:String(inbox.id), waba_id, wa_phone_id:phone_number_id});
+}
+
+// POST /channels/whatsapp/extract-meta-creds
+// Auto-extracts waba_id / wa_token / wa_phone_id from the Chatwoot inbox config so clients
+// whose WhatsApp was set up directly in Chatwoot (not via Embedded Signup) don't have to copy
+// credentials manually. Chatwoot's inbox show endpoint returns `channel_config` which includes
+// `api_key` (the Meta access token), `phone_number_id`, and `business_account_id`.
+async function handleChannelsExtractMetaCreds(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token)
+    return json({error:'Chatwoot is not fully configured. Make sure the Chatwoot account and WhatsApp inbox are connected first.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=String(body.inbox_id||c.chatwoot_inbox_id||'');
+  if(!inboxId) return json({error:'Select a WhatsApp channel first.'},400);
+  // Fetch full inbox details — channel_config is returned for admin tokens
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${inboxId}`, {
+    headers:{api_access_token:c.chatwoot_token}
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:data?.message||('Chatwoot API '+r.status)}, 502);
+  let credential=metaCredentialFromInbox(data,inboxId);
+  if(!credential.wa_token||!credential.wa_phone_id||!credential.waba_id) credential=await detectMetaCredentialFromAccessibleAccounts(env,c,credential)||credential;
+  if(!credential.wa_token||!credential.waba_id||!credential.wa_phone_id) return json({error:'Could not match this Chatwoot number to an accessible Meta WhatsApp account. Reconnect this number through Meta or save its credentials manually.'}, 400);
+  await ensureClientColumns(env, [META_CHANNEL_CREDENTIALS_FIELD]);
+  const existing=resolveMetaCredentials(c,{inbox_id:inboxId});
+  const patch={[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(mergeMetaChannelCredential(c,credential))};
+  if(!c.wa_token) Object.assign(patch,{waba_id:credential.waba_id,wa_token:credential.wa_token,wa_phone_id:credential.wa_phone_id,chatwoot_inbox_id:inboxId});
+  await patchClientFields(env, payload.cid, patch);
+  return json({ok:true,inbox_id:inboxId,already_configured:!!existing,saved:{waba_id:!!credential.waba_id,wa_token:!!credential.wa_token,wa_phone_id:!!credential.wa_phone_id}});
+}
+
+async function handleChannelsManualMetaCreds(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const waba_id=String(body.waba_id||'').trim(),wa_token=String(body.wa_token||'').trim(),wa_phone_id=String(body.wa_phone_id||'').trim(),inbox_id=String(body.inbox_id||'').trim();
+  if(!waba_id||!wa_token) return json({error:'WABA ID and access token are required.'},400);
+  const c=await getClientById(env,payload.cid);
+  const patch={};
+  if(inbox_id){
+    await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+    patch[META_CHANNEL_CREDENTIALS_FIELD]=JSON.stringify(mergeMetaChannelCredential(c,{inbox_id,waba_id,wa_token,wa_phone_id}));
+  }
+  if(!inbox_id||!c?.wa_token) Object.assign(patch,{waba_id,wa_token,...(wa_phone_id?{wa_phone_id}:{}),...(inbox_id?{chatwoot_inbox_id:inbox_id}:{})});
+  await patchClientFields(env,payload.cid,patch);
+  return json({ok:true,inbox_id,waba_id,wa_phone_id,wa_token_connected:true});
 }
 
 /* ── Instagram DM module (native — no Chatwoot) ────────────────────────────────────────────
@@ -4089,7 +4617,37 @@ async function handleChannelsStatus(request, env){
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:'Failed to load inboxes from Chatwoot: HTTP '+r.status}, 502);
-  const inboxes=(data?.payload||data?.data?.payload||[]).map(ib=>({id:ib.id, name:ib.name, channel_type:ib.channel_type}));
+  let credentialState=c;
+  const rawInboxes=data?.payload||data?.data?.payload||[];
+  const whatsapp=rawInboxes.filter(ib=>ib.channel_type==='Channel::Whatsapp');
+  // Automatic, best-effort detection for every connected number. A Chatwoot version that hides
+  // provider_config simply leaves that channel unconfigured and the per-channel button explains
+  // how to retry; failures never break the Channels page.
+  if(whatsapp.length){
+    const detected=await Promise.all(whatsapp.map(async ib=>{
+      try{
+        const ir=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes/${ib.id}`,{headers:{api_access_token:c.chatwoot_token}});
+        if(!ir.ok) return null;
+        const credential=metaCredentialFromInbox(await ir.json().catch(()=>({})),ib.id);
+        return credential.wa_token?credential:null;
+      }catch(e){ return null; }
+    }));
+    const found=detected.filter(Boolean);
+    if(found.length){
+      let merged=parseMetaChannelCredentials(c);
+      for(const credential of found) merged=mergeMetaChannelCredential({[META_CHANNEL_CREDENTIALS_FIELD]:JSON.stringify(merged)},credential);
+      const encoded=JSON.stringify(merged);
+      if(encoded!==JSON.stringify(parseMetaChannelCredentials(c))){
+        try{
+          await ensureClientColumns(env,[META_CHANNEL_CREDENTIALS_FIELD]);
+          await patchClientFields(env,payload.cid,{[META_CHANNEL_CREDENTIALS_FIELD]:encoded});
+          credentialState={...c,[META_CHANNEL_CREDENTIALS_FIELD]:encoded};
+        }catch(e){ /* status remains usable; never log credential material */ }
+      }
+    }
+  }
+  const summaries=Object.fromEntries(metaCredentialSummary(credentialState).map(x=>[String(x.inbox_id),x]));
+  const inboxes=rawInboxes.map(ib=>({id:ib.id,name:ib.name,channel_type:ib.channel_type,...(ib.channel_type==='Channel::Whatsapp'?{phone_number:summaries[String(ib.id)]?.display_phone||ib.phone_number||'',meta_credentials:summaries[String(ib.id)]||{configured:false,has_phone_id:false,has_waba_id:false,display_phone:''}}:{})}));
   const has_whatsapp=inboxes.some(ib=>ib.channel_type==='Channel::Whatsapp');
   return json({ok:true, account:{chatwoot_base:c.chatwoot_base, chatwoot_account_id:c.chatwoot_account_id}, inboxes, has_whatsapp});
 }
@@ -4199,6 +4757,73 @@ async function handleChannelsChatwootSso(request, env){
   const data=await r.json().catch(()=>({}));
   if(!r.ok||!data?.url) return json({error:'Failed to generate a Chatwoot login link: '+(data?.message||('HTTP '+r.status))}, 502);
   return json({ok:true, sso:true, url:data.url});
+}
+
+async function ensureInboxAssignmentsTable(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS channel_inbox_assignments (client_id INTEGER NOT NULL,inbox_id INTEGER NOT NULL,assigned_email TEXT NOT NULL DEFAULT '',chatwoot_user_id INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY (client_id,inbox_id))`).run().catch(()=>{});
+  await env.DB.prepare(`ALTER TABLE channel_inbox_assignments ADD COLUMN bot_reply_disabled INTEGER NOT NULL DEFAULT 0`).run().catch(()=>null);
+}
+
+// GET /channels/agents — list Chatwoot agents for this account (for the assignment picker)
+async function handleChannelsAgents(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'No Chatwoot account connected.'}, 400);
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/agents`, {headers:{api_access_token:c.chatwoot_token}});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'Failed to load agents: HTTP '+r.status}, 502);
+  const agents=(Array.isArray(data)?data:(data?.payload||[])).map(a=>({id:a.id, name:a.name, email:a.email, role:a.role||'agent'}));
+  return json({ok:true, agents});
+}
+
+// GET /channels/inbox-assignments — list all inbox→agent assignments for this client
+async function handleChannelsInboxAssignmentsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureInboxAssignmentsTable(env);
+  const rows=await env.DB.prepare(`SELECT inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=?`).bind(payload.cid).all();
+  return json({ok:true, assignments:rows.results||[]});
+}
+
+// PUT /channels/inbox-assignment — set agent assignment and/or bot-reply toggle for a specific inbox
+async function handleChannelsInboxAssignmentPut(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'No Chatwoot account connected.'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const inboxId=Number(body.inbox_id||0);
+  if(!inboxId) return json({error:'inbox_id is required'}, 400);
+  await ensureInboxAssignmentsTable(env);
+  const now=new Date().toISOString();
+  const clear=body.clear===true||body.chatwoot_user_id===null;
+  if(clear){
+    await env.DB.prepare(`DELETE FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=?`).bind(payload.cid, inboxId).run();
+    return json({ok:true, inbox_id:inboxId, cleared:true});
+  }
+  // Pure bot-reply toggle (no agent change): just upsert the bot_reply_disabled flag
+  if('bot_reply_disabled' in body && !('assigned_email' in body)){
+    const disabled=body.bot_reply_disabled?1:0;
+    await env.DB.prepare(
+      `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,0,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
+    ).bind(payload.cid,inboxId,'',disabled,now,now).run();
+    return json({ok:true, inbox_id:inboxId, bot_reply_disabled:!!disabled});
+  }
+  // Agent assignment (may also include bot_reply_disabled)
+  const agentId=Number(body.chatwoot_user_id||0);
+  const email=String(body.assigned_email||'').trim().toLowerCase();
+  if(!email) return json({error:'assigned_email is required'}, 400);
+  const disabled='bot_reply_disabled' in body ? (body.bot_reply_disabled?1:0) : 0;
+  await env.DB.prepare(
+    `INSERT INTO channel_inbox_assignments (client_id,inbox_id,assigned_email,chatwoot_user_id,bot_reply_disabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id,inbox_id) DO UPDATE SET assigned_email=excluded.assigned_email,chatwoot_user_id=excluded.chatwoot_user_id,bot_reply_disabled=excluded.bot_reply_disabled,updated_at=excluded.updated_at`
+  ).bind(payload.cid,inboxId,email,agentId,disabled,now,now).run();
+  // Ensure InboxId column exists on the leads table so channel-visibility filters work
+  await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
+  // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
+  if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
+    .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
+  return json({ok:true, inbox_id:inboxId, cleared:false});
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
@@ -5524,7 +6149,7 @@ async function handleAiRepeatCustomers(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
-  if(c.industry!=='ecommerce') return json({has_orders_table:false, customers:[]});
+  if(!isEcomEnabled(c)) return json({has_orders_table:false, customers:[]});
   const tableId=await ecomResolveTable(env, payload.cid, 'orders');
   if(!tableId) return json({has_orders_table:false, customers:[]});
 
@@ -7018,6 +7643,316 @@ async function handleEcomCategoryMediaServe(env, key){
 }
 
 /* ════════════════════════════════════════════════════════════════════════════════════════════════
+   BUSINESS SERVICES MODULE
+   D1-backed CRUD for service centres (CSC/Akshaya-style). Services behave like Ecom products
+   with fee, turnaround_time, required_docs, appointment_required, service_type, government_url.
+   Categories have up to 3 photos (image_url_1/2/3) — same link-paste model as Ecom categories.
+   Client-id-based auth — same trust model as /ecom/*.
+   business-services.html embeds as an iframe in dashboard.html.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+const BS_CLIENT_READ_FIELDS=['Id','client_name','bot_config'];
+const BS_CLIENT_WRITE_FIELDS=['bot_config'];
+
+let _bsSchemaEnsured=false;
+async function bsEnsureSchema(env){
+  if(_bsSchemaEnsured)return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS bs_categories (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,image_url_1 TEXT,image_url_2 TEXT,image_url_3 TEXT,created_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_categories_client ON bs_categories(client_id)`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS bs_services (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,category_id INTEGER,name TEXT NOT NULL,description TEXT,fee TEXT,turnaround_time TEXT,required_docs TEXT,appointment_required INTEGER NOT NULL DEFAULT 0,service_type TEXT,government_url TEXT,image_url_1 TEXT,image_url_2 TEXT,image_url_3 TEXT,pdf_url TEXT,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_services_client ON bs_services(client_id)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_bs_services_category ON bs_services(client_id,category_id)`),
+  ]);
+  _bsSchemaEnsured=true;
+}
+
+async function handleBsClientGet(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'},404);
+  const out={};
+  BS_CLIENT_READ_FIELDS.forEach(k=>{ out[k]=c[k]; });
+  return json(out);
+}
+
+async function handleBsClientUpdate(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const fields={};
+  BS_CLIENT_WRITE_FIELDS.forEach(k=>{ if(k in body) fields[k]=body[k]; });
+  if(!Object.keys(fields).length) return json({error:'No valid fields to update'},400);
+  const result=await ncPatchVerified(env, clientId, fields);
+  return json(result.data, result.status);
+}
+
+async function handleBsCategoriesList(request, env){
+  await bsEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const {results}=await env.DB.prepare(`SELECT * FROM bs_categories WHERE client_id=? ORDER BY name ASC`).bind(Number(clientId)).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleBsCategoryCreate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,80);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(`INSERT INTO bs_categories (client_id, name, description, created_at) VALUES (?,?,?,?)`)
+    .bind(Number(clientId), name, String(body.description||'').trim().slice(0,500), new Date().toISOString()).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+
+async function findBsCategory(env, id){
+  return await env.DB.prepare(`SELECT * FROM bs_categories WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleBsCategoryUpdate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  if(body.name!==undefined){ const n=String(body.name).trim().slice(0,80); if(!n) return json({error:'name cannot be blank'},400); sets.push('name=?'); vals.push(n); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(body.description?String(body.description).trim().slice(0,500):null); }
+  if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
+  if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
+  if(body.image_url_3!==undefined){ sets.push('image_url_3=?'); vals.push(body.image_url_3?String(body.image_url_3).trim().slice(0,500):null); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE bs_categories SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleBsCategoryDelete(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsCategory(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM bs_services WHERE client_id=? AND category_id=?`).bind(Number(clientId), id).run();
+  await env.DB.prepare(`DELETE FROM bs_categories WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+async function handleBsServicesList(request, env){
+  await bsEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const categoryId=url.searchParams.get('category_id');
+  let q=`SELECT s.*, c.name AS category_name FROM bs_services s LEFT JOIN bs_categories c ON c.id=s.category_id WHERE s.client_id=?`;
+  const binds=[Number(clientId)];
+  if(categoryId){ q+=' AND s.category_id=?'; binds.push(Number(categoryId)); }
+  q+=' ORDER BY s.name ASC';
+  const {results}=await env.DB.prepare(q).bind(...binds).all();
+  return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
+}
+
+async function handleBsServiceCreate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const name=String(body.name||'').trim().slice(0,120);
+  if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const r=await env.DB.prepare(
+    `INSERT INTO bs_services (client_id,category_id,name,description,fee,turnaround_time,required_docs,appointment_required,service_type,government_url,image_url_1,image_url_2,image_url_3,pdf_url,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    Number(clientId),
+    body.category_id?Number(body.category_id):null,
+    name,
+    String(body.description||'').trim().slice(0,2000),
+    String(body.fee||'').trim().slice(0,100),
+    String(body.turnaround_time||'').trim().slice(0,200),
+    String(body.required_docs||'').trim().slice(0,2000),
+    body.appointment_required?1:0,
+    String(body.service_type||'').trim().slice(0,80),
+    body.government_url?String(body.government_url).trim().slice(0,500):null,
+    body.image_url_1?String(body.image_url_1).trim().slice(0,500):null,
+    body.image_url_2?String(body.image_url_2).trim().slice(0,500):null,
+    body.image_url_3?String(body.image_url_3).trim().slice(0,500):null,
+    body.pdf_url?String(body.pdf_url).trim().slice(0,500):null,
+    body.status==='inactive'?'inactive':'active',
+    new Date().toISOString()
+  ).run();
+  return json({Id:r.meta.last_row_id, client_id:Number(clientId), name});
+}
+
+async function findBsService(env, id){
+  return await env.DB.prepare(`SELECT * FROM bs_services WHERE id=?`).bind(Number(id)).first();
+}
+
+async function handleBsServiceUpdate(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsService(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[], vals=[];
+  const strField=(k,max=500)=>{ if(k in body){ sets.push(`${k}=?`); vals.push(body[k]?String(body[k]).trim().slice(0,max):null); }};
+  if('name' in body){ const n=String(body.name||'').trim().slice(0,120); if(!n) return json({error:'name cannot be blank'},400); sets.push('name=?'); vals.push(n); }
+  if('category_id' in body){ sets.push('category_id=?'); vals.push(body.category_id?Number(body.category_id):null); }
+  strField('description', 2000);
+  strField('fee', 100);
+  strField('turnaround_time', 200);
+  strField('required_docs', 2000);
+  if('appointment_required' in body){ sets.push('appointment_required=?'); vals.push(body.appointment_required?1:0); }
+  strField('service_type', 80);
+  strField('government_url', 500);
+  strField('image_url_1', 500);
+  strField('image_url_2', 500);
+  strField('image_url_3', 500);
+  strField('pdf_url', 500);
+  if('status' in body){ sets.push('status=?'); vals.push(body.status==='inactive'?'inactive':'active'); }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE bs_services SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleBsServiceDelete(request, env){
+  await bsEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findBsService(env, id);
+  if(!existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM bs_services WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
+   ATTESTATION MODULE (D1-backed, auto-schema)
+   Document attestation services catalog for travel agencies — MEA, Embassy, MOFA, Apostille,
+   HRD, State, Notary, CoC, Police Clearance, Birth/Marriage/Degree certificate attestation.
+   Client-id-based auth (no session token). Bot auto-sends service PDF when customer enquires.
+   ════════════════════════════════════════════════════════════════════════════════════════════════ */
+
+let _attestSchemaEnsured=false;
+async function attestEnsureSchema(env){
+  if(_attestSchemaEnsured)return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS attest_services(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    service_type TEXT,
+    country TEXT,
+    fee REAL,
+    currency TEXT DEFAULT 'INR',
+    turnaround_time TEXT,
+    required_docs TEXT,
+    description TEXT,
+    pdf_url TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT(datetime('now'))
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_attest_services_client ON attest_services(client_id)`).run();
+  // Add country column to existing tables that predate this field
+  const {results:cols}=await env.DB.prepare(`PRAGMA table_info(attest_services)`).all();
+  if(cols&&!cols.some(c=>c.name==='country')){
+    await env.DB.prepare(`ALTER TABLE attest_services ADD COLUMN country TEXT`).run();
+  }
+  _attestSchemaEnsured=true;
+}
+
+const ATTEST_SERVICE_FIELDS=['name','service_type','country','fee','currency','turnaround_time','required_docs','description','pdf_url','status'];
+
+async function handleAttestServicesList(request, env){
+  await attestEnsureSchema(env);
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const includeInactive=url.searchParams.get('include_inactive')==='true';
+  const q=includeInactive
+    ?`SELECT * FROM attest_services WHERE client_id=? ORDER BY created_at DESC`
+    :`SELECT * FROM attest_services WHERE client_id=? AND status='active' ORDER BY created_at DESC`;
+  const {results}=await env.DB.prepare(q).bind(clientId).all();
+  return json({list:results||[]});
+}
+
+async function handleAttestServiceCreate(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId||!body.name) return json({error:'client_id and name required'},400);
+  const cols=['client_id','name'];
+  const vals=[clientId,body.name];
+  for(const f of ATTEST_SERVICE_FIELDS.slice(1)){
+    if(f in body){cols.push(f);vals.push(body[f]);}
+  }
+  const placeholders=cols.map(()=>'?').join(',');
+  const result=await env.DB.prepare(`INSERT INTO attest_services(${cols.join(',')}) VALUES(${placeholders})`).bind(...vals).run();
+  return json({ok:true,id:result.meta?.last_row_id});
+}
+
+async function findAttestService(env,id){
+  const {results}=await env.DB.prepare(`SELECT * FROM attest_services WHERE id=?`).bind(id).all();
+  return results?.[0]||null;
+}
+
+async function handleAttestServiceUpdate(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findAttestService(env,id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  const sets=[]; const vals=[];
+  for(const f of ATTEST_SERVICE_FIELDS){
+    if(f in body){sets.push(`${f}=?`);vals.push(body[f]);}
+  }
+  if(!sets.length) return json({ok:true});
+  vals.push(id);
+  await env.DB.prepare(`UPDATE attest_services SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+
+async function handleAttestServiceDelete(request, env){
+  await attestEnsureSchema(env);
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const existing=await findAttestService(env,id);
+  if(!existing||String(existing.client_id)!==clientId) return json({error:'Not found'},404);
+  await env.DB.prepare(`DELETE FROM attest_services WHERE id=?`).bind(id).run();
+  return json({ok:true});
+}
+
+// Auto-sends attestation service PDF when the bot mentions a specific service by name.
+// Called after travel_faq bot reply; at most one PDF per turn (first match wins).
+async function travelMaybeSendAttestPdf(env, clientId, convId, replyText, c){
+  await attestEnsureSchema(env);
+  const {results:services}=await env.DB.prepare(
+    `SELECT name, pdf_url FROM attest_services WHERE client_id=? AND status='active' AND pdf_url IS NOT NULL AND pdf_url!=''`
+  ).bind(clientId).all();
+  if(!services||!services.length)return;
+  const lower=(replyText||'').toLowerCase();
+  for(const svc of services){
+    const svcName=(svc.name||'').toLowerCase();
+    if(svcName.length>3&&lower.includes(svcName)){
+      await sendDriveMediaToChatwoot(c, convId, svc.pdf_url, '', `${(svc.name).replace(/\s+/g,'-').toLowerCase()}-checklist.pdf`);
+      break;
+    }
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════════
    EDUCATION MODULE (migrations/0060-0065)
    All education data lives in D1 — courses, enrollments, categories, promotions, stories.
    Client-id-based auth (no session token) — same trust model as /ecom/*.
@@ -7064,11 +7999,21 @@ async function handleEduCoursesList(request, env){
   return json({list:(results||[]).map(r=>({...r, Id:r.id}))});
 }
 
+export function eduCoursePdfUrlError(value){
+  const url=String(value||'').trim();
+  if(!url) return '';
+  if(/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\//i.test(url)) return 'Paste the Google Drive link for the PDF file, not a Drive folder. The file must be shared as "Anyone with the link can view."';
+  if(/(?:drive|docs)\.google\.com/i.test(url)&&!driveFileId(url)) return 'Use a valid Google Drive file, Doc, Slides, or Sheets share link for the brochure PDF.';
+  return '';
+}
+
 async function handleEduCourseCreate(request, env){
   const body=await request.json().catch(()=>({}));
   const clientId=String(body.client_id||'');
   const name=String(body.name||'').trim();
   if(!clientId||!name) return json({error:'client_id and name required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const now=new Date().toISOString();
   const r=await env.DB.prepare(
     `INSERT INTO edu_courses (client_id,name,short_label,category,level,duration,start_date,price,currency,seats_available,status,enrollment_link,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url,description,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -7081,6 +8026,8 @@ async function handleEduCourseUpdate(request, env){
   const clientId=String(body.client_id||'');
   const id=parseInt(body.Id||body.id,10);
   if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const pdfError=eduCoursePdfUrlError(body.pdf_url);
+  if(pdfError) return json({error:pdfError},400);
   const existing=await env.DB.prepare(`SELECT id FROM edu_courses WHERE id=? AND client_id=?`).bind(id,Number(clientId)).first();
   if(!existing) return json({error:'Not found'},404);
   const sets=[],vals=[];
@@ -7204,6 +8151,334 @@ async function handleEduEnroll(request, env){
   const results=await env.DB.batch(stmts);
   return json({ok:true,enrollment_id:enrollmentId,id:results[0].meta.last_row_id});
 }
+
+
+/* ── Education chat-only admissions (migration 0068) ─────────────────────────
+   A deterministic, resumable state machine. Course/general questions fall through
+   to the normal education FAQ route; the active step is injected into its verified
+   context so the answer always offers Continue / Ask / Change Course. */
+const EDU_ADMISSION_START_RE=/\b(start (?:an? )?(?:application|admission)|apply now|apply for admission|enrol(?:l)? now|begin (?:an? )?(?:application|admission)|i (?:want|would like) (?:to apply|admission))\b/i;
+const EDU_ADMISSION_CONTINUE_RE=/^(?:▶️?\s*)?(?:continue|continue application|resume|resume application)$/i;
+const EDU_ADMISSION_CHANGE_RE=/^(?:🔄?\s*)?(?:change course|choose another course|another course)$/i;
+const EDU_ADMISSION_CANCEL_RE=/^(?:❌?\s*)?(?:cancel|cancel application|stop application)$/i;
+const EDU_ADMISSION_QUESTION_RE=/\?$|^(?:what|why|when|where|who|how|can|could|is|are|do|does|tell me|explain|ask another question)\b/i;
+const EDU_ADMISSION_ADVISOR_RE=/^(?:👤\s*)?(?:talk to (?:an? )?advisor|speak to (?:an? )?advisor|contact (?:an? )?advisor|book consultation|call us)$/i;
+const EDU_ADMISSION_STEPS=['welcome','course','full_name','email','qualification','completion_year','study_mode','scholarship','id_proof','qualification_document','photo','payment_option','confirm','submitted'];
+
+function eduAdmissionId(){ return 'APP-'+Date.now()+'-'+String(Math.floor(Math.random()*9000)+1000); }
+function eduAdmissionOptions(items){ return (items||[]).slice(0,10).map(function(x){ return {title:x[0],value:x[1]||x[0]}; }); }
+export function eduNormalizePhone(v){ return String(v||'').replace(/[^\d+]/g,'').slice(-18); }
+export function eduEmailValid(v){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||'').trim()); }
+export function eduYearValid(v){ const y=Number(String(v||'').match(/\d{4}/)?.[0]); return y>=1950&&y<=new Date().getFullYear()+1; }
+export function eduAdmissionWantsStart(v){
+  const text=String(v||'').trim();
+  return EDU_ADMISSION_START_RE.test(text)||/^(?:📚\s*)?choose course$/i.test(text);
+}
+export function eduAdmissionWantsAdvisor(v){ return EDU_ADMISSION_ADVISOR_RE.test(String(v||'').trim()); }
+
+function eduAdmissionCourseKey(value){
+  return String(value||'').trim().toLowerCase().normalize('NFC').replace(/\s+/g,' ');
+}
+
+// WhatsApp echoes the visible list-row title, not reliably the longer `value` stored by
+// Chatwoot. Course rows are capped at 24 characters, so a tap on a long course such as
+// "B.Voc in Oil & Gas Safety Management" can arrive as only "📘 B.Voc in Oil & Gas S".
+// Resolve against both database labels and the exact 20/24-character titles we send. Return
+// null when two courses collapse to the same visible title rather than selecting the wrong one.
+export function eduResolveAdmissionCourse(courses,userText){
+  const wanted=eduAdmissionCourseKey(userText);
+  if(!wanted) return null;
+  const matches=(courses||[]).filter(function(course){
+    const label=String(course.short_label||course.name||'').trim();
+    const renderedKey=eduAdmissionCourseKey(label?`📘 ${label}`:'');
+    const candidates=[course.name,course.short_label,label?`📘 ${label}`:''];
+    if(label){
+      candidates.push(engineTruncateButtonTitle(`📘 ${label}`,20));
+      candidates.push(engineTruncateButtonTitle(`📘 ${label}`,24));
+      // Older Chatwoot/Meta sends hard-cut the title instead of using our word-boundary
+      // truncation. Keep accepting those already-delivered rows while clients roll forward.
+      candidates.push(`📘 ${label}`.slice(0,20).trimEnd());
+      candidates.push(`📘 ${label}`.slice(0,24).trimEnd());
+    }
+    return candidates.some(function(candidate){return eduAdmissionCourseKey(candidate)===wanted;})
+      // Meta counts the leading emoji differently across payload paths, producing either a
+      // 23- or 24-code-unit echo. Accept only an emoji-prefixed, unique rendered-title prefix.
+      || (wanted.startsWith('📘 ')&&wanted.length>=20&&renderedKey.startsWith(wanted));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+// A short affirmative after one specific course's details should continue into enrollment rather
+// than ask about the same missing duration again. Explicit Enroll/Apply taps use the same resolver,
+// so the student is not forced to choose the course a second time.
+export function eduEnrollmentCourseFromChat(courses,userText,history){
+  const clean=String(userText||'').trim();
+  const affirmative=/^(?:yes|yes please|sure|ok|okay|please do|continue)$/i.test(clean);
+  if(!affirmative&&!eduAdmissionWantsStart(clean)) return null;
+  const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+  if(!lastAssistant) return null;
+  if(affirmative&&!/(?:would you like|want to|shall i|can i).*(?:know more|details|syllabus|eligibility|enrol|admission|apply)/is.test(lastAssistant.content)) return null;
+  return eduResolveCourseForMedia(courses,[lastAssistant.content]);
+}
+
+async function eduAdmissionEvent(env,app,type,data){
+  await env.DB.prepare('INSERT INTO edu_admission_events (client_id,application_id,event_type,step,event_data,created_at) VALUES (?,?,?,?,?,?)')
+    .bind(Number(app.client_id),Number(app.id),type,String(app.current_step||''),JSON.stringify(data||{}),new Date().toISOString()).run();
+}
+async function eduAdmissionPatch(env,app,fields,eventType){
+  const allowed=['lead_id','conversation_id','student_id','course_id','full_name','email','qualification','completion_year','study_mode','scholarship_code','eligibility_status','current_step','paused_step','status','payment_option','payment_status','payment_reference','answers_json','submitted_at'];
+  const sets=[],vals=[];
+  allowed.forEach(function(k){ if(Object.prototype.hasOwnProperty.call(fields,k)){ sets.push(k+'=?'); vals.push(fields[k]); app[k]=fields[k]; } });
+  sets.push('updated_at=?'); vals.push(new Date().toISOString()); vals.push(Number(app.id));
+  await env.DB.prepare('UPDATE edu_admission_applications SET '+sets.join(',')+' WHERE id=?').bind(...vals).run();
+  if(eventType) await eduAdmissionEvent(env,app,eventType,fields);
+  return app;
+}
+async function eduAdmissionActive(env,clientId,phone){
+  return await env.DB.prepare("SELECT * FROM edu_admission_applications WHERE client_id=? AND phone=? AND status IN ('in_progress','awaiting_review','payment_pending') ORDER BY updated_at DESC LIMIT 1")
+    .bind(Number(clientId),eduNormalizePhone(phone)).first();
+}
+async function eduAdmissionCreate(env,clientId,phone,leadId,convId){
+  const now=new Date().toISOString(),applicationId=eduAdmissionId();
+  const r=await env.DB.prepare("INSERT INTO edu_admission_applications (client_id,application_id,lead_id,conversation_id,phone,current_step,status,created_at,updated_at) VALUES (?,?,?,?,?,'welcome','in_progress',?,?)")
+    .bind(Number(clientId),applicationId,String(leadId||''),String(convId||''),eduNormalizePhone(phone),now,now).run();
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE id=?').bind(r.meta.last_row_id).first();
+  await eduAdmissionEvent(env,app,'application_started',{channel:'chat'});
+  return app;
+}
+async function eduAdmissionSend(env,c,clientId,convId,text,options){
+  if(options&&options.length) return await engineSendChatwootQuickReply(env,c,clientId,convId,text,options);
+  return await engineSendChatwootReply(env,c,clientId,convId,text);
+}
+async function eduAdmissionCourses(env,clientId){
+  const r=await env.DB.prepare("SELECT * FROM edu_courses WHERE client_id=? AND status='active' AND (admission_open IS NULL OR admission_open=1) ORDER BY name LIMIT 30").bind(Number(clientId)).all();
+  return r.results||[];
+}
+async function eduAdmissionPrompt(env,c,clientId,convId,app,extra){
+  const courses=await eduAdmissionCourses(env,clientId);
+  let text='',options=[];
+  switch(app.current_step){
+    case 'welcome':
+      text='🎓 *Admission Application*\n\n• I will guide you step by step.\n• You can ask a question at any time.\n• Your progress is saved automatically.';
+      options=eduAdmissionOptions([['📚 Choose Course','Choose Course'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]); break;
+    case 'course':
+      text='📚 *Step 1 of 8 · Choose a Course*\n\n• Select one verified course to continue.';
+      options=eduAdmissionOptions(courses.slice(0,8).map(function(x){return ['📘 '+String(x.short_label||x.name).slice(0,20),x.name];}));
+      if(!options.length) options=eduAdmissionOptions([['👤 Talk to Advisor','Talk to Advisor']]);
+      break;
+    case 'full_name':
+      text='👤 *Step 2 of 8 · Personal Details*\n\n• Please enter your full name.';
+      options=eduAdmissionOptions([['🔄 Change Course','Change Course'],['❓ Ask a Question','Ask another question']]); break;
+    case 'email':
+      text='📧 *Step 2 of 8 · Personal Details*\n\n• Please enter your email address.';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification':
+      text='🎓 *Step 3 of 8 · Education*\n\n• What is your highest qualification?';
+      options=eduAdmissionOptions([['10th','10th'],['12th','12th'],['🎓 Diploma','Diploma'],['🎓 Graduate','Graduate'],['🎓 Postgraduate','Postgraduate']]); break;
+    case 'completion_year':
+      text='📅 *Step 3 of 8 · Education*\n\n• What year did you complete it?';
+      options=eduAdmissionOptions([['⬅️ Back','Back'],['❓ Ask a Question','Ask another question']]); break;
+    case 'study_mode':
+      text='🖥️ *Step 4 of 8 · Study Mode*\n\n• Choose your preferred learning mode.';
+      options=eduAdmissionOptions([['🏫 Classroom','Classroom'],['💻 Online','Online'],['🔄 Hybrid','Hybrid']]); break;
+    case 'scholarship':
+      text='🎁 *Step 5 of 8 · Scholarship*\n\n• Would you like us to check available offers?';
+      options=eduAdmissionOptions([['🎁 Check Offers','Check Offers'],['⏭️ Skip','Skip'],['❓ Ask a Question','Ask another question']]); break;
+    case 'id_proof':
+      text='🪪 *Step 6 of 8 · Documents*\n\n• Upload your ID proof here.\n• Send one clear image or PDF.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'qualification_document':
+      text='📄 *Step 6 of 8 · Documents*\n\n• Upload your qualification certificate.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'photo':
+      text='🖼️ *Step 6 of 8 · Documents*\n\n• Upload your passport-size photograph.';
+      options=eduAdmissionOptions([['⏭️ Upload Later','Upload Later'],['❓ Ask a Question','Ask another question']]); break;
+    case 'payment_option':
+      text='💳 *Step 7 of 8 · Payment Preference*\n\n• Choose how you prefer to pay.\n• Never send card or bank details in chat.';
+      options=eduAdmissionOptions([['💰 Full Fee','Full Fee'],['📅 Installments','Installments'],['👤 Discuss with Advisor','Discuss with Advisor']]); break;
+    case 'confirm': {
+      const course=courses.find(function(x){return Number(x.id)===Number(app.course_id);});
+      text='✅ *Step 8 of 8 · Confirm Application*\n\n• 👤 '+(app.full_name||'—')+'\n• 📘 '+(course?.name||'—')+'\n• 🎓 '+(app.qualification||'—')+'\n• 🖥️ '+(app.study_mode||'—')+'\n• 💳 '+(app.payment_option||'—');
+      options=eduAdmissionOptions([['✅ Submit Application','Submit Application'],['✏️ Edit Details','Edit Details'],['❓ Ask a Question','Ask another question']]); break;
+    }
+  }
+  if(extra) text=extra+'\n\n'+text;
+  await eduAdmissionSend(env,c,clientId,convId,text,options);
+  return {handled:true,step:app.current_step};
+}
+async function eduAdmissionSaveDocument(env,app,type,url,mediaType){
+  const now=new Date().toISOString();
+  await env.DB.prepare("INSERT INTO edu_admission_documents (client_id,application_id,document_type,file_url,media_type,verification_status,created_at,updated_at) VALUES (?,?,?,?,?,'pending',?,?) ON CONFLICT(application_id,document_type) DO UPDATE SET file_url=excluded.file_url,media_type=excluded.media_type,verification_status='pending',updated_at=excluded.updated_at")
+    .bind(Number(app.client_id),Number(app.id),type,String(url||''),String(mediaType||''),now,now).run();
+  await eduAdmissionEvent(env,app,'document_received',{document_type:type});
+}
+async function engineHandleEduAdmissionChat(env,c,clientId,convId,phone,leadId,userText,mediaType,mediaUrl,history){
+  if(c.industry!=='education') return null;
+  const clean=String(userText||'').trim();
+  let app=await eduAdmissionActive(env,clientId,phone);
+  let wantsStart=eduAdmissionWantsStart(clean);
+  let preselectedCourse=null;
+  if(!app){
+    const courses=await eduAdmissionCourses(env,clientId);
+    preselectedCourse=eduEnrollmentCourseFromChat(courses,clean,history);
+    if(preselectedCourse) wantsStart=true;
+  }
+  if(!app&&!wantsStart) return null;
+  if(!app) app=await eduAdmissionCreate(env,clientId,phone,leadId,convId);
+  if(String(app.lead_id||'')!==String(leadId||'')||String(app.conversation_id||'')!==String(convId||'')) await eduAdmissionPatch(env,app,{lead_id:String(leadId||''),conversation_id:String(convId||'')},null);
+
+  if(preselectedCourse&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{course_id:Number(preselectedCourse.id),current_step:'full_name'},'course_selected');
+    const durationNote=preselectedCourse.duration?'':'⏱ Duration is not confirmed yet.\n• It does not block enrollment.\n\n';
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+preselectedCourse.name+' selected.\n\n'+durationNote+'▶️ Let’s continue your enrollment.');
+  }
+
+  if(EDU_ADMISSION_CANCEL_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{status:'cancelled',current_step:'cancelled'},'application_cancelled');
+    await eduAdmissionSend(env,c,clientId,convId,'❌ *Application cancelled*\n\n• Your saved application has been closed.\n• You can start a new application anytime.',eduAdmissionOptions([['🎓 Start Application','Start Application'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'cancelled'};
+  }
+  if(eduAdmissionWantsAdvisor(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'advisor_requested');
+    return null;
+  }
+  if(EDU_ADMISSION_CHANGE_RE.test(clean)){
+    await eduAdmissionPatch(env,app,{course_id:null,current_step:'course',paused_step:''},'course_change_requested');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^(?:❓\s*)?ask another question$/i.test(clean)){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'question_mode_started');
+    await eduAdmissionSend(env,c,clientId,convId,'❓ *Ask your question*\n\n• Your application progress is safely saved.\n• I will return you to the same step.',eduAdmissionOptions([['▶️ Continue Application','Continue Application'],['🔄 Change Course','Change Course']]));
+    return {handled:true,step:app.current_step};
+  }
+  if(EDU_ADMISSION_CONTINUE_RE.test(clean)){
+    if(app.paused_step) await eduAdmissionPatch(env,app,{current_step:app.paused_step,paused_step:''},'application_resumed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'▶️ Your application has resumed.');
+  }
+  if(app.paused_step&&EDU_ADMISSION_QUESTION_RE.test(clean)) return null;
+  if(EDU_ADMISSION_QUESTION_RE.test(clean)&&!wantsStart){
+    await eduAdmissionPatch(env,app,{paused_step:app.current_step},'application_paused_for_question');
+    return null;
+  }
+  if(wantsStart&&app.current_step==='welcome'){
+    await eduAdmissionPatch(env,app,{current_step:'course'},'step_completed');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(/^back$/i.test(clean)){
+    const back={email:'full_name',completion_year:'qualification',confirm:'payment_option'}[app.current_step];
+    if(back) await eduAdmissionPatch(env,app,{current_step:back},'step_back');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+
+  if(app.current_step==='welcome') return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  if(app.current_step==='course'){
+    const courses=await eduAdmissionCourses(env,clientId);
+    const course=eduResolveAdmissionCourse(courses,clean);
+    if(!course) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please select one of the verified courses.');
+    await eduAdmissionPatch(env,app,{course_id:Number(course.id),current_step:'full_name'},'course_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ '+course.name+' selected.');
+  }
+  if(app.current_step==='full_name'){
+    if(clean.length<2||clean.length>100) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid full name.');
+    await eduAdmissionPatch(env,app,{full_name:clean,current_step:'email'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='email'){
+    if(!eduEmailValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid email address.');
+    await eduAdmissionPatch(env,app,{email:clean.toLowerCase(),current_step:'qualification'},'personal_details_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='qualification'){
+    await eduAdmissionPatch(env,app,{qualification:clean.slice(0,80),current_step:'completion_year'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='completion_year'){
+    if(!eduYearValid(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please enter a valid four-digit year.');
+    await eduAdmissionPatch(env,app,{completion_year:String(clean.match(/\d{4}/)[0]),current_step:'study_mode',eligibility_status:'review_required'},'education_updated');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,'✅ Details saved. Eligibility will be verified by admissions.');
+  }
+  if(app.current_step==='study_mode'){
+    const mode=/online/i.test(clean)?'Online':/class/i.test(clean)?'Classroom':/hybrid/i.test(clean)?'Hybrid':'';
+    if(!mode) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one study mode.');
+    await eduAdmissionPatch(env,app,{study_mode:mode,current_step:'scholarship'},'study_mode_selected');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='scholarship'){
+    let code='';
+    if(!/^skip$/i.test(clean)){
+      const p=await env.DB.prepare("SELECT code FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 1").bind(Number(clientId)).first();
+      code=p?.code||'review_requested';
+    }
+    await eduAdmissionPatch(env,app,{scholarship_code:code,current_step:'id_proof'},'scholarship_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  const docSteps={id_proof:['id_proof','qualification_document'],qualification_document:['qualification_certificate','photo'],photo:['passport_photo','payment_option']};
+  if(docSteps[app.current_step]){
+    const spec=docSteps[app.current_step];
+    if(mediaUrl) await eduAdmissionSaveDocument(env,app,spec[0],mediaUrl,mediaType);
+    else if(!/^upload later$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please upload a file or choose Upload Later.');
+    await eduAdmissionPatch(env,app,{current_step:spec[1]},mediaUrl?'document_step_completed':'document_deferred');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app,mediaUrl?'✅ Document received securely.':'⏭️ Document marked for later upload.');
+  }
+  if(app.current_step==='payment_option'){
+    const option=/install/i.test(clean)?'Installments':/full/i.test(clean)?'Full Fee':/advisor|discuss/i.test(clean)?'Discuss with Advisor':'';
+    if(!option) return await eduAdmissionPrompt(env,c,clientId,convId,app,'⚠️ Please choose one payment preference.');
+    await eduAdmissionPatch(env,app,{payment_option:option,current_step:'confirm',status:'payment_pending'},'payment_preference_saved');
+    return await eduAdmissionPrompt(env,c,clientId,convId,app);
+  }
+  if(app.current_step==='confirm'){
+    if(/^edit details$/i.test(clean)){
+      await eduAdmissionPatch(env,app,{current_step:'full_name',status:'in_progress'},'edit_requested');
+      return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    }
+    if(!/^submit application$/i.test(clean)) return await eduAdmissionPrompt(env,c,clientId,convId,app);
+    const now=new Date().toISOString();
+    let student=await env.DB.prepare('SELECT * FROM edu_students WHERE client_id=? AND phone=?').bind(Number(clientId),eduNormalizePhone(phone)).first();
+    if(!student){
+      const sr=await env.DB.prepare('INSERT INTO edu_students (client_id,name,phone,email,notes,created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),app.full_name,eduNormalizePhone(phone),app.email,'Created from chat admission',now).run();
+      student={id:sr.meta.last_row_id};
+    }else{
+      await env.DB.prepare('UPDATE edu_students SET name=?,email=? WHERE id=?').bind(app.full_name,app.email,student.id).run();
+    }
+    await eduAdmissionPatch(env,app,{student_id:Number(student.id),current_step:'submitted',status:'awaiting_review',submitted_at:now},'application_submitted');
+    await eduAdmissionSend(env,c,clientId,convId,'🎉 *Application submitted!*\n\n• 🆔 '+app.application_id+'\n• ✅ Your details are saved.\n• 🎓 Admissions will verify eligibility and documents.\n• 💳 Use only the secure payment link shared by the team.',eduAdmissionOptions([['📋 Application Status','Application Status'],['❓ Ask a Question','Ask another question'],['👤 Talk to Advisor','Talk to Advisor']]));
+    return {handled:true,step:'submitted'};
+  }
+  return null;
+}
+
+async function handleEduAdmissionApplicationsList(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const r=await env.DB.prepare('SELECT a.*,c.name AS course_name,(SELECT COUNT(*) FROM edu_admission_documents d WHERE d.application_id=a.id) AS document_count FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? ORDER BY a.updated_at DESC LIMIT 500').bind(Number(clientId)).all();
+  return json({list:r.results||[]});
+}
+async function handleEduAdmissionApplicationDetail(request,env){
+  const url=new URL(request.url),clientId=String(url.searchParams.get('client_id')||''),id=Number(url.searchParams.get('id'));
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const application=await env.DB.prepare('SELECT a.*,c.name AS course_name FROM edu_admission_applications a LEFT JOIN edu_courses c ON c.id=a.course_id WHERE a.client_id=? AND a.id=?').bind(Number(clientId),id).first();
+  if(!application) return json({error:'Not found'},404);
+  const [docs,events]=await Promise.all([
+    env.DB.prepare('SELECT * FROM edu_admission_documents WHERE client_id=? AND application_id=? ORDER BY created_at').bind(Number(clientId),id).all(),
+    env.DB.prepare('SELECT * FROM edu_admission_events WHERE client_id=? AND application_id=? ORDER BY created_at DESC LIMIT 100').bind(Number(clientId),id).all()
+  ]);
+  return json({application:application,documents:docs.results||[],events:events.results||[]});
+}
+async function handleEduAdmissionApplicationUpdate(request,env){
+  const body=await request.json().catch(function(){return {};});
+  const clientId=String(body.client_id||''),id=Number(body.id);
+  if(!clientId||!id) return json({error:'client_id and id required'},400);
+  const app=await env.DB.prepare('SELECT * FROM edu_admission_applications WHERE client_id=? AND id=?').bind(Number(clientId),id).first();
+  if(!app) return json({error:'Not found'},404);
+  const patch={};
+  ['status','eligibility_status','payment_status','payment_reference'].forEach(function(k){if(Object.prototype.hasOwnProperty.call(body,k))patch[k]=String(body[k]||'');});
+  await eduAdmissionPatch(env,app,patch,'admin_updated');
+  if(body.document_id&&body.verification_status){
+    await env.DB.prepare('UPDATE edu_admission_documents SET verification_status=?,updated_at=? WHERE id=? AND client_id=? AND application_id=?').bind(String(body.verification_status),new Date().toISOString(),Number(body.document_id),Number(clientId),id).run();
+  }
+  return json({ok:true});
+}
+
 
 /* ── Education Categories (D1-backed, same pattern as Ecom categories) ── */
 async function handleEduCategoriesList(request, env){
@@ -7405,15 +8680,154 @@ async function eduClaimCourseBrochureForToday(env, clientId, leadId, courseId){
   }catch(e){ await reportOpsError(env, 'eduClaimCourseBrochureForToday', e, {clientId, leadId, courseId}); return true; }
 }
 
-async function eduMaybeSendCourseMedia(env, c, clientId, convId, course){
+async function eduMaybeSendCourseMedia(env, c, clientId, convId, course, pdfOnly=false){
   if(!course || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
   try{
+    if(pdfOnly){
+      if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
+      return;
+    }
+    // Primary image first (image_url), then secondary images, then audio/video, then PDF
+    if(course.image_url) await sendDriveMediaToChatwoot(c, convId, course.image_url, '');
     if(course.image_url_2) await sendDriveMediaToChatwoot(c, convId, course.image_url_2, '');
     if(course.image_url_3) await sendDriveMediaToChatwoot(c, convId, course.image_url_3, '');
     if(course.audio_url) await sendDriveMediaToChatwoot(c, convId, course.audio_url, '');
     if(course.video_url) await sendDriveMediaToChatwoot(c, convId, course.video_url, '');
-    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '');
+    if(course.pdf_url) await sendDriveMediaToChatwoot(c, convId, course.pdf_url, '', `${course.short_label||course.name||'course'}-brochure.pdf`);
   }catch(e){ await reportOpsError(env, 'eduMaybeSendCourseMedia', e, {clientId, convId}); }
+}
+
+function eduMediaNormalize(value){
+  return String(value||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+}
+
+// Resolve a course only when the current/recent chat names exactly one verified active course.
+// This lets a tap on "Get Brochure" reuse the one course named in the immediately preceding bot
+// reply, while refusing to guess when that reply listed several courses.
+export function eduResolveCourseForMedia(courses, texts){
+  const haystacks=(texts||[]).map(eduMediaNormalize).filter(Boolean);
+  if(!haystacks.length) return null;
+  const matches=(courses||[]).filter(course=>{
+    const names=[course.name,course.short_label].map(eduMediaNormalize).filter(name=>name.length>=3);
+    return names.some(name=>haystacks.some(text=>text===name||text.includes(` ${name} `)||text.startsWith(`${name} `)||text.endsWith(` ${name}`)));
+  });
+  return matches.length===1?matches[0]:null;
+}
+
+export function eduVerifiedChoicesFromReply(courses,categories,replyText){
+  const text=eduMediaNormalize(replyText);
+  if(!text) return [];
+  const mentioned=(rows,labelKey)=>{
+    const seen=new Set();
+    return (rows||[]).filter(row=>{
+      const label=String(typeof row==='string'?row:row?.[labelKey]||'').trim();
+      const normalized=eduMediaNormalize(label);
+      if(normalized.length<3||seen.has(normalized)) return false;
+      const found=text===normalized||text.includes(` ${normalized} `)||text.startsWith(`${normalized} `)||text.endsWith(` ${normalized}`);
+      if(found) seen.add(normalized);
+      return found;
+    }).map(row=>String(typeof row==='string'?row:row?.[labelKey]||'').trim());
+  };
+  const courseNames=mentioned(courses,'name');
+  if(courseNames.length>=2) return courseNames.slice(0,10).map(name=>({title:name,value:name}));
+  const categoryNames=mentioned(categories,'name');
+  if(categoryNames.length>=2) return categoryNames.slice(0,10).map(name=>({title:name,value:name}));
+  return [];
+}
+
+async function engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,history,replyText){
+  if(c.industry!=='education'||!convId||!userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  const wantsPdf=/\b(brochure|syllabus|prospectus|course\s*pdf|pdf|download)\b/i.test(userText);
+  try{
+    // Include image_url (primary) in addition to secondary images
+    const {results:courses}=await env.DB.prepare(`SELECT id,name,short_label,image_url,image_url_2,image_url_3,audio_url,video_url,pdf_url FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all();
+    if(!courses?.length) return;
+    // 1. Try explicit course name in student's current message
+    let course=eduResolveCourseForMedia(courses,[userText]);
+    // 2. Always fall back to the last assistant reply and bot reply text when no match in userText
+    //    (covers "Tell me more", button taps, "enroll", etc. where the course name is in the bot's reply)
+    if(!course){
+      const lastAssistant=[...(history||[])].reverse().find(turn=>turn?.role==='assistant'&&turn.content);
+      course=eduResolveCourseForMedia(courses,[lastAssistant?.content,replyText]);
+    }
+    if(!course||(!course.image_url&&!course.pdf_url&&!course.image_url_2&&!course.image_url_3&&!course.audio_url&&!course.video_url)) return;
+    if(!await eduClaimCourseBrochureForToday(env,clientId,resolvedLeadId,course.id)) return;
+    await eduMaybeSendCourseMedia(env,c,clientId,convId,course,wantsPdf);
+  }catch(e){ await reportOpsError(env,'engineMaybeSendEduCourseMedia',e,{clientId,convId}); }
+}
+
+/* ── Education enrollment collection flow ─────────────────────────────────────────────────────
+   Deterministic name → phone collection, then INSERT into edu_enrollments.
+   Intercepts BEFORE the FAQ LLM so the bot never hallucinates "recorded" without actually saving.
+   State is stored as EduEnrollState (JSON) on the lead row in NocoDB.
+   ─────────────────────────────────────────────────────────────────────────────────────────── */
+const EDU_ENROLL_INTENT_RE=/\b(enroll|admission|apply|register|i want to join|want enroll|need enroll|enroll me|i want to enroll|how to enroll|how to apply|start enrollment|begin enrollment|take admission)\b/i;
+
+async function engineMaybeEduEnrollFlow(env, c, clientId, convId, leadId, userText, state, routing){
+  if(c.industry!=='education'||!leadId||!userText) return false;
+  const enrollState=engineParseJsonField(state.lead?.EduEnrollState, null);
+
+  // STEP: awaiting_name — previous turn asked for full name
+  if(enrollState?.step==='awaiting_name'){
+    const studentName=userText.trim();
+    const next={...enrollState, step:'awaiting_phone', student_name:studentName};
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(next)}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`Thanks, ${studentName}! 😊\n\nCould you please share your *Mobile Number* so we can complete your enrollment for *${courseName}*?`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // STEP: awaiting_phone — previous turn asked for phone, now save to D1
+  if(enrollState?.step==='awaiting_phone'){
+    const phone=userText.replace(/[^\d+]/g,'').trim()||userText.trim();
+    const now=new Date().toISOString();
+    const enrollmentId='ENR-'+Date.now();
+    try{
+      await env.DB.prepare(
+        `INSERT INTO edu_enrollments (client_id,enrollment_id,enrollment_date,student_name,student_phone,student_email,course,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(Number(clientId),enrollmentId,now.slice(0,10),String(enrollState.student_name||''),phone,'',String(enrollState.course_name||''),'pending','via WhatsApp',now,now).run();
+    }catch(e){ await reportOpsError(env,'eduEnrollFlowInsert',e,{clientId,convId}); }
+    await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+    await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:null}}).catch(()=>{});
+    const courseName=enrollState.course_name||'the course';
+    const reply=`✅ Your enrollment request for *${courseName}* has been recorded!\n\n• 📚 Course: ${courseName}\n• 👤 Name: ${enrollState.student_name}\n• 📱 Mobile: ${phone}\n• 🆔 Reference: ${enrollmentId}\n\nOur admissions team will contact you shortly to confirm. 🎓\n\n*Reply with:* [Ask a Question] [View Other Courses] [Talk to Advisor]`;
+    await engineSendChatwootReply(env,c,clientId,convId,reply);
+    routing.reply=reply;
+    return true;
+  }
+
+  // DETECT ENROLLMENT INTENT — start the collection flow
+  if(!EDU_ENROLL_INTENT_RE.test(userText)) return false;
+  let courseName='';
+  try{
+    const {results:courses}=await env.DB.prepare(`SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name`).bind(Number(clientId)).all();
+    const lower=userText.toLowerCase();
+    let found=courses.find(cr=>cr.name&&lower.includes(cr.name.toLowerCase()));
+    if(!found){
+      // Search recent conversation history for a course name the bot mentioned
+      const history=(state.activeHistory||[]).slice(-8).reverse();
+      for(const msg of history){
+        if(!msg.content) continue;
+        const msgLower=msg.content.toLowerCase();
+        found=courses.find(cr=>cr.name&&msgLower.includes(cr.name.toLowerCase()));
+        if(found) break;
+      }
+    }
+    if(!found&&courses.length===1) found=courses[0];
+    if(found) courseName=found.name;
+  }catch(e){}
+  const newState={step:'awaiting_name',course_name:courseName};
+  await ensureLeadsColumns(env,['EduEnrollState']).catch(()=>{});
+  await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:Number(leadId),EduEnrollState:JSON.stringify(newState)}}).catch(()=>{});
+  const courseLabel=courseName?`the *${courseName}*`:`a course`;
+  const reply=`Great! To enroll in ${courseLabel}, I need a few details. 📋\n\nCould you please share your *Full Name*?`;
+  await engineSendChatwootReply(env,c,clientId,convId,reply);
+  routing.reply=reply;
+  return true;
 }
 
 /* ── Education category media auto-send (once per lead per category, same as ecom categories) ── */
@@ -7471,7 +8885,7 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
 // reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
 // re-sent on every later message that happens to mention the same category again.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  if(c.industry!=='ecommerce' || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  if(!isEcomEnabled(c) || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
@@ -7531,6 +8945,11 @@ function escapeRegexLiteral(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, 
 // "it's a deal", "on sale of my old car") in favor of phrases that only really come up when
 // someone's asking a shop about a promotion.
 const ECOM_PROMO_KEYWORD_RE=/\b(promo\s*code|promocode|coupon\s*code|discount\s*code|any\s+offers?|any\s+discounts?|any\s+promo|current\s+offers?|ongoing\s+offers?|special\s+offers?)\b/i;
+// Explicit re-send requests that bypass the 5-hour tier gate and deliver only
+// what the customer asked for (primary image OR Shopify link), without
+// advancing the progressive-disclosure counter.
+const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photo|image|pic|picture)|send\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|show\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|photo\s+again|image\s+again|pic\s+again)\b/i;
+const ECOM_RESEND_LINK_RE=/\b(re[-\s]?send\s*(the\s+)?(link|url)|send\s*(me\s+)?(the\s+)?(link|url|product\s*link|shopify\s*link)|link\s+again|url\s+again)\b/i;
 
 /* ── PROMOTIONS & OFFERS engine hook (migrations/0045_ecom_promotions.sql) ──────────────────
    Two ways a customer's message triggers a reply:
@@ -7630,8 +9049,8 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
    it). Previously gated on the customer's wording matching ECOM_PRODUCT_DETAILS_KEYWORD_RE
    ("more details", "full description", etc.) with no dedup at all; per explicit product
    direction this now sends whenever any product is confidently matched (same trigger as the
-   photo), capped to once per (lead, product, calendar day) by the caller passing the same
-   engineClaimProductImageForToday claim (sendProductImage) the photo/media bundle already uses.
+   photo), capped to once per 5-hour window by the caller's engineClaimProductSend tier-1
+   claim (sendProductImage===true) that the photo/media bundle already uses.
    Called right before engineMaybeSendProductMedia at each order-detection branch in
    handleEngineWebhook, so the customer sees description → extra images → audio → video,
    in that order, as one bundle. */
@@ -8096,6 +9515,14 @@ export function ecomIsGeneralBusinessInfoQuery(text){
   return /^(?:(?:hi|hello|hey)[,! .-]*)?(?:(?:can|could|may) i (?:get|have) (?:some )?more (?:info|information)(?: (?:on|about))? (?:this|your business|your company|your store)?|tell me (?:more )?about (?:your business|your company|your store|what you do)|what (?:does your (?:business|company) do|do you do)|(?:business|company|store) (?:info|information|details))[?!. ]*$/i.test(normalized);
 }
 
+// Detects messages asking about the physical location, address, or directions to the business.
+// Used to decide whether to follow a bot reply with a Google Maps CTA button.
+function isLocationDirectionsQuery(text){
+  const t=String(text||'').toLowerCase().replace(/['']/g,"'").replace(/\s+/g,' ').trim();
+  if(!t) return false;
+  return /\b(location|address|directions?|how (?:do i|can i|to) (?:get|find|reach|visit|come)|where (?:are you|is (?:your|the) (?:shop|store|office|branch|place|location|showroom))|find (?:you|your (?:shop|store|office|location))|visit you|come to (?:you|your)|google map|gmaps|maps? link|navigate|gps|way to (?:your|the)|near(?:by|est)|your (?:shop|store|office|showroom|branch) (?:address|location))\b/i.test(t);
+}
+
 // The reverse direction of ecomResolveProduct above: given a block of text (the ecom_faq LLM's own
 // generated reply, not the customer's message), find whether it confidently names exactly one
 // catalog product — used to attach one-tap follow-up buttons (order / more details / talk to a
@@ -8145,29 +9572,85 @@ async function ecomDetectMentionedCategories(env, clientId, replyText){
 // Drive-fetch path. Best-effort: a missing/unshared Drive link for any of the three just skips that
 // one send, never blocks or fails the product reply that already went out above it.
 //
-// Per-day-per-product dedup (migrations/0055_ecom_product_image_sent.sql) — observed real
-// complaint: a customer asking about the same product several times in one day (re-confirming
-// size, coming back to it later, etc.) got the full photo/extra-angle/audio/video/PDF bundle
-// resent every single time, which reads as spammy on WhatsApp. engineClaimProductImageForToday
-// below is called once per turn, right before deciding whether to attach the inline photo AND
-// before calling engineMaybeSendProductMedia — both are gated by the same claim so the whole
-// bundle is either sent together (first ask that day) or skipped together (a repeat ask), leaving
-// the text answer itself unaffected either way. The `sent_date` column (not "ever", unlike
-// ecom_testimonial_sent's identical shape) means the SAME product photo/media happily sends again
-// tomorrow — only same-day repeats are being avoided. `leadId` is `state.leadId`, the lead as
-// loaded at the START of this turn (before this turn's own upsert) — a brand-new lead has no id
-// yet at that point, so this always returns true (send) for a lead's very first-ever message,
-// since there is nothing to have already sent. INSERT OR IGNORE + checking meta.changes (rather
-// than a separate SELECT-then-INSERT) is the same atomic single-write claim idiom already used for
-// inbound-message dedup above (engine_processed_messages) — one D1 round trip, not two.
-async function engineClaimProductImageForToday(env, clientId, leadId, productId){
-  if(!leadId || !productId) return true;
+// Progressive-disclosure tier tracker (migrations/0084_ecom_product_image_sent_send_count.sql).
+// Replaces the old per-calendar-day binary claim with a 5-hour rolling window and a send_count
+// that drives three tiers for Shopify products:
+//   tier 1 (first ask in window)  — full bundle: primary image + description + all media
+//   tier 2 (second ask in window) — 1 random extra angle + description + Shopify link
+//   tier 3+ (third+ ask in window)— 1 random extra angle + audio + Shopify link
+// Non-Shopify products continue to use tier 1 vs. Furniture random-image fallback as before.
+// Window resets after 5 hours so the same product can cycle through tiers again the next
+// conversation window without being permanently gated.
+// Returns the new send_count (1, 2, 3…); fail-open returns 1 so media always sends on error.
+async function engineClaimProductSend(env, clientId, leadId, productId){
+  if(!leadId || !productId) return 1;
   try{
-    const today=new Date().toISOString().slice(0,10);
-    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(clientId), leadId, productId, today, new Date().toISOString()).run();
-    return !!ins?.meta?.changes;
-  }catch(e){ await reportOpsError(env, 'engineClaimProductImageForToday', e, {clientId, leadId, productId}); return true; }
+    const now=new Date().toISOString();
+    const today=now.slice(0,10);
+    const fiveHoursAgo=new Date(Date.now()-5*60*60*1000).toISOString();
+    const existing=await env.DB.prepare(
+      `SELECT id, sent_at, send_count FROM ecom_product_image_sent WHERE lead_id=? AND product_id=? ORDER BY sent_at DESC LIMIT 1`
+    ).bind(leadId, productId).first();
+    if(!existing){
+      // First ever send for this lead+product
+      await env.DB.prepare(`INSERT OR IGNORE INTO ecom_product_image_sent (client_id, lead_id, product_id, sent_date, sent_at, send_count) VALUES (?,?,?,?,?,1)`)
+        .bind(Number(clientId), leadId, productId, today, now).run();
+      return 1;
+    }
+    if(existing.sent_at < fiveHoursAgo){
+      // Window expired — reset counter on the existing row (avoids a new row duplicating the index)
+      await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, sent_date=?, send_count=1 WHERE id=?`)
+        .bind(now, today, existing.id).run();
+      return 1;
+    }
+    // Within 5-hour window — advance to next tier
+    const next=(existing.send_count||1)+1;
+    await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, send_count=? WHERE id=?`)
+      .bind(now, next, existing.id).run();
+    return next;
+  }catch(e){ await reportOpsError(env, 'engineClaimProductSend', e, {clientId, leadId, productId}); return 1; }
+}
+
+// Shopify tier 2 follow-up: 1 random extra angle image, then optionally full description and
+// the Shopify product URL as separate messages. opts.withDescription controls whether to re-send
+// the description (skip when the main reply already includes it inline). opts.withLink controls
+// whether to append the Shopify URL (skip when the main reply text already contains it).
+async function engineSendShopifyTier2(env, c, clientId, convId, product, opts={}){
+  const {withDescription=true, withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(withDescription && product.description){
+      const heading=product.name?`📋 *${product.name}*\n\n`:'📋 ';
+      await engineSendChatwootReply(env, c, clientId, convId, `${heading}${product.description}`);
+    }
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier2', e, {clientId, convId}); }
+}
+
+// Shopify tier 3 follow-up: 1 random extra angle image + audio note + optionally the Shopify URL.
+async function engineSendShopifyTier3(env, c, clientId, convId, product, opts={}){
+  const {withLink=true}=opts;
+  if(!product || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  try{
+    const pool=[product.image_url_2, product.image_url_3, product.image_url_4, product.image_url_5].filter(Boolean);
+    if(pool.length){
+      const img=pool[Math.floor(Math.random()*pool.length)];
+      await sendDriveMediaToChatwoot(c, convId, img, '');
+    }
+    if(product.audio_url) await sendDriveMediaToChatwoot(c, convId, product.audio_url, '');
+    if(withLink){
+      const link=(product.shopify_product_url||'').trim();
+      if(link) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ *Order here:*\n${link}`);
+    }
+  }catch(e){ await reportOpsError(env, 'engineSendShopifyTier3', e, {clientId, convId}); }
 }
 
 // Furniture & Home Appliances same-day repeat: pick 2 random images from the product's pool
@@ -8488,15 +9971,6 @@ const HC_OPERATIONS_SCHEMA=[
     failure_reason TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS healthcare_booking_sessions (
-    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
-    conversation_id INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT '',
-    service_id INTEGER NOT NULL DEFAULT 0, doctor_id INTEGER NOT NULL DEFAULT 0,
-    appointment_date TEXT NOT NULL DEFAULT '', start_time TEXT NOT NULL DEFAULT '',
-    end_time TEXT NOT NULL DEFAULT '', patient_name TEXT NOT NULL DEFAULT '',
-    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-    PRIMARY KEY (client_id, patient_phone)
-  )`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_departments_client ON healthcare_departments(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_client ON healthcare_doctors(client_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctors_department ON healthcare_doctors(department_id)`,
@@ -8513,8 +9987,6 @@ const HC_OPERATIONS_SCHEMA=[
     ON healthcare_appointment_automation(client_id, workflow_status, calendar_status, reminder_status)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_queue_failures_client
     ON healthcare_queue_failures(client_id, created_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_healthcare_booking_sessions_expiry
-    ON healthcare_booking_sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS healthcare_doctor_services (
     id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL,
     doctor_id INTEGER NOT NULL, service_id INTEGER NOT NULL,
@@ -8524,7 +9996,13 @@ const HC_OPERATIONS_SCHEMA=[
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_doctor
     ON healthcare_doctor_services(client_id, doctor_id)`,
   `CREATE INDEX IF NOT EXISTS idx_healthcare_doctor_services_service
-    ON healthcare_doctor_services(client_id, service_id)`
+    ON healthcare_doctor_services(client_id, service_id)`,
+  `CREATE TABLE IF NOT EXISTS healthcare_simple_sessions (
+    client_id INTEGER NOT NULL, patient_phone TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '', appt_date TEXT NOT NULL DEFAULT '',
+    appt_time TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+    PRIMARY KEY (client_id, patient_phone)
+  )`
 ];
 export async function hcEnsureOperationsSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
@@ -8532,6 +10010,7 @@ export async function hcEnsureOperationsSchema(env){
   if(cached) return cached;
   const pending=(async()=>{
     for(const statement of HC_OPERATIONS_SCHEMA) await env.DB.prepare(statement).run();
+    // service_type column added by migration 0081_healthcare_service_type.sql
   })();
   hcOperationsSchemaReady.set(env.DB,pending);
   try{ await pending; }
@@ -8540,14 +10019,24 @@ export async function hcEnsureOperationsSchema(env){
 async function hcListActiveServices(env, clientId){
   await hcEnsureOperationsSchema(env);
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
-  return results||[];
+  return hcDedupeServices(results||[]);
+}
+function hcDedupeServices(services){
+  const seen=new Set(), out=[];
+  for(const s of services||[]){
+    const key=String(s.name||'').trim().toLowerCase();
+    if(!key||seen.has(key)) continue;
+    seen.add(key); out.push(s);
+  }
+  return out;
 }
 export function hcServiceChoiceItems(services){
-  const seen=new Set(), items=[];
+  const seenNames=new Set(), seenLabels=new Set(), items=[];
   for(const s of services||[]){
     const name=String(s.name||'').trim(), label=String(s.short_label||name).trim();
-    if(!name||seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase()); items.push({title:label,value:name});
+    if(!name||seenNames.has(name.toLowerCase())||seenLabels.has(label.toLowerCase())) continue;
+    seenNames.add(name.toLowerCase()); seenLabels.add(label.toLowerCase());
+    items.push({title:label,value:`HC_BOOK_SERVICE:${s.id}`});
   }
   return items.slice(0,10);
 }
@@ -8565,17 +10054,24 @@ async function hcFindBroadServiceMatches(env,clientId,message){
   }
   if(!scored.length)return [];
   scored.sort((a,b)=>b.score-a.score||String(a.service.name).localeCompare(String(b.service.name)));
+  // Exact service name match (e.g. customer tapped a flow button titled "General Medicine") —
+  // return only that one service so the bot shows its info + Book Now rather than re-displaying
+  // the full services list, which would create a loop.
+  const exactNameMatch=scored.find(x=>hcNormalizeText(x.service.name)===query);
+  if(exactNameMatch) return [exactNameMatch.service];
   const best=scored[0].score;
   return scored.filter(x=>x.score>=Math.max(80,best*.55)).slice(0,10).map(x=>x.service);
 }
 async function hcFindDoctorMatches(env,clientId,message){
   const tokens=hcQueryTokens(message).filter(t=>t!=='dr'); if(!tokens.length)return [];
   const {results}=await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 100`).bind(Number(clientId)).all();
+  const seen=new Set();
   return (results||[]).map(doctor=>{
     const text=hcNormalizeText([doctor.name,doctor.specialization,doctor.qualification,doctor.description].join(' '));
     const hits=tokens.filter(t=>new RegExp(`(^| )${escapeRegexLiteral(t)}( |$)`,'u').test(text));
     return {doctor,score:hits.length/tokens.length};
-  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor);
+  }).filter(x=>x.score>=.5).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.doctor)
+    .filter(d=>{ const k=d.name.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true; });
 }
 async function hcFindDepartmentMatches(env,clientId,message){
   const tokens=hcQueryTokens(message); if(!tokens.length)return [];
@@ -8601,10 +10097,7 @@ async function hcSendDoctorMedia(env,c,clientId,convId,doctor){
 export function hcVerifiedServiceText(service,question){
   const lines=[`*${service.name}*`];
   if(service.description)lines.push(service.description);
-  if(/price|cost|fee|how much/i.test(question||'')){
-    if(Number(service.price)>0) lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
-    else lines.push('Price: Available on consultation — contact the clinic for exact pricing.');
-  }
+  if(/price|cost|fee|how much/i.test(question||'')&&Number(service.price)>0)lines.push(`Price: ${((service.currency||'')+' '+service.price).trim()}`);
   if(/duration|how long|time/i.test(question||'')&&Number(service.duration_minutes)>0)lines.push(`Duration: ${service.duration_minutes} minutes`);
   if(/prepare|preparation|before|fasting/i.test(question||'')&&service.preparation)lines.push(`Preparation: ${service.preparation}`);
   // Healthcare appointments are completed inside WhatsApp. Never leak an external booking URL
@@ -8657,10 +10150,10 @@ async function engineBuildHealthcareContext(env,clientId){
   if(insurance.length){lines.push('### Insurance (coverage always requires clinic verification)');insurance.forEach(i=>lines.push(`- ${i.provider_name}${i.network_name?' | network '+i.network_name:''}${i.plan_name?' | plan '+i.plan_name:''}${i.covered_services?' | listed services '+i.covered_services:''}${i.preapproval_required?' | pre-approval required':''}${i.verification_note?' | '+i.verification_note:''}${i.last_verified_at?' | last verified '+i.last_verified_at:''}`));}
   return lines.join('\n');
 }
-async function engineBuildEduContext(env, clientId){
+async function engineBuildEduContext(env, clientId, phone){
   const [courses, categories, promos]=await Promise.all([
     env.DB.prepare(`SELECT id,name,short_label,category,level,duration,start_date,price,currency,seats_available,enrollment_link,pdf_url,description FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60`).bind(Number(clientId)).all().then(x=>x.results||[]),
-    env.DB.prepare(`SELECT name,description FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
+    env.DB.prepare(`SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30`).bind(Number(clientId)).all().then(x=>x.results||[]),
     env.DB.prepare(`SELECT code,description,reply_text FROM edu_promotions WHERE client_id=? AND status='active' ORDER BY created_at DESC LIMIT 15`).bind(Number(clientId)).all().then(x=>x.results||[]),
   ]);
   const lines=[`\n\n## VERIFIED COURSE DATA — ONLY SOURCE OF TRUTH`,
@@ -8669,7 +10162,7 @@ async function engineBuildEduContext(env, clientId){
   ];
   if(categories.length){
     lines.push('### Course Categories');
-    categories.forEach(cat=>lines.push(`- ${cat.name}${cat.description?' | '+cat.description:''}`));
+    categories.forEach(cat=>lines.push(`- ${cat.name}`));
   }
   if(courses.length){
     lines.push('### Active Courses');
@@ -8683,7 +10176,7 @@ async function engineBuildEduContext(env, clientId){
       p.push(cr.price!=null?`fee: ${cr.currency||'INR'} ${cr.price}`:`fee: Contact for pricing (never invent a number)`);
       if(cr.seats_available!=null) p.push(`seats available: ${cr.seats_available}`);
       if(cr.enrollment_link) p.push(`enroll link: ${cr.enrollment_link}`);
-      if(cr.pdf_url) p.push(`brochure: ${cr.pdf_url}`);
+      if(cr.pdf_url) p.push('brochure: available — attach it directly in chat; never print or expose its Drive URL');
       if(cr.description) p.push(cr.description.slice(0,200));
       lines.push(p.join(' | '));
     });
@@ -8698,6 +10191,15 @@ async function engineBuildEduContext(env, clientId){
       if(pr.reply_text) p.push(`offer details: ${pr.reply_text.slice(0,150)}`);
       lines.push(p.join(' | '));
     });
+  }
+  if(phone){
+    const app=await eduAdmissionActive(env,clientId,phone).catch(function(){return null;});
+    if(app){
+      lines.push('### ACTIVE CHAT ADMISSION — STRICT MEMORY');
+      lines.push('- application id: '+app.application_id+' | current step: '+app.current_step+' | paused step: '+(app.paused_step||'none')+' | status: '+app.status);
+      lines.push('- saved name: '+(app.full_name||'not collected')+' | qualification: '+(app.qualification||'not collected')+' | mode: '+(app.study_mode||'not selected'));
+      lines.push('- Never restart or repeat completed questions. Answer the current question first, then offer exactly: OPTIONS: Continue Application | Ask Another Question | Change Course');
+    }
   }
   return lines.join('\n');
 }
@@ -8849,7 +10351,7 @@ function buildCheckoutLink(c, clientId, sku, product){
 // out entirely rather than leaving a dangling "click here: " with nothing after it — cleaner than
 // echoing the literal bracket text back at the customer.
 function engineSubstituteOrderLinkPlaceholder(text, c, clientId, sku, product){
-  if(!text || c.industry!=='ecommerce' || !/\[order_link\]/i.test(text)) return text;
+  if(!text || !isEcomEnabled(c) || !/\[order_link\]/i.test(text)) return text;
   const link=buildCheckoutLink(c, clientId, sku||'', product);
   if(!link) return text.split('\n').filter(line=>!/\[order_link\]/i.test(line)).join('\n');
   return text.replace(/\[order_link\]/gi, link);
@@ -9429,9 +10931,8 @@ async function handleChatwootMessageHook(request, env){
 
    Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
    deliberate deviations from what that workflow literally does today:
-   - Voice notes are still never transcribed — same "(sent a voice note)" placeholder text goes
-     to the AI. That's not a shortcut taken here; it's what engine.json itself actually does
-     (there's no transcription node wired to the voice branch despite docs describing one).
+   - Voice notes are transcribed via Gemini (engineGeminiTranscribeVoice) when a media URL is
+     present; "(sent a voice note)" is only used as a fallback when transcription fails.
    - Once a lead's Handover is 'Yes' or Stage is 'human_handover', the bot goes fully silent —
      matches engine.json's own Code·State hard-stop and SETUP.md's documented "never talk over a
      live agent" behavior. The HandoverFaqCount/_isPostHandover branch later in that workflow's
@@ -9466,7 +10967,7 @@ const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
 // Matches engine.json's "Google Gemini Chat Model" node (modelName: 'models/gemini-2.0-flash'),
 // which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
 // across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
-const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+const ENGINE_GEMINI_MODEL='gemini-2.5-flash';
 // Real observed failure: a customer asked about a free-trial offer that WAS explicitly written in
 // this client's own main_prompt (so the model had the correct answer in context) and still got
 // told there wasn't one — a plain accuracy/instruction-following gap in gemini-2.0-flash, the same
@@ -9496,6 +10997,23 @@ function engineGeminiGenerationConfig(model, opts){
   return cfg;
 }
 
+// Cloudflare Workers AI — lightweight inference for structured/short-output tasks (classify,
+// extract-options, fp-snapshot, fp-forecast). Falls back gracefully when env.AI is absent so a
+// deployment without the [ai] binding still works (it just routes to Gemini instead).
+async function engineCfAiGenerate(env, systemText, userText, opts={}){
+  if(!env.AI) return null;
+  try{
+    const result=await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages:[{role:'system', content:systemText}, {role:'user', content:userText}],
+      max_tokens:opts.maxOutputTokens||300,
+      temperature:opts.temperature??0.3
+    });
+    const text=result?.response||result?.choices?.[0]?.message?.content||null;
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'cf-ai', model:'llama-3.1-8b-instruct', ts:new Date().toISOString()}));
+    return text?String(text).trim():null;
+  }catch(e){ return null; }
+}
+
 async function engineGeminiGenerate(env, systemText, userText, opts={}){
   if(!env.GEMINI_API_KEY) return null;
   try{
@@ -9512,6 +11030,7 @@ async function engineGeminiGenerate(env, systemText, userText, opts={}){
     const data=await r.json().catch(()=>({}));
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const outText=parts.map(p=>p.text||'').join('').trim();
+    if(outText) console.log('[gemini-call]', JSON.stringify({caller:opts.caller||'unknown', model, ts:new Date().toISOString()}));
     return outText||null;
   }catch(e){ return null; }
 }
@@ -9625,6 +11144,7 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, 
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
     if(!text) await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript in response', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
+    if(text) console.log('[gemini-call]', JSON.stringify({caller:'transcribe', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()}));
     return text||null;
   }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
@@ -9679,6 +11199,100 @@ function engineParseSalesReps(raw){
   try{ const a=JSON.parse(raw||'[]'); if(Array.isArray(a)&&a.length) return a; }catch(e){}
   return (raw||'').split('\n').map(s=>s.trim()).filter(Boolean);
 }
+function engineGetLeadRouting(c){
+  try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
+}
+
+// Location keys the bot may store city/area answers under in QualAnswers — same list as the
+// frontend Splits view so routing and display always agree.
+const ENGINE_LOC_KEYS=['city','town','locality','area','district','zone','location','neighbourhood','neighborhood','place','region'];
+function engineExtractCityFromQual(qualAnswers){
+  const entries=Object.entries(qualAnswers||{});
+  for(const k of ENGINE_LOC_KEYS){
+    const hit=entries.find(([key])=>key.toLowerCase().includes(k));
+    if(hit&&hit[1]&&String(hit[1]).trim()) return String(hit[1]).trim().toLowerCase();
+  }
+  return '';
+}
+
+// 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
+// Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
+// When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
+async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  if(!isNewLead || leadBody.Owner) return; // already assigned or not new
+
+  const routing=engineGetLeadRouting(c);
+
+  if(!routing.enabled){
+    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
+    const reps=engineParseSalesReps(c.agents);
+    if(reps.length){
+      let h=0; const ps=String(state.phone||'');
+      for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
+      leadBody.Owner=reps[Math.abs(h)%reps.length];
+    }
+    return;
+  }
+
+  const modes=Array.isArray(routing.modes)?routing.modes:[];
+  const rules=routing.rules||{};
+
+  const get=f=>leadBody[f]||state.lead?.[f]||'';
+
+  // ── Priority 0: Channel inbox assignment (bypasses all other rules) ─────────
+  if(state.inboxId && env.DB){
+    try{
+      const asgn=await env.DB.prepare(
+        `SELECT assigned_email FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND assigned_email!=''`
+      ).bind(Number(clientId), Number(state.inboxId)).first();
+      if(asgn?.assigned_email){ leadBody.Owner=asgn.assigned_email; return; }
+    }catch(e){}
+  }
+
+  // ── Priority 1: Product / Property match ─────────────────────────────────────
+  if(modes.includes('product')){
+    const product=(get('InterestedProduct')||get('ProductCategory')||get('Brand')||
+                   get('HospSelectedProperty')||get('HospSelectedUnit')||
+                   get('Destination')||get('ServiceCategory')).toLowerCase();
+    if(product){
+      const match=Object.entries(rules).find(([,r])=>{
+        const pool=[...(r.products||[]),...(r.properties||[])];
+        return pool.some(p=>String(p).toLowerCase()===product);
+      });
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 2: Location match ───────────────────────────────────────────────
+  if(modes.includes('location')){
+    let qa={};
+    try{ qa=JSON.parse(leadBody.QualAnswers||state.lead?.QualAnswers||'{}'); }catch(e){}
+    const city=engineExtractCityFromQual({...qa,...(state.qualAnswers||{})});
+    if(city){
+      const match=Object.entries(rules).find(([,r])=>
+        (r.locations||[]).some(l=>String(l).toLowerCase()===city)
+      );
+      if(match){ leadBody.Owner=match[0]; return; }
+    }
+  }
+
+  // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
+  if(modes.includes('roundrobin')){
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    if(pool.length){
+      const idx=Number(routing.rrIndex||0)%pool.length;
+      leadBody.Owner=pool[idx];
+      // Persist the next index so the following lead goes to the next rep
+      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
+      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      return;
+    }
+  }
+
+  // ── Priority 4: Catch-all ────────────────────────────────────────────────────
+  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  // Otherwise: Unmatched — lead stays without an Owner
+}
 
 function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
@@ -9694,11 +11308,12 @@ function engineParseChatwootPayload(body){
     mediaUrl=a.data_url||a.file_url||'';
     if((a.file_type||'').includes('audio')) mediaType='voice';
     else if((a.file_type||'').includes('image')) mediaType='image';
+    else if(mediaUrl) mediaType='document';
   }
   const text=(body.content||body.message?.content||'').trim();
   if(!phone) return null;
   if(mediaType==='text' && !text) return null;
-  return {convId:conv?.id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+  return {convId:conv?.id||null, inboxId:conv?.inbox_id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
 }
 // Diagnostic-only twin of the null branches above — recomputes just enough to say *which* check
 // dropped a payload, without touching engineParseChatwootPayload's return contract or behavior at
@@ -9952,12 +11567,13 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true});
-    if(geminiRaw){
-      try{ aiResult=JSON.parse(geminiRaw); }
-      catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini returned unparseable JSON', e, {geminiRaw:geminiRaw.slice(0,500)}); }
+    const raw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
+      || await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'});
+    if(raw){
+      try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
+      catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
     }
-  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — Gemini request threw', e); }
+  }catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier request threw', e); }
 
   if(!aiResult && c.openrouter_key){
     try{
@@ -9993,9 +11609,18 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   let intent=null, intentData={};
 
   if(/\b(human|agent|person|speak to|talk to|call me|contact me|representative|support|helpline|manager)\b/.test(low)) intent='WANTS_HUMAN';
+  // "can i get more info", "tell me more", "more details" etc. are explicit information requests —
+  // force QUESTION so they always route to the FAQ path and get answered from the business prompt,
+  // regardless of how the AI classifies sentiment or confidence on an ambiguous short message.
+  if(!intent && /\b(more info|more information|tell me more|get more info|know more|more details|learn more|give me info|give me more|want more info|need more info)\b/.test(low)){ intent='QUESTION'; intentData={question:userText}; }
   if(!intent){
     const bookMatch=low.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}[:\/\-]\d{1,2}|\d{1,2}\s*(am|pm)|morning|afternoon|evening|tonight|next week)\b/);
     if(bookMatch){ intent='BOOKING'; intentData={booking_time:userText}; }
+  }
+  // Explicit information-request phrases are always QUESTION regardless of AI classification.
+  // Guards against the LLM misreading "Can I get more info on this?" as WANTS_HUMAN.
+  if(!intent && /\b(more info(?:rmation)?|more detail|tell me more|know more|what is|what are|how does|how do|how much|how to|can (?:i|you) (?:get|see|have|know)|please (?:explain|clarify)|explain (?:this|that|it)|what about|tell me about)\b/.test(low)){
+    intent='QUESTION'; intentData={question:userText};
   }
   if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
     intent=aiResult.intent;
@@ -10064,6 +11689,7 @@ export function engineHandoverCannedTexts(botConfig){
   return new Set([
     'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.',
     'Sure — connecting you to our team now. Someone will reply here shortly.',
+    'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.',
     botConfig.callback_msg,
     botConfig.callback_msg_frustrated,
     botConfig.callback_msg_lowconf,
@@ -10072,7 +11698,7 @@ export function engineHandoverCannedTexts(botConfig){
   ].filter(Boolean));
 }
 
-export function engineRouteFlow(c, state, userText, cls){
+export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   const {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory}=cls;
   const lowText=userText.toLowerCase().trim();
   const isOptOut=ENGINE_OPT_OUT_WORDS.includes(lowText);
@@ -10093,7 +11719,9 @@ export function engineRouteFlow(c, state, userText, cls){
   // whose last 3 bot messages are all a prior handover confirmation must NOT re-trigger this, or
   // it can never leave that state again regardless of Stage/Handover being reset elsewhere.
   const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]);
-  if(isRealLoop && botConfig.antiloop_enabled!==false) effIntent='WANTS_HUMAN';
+  // Anti-loop: only escalate to human when handover is actually enabled — otherwise route to FAQ
+  // so the bot keeps trying to answer rather than promising a human that never comes.
+  if(isRealLoop && botConfig.antiloop_enabled!==false && c.handover_enabled!=='No') effIntent='WANTS_HUMAN';
 
   const qualDone=!qualQuestions.length || botConfig.qual_enabled===false || (state.stage && !state.stage.startsWith('qual_') && state.stage!=='new');
   const qualStage=state.stage?.startsWith('qual_')?parseInt(state.stage.replace('qual_','')):null;
@@ -10132,7 +11760,11 @@ export function engineRouteFlow(c, state, userText, cls){
   // branch below), so the bot always answers itself and Human Deals has nothing to ever queue —
   // dashboard.html hides that tab automatically while this is off.
   if(effIntent==='WANTS_HUMAN' && c.handover_enabled!=='No'){ route='human'; humanReason='explicit'; }
-  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No'){
+  // Voice notes have ambiguous intent — a customer sending a voice note at the final stage
+  // (e.g. in reply to "are you free tomorrow?") may or may not be saying something positive.
+  // Skip the isFinalStage+POSITIVE heuristic for voice inputs; only an explicit WANTS_HUMAN
+  // signal (resolved from a successful transcription) triggers handoff for voice.
+  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No' && mediaType!=='voice'){
     // Reached the end of the funnel with a positive reply — this used to hand straight over to a
     // human with no order/trial link ever sent. Real product requirement: when a self-serve link
     // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
@@ -10165,7 +11797,7 @@ export function engineRouteFlow(c, state, userText, cls){
   // routing is computed at all in the default (silence-off) case; when that hard-stop IS skipped
   // (handover_silence_enabled='No'), without this exception every such reply would still get
   // forced to 'drop' right here regardless.
-  else if(state.stage==='human_handover' && c.handover_silence_enabled==='Yes') route='drop';
+  else if(state.stage==='human_handover' && c.industry!=='healthcare' && c.handover_silence_enabled==='Yes') route='drop';
   // A QUESTION (or NEGATIVE) always gets a clean FAQ answer before qualification even gets a
   // chance to run — matches the original precedence (a customer asking something mid-qualification
   // still gets answered, not another qualifying question).
@@ -10174,22 +11806,37 @@ export function engineRouteFlow(c, state, userText, cls){
   else if(!qualDone && qualStage!==null) route='qualify_next';
   else route=industryFaqRoute;
 
-  if(sentiment==='Frustrated' && route!=='human' && c.handover_enabled!=='No'){
+  // Require at least one genuine frustration signal in the text before escalating on
+  // Frustrated sentiment — guards against the LLM mislabelling terse product queries
+  // ("stock details pls", "more info?") as Frustrated and sending an unwanted handover.
+  const FRUSTRATED_SIGNAL=/\b(frustrated|annoyed|angry|upset|ridiculous|useless|pathetic|terrible|awful|horrible|not working|doesn't work|waste|cheated|scam|disappointed|fed up|sick of|unacceptable|worst|rubbish|nonsense|stupid)\b|!{2,}|\?{3,}|[A-Z]{4,}/;
+  if(sentiment==='Frustrated' && FRUSTRATED_SIGNAL.test(userText) && route!=='human' && c.handover_enabled!=='No'){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   }
-  // Proactive escalation for a turn where sentiment is already negative AND the classifier itself
-  // wasn't confident about its own read of it — a weaker, noisier signal than 'Frustrated' (an
-  // explicit read) or WANTS_HUMAN (an explicit ask), so this stays opt-in (default on, but a client
-  // uneasy about false positives can turn it off) and humanReason is 'low_confidence' rather than
-  // 'explicit' — same heuristic-not-request treatment engineRouteFlow already gives
-  // 'final_stage_positive' (see handleEngineWebhook's humanBlocksOrderCheck), so an unambiguous
-  // product/order signal can still override it.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled!==false){
+  // Proactive escalation for Negative sentiment + low classifier confidence. Changed to genuine
+  // opt-in (===true) — the comment always described it as opt-in but the original code used
+  // !==false which is opt-OUT, causing false positives on all ambiguous/terse queries.
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled===true){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
     route='objection';
+  }
+
+  // Initial-phase rule: the bot must handle the first 5 conversation turns through its own
+  // configured prompt and industry module (FAQ, travel_faq, ecom_faq, etc.) before any automatic
+  // human handoff is allowed. Counts assistant turns already in history — a lead with 0-4 bot
+  // replies still hasn't had a meaningful engagement, so non-explicit handoff routes (final-stage
+  // heuristic, low-confidence escalation, frustrated sentiment) are overridden back to the
+  // industry FAQ route. Only a genuine, explicit customer request (WANTS_HUMAN intent, which sets
+  // humanReason='explicit') bypasses this — if someone says "connect me to a human" on turn 1,
+  // that signal is always honored regardless of where the conversation stands.
+  const botTurnCount=(state.history||[]).filter(m=>m.role==='assistant').length;
+  if(botTurnCount<5 && route==='human' && humanReason!=='explicit'){
+    route=industryFaqRoute;
+    humanReason=null;
+    reply='';
   }
 
   let qualAnswers={...state.qualAnswers};
@@ -10389,35 +12036,495 @@ async function engineBuildTravelContext(env, c, clientId){
       });
     }
   }
+  const {results:attestSvcs}=await env.DB.prepare(
+    `SELECT name,service_type,country,fee,currency,turnaround_time,required_docs FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`
+  ).bind(clientId).all().catch(()=>({results:[]}));
+  if(attestSvcs&&attestSvcs.length){
+    lines.push('## Attestation Services');
+    attestSvcs.forEach(s=>{
+      let line=`- ${s.name}`;
+      if(s.service_type) line+=` (${s.service_type})`;
+      if(s.country) line+=` for ${s.country}`;
+      if(s.fee) line+=` — ${s.currency||'INR'} ${s.fee}`;
+      if(s.turnaround_time) line+=`, turnaround: ${s.turnaround_time}`;
+      if(s.required_docs) line+=` — docs: ${String(s.required_docs).slice(0,120)}`;
+      lines.push(line);
+    });
+  }
   return lines.length?('\n\n'+lines.join('\n')):'';
+}
+
+export function ltChatFlightIntent(text){
+  const value=String(text||'').toLowerCase();
+  if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
+  const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying|plane\s*tickets?)\b/.test(value);
+  const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
+  const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|get|looking|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
+  // Compact structured searches such as "DXB to COK on 2026-09-20, 1 adult,
+  // economy" are already complete flight requests even when the customer omits
+  // the words flight/ticket/fare. Route them to POOMAS, never to the generic LLM.
+  const compactIataRoute=/\b[A-Z]{3}(?:\s+TO\s+|\s*[-→]\s*)[A-Z]{3}\b/i.test(String(text||''));
+  const hasTravelDetail=/\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|\b\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d+\s*(?:adult|child|children|infant)s?\b|\b(?:economy|business|first|premium[ _-]?economy)\b|\btomorrow\b|\bnext\s+(?:week|month|weekend|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b|\bthis\s+(?:weekend|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/i.test(String(text||''));
+  // Detect city-name routes (e.g. "Dubai to Kochi") using the known airport alias table.
+  // Complements compactIataRoute which only matches raw 3-letter IATA codes.
+  const _cityParts=value.split(/\s+to\s+|\s*→\s*|\s+-\s+/i);
+  const knownCityRoute=_cityParts.length>=2&&(()=>{
+    const o=ltAirportCodeFromText(_cityParts[0]),d=ltAirportCodeFromText(_cityParts.slice(1).join(' '));
+    return !!(o&&d&&o!==d);
+  })();
+  return (explicitFlight&&shopping)||travelTicket||((compactIataRoute||knownCityRoute)&&hasTravelDetail)||(knownCityRoute&&(explicitFlight||travelTicket));
+}
+
+export function ltNormalizeChatFlightRequest(raw={}){
+  const code=v=>String(v||'').trim().toUpperCase().match(/^[A-Z]{3}$/)?.[0]||'';
+  const date=v=>String(v||'').trim().match(/^\d{4}-\d{2}-\d{2}$/)?.[0]||'';
+  const clamp=(v,min,max,def)=>Math.max(min,Math.min(max,Number.parseInt(v,10)||def));
+  const trip_type=String(raw.trip_type||'one_way').toLowerCase()==='round_trip'?'round_trip':'one_way';
+  const out={origin:code(raw.origin),destination:code(raw.destination),departure_date:date(raw.departure_date),return_date:date(raw.return_date),trip_type,
+    adults:clamp(raw.adults,1,9,1),children:clamp(raw.children,0,9,0),infants:clamp(raw.infants,0,9,0),
+    cabin:['economy','premium_economy','business','first'].includes(String(raw.cabin||'').toLowerCase())?String(raw.cabin).toLowerCase():'economy',
+    currency:['AED','INR','USD','SAR','EUR','GBP'].includes(String(raw.currency||'').toUpperCase())?String(raw.currency).toUpperCase():'AED'};
+  const missing=[];
+  if(!out.origin) missing.push('origin airport code');
+  if(!out.destination) missing.push('destination airport code');
+  if(!out.departure_date) missing.push('departure date');
+  if(out.trip_type==='round_trip'&&!out.return_date) missing.push('return date');
+  return {...out,missing};
+}
+
+function ltParseConversationalFlightDate(value,now=new Date()){
+  const text=String(value||'').trim();
+  const valid=(y,m,d)=>{const dt=new Date(Date.UTC(y,m-1,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d?dt:null};
+  const iso=(dt)=>dt?.toISOString().slice(0,10)||'';
+  let m=text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+  if(m)return iso(valid(Number(m[1]),Number(m[2]),Number(m[3])));
+  m=text.match(/\b(\d{1,2})[-\/](\d{1,2})(?:[-\/](\d{2,4}))?\b/);
+  if(m){let y=m[3]?Number(m[3]):now.getUTCFullYear();if(y<100)y+=2000;let dt=valid(y,Number(m[2]),Number(m[1]));if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,Number(m[2]),Number(m[1]));return iso(dt);}
+  const months={jan:1,january:1,feb:2,february:2,mar:3,march:3,apr:4,april:4,may:5,jun:6,june:6,jul:7,july:7,aug:8,august:8,sep:9,sept:9,september:9,oct:10,october:10,nov:11,november:11,dec:12,december:12};
+  m=text.match(/\b([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(20\d{2}))?\b/)||text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})(?:[,\s]+(20\d{2}))?\b/);
+  if(m){const monthFirst=/^[A-Za-z]/.test(m[1]),month=months[String(monthFirst?m[1]:m[2]).toLowerCase()],day=Number(monthFirst?m[2]:m[1]);if(!month)return '';let y=Number(m[3]||now.getUTCFullYear()),dt=valid(y,month,day);if(dt&&!m[3]&&dt<new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate())))dt=valid(y+1,month,day);return iso(dt);}
+  return '';
+}
+
+const LT_AIRPORT_ALIASES=[
+  ['DXB',/\b(?:dubai|dxb)\b/i],['AUH',/\b(?:abu\s*dhabi|auh)\b/i],['SHJ',/\b(?:sharjah|shj)\b/i],
+  ['CCJ',/\b(?:calicut|kozhikode|ccj)\b/i],['COK',/\b(?:kochi|cochin|ernakulam|cok)\b/i],['CNN',/\b(?:kannur|cnn)\b/i],['TRV',/\b(?:trivandrum|thiruvananthapuram|trv)\b/i],
+  ['BOM',/\b(?:mumbai|bombay|bom)\b/i],['DEL',/\b(?:new\s*delhi|delhi|del)\b/i],['MAA',/\b(?:chennai|madras|maa)\b/i],['HYD',/\b(?:hyderabad|hyd)\b/i],['BLR',/\b(?:bangalore|bengaluru|blr)\b/i],
+  ['DOH',/\b(?:doha|doh)\b/i],['MCT',/\b(?:muscat|mct)\b/i],['RUH',/\b(?:riyadh|ruh)\b/i],['JED',/\b(?:jeddah|jed)\b/i],['DMM',/\b(?:dammam|dmm)\b/i]
+];
+function ltAirportCodeFromText(value){
+  const text=String(value||'');
+  for(const [code,pattern] of LT_AIRPORT_ALIASES)if(pattern.test(text))return code;
+  return text.match(/\b[A-Z]{3}\b/)?.[0]||'';
+}
+export function ltParseFlightRoute(value){
+  const text=String(value||'').trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
+  if(parts.length<2)return null;
+  const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
+  return origin&&destination&&origin!==destination?{origin,destination}:null;
+}
+
+async function engineExtractChatFlightRequest(env,c,userText,history=[]){
+  const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
+  const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
+  let raw=null;
+  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250,caller:'flight-extract'})
+    ||await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'});
+  if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
+  if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
+  raw=raw&&typeof raw==='object'?raw:{};
+  const customerHistory=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).join('\n');
+  const route=ltParseFlightRoute(userText)||ltParseFlightRoute(customerHistory);
+  const latestDate=ltParseConversationalFlightDate(userText),historicDate=ltParseConversationalFlightDate(customerHistory);
+  if(!raw.origin&&route)raw.origin=route.origin;if(!raw.destination&&route)raw.destination=route.destination;
+  if(latestDate)raw.departure_date=latestDate;else if(!raw.departure_date&&historicDate)raw.departure_date=historicDate;
+  if(!raw.trip_type)raw.trip_type=raw.return_date?'round_trip':'one_way';
+  return ltNormalizeChatFlightRequest(raw);
+}
+
+function ltOfferFareId(raw){
+  return ltText(String(raw?.id||raw?.fareId||raw?.fare_id||raw?.offerId||raw?.offer_id||raw?.raw?.id||raw?.raw?.fareId||''),300);
+}
+async function ltEnsureChatCheckoutSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_checkout_state (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, step TEXT NOT NULL DEFAULT 'select',
+    offers_json TEXT NOT NULL DEFAULT '[]', selected_offer_json TEXT, passenger_json TEXT,
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id, phone)
+  )`).run();
+}
+export function ltBookableChatOffers(offers){
+  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+}
+async function ltSaveChatOffers(env,clientId,phone,offers){
+  if(!phone)return;
+  await ltEnsureChatCheckoutSchema(env);
+  const top=ltBookableChatOffers(offers);
+  if(!top.length){
+    await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+    return;
+  }
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
+  await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
+    VALUES (?,?,'select',?,NULL,NULL,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET step='select',offers_json=excluded.offers_json,selected_offer_json=NULL,passenger_json=NULL,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(safe),expires,now.toISOString()).run();
+}
+export function ltCheckoutCtaPayload(phone,url){
+  return {messaging_product:'whatsapp',to:String(phone||'').replace(/\D/g,''),type:'interactive',interactive:{type:'cta_url',body:{text:'Your selected flight is ready. Complete passenger details securely on POOMAS.'},action:{name:'cta_url',parameters:{display_text:'Book Now',url:String(url)}}}};
+}
+async function engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId){
+  const creds=resolveMetaCredentials(c,{inbox_id:inboxId});
+  if(creds?.wa_phone_id&&creds?.wa_token&&phone){
+    try{
+      const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(ltCheckoutCtaPayload(phone,url))});
+      if(r.ok)return true;
+      const body=await r.text().catch(()=>'');
+      await reportOpsError(env,'Travel checkout CTA rejected by Meta',new Error(`HTTP ${r.status} — ${body.slice(0,500)}`),{clientId,convId});
+    }catch(e){await reportOpsError(env,'Travel checkout CTA send failed',e,{clientId,convId});}
+  }
+  return engineSendChatwootReply(env,c,clientId,convId,`Book now: ${url}`);
+}
+// Sends the client's Google Maps URL as a tappable "Get Directions" CTA button after any reply
+// that answers a location/directions question. Tries the WhatsApp Cloud API cta_url interactive
+// type first (requires wa_phone_id + wa_token); falls back to a plain URL message via Chatwoot
+// (WhatsApp still renders bare URLs as tappable links with a preview card).
+async function engineSendGoogleMapsButton(env,c,clientId,convId,phone,inboxId){
+  const mapsUrl=String(c.google_maps_url||'').trim();
+  if(!mapsUrl) return;
+  const destination=String(phone||'').replace(/\D/g,'');
+  const creds=resolveMetaCredentials(c,{inbox_id:inboxId});
+  if(creds?.wa_phone_id&&creds?.wa_token&&destination){
+    try{
+      const body={messaging_product:'whatsapp',to:destination,type:'interactive',interactive:{type:'cta_url',body:{text:'📍 Here\'s our location on Google Maps:'},action:{name:'cta_url',parameters:{display_text:'Get Directions',url:mapsUrl}}}};
+      const r=await fetch(`https://graph.facebook.com/v24.0/${creds.wa_phone_id}/messages`,{method:'POST',headers:{Authorization:`Bearer ${creds.wa_token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(r.ok) return;
+      const errBody=await r.text().catch(()=>'');
+      await reportOpsError(env,'engineSendGoogleMapsButton — Meta rejected cta_url',new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`),{clientId,convId});
+    }catch(e){await reportOpsError(env,'engineSendGoogleMapsButton — send threw',e,{clientId,convId});}
+  }
+  await engineSendChatwootReply(env,c,clientId,convId,`📍 Google Maps: ${mapsUrl}`);
+}
+function ltStoredOfferText(offers){
+  const rows=(offers||[]).slice(0,3).map((o,i)=>`${i+1}. ${o.airline||'Flight'}${o.flightNumber?' · '+o.flightNumber:''} — ${o.currency||''} ${Number(o.total||0).toFixed(2)}\n${o.origin||'—'} → ${o.destination||'—'}`);
+  return `Previous live flight options:\n\n${rows.join('\n\n')}\n\nSelect a flight below.`;
+}
+export function ltBookButtons(offers){
+  return (offers||[]).slice(0,3).map((_,i)=>({title:`Book Option ${i+1}`,value:`book ${['first','second','third'][i]}`}));
+}
+export function ltStoredOfferSelectionIndex(offers,input){
+  const list=Array.isArray(offers)?offers:[],text=String(input||'').trim();
+  const numbered=text.match(/^(?:book\s+(?:option\s+)?)?([1-3])$/i);
+  if(numbered){const idx=Number(numbered[1])-1;return idx<list.length?idx:-1;}
+  const ordinals={first:0,one:0,second:1,two:1,third:2,three:2};
+  const ordinal=text.match(/\b(first|one|second|two|third|three)\b/i);
+  if(ordinal){const idx=ordinals[ordinal[1].toLowerCase()];return idx<list.length?idx:-1;}
+  const normalize=v=>String(v||'').toLowerCase().replace(/\b(?:book|booking|please|ticket|flight|option)\b/g,'').replace(/[^a-z0-9]/g,'');
+  const query=normalize(text);if(query.length<3)return -1;
+  const matches=list.map((o,i)=>({i,airline:normalize(o?.airline),number:normalize(o?.flightNumber)})).filter(o=>(o.airline.length>=3&&query.includes(o.airline))||(o.number.length>=3&&query.includes(o.number)));
+  return matches.length===1?matches[0].i:-1;
+}
+
+export function ltFormatChatOffers(offers){
+  const top=ltBookableChatOffers(offers);
+  if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
+  const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
+  const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
+  const cabin=String(top[0].cabin||'economy').replace('_',' ');
+  const lines=[`✈️ *${top.length} Live Flight Option${top.length===1?'':'s'}*\n${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?` · ${dateLabel} · ${cabin}`:''}`];
+  top.forEach((o,i)=>{
+    const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
+    const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
+    const time=v=>v?new Date(v).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
+    const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
+    const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
+    const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
+    let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${o.currency} ${Number(o.total_amount).toFixed(2)}*`;
+    if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
+    lines.push(line);
+  });
+  lines.push('Select a flight below.\n_Fares may change until checkout._');
+  return lines.join('\n\n');
+}
+
+export function ltExactRouteOffers(offers,origin,destination){
+  const wantedOrigin=String(origin||'').trim().toUpperCase(),wantedDestination=String(destination||'').trim().toUpperCase();
+  return (offers||[]).filter(o=>{const legs=Array.isArray(o?.itinerary)?o.itinerary:[],first=legs[0]||{},last=legs[legs.length-1]||first;return String(first.origin||'').trim().toUpperCase()===wantedOrigin&&String(last.destination||'').trim().toUpperCase()===wantedDestination;});
+}
+
+async function ltEnsureChatSearchDraftSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_search_state (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, draft_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone)
+  )`).run();
+}
+async function ltLoadChatSearchDraft(env,clientId,phone){
+  if(!phone)return null;
+  await ltEnsureChatSearchDraftSchema(env);
+  const row=await env.DB.prepare(`SELECT draft_json FROM live_travel_chat_search_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.draft_json,null):null;
+}
+async function ltSaveChatSearchDraft(env,clientId,phone,draft){
+  if(!phone)return;
+  await ltEnsureChatSearchDraftSchema(env);
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
+  await env.DB.prepare(`INSERT INTO live_travel_chat_search_state (client_id,phone,draft_json,expires_at,updated_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET draft_json=excluded.draft_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(draft||{}),expires,now.toISOString()).run();
+}
+async function ltClearChatSearchDraft(env,clientId,phone){
+  if(phone)await env.DB.prepare(`DELETE FROM live_travel_chat_search_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
+}
+async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,inboxId){
+  await ltEnsureChatCheckoutSchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  if(!row)return null;
+  const send=async(reply,buttons=null)=>{if(buttons?.length)await engineSendChatwootQuickReply(env,c,clientId,convId,reply,buttons);else await engineDeliverReply(env,c,clientId,convId,reply,{mediaType:'text',langCode:c.language||'en'});return {handled:true,step:row.step}};
+  const input=String(text||'').trim();
+  if(/^(new search|search again|new flight)$/i.test(input)){
+    await Promise.all([env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run(),ltClearChatSearchDraft(env,clientId,phone)]);
+    return send('Send route, date and passengers.\nExample: CCJ to SHJ on 2026-09-15, 1 adult, economy.');
+  }
+  if(/^(continue previous|continue old|previous search|old search)$/i.test(input)){
+    const offers=ltJson(row.offers_json,[]);
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',updated_at=? WHERE client_id=? AND phone=?`).bind(new Date().toISOString(),Number(clientId),String(phone)).run();
+    return send(ltStoredOfferText(offers),ltBookButtons(offers));
+  }
+  if(row.step==='select'){
+    const offers=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(offers,input);
+    if(idx<0){
+      if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(offers));
+      return null;
+    }
+    const selected=offers[idx];
+    if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'—';
+    const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}`;
+    await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  if(row.step==='checkout_ready'&&/^(open checkout|checkout|book now|continue booking)$/i.test(input)){
+    const selected=ltJson(row.selected_offer_json,{});
+    if(!selected.fareId)return send('This fare has expired. Please run a new search.');
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  return null;
+}
+function ltMergeChatFlightDraft(draft,input,userText){
+  const old=draft||{},next={...old},text=String(userText||'');
+  const route=ltParseFlightRoute(text);
+  if(route){next.origin=route.origin;next.destination=route.destination}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
+  const date=ltParseConversationalFlightDate(text);next.departure_date=date||old.departure_date||input.departure_date;
+  const adult=text.match(/\b(\d+)\s*adults?\b/i),child=text.match(/\b(\d+)\s*(?:children|child)\b/i),infant=text.match(/\b(\d+)\s*infants?\b/i);
+  next.adults=adult?Number(adult[1]):(old.adults??input.adults??1);
+  next.children=child?Number(child[1]):(old.children??input.children??0);
+  next.infants=infant?Number(infant[1]):(old.infants??input.infants??0);
+  const cabin=text.match(/\b(premium[ _-]?economy|economy|business|first)\b/i);
+  next.cabin=cabin?cabin[1].toLowerCase().replace(/[ -]/g,'_'):(old.cabin||input.cabin||'economy');
+  const currency=text.match(/\b(AED|INR|USD|SAR|EUR|GBP)\b/i);next.currency=currency?currency[1].toUpperCase():(old.currency||input.currency||'AED');
+  next.trip_type=old.trip_type||input.trip_type||'one_way';next.return_date=old.return_date||input.return_date||'';
+  return ltNormalizeChatFlightRequest(next);
+}
+
+export function ltLiveAgencyEnabled(c={}){
+  const industry=String(c.industry||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
+  return industry==='travel'||industry==='travel_agency'||industry==='live_travel'||industry.includes('travel')||String(c.ta_enabled||'').toLowerCase()==='yes';
+}
+
+async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
+  const liveAgencyEnabled=ltLiveAgencyEnabled(c);
+  if(!liveAgencyEnabled)return null;
+  const draft=await ltLoadChatSearchDraft(env,clientId,phone);
+  const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
+  const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
+  if(!ltChatFlightIntent(userText)&&!continuing)return null;
+  if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
+    await ltClearChatSearchDraft(env,clientId,phone);
+    return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
+  }
+  await ltEnsureSchema(env);
+  await ltSeedSuppliers(env,clientId);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+  if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
+  const extracted=await engineExtractChatFlightRequest(env,c,userText,history);
+  const input=ltMergeChatFlightDraft(draft,extracted,userText);
+  if(input.missing.length){
+    await ltSaveChatSearchDraft(env,clientId,phone,input);
+    const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
+    return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
+  }
+  await ltSaveChatSearchDraft(env,clientId,phone,input);
+  try{
+    const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
+    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
+    const data=await ltSupplierSearch(runtime,input,env);
+    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
+    const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
+    const bookingOffers=ltBookableChatOffers(offers);
+    await ltSaveChatOffers(env,clientId,phone,bookingOffers);
+    await ltClearChatSearchDraft(env,clientId,phone);
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers),buttons:ltBookButtons(bookingOffers)};
+  }catch(e){
+    await reportOpsError(env,'Live ticketing chat search',e,{clientId});
+    return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};
+  }
+}
+
+// Builds verified resort property + room data for injection into the LLM system prompt so
+// follow-up questions are answered from real D1 records — no hallucinated prices or names.
+async function engineBuildResortContext(env, clientId){
+  const lines=['\n\n## VERIFIED RESORT DATA (use ONLY these facts for prices, names, descriptions, amenities — never invent or infer anything not listed here)'];
+  const [{results:properties},{results:units}]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+  ]);
+  const propList=properties||[];
+  const unitList=units||[];
+  for(const prop of propList){
+    lines.push(`\n### ${prop.name}`);
+    if(prop.description && String(prop.description).trim()) lines.push(`Description: ${String(prop.description).trim()}`);
+    if(prop.amenities && String(prop.amenities).trim()) lines.push(`Amenities: ${String(prop.amenities).trim()}`);
+    const rooms=unitList.filter(u=>String(u.property_id)===String(prop.id));
+    if(rooms.length){
+      lines.push('Rooms:');
+      for(const r of rooms){
+        let roomLine=`  - **${r.name}**`;
+        if(r.unit_type) roomLine+=` (${r.unit_type})`;
+        roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+        if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+        if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+        if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+        if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+        lines.push(roomLine);
+      }
+    }
+  }
+  const unassigned=unitList.filter(u=>!u.property_id);
+  if(unassigned.length){
+    lines.push('\n### Rooms (no property assigned)');
+    for(const r of unassigned){
+      let roomLine=`  - **${r.name}**`;
+      if(r.unit_type) roomLine+=` (${r.unit_type})`;
+      roomLine+=` | Adults: ${r.capacity_adults||1}, Children: ${r.capacity_children||0}`;
+      if(r.base_rate) roomLine+=` | Rate: ${r.currency||'INR'} ${r.base_rate}/night`;
+      if(r.weekend_rate) roomLine+=` (weekend: ${r.currency||'INR'} ${r.weekend_rate}/night)`;
+      if(r.amenities && String(r.amenities).trim()) roomLine+=` | Amenities: ${String(r.amenities).trim().slice(0,150)}`;
+      if(r.description && String(r.description).trim()) roomLine+=` | ${String(r.description).trim().slice(0,200)}`;
+      lines.push(roomLine);
+    }
+  }
+  if(propList.length===0 && unassigned.length===0) return '';
+  return lines.join('\n');
+}
+
+// Returns the slice of kb_summary that is relevant to the current intent/objection.
+// If kb has no "## Header" sections, returns the full text (no regression for unstructured KBs).
+// Intents that carry no question (AFFIRMATIVE/SHORT_NEUTRAL/WATCHED) get an empty string so the
+// KB is not injected at all — saves ~500 tokens per turn for those common, question-free messages.
+function engineSelectKb(kb, intent, objection){
+  if(!kb || !kb.trim()) return '';
+  const full=kb.slice(0,2000);
+  if(['AFFIRMATIVE','SHORT_NEUTRAL','WATCHED'].includes(intent)) return '';
+  const sections=full.split(/(?=^## )/m).filter(s=>s.trim());
+  if(sections.length<=1) return full; // no structured headers — full KB as fallback
+  let keywords=[];
+  if(objection==='price') keywords=['price','pricing','discount','offer','cost','fee','payment'];
+  else if(objection==='competitor') keywords=['comparison','compare','competitor','why us','why choose','differ','advantage','benefit'];
+  else if(objection==='trust') keywords=['review','guarantee','testimonial','trust','certif','accredit','refund','warranty'];
+  else if(objection==='timing') keywords=['time','when','availab','schedul','deadline','urgent','ready'];
+  else if(intent==='BOOKING'||intent==='DELAY') keywords=['price','pricing','payment','booking','process','step','how to','delivery','schedule','deposit'];
+  else return full; // QUESTION, WANTS_HUMAN, no intent → full KB
+  const matched=sections.filter(s=>keywords.some(k=>s.split('\n')[0].toLowerCase().includes(k)));
+  return matched.length ? matched.join('\n').slice(0,2000) : full;
 }
 
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
-export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead){
+export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead, intent){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
   let sys=c.main_prompt||'';
+  // Inject Google Maps URL so the LLM can share the actual link when a customer asks for
+  // directions or the shop location — without this, it knows the address text but has no URL.
+  if(c.google_maps_url && c.google_maps_url.trim()){
+    sys+=`\n\n## Location\nGoogle Maps: ${c.google_maps_url.trim()}`;
+  }
   const services=engineParseJsonField(c.services, []);
   const defaultCurrency=industry==='ecommerce'?'INR':'AED';
   const defaultUnit=industry==='ecommerce'?'item':'person';
-  if(services.length){
+  // Resort: suppress c.services — all property/room/rate facts come exclusively from VERIFIED RESORT
+  // DATA injected via contextBlock; a services list here would add a second, potentially stale source.
+  const isResort=c.hospitality_enabled==='Yes' && c.hospitality_style==='resort';
+  if(services.length && !isResort){
     sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||defaultCurrency} ${s.price} per ${s.per||defaultUnit}`).join('\n');
   }
-  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  const kbText=engineSelectKb(c.kb_summary, intent, null);
+  if(kbText){
+    sys+='\n\n## Knowledge Base\n'+kbText;
+    // Observed real failure (Cloudnine Beddings / home appliances): the KB contained product
+    // descriptions with prices that were different from the actual Ecom catalog. The AI was
+    // reading those KB prices instead of the verified Product Catalog prices. This disclaimer
+    // prevents that: for ecommerce clients, the KB is general context only — all product
+    // pricing and availability must come from the Product Catalog (VERIFIED ECOM PRODUCT DATA).
+    if(industry==='ecommerce') sys+='\n\nKB PRICING OVERRIDE: The Knowledge Base section above is for general business context and FAQs only. It is NOT an authoritative source for product names, prices, availability, or specifications. For all product facts — especially prices — use ONLY the Product Catalog in the VERIFIED ECOM PRODUCT DATA section below. If the KB mentions a price that differs from the Product Catalog, the Product Catalog price is the only correct one.';
+  }
+  if(c.b2b_stock_json && c.b2b_stock_json.trim()){
+    try{
+      const stockRows=JSON.parse(c.b2b_stock_json);
+      if(Array.isArray(stockRows) && stockRows.length){
+        const cols=Object.keys(stockRows[0]);
+        sys+='\n\n## Current Stock (live — uploaded by business)\n'+stockRows.slice(0,300).map(r=>cols.map(k=>`${k}: ${r[k]??''}`).join(' | ')).join('\n');
+        sys+='\n\nB2B STOCK RULE: When a customer asks about availability or quantity of any product, refer only to the Current Stock table above. Never invent stock levels. If a product is not listed, say it is not in the current stock list and offer to connect them with the sales team.';
+      }
+    }catch(e){}
+  }
   if(contextBlock) sys+=contextBlock;
+  if(isResort){
+    const hasResortData=contextBlock && contextBlock.includes('VERIFIED RESORT DATA');
+    if(hasResortData){
+      sys+='\n\nHOSPITALITY ZERO-HALLUCINATION LOCK: VERIFIED RESORT DATA above is the single, authoritative source for every property name, room name, location/destination, description, amenity, rate, and capacity. The business prompt is for general tone and context only — it is NOT a source of property or room facts. Never use, infer, or invent property/room details, prices, availability, or destination names from the business prompt, your training data, or any source other than VERIFIED RESORT DATA. LOCATION RULE: Never mention, list, or suggest any destination, city, or location that is not explicitly present in VERIFIED RESORT DATA — do not use your training knowledge of popular destinations. NUMBERED-LIST RULE: Never present destinations, properties, or rooms as a numbered list (e.g. "1. Munnar 2. Vagamon") — the system sends tappable selection buttons automatically; your job is only to answer questions in words and end with OPTIONS: listing verified names. ORDINAL CONTEXT RULE: when a customer replies with just a number ("1", "2", "3") always interpret it as their answer to the MOST RECENT question you asked — never map it back to an earlier numbered list in the conversation. Quote rates exactly as listed — never round, estimate, combine, or adjust them. If a customer asks for a fact absent from VERIFIED RESORT DATA, say it is not confirmed and offer to connect them with the team. When answering questions about available rooms or properties, always end with OPTIONS: followed by the exact property or room names from VERIFIED RESORT DATA so the customer can tap to choose.';
+    } else {
+      // No room/property data configured yet — answer general enquiries from the business prompt.
+      // Never invent specific rates, room names, or availability that aren't confirmed in writing.
+      sys+='\n\nHOSPITALITY PROMPT FALLBACK: No verified room or property data is available yet. Answer the customer\'s question using only the information in the business prompt above. For specific room types, rates, or availability that are not mentioned in the business prompt, let the customer know you\'ll have the team follow up with the exact details rather than guessing.';
+    }
+    sys+='\n\nPHOTO/MEDIA RULE: The system automatically sends actual photos and images — you must NEVER write text like "(send Classic Room photos)", "(send photos)", "(send images)" or any parenthetical placeholder suggesting a photo action. Never announce or describe that photos are being sent. Simply answer the customer\'s question in words; the system handles all media delivery.';
+    sys+=`\n\nCURRENT DATE: Today is ${new Date().toISOString().slice(0,10)}. CRITICAL DATE RULE: Dates that appear in conversation history may be from a previous session and are no longer valid as the customer's current intent. NEVER carry forward a booking date from history without the customer explicitly stating it again in their latest message. If dates look stale or were not mentioned in the current session, ask the customer to confirm their check-in and check-out dates afresh.`;
+  }
   if(industry==='healthcare'){
     sys+='\n\nHEALTHCARE SAFETY LOCK: Never diagnose, prescribe, interpret symptoms as a diagnosis, guarantee coverage, invent availability, or confirm an appointment unless a real appointment record or booking confirmation is present.';
+    sys+='\n\nHEALTHCARE CONVERSATION STYLE — sound like a calm, attentive clinic receptionist: answer the patient’s latest question first; acknowledge relevant details already shared; never restart with another greeting during an active conversation; never repeat information or a question already answered in the recent conversation; interpret short replies such as “yes”, “okay”, dates, and times using the immediately previous question; ask only one necessary question at a time; do not repeat the patient’s full sentence; use the patient’s name occasionally, never in every reply; keep the response concise and natural; before answering, compare the draft with the last two assistant messages and rewrite it if it repeats the same wording or meaning. Once human handover is requested, do not add more questions or buttons.';
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
   }
   if(industry==='ecommerce'){
-    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover.';
+    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover. IMAGE RULE: Never write image placeholder text such as "(Image of X)", "(Photo)", "[Image]", or any bracket/parenthesis notation referencing an image — you cannot send images in this reply path; real product photos are sent separately by the system. If no real image URL is present in the product data, do not mention images at all. PRICE-SIZE RULE: Never claim that a product price applies to a specific size, dimension, or measurement unless the Product Catalog explicitly states that price for that exact size. A catalog price is the price of that product entry as listed — do not attribute it to a customer-requested size or compute a per-size price from it.';
     const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
     const ecomStyleInstructions={
       fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
-      shopify:'SHOPIFY / GENERAL STORE COMMUNICATION STYLE: Sound clear, friendly and conversion-focused. Guide discovery in this order when applicable: category, customer requirement, then verified matching products. Keep replies compact and make the next action obvious. Never use a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
-      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.'
+      shopify:`SHOPIFY / GENERAL STORE COMMUNICATION STYLE — apply to every reply:
+
+PRODUCT ENQUIRY (customer mentions, asks about, or shares a URL for a specific product):
+• Match the product to VERIFIED ECOM PRODUCT DATA by name, category, key ingredient, or brand — never invent or guess details.
+• Reply with: verified product name, price, availability (in stock / out of stock), and 2–3 key attributes from VERIFIED ECOM PRODUCT DATA.
+• Share the Order Link from the ## Order Link section when the customer is ready to purchase.
+• If the product is absent from VERIFIED ECOM PRODUCT DATA, say it is not in the verified catalog and offer to connect them with the team — never guess.
+
+BROWSING / DISCOVERY (customer is exploring, no specific product mentioned):
+• Guide in this order: category → customer requirement → verified matching products from VERIFIED ECOM PRODUCT DATA.
+• When presenting OPTIONS that include both matching products and categories, always list matching products first, then related categories — never categories first.
+• End with OPTIONS: using only verified category or product names — never invent a choice.
+
+REPLY RULES:
+• Sound clear, friendly and conversion-focused.
+• Keep replies compact — one clear answer and one obvious next action.
+• Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.\n\nPRICING RULE (strict — no exceptions): Never calculate, estimate, derive, or infer a price from a product\'s size, dimensions, or inches. Only quote the exact price that appears in the VERIFIED ECOM PRODUCT DATA for that specific product entry — never attribute a catalog price to a customer-requested dimension (e.g. do not say "these prices are for 5×6.25 ft"). If a customer asks about pricing for a size or configuration that is not explicitly priced in the Product Catalog, say you do not have a confirmed price for that specific option and offer to connect them with a team member who can help.\n\nIMAGE RULE: Never write placeholder text like "(Image of X)", "(Photo of Cot)", "[Image]", or any bracket/parenthesis notation to indicate an image. Real product photos are sent separately by the system — if no real image URL is present in the product data, do not reference images in your reply at all.'
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
@@ -10431,6 +12538,8 @@ DATA ACCURACY:
 • Only use VERIFIED COURSE DATA for facts (name, level, price, duration, start date, seats, links, media).
 • Never invent or infer any detail not explicitly in your data.
 • If a fact is missing say "I don't have that confirmed" and offer to connect them with the team.
+• Missing duration, fee, date, or another optional fact never blocks enrollment.
+• Mention an unavailable fact once, then continue to the next enrollment action.
 
 FORMAT — every single reply must follow this structure:
 • Write in short bullet points (•) only — NO long paragraphs, ever.
@@ -10443,13 +12552,13 @@ FORMAT — every single reply must follow this structure:
 BUTTONS — mandatory after EVERY reply:
 • Always end with a row of tappable choice buttons — never skip this.
 • Offer the MAXIMUM relevant buttons for the context (up to 3 per set on WhatsApp):
-  — After greeting / general query:       [Browse Courses] [Talk to Advisor] [About Us]
-  — After listing courses:                [Enroll Now] [Get Brochure] [Schedule a Call]
-  — After sharing one course detail:      [Enroll Now] [Download Syllabus] [Ask a Question]
-  — After fee / scholarship question:     [Check Eligibility] [Apply for Scholarship] [Enroll Now]
-  — After enrollment / application topic: [Start Application] [Book Consultation] [Call Us]
-  — After answering any question:         [Learn More] [Enroll Now] [Talk to Advisor]
-• Format buttons exactly like this on its own line: *Reply with:* [Button 1] [Button 2] [Button 3]`;
+  — After greeting / general query: Browse Courses · Talk to Advisor · About Us
+  — After listing courses: Enroll Now · Get Brochure · Schedule a Call
+  — After sharing one course detail: Enroll Now · Download Syllabus · Ask a Question
+  — After fee / scholarship question: Check Eligibility · Apply for Scholarship · Enroll Now
+  — After enrollment / application topic: Start Application · Book Consultation · Call Us
+  — After answering any question: Learn More · Enroll Now · Talk to Advisor
+• For admission flows, never ask more than one data question per message.\n• If ACTIVE CHAT ADMISSION exists, preserve its exact step and never restart it.\n• Questions may interrupt the flow. Answer them first, then offer Continue Application, Ask Another Question, and Change Course.\n• Use the same emoji, short-bullet, progress-step and button pattern for every Education communication style.\n• Never print "Reply with", square-bracket choices, or button instructions to the customer.\n• When offering choices, append only the internal OPTIONS: marker described below; the system removes it and creates real WhatsApp buttons or a list.\n• When listing 2–10 courses or categories, use those exact verified names as OPTIONS instead of generic navigation choices.\n• Never expose a Google Drive brochure URL in reply text; the system sends the PDF as a direct document attachment.`;
     const eduCommunicationStyle=engineParseJsonField(c.bot_config,{}).edu_communication_style||'';
     const eduStyleInstructions={
       higher_education:`HIGHER EDUCATION COMMUNICATION STYLE:
@@ -10457,13 +12566,13 @@ BUTTONS — mandatory after EVERY reply:
 • Discovery order: 1️⃣ Area of study → 2️⃣ Entry requirements / level → 3️⃣ Matched verified programmes.
 • Emphasise: 🎓 academic credibility · 💼 career pathways · 🏛 institutional reputation.
 • Never invent qualifications, accreditations, entry criteria, scholarship amounts or acceptance rates.
-• Preferred button set: [View Programme] [Check Eligibility] [Book Consultation] [Download Prospectus]`,
+• Preferred choices: View Programme · Check Eligibility · Book Consultation · Download Prospectus`,
       courses_online:`COURSES / ONLINE LEARNING COMMUNICATION STYLE:
 • Tone: encouraging, energetic, results-driven — like a personal learning coach.
 • Discovery order: 1️⃣ Skill or topic → 2️⃣ Current level → 3️⃣ Matched verified courses.
 • Emphasise: ⚡ flexibility · 📱 self-paced learning · 🏆 certifications and outcomes.
 • Never invent module counts, platform features, completion guarantees or discount amounts.
-• Preferred button set: [Enroll Now] [Watch Free Preview] [Get Syllabus] [Chat with Advisor]`
+• Preferred choices: Enroll Now · Watch Free Preview · Get Syllabus · Chat with Advisor`
     };
     if(eduStyleInstructions[eduCommunicationStyle]) sys+='\n\n'+eduStyleInstructions[eduCommunicationStyle];
   }
@@ -10480,9 +12589,22 @@ BUTTONS — mandatory after EVERY reply:
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineMemoryBlock(state);
-  // Hospitality: inject the selected unit so the LLM has booking/availability context
+  // Inject known contact name so the LLM never asks for something Chatwoot already gave us.
+  // state.name is the WhatsApp/Chatwoot profile name set at turn start; state.lead?.Name is the
+  // same value persisted to the lead row on previous turns. Either is authoritative.
+  const _knownName=state.name||state.lead?.Name;
+  if(_knownName) sys+=`\n\nKnown customer name: ${_knownName} — this is already on file from their WhatsApp profile. Never ask for their name or company name again.`;
+  // Hospitality: inject selected location/property/unit so LLM has destination & booking context
   const hospSelectedUnit=state.lead?.HospSelectedUnit;
-  if(hospSelectedUnit) sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
+  const hospSelectedProperty=state.lead?.HospSelectedProperty;
+  const hospSelectedLocation=state.lead?.HospSelectedLocation;
+  if(hospSelectedUnit){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer has expressed interest in: *${hospSelectedUnit}*. When they ask about booking, availability, pricing or details, assume they mean this specific option unless they explicitly say otherwise.`;
+  } else if(hospSelectedProperty){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer is interested in the *${hospSelectedProperty}* property. Answer questions about that property's rooms, pricing and availability from VERIFIED RESORT DATA above. If they ask about a specific room, list the rooms available under that property.`;
+  } else if(hospSelectedLocation){
+    sys+=`\n\n## Customer's Hospitality Interest\nThis customer is looking for options in *${hospSelectedLocation}*. Limit all property and room recommendations to options located in ${hospSelectedLocation}. Do not suggest properties from other destinations unless the customer explicitly asks.`;
+  }
   if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
@@ -10492,7 +12614,7 @@ BUTTONS — mandatory after EVERY reply:
   // no handover of any kind had actually happened. That's a trust problem independent of whatever
   // data gap caused it: never imply a human is already engaged unless one genuinely is (this route
   // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
-  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. If you cannot answer from the data above, say plainly that you do not have that specific information and will find out / connect them with the team, as something you are about to do, not something already in progress.';
+  sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. Never offer to "connect" or "transfer" the customer to a team, agent, or person in this reply — that decision is made by the system, not by you. If you cannot answer a question from the data above, say plainly that you do not have that specific information and ask the customer for more details so you can help them better.';
 
   // Observed real failure #1: a customer's plain "Hi" got a long, salesy paragraph back — a full
   // "welcome to the store, what are you looking for, let me know your size and color" pitch nobody
@@ -10545,6 +12667,13 @@ BUTTONS — mandatory after EVERY reply:
     // the Product Catalog above (a supply duration, a pack-size breakdown, an ingredient, a
     // certification) is not real data, even if it sounds plausible for the category.
     sys+=' Only state a product fact (name, price, category, size/color options, stock, or anything else) that is literally present in the Product Catalog above — never add a plausible-sounding detail that isn\'t there (a supply duration like "1-month supply", a pack-size breakdown, an ingredient, a certification). If a customer asks about something the catalog entry doesn\'t cover, say honestly that you\'ll check rather than guessing an answer that sounds right for the category.';
+    // Observed real failure (home appliances / mattress clients): the bot was computing estimated
+    // prices by multiplying or scaling from a known size (e.g. inferring a 72x60 mattress price
+    // from a 72x36 listing) — a calculation the product catalog never authorised. Price must only
+    // ever come verbatim from the catalog entry for that exact product; if the requested size or
+    // configuration has no listed price, escalate to a human.
+    sys+=' PRICE INTEGRITY: Never calculate, derive, estimate, or extrapolate a price from a product\'s size, dimensions, inches, or any other attribute. The only valid price is the exact figure shown in the Product Catalog for that specific product. If a customer asks about a size or configuration whose price is not explicitly listed, tell them you do not have a confirmed price for that option and offer to connect them with a team member for accurate pricing — never compute or approximate a number.';
+
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
     // of the shown product — because a bare size/color reply carries no signal on its own, only in
@@ -10586,15 +12715,344 @@ BUTTONS — mandatory after EVERY reply:
 // One extra LLM call, but only ever once per lead's whole lifetime (isNewLead), so the cost is
 // negligible. Falls back to the plain question on any failure — same "never leave the customer
 // with nothing" principle as engineCallLlm's own fallback.
+export function engineIsGreetingOnly(text){
+  return /^(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|assalamu\s+alaikum|salaam|namaste)[!. ,🙏👋]*$/iu.test(String(text||'').trim());
+}
+export function engineIsRevisitAfterSilence(state,thresholdMs=4*60*60*1000){
+  const lastAt=state?.lastCustomerMsgAt?new Date(state.lastCustomerMsgAt).getTime():0;
+  return lastAt>0&&Date.now()-lastAt>thresholdMs;
+}
+
+export function engineIndustryFlowEnabled(c){
+  const flow=engineParseJsonField(c?.flow_json,{});
+  return flow.flow_engine?.enabled===true&&flow.flow_engine?.published===true;
+}
+export function engineShouldUseConfiguredFlowIntro(c,userText,mediaType='text'){
+  if(mediaType!=='text'||!engineIsGreetingOnly(userText)||!engineIndustryFlowEnabled(c))return false;
+  const flow=engineParseJsonField(c?.flow_json,{}),intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
+  return intro.enabled!==false&&Boolean(String(intro.text||'').trim());
+}
+function engineFlowStageConfig(flow,stageId){
+  const config=flow.stage_config?.[stageId];
+  return config&&typeof config==='object'?config:{};
+}
+function engineFlowAnswerValue(stageId,answerId){
+  return `FLOW_ANSWER:${String(stageId||'').replace(/[^a-zA-Z0-9_-]/g,'')}:${String(answerId||'').replace(/[^a-zA-Z0-9_-]/g,'')}`.slice(0,200);
+}
+function engineFlowAnswers(config){
+  return (Array.isArray(config?.answers)?config.answers:[]).filter(answer=>answer&&answer.id&&answer.title).slice(0,10);
+}
+export function engineBuildIndustryFlowButtons(flow,stageId){
+  return engineFlowAnswers(engineFlowStageConfig(flow,stageId)).map(answer=>({
+    title:String(answer.title).trim(),
+    value:engineFlowAnswerValue(stageId,answer.id)
+  }));
+}
+function engineFlowInterpolate(text,variables,c){
+  return String(text||'').replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g,(_,key)=>{
+    if(key==='business_name'||key==='company_name') return String(c.client_name||'our team');
+    const value=String(key).split('.').reduce((current,part)=>current&&current[part],variables);
+    return value==null?'':String(value);
+  }).trim();
+}
+export function engineIndustryFlowMemory(c,state){
+  if(!engineIndustryFlowEnabled(c)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
+  const saved=state?.qualAnswers?._flow_state;
+  if(saved?.status==='active'&&stageIds.includes(saved.current_stage)){
+    return {...saved,variables:{...(saved.variables||state.qualAnswers?._flow_variables||{})}};
+  }
+  // Migration path for leads already sitting on one of the client's old configured stages:
+  // the same stage id becomes their flow-stage id when the client enables the module.
+  if(stageIds.includes(String(state?.stage||''))){
+    return {flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:String(state.stage),previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},stage_history:[],interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,String(state.stage))};
+  }
+  return null;
+}
+function engineFlowQualAnswers(state,memory){
+  const qualAnswers={...(state.qualAnswers||{})};
+  qualAnswers._flow_variables={...(memory.variables||{})};
+  qualAnswers._flow_state={...memory,variables:{...(memory.variables||{})}};
+  return qualAnswers;
+}
+function engineFlowAdvanceMemory(flow,memory,currentStage,nextStage,answer,variables){
+  const history=Array.isArray(memory.stage_history)?memory.stage_history.slice(-19):[];
+  if(answer) history.push({stage:currentStage,answer_id:String(answer.id),answer:String(answer.title),completed_at:new Date().toISOString()});
+  return {
+    ...memory,status:'active',previous_stage:currentStage,current_stage:nextStage,variables,
+    stage_history:history,interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,nextStage),
+    updated_at:new Date().toISOString()
+  };
+}
+export function engineResolveIndustryFlowTurn(c,state,userText){
+  if(!engineIndustryFlowEnabled(c)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const raw=String(userText||'').trim();
+  const actionMatch=raw.match(/^FLOW_ANSWER:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/);
+  const memory=engineIndustryFlowMemory(c,state);
+  if(raw==='FLOW_CONTINUE'&&memory){
+    const resumeStage=memory.current_stage;
+    const resumeConfig=engineFlowStageConfig(flow,resumeStage);
+    const resumedMemory={...memory,interruption_count:0,last_options:engineBuildIndustryFlowButtons(flow,resumeStage),updated_at:new Date().toISOString()};
+    return {
+      route:'industry_flow',next:resumeStage,preserveCrmStage:true,
+      reply:engineFlowInterpolate(resumeConfig.resume_message||flow.messages?.['msg_'+resumeStage]||'Let’s continue.',memory.variables||{},c),
+      quickReplies:engineBuildIndustryFlowButtons(flow,resumeStage),mediaUrl:'',
+      qualAnswers:engineFlowQualAnswers(state,resumedMemory),intent:'FLOW_CONTINUE',intentData:{},
+      sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
+    };
+  }
+  // A button contains its source stage, so it can recover even if this is the first persisted tap.
+  let currentStage=actionMatch?.[1]||memory?.current_stage||'';
+  if(!currentStage) return null;
+  const config=engineFlowStageConfig(flow,currentStage);
+  const variables={...(memory?.variables||state.qualAnswers?._flow_variables||{})};
+  let answer=null,nextStage='',mediaUrl='',linkUrl='';
+
+  if(actionMatch){
+    answer=engineFlowAnswers(config).find(item=>String(item.id)===actionMatch[2]);
+    if(!answer) return null;
+  }else{
+    // A customer may type a visible option instead of tapping it. Exact title matching remains
+    // deterministic and converts it to the same stored internal answer.
+    const normalized=raw.toLowerCase().normalize('NFC');
+    answer=engineFlowAnswers(config).find(item=>String(item.title).trim().toLowerCase().normalize('NFC')===normalized)||null;
+  }
+
+  if(answer){
+    nextStage=String(answer.next||config.default_next||'');
+    // No next stage, or button loops back to same stage → let AI handle the turn.
+    if(!nextStage||nextStage===currentStage) return null;
+    if(config.capture_variable) variables[config.capture_variable]=answer.entity_id||answer.value||answer.title;
+    if(answer.set_variable) variables[answer.set_variable]=answer.entity_id||answer.value||answer.title;
+    if(answer.entity_type){
+      variables[answer.entity_type+'_id']=answer.entity_id||answer.value||answer.title;
+      variables[answer.entity_type+'_label']=answer.title;
+    }
+    mediaUrl=String(answer.media_url||'').trim();
+    linkUrl=String(answer.link_url||'').trim();
+  }else if(config.input_type==='free_text'&&config.capture_variable&&raw){
+    variables[config.capture_variable]=raw;
+    nextStage=String(config.default_next||'');
+    // No configured next stage — capture the value but let AI answer naturally
+    // rather than looping back to the same stage.
+    if(!nextStage||nextStage===currentStage) return null;
+  }else{
+    // When ai_mode is 'off', block AI entirely — re-present the current stage instead of deferring.
+    if(config.ai_mode==='off'){
+      const stayMsg=flow.messages?.['msg_'+currentStage]||config.message||config.retry_message||'';
+      const stayButtons=engineBuildIndustryFlowButtons(flow,currentStage);
+      const stayMemory=memory||{flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:currentStage,previous_stage:null,variables,stage_history:[],interruption_count:0,last_options:stayButtons};
+      return {
+        route:'industry_flow',next:currentStage,preserveCrmStage:true,
+        reply:engineFlowInterpolate(stayMsg,variables,c),
+        quickReplies:stayButtons,mediaUrl:String(config.media_url||'').trim(),
+        qualAnswers:engineFlowQualAnswers(state,stayMemory),intent:'FLOW_STAY',intentData:{},
+        sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
+      };
+    }
+    // No button match and not a free-text capture stage — let AI answer.
+    return null;
+  }
+
+  const baseMemory=memory||{flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),status:'active',current_stage:currentStage,previous_stage:null,variables:{},stage_history:[],interruption_count:0,last_options:[]};
+  const nextMemory=engineFlowAdvanceMemory(flow,baseMemory,currentStage,nextStage,answer,variables);
+  const nextConfig=engineFlowStageConfig(flow,nextStage);
+  const nextMsg=flow.messages?.['msg_'+nextStage]||nextConfig.message;
+  const nextButtons=engineBuildIndustryFlowButtons(flow,nextStage);
+  // Next stage has no message and no buttons — nothing to show, let AI handle.
+  if(!nextMsg&&!nextButtons.length) return null;
+  let reply=engineFlowInterpolate(nextMsg||config.retry_message||'Please choose one of the available options.',variables,c);
+  if(linkUrl) reply+=(reply?'\n\n':'')+linkUrl;
+  return {
+    route:'industry_flow',next:nextStage,reply,preserveCrmStage:true,
+    quickReplies:engineBuildIndustryFlowButtons(flow,nextStage),
+    mediaUrl:mediaUrl||String(nextConfig.media_url||'').trim(),
+    qualAnswers:engineFlowQualAnswers(state,nextMemory),intent:'FLOW_ANSWER',intentData:{},sentiment:'Neutral',
+    objectionCategory:'none',customerLanguage:c.language||'en'
+  };
+}
+
+async function engineBuildIndustryFlowInterruptionTurn(env,c,state,userText){
+  const raw=String(userText||'').trim();
+  // Global safety/navigation intents must continue to the existing deterministic router.
+  if(/\b(?:human|agent|representative|person|staff|receptionist|unsubscribe|stop|cancel)\b/i.test(raw)) return null;
+  const memory=engineIndustryFlowMemory(c,state);
+  if(!memory) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const currentStage=memory.current_stage;
+  const config=engineFlowStageConfig(flow,currentStage);
+  // Default: AI handles general questions during any active flow stage.
+  // Only skip when the stage explicitly opts out with ai_mode:'disabled' or ai_mode:'off'.
+  if(config.ai_mode==='disabled'||config.ai_mode==='off') return null;
+  const stageLabel=String(flow.labels?.[currentStage]||currentStage);
+  const variables=memory.variables||{};
+  const resumeMessage=engineFlowInterpolate(config.resume_message||`Would you like to continue with ${stageLabel}?`,variables,c);
+  const context=[
+    String(c.main_prompt||'').slice(0,3500),
+    c.kb_summary?'\nRelevant business knowledge:\n'+String(c.kb_summary).slice(0,1400):'',
+    `\nThe customer temporarily interrupted an active "${stageLabel}" flow step. Answer only their immediate question. Do not change the flow stage, do not ask for information already present in Saved flow variables, and do not repeat the stage message. Keep the answer concise and factual. Never invent products, services, prices, doctors, properties, units, availability, stock, schedules, flights or links. For healthcare, never diagnose or prescribe.`,
+    '\nSaved flow variables:\n'+JSON.stringify(variables).slice(0,1200)
+  ].join('');
+  const answer=await engineCallLlmAvoidingRepeat(env,c,context,String(userText||''),180,state.botMsgs?.[state.botMsgs.length-1]);
+  if(!answer||!answer.trim()||answer.trim()==='One moment 🙏') return null;
+  const interruptionCount=Number(memory.interruption_count||0)+1;
+  const buttons=interruptionCount<=2?engineBuildIndustryFlowButtons(flow,currentStage):[
+    {title:'Continue',value:'FLOW_CONTINUE'},
+    ...(c.handover_enabled!=='No'?[{title:'Talk to Human',value:'INTRO_HUMAN'}]:[])
+  ];
+  const updatedMemory={...memory,status:'active',current_stage:currentStage,variables,interruption_count:interruptionCount,last_options:buttons,updated_at:new Date().toISOString()};
+  return {
+    route:'industry_flow_ai',next:currentStage,preserveCrmStage:true,
+    reply:answer.trim()+'\n\n'+resumeMessage,quickReplies:buttons,mediaUrl:'',
+    qualAnswers:engineFlowQualAnswers(state,updatedMemory),intent:'FLOW_INTERRUPTION',intentData:{},
+    sentiment:'Neutral',objectionCategory:'none',customerLanguage:c.language||'en'
+  };
+}
+
+const ENGINE_INTRO_ACTIONS={
+  INTRO_SERVICES:{text:'Show me your services',intent:'QUESTION'},
+  INTRO_BOOK:{text:'I want to book an appointment',intent:'BOOKING'},
+  INTRO_MORE:{text:'Tell me more',intent:'QUESTION'},
+  INTRO_HUMAN:{text:'Talk to a human',intent:'WANTS_HUMAN'}
+};
+export function engineResolveIntroInternalAction(value,language='en'){
+  const action=ENGINE_INTRO_ACTIONS[String(value||'').trim().toUpperCase()];
+  if(!action) return null;
+  return {...action,customerLanguage:language||'en'};
+}
+export function engineNormalizeIntroButtons(buttons,c={}){
+  const allowed=new Set(Object.keys(ENGINE_INTRO_ACTIONS));
+  const configured=(Array.isArray(buttons)?buttons:[])
+    .map(button=>({title:String(button?.title||'').trim().slice(0,20),value:String(button?.action||button?.value||'').trim().toUpperCase()}))
+    .filter(button=>button.title&&allowed.has(button.value))
+    .slice(0,3);
+  if(configured.length) return configured;
+  const industry=String(c.industry||'general').toLowerCase();
+  const defaults=industry==='healthcare'
+    ? [{title:'View Services',value:'INTRO_SERVICES'},{title:'Book Appointment',value:'INTRO_BOOK'}]
+    : [{title:'View Services',value:'INTRO_SERVICES'},{title:'Tell Me More',value:'INTRO_MORE'}];
+  if(c.handover_enabled!=='No') defaults.push({title:'Talk to Human',value:'INTRO_HUMAN'});
+  return defaults.slice(0,3);
+}
+function engineIntroCacheKey(c,lang,firstQuestion){
+  const seed=[c.main_prompt||'',c.services||'',c.kb_summary||'',firstQuestion||''].join('|');
+  let hash=2166136261;
+  for(let i=0;i<seed.length;i++){ hash^=seed.charCodeAt(i); hash=Math.imul(hash,16777619); }
+  return `greeting-intro:v1:${c.Id||'client'}:${lang}:${hash>>>0}`;
+}
+
+// Generates a prompt-led introduction once, then reuses it for later new leads. The cache key
+// changes automatically when the prompt, services, KB summary, language, or first-stage message
+// changes, so clients get fresh copy after editing settings without spending tokens per greeting.
 async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   const lang=replyLang||c.language||'en';
+  const cache=env.MATRI_CACHE;
+  const cacheKey=engineIntroCacheKey(c,lang,firstQuestion);
+  if(cache){
+    try{ const hit=await cache.get(cacheKey); if(hit&&hit.trim()) return hit.trim(); }catch(e){}
+  }
   const services=engineParseJsonField(c.services, []);
-  let sys=c.main_prompt||'';
-  if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
+  let sys=String(c.main_prompt||'').slice(0,5000);
+  if(c.google_maps_url && c.google_maps_url.trim()) sys+=`\n\n## Location\nGoogle Maps: ${c.google_maps_url.trim()}`;
+  if(services.length) sys+='\n\n## Services\n'+services.slice(0,12).map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
-  sys+=`\n\nThis is a brand-new lead's very first message. Default format (follow this unless the persona/instructions above specify a different length or format): write a short WhatsApp reply, in ${lang}: one short, warm sentence introducing what the business offers (from the Services/Knowledge Base above), then this exact question on its own line: "${firstQuestion}". Nothing else — no extra questions, no long pitch.`;
-  const out=await engineCallLlm(env, c, sys, '(new conversation)', 150);
-  return out && out.trim() && out!=='One moment 🙏' ? out : firstQuestion;
+  sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
+  const out=await engineCallLlm(env, c, sys, '(new conversation)', 120);
+  // When the LLM fails, build a minimal intro from the business name so the customer sees
+  // "Welcome to [Name]! How can I help you today?" instead of a bare unanswered question.
+  const _bizName=String(c.client_name||'').trim();
+  const _llmFallback=_bizName?`Welcome to ${_bizName}! ${firstQuestion}`:firstQuestion;
+  const resolved=out && out.trim() && out!=='One moment 🙏' ? out.trim() : _llmFallback;
+  if(cache&&resolved){
+    // Only cache LLM-generated replies — the name-based fallback should not be cached
+    // because it would persist even after the LLM recovers and could serve stale copy.
+    if(out && out.trim() && out!=='One moment 🙏'){
+      try{ await cache.put(cacheKey,resolved,{expirationTtl:2592000}); }catch(e){}
+    }
+  }
+  return resolved;
+}
+
+function engineFillIntroTokens(text,c,knownName){
+  return String(text||'')
+    .replace(/\{\{\s*(?:business_name|company_name)\s*\}\}/gi,String(c.client_name||'our team'))
+    .replace(/\{\{\s*(?:customer_name|name)\s*\}\}/gi,String(knownName||'there'))
+    .trim();
+}
+async function engineBuildFirstGreetingTurn(env,c,state,userText,replyLang,knownName,force=false){
+  if(!force&&!engineIsGreetingOnly(userText)) return null;
+  const flow=engineParseJsonField(c.flow_json,{});
+  const intro=flow.intro&&typeof flow.intro==='object'?flow.intro:{};
+  if(intro.enabled===false) return null;
+  const stageIds=Object.keys(flow.stages||{}).filter(id=>id!=='new');
+  const hasStages=engineIndustryFlowEnabled(c)&&stageIds.length>0;
+  const introText=String(intro.text||'').trim();
+  if(hasStages){
+    // Full industry-flow path: attach flow memory and advance into the first stage
+    const firstStage=flow.flow_engine?.entry_stage&&stageIds.includes(flow.flow_engine.entry_stage)?flow.flow_engine.entry_stage:stageIds[0];
+    const firstStageMessage=firstStage!=='new'?String(flow.messages?.['msg_'+firstStage]||'').trim():'';
+    let text=engineFillIntroTokens(introText,c,knownName);
+    if(text&&firstStageMessage&&!text.includes(firstStageMessage)) text+=`\n\n${firstStageMessage}`;
+    if(!text){
+      const question=firstStageMessage||'How can we help you today?';
+      text=await engineBuildFirstTouchIntro(env,c,question,replyLang);
+    }
+    const botConfig=engineParseJsonField(c.bot_config,{});
+    const configuredFlowButtons=engineBuildIndustryFlowButtons(flow,firstStage);
+    const buttons=botConfig.quick_reply_buttons_enabled===false?[]:(configuredFlowButtons.length?configuredFlowButtons:engineNormalizeIntroButtons(intro.buttons,c));
+    const firstConfig=engineFlowStageConfig(flow,firstStage);
+    const memory={
+      flow_id:flow.flow_engine?.template||'industry_flow',flow_version:Number(flow.flow_engine?.version||1),
+      status:'active',current_stage:firstStage,previous_stage:null,variables:{...(state.qualAnswers?._flow_variables||{})},
+      stage_history:[],interruption_count:0,last_options:buttons,updated_at:new Date().toISOString()
+    };
+    return {route:'industry_flow',text,next:firstStage,preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||firstConfig.media_url||'').trim(),qualAnswers:engineFlowQualAnswers(state,memory)};
+  }
+  // Plain intro (no flow stages): send the configured greeting + buttons; normal routing resumes next turn
+  if(!introText) return null;
+  const botConfigPlain=engineParseJsonField(c.bot_config,{});
+  const text=engineFillIntroTokens(introText,c,knownName);
+  const buttons=botConfigPlain.quick_reply_buttons_enabled===false?[]:engineNormalizeIntroButtons(intro.buttons,c);
+  return {route:'intro',text,next:state.stage||'new',preserveCrmStage:true,lang:replyLang||c.language||'en',buttons,mediaUrl:String(intro.media_url||'').trim(),qualAnswers:state.qualAnswers||{}};
+}
+
+async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,turn,startMs,mediaType,ctx){
+  const routing={
+    route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,preserveCrmStage:turn.preserveCrmStage===true,
+    qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
+    sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
+  };
+  const replyText=turn.text||turn.reply||'';
+  const replyLang=turn.lang||turn.customerLanguage||c.language||'en';
+  const replyButtons=turn.buttons||turn.quickReplies||[];
+  if(c.bot_reply_disabled!=='Yes'&&turn.mediaUrl&&state.convId){
+    await sendDriveMediaToChatwoot(c,state.convId,turn.mediaUrl,'').catch(()=>false);
+  }
+  const sentOptions=await engineDeliverReply(env,c,clientId,state.convId,replyText,{
+    mediaType,langCode:replyLang,quickReplies:replyButtons,ctx
+  });
+  routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
+  const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
+  await engineResolveLeadOwner(env,c,clientId,built.body,state,isNewLead);
+  await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
+  built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
+  const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
+  if(resolvedLeadId){
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,replyText);
+    if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
+    await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
+    if(isNewLead) await engineBroadcastUpdate(env,clientId,{type:'new_lead',lead_id:resolvedLeadId,lead_name:built.body.Name||built.body.Phone||'New Enquiry',at:new Date().toISOString()});
+    if(isNewLead&&state.referrerLeadId){
+      try{ await env.DB.prepare('INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referral_code, status, created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),Number(state.referrerLeadId),Number(resolvedLeadId),'','pending',new Date().toISOString()).run(); }catch(e){}
+    }
+  }
+  await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:state.phone,Intent:routing.intent,Route:routing.route,Stage:state.stage||'',NextStage:built.body.Stage||'',ResponseMs:Date.now()-startMs,IsError:false,ErrorMsg:'',Timestamp:new Date().toISOString()});
+  await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(()=>{});
+  return resolvedLeadId;
 }
 
 // Mirrors "Code · Objection prep".
@@ -10606,7 +13064,8 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   let sys=c.main_prompt||'';
   const services=engineParseJsonField(c.services, []);
   if(services.length) sys+='\n\n## Services\n'+services.map(s=>`- ${s.name}: ${s.description||''} | Price: ${s.currency||'AED'} ${s.price} per ${s.per||'person'}`).join('\n');
-  if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+  const kbText=engineSelectKb(c.kb_summary, 'OBJECTION', objectionCategory);
+  if(kbText) sys+='\n\n## Knowledge Base\n'+kbText;
   sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
   if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
   else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
@@ -10659,7 +13118,7 @@ function engineStripHallucinatedToolCode(text){
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
-  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL}));
+  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
   if(geminiReply) return geminiReply;
   // OpenRouter is optional legacy fallback only; never request it with an absent key.
   if(!c?.openrouter_key){
@@ -10771,7 +13230,9 @@ async function engineEmbedText(env, text){
       body:JSON.stringify({model:'models/text-embedding-004', content:{parts:[{text:String(text).slice(0,2000)}]}})
     });
     const data=await r.json().catch(()=>({}));
-    return Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+    const values=Array.isArray(data?.embedding?.values) ? data.embedding.values : null;
+    if(values) console.log('[gemini-call]', JSON.stringify({caller:'embed', model:'text-embedding-004', ts:new Date().toISOString()}));
+    return values;
   }catch(e){ return null; }
 }
 
@@ -10899,7 +13360,7 @@ async function engineMemoryBackfillCatalogIfNeeded(env, clientId){
 async function runMemoryBackfillForAllClients(env){
   if(!env.MEMORY_INDEX) return;
   try{
-    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)&limit=500&fields=Id,openrouter_key`);
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(industry,eq,ecommerce)~or(ecom_enabled,eq,Yes)&limit=500&fields=Id,openrouter_key`);
     const d=await r.json().catch(()=>({}));
     for(const c of (d?.list||[])){
       if(!c.openrouter_key) continue;
@@ -10983,7 +13444,7 @@ async function engineLocalizeReply(env, c, text, targetLang){
   if(!trimmed || !targetLang || targetLang==='en') return text;
   const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400});
+    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
     if(geminiRaw) return geminiRaw;
   }catch(e){}
   if(c.openrouter_key){
@@ -11054,13 +13515,20 @@ export async function engineSendChatwootReply(env, c, clientId, convId, text){
 // render buttons at all) must never leak a raw "OPTIONS:" line into what the customer reads.
 export function engineExtractReplyOptions(replyText){
   const text=(typeof replyText==='string'?replyText:'');
-  const match=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  const optionsMatch=text.match(/\n?OPTIONS:\s*(.+?)\s*$/i);
+  // Backward compatibility for old Education prompts that told the model to print
+  // "Reply with: [A] [B]". Strip that internal syntax and turn it into real interactive choices
+  // instead of ever showing square brackets to a customer.
+  const bracketMatch=!optionsMatch?text.match(/\n?\*?Reply\s+with:\*?\s*((?:\[[^\]\r\n]+\]\s*){2,10})$/i):null;
+  const match=optionsMatch||bracketMatch;
   if(!match) return {text, options:null};
-  const stripped=text.slice(0, match.index).trimEnd();
+  const stripped=text.slice(0,match.index).trimEnd();
   // Capped at 10, not 3 — matches engineSendChatwootQuickReply's own max (it already renders >3
   // items as a proper WhatsApp list message, not just buttons), so a legitimately larger menu (e.g.
   // a first-touch reply naming several catalog categories) isn't silently truncated back down.
-  const options=match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10);
+  const options=optionsMatch
+    ?match[1].split('|').map(s=>s.trim()).filter(Boolean).slice(0,10)
+    :[...match[1].matchAll(/\[([^\]]+)\]/g)].map(m=>m[1].trim()).filter(Boolean).slice(0,10);
   return {text:stripped, options:options.length?options:null};
 }
 // Fallback for when a FAQ reply reads as a plain-English "X, Y, or Z?" choice question but the
@@ -11094,9 +13562,8 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {
-      temperature:0.1, maxOutputTokens:150, json:true
-    }))||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'})
+      || await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'}))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
@@ -11128,7 +13595,7 @@ export function engineTruncateButtonTitle(title, cap){
   // Only break on the space if it doesn't throw away most of the cap (a title like "XL" has no
   // useful space to break on at all) — otherwise a hard cut is the better of two bad options.
   const cut=lastSpace>Math.floor(cap*0.4) ? slice.slice(0, lastSpace) : slice;
-  return cut.trimEnd()+'…';
+  return cut.trimEnd();
 }
 // Returns the items actually presented to the customer as tappable buttons — {title, value},
 // title truncated/deduped exactly as sent — or null on every path that fell back to plain text
@@ -11187,7 +13654,9 @@ async function engineSendChatwootQuickReply(env, c, clientId, convId, text, item
     return false;
   });
   if(hasCollision){
-    const listText=raw.map(it=>`- ${it.title||it.value}`).join('\n');
+    const seenFallback=new Set();
+    const uniqueRaw=raw.filter(it=>{const k=String(it.title||it.value||'').toLowerCase().normalize('NFC');if(seenFallback.has(k))return false;seenFallback.add(k);return true;});
+    const listText=uniqueRaw.map(it=>`- ${it.title||it.value}`).join('\n');
     const sent=await engineSendChatwootReply(env, c, clientId, convId, `${text}\n${listText}`);
     return sent?null:false;
   }
@@ -11359,14 +13828,18 @@ const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'mee
 // voice-note customer silently and permanently getting a text reply with zero trace of why.
 // Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
 // just voice-to-voice not being set up yet for this environment, not a bug.
-async function engineSarvamTts(env, text, targetLangCode){
+async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', requestTimeoutMs=0){
   if(!text || !targetLangCode) return null;
-  if(!env.SARVAM_API_KEY){ await reportOpsError(env, 'engineSarvamTts — SARVAM_API_KEY not configured', new Error('missing secret')); return null; }
+  const apiKey=String(clientApiKey||env.SARVAM_API_KEY||'').trim();
+  if(!apiKey){ await reportOpsError(env, 'engineSarvamTts — no client or Worker SARVAM_API_KEY configured', new Error('missing secret')); return null; }
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const r=await engineFetchWithRetry('https://api.sarvam.ai/text-to-speech', {
       method:'POST',
-      headers:{'api-subscription-key':env.SARVAM_API_KEY, 'Content-Type':'application/json'},
-      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'})
+      headers:{'api-subscription-key':apiKey, 'Content-Type':'application/json'},
+      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'}),
+      ...(controller?{signal:controller.signal}:{})
     });
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
@@ -11394,7 +13867,193 @@ async function engineSarvamTts(env, text, targetLangCode){
   }catch(e){
     await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
+}
+
+const ENGINE_VOICE_REPLY_DEADLINE_MS=65000;  // Piper 2.5s + AI4Bharat up to 30s + Sarvam up to 30s + 2.5s buffer
+const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
+const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
+const ENGINE_AI4BHARAT_HEDGE_MS=30000;  // wait 30s for AI4Bharat VITS before starting Sarvam
+const ENGINE_LIVE_TTS_DEADLINE_MS=60000;  // 30s AI4Bharat + 30s Sarvam total budget
+const ENGINE_SARVAM_DAILY_FALLBACK_LIMIT=25;
+
+export function engineResolveSarvamApiKey(env, c){
+  return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
+}
+
+export function engineResolveSarvamCredential(env, c){
+  const clientKey=String(c?.sarvam_api_key||'').trim();
+  if(clientKey) return {apiKey:clientKey, source:'client'};
+  const workerKey=String(env?.SARVAM_API_KEY||'').trim();
+  return workerKey?{apiKey:workerKey, source:'worker'}:null;
+}
+
+function engineSarvamDailyFallbackLimit(env){
+  const configured=Number(env?.SARVAM_DAILY_FALLBACK_LIMIT);
+  return Number.isFinite(configured)?Math.max(0,Math.floor(configured)):ENGINE_SARVAM_DAILY_FALLBACK_LIMIT;
+}
+
+// Client-owned Sarvam keys are never charged to LeadVyne's allowance. The shared Worker key is
+// protected by an atomic D1 daily counter; if D1/migration is unavailable, fail closed to the text
+// reply instead of accidentally creating unbounded paid usage.
+async function engineClaimSarvamCredential(env, c, clientId){
+  const credential=engineResolveSarvamCredential(env,c);
+  if(!credential || credential.source==='client') return credential;
+  const limit=engineSarvamDailyFallbackLimit(env);
+  if(!env.DB || limit<=0) return null;
+  const usageDate=new Date().toISOString().slice(0,10);
+  try{
+    await env.DB.prepare(`INSERT OR IGNORE INTO voice_sarvam_daily_usage
+      (client_id,usage_date,usage_count,updated_at) VALUES (?,?,0,CURRENT_TIMESTAMP)`)
+      .bind(String(clientId),usageDate).run();
+    const claimed=await env.DB.prepare(`UPDATE voice_sarvam_daily_usage
+      SET usage_count=usage_count+1,updated_at=CURRENT_TIMESTAMP
+      WHERE client_id=? AND usage_date=? AND usage_count<? RETURNING usage_count`)
+      .bind(String(clientId),usageDate,limit).first();
+    return claimed?credential:null;
+  }catch(e){
+    await reportOpsError(env,'engineClaimSarvamCredential — Worker fallback quota unavailable',e,{clientId});
+    return null;
+  }
+}
+
+export async function engineWithDeadline(promise, deadlineMs){
+  let timer;
+  try{
+    return await Promise.race([
+      promise,
+      new Promise(resolve=>{ timer=setTimeout(()=>resolve(null),deadlineMs); })
+    ]);
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function engineVoiceCacheKey(clientId, langCode, replyText){
+  const normalized=String(replyText||'').trim().replace(/\s+/g,' ').toLowerCase();
+  const digest=await sha256Hex(`${langCode}|${ENGINE_TTS_SPEAKER}|${normalized}`);
+  return `${ENGINE_VOICE_CACHE_PREFIX}/${clientId}/${langCode}/${digest}.ogg`;
+}
+
+async function engineVoiceCacheGet(env, key){
+  if(!env.HOSPITALITY_MEDIA) return null;
+  try{
+    const obj=await env.HOSPITALITY_MEDIA.get(key);
+    if(!obj) return null;
+    const buf=await obj.arrayBuffer();
+    return buf.byteLength>=200?buf:null;
+  }catch(_e){ return null; }
+}
+
+async function engineVoiceCachePut(env, key, audioBuf, provider){
+  if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
+  try{
+    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:String(provider||'unknown')}});
+  }catch(_e){}
+}
+
+// Free Piper gets a short first attempt (2.5s). If it is unavailable/unsupported, AI4Bharat VITS
+// starts and is the primary provider — Sarvam only fires after 30s if AI4Bharat hasn't responded.
+// Sarvam is the strong backup: it requires a client key or a Worker quota slot.
+// Kept as an injectable coordinator so ordering and deadlines are covered without live APIs.
+export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sarvamCall, piperDeadlineMs=ENGINE_PIPER_TTS_DEADLINE_MS){
+  const safeCall=call=>Promise.resolve().then(call).catch(()=>null);
+  const piper=await engineWithDeadline(safeCall(piperCall),piperDeadlineMs);
+  if(piper) return {audio:piper,provider:'piper'};
+  const live=await engineHedgeAi4BharatTts(
+    ()=>safeCall(ai4bharatCall).then(audio=>audio?{audio,provider:'ai4bharat'}:null),
+    ()=>safeCall(sarvamCall).then(audio=>audio?{audio,provider:'sarvam'}:null),
+    ENGINE_AI4BHARAT_HEDGE_MS,
+    ENGINE_LIVE_TTS_DEADLINE_MS
+  );
+  return live||{audio:null,provider:'text'};
+}
+
+// Voice-to-voice only: exact final replies are safe to reuse. Text-message delivery and scheduled
+// follow-ups do not call this function and therefore retain their existing behaviour.
+async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
+  // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
+  // call and every TTS provider. The cache prefix changes when the provider/voice ladder changes.
+  const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
+  const cached=await engineVoiceCacheGet(env, cacheKey);
+  if(cached) return cached;
+  const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+  if(!spokenText) return null;
+  const iso=(langCode||'').toLowerCase();
+  const bcp47=ENGINE_TTS_LANG_MAP[iso];
+  const result=await engineRunLiveVoiceTtsRotation(
+    ()=>enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS),
+    ()=>engineAi4BharatTts(env,spokenText,iso,ENGINE_LIVE_TTS_DEADLINE_MS),
+    async()=>{
+      if(!bcp47) return null;
+      const credential=await engineClaimSarvamCredential(env,c,clientId);
+      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,15000):null;  // 15s — fires only after AI4Bharat 30s wait
+    }
+  );
+  // Cache writes must never delay the first live send. R2 is best-effort here; the generated
+  // audio remains immediately usable even if this background write is interrupted or fails.
+  if(result.audio) void engineVoiceCachePut(env,cacheKey,result.audio,result.provider);
+  return result.audio;
+}
+
+// Two-phase voice follow-up — called via ctx.waitUntil after the text reply has already been
+// sent. Tries Piper (fast local), then AI4Bharat with no request timeout (the Worker stays alive
+// on the I/O wait however long the VITS model needs), then Sarvam as final fallback. On success
+// sends a voice-note follow-up on the same conversation. Errors are silently swallowed since the
+// customer already received the text reply.
+async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
+  try{
+    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+    if(!spokenText) return;
+    const iso=(langCode||'').toLowerCase();
+    const bcp47=ENGINE_TTS_LANG_MAP[iso];
+    let audio=null, provider='';
+    const safe=p=>Promise.resolve(p).catch(()=>null);
+    // Prefer the fast local Piper tier for the background follow-up. This prevents a long
+    // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages
+    // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.
+    // Prefer the fast local Piper tier for the background follow-up. For languages without a
+    // configured Piper voice, fall through to AI4Bharat and then Sarvam.
+    audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
+    if(audio) provider='piper';
+    if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+    if(audio && !provider) provider='ai4bharat';
+    if(!audio) provider='';
+
+    if(!audio && bcp47){
+      const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
+      if(credential){
+        audio=await safe(engineSarvamTts(env,spokenText,bcp47,credential.apiKey,30000));
+        if(audio) provider='sarvam';
+      }
+    }
+    if(audio){
+      const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
+      if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
+      await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
+    }
+  }catch(e){}
+}
+
+async function handleVoiceSettingsGet(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const c=await getClientById(env,session.cid);
+  if(!c) return json({error:'Client not found'},404);
+  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY});
+}
+
+async function handleVoiceSettingsUpdate(request, env){
+  const session=await requireSession(request,env);
+  if(!session) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const apiKey=String(body.api_key||'').trim();
+  if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
+  await ensureClientColumns(env,['sarvam_api_key']);
+  await patchClientFields(env,session.cid,{sarvam_api_key:apiKey});
+  return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
 }
 
 // Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
@@ -11405,15 +14064,14 @@ async function engineSarvamTts(env, text, targetLangCode){
 const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
 
 // STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
-// render-pipeline server that already hosts AI4Bharat's self-hosted ASR model (see
+// dedicated Coolify voice service (see
 // render-pipeline/lib/ai4bharatTts.js / render-pipeline/tts/synthesize_ai4bharat.py for what is and
 // isn't verified about the model itself — no live test was possible without a real deploy). Sarvam
 // AI (engineSarvamTts above) stays the PRIMARY TTS provider everywhere — this only exists to be
 // called from engineTtsWithFallback below when Sarvam's call already failed or SARVAM_API_KEY isn't
 // configured, so a customer still gets a real voice-note reply instead of silently downgrading
-// straight to text. Requires the render pipeline configured (MARKETING_RENDER_WEBHOOK_URL/_SECRET —
-// the same Marketing Studio render service this Worker already calls for transcription/scene
-// detection, reused rather than standing up a second service) AND AI4BHARAT_TTS_ENABLED set on that
+// straight to text. Requires the voice service configured (the legacy-named
+// MARKETING_RENDER_WEBHOOK_URL/_SECRET settings) AND AI4BHARAT_TTS_ENABLED set on that
 // service. Missing either is the expected/unconfigured case (silent null, no ops report), same
 // convention as engineSarvamTts's own missing-SARVAM_API_KEY case — this feature simply isn't set
 // up yet for this environment, not a bug.
@@ -11421,15 +14079,19 @@ const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te',
 // managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
 // whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
 // instead of instantly falling back to text", not tuned for low latency.
-async function engineAi4BharatTts(env, text, isoLangCode){
+async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
   if(!AI4BHARAT_TTS_LANGS.has(isoLangCode)) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
-    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
+    // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
@@ -11447,6 +14109,8 @@ async function engineAi4BharatTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'engineAi4BharatTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
   }
 }
 
@@ -11459,7 +14123,7 @@ async function engineAi4BharatTts(env, text, isoLangCode){
 //
 // GEMINI_API_KEY is the same shared Worker secret the intent classifier/transcriber already use
 // (see engineGeminiGenerateWithFallback) — no new secret needed. Reuses the exact same
-// render-pipeline service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
+// voice service as engineAi4BharatTts above (MARKETING_RENDER_WEBHOOK_URL/_SECRET) for
 // one thing only: converting the Live API's raw PCM16 output into the Ogg/Opus format WhatsApp
 // needs for a native voice-note bubble, since Cloudflare Workers have no audio codec available and
 // this repo's own convention is "anything ffmpeg-shaped runs on the render pipeline, not here" —
@@ -11562,16 +14226,18 @@ async function engineGeminiLiveTts(env, text, isoLangCode){
 // elsewhere), Piper's language coverage on the render pipeline defaults to English only (see that
 // file's PIPER_VOICE_MAP comment on why more languages aren't guessed at) — auto-falling back to
 // it for an Indic-language customer would silently downgrade them to an English-accented voice.
-// Same render-pipeline service as engineAi4BharatTts/engineGeminiLiveTts
+// Same voice service as engineAi4BharatTts/engineGeminiLiveTts
 // (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
-async function enginePiperTts(env, text, isoLangCode){
+async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+  const controller=requestTimeoutMs?new AbortController():null;
+  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
   try{
     const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
-    const r=await engineFetchWithRetry(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
+    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
       // A 400 here just means no Piper voice is configured for this language — expected/
@@ -11586,6 +14252,48 @@ async function enginePiperTts(env, text, isoLangCode){
   }catch(e){
     await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
     return null;
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
+}
+
+// AI4Bharat is self-hosted and can occasionally cold-start or wait behind another synthesis.
+// Start Sarvam after a short hedge
+// delay and return the first *valid* audio result. A null/failed provider never wins the race.
+// Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
+export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
+  const started=Date.now();
+  const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
+  let hedgeTimer;
+  const early=await Promise.race([
+    ai4bharatPromise.then(audio=>({finished:true,audio})),
+    new Promise(resolve=>{ hedgeTimer=setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs); })
+  ]);
+  clearTimeout(hedgeTimer);
+  if(early.finished && early.audio) return early.audio;
+  const remainingMs=Math.max(0,deadlineMs-(Date.now()-started));
+  if(early.finished){
+    if(!remainingMs) return null;
+    return engineWithDeadline(Promise.resolve().then(sarvamCall).catch(()=>null),remainingMs);
+  }
+
+  // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
+  // and resolves with whichever provider produces usable audio first.
+  const requireAudio=promise=>promise.then(audio=>audio||Promise.reject(new Error('TTS provider returned no audio')));
+  let deadlineTimer;
+  try{
+    const firstValid=Promise.any([
+      requireAudio(ai4bharatPromise),
+      requireAudio(Promise.resolve().then(sarvamCall))
+    ]);
+    return await Promise.race([
+      firstValid,
+      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), remainingMs); })
+    ]);
+  }catch(_e){
+    return null;
+  }finally{
+    clearTimeout(deadlineTimer);
   }
 }
 
@@ -11596,12 +14304,10 @@ async function engineTtsWithFallback(env, text, langCode, provider){
   if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
   if(mode==='piper') return enginePiperTts(env, text, iso);
   if(mode==='ai4bharat'){
-    const ai4bharatBuf=await engineAi4BharatTts(env, text, iso);
-    if(ai4bharatBuf) return ai4bharatBuf;
-    // AI4Bharat failed (render pipeline unavailable / AI4BHARAT_TTS_ENABLED not set) — fall back
-    // to Sarvam so the customer still gets a voice reply instead of silently downgrading to text.
-    if(bcp47) return engineSarvamTts(env, text, bcp47);
-    return null;
+    return engineHedgeAi4BharatTts(
+      ()=>engineAi4BharatTts(env, text, iso),
+      ()=>bcp47?engineSarvamTts(env, text, bcp47):null
+    );
   }
   if(bcp47){
     const sarvamBuf=await engineSarvamTts(env, text, bcp47);
@@ -11890,6 +14596,9 @@ async function handleNativeFormEndpoint(request, env){
       ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(), Channel:'whatsapp'
     };
     const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+    // Dual-write bot message to D1 lead_messages
+    if(resolvedLeadId) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:sentText, ts:new Date().toISOString()});
     if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
 
     if(flowMeta.convId){
@@ -11917,7 +14626,7 @@ async function handleNativeFormEndpoint(request, env){
 // text caption by engineExtractLinkPriceCaption instead.
 async function engineBuildSpokenReply(env, c, replyText, langCode){
   const sys='Rewrite the following customer-service reply as ONE short, natural sentence the way a friendly person would actually say it out loud on a voice note — real spoken style, not written text. Keep the exact same language and meaning. Never speak a URL, link, price, currency amount, or long number — if the reply mainly exists to share one of those, say something short and natural instead (for example, that the details are shared below/above in text). Respond with ONLY the spoken sentence — no quotes, no commentary, no markdown.';
-  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120});
+  const spoken=await engineGeminiGenerateWithFallback(env, c, sys, replyText, {temperature:0.4, maxOutputTokens:120, caller:'build-spoken'});
   if(spoken) return spoken;
   // Fallback if Gemini is unavailable: best-effort strip links/prices instead of speaking them,
   // and cap length, rather than failing the voice reply outright.
@@ -11947,28 +14656,18 @@ function engineExtractLinkPriceCaption(replyText){
 // play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
-async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies}={}){
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
   // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
   engineSendChatwootTyping(env, c, convId, false);
-  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — unlike engine_disabled
-  // above, this is the ONLY choke point gated by this flag: classification, routing, lead
-  // upsert/CRM fields, analytics logging, last_seen, and order/booking-signal detection in
-  // handleEngineWebhook all still run normally. Only the actual outbound WhatsApp message (text,
-  // image caption, or voice) stops going out — for a client who wants their own bot (e.g. a
-  // custom n8n workflow wired to the same Chatwoot inbox) to own the reply, while this CRM keeps
-  // tracking leads/stages/analytics off the same conversation exactly as if the built-in bot were
-  // still replying.
-  // Real observed gap: with this on, nothing below ever sends — but the caller's turn still
-  // finishes normally and engineLogAnalytics (handleEngineWebhook) still logs "✓ Replied" in
-  // Settings → Logs, since that log is written unconditionally at end-of-turn regardless of
-  // whether a reply actually went out (see engineSendChatwootReply's own comment for the same gap
-  // on the failure side). A business owner checking Settings → Logs for "why didn't my customer
-  // get a reply" would see "Replied" and have no way to know this toggle is why. Logging it
-  // explicitly here — distinct from a genuine send failure — closes that.
+  // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — the primary gate for
+  // this flag is now the early-exit in handleEngineWebhook (WhatsApp) and the inboxReason check
+  // (Instagram), which both short-circuit before any AI classification or LLM call so no tokens
+  // are consumed. This check here is a safety net for any call-site that bypasses those paths
+  // (e.g. follow-up flows, intro turns) and still reaches engineDeliverReply directly.
   if(c.bot_reply_disabled==='Yes'){
-    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply computed but not sent');
+    await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply not sent');
     return false;
   }
   const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
@@ -11977,13 +14676,16 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
-  // voice_reply_enabled — Integrations → Voice-to-Voice Reply toggle (dashboard.html). This is the
-  // only gate: not tied to voice_addon_active/billing at all (deliberately — see the toggle's own
-  // comment in dashboard.html), so a client controls this purely by flipping the toggle on or off.
-  if(mediaType==='voice' && c.voice_reply_enabled==='Yes' && !imageUrl && bcp47){
-    const spokenText=await engineBuildSpokenReply(env, c, trimmed, langCode);
-    const audioBuf=await engineTtsWithFallback(env, spokenText, langCode, c.voice_tts_provider);
-    if(audioBuf) return engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, engineExtractLinkPriceCaption(trimmed), trimmed);
+  // Voice messages: cache hit → instant voice reply; otherwise → text immediately + voice follow-up
+  // via ctx.waitUntil. AI4Bharat has no request timeout in the background path — it runs until the
+  // Worker's own I/O limit instead of an arbitrary ceiling that would abort mid-generation.
+  if(mediaType==='voice' && !imageUrl && bcp47){
+    const cacheKey=await engineVoiceCacheKey(clientId, langCode, trimmed).catch(()=>null);
+    const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
+    if(cached) return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
+    if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, langCode));
+    return;
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
   if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
@@ -12018,6 +14720,16 @@ async function engineSendHandoverLabel(c, convId){
       body:JSON.stringify({labels:['human-requested']})
     });
   }catch(e){}
+}
+
+export const HEALTHCARE_HANDOVER_SILENCE_MS=5*60*60*1000;
+export function engineHealthcareHandoverSilenceActive(c, state, nowMs=Date.now()){
+  if(String(c?.industry||'').toLowerCase()!=='healthcare' || !state?.lead) return false;
+  if(state.lead.Handover!=='Yes' && state.stage!=='human_handover') return false;
+  const handoverMs=Date.parse(state.lead.HandoverAt||state.lead.LastMsgAt||'');
+  if(!Number.isFinite(handoverMs)) return false;
+  const age=Number(nowMs)-handoverMs;
+  return age>=0 && age<HEALTHCARE_HANDOVER_SILENCE_MS;
 }
 
 // Deterministic phone→country lookup (E.164 calling codes) — no external API, no cost, always
@@ -12228,6 +14940,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:new Date().toISOString(),
     Channel:state.channel||'whatsapp'
   };
+  if(state.inboxId) body.InboxId=String(state.inboxId);
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -12248,6 +14961,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // with order' back to the product actually being discussed" fallback above.
   if(routing.matchedProductSku) body['Last Product Sku']=routing.matchedProductSku;
   if(isHuman){ body.Stage='human_handover'; body.Handover='Yes'; }
+  else if(routing.preserveCrmStage) body.Stage=state.stage||'new';
   else body.Stage=next;
   if(!isHuman && next!==state.stage){ body['Follow up 1']='No'; body['Follow up 2']='No'; body['Follow up 3']='No'; body['Follow up 4']='No'; body['Follow up 5']='No'; }
   if(intentData?.booking_time) body.BookingTime=intentData.booking_time;
@@ -12294,14 +15008,8 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // written to D1's referrals table, not here — see engineUpsertLead's call site, which is the
   // first point in this turn a brand-new lead actually has a real id to attribute.
 
-  if(isNewLead && !state.owner){
-    const reps=engineParseSalesReps(c.agents);
-    if(reps.length){
-      let h=0; const phoneStr=String(state.phone||'');
-      for(let i=0;i<phoneStr.length;i++) h=(h*31+phoneStr.charCodeAt(i))|0;
-      body.Owner=reps[Math.abs(h)%reps.length];
-    }
-  }
+  // Owner assignment is handled externally by engineResolveLeadOwner() after this function
+  // returns, so it can be async (round-robin must persist rrIndex via patchClientFields).
 
   if(sentiment) body.Sentiment=sentiment;
   if(objectionCategory && objectionCategory!=='none') body.LastObjectionCategory=objectionCategory;
@@ -12313,9 +15021,11 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // but fall back to classifier when no catalog match. Both are sparse-signal writes.
   const resolvedProductCategory=routing.matchedCategory||productCategory;
   if(resolvedProductCategory) body.ProductCategory=resolvedProductCategory;
-  // Catalog-matched brand (ecom only; only written when the classifier confidently matched a
-  // catalog brand entry alongside a category — never set from free-text guess alone).
+  // Catalog-matched brand wins (ecom — validated against live catalog). When no catalog match
+  // exists, fall back to the classifier's free-text product_interest so non-ecom clients (B2B,
+  // general) still get their Brand/Product column populated when a customer names a brand.
   if(routing.matchedBrand) body.Brand=routing.matchedBrand;
+  else if(productInterest) body.Brand=productInterest;
   if(isHuman && state.stage!=='human_handover'){ body.HandoverAt=new Date().toISOString(); body.SlaAlerted='No'; }
 
   // fullHistory (untrimmed — body.ConvHistory above is already capped to the last 40) is exposed
@@ -12409,6 +15119,151 @@ async function handleEngineLogsList(request, env){
 
 // Chatwoot has no built-in webhook signing (unlike Shopify/Cal.com, both verified elsewhere in
 // this file via verifyShopifyWebhookHmac/verifyCalcomWebhookHmac against a secret the client
+// ── Support Tickets ──────────────────────────────────────────────────────────────────────────────
+// Won/converted leads bypass the AI pipeline entirely and are handled as after-sales support.
+// A new customer message opens a ticket (replied to with a ref number) and creates a pm_tasks row
+// in the client's "Support" project. Subsequent messages on the same open ticket are appended
+// silently and recorded in lead_messages/NocoDB. Resolving a ticket syncs the pm_task to 'done'
+// and fires a WhatsApp template to the customer.
+
+async function supportTicketFindOpen(env, clientId, phone){
+  return env.DB.prepare(
+    `SELECT * FROM support_tickets WHERE client_id=? AND phone=? AND status IN ('open','in_progress') ORDER BY created_at DESC LIMIT 1`
+  ).bind(clientId, phone).first();
+}
+
+async function pmFindOrCreateSupportProject(env, clientId){
+  const existing=await env.DB.prepare(`SELECT id FROM pm_projects WHERE client_id=? AND name=?`).bind(Number(clientId),'Support').first();
+  if(existing) return existing.id;
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(
+    `INSERT INTO pm_projects (client_id, name, description, color, status, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(Number(clientId),'Support','After-sales support tickets from won/converted customers.','#7C3AED','active',now).run();
+  return r.meta.last_row_id;
+}
+
+async function supportTicketCreate(env, clientId, lead, message, convId){
+  const now=new Date().toISOString();
+  // Insert ticket row
+  const result=await env.DB.prepare(
+    `INSERT INTO support_tickets (client_id, lead_id, phone, customer_name, source_message, messages, conv_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(
+    clientId,
+    String(lead?.Id||''),
+    lead?.Phone||'',
+    lead?.Name||'',
+    message||'',
+    JSON.stringify([{text:message||'', ts:Date.now()}]),
+    convId||null
+  ).first();
+  const refNumber=`TKT-${String(result.id).padStart(4,'0')}`;
+  // Create a task in the Support project
+  const projectId=await pmFindOrCreateSupportProject(env, clientId);
+  const taskResult=await env.DB.prepare(
+    `INSERT INTO pm_tasks (client_id, project_id, title, description, status, priority, assignee_email, due_date, position, category, channel, mode, followup_step, auto_generated, lead_id, lead_name, created_at, updated_at)
+     VALUES (?,?,?,?,'todo','medium','',null,0,'Support','','',null,1,?,?,?,?) RETURNING id`
+  ).bind(Number(clientId), projectId, `🎫 ${refNumber} — ${lead?.Name||lead?.Phone||'Customer'}`, message||'', String(lead?.Id||''), lead?.Name||lead?.Phone||'', now, now).first().catch(()=>null);
+  const taskId=taskResult?.id||null;
+  // Persist ref_number and task_id
+  await env.DB.prepare(`UPDATE support_tickets SET ref_number=?, task_id=? WHERE id=?`).bind(refNumber, taskId, result.id).run();
+  // Record customer message in lead_messages and update NocoDB LastMsgAt
+  if(lead?.Id){
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), LastMsgAt:now}}).catch(()=>{});
+  }
+  return {id:result.id, ref_number:refNumber};
+}
+
+async function supportTicketAppendMessage(env, ticketId, leadId, clientId, message){
+  const row=await env.DB.prepare(`SELECT messages FROM support_tickets WHERE id=?`).bind(ticketId).first();
+  const msgs=JSON.parse(row?.messages||'[]');
+  const now=new Date().toISOString();
+  msgs.push({text:message||'', ts:Date.now()});
+  await env.DB.prepare(`UPDATE support_tickets SET messages=?, updated_at=unixepoch() WHERE id=?`).bind(JSON.stringify(msgs), ticketId).run();
+  // Record in lead_messages and update NocoDB LastMsgAt
+  if(leadId){
+    await d1InsertLeadMessage(env, leadId, clientId, {role:'user', content:message||'', ts:now});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:now}}).catch(()=>{});
+  }
+}
+
+async function sendSupportTicketResolvedTemplate(env, c, ticket){
+  const templateName=c.support_resolved_template_name||'ticket_resolved';
+  const langCode=c.support_resolved_template_lang||'en';
+  const convId=ticket.conv_id;
+  if(!convId||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{
+    method:'POST',
+    headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},
+    body:JSON.stringify({
+      content:templateName,
+      message_type:'outgoing',
+      private:false,
+      template_params:{
+        name:templateName,
+        category:'UTILITY',
+        language:langCode,
+        processed_params:{1:ticket.customer_name||'Customer',2:ticket.ref_number||''}
+      }
+    })
+  });
+}
+
+async function handleSupportTicketsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const status=url.searchParams.get('status')||null;
+  const {results}=status
+    ? await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? AND status=? ORDER BY created_at DESC LIMIT 200`).bind(clientId, status).all()
+    : await env.DB.prepare(`SELECT * FROM support_tickets WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(clientId).all();
+  return json({ok:true, tickets:results||[]});
+}
+
+async function handleSupportTicketsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'}, 401);
+  const clientId=payload.cid;
+  const url=new URL(request.url);
+  const ticketId=url.searchParams.get('id');
+  if(!ticketId) return json({error:'missing id'}, 400);
+  const body=await request.json().catch(()=>({}));
+  const {status, assigned_to}=body;
+  if(!status && assigned_to===undefined) return json({error:'nothing to update'}, 400);
+
+  const ticket=await env.DB.prepare(`SELECT * FROM support_tickets WHERE id=? AND client_id=?`).bind(ticketId, clientId).first();
+  if(!ticket) return json({error:'not found'}, 404);
+
+  const fields=[];
+  const vals=[];
+  if(status){fields.push('status=?'); vals.push(status);}
+  if(assigned_to!==undefined){fields.push('assigned_to=?'); vals.push(assigned_to);}
+  fields.push('updated_at=unixepoch()');
+  if(status==='resolved'||status==='closed'){fields.push('resolved_at=unixepoch()');}
+  vals.push(ticketId, clientId);
+
+  await env.DB.prepare(`UPDATE support_tickets SET ${fields.join(', ')} WHERE id=? AND client_id=?`).bind(...vals).run();
+
+  // Sync pm_tasks status so the Projects board reflects the ticket state
+  if(status && ticket.task_id){
+    const taskStatus={open:'todo',in_progress:'in_progress',resolved:'done',closed:'done'}[status];
+    if(taskStatus){
+      const now=new Date().toISOString();
+      await env.DB.prepare(`UPDATE pm_tasks SET status=?, updated_at=? WHERE id=? AND client_id=?`).bind(taskStatus, now, ticket.task_id, Number(clientId)).run();
+    }
+  }
+
+  if(status==='resolved'){
+    const c=await getClientById(env, clientId);
+    if(c) await sendSupportTicketResolvedTemplate(env, c, ticket).catch(()=>{});
+  }
+
+  return json({ok:true});
+}
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
 // configures on their side) — its webhook feature just POSTs JSON to whatever URL you give it, no
 // signature header, no secret field in its own UI. `secret` is this route's equivalent: a random
 // 192-bit per-client token baked into the URL path itself (`/engine/webhook/<secret>`, same
@@ -12417,7 +15272,7 @@ async function handleEngineLogsList(request, env){
 // exact secret, a request is rejected before any client data is touched — same practical
 // unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
 // (both are exposed in various places already) no longer gets an attacker anywhere.
-async function handleEngineWebhook(request, env, secret){
+async function handleEngineWebhook(request, env, secret, ctx=null){
   const startMs=Date.now();
   // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
   // not instant, but a one-line change is still far faster than debugging/reverting code under
@@ -12428,6 +15283,13 @@ async function handleEngineWebhook(request, env, secret){
   if(!secret) return json({ok:true, skipped:'no-secret'});
   const c=await findClientByField(env, 'engine_webhook_secret', secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
+  // Attach D1 stock rows so engineBuildFaqSystemPrompt can reference current stock without
+  // an extra NocoDB round trip — just overwrites the (now unused) NocoDB field with the
+  // authoritative D1 value.
+  try{
+    const _sr=await env.DB.prepare('SELECT stock_json FROM b2b_stock WHERE client_id=?').bind(Number(c.Id)).first();
+    if(_sr?.stock_json) c.b2b_stock_json=_sr.stock_json;
+  }catch(e){}
   const clientId=String(c.Id);
   if(c.active==='No'){ await logEngineSkip(env, clientId, null, null, 'client-inactive'); return json({ok:true, skipped:'client-inactive'}); }
   // Per-client kill switch (CLIENTS.engine_disabled, 'Yes'/'No') — same "go silent" reasoning as
@@ -12467,6 +15329,36 @@ async function handleEngineWebhook(request, env, secret){
     }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
   }
 
+  // Human agent reply tracking — fires when a real human (not the bot) sends an outgoing
+  // message from inside Chatwoot. Chatwoot's sender.type is 'agent_bot' for bot-sent messages
+  // and 'agent' (or 'user') for human agents. When a rep closes a sale in chat without
+  // updating the CRM stage, this records LastAgentMsgAt so the follow-up ladder skips the lead
+  // rather than firing auto-messages the rep already rendered unnecessary.
+  if(body.message_type==='outgoing' && !body.private){
+    const senderType=body.sender?.type||'';
+    if(senderType!=='agent_bot'){
+      const convId=String(body.conversation?.id||'');
+      if(convId){
+        try{
+          await ensureLeadsColumns(env, ['LastAgentMsgAt']);
+          const convField='ConversationID'; // NocoDB field name for Chatwoot conv id
+          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id`);
+          const ld=await leadsR.json().catch(()=>({}));
+          const leadId=ld?.list?.[0]?.Id;
+          if(leadId){
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:new Date().toISOString()}});
+            // Also reset the Durable Object cadence so it doesn't fire while the human is active
+            try{
+              const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${leadId}`));
+              if(stub) await stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+            }catch(e){}
+          }
+        }catch(e){ /* best-effort — don't block on tracking */ }
+      }
+      return json({ok:true, handled:'agent-reply-tracked'});
+    }
+  }
+
   let phone=null;
   try{
     const parsed=engineParseChatwootPayload(body);
@@ -12486,10 +15378,51 @@ async function handleEngineWebhook(request, env, secret){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
-    if(!env.GEMINI_API_KEY && !c.openrouter_key){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
+    const configuredIntroCanRun=engineShouldUseConfiguredFlowIntro(c,text,mediaType);
+    if(!env.GEMINI_API_KEY && !c.openrouter_key&&!configuredIntroCanRun){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     const state=await engineGetLeadState(env, clientId, phone);
-    state.phone=phone; state.name=name; state.convId=convId;
+    state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
+
+    // Global bot-reply toggle (CLIENTS.bot_reply_disabled='Yes', Settings → Bot Auto-Reply).
+    // Exit before any AI classification or LLM call so no tokens are consumed — collect/upsert
+    // the lead so the CRM stays current, then return. Mirrors the per-inbox check below.
+    if(c.bot_reply_disabled==='Yes'){
+      const earlyMsgId=String(body.id||body.message?.id||'');
+      const isFirstMsg=!state.leadId;
+      if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+      const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
+        Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',
+        ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
+      if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+      await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+      await logEngineSkip(env, clientId, phone, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off — lead collected, no AI reply');
+      return json({ok:true, skipped:'bot-reply-disabled', lead_collected:true});
+    }
+
+    // Per-inbox AI reply toggle — if this inbox is marked bot_reply_disabled in channel_inbox_assignments,
+    // still collect/upsert the lead (so the CRM stays current) but skip the AI reply entirely,
+    // same shape as the global bot_reply_disabled check above.
+    if(state.inboxId && env.DB){
+      try{
+        await ensureInboxAssignmentsTable(env);
+        const ibRow=await env.DB.prepare(
+          `SELECT bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND bot_reply_disabled=1`
+        ).bind(Number(clientId), Number(state.inboxId)).first();
+        if(ibRow){
+          // Collect lead then exit — no AI processing, no reply
+          const earlyMsgId=String(body.id||body.message?.id||'');
+          const isFirstMsg=!state.leadId;
+          if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+          const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
+            Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',InboxId:String(state.inboxId)};
+          if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+          await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+          await logEngineSkip(env, clientId, phone, convId, 'inbox-bot-disabled', `inbox ${state.inboxId} — AI reply off, lead collected`);
+          return json({ok:true, skipped:'inbox-bot-disabled', lead_collected:true});
+        }
+      }catch(e){}
+    }
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and
@@ -12506,16 +15439,33 @@ async function handleEngineWebhook(request, env, secret){
     const messageId=String(body.id||body.message?.id||'');
     if(messageId && state.lead?.LastProcessedMessageId===messageId){ await logEngineSkip(env, clientId, phone, convId, 'duplicate-delivery', `message ${messageId}`); return json({ok:true, skipped:'duplicate-delivery'}); }
 
-    // engine.json's own Code·State hard-stop ("the bot stops writing to the lead entirely once
-    // handed over ... so it can never talk over a live agent") is now opt-in, not the default — set
-    // CLIENTS.handover_silence_enabled='Yes' (Settings → Human Handover, off by default) for a
-    // client who wants that. Left off, the bot keeps replying (ordinary FAQ-style, via
-    // engineRouteFlow's own matching exception — its human_handover→'drop' branch needs the same
-    // gate, since this check alone isn't enough) even after handover; the lead still shows
-    // Handover='Yes'/Stage='human_handover' in the CRM either way — only whether the bot keeps
-    // replying changes.
-    if(state.lead && (state.lead.Handover==='Yes' || state.stage==='human_handover') && c.handover_silence_enabled==='Yes'){ await logEngineSkip(env, clientId, phone, convId, 'handed-over', `stage ${state.stage||''}`); return json({ok:true, skipped:'handed-over'}); }
+    // Healthcare always pauses the bot for five hours after human handover. Repeat button taps
+    // and new patient messages stay silent in that window so the AI never talks over clinic staff.
+    // Other industries retain the existing per-client indefinite-silence setting.
+    const healthcareHandoverSilence=engineHealthcareHandoverSilenceActive(c,state,startMs);
+    const configuredHandoverSilence=c.industry!=='healthcare' && state.lead &&
+      (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
+      c.handover_silence_enabled==='Yes';
+    if(healthcareHandoverSilence||configuredHandoverSilence){
+      await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
+      return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
+    }
     if(state.leadOptOut==='Yes' && text.trim().toLowerCase()!=='start'){ await logEngineSkip(env, clientId, phone, convId, 'opted-out'); return json({ok:true, skipped:'opted-out'}); }
+
+    // After-sales support: won/converted leads never enter the AI pipeline.
+    // Open ticket → append message silently (no reply). No open ticket → create one and confirm.
+    if(state.stage==='won'||state.stage==='converted'){
+      const openTicket=await supportTicketFindOpen(env, clientId, phone);
+      if(openTicket){
+        await supportTicketAppendMessage(env, openTicket.id, openTicket.lead_id, clientId, text||'');
+      } else {
+        const ticket=await supportTicketCreate(env, clientId, state.lead||{Phone:phone,Name:name}, text||'', convId);
+        await engineDeliverReply(env, c, clientId, convId,
+          `Hi ${name||'there'}, your support request has been received.\nTicket Ref: #${ticket.ref_number}\nWe\'ll get back to you shortly.`
+        );
+      }
+      return json({ok:true, handled:'support-ticket'});
+    }
 
     const botConfig=engineParseJsonField(c.bot_config, {});
     const rateLimitMs=parseInt(botConfig.rate_limit_ms)||4000;
@@ -12547,6 +15497,7 @@ async function handleEngineWebhook(request, env, secret){
     // can mutate state.leadId, since engineBuildLeadUpsertBody uses "no leadId yet" to decide
     // Owner/DealCurrency assignment for a genuinely brand-new lead.
     const isNewLead=!state.leadId;
+    const isRevisit=!isNewLead&&engineIsRevisitAfterSilence(state,4*60*60*1000);
     // Referral/affiliate tracking — only checked for a brand-new lead's very first message (an
     // existing lead re-typing an old code by accident shouldn't re-attribute them). Strips the
     // code from `text` before it reaches classification/the AI reply, so it never shows up in
@@ -12592,9 +15543,144 @@ async function handleEngineWebhook(request, env, secret){
       const tappedOption=lastTurn.options.find(o=>o && String(o.title||'').trim().toLowerCase().normalize('NFC')===tappedLower);
       if(tappedOption?.value && String(tappedOption.value)!==text) text=String(tappedOption.value);
     }
-    const userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
-    const cls=await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
-    const routing=engineRouteFlow(c, state, userText, cls);
+    let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
+    const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
+    if(introAction) userText=introAction.text;
+
+    // ── Flowvyne scripted flows ──────────────────────────────────────────────
+    // Runs before AI classification. Flowvyne's own tenant allowlist decides
+    // per-client enrollment; it returns handled:false for non-enrolled clients
+    // so this block is always safe to attempt whenever the binding is present.
+    if(env.FLOWVYNE && mediaType==='text'){
+      try{
+        const fvRow=await env.DB.prepare(
+          'SELECT flow_current_node,flow_variables FROM flowvyne_conversation_state WHERE client_id=? AND phone=?'
+        ).bind(Number(clientId),phone||'').first().catch(()=>null);
+        const recentHistory=(state.activeHistory||[]).slice(-6).map(h=>({role:h.role==='assistant'?'assistant':'user',text:String(h.content||h.text||'').slice(0,500)}));
+        const fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/handle',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            tenant_id:clientId,
+            contact_id:phone||convId,
+            message_text:userText||text||'',
+            current_node:fvRow?.flow_current_node||null,
+            variables:fvRow?.flow_variables?JSON.parse(fvRow.flow_variables):{},
+            recent_history:recentHistory,
+          }),
+        }));
+        if(fvResp.ok){
+          const fvResult=await fvResp.json();
+          if(fvResult.handled){
+            // Persist updated flow state so next message resumes the right node.
+            await env.DB.prepare(
+              'INSERT OR REPLACE INTO flowvyne_conversation_state (client_id,phone,flow_current_node,flow_variables,updated_at) VALUES (?,?,?,?,?)'
+            ).bind(Number(clientId),phone||'',fvResult.next_node||null,JSON.stringify(fvResult.variables||{}),new Date().toISOString()).run().catch(()=>{});
+            if(fvResult.reply_text){
+              const fvButtons=(fvResult.reply_buttons||[]).map(b=>({title:String(b.label||b.title||'').slice(0,24),value:String(b.value||b.label||'')}));
+              if(fvButtons.length){
+                await engineSendChatwootQuickReply(env,c,clientId,convId,fvResult.reply_text,fvButtons);
+              } else {
+                await engineDeliverReply(env,c,clientId,convId,fvResult.reply_text,{mediaType:'text',langCode:c.language||'en'});
+              }
+            }
+            return json({ok:true,route:'flowvyne',kind:fvResult.kind||'reply'});
+          }
+        }
+      }catch(fvErr){
+        console.error('Flowvyne error:',String(fvErr));
+        // Fall through to existing AI path.
+      }
+    }
+    // ── End Flowvyne ─────────────────────────────────────────────────────────
+
+    // HC service/doctor booking button taps carry internal values like HC_BOOK_SERVICE:<id>.
+    // Restore human-readable names before any classifier runs so AI gets natural context.
+    const hcSvcTap=/^HC_BOOK_SERVICE:(\d+)$/i.exec(userText);
+    if(hcSvcTap){
+      const svc=await env.DB.prepare('SELECT name FROM healthcare_services WHERE id=? AND client_id=? LIMIT 1').bind(Number(hcSvcTap[1]),clientId).first().catch(()=>null);
+      if(svc?.name) userText=`I want to book ${svc.name}`;
+    }
+    const hcDocTap=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(userText);
+    if(hcDocTap){
+      const doc=await env.DB.prepare('SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1').bind(Number(hcDocTap[1]),clientId).first().catch(()=>null);
+      if(doc?.name) userText=`I want to book with ${doc.name}`;
+    }
+    // A saved Flow introduction is deterministic configuration, not AI content. Run it for
+    // every greeting (including an existing/returning contact) before interruption/classifier
+    // paths can spend tokens or replace it with an industry-generated "Welcome back" message.
+    // Also fires for brand-new leads and leads returning after 4 h of silence — but only when
+    // the opening message is a greeting keyword. When a new lead's first message is an actual
+    // question (e.g. "Where is the shop?"), the intro is skipped so the AI can answer the
+    // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
+    // new leads in that path.
+    const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
+      ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
+      :null;
+    if(configuredGreetingTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType,ctx);
+      return json({ok:true,route:'intro_saved',sent:c.bot_reply_disabled!=='Yes',cached:true});
+    }
+    const industryFlowTurn=engineResolveIndustryFlowTurn(c,state,userText);
+    if(industryFlowTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,industryFlowTurn,startMs,mediaType,ctx);
+      return json({ok:true,route:'industry_flow',sent:c.bot_reply_disabled!=='Yes'});
+    }
+    // When a flow button tap had no configured next stage and fell through, recover the human-readable
+    // title so the AI gets natural context instead of the internal FLOW_ANSWER:stageId:answerId value.
+    if(/^FLOW_ANSWER:/.test(userText)){
+      const lastOpts=state.history?.length?state.history[state.history.length-1]?.options:null;
+      const matched=Array.isArray(lastOpts)?lastOpts.find(o=>o?.value===userText):null;
+      if(matched?.title) userText=matched.title;
+    }
+    const flowInterruptionTurn=await engineBuildIndustryFlowInterruptionTurn(env,c,state,userText);
+    if(flowInterruptionTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,flowInterruptionTurn,startMs,mediaType,ctx);
+      return json({ok:true,route:'industry_flow_ai',resumed_stage:flowInterruptionTurn.next,sent:c.bot_reply_disabled!=='Yes'});
+    }
+    const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
+    if(liveCheckoutTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'travel_live_checkout',sent:true,step:liveCheckoutTurn.step});
+    }
+    const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
+    if(eduAdmissionTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'education_admission',sent:true,step:eduAdmissionTurn.step});
+    }
+    const matriChatTurn=await handleMatrimonialChatMenu(env,c,clientId,convId,phone,state.leadId,userText,isNewLead);
+    if(matriChatTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
+    }
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
+      ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
+      : null;
+    if(greetingTurn){
+      await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType,ctx);
+      return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
+    }
+    // New lead, no published flow: every first message — whether a greeting, a generic "more info"
+    // opener, or any other first turn — should receive the business-prompt intro rather than going
+    // through the full classification/routing/LLM pipeline (which can mis-route to human handover
+    // or fail and fall back to the handover message). engineBuildFirstTouchIntro builds this once
+    // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
+    // If the LLM call inside it fails, it returns the plain question which is still better than
+    // "I'll connect you with our team shortly." on a first contact.
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text'){
+      const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
+      if(_noFlowIntro && _noFlowIntro.trim()){
+        const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType,ctx);
+        return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
+      }
+    }
+    const cls=introAction
+      ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+      : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
+    const routing=engineRouteFlow(c, state, userText, cls, mediaType);
+    if(introAction) routing.historyUserText=parsed.text;
     // A generic ad CTA/business-information request must be answered from the client's prompt,
     // even if the probabilistic intent model guesses that the pronoun "this" means a product.
     // Explicit human/opt-out routes still win; explicit product language never matches the helper.
@@ -12610,6 +15696,25 @@ async function handleEngineWebhook(request, env, secret){
     if(c.industry==='ecommerce' && routing.route!=='drop' && !(routing.route==='human'&&routing.humanReason==='explicit') && !routing.isOptOut && !routing.isResub){
       routing.route='ecom_faq';
       routing.reply=null;
+    }
+    // All industries: a generic business-information opener ("can i get more info on this",
+    // "tell me about your company" etc.) must always be answered from the configured business
+    // prompt — the same pattern the ecommerce businessInfoOnly check above handles. Click-to-
+    // WhatsApp ads prefill exactly this kind of opener and it is not ecommerce-specific.
+    // Also: a brand-new lead's very first message should never reach human handover via heuristics
+    // alone (isFinalStage on an empty history, low-confidence sentiment, anti-loop) — only an
+    // explicit WANTS_HUMAN intent or a genuinely Frustrated-sentiment turn is a real signal.
+    if(routing.route==='human' && routing.humanReason!=='explicit' && !routing.isOptOut && !routing.isResub && (ecomIsGeneralBusinessInfoQuery(userText)||isNewLead)){
+      const _ind=c.industry||'general';
+      routing.route=_ind==='ecommerce'?'ecom_faq':(_ind==='travel'?'travel_faq':(_ind==='saas_digital_marketing'?'saas_faq':'faq'));
+      if(ecomIsGeneralBusinessInfoQuery(userText)) routing.businessInfoOnly=true;
+      routing.reply=null;
+    }
+    // Also catch general business-info queries that arrive directly as QUESTION intent (not via
+    // human-route redirect above) — Meta ad CTAs land as QUESTION from the regex guard, but the
+    // FAQ LLM still needs the businessInfoOnly instruction or it returns a vague/empty reply.
+    if(!routing.businessInfoOnly && ecomIsGeneralBusinessInfoQuery(userText) && routing.route!=='drop' && !routing.isOptOut && !routing.isResub && !(routing.route==='human' && routing.humanReason==='explicit')){
+      routing.businessInfoOnly=true;
     }
     // Proactive visibility, not just a customer-facing safety net: every fix in this loop-detection
     // thread started from a business owner manually screenshotting a stuck WhatsApp conversation —
@@ -12627,6 +15732,7 @@ async function handleEngineWebhook(request, env, secret){
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
+    const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
     let sentText=null;
     let orderHandledInline=false;
@@ -12645,12 +15751,19 @@ async function handleEngineWebhook(request, env, secret){
     // touching that cascade at all. isOptOut/isResub are still honored (engineRouteFlow itself
     // already short-circuits those unconditionally, above its own cascade) and an explicit human
     // ask still wins, so neither is checked again here.
-    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
+    if(liveTicketingTurn?.handled && !routing.isOptOut && !routing.isResub && !(routing.route==='human'&&routing.humanReason==='explicit')){
+      sentText=await engineLocalizeReply(env,c,liveTicketingTurn.reply,replyLang);
+      routing.route='travel_live_ticketing'; routing.reply=sentText; routing.next=state.stage;
+      routing.quickReplies=liveTicketingTurn.buttons?.length
+        ?await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,liveTicketingTurn.buttons)
+        :(await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}),null);
+      orderHandledInline=true;
+    } else if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(/^FASHION_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
-        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       }else if(state.stage==='fashion_order_details'){
         // Parse a single reply that contains Colour, Size, and Delivery Address.
@@ -12677,7 +15790,7 @@ async function handleEngineWebhook(request, env, secret){
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           sentText=await engineLocalizeReply(env,c,orderFormText,replyLang);
           routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }else{
           seed.color=colour; seed.size=size; seed.address=address.slice(0,500);
           sentText=await engineLocalizeReply(env,c,`Please confirm your order:\n\n${seed.productName}\nColour: ${seed.color}\nSize: ${seed.size}\nDelivery address: ${seed.address}`,replyLang);
@@ -12694,7 +15807,7 @@ async function handleEngineWebhook(request, env, secret){
             : 'I could not save the order. I will connect you with our team.',replyLang);
           routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
           if(!order.ok){routing.route='human';routing.humanReason='fashion_order_save_failed';await engineSendHandoverLabel(c,convId);}
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang}); orderHandledInline=true;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }else{
           sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
           routing.reply=sentText;
@@ -12711,7 +15824,7 @@ async function handleEngineWebhook(request, env, secret){
         routing.reply=sentText;
         routing.next='order_collect_address';
         routing.orderCollectSeed=seed;
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
       } else if(state.stage==='order_collect_address'){
         const order=await finalizeChatOrder(env, c, clientId, phone, name, seed, userText);
@@ -12724,7 +15837,7 @@ async function handleEngineWebhook(request, env, secret){
         // leaves no lingering stage of its own.
         routing.next='new';
         routing.clearOrderCollect=true;
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
       }
     }
@@ -12741,70 +15854,170 @@ async function handleEngineWebhook(request, env, secret){
         if(hcSettings?.handover_message) sentText+=`\n\n${hcSettings.handover_message}`;
         sentText=await engineLocalizeReply(env,c,sentText,replyLang);
         routing.reply=sentText; routing.route='human'; routing.humanReason='healthcare_emergency';
-        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang});
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         await engineSendHandoverLabel(c,convId);
         orderHandledInline=true;
       }else{
-        const bookingFlow=await hcHandleWhatsappBooking(env,c,clientId,convId,phone,state.leadId,userText,replyLang);
+        const bookingFlow=await hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang);
         if(bookingFlow.handled){
           sentText=bookingFlow.text; routing.reply=sentText; routing.quickReplies=bookingFlow.quickReplies||null;
           orderHandledInline=true;
         }
         if(!orderHandledInline){
+        // ── GREETING ──────────────────────────────────────────────────────────────
+        // For healthcare, greeting shows departments (navigation) when available,
+        // otherwise shows the standard service/booking quick-reply buttons.
+        if(/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())){
+          const clinicName=c.client_name||'our clinic';
+          const prevApt=await env.DB.prepare(`SELECT id FROM healthcare_appointments WHERE client_id=? AND patient_phone=? LIMIT 1`).bind(Number(clientId),String(phone)).first().catch(()=>null);
+          const isReturning=!!prevApt;
+          const greetMsg=isReturning?`Welcome back to ${clinicName}! Which department can we help you with today?`:`Welcome to ${clinicName}! Which department can we help you with today?`;
+          sentText=await engineLocalizeReply(env,c,greetMsg,replyLang);
+          routing.reply=sentText;
+          // Show departments as nav buttons, fallback to standard booking buttons
+          const {results:depts}=await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE client_id=? ORDER BY name LIMIT 8`).bind(Number(clientId)).all().catch(()=>({results:[]}));
+          let greetBtns;
+          if(depts&&depts.length){
+            greetBtns=[...hcDedupeServices(depts).map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+          }else{
+            greetBtns=isReturning
+              ?[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}]
+              :[{title:'Book Appointment',value:'book appointment'},{title:'See All Services',value:'see all services'},{title:'Talk to Human',value:'Talk to a human'}];
+          }
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,greetBtns);
+          orderHandledInline=true;
+        }
+        if(!orderHandledInline){
+        // ── "SEE ALL SERVICES" button tap ─────────────────────────────────────────
+        if(/^see\s+(?:all\s+)?services?$/i.test(userText.trim())||/^all\s+services?$/i.test(userText.trim())){
+          const allSvcs=await hcListActiveServices(env,clientId);
+          if(allSvcs.length){
+            sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(allSvcs));
+          }else{
+            sentText=await engineLocalizeReply(env,c,'No services are listed yet — please contact us directly.',replyLang);
+            routing.reply=sentText;
+            await engineSendChatwootReply(env,c,clientId,convId,sentText);
+          }
+          orderHandledInline=true;
+        }
+        }
+        if(!orderHandledInline){
+        // ── SERVICE MATCH ─────────────────────────────────────────────────────────
         let matches=await hcFindBroadServiceMatches(env,clientId,userText);
-        if(!matches.length&&isNewLead&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!. ]*$/i.test(userText.trim())) matches=await hcListActiveServices(env,clientId);
-        if(matches.length>1){
-          sentText=await engineLocalizeReply(env,c,isNewLead?`Welcome to ${c.client_name||'our clinic'}. Please choose the service you need:`:'Please choose the exact service you need:',replyLang);
+        if(matches.length===1){
+          const service=matches[0];
+          const sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
+          // Build service profile; include doctors offering this service for guidance
+          let svcText=hcVerifiedServiceText(service,userText);
+          const {results:svcDocs}=await env.DB.prepare(`SELECT DISTINCT d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 5`).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
+          if(svcDocs&&svcDocs.length){
+            const docNames=svcDocs.map(d=>d.name+(d.specialization?' ('+d.specialization+')':'')).join(', ');
+            svcText+=`\n\nAvailable with: ${docNames}`;
+          }
+          sentText=await engineLocalizeReply(env,c,svcText,replyLang);
+          routing.reply=sentText;
+          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
+          // Use HC_BOOK_SERVICE so the booking link goes straight to the right service
+          const bookBtnTitle=svcDocs&&svcDocs.length===1?`Book with ${svcDocs[0].name}`:'Book Now';
+          const bookingChoices=[{title:bookBtnTitle,value:`HC_BOOK_SERVICE:${service.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices,ctx});
+          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
+          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Would you like to book?',bookingChoices);
+          else routing.quickReplies=bookingChoices.length?delivered:null;
+          orderHandledInline=true;
+        }else if(matches.length>1){
+          // Multiple services matched → let patient pick
+          sentText=await engineLocalizeReply(env,c,'Please choose the service you need:',replyLang);
           routing.reply=sentText;
           routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(matches));
           orderHandledInline=true;
-        }else if(matches.length===1){
-          const service=matches[0], sendMedia=await hcClaimServiceMediaForToday(env,clientId,state.leadId,service.id);
-          sentText=await engineLocalizeReply(env,c,hcVerifiedServiceText(service,userText),replyLang);
+        }
+        }
+        if(!orderHandledInline){
+        // ── DOCTOR MATCH ──────────────────────────────────────────────────────────
+        const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
+        if(doctorMatches.length>1){
+          sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
           routing.reply=sentText;
-          if(sendMedia&&service.image_url) routing.media={url:engineResolveDirectImageUrl(service.image_url),type:'image'};
-          const {results:serviceDoctors}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 9`).bind(Number(clientId),Number(service.department_id||0)).all();
-          const doctorChoices=(serviceDoctors||[]).map(d=>({title:d.name,value:d.name}));
-          const bookingChoices=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${service.id}`},...doctorChoices];
-          const delivered=await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendMedia?service.image_url:null,quickReplies:sendMedia&&service.image_url?null:bookingChoices});
-          if(sendMedia) await hcSendServiceMedia(env,c,clientId,convId,service);
-          // If the primary image path was used, send the exact doctor choices as a separate picker
-          // because engineDeliverReply deliberately prioritizes an image over quick replies.
-          if(sendMedia&&service.image_url) routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,'Book or choose a doctor:',bookingChoices);
-          else routing.quickReplies=bookingChoices.length?delivered:null;
+          routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
           orderHandledInline=true;
-        }else{
-          const doctorMatches=await hcFindDoctorMatches(env,clientId,userText);
-          if(doctorMatches.length>1){
-            sentText=await engineLocalizeReply(env,c,'Please choose the doctor you are interested in:',replyLang);
+        }else if(doctorMatches.length===1){
+          const doctor=doctorMatches[0];
+          // Distinguish explicit name-tap ("Dr. Jeff Zacharia") from a general query ("dental doctor available"):
+          // if all message tokens appear in the doctor's own name tokens, treat it as an explicit selection.
+          const msgToks=hcQueryTokens(userText).filter(t=>t!=='dr');
+          const nameToks=new Set(hcQueryTokens(doctor.name));
+          const isNameSelection=msgToks.length>0&&msgToks.every(t=>nameToks.has(t));
+          if(!isNameSelection){
+            // General query ("dental doctor available") → check department first, else show all doctors
+            const deptMatch=doctor.department_id
+              ?await env.DB.prepare(`SELECT id,name FROM healthcare_departments WHERE id=? AND client_id=?`).bind(Number(doctor.department_id),Number(clientId)).first().catch(()=>null)
+              :null;
+            const {results:allDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active'${deptMatch?' AND department_id=?':''} ORDER BY name LIMIT 20`).bind(...[Number(clientId),...(deptMatch?[Number(deptMatch.id)]:[])]).all().catch(()=>({results:[]}));
+            const allDocsUniq=[...new Map((allDocs||[]).map(d=>[d.name.toLowerCase(),d])).values()];
+            const showList=(allDocsUniq.length>1)?allDocsUniq:[doctor];
+            const prompt=deptMatch?`Here are our ${deptMatch.name} doctors:`:'Please choose the doctor you are interested in:';
+            sentText=await engineLocalizeReply(env,c,prompt,replyLang);
             routing.reply=sentText;
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,doctorMatches.map(d=>({title:d.name,value:d.name})));
-            orderHandledInline=true;
-          }else if(doctorMatches.length===1){
-            const doctor=doctorMatches[0];
-            sentText=await engineLocalizeReply(env,c,hcVerifiedDoctorText(doctor,userText),replyLang);
-            routing.reply=sentText;
-            if(doctor.image_url)routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
-            // Send image first (no caption), then doctor bio + "📅 Book Appointment" button together
-            // so the action button is visually attached to the bio text, not buried after extra media.
-            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
-            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
-            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,[{title:'📅 Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}]);
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,showList.map(d=>({title:d.name,value:d.name})));
             orderHandledInline=true;
           }else{
-            const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
-            if(departmentMatches.length){
-              const ids=departmentMatches.map(d=>Number(d.id));
-              const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
-              if(departmentServices.length){
-                sentText=await engineLocalizeReply(env,c,'Please choose the exact service you need:',replyLang);
-                routing.reply=sentText;
-                routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
-                orderHandledInline=true;
-              }
+            // Explicit name selection → show full profile + services this doctor provides
+            let profileText=hcVerifiedDoctorText(doctor,userText);
+            // List services this doctor offers, so patient knows what to book
+            const {results:drSvcs}=await env.DB.prepare(`SELECT DISTINCT s.id,s.name FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 6`).bind(Number(clientId),Number(doctor.id)).all().catch(()=>({results:[]}));
+            if(drSvcs&&drSvcs.length){
+              profileText+=`\n\nServices offered: ${drSvcs.map(s=>s.name).join(', ')}`;
+            }
+            sentText=await engineLocalizeReply(env,c,profileText,replyLang);
+            routing.reply=sentText;
+            if(doctor.image_url) routing.media={url:engineResolveDirectImageUrl(doctor.image_url),type:'image'};
+            if(doctor.image_url) await engineSendChatwootImageReply(env,c,clientId,convId,doctor.image_url,'');
+            await hcSendDoctorMedia(env,c,clientId,convId,doctor);
+            // If doctor offers multiple services, show them as buttons; otherwise go straight to booking
+            let docActionBtns;
+            if(drSvcs&&drSvcs.length>1){
+              docActionBtns=[...drSvcs.slice(0,2).map(s=>({title:s.name,value:`HC_BOOK_SERVICE:${s.id}`})),{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }else{
+              docActionBtns=[{title:'Book Appointment',value:`HC_BOOK_DOCTOR:${doctor.id}`},{title:'Talk to Human',value:'Talk to a human'}];
+            }
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docActionBtns);
+            orderHandledInline=true;
+          }
+        }
+        }
+        if(!orderHandledInline){
+        // ── DEPARTMENT MATCH ──────────────────────────────────────────────────────
+        // Departments matched by name → show doctors in that dept first, then services.
+        const departmentMatches=await hcFindDepartmentMatches(env,clientId,userText);
+        if(departmentMatches.length){
+          const ids=departmentMatches.map(d=>Number(d.id));
+          const deptName=departmentMatches[0].name;
+          // Prefer showing doctors (patient can then choose and see their profile)
+          const {results:deptDocs}=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id IN (${ids.map(()=>'?').join(',')}) ORDER BY name LIMIT 10`).bind(Number(clientId),...ids).all().catch(()=>({results:[]}));
+          const deptDocsUniq=[...new Map((deptDocs||[]).map(d=>[d.name.toLowerCase(),d])).values()];
+          if(deptDocsUniq.length){
+            sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} doctors:`,replyLang);
+            routing.reply=sentText;
+            // Doctor buttons: name as value so tapping triggers the name-selection profile flow
+            const docBtns=[...deptDocsUniq.map(d=>({title:d.name,value:d.name})),{title:'Talk to Human',value:'Talk to a human'}];
+            routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,docBtns);
+            orderHandledInline=true;
+          }else{
+            // No doctors in dept → show dept services
+            const departmentServices=(await hcListActiveServices(env,clientId)).filter(s=>ids.includes(Number(s.department_id)));
+            if(departmentServices.length){
+              sentText=await engineLocalizeReply(env,c,`Here are our ${deptName} services:`,replyLang);
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,hcServiceChoiceItems(departmentServices));
+              orderHandledInline=true;
             }
           }
         }
+        }
+        // ── INSURANCE ─────────────────────────────────────────────────────────────
         if(!orderHandledInline&&/insurance|coverage|covered|network|policy/i.test(userText)){
           const {results:providers}=await env.DB.prepare(`SELECT provider_name,network_name,plan_name FROM healthcare_insurance WHERE client_id=? AND status='active' ORDER BY provider_name LIMIT 10`).bind(Number(clientId)).all();
           if(providers?.length){
@@ -12814,8 +16027,8 @@ async function handleEngineWebhook(request, env, secret){
             orderHandledInline=true;
           }
         }
-        }
       }
+    }
     }
     // Order-readiness overrides the flow_json state machine's own routing entirely, not just
     // within the ecom_faq branch — observed real failure: a customer given a product's full detail
@@ -12845,7 +16058,7 @@ async function handleEngineWebhook(request, env, secret){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    if(!orderHandledInline && !routing.businessInfoOnly && c.industry==='ecommerce' && routing.route!=='drop' && !humanBlocksOrderCheck){
+    if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
       const activeProducts=await ecomListActiveProducts(env, clientId);
@@ -12864,7 +16077,7 @@ async function handleEngineWebhook(request, env, secret){
         if(categories.length){
           // New leads get the personalised first-touch intro; returning customers get a simpler prompt
           const intro=isNewLead
-            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang)
+            ? await engineBuildFirstTouchIntro(env,c,'Please choose a category:',replyLang,state.name||state.lead?.Name)
             : await engineLocalizeReply(env,c,'Please choose a category:',replyLang);
           // Send each category's image in sequence before presenting the category buttons
           let anySent=false;
@@ -12953,16 +16166,27 @@ async function handleEngineWebhook(request, env, secret){
         // to filter on, not just the classifier's free-text product_interest string.
         if(detection.category) routing.matchedCategory=detection.category;
         if(detection.brand) routing.matchedBrand=detection.brand;
-        // Claimed once per turn, shared by every branch below that might send this product's
-        // description/photo/media bundle — see engineClaimProductImageForToday's own comment for
-        // why this is gated per (lead, product, calendar day) rather than resent on every repeat
-        // question. For Furniture & Home Appliances the day restriction is lifted: a same-day
-        // repeat sends 2 random product images instead of the full bundle (sendRandomImages path).
-        let sendProductImage=false, sendRandomImages=false;
+        // Claimed once per turn via engineClaimProductSend — 5-hour rolling window, send_count
+        // advances through tiers 1→2→3. Shopify products (shopify_product_url set) get progressive
+        // disclosure on repeat asks; non-Shopify furniture gets random-angle fallback as before.
+        // Explicit re-send keywords (ECOM_RESEND_IMAGE_RE / ECOM_RESEND_LINK_RE) bypass the tier
+        // counter entirely and deliver only what was asked, leaving send_count unchanged.
+        const isShopify=!!(product?.shopify_product_url||'').trim();
+        let sendProductImage=false, sendOnlyPrimaryImage=false, sendRandomImages=false, shopifyTier=0, forceResendLink=false;
         if(product){
-          const claimed=await engineClaimProductImageForToday(env, clientId, state.leadId, product.Id);
-          if(claimed) sendProductImage=true;
-          else if(botConfig.ecom_communication_style==='furniture_appliances') sendRandomImages=true;
+          const wantsImage=ECOM_RESEND_IMAGE_RE.test(userText||'');
+          const wantsLink=ECOM_RESEND_LINK_RE.test(userText||'');
+          if(wantsImage){
+            sendOnlyPrimaryImage=true;
+          } else if(wantsLink && isShopify){
+            forceResendLink=true;
+          } else {
+            const tier=await engineClaimProductSend(env, clientId, state.leadId, product.Id);
+            if(tier===1){ sendProductImage=true; }
+            else if(isShopify && tier===2){ shopifyTier=2; }
+            else if(isShopify && tier>=3){ shopifyTier=3; }
+            else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
+          }
         }
         if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
@@ -12973,13 +16197,14 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.next='order_collect_items';
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          const _attach1=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach1 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach1?product.image_url:null, ctx});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='Human'){
           // "Talk to sales team" (ecom.html → Settings → Order Link Sending) — skips both the
@@ -12996,13 +16221,14 @@ async function handleEngineWebhook(request, env, secret){
           routing.reply=sentText;
           routing.route='human';
           routing.humanReason='order_handoff';
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          const _attach2=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach2 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach2?product.image_url:null, ctx});
+          if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           await engineSendHandoverLabel(c, convId);
           await logPendingOrder(env, c, clientId, phone, name, product);
           orderHandledInline=true;
@@ -13011,13 +16237,14 @@ async function handleEngineWebhook(request, env, secret){
           if(link){
             sentText=await engineLocalizeReply(env, c, `Great choice! 🛍️ Please complete your order here — pick your size and add your delivery details:\n${link}`, replyLang);
             routing.reply=sentText;
-            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            const _attach3=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach3 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach3?product.image_url:null, ctx});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
             await logPendingOrder(env, c, clientId, phone, name, product);
           }else{
             // No product-level link and no client-wide external_store_link configured — nothing to
@@ -13028,19 +16255,20 @@ async function handleEngineWebhook(request, env, secret){
             routing.reply=sentText;
             routing.next='order_collect_items';
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
-            if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-            // Description first, then the extra product images/audio/video bundle — same
-          // sendProductImage claim gates both, so this whole set (description, images, audio and video) goes out together exactly once per (lead, product, calendar day).
-          if(sendProductImage) await engineMaybeSendProductDescription(env, c, clientId, convId, product);
-          if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            const _attach4=sendProductImage||sendOnlyPrimaryImage;
+            if(_attach4 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach4?product.image_url:null, ctx});
+            if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
+            else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
+            else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
+            else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+            if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           }
           orderHandledInline=true;
         } else if(detection.mode==='order' && !product && !orderHandledInline){
           sentText=await engineLocalizeReply(env, c, 'Happy to help you order! Which item would you like — could you share the product name so I can get you the checkout link?', replyLang);
           routing.reply=sentText;
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product && isFashionEcom && exactSelectedProduct){
           // Selecting an exact Fashion product starts an in-WhatsApp order. Product description
@@ -13050,15 +16278,19 @@ async function handleEngineWebhook(request, env, secret){
           if(product.description) productLines.push(String(product.description));
           sentText=productLines.join('\n\n');
           routing.reply=sentText;
-          if(sendProductImage&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:sendProductImage?product.image_url:null});
+          const _attach5=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach5&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attach5?product.image_url:null,ctx});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:true});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:true});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env,c,clientId,convId,product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env,c,clientId,convId,`🛍️ Here's the product link:\n${_fl}`); }
           const seed={fashionFlow:true,sku:product.sku||'',productName:product.name,price:product.price||0,currency:product.currency||'',sizeOptions:product.size||'',colorOptions:product.color||''};
           const orderFormText=`Please share your order details:\n\nColour: ___\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
           routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang});
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
@@ -13081,11 +16313,16 @@ async function handleEngineWebhook(request, env, secret){
           // gated by sendProductImage though — that direction was about link-presence never
           // suppressing the photo, not about resending the same photo every time the same product
           // comes up again the same day.
-          if(sendProductImage && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:sendProductImage?product.image_url:null});
-          // Primary image is attached above; additional images, audio, video and PDF follow.
+          const _attach6=sendProductImage||sendOnlyPrimaryImage;
+          if(_attach6 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null, ctx});
+          // Primary image above; additional media follows. Description + link are already in sentText
+          // for this enquiry branch, so Shopify tiers skip both (withDescription:false, withLink:false).
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
-          if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:false, withLink:false});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:false});
+          else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
+          if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
           else{
             routing.route='human';
@@ -13132,7 +16369,7 @@ async function handleEngineWebhook(request, env, secret){
           let categoryPromptReply=null;
           if(categoryProducts.length){
             const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
-            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead)
+            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
               +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
             const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
             categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
@@ -13238,6 +16475,14 @@ async function handleEngineWebhook(request, env, secret){
       }catch(e){}
     }
 
+    // Education enrollment flow — deterministic name/phone collection + D1 insert.
+    // Intercepts BEFORE the LLM so the bot never says "recorded" without actually saving.
+    if(!orderHandledInline && c.industry==='education' && state.leadId){
+      try{
+        if(await engineMaybeEduEnrollFlow(env, c, clientId, convId, state.leadId, userText, state, routing)) orderHandledInline=true;
+      }catch(e){ await reportOpsError(env,'eduEnrollFlow',e,{clientId,convId}); }
+    }
+
     // A brand-new ecom lead's very first message, when this client has product categories
     // configured — computed once here (both to gate the branch below and to build it) so the
     // greeting is a deterministic, instant WhatsApp category list instead of leaving the FAQ LLM
@@ -13253,9 +16498,12 @@ async function handleEngineWebhook(request, env, secret){
       // decision is left untouched so the flow/qualification funnel resumes from wherever it was
       // on the next turn; only the reply actually sent to the customer this turn changes.
     } else if(routing.route==='human'){
-      sentText=await engineLocalizeReply(env, c, routing.reply || 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.', replyLang);
+      const handoverFallback=c.industry==='healthcare'
+        ? 'Sure, I’ve asked our clinic team to join this chat. They’ll assist you shortly.'
+        : 'Sure 🙏 connecting you to our advisor now. Someone will be with you shortly.';
+      sentText=await engineLocalizeReply(env, c, routing.reply || handoverFallback, replyLang);
       routing.reply=sentText; // keep ConvHistory consistent with what was actually sent
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       await engineSendHandoverLabel(c, convId);
     } else if(routing.route==='selfserve'){
       // Reached the end of the funnel with a positive reply and a self-serve link is configured —
@@ -13263,7 +16511,7 @@ async function handleEngineWebhook(request, env, secret){
       // reply), instead of handing over to a human. See engineRouteFlow's own comment.
       sentText=await engineLocalizeReply(env, c, routing.reply, replyLang);
       routing.reply=sentText;
-      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+      await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
     } else if(routing.route==='drop'){
       // no reply
     } else if(routing.route==='qualify'){
@@ -13290,7 +16538,7 @@ async function handleEngineWebhook(request, env, secret){
         // qualifying question — see engineBuildFirstTouchIntro. A returning lead landing on this
         // route again (edge case, e.g. a re-subscribe) just gets the plain scripted question.
         sentText=isNewLead
-          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang)
+          ? await engineBuildFirstTouchIntro(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang, state.name||state.lead?.Name)
           : await engineLocalizeReply(env, c, firstQ||'Could you tell me a bit more about what you are looking for?', replyLang);
         routing.reply=sentText;
         // engineQualQuestionOptions — a client-configured qualifying question can be a genuine
@@ -13323,7 +16571,7 @@ async function handleEngineWebhook(request, env, secret){
           const items=firstQOptions.map(o=>({title:o, value:o}));
           routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
         } else {
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         }
       }
     } else if(routing.route==='qualify_next'){
@@ -13350,7 +16598,7 @@ async function handleEngineWebhook(request, env, secret){
         const items=qualNextOptions.map(o=>({title:o, value:o}));
         routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
       } else if(sentText){
-        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang});
+        await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
       }
     } else if(newLeadCategories.length){
       const intro=`Hi! Welcome to ${c.client_name||'our store'}! 😊 What are you looking for today?`;
@@ -13364,12 +16612,18 @@ async function handleEngineWebhook(request, env, secret){
       else if(routing.route==='travel_faq') contextBlock=await engineBuildTravelContext(env, c, clientId);
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
-      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId);
+      else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
+      // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
+      // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
+      if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
+        const resortCtx=await engineBuildResortContext(env, clientId);
+        if(resortCtx) contextBlock=(contextBlock||'')+resortCtx;
+      }
       // Product/category recall only makes sense for ecom_faq — other industries have no such
       // catalog concept indexed into memory_chunks at all, so a query there would just return
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead);
+      let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this
@@ -13378,6 +16632,13 @@ async function handleEngineWebhook(request, env, secret){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
+      if(!reply||reply.trim()==='One moment 🙏'){
+        let fallbackMsg;
+        if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
+        else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
+      }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -13386,7 +16647,18 @@ async function handleEngineWebhook(request, env, secret){
       // The LLM never creates Ecom navigation. Exact categories/products are handled before this
       // branch; general/additional Ecom questions receive prompt text only.
       if(botConfig.quick_reply_buttons_enabled!==false && routing.route!=='ecom_faq'){
-        if(!routing.businessInfoOnly && replyOptions && replyOptions.length){
+        // Education course/category menus must use the verified D1 names actually shown in the
+        // reply. With 4-10 names, engineSendChatwootQuickReply renders a native WhatsApp list;
+        // this takes priority over generic legacy choices such as "Browse Courses" that the model
+        // may have emitted after already listing the real courses in its message.
+        if(c.industry==='education'){
+          const [courseRows,categoryRows]=await Promise.all([
+            env.DB.prepare("SELECT name FROM edu_courses WHERE client_id=? AND status='active' ORDER BY name LIMIT 60").bind(Number(clientId)).all().then(r=>r.results||[]),
+            env.DB.prepare('SELECT name FROM edu_categories WHERE client_id=? ORDER BY name LIMIT 30').bind(Number(clientId)).all().then(r=>r.results||[]),
+          ]);
+          faqQuickReplies=eduVerifiedChoicesFromReply(courseRows,categoryRows,reply);
+        }
+        if(!faqQuickReplies?.length&&!routing.businessInfoOnly && replyOptions && replyOptions.length){
           // The LLM's own clarifying question already named these — tapping one sends its exact
           // text back as a normal message, resolved the same way a customer typing it by hand
           // already is (see the OPTIONS: instruction in engineBuildFaqSystemPrompt).
@@ -13443,9 +16715,9 @@ async function handleEngineWebhook(request, env, secret){
         if(!faqQuickReplies && c.industry==='healthcare' && botConfig.quick_reply_buttons_enabled!==false){
           const hcServices=await hcListActiveServices(env,clientId);
           if(hcServices.length===1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'Talk to a human',value:'Talk to a human'}];
           } else if(hcServices.length>1){
-            faqQuickReplies=[{title:'📅 Book Appointment',value:'book appointment'},{title:'🙋 Talk to a human',value:'Talk to a human'}];
+            faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
           }
         }
       }
@@ -13453,11 +16725,21 @@ async function handleEngineWebhook(request, env, secret){
       // sent (only meaningful when faqQuickReplies was non-empty in the first place — every other
       // branch it might have taken instead, voice/image/plain text, returns something else) — see
       // engineSendChatwootQuickReply's own comment for why this can't just be faqQuickReplies as-is.
-      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies});
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies:faqQuickReplies, ctx});
       routing.quickReplies=faqQuickReplies?.length ? sentReply : null;
+      // Auto-send attestation service checklist PDF when the bot's reply names a specific service
+      if(routing.route==='travel_faq') await travelMaybeSendAttestPdf(env, clientId, convId, sentText, c).catch(()=>{});
+      if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+      if(!reply||reply.trim()==='One moment 🙏'){
+        let fallbackMsg;
+        if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
+        else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
+      }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
@@ -13470,9 +16752,9 @@ async function handleEngineWebhook(request, env, secret){
       // new intent handling needed for either. Opt-out via the same bot_config a client already
       // uses for the other handover/objection toggles.
       const quickReplies=botConfig.quick_reply_buttons_enabled!==false?[
-        {title:"👍 I'm convinced", value:"Okay, I'm convinced — let's proceed"},
-        {title:'❓ Another question', value:'I have another question'},
-        {title:'🙋 Talk to a human', value:'Talk to a human'},
+        {title:"I'm convinced", value:"Okay, I'm convinced — let's proceed"},
+        {title:'Another question', value:'I have another question'},
+        {title:'Talk to a human', value:'Talk to a human'},
       ]:null;
       // Carried on `routing` (already passed to engineBuildLeadUpsertBody just below) purely so the
       // Chats tab can render this turn with the same button styling the customer actually saw on
@@ -13480,12 +16762,14 @@ async function handleEngineWebhook(request, env, secret){
       // what engineDeliverReply's own quickReplies branch actually sent (title truncated/deduped as
       // needed), not the pre-truncation `quickReplies` built above — see
       // engineSendChatwootQuickReply's own comment for why that distinction matters.
-      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies});
+      const sentReply=await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, quickReplies, ctx});
       routing.quickReplies=quickReplies?.length ? sentReply : null;
+      if(c.google_maps_url&&c.google_maps_url.trim()&&isLocationDirectionsQuery(userText)) await engineSendGoogleMapsButton(env,c,clientId,convId,phone,state.inboxId).catch(()=>{});
     }
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
+    await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
     // with "now", i.e. after this whole turn's reply was generated and sent). Real observed
     // failure: the rate limiter a few lines up compares against LastMsgAt, which real production
@@ -13500,18 +16784,43 @@ async function handleEngineWebhook(request, env, secret){
     // message, never since the bot's reply to it, while still correctly throttling genuine
     // rapid-fire customer typing (which is what this limiter is actually for).
     await ensureLeadsColumns(env, ['LastCustomerMsgAt']).catch(()=>{});
+    if(leadBody.InboxId) await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
     leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Dual-write new messages to D1 lead_messages for chats.html display
+    if(resolvedLeadId){
+      const userTs=new Date(startMs).toISOString();
+      const botTs=new Date().toISOString();
+      if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'user', content:routing.historyUserText||userText, ts:userTs,
+         ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+      if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+        {role:'assistant', content:routing.reply, ts:botTs,
+         ...(routing.media?{media:routing.media}:{}),
+         ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
     if(resolvedLeadId){
       await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
+    }
+    // New-lead CRM push notification
+    if(isNewLead && resolvedLeadId){
+      await engineBroadcastUpdate(env, clientId, {type:'new_lead', lead_id:resolvedLeadId,
+        lead_name:leadBody.Name||leadBody.Phone||'New Enquiry', at:new Date().toISOString()});
+    }
+    // Resort greeting showcase: up to 3 images per property + property-picker buttons.
+    // Fires only for brand-new leads (isNewLead). Returning customers follow the normal flow.
+    if(isNewLead && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
+      // Awaited (not fire-and-forget) — this fetch handler has no ctx.waitUntil, so a
+      // background promise risks being killed before R2/image fetches and Chatwoot uploads finish.
+      await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
     }
     // Referral tracking's D1 write — deferred to here (rather than at detection time, earlier in
     // this function) because a brand-new lead has no real id until this exact upsert assigns one.
@@ -13521,6 +16830,18 @@ async function handleEngineWebhook(request, env, secret){
       try{
         await env.DB.prepare(`INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referred_at, reward_status) VALUES (?,?,?,?, 'Pending')`)
           .bind(Number(clientId), state.referrerLeadId, resolvedLeadId, new Date().toISOString()).run();
+      }catch(e){}
+    }
+    // Smart Follow-ups DO — spawn on new lead creation; notify on customer reply so alarm resets
+    if(resolvedLeadId && c.followup_do_enabled==='Yes' && env.LEAD_AGENT){
+      try{
+        const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
+        const stub=env.LEAD_AGENT.get(doId);
+        if(isNewLead){
+          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1,lastMsgAt:startMs})}).catch(()=>{});
+        } else if(userText){
+          stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+        }
       }catch(e){}
     }
     // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
@@ -13545,7 +16866,7 @@ async function handleEngineWebhook(request, env, secret){
     // time this lead's message mentions a unit by name, send its photos/video straight into the
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
-    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText);
+    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit, selectedLocation:state.lead?.HospSelectedLocation});
     // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
     // the hospitality call just above: the first time this lead's message names a project or
     // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
@@ -13564,6 +16885,11 @@ async function handleEngineWebhook(request, env, secret){
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
+    // A specifically named course also sends its configured Drive media bundle. Brochure,
+    // syllabus, prospectus and PDF requests send the PDF itself as a Chatwoot/WhatsApp document,
+    // not a Drive preview-page link. A button tap can resolve the one course named in the
+    // immediately preceding assistant turn; multiple course names remain intentionally ambiguous.
+    await engineMaybeSendEduCourseMedia(env,c,clientId,convId,resolvedLeadId,userText,state.activeHistory,routing.reply);
     await engineMaybeSendEduCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText);
     await engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, userText);
     // Full product description — sent inline, right before the photo/media bundle, at each
@@ -13647,11 +16973,20 @@ async function handleInstagramWebhookVerify(request, env){
 async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
   if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
   const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
+  await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
   const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
   if(newSummary) leadBody.ConvSummary=newSummary;
   const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
   if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
+  if(resolvedLeadId){
+    const now=new Date().toISOString();
+    if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'user', content:routing.historyUserText||userText, ts:now});
+    if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
+      {role:'assistant', content:routing.reply, ts:now});
+  }
   if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
   // Verify those identity fields before considering the first inbound turn durable.
@@ -13703,7 +17038,7 @@ export async function processInstagramWebhookBody(env, body){
       let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
       if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
       const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
-      const routing=engineRouteFlow(c,state,userText,cls);
+      const routing=engineRouteFlow(c,state,userText,cls,parsed.mediaType);
       Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
       if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
       const replyLang=routing.customerLanguage||c.language||'en';
@@ -13719,13 +17054,13 @@ export async function processInstagramWebhookBody(env, body){
         sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify'){
         const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
-        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
+        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang,state.name||state.lead?.Name):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='qualify_next'){
         sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
       }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
         state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead);
+        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead,routing.intent);
         const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
         sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
         routing.reply=sentText; await deliver(sentText);
@@ -13975,7 +17310,7 @@ async function handleEcomPublicStores(request, env){
    table. This is the manual, customer-self-serve counterpart to the Cal.com sync and the AI
    auto-send — a client with no Cal.com account (or who just wants a simple always-available link)
    can hand out `book.html?client=<id>` directly. ── */
-const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug'];
+const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','healthcare_enabled'];
 const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
 
 async function apptPublicResolveClient(env, url){
@@ -13989,20 +17324,78 @@ async function apptPublicResolveClient(env, url){
 async function handleApptPublicClient(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  // Healthcare clients use D1; non-healthcare clients require appt_enabled
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
   return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
 }
 
 async function handleApptPublicServices(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!c) return json({error:'Booking page not found'}, 404);
+  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  // Healthcare: serve active services from D1, optionally filtered by doctor_id
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const doctorId=Number(url.searchParams.get('doctor_id')||0);
+    let svcs;
+    if(doctorId){
+      const linked=await env.DB.prepare(`SELECT DISTINCT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s JOIN healthcare_doctor_services ds ON ds.service_id=s.id WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doctorId).all().catch(()=>({results:[]}));
+      svcs=linked.results||[];
+      if(!svcs.length){
+        // Fall back to department-based filtering using the doctor's department_id
+        const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(doctorId,Number(c.Id)).first().catch(()=>null);
+        if(doc?.department_id){
+          const dept=await env.DB.prepare(`SELECT s.id,s.name,s.duration_minutes,s.price,s.currency,s.description FROM healthcare_services s WHERE s.client_id=? AND s.status='active' AND s.department_id=? ORDER BY s.name LIMIT 100`).bind(Number(c.Id),doc.department_id).all().catch(()=>({results:[]}));
+          svcs=dept.results||[];
+        }
+        if(!svcs.length) svcs=await hcListActiveServices(env, c.Id);
+      }
+    }else{
+      svcs=await hcListActiveServices(env, c.Id);
+    }
+    const uniqueSvcs=[...new Map(svcs.map(s=>[s.name.toLowerCase(),s])).values()];
+    return json({list:uniqueSvcs.map(s=>({Id:s.id,name:s.name,duration_minutes:s.duration_minutes,price:s.price,currency:s.currency,description:s.description}))});
+  }
   const servicesTable=apptResolveTable(c, 'services');
   if(!servicesTable) return json({list:[]});
   const r=await ncFetch(env, `api/v2/tables/${servicesTable}/records?where=(client_id,eq,${c.Id})~and(status,neq,inactive)&limit=100`);
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json(data, r.status);
   return json({list:(data.list||[]).map(row=>ecomPublicPick(row, APPT_PUBLIC_SERVICE_FIELDS))});
+}
+
+// Healthcare-only: returns active doctors so the public booking page can show a doctor picker
+async function handleApptPublicDoctors(request, env){
+  const url=new URL(request.url);
+  const c=await apptPublicResolveClient(env, url);
+  if(!c || c.healthcare_enabled!=='Yes') return json({list:[]});
+  await hcEnsureOperationsSchema(env);
+  const serviceId=Number(url.searchParams.get('service_id')||0);
+  let rows;
+  if(serviceId){
+    // Prefer doctors linked to the selected service; fall back to all active doctors
+    const linked=await env.DB.prepare(`SELECT DISTINCT d.id,d.name,d.qualification,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 50`).bind(Number(c.Id),serviceId).all().catch(()=>({results:[]}));
+    rows=linked.results||[];
+    if(!rows.length){
+      // Fall back to department-based filtering using the service's department_id
+      const svc=await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(serviceId,Number(c.Id)).first().catch(()=>null);
+      if(svc?.department_id){
+        const dept=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' AND department_id=? ORDER BY name LIMIT 50`).bind(Number(c.Id),svc.department_id).all().catch(()=>({results:[]}));
+        rows=dept.results||[];
+      }
+      if(!rows.length){
+        const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+        rows=all.results||[];
+      }
+    }
+  }else{
+    const all=await env.DB.prepare(`SELECT id,name,qualification,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(Number(c.Id)).all().catch(()=>({results:[]}));
+    rows=all.results||[];
+  }
+  const uniqueRows=[...new Map(rows.map(d=>[d.name.toLowerCase(),d])).values()];
+  return json({list:uniqueRows.map(d=>({Id:d.id,name:d.name,qualification:d.qualification||'',specialization:d.specialization||''}))});
 }
 
 // The one write path this whole public surface has — always creates a `requested` row (never
@@ -14013,9 +17406,7 @@ async function handleApptPublicBook(request, env){
   const clientId=String(body.client_id||'');
   if(!clientId) return json({error:'client_id required'}, 400);
   const c=await getClientById(env, clientId);
-  if(!c || c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
-  const bookingsTable=apptResolveTable(c, 'bookings');
-  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
+  if(!c) return json({error:'Booking page not found'}, 404);
 
   const name=String(body.name||'').trim().slice(0,120);
   const phone=String(body.phone||'').replace(/[^0-9+]/g,'');
@@ -14023,6 +17414,51 @@ async function handleApptPublicBook(request, env){
   const date=String(body.date||'').slice(0,10);
   const time=String(body.time||'').slice(0,5);
   const notes=String(body.notes||'').trim().slice(0,500);
+
+  // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar + CRM lead
+  if(c.healthcare_enabled==='Yes'){
+    await hcEnsureOperationsSchema(env);
+    const now=new Date().toISOString();
+    const ins=await env.DB.prepare(
+      `INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','public',?,'',?,?)`
+    ).bind(Number(clientId),name,phone,Number(body.service_id)||0,Number(body.doctor_id)||0,date,time,notes,now,now).run();
+    const row=await hcAppointmentRow(env,clientId,ins.meta.last_row_id);
+    if(row){
+      await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
+      await hcSyncAppointmentToGoogle(env,c,row,'upsert').catch(()=>null);
+    }
+    // Save to CRM — best-effort
+    let svc=null;
+    if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
+    advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
+    // Send WhatsApp confirmation via the patient's existing Chatwoot conversation (looked up by phone)
+    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
+      (async()=>{
+        try{
+          const srch=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,{headers:{api_access_token:c.chatwoot_token}});
+          const srchData=srch.ok?await srch.json().catch(()=>null):null;
+          const contact=(srchData?.payload||[])[0]||null;
+          if(!contact) return;
+          const convR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,{headers:{api_access_token:c.chatwoot_token}});
+          const convData=convR.ok?await convR.json().catch(()=>null):null;
+          const convId=((convData?.payload||[])[0])?.id||null;
+          if(!convId) return;
+          const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
+          const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
+          const dateLine=date?`\n📅 *Date:* ${date}`:'';
+          const timeLine=time?`\n⏰ *Time:* ${time}`:'';
+          const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
+          await sendFlowWhatsappDm(c, convId, confirmMsg);
+        }catch(e){}
+      })();
+    }
+    return json({ok:true});
+  }
+
+  // Non-healthcare (NocoDB) path
+  if(c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  const bookingsTable=apptResolveTable(c, 'bookings');
+  if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
 
   let service=null;
   if(body.service_id){
@@ -14102,6 +17538,27 @@ async function handleB2bInit(request, env){
   await ensureB2bLeadFields(env);
   await ensureB2bClientFields(env);
   return json({ok:true});
+}
+
+async function handleB2bStockGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS b2b_stock (client_id INTEGER PRIMARY KEY, stock_json TEXT NOT NULL DEFAULT \'[]\', updated_at TEXT NOT NULL)').run().catch(()=>{});
+  const row=await env.DB.prepare('SELECT stock_json, updated_at FROM b2b_stock WHERE client_id=?').bind(Number(payload.cid)).first().catch(()=>null);
+  let rows=[]; try{ rows=JSON.parse(row?.stock_json||'[]'); }catch(e){}
+  return json({rows, updated_at:row?.updated_at||null});
+}
+
+async function handleB2bStockSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!Array.isArray(body.rows)) return json({error:'rows array required'}, 400);
+  const stockJson=JSON.stringify(body.rows.slice(0,5000));
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO b2b_stock (client_id, stock_json, updated_at) VALUES (?,?,?) ON CONFLICT(client_id) DO UPDATE SET stock_json=excluded.stock_json, updated_at=excluded.updated_at')
+    .bind(Number(payload.cid), stockJson, now).run();
+  return json({ok:true, saved:body.rows.length});
 }
 
 function computeB2bDocSubtotal(lineItems){
@@ -14252,6 +17709,16 @@ function computeAccountingDocTotals(lineItems, taxPct){
   const taxAmount=subtotal*(pct/100);
   return {subtotal, taxAmount, total:subtotal+taxAmount};
 }
+// GST split: intra-state (supplier state === place of supply) → CGST+SGST (half each);
+// inter-state (or blank supplier state) → IGST (full rate). Returns zeros when gstRatePct=0.
+function computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply){
+  const rate=Number(gstRatePct)||0;
+  if(!rate) return {cgst:0, sgst:0, igst:0, totalGst:0};
+  const gstAmt=subtotal*(rate/100);
+  const intraState=supplierStateCode && placeOfSupply && String(supplierStateCode).trim().toUpperCase()===String(placeOfSupply).trim().toUpperCase();
+  if(intraState){ const half=Math.round(gstAmt*100/2)/100; return {cgst:half, sgst:half, igst:0, totalGst:half+half}; }
+  return {cgst:0, sgst:0, igst:Math.round(gstAmt*100)/100, totalGst:Math.round(gstAmt*100)/100};
+}
 
 // Maps a D1 row (lowercase `id`) onto the shape accounting.html already expects (capitalized
 // `Id`) — the one difference between a raw D1 row and this module's public JSON contract.
@@ -14281,43 +17748,43 @@ async function handleAccountingDocumentCreate(request, env){
   const VALID_TYPES=new Set(['quotation','invoice','receipt']);
   const type=VALID_TYPES.has(body.type)?body.type:'quotation';
   const lineItems=Array.isArray(body.line_items)?body.line_items:[];
-  // No GST — this module never charges tax, so tax_pct/tax_amount are always 0 regardless of what
-  // a caller sends; the columns stay (existing documents from before this rule may still have a
-  // nonzero value) but nothing new can create one.
-  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, 0);
+  const gstRatePct=Number(body.gst_rate_pct)||0;
+  const supplierGstin=body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null;
+  const placeOfSupply=body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null;
+  const supplierStateCode=body.supplier_state_code?String(body.supplier_state_code).trim().toUpperCase():null;
+  const {subtotal, taxAmount, total}=computeAccountingDocTotals(lineItems, gstRatePct);
+  const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
   const fields={
     client_id:Number(payload.cid), lead_id:body.lead_id?Number(body.lead_id):null,
     type, title:String(body.title||'').trim().slice(0,200),
     line_items_json:JSON.stringify(lineItems), currency:String(body.currency||'').trim().slice(0,10),
-    subtotal, tax_pct:0, tax_amount:taxAmount, total,
+    subtotal, tax_pct:gstRatePct, tax_amount:taxAmount, total,
     status:ACCOUNTING_VALID_STATUS.has(body.status)?body.status:'draft',
     linked_doc_id:body.linked_doc_id?Number(body.linked_doc_id):null,
     notes:String(body.notes||'').trim().slice(0,1000),
-    // customer_name (migration 0035) — a plain label for a walk-in/one-off customer not tied to a
-    // CRM lead, replacing the old ERPNext-only customer picker; erpnext_customer/company/
-    // erpnext_debtors_account stay writable too (still read by the optional ERPNext push) but are
-    // no longer set by the standalone Document modal.
     customer_name:body.customer_name?String(body.customer_name).trim().slice(0,200):null,
-    // customer_id (migration 0036) — links to fp_customers, the interconnection point with
-    // Financial Planning; resolved server-side via handleFpCustomerEnsureByName from
-    // customer_name before this insert, so the frontend only ever sends a name and this column is
-    // populated automatically.
     customer_id:body.customer_id?Number(body.customer_id):null,
-    // valid_until/due_date (migration 0037) — type-specific: a Quotation shows "Valid Until", an
-    // Invoice shows "Due Date"; only ever set by the modal matching this document's own type, but
-    // both columns exist on every row for simplicity (unused one just stays NULL).
     valid_until:body.valid_until?String(body.valid_until).slice(0,10):null,
     due_date:body.due_date?String(body.due_date).slice(0,10):null,
     erpnext_customer:body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null,
     company:body.company?String(body.company).trim().slice(0,140):null,
     erpnext_debtors_account:body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null,
     erpnext_doctype:null, erpnext_doc_name:null, erpnext_sync_status:null, erpnext_sync_error:null, erpnext_synced_at:null,
+    // GST fields (migration 0075)
+    is_tax_invoice:body.is_tax_invoice?1:0,
+    gst_rate_pct:gstRatePct,
+    cgst_amount:cgst, sgst_amount:sgst, igst_amount:igst,
+    supplier_gstin:supplierGstin,
+    recipient_gstin:body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null,
+    place_of_supply:placeOfSupply,
+    supply_type:['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)?body.supply_type:'B2C',
+    reverse_charge:body.reverse_charge?1:0,
     doc_created_at:new Date().toISOString(),
   };
   const r=await env.DB.prepare(`INSERT INTO accounting_documents
-    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, doc_created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.doc_created_at)
+    (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, valid_until, due_date, erpnext_customer, company, erpnext_debtors_account, erpnext_doctype, erpnext_doc_name, erpnext_sync_status, erpnext_sync_error, erpnext_synced_at, is_tax_invoice, gst_rate_pct, cgst_amount, sgst_amount, igst_amount, supplier_gstin, recipient_gstin, place_of_supply, supply_type, reverse_charge, doc_created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.type, fields.title, fields.line_items_json, fields.currency, fields.subtotal, fields.tax_pct, fields.tax_amount, fields.total, fields.status, fields.linked_doc_id, fields.notes, fields.customer_name, fields.customer_id, fields.valid_until, fields.due_date, fields.erpnext_customer, fields.company, fields.erpnext_debtors_account, fields.erpnext_doctype, fields.erpnext_doc_name, fields.erpnext_sync_status, fields.erpnext_sync_error, fields.erpnext_synced_at, fields.is_tax_invoice, fields.gst_rate_pct, fields.cgst_amount, fields.sgst_amount, fields.igst_amount, fields.supplier_gstin, fields.recipient_gstin, fields.place_of_supply, fields.supply_type, fields.reverse_charge, fields.doc_created_at)
     .run();
   return json({...fields, Id:r.meta.last_row_id});
 }
@@ -14383,11 +17850,21 @@ async function handleAccountingDocumentUpdate(request, env){
   if(body.erpnext_customer!==undefined){ sets.push('erpnext_customer=?'); vals.push(body.erpnext_customer?String(body.erpnext_customer).trim().slice(0,140):null); }
   if(body.company!==undefined){ sets.push('company=?'); vals.push(body.company?String(body.company).trim().slice(0,140):null); }
   if(body.erpnext_debtors_account!==undefined){ sets.push('erpnext_debtors_account=?'); vals.push(body.erpnext_debtors_account?String(body.erpnext_debtors_account).trim().slice(0,140):null); }
+  if(body.is_tax_invoice!==undefined){ sets.push('is_tax_invoice=?'); vals.push(body.is_tax_invoice?1:0); }
+  if(body.gst_rate_pct!==undefined){ sets.push('gst_rate_pct=?'); vals.push(Number(body.gst_rate_pct)||0); }
+  if(body.supplier_gstin!==undefined){ sets.push('supplier_gstin=?'); vals.push(body.supplier_gstin?String(body.supplier_gstin).trim().slice(0,15):null); }
+  if(body.recipient_gstin!==undefined){ sets.push('recipient_gstin=?'); vals.push(body.recipient_gstin?String(body.recipient_gstin).trim().slice(0,15):null); }
+  if(body.place_of_supply!==undefined){ sets.push('place_of_supply=?'); vals.push(body.place_of_supply?String(body.place_of_supply).trim().slice(0,50):null); }
+  if(body.supply_type!==undefined && ['B2B','B2C','B2CL','EXPORT'].includes(body.supply_type)){ sets.push('supply_type=?'); vals.push(body.supply_type); }
+  if(body.reverse_charge!==undefined){ sets.push('reverse_charge=?'); vals.push(body.reverse_charge?1:0); }
   if(Array.isArray(body.line_items)){
-    // No GST — see handleAccountingDocumentCreate's own note; tax is always 0 here too.
-    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, 0);
-    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?');
-    vals.push(JSON.stringify(body.line_items), subtotal, 0, taxAmount, total);
+    const gstRatePct=body.gst_rate_pct!==undefined?Number(body.gst_rate_pct)||0:Number(existing.gst_rate_pct)||0;
+    const supplierStateCode=body.supplier_state_code||null;
+    const placeOfSupply=body.place_of_supply!==undefined?body.place_of_supply:existing.place_of_supply;
+    const {subtotal, taxAmount, total}=computeAccountingDocTotals(body.line_items, gstRatePct);
+    const {cgst, sgst, igst}=computeGstAmounts(subtotal, gstRatePct, supplierStateCode, placeOfSupply);
+    sets.push('line_items_json=?','subtotal=?','tax_pct=?','tax_amount=?','total=?','cgst_amount=?','sgst_amount=?','igst_amount=?');
+    vals.push(JSON.stringify(body.line_items), subtotal, gstRatePct, taxAmount, total, cgst, sgst, igst);
   }
   if(!sets.length) return json({ok:true});
   vals.push(Number(body.id));
@@ -15095,6 +18572,1044 @@ async function handleRecruitDelete(request, env, kind){
   return json({ok:true});
 }
 
+/* ── MATRIMONIAL SERVICE MODULE (frontend/matrimonial.html, migrations/0071_matrimonial.sql)
+   Profile management, match tracking, shortlists, success stories.
+   All tables are client_id-scoped; reads/writes go through session auth. ── */
+
+const MATRIMONIAL_PROFILE_FIELDS=['serial_number','profile_type','full_name','date_of_birth','religion','caste','sub_caste','mother_tongue','height_cm','complexion','education','occupation','annual_income','city','state','country','about','family_type','father_name','father_occupation','mother_name','mother_occupation','siblings','horoscope_star','horoscope_rashi','horoscope_notes','manglik','photo_url','photo_url_2','photo_url_3','biodata_pdf_url','membership_plan','membership_expiry','status','lead_id','age','gender','phone','whatsapp','guardian_phone','marriage_status','required_education','body_type','district','job_place','expected_partner_age','expected_partner_dob','other_conditions','payment_amount','payment_link','whatsapp_filled','plan_label','remarks'];
+const MATRIMONIAL_MATCH_FIELDS=['profile_id_1','profile_id_2','match_score','status','interest_sent_by','notes','family_meeting_date','family_meeting_venue','outcome_notes'];
+const MATRIMONIAL_SHORTLIST_FIELDS=['profile_id','shortlisted_profile_id','notes'];
+const MATRIMONIAL_STORY_FIELDS=['profile_id_1','profile_id_2','bride_name','groom_name','wedding_date','testimonial','photo_url','featured'];
+const MATRIMONIAL_SETTINGS_FIELDS=['service_name','membership_plans','horoscope_matching_enabled','auto_suggest_matches','match_criteria_weights','privacy_note','success_story_template'];
+
+function matriCoerce(k,v){
+  const intFields=new Set(['height_cm','match_score','interest_sent_by','profile_id_1','profile_id_2','profile_id','shortlisted_profile_id','featured','horoscope_matching_enabled','auto_suggest_matches','age','chat_enabled','chat_profiles_per_msg']);
+  if(intFields.has(k)) return v===null||v===undefined||v===''?null:parseInt(v,10)||0;
+  return v===null||v===undefined?null:String(v).trim().slice(0,2000);
+}
+
+let matrimonialSerialSchemaReady=false;
+async function ensureMatrimonialSerialSchema(env){
+  if(matrimonialSerialSchemaReady) return;
+  // serial_number column added by migration 0083_matrimonial_serial_number.sql
+  try{ await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_matri_profiles_serial ON matrimonial_profiles(client_id, serial_number)').run(); }catch(e){}
+  matrimonialSerialSchemaReady=true;
+}
+
+async function handleMatriList(request, env, table, fields, orderBy='id DESC'){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM ${table} WHERE client_id=? ORDER BY ${orderBy}`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriCreate(request, env, table, fields, required){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(required && !String(body[required]||'').trim()) return json({error:`${required} required`}, 400);
+  const now=new Date().toISOString();
+  const cols=fields.filter(k=>body[k]!==undefined);
+  const vals=cols.map(k=>matriCoerce(k,body[k]));
+  const r=await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(Number(payload.cid),...vals,now,now).run();
+  const row=await env.DB.prepare(`SELECT * FROM ${table} WHERE id=?`).bind(r.meta.last_row_id).first();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json(row);
+}
+async function handleMatriUpdate(request, env, table, fields){
+  if(table==='matrimonial_profiles') await ensureMatrimonialSerialSchema(env);
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  const sets=[],vals=[];
+  for(const k of fields){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?');vals.push(new Date().toISOString());vals.push(id);
+  await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json({ok:true});
+}
+async function handleMatriDelete(request, env, table){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const id=parseInt(body.id,10);
+  if(!id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT client_id FROM ${table} WHERE id=?`).bind(id).first();
+  if(!existing||String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(id).run();
+  if(table==='matrimonial_profiles') await matriProfilesCacheInvalidate(env, payload.cid);
+  return json({ok:true});
+}
+async function handleMatriSettingsGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const row=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  return json(row||{});
+}
+async function handleMatriSettingsUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(existing){
+    const sets=[],vals=[];
+    for(const k of MATRIMONIAL_SETTINGS_FIELDS){if(body[k]===undefined)continue;sets.push(`${k}=?`);vals.push(matriCoerce(k,body[k]));}
+    sets.push('updated_at=?');vals.push(now);vals.push(String(payload.cid));
+    if(sets.length>1) await env.DB.prepare(`UPDATE matrimonial_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
+  }else{
+    const cols=MATRIMONIAL_SETTINGS_FIELDS.filter(k=>body[k]!==undefined);
+    const vals=cols.map(k=>matriCoerce(k,body[k]));
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`).bind(String(payload.cid),...vals,now,now).run();
+  }
+  return json({ok:true});
+}
+
+// Extend MATRIMONIAL_SETTINGS_FIELDS with webhook columns so the generic update handler saves them
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'profiles_webhook_token','matches_webhook_token','shortlists_webhook_token','stories_webhook_token',
+  'profiles_col_map','matches_col_map','shortlists_col_map','stories_col_map',
+  'profiles_dedup_key','matches_dedup_key','shortlists_dedup_key','stories_dedup_key'
+);
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'chat_enabled','chat_welcome_message','chat_plan_filter','chat_profiles_per_msg',
+  'chat_preview_fields','chat_form_url','chat_keyword_view','chat_keyword_list','chat_keyword_agent',
+  'chat_keyword_subscribe','chat_keyword_plans'
+);
+MATRIMONIAL_SETTINGS_FIELDS.push(
+  'paid_plans','razorpay_key_id','razorpay_key_secret','razorpay_webhook_secret'
+);
+
+// ── Matrimonial profile KV cache helpers ─────────────────────────────────────
+// Cache key: matri_profiles:{clientId} — stores all active profiles as a JSON array (TTL 7200 s).
+// All write paths (create/update/delete/webhook/chat-listing) call matriProfilesCacheInvalidate so
+// sendProfiles always sees fresh data on the next request after any change.
+// Every function is a no-op when env.MATRI_CACHE is absent (binding not yet configured).
+async function matriProfilesCacheGet(env,clientId){
+  if(!env.MATRI_CACHE) return null;
+  try{ const v=await env.MATRI_CACHE.get(`matri_profiles:${clientId}`); return v?JSON.parse(v):null; }catch(e){ return null; }
+}
+async function matriProfilesCacheSet(env,clientId,profiles){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.put(`matri_profiles:${clientId}`,JSON.stringify(profiles),{expirationTtl:7200}); }catch(e){}
+}
+async function matriProfilesCacheInvalidate(env,clientId){
+  if(!env.MATRI_CACHE) return;
+  try{ await env.MATRI_CACHE.delete(`matri_profiles:${clientId}`); }catch(e){}
+}
+
+// Matrimonial WhatsApp chat menu — handles the 1/2/3 keyword menu, gender selection, and
+// paginated profile delivery. Returns {handled:true, step} when it owns the turn, or null to
+// fall through to the normal LLM routing (e.g. when "3" / talk-to-agent is typed, or when
+// no state matches the incoming text).
+async function handleMatrimonialChatMenu(env,c,clientId,convId,phone,leadId,userText,isNewLead){
+  await ensureMatrimonialSerialSchema(env);
+  let settings;
+  try{ settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first(); }catch(e){ return null; }
+  if(!settings||!settings.chat_enabled) return null;
+
+  const text=String(userText||'').trim();
+  const textLower=text.toLowerCase();
+
+  const kwView      =String(settings.chat_keyword_view      ||'1').trim().toLowerCase();
+  const kwList      =String(settings.chat_keyword_list      ||'2').trim().toLowerCase();
+  const kwAgent     =String(settings.chat_keyword_agent     ||'3').trim().toLowerCase();
+  const kwSubscribe =String(settings.chat_keyword_subscribe ||'4').trim().toLowerCase();
+  const kwPlans    =String(settings.chat_keyword_plans    ||'5').trim().toLowerCase();
+
+  const send=async (msg)=>{ try{ await engineSendChatwootReply(env,c,clientId,convId,msg); }catch(e){} };
+
+  let st;
+  try{ st=await env.DB.prepare('SELECT * FROM matrimonial_chat_state WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){ st=null; }
+
+  const setState=async (fields)=>{
+    const now=new Date().toISOString();
+    const m={menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null,...(st||{}),...fields};
+    try{
+      await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,listing_data,updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,m.listing_data||null,now).run();
+    }catch(e){
+      // Fallback if migration 0085 not yet applied — persists state without listing_data column
+      try{
+        await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,city_filter,max_age,updated_at) VALUES (?,?,?,?,?,?,?,?)')
+          .bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',m.city_filter||null,m.max_age||null,now).run();
+      }catch(e2){
+        // Fallback if migration 0079 not yet applied — persists basic state without filter columns
+        try{ await env.DB.prepare('INSERT OR REPLACE INTO matrimonial_chat_state (client_id,phone,menu_state,profile_type,sent_ids,updated_at) VALUES (?,?,?,?,?,?)').bind(String(clientId),String(phone),m.menu_state||'menu',m.profile_type||null,m.sent_ids||'[]',now).run(); }catch(e3){}
+      }
+    }
+    st=m;
+  };
+
+  const buildWelcome=()=>{
+    const svc=settings.service_name||'Matrimonial Service';
+    const v=settings.chat_keyword_view||'1';
+    const l=settings.chat_keyword_list||'2';
+    const a=settings.chat_keyword_agent||'3';
+    const s=settings.chat_keyword_subscribe||'4';
+    const p=settings.chat_keyword_plans||'5';
+    let intro=(settings.chat_welcome_message||`Welcome to ${svc} 💜\n\nPlease choose an option:`).trim();
+    // Strip any menu option lines the admin may have saved inside the welcome message
+    // to prevent the options block from appearing twice.
+    const lines=intro.split('\n');
+    const firstOptIdx=lines.findIndex(ln=>{ const t=ln.trim(); return t.startsWith(v)||t.startsWith(l)||t.startsWith(a)||t.startsWith(s)||t.startsWith(p); });
+    if(firstOptIdx>0) intro=lines.slice(0,firstOptIdx).join('\n').trim();
+    let hasPaidPlans=false;
+    try{ hasPaidPlans=(JSON.parse(settings.paid_plans||'[]')||[]).length>0&&!!settings.razorpay_key_id; }catch(e){}
+    const plansLine=hasPaidPlans?`\n${p}️⃣  Paid Plans – Premium subscription options`:'';
+    return `${intro}\n\n${v}️⃣  View Profiles – Browse bride/groom profiles\n${l}️⃣  List My Profile – Submit your profile to find a match\n${s}️⃣  Free Subscription – Get 10 free profile views${plansLine}\n${a}️⃣  Talk to an Agent – Our team will personally assist you`;
+  };
+
+  const sendProfiles=async (profileType,profileRef=null)=>{
+    // Activation gate — check if this phone has been granted profile-view access
+    let activated=null;
+    try{ activated=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(!activated){
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('⚠️ Your number is not yet activated for profile viewing.\n\n🎁 *Get a Free Subscription instantly — no payment needed!*\n\nWhat is your *name*? (We\'ll activate your account right away)');
+      return {handled:true,step:'not_activated_auto_subscribe'};
+    }
+    if(activated.status!=='active'){
+      await send(`⚠️ Your profile view access has been *${activated.status}*.\n\nPlease contact us for assistance.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_'+activated.status};
+    }
+    const today=new Date().toISOString().slice(0,10);
+    const thisMonth=new Date().toISOString().slice(0,7);
+    if(activated.expiry_date&&activated.expiry_date<today){
+      await env.DB.prepare("UPDATE matrimonial_activated_leads SET status='expired',updated_at=? WHERE id=?").bind(new Date().toISOString(),activated.id).run().catch(()=>{});
+      await send(`⚠️ Your profile view access expired on *${activated.expiry_date}*.\n\nPlease contact us to renew.`);
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'access_expired'};
+    }
+    const canView=activated.can_view||'both';
+    if(canView!=='both'&&profileType!==canView){
+      await send(`ℹ️ Your access is limited to *${canView}* profiles only. Switching for you.`);
+      profileType=canView;
+    }
+    const vToday=activated.last_daily_reset===today?(activated.views_today||0):0;
+    const vMonth=activated.last_monthly_reset===thisMonth?(activated.views_month||0):0;
+    const dLimit=activated.daily_limit||10, mLimit=activated.monthly_limit||50;
+    if(vToday>=dLimit){
+      await send(`📊 Daily limit reached (${vToday}/${dLimit} profiles viewed today).\n\nCome back tomorrow!`);
+      return {handled:true,step:'daily_limit'};
+    }
+    if(vMonth>=mLimit){
+      await send(`📊 Monthly limit reached (${vMonth}/${mLimit} profiles this month).\n\nYour limit resets next month.`);
+      return {handled:true,step:'monthly_limit'};
+    }
+
+    let sentIds=[];
+    try{ sentIds=JSON.parse(st?.sent_ids||'[]'); }catch(e){}
+
+    let plans=['gold','silver','platinum'];
+    try{ const pf=JSON.parse(settings.chat_plan_filter||'[]'); if(pf.length) plans=pf; }catch(e){}
+
+    const perMsg=Math.max(2,parseInt(settings.chat_profiles_per_msg)||3);
+
+    let previewFields=['full_name','age','city','plan_label'];
+    try{ const pf=JSON.parse(settings.chat_preview_fields||'[]'); if(pf.length) previewFields=pf; }catch(e){}
+
+    const cityFilter=st?.city_filter||null;
+    const maxAge=st?.max_age?parseInt(st.max_age):null;
+    let rows;
+    try{
+      // KV-first: cache holds all active profiles for this client; JS filtering keeps a single cache
+      // key per client so any write path only needs to delete one entry to keep data in sync.
+      let allProfiles=await matriProfilesCacheGet(env,clientId);
+      if(!allProfiles){
+        const d1=await env.DB.prepare(
+          `SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' ORDER BY id ASC`
+        ).bind(String(clientId)).all();
+        allProfiles=d1.results||[];
+        await matriProfilesCacheSet(env,clientId,allProfiles);
+      }
+      // Type + already-sent filter
+      let filtered=allProfiles.filter(p=>p.profile_type===profileType&&!sentIds.includes(p.id));
+      // Plan filter — fall back to all when nothing matches (mirrors original two-query fallback)
+      const planSet=new Set(plans);
+      const planFiltered=filtered.filter(p=>planSet.has(String(p.membership_plan||'').toLowerCase())||planSet.has(String(p.plan_label||'').toLowerCase()));
+      if(planFiltered.length) filtered=planFiltered;
+      // City filter
+      if(cityFilter){ const cf=cityFilter.toLowerCase(); filtered=filtered.filter(p=>String(p.city||'').toLowerCase().includes(cf)||String(p.district||'').toLowerCase().includes(cf)); }
+      // Max-age filter
+      if(maxAge) filtered=filtered.filter(p=>{ const a=parseInt(p.age||0); return a>0&&a<=maxAge; });
+      // Profile-ref filter
+      if(profileRef){ const ref=String(profileRef); filtered=filtered.filter(p=>String(p.id)===ref||String(p.lead_id||'').toLowerCase()===ref.toLowerCase()); }
+      rows={results:filtered.slice(0,perMsg+1)};
+    }catch(e){ rows={results:[]}; }
+
+    const all=rows.results||[];
+    const hasMore=all.length>perMsg;
+    const batch=hasMore?all.slice(0,perMsg):all;
+
+    if(!batch.length){
+      await send(sentIds.length
+        ?'🔄 No more profiles at this time.\n\nReply *menu* to go back to the main menu.'
+        :'📭 No profiles are currently available.\n\nReply *menu* to go back to the main menu.');
+      await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:'[]'});
+      return {handled:true,step:'no_profiles'};
+    }
+
+    const newSentIds=[...sentIds,...batch.map(p=>p.id)];
+    await setState({menu_state:'viewing_profiles',profile_type:profileType,sent_ids:JSON.stringify(newSentIds)});
+    // Increment view counters
+    await env.DB.prepare('UPDATE matrimonial_activated_leads SET views_today=?,views_month=?,last_daily_reset=?,last_monthly_reset=?,updated_at=? WHERE id=?')
+      .bind(vToday+batch.length,vMonth+batch.length,today,thisMonth,new Date().toISOString(),activated.id).run().catch(()=>{});
+
+    const fLabel={full_name:'Name',age:'Age',city:'City',district:'District',education:'Education',occupation:'Occupation',job_place:'Job place',plan_label:'Plan',religion:'Religion',caste:'Caste',mother_tongue:'Mother tongue',height_cm:'Height',annual_income:'Income',marriage_status:'Marital status',about:'About'};
+    // Show useful fields exactly as saved in Matrimony Profiles. Admin-selected preview
+    // fields are appended and de-duplicated; plan, private contact, and payment fields stay hidden.
+    const cardFields=[...new Set(['full_name','age','district','city','education','occupation','job_place','marriage_status','religion','height_cm','about',...previewFields])].filter(f=>f!=='plan_label'&&f!=='membership_plan');
+    for(const p of batch){
+      let card='──────────────\n';
+      if(p.serial_number) card+=`#️⃣ *${p.serial_number}*\n`;
+      for(const f of cardFields){
+        let val=p[f];
+        if(f==='age'&&!val&&p.date_of_birth){ try{ val=String(Math.floor((Date.now()-new Date(p.date_of_birth).getTime())/31557600000)); }catch(e){} }
+        if(val) card+=`${fLabel[f]||f}: ${val}\n`;
+      }
+      card+='──────────────';
+      await send(card);
+    }
+    await send(hasMore
+      ?`✅ ${batch.length} profile(s) sent.\n\nReply *next* to see more.\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* for the main menu.`
+      :`✅ ${batch.length} profile(s) sent.\n\nType a *serial number* (e.g. #001) to get contact details.\nReply *menu* to go back to the main menu.`);
+    return {handled:true,step:'profiles_sent'};
+  };
+
+  // "menu" — always resets to welcome
+  if(/^menu$/i.test(text)){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null,listing_data:null});
+    await send(buildWelcome());
+    return {handled:true,step:'menu'};
+  }
+
+  // ── CONVERSATIONAL PROFILE LISTING FLOW ──────────────────────────────────────
+  // Handles each step of the "List My Profile" registration (menu option "2").
+  // State is stored as listing_data JSON in matrimonial_chat_state.
+  // Completes by inserting a pending/free profile into matrimonial_profiles.
+  const menuStateEarly=st?.menu_state;
+  if(menuStateEarly&&menuStateEarly.startsWith('listing_')){
+    let ld={};
+    try{ ld=JSON.parse(st?.listing_data||'{}'); }catch(e){}
+
+    if(menuStateEarly==='listing_asked_type'){
+      let pType=null;
+      if(/^b(ride)?$/i.test(text)) pType='bride';
+      else if(/^g(room)?$/i.test(text)) pType='groom';
+      if(!pType){
+        await send('Please reply *B* for Bride or *G* for Groom.');
+        return {handled:true,step:'listing_asked_type_reprompt'};
+      }
+      ld.profile_type=pType;
+      await setState({menu_state:'listing_asked_name',listing_data:JSON.stringify(ld)});
+      await send('What is your *full name*?');
+      return {handled:true,step:'listing_asked_name'};
+    }
+
+    if(menuStateEarly==='listing_asked_name'){
+      const name=text.trim();
+      if(name.length<2){
+        await send('Please enter your full name.');
+        return {handled:true,step:'listing_asked_name_reprompt'};
+      }
+      ld.full_name=name;
+      await setState({menu_state:'listing_asked_age',listing_data:JSON.stringify(ld)});
+      await send(`Thanks, *${name}*! 😊\n\nHow old are you? (e.g. *25*)`);
+      return {handled:true,step:'listing_asked_age'};
+    }
+
+    if(menuStateEarly==='listing_asked_age'){
+      const age=parseInt(text,10);
+      if(!age||age<18||age>80){
+        await send('Please enter a valid age between 18 and 80.');
+        return {handled:true,step:'listing_asked_age_reprompt'};
+      }
+      ld.age=String(age);
+      await setState({menu_state:'listing_asked_city',listing_data:JSON.stringify(ld)});
+      await send('Which *city or district* are you from?');
+      return {handled:true,step:'listing_asked_city'};
+    }
+
+    if(menuStateEarly==='listing_asked_city'){
+      const city=text.trim();
+      if(city.length<2){
+        await send('Please enter your city or district name.');
+        return {handled:true,step:'listing_asked_city_reprompt'};
+      }
+      ld.city=city;
+      await setState({menu_state:'listing_asked_education',listing_data:JSON.stringify(ld)});
+      await send('What is your *highest education*? (e.g. B.Tech, MBA, HSC, SSLC)');
+      return {handled:true,step:'listing_asked_education'};
+    }
+
+    if(menuStateEarly==='listing_asked_education'){
+      const edu=text.trim();
+      if(edu.length<2){
+        await send('Please enter your education qualification.');
+        return {handled:true,step:'listing_asked_education_reprompt'};
+      }
+      ld.education=edu;
+      await setState({menu_state:'listing_asked_occupation',listing_data:JSON.stringify(ld)});
+      await send('What is your *occupation*? (e.g. Software Engineer, Teacher, Business, Doctor)');
+      return {handled:true,step:'listing_asked_occupation'};
+    }
+
+    if(menuStateEarly==='listing_asked_occupation'){
+      const occ=text.trim();
+      if(occ.length<2){
+        await send('Please enter your occupation.');
+        return {handled:true,step:'listing_asked_occupation_reprompt'};
+      }
+      ld.occupation=occ;
+      await setState({menu_state:'listing_asked_phone',listing_data:JSON.stringify(ld)});
+      await send(`What *contact number* should we list for you?\n\nReply *same* to use your WhatsApp number (*${phone}*), or type a different number.`);
+      return {handled:true,step:'listing_asked_phone'};
+    }
+
+    if(menuStateEarly==='listing_asked_phone'){
+      const contactPhone=/^same$/i.test(text)?String(phone):text.replace(/[^\d+]/g,'').trim()||text.trim();
+      ld.phone=contactPhone;
+      const now=new Date().toISOString();
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_profiles (client_id,profile_type,full_name,age,city,education,occupation,phone,whatsapp,membership_plan,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),ld.profile_type||'',ld.full_name||'',ld.age||null,ld.city||'',ld.education||'',ld.occupation||'',contactPhone,String(phone),'free','pending',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriListingFlowInsert',e,{clientId,phone}); }
+      await matriProfilesCacheInvalidate(env,clientId);
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      const typeLabel=ld.profile_type==='bride'?'Bride 👰':'Groom 🤵';
+      await send(`✅ Your profile has been submitted!\n\n📋 *Summary:*\n• Type: ${typeLabel}\n• Name: ${ld.full_name}\n• Age: ${ld.age}\n• City: ${ld.city}\n• Education: ${ld.education}\n• Occupation: ${ld.occupation}\n• Contact: ${contactPhone}\n\n💜 Our team will review and activate your profile shortly.\n\nReply *menu* to go back to the main menu.`);
+      return {handled:true,step:'listing_submitted'};
+    }
+  }
+
+  // ── PAID PLANS FLOW ──────────────────────────────────────────────────────────
+  // subscribe_plans_menu: bot showed list of paid plans, waiting for selection.
+  if(menuStateEarly==='subscribe_plans_menu'){
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const paidPlans=ld.plans||[];
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'plans_menu_cancelled'};
+    }
+    const choice=parseInt(text,10);
+    if(choice===0){
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_from_plans'};
+    }
+    const plan=paidPlans[choice-1];
+    if(!plan){
+      await send(`Please reply with a plan number (0 to ${paidPlans.length}).\n\n_(Reply *menu* to go back)_`);
+      return {handled:true,step:'subscribe_plans_menu_invalid'};
+    }
+    await setState({menu_state:'subscribe_plan_asked_name',listing_data:JSON.stringify({plan_key:plan.key,plan_label:plan.label,plan_price:plan.price}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *${plan.label} Plan* selected — ₹${plan.price}\n\nPlease enter your *name* to generate the payment link.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plan_asked_name'};
+  }
+
+  // subscribe_plan_asked_name: collected plan selection, now asking for customer's name.
+  if(menuStateEarly==='subscribe_plan_asked_name'){
+    if(/^(?:menu|back|cancel)$/i.test(text)){
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      await send(buildWelcome());
+      return {handled:true,step:'subscribe_plan_name_cancelled'};
+    }
+    const name=text.trim();
+    if(name.length<2){
+      await send('Please enter your full name to continue.');
+      return {handled:true,step:'subscribe_plan_name_short'};
+    }
+    let ld={};
+    try{ ld=JSON.parse(st.listing_data||'{}'); }catch(e){}
+    const planKey=ld.plan_key;
+    if(!planKey||!settings.razorpay_key_id||!settings.razorpay_key_secret){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Payment is not configured. Please contact our team to subscribe.');
+      return {handled:true,step:'subscribe_plan_razorpay_missing'};
+    }
+    let plans=[];
+    try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    const plan=plans.find(p=>p.key===planKey);
+    if(!plan){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Plan not found. Please contact our team.');
+      return {handled:true,step:'subscribe_plan_not_found'};
+    }
+    try{
+      const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+      const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+        body:JSON.stringify({
+          amount:Math.round(plan.price*100),
+          currency:'INR',
+          description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+          customer:{name:name.slice(0,50),contact:String(phone)},
+          notes:{plan_key:planKey,phone:String(phone),client_id:String(clientId)},
+          expire_by:Math.floor(Date.now()/1000)+86400,
+          reminder_enable:false,
+        })
+      });
+      if(!r.ok){
+        const re=await r.json().catch(()=>({}));
+        await setState({menu_state:'menu',listing_data:null});
+        await send(`⚠️ Could not generate payment link. Please try again or contact our team.${re?.error?.description?'\n\n'+re.error.description:''}`);
+        return {handled:true,step:'subscribe_plan_link_error'};
+      }
+      const data=await r.json();
+      await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+      const expiryLine=plan.expiry_days?`\n• Validity: ${plan.expiry_days} days`:'';
+      const viewsLine=`\n• ${plan.daily_limit||50} profile views/day`;
+      await send(`✅ Hi *${name}*! Your payment link is ready.\n\n💎 *${plan.label} Plan* — ₹${plan.price}${viewsLine}${expiryLine}\n\n🔗 *Click to pay securely:*\n${data.short_url}\n\n⏳ Link expires in 24 hours. Once payment is confirmed, your account will be activated automatically!\n\n_(Reply *menu* for main menu)_`);
+      return {handled:true,step:'subscribe_plan_link_sent'};
+    }catch(e){
+      await setState({menu_state:'menu',listing_data:null});
+      await send('⚠️ Network error. Please try again later or contact our team.');
+      return {handled:true,step:'subscribe_plan_link_exception'};
+    }
+  }
+
+  // ── FREE SUBSCRIPTION FLOW ───────────────────────────────────────────────────
+  // subscribe_asked_name: bot asked for customer's name before activating.
+  if(menuStateEarly==='subscribe_asked_name'){
+    const name=text.trim();
+    const now=new Date().toISOString();
+    const displayName=name.length>=2?name:String(phone);
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing){
+      if(existing.status==='active'){
+        await setState({menu_state:'menu',listing_data:null,sent_ids:'[]'});
+        await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+        return {handled:true,step:'subscribe_already_active'};
+      }
+      // Reactivate suspended/expired record
+      try{
+        await env.DB.prepare("UPDATE matrimonial_activated_leads SET name=?,status='active',daily_limit=10,monthly_limit=10,can_view='both',expiry_date=NULL,views_today=0,views_month=0,updated_at=? WHERE id=?")
+          .bind(displayName,now,existing.id).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeReactivate',e,{clientId,phone}); }
+    } else {
+      try{
+        await env.DB.prepare(
+          `INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).bind(String(clientId),String(phone),displayName,'both',10,10,'active','free subscription via WhatsApp',now,now).run();
+      }catch(e){ await reportOpsError(env,'matriSubscribeInsert',e,{clientId,phone}); }
+    }
+    await setState({menu_state:'menu',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`🎉 *You're now subscribed!*\n\nHi *${displayName}*, your free subscription is active.\n\n📊 *Your plan:*\n• 10 profile views per day\n• Access to all profiles\n• No expiry\n\nReply *1* to start browsing profiles now!\nReply *menu* for the main menu.`);
+    return {handled:true,step:'subscribe_activated'};
+  }
+
+  const findProfileBySerial=async (ref)=>{
+    try{
+      return await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND status='active' AND (LOWER(COALESCE(serial_number,''))=LOWER(?) OR CAST(id AS TEXT)=? OR LOWER(COALESCE(lead_id,''))=LOWER(?)) LIMIT 1")
+        .bind(String(clientId),String(ref),String(ref),String(ref)).first();
+    }catch(e){ return null; }
+  };
+  const askProfileConfirmation=async (profile)=>{
+    await setState({menu_state:'awaiting_profile_confirmation',profile_type:profile.profile_type,sent_ids:JSON.stringify([profile.id]),city_filter:null,max_age:null});
+    const place=profile.city||profile.district||profile.state||'—';
+    await send(`Please confirm this is the profile you mean:\n\nName: *${profile.full_name||'—'}*\nPlace: *${place}*\nFather's name: *${profile.father_name||'—'}*\n\nIs this the correct person? Reply *Yes* or *No*.`);
+    return {handled:true,step:'profile_confirmation'};
+  };
+
+  // "Profile number" without a number starts the serial-number lookup flow.
+  const asksForProfileNumber=/\b(?:profile|serial)\s*(?:id|no|number)\b/i.test(text);
+  // Matches: "serial 001", "profile id 5", "profile number 209", "profile 209", "#209", "show me profile 5"
+  const serialMatch=text.match(/(?:\bserial(?:\s*(?:no|number))?|\bprofile\s*(?:id|no|number)?|#)\s*[:#-]?\s*["']?([a-z0-9_-]+)["']?/i)||text.match(/\b(?:looking\s+for|find|show\s+me)\s+(?:profile\s*)?["']?#?(\d+)["']?/i);
+  if(asksForProfileNumber&&!serialMatch){
+    await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('Please type the *profile serial number*.');
+    return {handled:true,step:'asked_profile_serial'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_serial'){
+    const ref=text.replace(/^#\s*/,'').trim();
+    const exact=ref?await findProfileBySerial(ref):null;
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref||text}*.\n\nPlease check the number and type it again.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  // A serial supplied in the first message goes straight to identity confirmation.
+  if(serialMatch){
+    const ref=serialMatch[1];
+    const exact=await findProfileBySerial(ref);
+    if(exact) return await askProfileConfirmation(exact);
+    await send(`📭 No active Matrimony Profile found for serial number *${ref}*.`);
+    return {handled:true,step:'serial_not_found'};
+  }
+
+  if(st?.menu_state==='awaiting_profile_confirmation'){
+    let pendingIds=[];
+    try{ pendingIds=JSON.parse(st.sent_ids||'[]'); }catch(e){}
+    const yes=/^(?:y|yes|ok|okay|correct|confirm|അതെ|ഓക്കെ|ശരി)[.!\s]*$/i.test(text);
+    const no=/^(?:n|no|wrong|not this|അല്ല)[.!\s]*$/i.test(text);
+    if(no){
+      await setState({menu_state:'awaiting_profile_serial',profile_type:null,sent_ids:'[]'});
+      await send('Okay. Please type the correct *profile serial number*.');
+      return {handled:true,step:'profile_rejected'};
+    }
+    if(!yes){
+      await send('Please reply *Yes* if this is the correct person, or *No* to enter another serial number.');
+      return {handled:true,step:'profile_confirmation_reprompt'};
+    }
+
+    const profileId=parseInt(pendingIds[0],10);
+    let profile=null,access=null;
+    try{
+      profile=await env.DB.prepare("SELECT * FROM matrimonial_profiles WHERE client_id=? AND id=? AND status='active'").bind(String(clientId),profileId).first();
+      access=await env.DB.prepare("SELECT * FROM matrimonial_activated_leads WHERE client_id=? AND phone=?").bind(String(clientId),String(phone)).first();
+    }catch(e){}
+    const today=new Date().toISOString().slice(0,10);
+    const permitted=access&&access.status==='active'&&(!access.expiry_date||access.expiry_date>=today)&&(access.can_view==='both'||access.can_view===profile?.profile_type);
+    if(!permitted){
+      await send('⚠️ Your number is not activated to receive this profile’s contact details. Please contact our team for access.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'contact_access_denied'};
+    }
+    if(!profile){
+      await send('📭 This profile is no longer available.');
+      await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+      return {handled:true,step:'profile_unavailable'};
+    }
+    const contacts=[];
+    if(profile.phone) contacts.push(`Personal number: *${profile.phone}*`);
+    if(profile.guardian_phone) contacts.push(`Guardian number: *${profile.guardian_phone}*`);
+    if(profile.whatsapp) contacts.push(`WhatsApp number: *${profile.whatsapp}*`);
+    await send(contacts.length?`✅ Contact details for *${profile.full_name}*:\n\n${contacts.join('\n')}`:'ℹ️ No contact numbers are saved for this profile.');
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    return {handled:true,step:'profile_contacts_sent'};
+  }
+
+  // A complete natural-language request should search immediately instead of
+  // asking again for gender, city, or age already provided by the customer.
+  const directType=/\bbrides?\b/i.test(text)?'bride':(/\bgrooms?\b/i.test(text)?'groom':null);
+  if(directType&&/\b(show|view|see|browse|find|search|give|send)\b/i.test(text)){
+    const directAge=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const directCity=text.match(/\b(?:in|from)\s+([a-z][a-z .'-]{1,40}?)(?=\s+(?:under|below|max(?:imum)?|up\s*to)\b|[,.!?]|$)/i);
+    const age=directAge?parseInt(directAge[1],10):null;
+    const city=directCity?directCity[1].trim():null;
+    await setState({menu_state:'viewing_profiles',profile_type:directType,sent_ids:'[]',city_filter:city,max_age:age});
+    const filters=[];
+    if(city) filters.push(`📍 ${city}`);
+    if(age) filters.push(`🎂 Under ${age}`);
+    await send(`Searching *${directType}* profiles${filters.length?' — '+filters.join(', '):''}…`);
+    return await sendProfiles(directType);
+  }
+
+  // Natural-language phrase matching — treat as keyword "1" (view profiles)
+  const isViewPhrase=textLower!==kwView&&/\b(show|view|see|browse|find|search)\b.*\bprofiles?\b|\bprofiles?\b$/i.test(text);
+
+  // View profiles keyword (default "1") or natural-language phrase
+  if(textLower===kwView||isViewPhrase){
+    await setState({menu_state:'asked_gender',profile_type:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('Do you want *Bride* or *Groom* profiles?\n\nReply *B* for Bride or *G* for Groom');
+    return {handled:true,step:'asked_gender'};
+  }
+
+  // List profile keyword (default "2") — start conversational registration flow
+  if(textLower===kwList){
+    await setState({menu_state:'listing_asked_type',listing_data:'{}',sent_ids:'[]',city_filter:null,max_age:null});
+    await send('📋 *List Your Profile*\n\nAre you registering as a *Bride* or *Groom*?\n\nReply *B* for Bride or *G* for Groom\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'listing_asked_type'};
+  }
+
+  // Natural-language phrase matching — treat as keyword "4" (free subscription)
+  const isSubscribePhrase=textLower!==kwSubscribe&&/\b(free\s*sub(?:scription)?|free\s*plan|free\s*access|free\s*(?:now|today)|subscribe\s*free|get\s*free|start\s*free|activate\s*free|free\s*register|free\s*membership)\b/i.test(text);
+
+  // Free subscription keyword (default "4") or natural-language phrase
+  if(textLower===kwSubscribe||isSubscribePhrase){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      await send('✅ You already have an active subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.');
+      return {handled:true,step:'subscribe_already_active'};
+    }
+    await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+    await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+    return {handled:true,step:'subscribe_asked_name'};
+  }
+
+  // Paid plans keyword (default "5")
+  if(textLower===kwPlans){
+    let existing=null;
+    try{ existing=await env.DB.prepare('SELECT id,status,plan_type FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first(); }catch(e){}
+    if(existing&&existing.status==='active'){
+      const planLabel=(existing.plan_type&&existing.plan_type!=='free')?existing.plan_type:'free';
+      await send(`✅ You already have an active *${planLabel}* subscription!\n\nReply *1* to start browsing profiles, or *menu* for the main menu.`);
+      return {handled:true,step:'plans_already_active'};
+    }
+    let paidPlans=[];
+    try{ paidPlans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+    if(!paidPlans.length||!settings.razorpay_key_id){
+      // No paid plans configured — fall through to free subscribe
+      await setState({menu_state:'subscribe_asked_name',listing_data:null,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('🎁 *Free Subscription*\n\nGet *10 free profile views per day* — no payment needed!\n\nWhat is your *name*?\n\n_(Reply *menu* anytime to go back)_');
+      return {handled:true,step:'subscribe_asked_name_plans_fallback'};
+    }
+    const lines=paidPlans.map((p,i)=>`${i+1}. 💎 *${p.label}* — ₹${p.price}${p.expiry_days?` / ${p.expiry_days} days`:''}  (${p.daily_limit||50} views/day)`).join('\n');
+    await setState({menu_state:'subscribe_plans_menu',listing_data:JSON.stringify({plans:paidPlans}),sent_ids:'[]',city_filter:null,max_age:null});
+    await send(`💎 *Subscription Plans*\n\n${lines}\n\n0. 🎁 Free – 10 views/day (no payment)\n\nReply with the plan number to subscribe.\n\n_(Reply *menu* anytime to go back)_`);
+    return {handled:true,step:'subscribe_plans_menu'};
+  }
+
+  // Talk to agent keyword (default "3") — let normal LLM routing handle it
+  if(textLower===kwAgent) return null;
+
+  // State-driven responses
+  const menuState=st?.menu_state;
+
+  if(menuState==='asked_gender'){
+    let pType=null;
+    if(/^b(ride)?$/i.test(text)) pType='bride';
+    else if(/^g(room)?$/i.test(text)) pType='groom';
+    if(pType){
+      await setState({menu_state:'asked_city',profile_type:pType,sent_ids:'[]',city_filter:null,max_age:null});
+      await send('Which district or city? (e.g. *Malappuram*, *Kozhikode*)\n\nOr reply *all* to see all locations.');
+      return {handled:true,step:'asked_city'};
+    }
+    await send('Please reply *B* for Bride profiles or *G* for Groom profiles.\n\nOr reply *menu* to go back.');
+    return {handled:true,step:'asked_gender_reprompt'};
+  }
+
+  if(menuState==='asked_city'){
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nWhich district or city? (or reply *all*)`);
+      return {handled:true,step:'serial_not_found_city'};
+    }
+    const cityInput=/^all$/i.test(text)?null:text.trim();
+    await setState({menu_state:'asked_age',city_filter:cityInput});
+    await send('Maximum age? (e.g. *25*)\n\nOr reply *any* for no age limit.');
+    return {handled:true,step:'asked_age'};
+  }
+
+  if(menuState==='asked_age'){
+    // Let a serial/profile reference interrupt the flow even mid-search.
+    if(serialMatch){
+      const ref=serialMatch[1];
+      const exact=await findProfileBySerial(ref);
+      if(exact) return await askProfileConfirmation(exact);
+      await send(`📭 No active profile found for *${ref}*.\n\nMaximum age? (or reply *any*)`);
+      return {handled:true,step:'serial_not_found_age'};
+    }
+    const ageInput=/^(?:any|no\s*(?:age\s*)?limit)$/i.test(text)?null:(parseInt(text)||null);
+    await setState({menu_state:'viewing_profiles',max_age:ageInput});
+    const cityLabel=st.city_filter||null;
+    const filterLine=[];
+    if(cityLabel) filterLine.push(`📍 ${cityLabel}`);
+    if(ageInput) filterLine.push(`🎂 Under ${ageInput}`);
+    if(filterLine.length) await send(`Searching *${st.profile_type}* profiles — ${filterLine.join(', ')}…`);
+    return await sendProfiles(st.profile_type||'bride');
+  }
+
+  if(menuState==='viewing_profiles'&&/^next$/i.test(text)){
+    return await sendProfiles(st.profile_type||'bride');
+  }
+
+  // Refine a previous search naturally and query saved profiles immediately.
+  if(menuState==='viewing_profiles'){
+    const ageMatch=textLower.match(/\b(?:under|below|max(?:imum)?(?:\s+age)?|up\s*to)\s*(\d{2})\b/);
+    const bareAge=textLower.match(/^\s*(\d{2})\s*$/);
+    const wantsAnyAge=/^(?:any|any age|no age limit)$/i.test(text);
+    const requestedAge=wantsAnyAge?null:parseInt((ageMatch||bareAge||[])[1],10)||null;
+    if(wantsAnyAge||requestedAge){
+      await setState({max_age:requestedAge,sent_ids:'[]'});
+      await send(requestedAge?`Searching *${st.profile_type||'bride'}* profiles — 🎂 Under ${requestedAge}…`:`Searching *${st.profile_type||'bride'}* profiles — any age…`);
+      return await sendProfiles(st.profile_type||'bride');
+    }
+    // Plain serial number typed while browsing — look it up directly.
+    const plainRef=text.replace(/^#\s*/,'').trim();
+    if(plainRef&&!/^\d{1,2}$/.test(plainRef)){
+      const bySerial=await findProfileBySerial(plainRef);
+      if(bySerial) return await askProfileConfirmation(bySerial);
+    }
+  }
+
+  // Brand-new lead — show welcome automatically
+  if(isNewLead){
+    await setState({menu_state:'menu',profile_type:null,sent_ids:'[]'});
+    await send(buildWelcome());
+    return {handled:true,step:'welcome'};
+  }
+
+  return null;
+}
+
+// Canonical DB columns for each table (used to validate incoming field names from n8n)
+const MATRI_WEBHOOK_COLS={
+  profiles: new Set(MATRIMONIAL_PROFILE_FIELDS),
+  matches:  new Set(MATRIMONIAL_MATCH_FIELDS),
+  shortlists:new Set(MATRIMONIAL_SHORTLIST_FIELDS),
+  stories:  new Set(MATRIMONIAL_STORY_FIELDS),
+};
+const MATRI_WEBHOOK_TABLE={
+  profiles:'matrimonial_profiles', matches:'matrimonial_matches',
+  shortlists:'matrimonial_shortlists', stories:'matrimonial_success_stories',
+};
+const MATRI_TOKEN_COL={
+  profiles:'profiles_webhook_token', matches:'matches_webhook_token',
+  shortlists:'shortlists_webhook_token', stories:'stories_webhook_token',
+};
+const MATRI_MAP_COL={
+  profiles:'profiles_col_map', matches:'matches_col_map',
+  shortlists:'shortlists_col_map', stories:'stories_col_map',
+};
+const MATRI_DEDUP_COL={
+  profiles:'profiles_dedup_key', matches:'matches_dedup_key',
+  shortlists:'shortlists_dedup_key', stories:'stories_dedup_key',
+};
+
+// CRUD for activated leads — customers allowed to view profiles via the WhatsApp chat menu.
+const MATRIMONIAL_ACTIVATED_FIELDS=['phone','name','can_view','daily_limit','monthly_limit','expiry_date','status','notes','plan_type'];
+async function handleMatriActivatedList(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const {results}=await env.DB.prepare('SELECT * FROM matrimonial_activated_leads WHERE client_id=? ORDER BY id DESC').bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleMatriActivatedCreate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.phone) return json({error:'phone required'},400);
+  const phone=String(body.phone).replace(/[^0-9]/g,'');
+  const now=new Date().toISOString();
+  try{
+    await env.DB.prepare('INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(String(payload.cid),phone,body.name||null,body.can_view||'both',parseInt(body.daily_limit)||10,parseInt(body.monthly_limit)||50,body.expiry_date||null,body.status||'active',body.notes||null,now,now).run();
+  }catch(e){
+    if(String(e.message||e).includes('UNIQUE')) return json({error:'This phone is already activated'},409);
+    throw e;
+  }
+  return json({ok:true});
+}
+async function handleMatriActivatedUpdate(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  const now=new Date().toISOString();
+  const sets=[],vals=[];
+  for(const k of MATRIMONIAL_ACTIVATED_FIELDS){
+    if(body[k]===undefined) continue;
+    sets.push(`${k}=?`);
+    vals.push(k==='daily_limit'||k==='monthly_limit'?parseInt(body[k])||0:(body[k]===null?null:String(body[k])));
+  }
+  if(!sets.length) return json({ok:true});
+  sets.push('updated_at=?'); vals.push(now); vals.push(String(payload.cid)); vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE matrimonial_activated_leads SET ${sets.join(',')} WHERE client_id=? AND id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleMatriActivatedDelete(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'},400);
+  await env.DB.prepare('DELETE FROM matrimonial_activated_leads WHERE client_id=? AND id=?').bind(String(payload.cid),Number(body.id)).run();
+  return json({ok:true});
+}
+
+// POST /matrimonial/razorpay/create-link — session-gated; creates a Razorpay Payment Link for a given
+// phone and plan. Used by the dashboard to manually generate a payment link for a customer.
+async function handleMatriCreatePaymentLink(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const {phone,plan_key,name}=body;
+  if(!phone||!plan_key) return json({error:'phone and plan_key required'},400);
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(payload.cid)).first();
+  if(!settings?.razorpay_key_id||!settings?.razorpay_key_secret) return json({error:'Razorpay not configured — add key_id and key_secret in Settings'},400);
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===plan_key);
+  if(!plan) return json({error:'Plan not found'},400);
+  const auth=btoa(`${settings.razorpay_key_id}:${settings.razorpay_key_secret}`);
+  const r=await fetch('https://api.razorpay.com/v1/payment_links',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Basic ${auth}`},
+    body:JSON.stringify({
+      amount:Math.round(plan.price*100),
+      currency:'INR',
+      description:`${settings.service_name||'Matrimonial'} — ${plan.label} Plan`,
+      customer:{name:(name||String(phone)).slice(0,50),contact:String(phone)},
+      notes:{plan_key,phone:String(phone),client_id:String(payload.cid)},
+      expire_by:Math.floor(Date.now()/1000)+86400,
+      reminder_enable:false,
+    })
+  });
+  if(!r.ok){
+    const e=await r.json().catch(()=>({}));
+    return json({error:e?.error?.description||'Razorpay error'},502);
+  }
+  const data=await r.json();
+  return json({payment_url:data.short_url,payment_link_id:data.id});
+}
+
+// POST /matrimonial/razorpay/webhook — public endpoint called by Razorpay on payment events.
+// Reads client_id from payment notes, verifies HMAC-SHA256 signature, and on payment_link.paid
+// activates the customer's account with the plan limits and expiry.
+async function handleMatriPaymentWebhook(request,env){
+  const rawBody=await request.text();
+  const sig=request.headers.get('X-Razorpay-Signature')||'';
+  let evt;
+  try{ evt=JSON.parse(rawBody); }catch(e){ return new Response('bad json',{status:400}); }
+  const plNotes=evt?.payload?.payment_link?.entity?.notes||{};
+  const pyNotes=evt?.payload?.payment?.entity?.notes||{};
+  const notes={...pyNotes,...plNotes};
+  const clientId=notes.client_id;
+  if(!clientId) return new Response('no client_id in notes',{status:400});
+  const settings=await env.DB.prepare('SELECT * FROM matrimonial_settings WHERE client_id=?').bind(String(clientId)).first().catch(()=>null);
+  if(!settings?.razorpay_webhook_secret) return new Response('webhook_secret not configured',{status:400});
+  // Verify HMAC-SHA256
+  const enc=new TextEncoder();
+  const key=await crypto.subtle.importKey('raw',enc.encode(settings.razorpay_webhook_secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const mac=await crypto.subtle.sign('HMAC',key,enc.encode(rawBody));
+  const expected=Array.from(new Uint8Array(mac)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  if(expected!==sig) return new Response('invalid signature',{status:400});
+  if(evt.event!=='payment_link.paid') return new Response('ok',{status:200});
+  const planKey=notes.plan_key;
+  const phone=notes.phone;
+  const paymentId=evt?.payload?.payment?.entity?.id||evt?.payload?.payment_link?.entity?.id||'';
+  if(!planKey||!phone) return new Response('missing plan_key or phone in notes',{status:400});
+  let plans=[];
+  try{ plans=JSON.parse(settings.paid_plans||'[]'); }catch(e){}
+  const plan=plans.find(p=>p.key===planKey);
+  if(!plan) return new Response('unknown plan',{status:400});
+  const now=new Date().toISOString();
+  const expiryDate=plan.expiry_days?new Date(Date.now()+plan.expiry_days*86400000).toISOString().slice(0,10):null;
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_activated_leads WHERE client_id=? AND phone=?').bind(String(clientId),String(phone)).first().catch(()=>null);
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_activated_leads SET status='active',plan_type=?,daily_limit=?,monthly_limit=?,can_view=?,expiry_date=?,razorpay_payment_id=?,views_today=0,views_month=0,updated_at=? WHERE id=?`)
+      .bind(planKey,plan.daily_limit||50,plan.monthly_limit||500,plan.can_view||'both',expiryDate,paymentId,now,existing.id).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_activated_leads (client_id,phone,name,can_view,daily_limit,monthly_limit,expiry_date,status,plan_type,razorpay_payment_id,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(String(clientId),String(phone),String(phone),plan.can_view||'both',plan.daily_limit||50,plan.monthly_limit||500,expiryDate,'active',planKey,paymentId,`${plan.label} plan via Razorpay`,now,now).run();
+  }
+  return new Response('ok',{status:200});
+}
+
+// POST /matrimonial/webhook/:kind — public endpoint called by n8n; authenticated by per-table token.
+// Accepts a JSON array (or a single object) of rows. Each row's keys are mapped through the saved
+// column map (if set) and then validated against the table's canonical field list; unknown keys
+// are silently dropped. If a dedup key is configured and the table has a matching row for this
+// client_id, the row is updated; otherwise it is inserted. Returns a summary of rows processed.
+async function handleMatriWebhook(request, env, kind){
+  if(kind==='profiles') await ensureMatrimonialSerialSchema(env);
+  const url=new URL(request.url);
+  const token=url.searchParams.get('token')||'';
+  if(!token) return json({error:'token required'}, 401);
+
+  // Look up the client that owns this token
+  const tokenCol=MATRI_TOKEN_COL[kind];
+  if(!tokenCol) return json({error:'Unknown table'}, 404);
+  const settings=await env.DB.prepare(`SELECT * FROM matrimonial_settings WHERE ${tokenCol}=?`).bind(token).first();
+  if(!settings) return json({error:'Invalid token'}, 401);
+  const clientId=Number(settings.client_id);
+
+  // Parse body — accept array or single object
+  let rows;
+  try{ const b=await request.json(); rows=Array.isArray(b)?b:[b]; }catch(e){ return json({error:'Invalid JSON body'}, 400); }
+  if(!rows.length) return json({ok:true, rows_received:0, rows_inserted:0, rows_updated:0, rows_skipped:0});
+
+  // Column map: external header → DB column
+  let colMap={};
+  try{ colMap=JSON.parse(settings[MATRI_MAP_COL[kind]]||'{}'); }catch(e){}
+  const dedupKey=settings[MATRI_DEDUP_COL[kind]]||'';
+  const validCols=MATRI_WEBHOOK_COLS[kind];
+  const table=MATRI_WEBHOOK_TABLE[kind];
+  const now=new Date().toISOString();
+
+  let inserted=0,updated=0,skipped=0;
+  for(const raw of rows){
+    // Apply column map then drop unknown keys
+    const row={};
+    for(const [k,v] of Object.entries(raw)){
+      const mapped=colMap[k]||k;
+      if(validCols.has(mapped)) row[mapped]=v;
+    }
+    const cols=Object.keys(row);
+    if(!cols.length){ skipped++; continue; }
+    const vals=cols.map(k=>matriCoerce(k,row[k]));
+
+    try{
+      if(dedupKey && row[dedupKey]!==undefined && String(row[dedupKey]||'').trim()){
+        const existing=await env.DB.prepare(`SELECT id FROM ${table} WHERE client_id=? AND ${dedupKey}=? LIMIT 1`)
+          .bind(clientId, String(row[dedupKey]).trim()).first();
+        if(existing){
+          const sets=cols.map(c=>`${c}=?`); sets.push('updated_at=?'); vals.push(now);
+          await env.DB.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id=?`).bind(...vals, existing.id).run();
+          updated++;
+        }else{
+          await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+            .bind(clientId,...vals,now,now).run();
+          inserted++;
+        }
+      }else{
+        await env.DB.prepare(`INSERT INTO ${table} (client_id,${cols.join(',')},created_at,updated_at) VALUES (?,${cols.map(()=>'?').join(',')},?,?)`)
+          .bind(clientId,...vals,now,now).run();
+        inserted++;
+      }
+    }catch(e){ skipped++; }
+  }
+
+  // Write sync log
+  await env.DB.prepare(`INSERT INTO matrimonial_webhook_log (client_id,table_name,rows_received,rows_inserted,rows_updated,rows_skipped,status,fired_at) VALUES (?,?,?,?,?,?,'ok',?)`)
+    .bind(clientId, kind, rows.length, inserted, updated, skipped, now).run().catch(()=>{});
+
+  if(kind==='profiles'&&(inserted||updated)) await matriProfilesCacheInvalidate(env,clientId);
+
+  return json({ok:true, rows_received:rows.length, rows_inserted:inserted, rows_updated:updated, rows_skipped:skipped});
+}
+
+// POST /matrimonial/tokens/regenerate — session-gated; re-rolls all four webhook tokens at once.
+// Returns the new tokens so the dashboard can display them immediately.
+async function handleMatriTokensRegenerate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cid=String(payload.cid);
+  const tokens={
+    profiles_webhook_token: crypto.randomUUID(),
+    matches_webhook_token:  crypto.randomUUID(),
+    shortlists_webhook_token: crypto.randomUUID(),
+    stories_webhook_token:  crypto.randomUUID(),
+  };
+  const now=new Date().toISOString();
+  const existing=await env.DB.prepare('SELECT id FROM matrimonial_settings WHERE client_id=?').bind(cid).first();
+  if(existing){
+    await env.DB.prepare(`UPDATE matrimonial_settings SET profiles_webhook_token=?,matches_webhook_token=?,shortlists_webhook_token=?,stories_webhook_token=?,updated_at=? WHERE client_id=?`)
+      .bind(tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,cid).run();
+  }else{
+    await env.DB.prepare(`INSERT INTO matrimonial_settings (client_id,profiles_webhook_token,matches_webhook_token,shortlists_webhook_token,stories_webhook_token,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
+      .bind(cid,tokens.profiles_webhook_token,tokens.matches_webhook_token,tokens.shortlists_webhook_token,tokens.stories_webhook_token,now,now).run();
+  }
+  return json({ok:true, tokens});
+}
+
+// GET /matrimonial/webhook/log — session-gated; last 50 sync events for this client.
+async function handleMatriWebhookLog(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM matrimonial_webhook_log WHERE client_id=? ORDER BY id DESC LIMIT 50`)
+    .bind(String(payload.cid)).all();
+  return json({list:results||[]});
+}
+
 /* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
    0051_pm_phase2.sql) Projects/Tasks/Sprints/Time/Automations, same "one shared D1 table per
    entity, client_id-scoped, generic config-driven CRUD" shape as RECRUIT_TABLES above — same
@@ -15107,6 +19622,35 @@ async function handleRecruitDelete(request, env, kind){
    the client's own copy; deleting a project cascades to its tasks; a task's `done_at` is
    maintained by the server on status transitions, not directly writable, and a task status change
    or creation runs any matching automations (see PM automation engine below). ── */
+let _pmSchemaEnsured=false;
+async function pmEnsureSchema(env){
+  if(_pmSchemaEnsured)return;
+  // Create all tables with full current schema (CREATE TABLE IF NOT EXISTS is idempotent)
+  await env.DB.batch([
+    `CREATE TABLE IF NOT EXISTS pm_projects (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,description TEXT,color TEXT NOT NULL DEFAULT '#0D9C93',status TEXT NOT NULL DEFAULT 'active',budget_amount REAL,budget_currency TEXT NOT NULL DEFAULT 'USD',default_hourly_rate REAL,client_email TEXT,ai_auto_stage_enabled INTEGER NOT NULL DEFAULT 0,task_reminders_enabled INTEGER NOT NULL DEFAULT 0,overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_projects_client ON pm_projects(client_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,description TEXT,status TEXT NOT NULL DEFAULT 'todo',priority TEXT NOT NULL DEFAULT 'medium',assignee_email TEXT,start_date TEXT,due_date TEXT,position REAL NOT NULL DEFAULT 0,item_type TEXT NOT NULL DEFAULT 'task',severity TEXT,story_points INTEGER,sprint_id INTEGER,link_url TEXT,link_label TEXT,done_at TEXT,lead_id INTEGER,lead_name TEXT,category TEXT,channel TEXT,mode TEXT,followup_step INTEGER,notify_customer INTEGER NOT NULL DEFAULT 0,ai_created INTEGER NOT NULL DEFAULT 0,auto_generated INTEGER NOT NULL DEFAULT 0,gcal_event_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_client ON pm_tasks(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_project ON pm_tasks(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_tasks_sprint ON pm_tasks(client_id,sprint_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_task_dependencies (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,predecessor_id INTEGER NOT NULL,successor_id INTEGER NOT NULL,lag_days INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,UNIQUE(predecessor_id,successor_id))`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_client ON pm_task_dependencies(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_deps_project ON pm_task_dependencies(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,task_id INTEGER NOT NULL,project_id INTEGER NOT NULL,user_email TEXT,entry_date TEXT NOT NULL,hours REAL NOT NULL DEFAULT 0,note TEXT,billable INTEGER NOT NULL DEFAULT 1,hourly_rate REAL,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_client ON pm_time_entries(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_project ON pm_time_entries(client_id,project_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_time_task ON pm_time_entries(client_id,task_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_sprints (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,start_date TEXT,end_date TEXT,status TEXT NOT NULL DEFAULT 'planned',created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_client ON pm_sprints(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_sprints_project ON pm_sprints(client_id,project_id)`,
+    `CREATE TABLE IF NOT EXISTS pm_automations (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,project_id INTEGER NOT NULL,name TEXT NOT NULL,trigger_type TEXT NOT NULL,trigger_config TEXT,action_type TEXT NOT NULL,action_config TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_client ON pm_automations(client_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_pm_automations_project ON pm_automations(client_id,project_id)`,
+  ].map(s=>env.DB.prepare(s)));
+  // Phase-2/3 columns for pm_tasks and pm_projects are added by migrations
+  // 0051_pm_phase2.sql, 0052_pm_merge_legacy_tasks.sql, and 0058_project_automation.sql.
+  _pmSchemaEnsured=true;
+}
 const PM_TABLES={
   projects:{
     table:'pm_projects', requiredField:'name', orderBy:'created_at DESC',
@@ -15121,7 +19665,7 @@ const PM_TABLES={
   tasks:{
     table:'pm_tasks', requiredField:'title', orderBy:'position ASC, created_at ASC', hasUpdatedAt:true,
     fields:{
-      project_id:{type:'int'}, title:{type:'str', max:300}, description:{type:'text'},
+      project_id:{type:'int', def:0}, title:{type:'str', max:300}, description:{type:'text'},
       status:{type:'str', max:20, def:'todo'}, priority:{type:'str', max:20, def:'medium'},
       assignee_email:{type:'str', max:140}, start_date:{type:'str', max:10}, due_date:{type:'str', max:10},
       position:{type:'num'}, item_type:{type:'str', max:10, def:'task'}, severity:{type:'str', max:20},
@@ -15189,10 +19733,7 @@ export async function pmEnsureAutomationSchema(env){
   if(!env?.DB) throw new Error('D1 DB binding is not configured');
   const cached=pmAutomationSchemaReady.get(env.DB); if(cached) return cached;
   const pending=(async()=>{
-    const info=await env.DB.prepare(`PRAGMA table_info(pm_projects)`).all();
-    const columns=new Set((info?.results||[]).map(x=>x.name));
-    if(!columns.has('task_reminders_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN task_reminders_enabled INTEGER NOT NULL DEFAULT 0`).run();
-    if(!columns.has('overdue_escalation_enabled')) await env.DB.prepare(`ALTER TABLE pm_projects ADD COLUMN overdue_escalation_enabled INTEGER NOT NULL DEFAULT 0`).run();
+    // task_reminders_enabled + overdue_escalation_enabled added by migration 0058_project_automation.sql
     for(const statement of PM_AUTOMATION_SCHEMA) await env.DB.prepare(statement).run();
   })();
   pmAutomationSchemaReady.set(env.DB,pending);
@@ -15216,6 +19757,7 @@ async function pmVerifyProject(env, cid, projectId){
 async function handlePmList(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const url=new URL(request.url);
   const projectId=parseInt(url.searchParams.get('project_id'),10);
@@ -15229,10 +19771,11 @@ async function handlePmList(request, env, kind){
 async function handlePmCreate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
-  if(PM_PROJECT_SCOPED.includes(kind)){
+  if(PM_PROJECT_SCOPED.includes(kind) && body.project_id){
     if(!await pmVerifyProject(env, payload.cid, body.project_id)) return json({error:'project_id not found'}, 400);
   }
   if(kind==='time'){
@@ -15261,6 +19804,7 @@ async function handlePmCreate(request, env, kind){
 async function handlePmUpdate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
@@ -15302,6 +19846,7 @@ async function handlePmUpdate(request, env, kind){
 async function handlePmDelete(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await pmEnsureSchema(env);
   const cfg=PM_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
@@ -16016,11 +20561,13 @@ async function handleFpCustomerCreate(request, env){
     renewal_date:body.renewal_date||null,
     seat_count:body.seat_count!==undefined?(parseInt(body.seat_count,10)||0):null,
     csm_owner:String(body.csm_owner||'').trim().slice(0,140),
+    gstin:body.gstin?String(body.gstin).trim().slice(0,15):null,
+    state_code:body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null,
   };
   const r=await env.DB.prepare(`INSERT INTO fp_customers
-    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner)
+    (client_id, lead_id, name, phone, email, plan_name, monthly_value, currency, billing_cycle, billing_day, start_date, status, notes, created_at, company_name, plan_tier, trial_end_date, lifecycle_stage, renewal_date, seat_count, csm_owner, gstin, state_code)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(fields.client_id, fields.lead_id, fields.name, fields.phone, fields.email, fields.plan_name, fields.monthly_value, fields.currency, fields.billing_cycle, fields.billing_day, fields.start_date, fields.status, fields.notes, fields.created_at, fields.company_name, fields.plan_tier, fields.trial_end_date, fields.lifecycle_stage, fields.renewal_date, fields.seat_count, fields.csm_owner, fields.gstin, fields.state_code)
     .run();
   await fpEnsureConfigRow(env, payload.cid);
   return json(fpCustomerOut({...fields, id:r.meta.last_row_id}));
@@ -16051,6 +20598,8 @@ async function handleFpCustomerUpdate(request, env){
   if(body.renewal_date!==undefined){ sets.push('renewal_date=?'); vals.push(body.renewal_date||null); }
   if(body.seat_count!==undefined){ sets.push('seat_count=?'); vals.push(parseInt(body.seat_count,10)||0); }
   if(body.csm_owner!==undefined){ sets.push('csm_owner=?'); vals.push(String(body.csm_owner).trim().slice(0,140)); }
+  if(body.gstin!==undefined){ sets.push('gstin=?'); vals.push(body.gstin?String(body.gstin).trim().slice(0,15):null); }
+  if(body.state_code!==undefined){ sets.push('state_code=?'); vals.push(body.state_code?String(body.state_code).trim().slice(0,50).toUpperCase():null); }
   // health_score itself is cron-computed (computeAccountHealthScore) — only a manual override may
   // set it directly here, same "manual write locks out the automatic one" shape as
   // LEADS.WinProbability/WinProbabilityManual.
@@ -16368,7 +20917,7 @@ async function handleFpExpenseDelete(request, env){
   return json({ok:true});
 }
 
-const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language';
+const FP_CONFIG_SELECT_COLS='client_id, enabled, reminders_enabled, razorpay_key_id, razorpay_webhook_secret, admin_phone_numbers, tax_reserve_pct, default_currency, reminder_template_name, reminder_template_category, reminder_template_language, business_gstin, business_state_code, default_gst_rate';
 // Shared by GET and PATCH (the latter now returns the fresh row instead of a bare {ok:true} — the
 // Settings tab's saveFpConfig assigns the response straight into fpConfig, so an {ok:true}-only
 // reply was quietly wiping every other field client-side until the next full page load).
@@ -16420,6 +20969,9 @@ async function handleFpConfigUpdate(request, env){
   if(body.reminder_template_name!==undefined){ sets.push('reminder_template_name=?'); vals.push(String(body.reminder_template_name||'').trim()||null); }
   if(body.reminder_template_category!==undefined){ sets.push('reminder_template_category=?'); vals.push(String(body.reminder_template_category||'').trim()||null); }
   if(body.reminder_template_language!==undefined){ sets.push('reminder_template_language=?'); vals.push(String(body.reminder_template_language||'').trim()||null); }
+  if(body.business_gstin!==undefined){ sets.push('business_gstin=?'); vals.push(String(body.business_gstin||'').trim().slice(0,15)||null); }
+  if(body.business_state_code!==undefined){ sets.push('business_state_code=?'); vals.push(String(body.business_state_code||'').trim().slice(0,50).toUpperCase()||null); }
+  if(body.default_gst_rate!==undefined){ sets.push('default_gst_rate=?'); vals.push(body.default_gst_rate===null||body.default_gst_rate===''?0:Math.max(0,Math.min(100,Number(body.default_gst_rate)||0))); }
   vals.push(Number(payload.cid));
   await env.DB.prepare(`UPDATE fp_config SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
   const row=await env.DB.prepare(`SELECT ${FP_CONFIG_SELECT_COLS} FROM fp_config WHERE client_id=?`).bind(Number(payload.cid)).first();
@@ -16746,12 +21298,13 @@ function fpAiNormalizeParsedExpense(parsed, defaultCurrency){
   };
 }
 async function fpAiParseExpenseText(env, text, defaultCurrency){
-  if(!env.GEMINI_API_KEY || !text) return null;
+  if((!env.AI && !env.GEMINI_API_KEY) || !text) return null;
   const today=new Date().toISOString().slice(0,10);
   const system=`You convert a small business owner's plain description of a purchase or expense into one structured bookkeeping record. They are not an accountant — never use accounting jargon back at them. Today's date is ${today}. Default currency is ${defaultCurrency} unless the text clearly states another. Respond with ONLY compact JSON, no commentary, in exactly this shape: {"name":"short title, 3-6 words","category":"one of: ${FP_EXPENSE_CATEGORIES.join(', ')}","vendor":"who was paid, or empty string","amount":number,"currency":"3-letter code","expense_date":"YYYY-MM-DD","notes":"anything extra worth keeping, or empty string"}. Resolve relative dates ("yesterday", "last Friday") against today's date. If you cannot tell the amount at all, set amount to 0.`;
-  const raw=await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
+  const raw=await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, caller:'fp-expense-parse'})
+    || await engineGeminiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:250, json:true});
   if(!raw) return null;
-  try{ return fpAiNormalizeParsedExpense(JSON.parse(raw), defaultCurrency); }catch(e){ return null; }
+  try{ return fpAiNormalizeParsedExpense(JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]), defaultCurrency); }catch(e){ return null; }
 }
 async function fpAiParseExpenseImage(env, base64, mimeType, defaultCurrency){
   if(!env.GEMINI_API_KEY || !base64) return null;
@@ -16847,13 +21400,14 @@ async function fpAiComputeSnapshotData(env, clientId){
 async function handleFpAiAsk(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
+  if(!env.AI && !env.GEMINI_API_KEY) return json({error:'AI features are not configured for this deployment yet.'}, 503);
   const body=await request.json().catch(()=>({}));
   const question=String(body.question||'').trim().slice(0,300);
   if(!question) return json({error:'question required'}, 400);
   const data=await fpAiComputeSnapshotData(env, Number(payload.cid));
   const system=`You are a friendly bookkeeping assistant for a small business owner who has no accounting background. Answer their question using ONLY the JSON data below — never invent or estimate a number that isn't in it. If the data doesn't cover what they're asking, say so plainly and suggest what to check instead. Keep the answer to 2-4 short sentences, warm and jargon-free (say "money customers owe you" not "receivables", "profit" not "net position"). All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const answer=await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220});
+  const answer=await engineCfAiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'})
+    || await engineGeminiGenerate(env, system, question, {temperature:0.3, maxOutputTokens:220, caller:'fp-ask'});
   if(!answer) return json({error:"Couldn't reach the AI assistant just now — try again in a moment."}, 502);
   return json({answer, data});
 }
@@ -16861,7 +21415,8 @@ async function handleFpAiAsk(request, env){
 async function fpAiGenerateSnapshotNarrative(env, clientId){
   const data=await fpAiComputeSnapshotData(env, clientId);
   const system=`You are a friendly bookkeeping assistant writing a one-paragraph monthly business snapshot for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, encouraging but honest tone; 3-5 short sentences; no jargon (say "money customers owe you" not "receivables", "profit" not "net position"). Mention: how much came in, how much went out, whether they're up or down, and the single biggest expense category if there is one. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const text=await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220});
+  const text=await engineCfAiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'})
+    || await engineGeminiGenerate(env, system, 'Write the snapshot now.', {temperature:0.4, maxOutputTokens:220, caller:'fp-snapshot'});
   return {text, data};
 }
 async function fpAiGetOrRefreshSnapshot(env, clientId, force){
@@ -16929,11 +21484,24 @@ async function handleFpAiForecast(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const clientId=Number(payload.cid);
+  const currentPeriod=new Date().toISOString().slice(0,7);
   const data=await fpAiComputeForecastData(env, clientId);
-  if(!env.GEMINI_API_KEY) return json({forecast:null, data, error:'AI features are not configured for this deployment yet.'});
+  // Return cached forecast when it was generated this calendar month — same pattern as fpAiGetOrRefreshSnapshot
+  const row=await env.DB.prepare(`SELECT ai_forecast_text, ai_forecast_period FROM fp_config WHERE client_id=?`).bind(clientId).first().catch(()=>null);
+  if(row?.ai_forecast_text && row.ai_forecast_period===currentPeriod){
+    return json({forecast:row.ai_forecast_text, data, cached:true});
+  }
+  if(!env.GEMINI_API_KEY) return json({forecast:row?.ai_forecast_text||null, data, error:'AI features are not configured for this deployment yet.'});
   const system=`You are a friendly bookkeeping assistant writing a short cash-flow outlook for a small business owner with no accounting background. Use ONLY the JSON data below — never invent numbers. Plain, warm, jargon-free (say "money still to come in" not "receivables", "bills still to pay" not "payables"), 2-4 short sentences, mention the money expected in before month end, what's still due to go out for fixed costs, and the rough net position that leaves. All amounts are in ${data.currency}.\n\nDATA: ${JSON.stringify(data)}`;
-  const forecast=await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200});
-  return json({forecast, data});
+  const forecast=await engineCfAiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'})
+    || await engineGeminiGenerate(env, system, 'Write the forecast now.', {temperature:0.35, maxOutputTokens:200, caller:'fp-forecast'});
+  if(forecast){
+    const now=new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO fp_config (client_id, enabled, reminders_enabled, ai_forecast_text, ai_forecast_period, updated_at) VALUES (?,1,1,?,?,?)
+      ON CONFLICT(client_id) DO UPDATE SET ai_forecast_text=excluded.ai_forecast_text, ai_forecast_period=excluded.ai_forecast_period, updated_at=excluded.updated_at`)
+      .bind(clientId, forecast, currentPeriod, now).run().catch(()=>{});
+  }
+  return json({forecast, data, cached:false});
 }
 
 // ── AI-drafted invoice chase reminders — a friendlier, tone-matched replacement for the fixed
@@ -16946,11 +21514,12 @@ function fpDefaultReminderText(due, balance){
 async function fpAiDraftReminder(env, due){
   const balance=Math.round((due.amount-due.collected_amount)*100)/100;
   const fallback=fpDefaultReminderText(due, balance);
-  if(!env.GEMINI_API_KEY) return fallback;
+  if(!env.AI && !env.GEMINI_API_KEY) return fallback;
   const overdueDays=Math.max(0, Math.floor((Date.now()-new Date(due.due_date).getTime())/86400000));
   const system=`Write one short, warm WhatsApp message to a customer reminding them a payment is due. Not robotic or threatening — this is a small business owner following up personally. Use the customer's name naturally. 1-3 sentences, end with a light thank-you. No subject line, no signature block, plain message text only.`;
   const userPrompt=`Customer: ${due.customer_name||'the customer'}\nAmount due: ${due.currency} ${balance.toFixed(2)}\nBilling period: ${due.period_key}\nDays overdue: ${overdueDays>0?overdueDays:'not yet overdue, due soon'}`;
-  const drafted=await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150});
+  const drafted=await engineCfAiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'})
+    || await engineGeminiGenerate(env, system, userPrompt, {temperature:0.6, maxOutputTokens:150, caller:'fp-reminder'});
   return drafted||fallback;
 }
 async function handleFpAiDraftReminder(request, env){
@@ -18346,7 +22915,7 @@ async function handleHospitalityMediaServe(env, key){
 // LLM call (same "cheap and predictable, can over/under-match" tradeoff as the unit-name
 // substring match), just a keyword list for "asking what's available at all" phrasing.
 const HOSPITALITY_GENERAL_ENQUIRY_RE=/\b(rooms?|units?|houseboats?|stays?|accommodations?|available|availability|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
-const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury)\b/i;
+const HOSPITALITY_RESORT_ENQUIRY_RE=/\b(resorts?|villas?|cottages?|chalets?|bungalows?|lodges?|suites?|rooms?|units?|available|availability|stays?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies)|pool|beach|luxury|photos?|pictures?|images?|gallery|pics?|view|show)\b/i;
 const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|backwaters?|canal|river|cabins?|rooms?|available|availability|stays?|nights?|options?|packages?|tariffs?|rates?|prices?|pricing|bookings?|vacanc(?:y|ies))\b/i;
 
 // Extracts a Google Drive file id from whichever share-link shape a rep pasted — the normal
@@ -18354,18 +22923,28 @@ const HOSPITALITY_HOUSEBOAT_ENQUIRY_RE=/\b(houseboats?|boats?|cruises?|floating|
 // (?id=<id>) — so the rest of this file can build its own direct-content URL regardless of which
 // one was pasted. Returns null for anything that doesn't look like a Drive link at all (a legacy
 // R2-hosted URL, or some other public URL a rep pasted instead — see hospitalitySendUnitMedia()).
-function driveFileId(url){
+export function driveFileId(url){
   if(!url) return null;
-  let m=String(url).match(/\/file\/d\/([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  m=String(url).match(/[?&]id=([a-zA-Z0-9_-]+)/); if(m) return m[1];
-  return null;
+  try{
+    const parsed=new URL(String(url).trim());
+    if(!['drive.google.com','docs.google.com'].includes(parsed.hostname.toLowerCase())) return null;
+    const m=parsed.pathname.match(/\/(?:file|document|presentation|spreadsheets)\/d\/([a-zA-Z0-9_-]+)/);
+    return m?.[1]||parsed.searchParams.get('id')?.match(/^[a-zA-Z0-9_-]+$/)?.[0]||null;
+  }catch(e){ return null; }
 }
 // Google Drive serves an HTML "Google Drive can't scan this file for viruses" interstitial
 // instead of the raw bytes for some files (mostly larger ones) unless a `confirm=` token is also
 // present. Appending `confirm=t` upfront skips that for most files without needing to scrape a
 // token first; driveFetchFile below falls back to extracting and replaying the real token from
 // the interstitial's own HTML if the file still needs it.
-function driveDirectUrl(fileId, confirmToken){
+function driveDirectUrl(fileId, confirmToken, sourceUrl=''){
+  try{
+    const parsed=new URL(String(sourceUrl||''));
+    const kind=parsed.pathname.match(/^\/(document|presentation|spreadsheets)\/d\//)?.[1];
+    if(kind==='document') return `https://docs.google.com/document/d/${fileId}/export?format=pdf`;
+    if(kind==='presentation') return `https://docs.google.com/presentation/d/${fileId}/export/pdf`;
+    if(kind==='spreadsheets') return `https://docs.google.com/spreadsheets/d/${fileId}/export?format=pdf`;
+  }catch(e){}
   return `https://drive.google.com/uc?export=download&id=${fileId}&confirm=${confirmToken||'t'}`;
 }
 // Fetches a Google Drive file's actual bytes for forwarding as a WhatsApp/Chatwoot attachment —
@@ -18373,20 +22952,27 @@ function driveDirectUrl(fileId, confirmToken){
 // account behind it) to read it at all. Returns null (never throws) on anything that didn't work
 // out — an unshared/deleted file, or a file too large for the confirm=t bypass above to satisfy —
 // so callers can just skip that one item rather than attaching garbage/an HTML page as "the photo".
-async function driveFetchFile(fileId){
+function driveResponseFilename(headers){
+  const disposition=headers?.get?.('content-disposition')||'';
+  const encoded=disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if(encoded){ try{return decodeURIComponent(encoded).replace(/[\\/\r\n"]/g,'_').slice(0,160);}catch(e){} }
+  const plain=disposition.match(/filename="?([^";]+)"?/i)?.[1]?.trim();
+  return plain?plain.replace(/[\\/\r\n"]/g,'_').slice(0,160):'';
+}
+async function driveFetchFile(fileId, sourceUrl=''){
   try{
-    let r=await fetch(driveDirectUrl(fileId));
+    let r=await fetch(driveDirectUrl(fileId,undefined,sourceUrl));
     let ct=(r.headers.get('content-type')||'');
     if(ct.includes('text/html')){
       const html=await r.text();
       const m=html.match(/confirm=([0-9A-Za-z_-]+)/);
       if(!m) return null;
-      r=await fetch(driveDirectUrl(fileId, m[1]));
+      r=await fetch(driveDirectUrl(fileId,m[1],sourceUrl));
       ct=(r.headers.get('content-type')||'');
       if(ct.includes('text/html')) return null; // still the interstitial — give up rather than send it as-is
     }
     if(!r.ok) return null;
-    return {blob:await r.blob(), contentType:ct};
+    return {blob:await r.blob(), contentType:ct, filename:driveResponseFilename(r.headers)};
   }catch(e){ return null; }
 }
 
@@ -18407,15 +22993,16 @@ function driveGuessFilename(contentType){
 // promotions/testimonials/product media, and others. Returns false (never throws) on anything that
 // didn't work — an unshared file, a bad link, or a Chatwoot send failure — so callers can treat it
 // as best-effort exactly like every other WhatsApp send in this file.
-async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption){
+export async function sendDriveMediaToChatwoot(c, convId, driveUrl, caption, filenameHint=''){
   const fileId=driveFileId(driveUrl);
   if(!fileId) return false;
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return false;
   const fd=new FormData();
   fd.append('content', caption||'');
   fd.append('message_type','outgoing'); fd.append('private','false');
-  fd.append('attachments[]', fetched.blob, driveGuessFilename(fetched.contentType));
+  const hinted=String(filenameHint||'').trim().replace(/[\\/\r\n"]/g,'_').slice(0,160);
+  fd.append('attachments[]', fetched.blob, fetched.filename||hinted||driveGuessFilename(fetched.contentType));
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   return r.ok;
 }
@@ -18432,7 +23019,7 @@ async function handleEcomDriveFileSize(request, env){
   const driveUrl=url.searchParams.get('url')||'';
   const fileId=driveFileId(driveUrl);
   if(!fileId) return json({error:'Not a recognizable Google Drive share link.'}, 400);
-  const fetched=await driveFetchFile(fileId);
+  const fetched=await driveFetchFile(fileId,driveUrl);
   if(!fetched) return json({error:'Could not read this file — make sure it\'s shared as "Anyone with the link can view."'}, 400);
   return json({size_bytes:fetched.blob.size, content_type:fetched.contentType});
 }
@@ -18506,10 +23093,43 @@ async function hospitalityChatwootText(c, convId, text){
 function hospUnitNameMatch(lower, unitName){
   const name=(unitName||'').trim().toLowerCase();
   if(name.length<4) return false;
+  // Full match: user text contains the complete unit name
   if(lower.includes(name)) return true;
-  // Truncated button tap: strip trailing "..." from customer text, check if unit name starts with it
+  // Partial match: unit name starts with what user typed ("Standard ac" → "Standard AC Room (2 Pax)")
+  if(lower.length>=4 && name.startsWith(lower)) return true;
+  // Truncated button tap: strip trailing "..." from customer text
   if(lower.endsWith('...') && name.startsWith(lower.slice(0,-3).trim())) return true;
+  // Fuzzy match: normalize both strings (remove punctuation/parens, collapse spaces) then compare
+  // Handles "premium deluxe 2pax" matching "Premium Deluxe (2 Pax)"
+  function norm(s){ return s.replace(/[^a-z0-9\s]/g,'').replace(/\s+/g,' ').trim(); }
+  const normName=norm(name);
+  const normLower=norm(lower);
+  if(normLower.length>=4 && (normName.includes(normLower) || normName.startsWith(normLower))) return true;
+  if(normLower.endsWith('...') && normName.startsWith(norm(normLower.slice(0,-3)))) return true;
+  // Word-overlap: if user typed 3+ words and ≥75% of those words appear in the unit name
+  const userWords=normLower.split(' ').filter(w=>w.length>1);
+  if(userWords.length>=2){
+    const nameWords=new Set(normName.split(' '));
+    const matched=userWords.filter(w=>nameWords.has(w)).length;
+    if(matched/userWords.length>=0.75) return true;
+  }
   return false;
+}
+
+// Returns 1-based index if the text is a numeric/ordinal selection ("1", "option 2", "2nd", etc.), else null.
+function resortOrdinalFromText(lower){
+  const s=lower.trim();
+  let m;
+  // "1", "2.", "option 1", "option 2", "#1", "no 1", "no. 2"
+  if((m=s.match(/^(?:option|no\.?|#)?\s*([1-9]\d*)\.?$/))){
+    return parseInt(m[1], 10);
+  }
+  // "option one" / "option two" etc.
+  const words={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+  if((m=s.match(/^option\s+([a-z]+)$/)) && words[m[1]]){
+    return words[m[1]];
+  }
+  return null;
 }
 
 // Returns true when a resort client's lead should receive media+description instead of an LLM reply
@@ -18527,6 +23147,10 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
+  // Photo/image keyword ("photos", "pictures", "images", "gallery", "pics") — always suppress LLM
+  // so the worker dispatches actual media or a property/unit picker. The LLM saying "here are
+  // some images" without sending any is worse than the bot showing a picker.
+  if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
   // subsequent keyword-only messages still get a normal LLM reply.
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
@@ -18546,8 +23170,16 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
     {url:unit.image_url_5, name:'photo5.jpg', isVideo:false},
     {url:unit.video_url, name:'video.mp4', isVideo:true},
     {url:unit.video_url_2, name:'video2.mp4', isVideo:true},
-  ].filter(m=>m.url);
-  if(!items.length) return false;
+  ].filter(m=>m.url && !m.isVideo).slice(0,3);
+  if(!items.length){
+    // No images configured — for resort still send the booking button so the lead has a next step
+    if(c.hospitality_style==='resort'){
+      await engineSendChatwootQuickReply(env, c, clientId, convId,
+        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
+    }
+    return false;
+  }
   // For resort units, send description text first so the lead reads context before the media burst.
   if(c.hospitality_style==='resort' && unit.description && String(unit.description).trim()){
     await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
@@ -18567,14 +23199,12 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
-    // Resort: after unit media, offer a booking/availability button so the customer can connect
-    // with the team in one tap. The button value is a generic phrase so it routes to human handover
-    // via intent classification without re-triggering unit name matching.
-    if(c.hospitality_style==='resort'){
-      await engineSendChatwootQuickReply(env, c, clientId, convId,
-        `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
-        [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
-    }
+  }
+  // Resort: always offer the booking button — even if image uploads failed the lead still needs a next step.
+  if(c.hospitality_style==='resort'){
+    await engineSendChatwootQuickReply(env, c, clientId, convId,
+      `Interested in *${unit.name}*? Connect with our team to check availability 👇`,
+      [{title:'📅 Book / Check Availability', value:'I want to book and check availability for this unit'}]);
   }
   return sentAny;
 }
@@ -18592,10 +23222,10 @@ async function handleHospitalityPropertyCreate(request, env){
   const body=await request.json().catch(()=>({}));
   if(!body.name) return json({error:'name required'}, 400);
   const now=new Date().toISOString();
-  const r=await env.DB.prepare(`INSERT INTO hospitality_properties (client_id, name, description, amenities, active, created_at) VALUES (?,?,?,?,1,?)`)
-    .bind(Number(payload.cid), String(body.name).trim().slice(0,140), String(body.description||'').trim().slice(0,1000), String(body.amenities||'').trim().slice(0,500), now)
+  const r=await env.DB.prepare(`INSERT INTO hospitality_properties (client_id, name, description, amenities, location, active, created_at) VALUES (?,?,?,?,?,1,?)`)
+    .bind(Number(payload.cid), String(body.name).trim().slice(0,140), String(body.description||'').trim().slice(0,1000), String(body.amenities||'').trim().slice(0,500), String(body.location||'').trim().slice(0,100), now)
     .run();
-  return json({Id:r.meta.last_row_id, client_id:Number(payload.cid), name:body.name, description:body.description||'', amenities:body.amenities||'', active:1, created_at:now});
+  return json({Id:r.meta.last_row_id, client_id:Number(payload.cid), name:body.name, description:body.description||'', amenities:body.amenities||'', location:body.location||'', active:1, created_at:now});
 }
 async function findHospitalityProperty(env, id){
   return await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE id=?`).bind(Number(id)).first();
@@ -18611,6 +23241,7 @@ async function handleHospitalityPropertyUpdate(request, env){
   if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).trim().slice(0,140)); }
   if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description).trim().slice(0,1000)); }
   if(body.amenities!==undefined){ sets.push('amenities=?'); vals.push(String(body.amenities).trim().slice(0,500)); }
+  if(body.location!==undefined){ sets.push('location=?'); vals.push(String(body.location).trim().slice(0,100)); }
   if(body.active!==undefined){ sets.push('active=?'); vals.push(body.active?1:0); }
   if(body.image_url_1!==undefined){ sets.push('image_url_1=?'); vals.push(body.image_url_1?String(body.image_url_1).trim().slice(0,500):null); }
   if(body.image_url_2!==undefined){ sets.push('image_url_2=?'); vals.push(body.image_url_2?String(body.image_url_2).trim().slice(0,500):null); }
@@ -18641,7 +23272,9 @@ async function handleHospitalityPropertyDelete(request, env){
 // tappable quick-reply buttons. The lead sees the resort overview first; tapping a unit name
 // triggers the specificUnit branch in engineMaybeSendHospitalityMedia which sends that unit's own
 // photos — avoids dumping every room's photo catalog at once on a general enquiry.
-async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits){
+// showRoomPicker=true (default) for explicit property selection; false for general-enquiry catalog
+// loop where a single property-picker button is sent after all properties instead.
+async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, property, allUnits, showRoomPicker=true){
   // Send property description + amenities as text before the media burst so the lead reads context first.
   const descParts=[];
   if(property.description && String(property.description).trim()) descParts.push(String(property.description).trim());
@@ -18655,7 +23288,7 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
     {url:property.image_url_5, name:'property-photo5.jpg', isVideo:false},
     {url:property.video_url_1, name:'property-video1.mp4', isVideo:true},
     {url:property.video_url_2, name:'property-video2.mp4', isVideo:true},
-  ].filter(m=>m.url);
+  ].filter(m=>m.url && !m.isVideo).slice(0,3);
   let sentAny=false;
   let captionSent=false;
   for(const item of items){
@@ -18668,16 +23301,19 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
     if(r.ok){ sentAny=true; captionSent=true; }
   }
-  // After property photos, list sub-units as quick-reply buttons so the lead can tap to see a
-  // specific unit's photos — instead of sending every room's media upfront at once.
-  // Fall back to all active units if none are linked to this property via property_id.
-  const linkedRooms=(allUnits||[]).filter(u=>u.property_id===property.id);
-  const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
-  if(rooms.length){
-    const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
-    await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which option would you like to know more about? 👇', unitButtons);
+  // After property photos, list this property's rooms as quick-reply buttons so the lead taps to see
+  // a specific room's photos. Uses Number() comparison so property_id matches whether D1 returned it
+  // as int or string. Skipped during general-enquiry catalog loop (showRoomPicker=false) where a
+  // single property-picker is sent after all properties instead.
+  if(showRoomPicker){
+    const linkedRooms=(allUnits||[]).filter(u=>Number(u.property_id)===Number(property.id));
+    const rooms=linkedRooms.length ? linkedRooms : (allUnits||[]);
+    if(rooms.length){
+      const unitButtons=rooms.map(r=>({title:r.name, value:r.name}));
+      await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+    }
   }
-  if(sentAny || rooms.length){
+  if(sentAny){
     await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_property_media_sent (client_id, lead_id, property_id, sent_at) VALUES (?,?,?,?)`)
       .bind(Number(clientId), leadId, property.id, new Date().toISOString()).run();
   }
@@ -18696,7 +23332,67 @@ async function hospitalitySendPropertyMedia(env, c, clientId, convId, leadId, pr
 //    happens to contain a word like "available".
 // "Once per session" in both modes means once per (lead, unit) ever, not re-sent on every later
 // message that happens to mention the same unit (or ask about availability) again.
-async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText){
+// hospContext = { selectedProperty, selectedUnit, selectedLocation } from the lead's stored NocoDB
+// values — passed in by handleEngineWebhook so we don't need an extra NocoDB read here.
+// Photo/image keywords always suppress the LLM (see engineCheckResortFirstInquiry) so this
+// function is the sole responder for those requests.
+
+// Sends a welcome showcase on a new lead's first message:
+//   - For each active property (in name order): up to 3 images with property name caption,
+//     followed by property-picker quick-reply buttons
+//   - Falls back to same pattern for units when no properties are configured
+// Only fires for brand-new leads (caller gates on isNewLead).
+async function hospitalitySendGreetingImages(env, c, clientId, convId, leadId){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const [{results:properties},{results:units}]=await Promise.all([
+      env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+      env.DB.prepare(`SELECT * FROM hospitality_units WHERE client_id=? AND active=1 ORDER BY name ASC`).bind(Number(clientId)).all(),
+    ]);
+    const propList=properties||[];
+    const unitList=units||[];
+
+    if(propList.length){
+      for(const prop of propList){
+        const imgUrls=[prop.image_url_1,prop.image_url_2,prop.image_url_3,prop.image_url_4,prop.image_url_5].filter(Boolean).slice(0,3);
+        let captionSent=false;
+        for(let i=0;i<imgUrls.length;i++){
+          const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
+          if(!blob) continue;
+          const fd=new FormData();
+          fd.append('content', captionSent?'':`*${prop.name}* 🏨`);
+          fd.append('message_type','outgoing'); fd.append('private','false');
+          fd.append('attachments[]', blob, `property-${i+1}.jpg`);
+          const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+            {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+          if(r.ok) captionSent=true;
+        }
+      }
+      const propButtons=propList.map(p=>({title:p.name, value:p.name}));
+      if(propButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which property would you like to explore? 👇', propButtons);
+    } else if(unitList.length){
+      for(const unit of unitList){
+        const imgUrls=[unit.image_url_1,unit.image_url_2,unit.image_url_3,unit.image_url_4,unit.image_url_5].filter(Boolean).slice(0,3);
+        let captionSent=false;
+        for(let i=0;i<imgUrls.length;i++){
+          const blob=await hospitalityFetchMediaBlob(env, imgUrls[i], false);
+          if(!blob) continue;
+          const fd=new FormData();
+          fd.append('content', captionSent?'':`*${unit.name}* 🏖️`);
+          fd.append('message_type','outgoing'); fd.append('private','false');
+          fd.append('attachments[]', blob, `unit-${i+1}.jpg`);
+          const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,
+            {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+          if(r.ok) captionSent=true;
+        }
+      }
+      const unitButtons=unitList.map(u=>({title:u.name, value:u.name}));
+      if(unitButtons.length) await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+    }
+  }catch(e){ await reportOpsError(env, 'hospitalitySendGreetingImages', e, {clientId, convId}); }
+}
+
+async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, hospContext={}){
   if(c.hospitality_enabled!=='Yes' || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -18706,11 +23402,10 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 
     if(c.hospitality_style==='resort'){
       // Resort 2-tier matching (migrations/0066_resort_properties.sql):
-      // 1. Specific room name → send that room's media (5 images + 2 videos)
+      // 1. Specific room name → always send that room's media (no dedup — lead explicitly chose it)
       const specificUnit=units.find(u=>hospUnitNameMatch(lower, u.name));
       if(specificUnit){
-        const already=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? AND unit_id=?`).bind(resolvedLeadId, specificUnit.id).first();
-        if(!already) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
+        await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, specificUnit);
         // Store selected unit in lead memory so the LLM knows their interest on the next turn
         try{
           await ensureLeadsColumns(env, ['HospSelectedUnit']);
@@ -18718,26 +23413,88 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
         }catch(e){}
         return;
       }
-      // 2. Property name → send property media + all its rooms
+      // 2. Property name → always send property media + room picker (no dedup — explicit selection)
       const {results:properties}=await env.DB.prepare(`SELECT * FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-      if(properties && properties.length){
-        const specificProp=properties.find(p=>hospUnitNameMatch(lower, p.name));
+
+      // Location detection: check if user text names a known location (e.g. "Munnar", "Vagamon").
+      // Save HospSelectedLocation to lead memory so all subsequent turns filter to that destination.
+      // This runs even when the LLM handles the destination flow — the worker captures the location
+      // from the message text for filtering future media/picker displays.
+      let selectedLocation=hospContext.selectedLocation||'';
+      if(properties && properties.length && !hospContext.selectedProperty && !hospContext.selectedUnit){
+        const {results:locationRows}=await env.DB.prepare(`SELECT DISTINCT location FROM hospitality_properties WHERE client_id=? AND active=1 AND location!=''`).bind(Number(clientId)).all();
+        if(locationRows && locationRows.length){
+          const matchedLocRow=locationRows.find(r=>hospUnitNameMatch(lower, r.location));
+          if(matchedLocRow && matchedLocRow.location!==selectedLocation){
+            selectedLocation=matchedLocRow.location;
+            try{
+              await ensureLeadsColumns(env, ['HospSelectedLocation']);
+              await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedLocation:selectedLocation}});
+            }catch(e){}
+          }
+        }
+      }
+      // Filter property list to selected location — all pickers and name-matching use this subset.
+      const filteredProps=selectedLocation
+        ? (properties||[]).filter(p=>p.location && p.location.toLowerCase()===selectedLocation.toLowerCase())
+        : (properties||[]);
+
+      // 2a. Photo/image keyword — use stored conversation context to decide what to send.
+      // Priority: already-selected unit → already-selected property → picker.
+      if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)){
+        if(hospContext.selectedUnit){
+          const unit=units.find(u=>hospUnitNameMatch(hospContext.selectedUnit.toLowerCase(), u.name));
+          if(unit){ await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit); return; }
+        }
+        if(hospContext.selectedProperty){
+          const prop=(properties||[]).find(p=>hospUnitNameMatch(hospContext.selectedProperty.toLowerCase(), p.name));
+          if(prop){ await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units, true); return; }
+        }
+        // No unit or property selected yet — ask which one they'd like to see
+        if(filteredProps.length){
+          const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which property would you like to see images of? 👇', propButtons);
+        } else if(units.length){
+          const unitButtons=units.map(u=>({title:u.name, value:u.name}));
+          await engineSendChatwootQuickReply(env, c, clientId, convId, 'Sure! Which room would you like to see images of? 👇', unitButtons);
+        }
+        return;
+      }
+
+      if(filteredProps.length){
+        const specificProp=filteredProps.find(p=>hospUnitNameMatch(lower, p.name));
         if(specificProp){
-          const already=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? AND property_id=?`).bind(resolvedLeadId, specificProp.id).first();
-          if(!already) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units);
+          // Explicit property selection: show property media + room-picker buttons, then save context
+          await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, specificProp, units, true);
+          try{
+            await ensureLeadsColumns(env, ['HospSelectedProperty']);
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(resolvedLeadId), HospSelectedProperty:specificProp.name}});
+          }catch(e){}
           return;
         }
-        // 3. General enquiry → send all properties (overview)
-        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
-        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-        if(alreadyAny) return;
-        for(const prop of properties) await hospitalitySendPropertyMedia(env, c, clientId, convId, resolvedLeadId, prop, units);
+        // When intro images are off there is no session-start greeting — send a property-picker on
+        // the first general enquiry so the customer can choose without seeing images/details yet.
+        // Picker is always filtered to the selected location so the customer sees relevant options.
+        if(c.hospitality_greeting_images==='off' && HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)){
+          const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          const alreadySentProp=await env.DB.prepare(`SELECT id FROM hospitality_property_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          if(!alreadySentMedia && !alreadySentProp){
+            const propButtons=filteredProps.map(p=>({title:p.name, value:p.name}));
+            const pickerPrompt=selectedLocation?`Which property in ${selectedLocation} would you like to explore? 👇`:'Which property would you like to explore? 👇';
+            await engineSendChatwootQuickReply(env, c, clientId, convId, pickerPrompt, propButtons);
+          }
+        }
       } else {
-        // No properties configured — fall back to sending all rooms directly
-        if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return;
-        const alreadyAny=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
-        if(alreadyAny) return;
-        for(const unit of units) await hospitalitySendUnitMedia(env, c, clientId, convId, resolvedLeadId, unit);
+        // No properties configured (or none in the selected location) — only send unit media on
+        // explicit room name match. When intro images are off, send a unit-picker on the first
+        // general enquiry so the customer can choose without seeing images/details yet.
+        if(c.hospitality_greeting_images==='off' && HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)){
+          const alreadySentMedia=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(resolvedLeadId).first();
+          if(!alreadySentMedia){
+            const unitButtons=units.map(u=>({title:u.name, value:u.name}));
+            await engineSendChatwootQuickReply(env, c, clientId, convId, 'Which room would you like to explore? 👇', unitButtons);
+          }
+        }
       }
       return;
     }
@@ -18770,13 +23527,19 @@ async function engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolve
 // (see engineMaybeSendRealEstateMedia's existence check below) rather than never again — an upsert
 // so a later send refreshes sent_at instead of being silently dropped by the (lead_id, unit_id)
 // unique index the way a plain INSERT OR IGNORE would.
-async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit){
-  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5, unit.video_url, unit.pdf_url].filter(Boolean);
+async function reSendUnitMediaToChatwoot(env, c, clientId, convId, leadId, unit, showButtons=false){
+  const items=[unit.image_url, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5].filter(Boolean).slice(0,3);
   if(!items.length) return false;
   let sentAny=false;
   for(let i=0;i<items.length;i++){
     const caption=i===0?`Here's a look at ${unit.unit_no}${unit.tower?(' — Tower '+unit.tower):''} 📸`:'';
     if(await sendDriveMediaToChatwoot(c, convId, items[i], caption)) sentAny=true;
+  }
+  if(sentAny && showButtons){
+    await engineSendChatwootQuickReply(env, c, clientId, convId,
+      `Interested in *${unit.unit_no}*? 👇`,
+      [{title:'📅 Schedule Site Visit', value:'I want to schedule a site visit'},
+       {title:'💰 Get Pricing Details', value:'I want to know the pricing details'}]);
   }
   if(sentAny){
     await env.DB.prepare(
@@ -18823,10 +23586,12 @@ async function engineMaybeSendRealEstateMedia(env, c, clientId, convId, resolved
     else if(typeMatch) candidates=units.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
     if(candidates){
       if(projectMatch && typeMatch) candidates=candidates.filter(u=>u.property_type && u.property_type.toLowerCase()===typeMatch[1].toLowerCase());
-      for(const unit of candidates.slice(0,5)){
+      const candidateSlice=candidates.slice(0,5);
+      for(let ci=0;ci<candidateSlice.length;ci++){
+        const unit=candidateSlice[ci];
         const already=await env.DB.prepare(`SELECT id FROM re_media_sent WHERE lead_id=? AND unit_id=? AND sent_at>?`).bind(resolvedLeadId, unit.id, resendCutoff).first();
         if(already) continue;
-        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit);
+        await reSendUnitMediaToChatwoot(env, c, clientId, convId, resolvedLeadId, unit, ci===0);
       }
       return;
     }
@@ -19077,2261 +23842,7 @@ async function handleHospitalityStats(request, env){
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════════════════════════════
-   MARKETING STUDIO MODULE (SETUP.md "Marketing Studio module") — standalone short-form video
-   repurposing tool: upload a long video, auto-transcribe it, edit captions, pick a caption
-   style, render a vertical/square/landscape clip, send it out. A genuinely different module from
-   the existing WhatsApp/Email "Campaigns" marketing tools (broadcast.html/email-marketing.html)
-   — those send messages, this produces video assets — so it gets its own standalone page
-   (frontend/marketing-studio.html) and its own D1 tables (migrations/0015_marketing_studio.sql),
-   same "new data shape, no existing NocoDB reader" reasoning as ecom_categories/review_config.
-
-   Gating: like the other optional tabs (feat_campaigns_enabled etc., see
-   setupFeatureTabToggle in dashboard.html), visibility is controlled by a Clients field —
-   `feat_marketing_studio_enabled`. Unlike those, this one defaults OFF (only 'Yes' counts as
-   enabled, not "anything other than 'No'") — it's metered (see marketing_minutes_used/limit
-   below) and depends on an operator-configured external render pipeline, so it shouldn't
-   silently light up for every existing client the moment this ships. As with every feat_*
-   flag in this codebase, the gate is frontend-only (the tab/nav button is hidden) — routes below
-   don't re-check it, same as /email/*, /accounting/*, etc.
-
-   What actually runs inside this Worker vs. what's delegated out, and why:
-   - Upload, project/job bookkeeping, caption editing, style presets, usage metering, and
-     WhatsApp delivery are all real, self-contained Worker code (D1 + R2, no external service).
-   - Transcription is a single HTTP call to an OpenAI-Whisper-compatible endpoint
-     (MARKETING_TRANSCRIBE_API_URL/KEY) — also genuinely runs here, no external orchestration.
-   - Rendering (crop to aspect, burn in captions, silence-cut, auto-zoom, background music +
-     ducking, watermark) is NOT something a Cloudflare Worker can do — there's no ffmpeg, no GPU,
-     and a 9:16 export with caption burn-in is minutes of CPU work, far past what Workers allow
-     per request. handleMarketingRenderStart instead posts a full render spec to an
-     operator-configured external pipeline (MARKETING_RENDER_WEBHOOK_URL — e.g. a small
-     ffmpeg/Remotion service, or Shotstack/Creatomate behind an n8n workflow, same "engine
-     outside this repo" shape the WhatsApp bot's n8n engine already uses) and that pipeline calls
-     back into POST /marketing/webhook/render-complete when done. Until that env var is set,
-     renders fail immediately with a clear error instead of hanging — see SETUP.md for the exact
-     request/callback contract an operator needs to implement on the other end. ── */
-
-// Videos upload directly browser -> R2 via a presigned PUT URL (marketingR2PresignPutUrl below),
-// NOT through this Worker's own request body — Cloudflare Workers cap request bodies around
-// 100 MB on most plans, a platform ceiling no amount of application code can raise. Presigned R2
-// uploads bypass that entirely; this max is a real, chosen application limit instead (R2 itself
-// handles single-PUT objects up to 5 GB).
-const MARKETING_SOURCE_MAX_BYTES = 2*1024*1024*1024;
-const MARKETING_VIDEO_MIME_EXT = {'video/mp4':'mp4', 'video/quicktime':'mov', 'video/webm':'webm', 'video/x-m4v':'m4v'};
-const MARKETING_RESOLUTIONS = {'9:16':'1080x1920', '1:1':'1080x1080', '16:9':'1920x1080'};
-// Export quality — always MP4 (the only format the render pipeline produces); this is the encode
-// speed/quality tradeoff, matching render-pipeline/lib/filtergraph.js's QUALITY_PRESETS exactly.
-const MARKETING_QUALITY_LEVELS = ['draft', 'standard', 'high'];
-
-// Built-in caption style presets (#7 "6-10 caption style presets") — static, no table needed.
-// Custom per-client presets ("brand style saving", #8) live in marketing_brand_styles instead,
-// referenced from a project as style_id:'custom:<id>'.
-const MARKETING_STYLE_PRESETS = [
-  {id:'bold-pop', name:'Bold Pop', font:'Montserrat, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFE600', bg_style:'none', position:'bottom', animation:'pop'},
-  {id:'clean-minimal', name:'Clean Minimal', font:'Inter, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'none', position:'bottom', animation:'none'},
-  {id:'neon-highlight', name:'Neon Highlight', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#39FF14', bg_style:'none', position:'middle', animation:'word-highlight'},
-  {id:'karaoke-yellow', name:'Karaoke Yellow', font:'"Archivo Black", sans-serif', text_color:'#FFFFFF', highlight_color:'#FFD400', bg_style:'none', position:'bottom', animation:'word-highlight'},
-  {id:'boxed-caption', name:'Boxed Caption', font:'Inter, sans-serif', text_color:'#111111', highlight_color:'#111111', bg_style:'pill', bg_color:'#FFFFFF', position:'bottom', animation:'none'},
-  {id:'classic-white', name:'Classic White', font:'Helvetica, Arial, sans-serif', text_color:'#FFFFFF', highlight_color:'#FFFFFF', bg_style:'box', bg_color:'rgba(0,0,0,0.55)', position:'bottom', animation:'none'},
-  {id:'gradient-glow', name:'Gradient Glow', font:'Poppins, sans-serif', text_color:'#FFFFFF', highlight_color:'#FF3CAC', bg_style:'none', position:'top', animation:'pop'},
-  {id:'manglish-casual', name:'Manglish Casual', font:'"Baloo Chettan 2", sans-serif', text_color:'#FFFFFF', highlight_color:'#25D366', bg_style:'pill', bg_color:'rgba(0,0,0,0.6)', position:'bottom', animation:'word-highlight'},
-];
-
-// Auto-Edit Templates (SETUP.md "Marketing Studio module — Auto-Edit Templates & Cue
-// Suggestions") — bundled, sensible defaults for the render options an operator's pipeline
-// already understands (silence_cut/auto_zoom/background_music, all pre-existing spec fields) plus
-// broll_density, a new hint the pipeline can use if it auto-generates its own B-roll beyond the
-// suggested cues below. Purely static config, same zero-cost "no table needed" shape as
-// MARKETING_STYLE_PRESETS — picking one just pre-fills the existing per-project toggles, still
-// overridable afterwards.
-const MARKETING_AUTOEDIT_PRESETS = [
-  {id:'talking-head', name:'Talking Head — Clean', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'highlight-reel', name:'Hype / Highlight Reel', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'tutorial', name:'Tutorial / How-To', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
-  {id:'testimonial', name:'Testimonial', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'product-ad', name:'Product Ad', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'vlog', name:'Vlog / Storytime', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'medium'},
-  {id:'announcement', name:'News / Announcement', silence_cut:true, auto_zoom:false, background_music:'cinematic', broll_density:'low'},
-  {id:'raw', name:'Raw — No Auto-Edit', silence_cut:false, auto_zoom:false, background_music:null, broll_density:'none'},
-  {id:'sales-pitch', name:'Sales Pitch / Offer', silence_cut:true, auto_zoom:true, background_music:'upbeat', broll_density:'high'},
-  {id:'faq-explainer', name:'FAQ / Explainer', silence_cut:true, auto_zoom:false, background_music:'chill', broll_density:'low'},
-  {id:'before-after', name:'Before & After / Transformation', silence_cut:true, auto_zoom:true, background_music:'cinematic', broll_density:'medium'},
-  {id:'event-recap', name:'Event Recap', silence_cut:false, auto_zoom:true, background_music:'upbeat', broll_density:'medium'},
-  {id:'interview', name:'Interview / Podcast Clip', silence_cut:true, auto_zoom:false, background_music:null, broll_density:'low'},
-  {id:'unboxing', name:'Unboxing / Demo', silence_cut:true, auto_zoom:true, background_music:'chill', broll_density:'high'},
-];
-
-// Cue suggestion dictionary — deliberately a static keyword→cue-type table, not a model call:
-// scanning the transcript this already has (free — no external request) against ~30 common
-// short-form-video trigger words costs nothing per suggestion, unlike an LLM pass per project.
-// (An AI-enhanced version of this is a reasonable future upgrade — reuse the GEMINI_API_KEY this
-// app already shares with the Conversation Engine for a single cheap call over the transcript
-// text — but wasn't added here so this feature stays exactly $0 marginal cost by default.)
-const MARKETING_CUE_KEYWORDS = [
-  {re:/\b(money|price|cost|discount|offer|sale|cash|₹|\$|rupees|dollars)\b/i, type:'broll', tag:'money', label:'Money / pricing shot'},
-  {re:/\b(fast|quick|quickly|speed|hurry|instant|instantly)\b/i, type:'broll', tag:'speed', label:'Fast-motion / speed shot'},
-  {re:/\b(team|office|work|staff|company|employees)\b/i, type:'broll', tag:'office', label:'Team / office shot'},
-  {re:/\b(phone|call|whatsapp|message|chat|text)\b/i, type:'broll', tag:'phone', label:'Phone / messaging shot'},
-  {re:/\b(location|city|travel|drive|road|journey)\b/i, type:'broll', tag:'location', label:'Location / travel shot'},
-  {re:/\b(product|unbox|unboxing|package|delivery|order)\b/i, type:'broll', tag:'product', label:'Product close-up shot'},
-  {re:/\b(customer|client|people|crowd|everyone)\b/i, type:'broll', tag:'people', label:'Customers / people shot'},
-  {re:/\b(wow|amazing|incredible|awesome|unbelievable)\b/i, type:'sfx', tag:'sparkle', label:'Sparkle / positive sting'},
-  {re:/\b(warning|careful|problem|mistake|don't|stop)\b/i, type:'sfx', tag:'alert', label:'Alert / negative sting'},
-  {re:/\b(boom|bang|hit|impact|crash)\b/i, type:'sfx', tag:'impact', label:'Impact hit'},
-  {re:/\b(new|launch|launching|introducing|announcing|announcement)\b/i, type:'sfx', tag:'whoosh', label:'Whoosh transition'},
-  {re:/\b(click|tap|swipe|select|choose)\b/i, type:'sfx', tag:'click', label:'UI click sound'},
-  {re:/\b(free|win|winner|prize|gift|giveaway)\b/i, type:'vfx', tag:'flash', label:'Flash / highlight burst'},
-  {re:/\b(compare|versus|vs\.?|before|after)\b/i, type:'vfx', tag:'split', label:'Split-screen compare'},
-  {re:/\b(number one|best|top|#1|guaranteed)\b/i, type:'vfx', tag:'badge', label:'Badge / callout overlay'},
-];
-
-// Pure function — words from an already-fetched transcript in, cue suggestions out, no I/O and
-// no cost. Caps at 20 cues and enforces a minimum gap between them so a keyword-dense transcript
-// doesn't produce an unusable wall of suggestions; every suggestion is accepted by default and
-// meant to be reviewed/pruned in the editor before it's ever sent to the render pipeline.
-function marketingSuggestCuesHeuristic(transcript){
-  const words=transcript?.words||[];
-  const MIN_GAP_SEC=2.5, MAX_CUES=20;
-  const cues=[];
-  let lastCueEnd=-Infinity;
-  for(const w of words){
-    if(cues.length>=MAX_CUES) break;
-    const match=MARKETING_CUE_KEYWORDS.find(k=>k.re.test(w.word||''));
-    if(!match) continue;
-    const start=Number(w.start)||0;
-    if(start-lastCueEnd<MIN_GAP_SEC) continue;
-    const end=(Number(w.end)||start)+1.2;
-    cues.push({start:Math.max(0, start-0.3), end, type:match.type, tag:match.tag, label:match.label, keyword:w.word, accepted:true});
-    lastCueEnd=end;
-  }
-  return cues;
-}
-
-function marketingSourceKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/source.${ext}`; }
-
-function marketingSerializeProject(row){
-  if(!row) return null;
-  const parseJson=(s)=>{ if(!s) return null; try{ return JSON.parse(s); }catch(e){ return null; } };
-  return {
-    id:row.id, title:row.title, source_key:row.source_key,
-    source_duration_sec:row.source_duration_sec, target_aspect:row.target_aspect,
-    trim_start_sec:row.trim_start_sec, trim_end_sec:row.trim_end_sec, language:row.language,
-    transcript:parseJson(row.transcript_json), captions:parseJson(row.captions_json),
-    style_id:row.style_id, style_overrides:parseJson(row.style_overrides_json)||{},
-    status:row.status, output_key:row.output_key, output_url:row.output_url,
-    output_duration_sec:row.output_duration_sec, watermarked:!!row.watermarked,
-    template_id:row.template_id||null, template_vars:parseJson(row.template_vars_json),
-    cues:parseJson(row.cues_json)||[],
-    scenes:parseJson(row.scenes_json)||[],
-    // The Auto-edit step's toggle selections, persisted so they're still there next time this
-    // project is opened (previously only lived transiently in the browser tab) — see
-    // handleMarketingAutoeditOptionsSave.
-    autoedit_options:parseJson(row.autoedit_options_json)||{},
-    created_at:row.created_at, updated_at:row.updated_at,
-  };
-}
-
-// Word-level timestamps aren't guaranteed by every OpenAI-Whisper-compatible provider even with
-// timestamp_granularities=word requested (some self-hosted Whisper front-ends only return
-// segment-level timing) — falls back to splitting each segment's text evenly across its
-// duration so the caption editor always has *something* word-grained to show, flagged
-// `approximate:true` so the frontend can visually distinguish an estimate from a real timestamp.
-function marketingWordsFromTranscription(data){
-  // approximate propagated (not just start/end/word) — render-pipeline's Sarvam path
-  // (lib/sarvamTranscribe.js) can itself fall back to evenly-split timing per chunk and flags
-  // those words approximate:true, same convention as the segments-fallback branch below; Whisper
-  // responses never set it, so this is a no-op for the existing path.
-  if(Array.isArray(data.words) && data.words.length) return data.words.map(w=>({word:w.word, start:w.start, end:w.end, ...(w.approximate?{approximate:true}:{})}));
-  const words=[];
-  (data.segments||[]).forEach(seg=>{
-    const tokens=(seg.text||'').trim().split(/\s+/).filter(Boolean);
-    if(!tokens.length) return;
-    const span=(Number(seg.end)-Number(seg.start))/tokens.length;
-    tokens.forEach((t,i)=>words.push({word:t, start:seg.start+i*span, end:seg.start+(i+1)*span, approximate:true}));
-  });
-  return words;
-}
-
-// revertStatus:null means "don't touch the project row at all" (a preview job failing shouldn't
-// revert the project's real status) — distinct from omitting it, which still falls back to
-// 'uploaded' for every existing caller.
-async function marketingFailJob(env, jobId, projectId, error, revertStatus){
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='failed', error=?, updated_at=? WHERE id=?`).bind(String(error||'Failed').slice(0,500), now, jobId).run();
-  if(revertStatus!==null) await env.DB.prepare(`UPDATE marketing_projects SET status=?, updated_at=? WHERE id=?`).bind(revertStatus||'uploaded', now, projectId).run();
-}
-
-async function hmacSha256Base64(secret, body){
-  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)));
-}
-async function verifyHmacSignature(secret, body, sigHeader){
-  if(!sigHeader) return false;
-  const expected=await hmacSha256Base64(secret, body);
-  if(expected.length!==sigHeader.length) return false;
-  let diff=0; for(let i=0;i<expected.length;i++) diff|=expected.charCodeAt(i)^sigHeader.charCodeAt(i);
-  return diff===0;
-}
-
-/* ── R2 presigned uploads (large-video direct-to-R2 upload, bypassing this Worker's own
-   ~100 MB-on-most-plans request-body ceiling — see MARKETING_SOURCE_MAX_BYTES above). AWS
-   SigV4 query-string ("presigned URL") signing, implemented directly against Web Crypto (no
-   dependency — Workers can't bundle npm packages like aws4fetch the way render-pipeline's Node
-   service can). Requires R2 API-token credentials as Worker secrets (R2_ACCOUNT_ID/
-   R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET_NAME) — separate from the native env.MARKETING_MEDIA
-   binding, which has no presign capability of its own; reuse the same R2 API token
-   render-pipeline already has, just also added as Worker secrets. Verified: the HMAC-chain
-   signing-key derivation was cross-checked byte-for-byte against Node's independent `crypto`
-   module for a fixed test vector, and the canonical-request/query-string structure was confirmed
-   against AWS's own documented format for S3 presigned URLs. NOT verified: an actual signed
-   request against live R2 (no R2 credentials available in the dev sandbox this was built in) —
-   test a real upload once R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY are set. ── */
-function marketingR2Configured(env){
-  return !!(env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_BUCKET_NAME);
-}
-function marketingToHex(bytes){ return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-async function marketingHmacRaw(keyBytes, msg){
-  const key=await crypto.subtle.importKey('raw', keyBytes, {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, typeof msg==='string'?new TextEncoder().encode(msg):msg);
-  return new Uint8Array(sig);
-}
-async function marketingSha256Hex(str){
-  const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-  return marketingToHex(new Uint8Array(buf));
-}
-async function marketingR2SigningKey(secretKey, dateStamp, region, service){
-  const kDate=await marketingHmacRaw(new TextEncoder().encode('AWS4'+secretKey), dateStamp);
-  const kRegion=await marketingHmacRaw(kDate, region);
-  const kService=await marketingHmacRaw(kRegion, service);
-  return await marketingHmacRaw(kService, 'aws4_request');
-}
-// method: 'PUT' (upload) or 'GET' (used nowhere yet, but the same signer works for either).
-async function marketingR2PresignUrl(env, method, key, expiresSec){
-  const region='auto', service='s3';
-  const host=`${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-  const now=new Date();
-  const amzDate=now.toISOString().replace(/[:-]|\.\d{3}/g,''); // YYYYMMDDTHHMMSSZ
-  const dateStamp=amzDate.slice(0,8);
-  const credentialScope=`${dateStamp}/${region}/${service}/aws4_request`;
-  // R2 keys here are always plain marketing/<clientId>/<projectId>/... segments (no reserved
-  // characters) — encodeURIComponent per-segment then rejoined with literal '/' is exactly what
-  // S3/R2's canonical URI wants.
-  const canonicalUri='/'+env.R2_BUCKET_NAME+'/'+key.split('/').map(encodeURIComponent).join('/');
-  const queryParams={
-    'X-Amz-Algorithm':'AWS4-HMAC-SHA256',
-    'X-Amz-Credential':`${env.R2_ACCESS_KEY_ID}/${credentialScope}`,
-    'X-Amz-Date':amzDate,
-    'X-Amz-Expires':String(expiresSec),
-    'X-Amz-SignedHeaders':'host',
-  };
-  const canonicalQueryString=Object.keys(queryParams).sort().map(k=>`${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join('&');
-  const canonicalHeaders=`host:${host}\n`;
-  const canonicalRequest=`${method}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\nhost\nUNSIGNED-PAYLOAD`;
-  const stringToSign=`AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${await marketingSha256Hex(canonicalRequest)}`;
-  const signingKey=await marketingR2SigningKey(env.R2_SECRET_ACCESS_KEY, dateStamp, region, service);
-  const signature=marketingToHex(await marketingHmacRaw(signingKey, stringToSign));
-  return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
-}
-
-// Bumped by hand on every Marketing Studio deploy — NOT a git SHA (Workers don't have build-time
-// access to one). Exists purely as a fast, visual "is the Worker I'm hitting actually running the
-// code I just deployed" check, surfaced in the frontend header — see marketing-studio.html's
-// loadUsage(). Real, repeated confusion from deploy sequencing (stale local git checkout, D1
-// migrations run before pulling the migration files, Coolify restart vs rebuild) is what this is
-// for: one glance instead of re-deriving "did this actually take" from scratch each time.
-const MARKETING_BUILD_TAG='2026-07-27-autosave-fonts';
-async function handleMarketingUsage(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  return json({used, limit, remaining:Math.max(0, limit-used), build:MARKETING_BUILD_TAG});
-}
-
-// Client-level API keys (SETUP.md "Marketing Studio module — Client API keys") — Pexels/Pixabay/
-// Freesound/fal.ai default to the render pipeline's own shared Coolify env vars; a client can
-// optionally bring their own instead (e.g. so their own fal.ai spend bills to them). Masked on
-// read (only the last 4 characters, like every "is this set" UI that doesn't need to show a real
-// secret back) — handleMarketingRenderStart/Preview/DetectScenes read the real values straight
-// from D1 server-side, this route is display-only.
-const MARKETING_CLIENT_KEY_FIELDS=['pexels_api_key','pixabay_api_key','freesound_api_key','fal_api_key'];
-function marketingMaskKey(k){ return k ? '••••'+k.slice(-4) : null; }
-async function handleMarketingSettingsGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  const keys={};
-  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ keys[f]=marketingMaskKey(row?.[f]); });
-  return json({keys});
-}
-async function handleMarketingSettingsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  const values=MARKETING_CLIENT_KEY_FIELDS.map(f=>{
-    const v=body[f];
-    return v===undefined?undefined:(String(v).trim()||null); // empty string clears the key back to "use shared default"
-  });
-  if(existing){
-    const sets=[], vals=[];
-    MARKETING_CLIENT_KEY_FIELDS.forEach((f,i)=>{ if(values[i]!==undefined){ sets.push(`${f}=?`); vals.push(values[i]); } });
-    if(sets.length){
-      sets.push('updated_at=?'); vals.push(now); vals.push(Number(payload.cid));
-      await env.DB.prepare(`UPDATE marketing_client_settings SET ${sets.join(', ')} WHERE client_id=?`).bind(...vals).run();
-    }
-  } else {
-    await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), values[0]??null, values[1]??null, values[2]??null, values[3]??null, now, now).run();
-  }
-  return json({ok:true});
-}
-// Real values (not masked) — used server-side when building a render/preview/scene-detect
-// request to the render pipeline, never returned to the frontend.
-async function marketingGetClientKeys(env, clientId){
-  const row=await env.DB.prepare(`SELECT pexels_api_key, pixabay_api_key, freesound_api_key, fal_api_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
-  if(!row) return {};
-  const out={};
-  MARKETING_CLIENT_KEY_FIELDS.forEach(f=>{ if(row[f]) out[f]=row[f]; });
-  return out;
-}
-
-/* ── CONTENT CALENDAR (SETUP.md "Marketing Studio module — Content Calendar") — plan social posts
-   (title/caption/schedule date) ahead of time. Image generation/editing and Instagram
-   auto-posting are separate, later increments (see marketing_content_posts' image_key/
-   approved_at/ig_media_id columns, already in the schema for them) — this slice is just the
-   planning layer: create/list/edit/delete a post, and the "Generate a week" button below that
-   fans one topic out into a week of draft ideas in a single call. Scheduling a post (setting
-   scheduled_at) best-effort pushes it onto the client's EXISTING Google Calendar connection
-   (gcal_refresh_token/gcal_calendar_id, "Google Calendar Sync" module above) — no second OAuth
-   flow — so a planned post shows up on a rep's phone the same way a Task or Calendar Event
-   already does. That connection is one-way (Leadvyne → Google); editing the event directly in
-   Google Calendar does not reschedule the post here. */
-function marketingSerializeContentPost(env, row){
-  if(!row) return null;
-  return {
-    id:row.id, title:row.title, caption:row.caption, image_key:row.image_key||null,
-    image_url:row.image_key?mediaUrlFor(env,row.image_key):null,
-    platform:row.platform, status:row.status, scheduled_at:row.scheduled_at,
-    approved:!!row.approved_at, gcal_event_id:row.gcal_event_id||null, ig_media_id:row.ig_media_id||null,
-    error:row.error||null, created_at:row.created_at, updated_at:row.updated_at,
-  };
-}
-
-async function handleContentPostsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE client_id=? ORDER BY (scheduled_at IS NULL), scheduled_at ASC, created_at DESC LIMIT 500`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(r=>marketingSerializeContentPost(env,r))});
-}
-
-async function handleContentPostCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const title=(body.title||'').trim().slice(0,120)||null;
-  const caption=(body.caption||'').trim().slice(0,2200)||null;
-  const scheduledAt=body.scheduled_at||null;
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, caption, 'instagram', scheduledAt?'scheduled':'draft', scheduledAt, now, now).run();
-  const id=result.meta.last_row_id;
-  if(scheduledAt) await marketingContentSyncGcal(env, payload.cid, id);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-async function handleContentPostUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!existing) return json({error:'Not found'}, 404);
-  if(existing.status==='posted') return json({error:'This post has already gone out — it cannot be edited.'}, 400);
-  const sets=[], vals=[];
-  if(body.title!==undefined){ sets.push('title=?'); vals.push((body.title||'').trim().slice(0,120)||null); }
-  if(body.caption!==undefined){ sets.push('caption=?'); vals.push((body.caption||'').trim().slice(0,2200)||null); }
-  let scheduleChanged=false;
-  if(body.scheduled_at!==undefined){
-    sets.push('scheduled_at=?'); vals.push(body.scheduled_at||null);
-    sets.push('status=?'); vals.push(body.scheduled_at?'scheduled':'draft');
-    scheduleChanged=true;
-  }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_content_posts SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  if(scheduleChanged) await marketingContentSyncGcal(env, payload.cid, id);
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-async function handleContentPostDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!post) return json({error:'Not found'}, 404);
-  if(post.gcal_event_id){
-    const c=await getClientById(env, payload.cid);
-    if(c) await gcalDeleteEvent(env, c, post.gcal_event_id);
-  }
-  await env.DB.prepare(`DELETE FROM marketing_content_posts WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-// Best-effort — silently no-ops if this client never connected Google Calendar (gcalUpsertEvent/
-// gcalDeleteEvent already do the same), same as every other caller of that module.
-async function marketingContentSyncGcal(env, clientId, postId){
-  const c=await getClientById(env, clientId);
-  if(!c?.gcal_refresh_token||!c?.gcal_calendar_id) return;
-  const post=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(postId).first();
-  if(!post) return;
-  if(!post.scheduled_at){
-    if(post.gcal_event_id){ await gcalDeleteEvent(env, c, post.gcal_event_id); await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=NULL WHERE id=?`).bind(postId).run(); }
-    return;
-  }
-  const [date, time]=String(post.scheduled_at).split('T');
-  const gcalEventId=await gcalUpsertEvent(env, c, {gcalEventId:post.gcal_event_id||null, title:`📲 ${post.title||'Instagram post'}`, notes:post.caption||'', date, time:time?time.slice(0,5):null, allDay:!time});
-  if(gcalEventId) await env.DB.prepare(`UPDATE marketing_content_posts SET gcal_event_id=? WHERE id=?`).bind(gcalEventId, postId).run();
-}
-
-// "Generate a week" — one topic fans out into a week of DRAFT post ideas (title + caption +
-// hashtags, one per day), scheduled but with no image yet. Deliberately drafts only: no fal.ai
-// image cost is spent until each idea is individually approved later (a separate increment), so
-// generating a whole week costs one shared Gemini call, not N paid image generations up front.
-// Same shared-key, heuristic-fallback pattern as handleMarketingSuggestCaption above — no
-// client-supplied key needed (this is text, not the paid fal.ai image path).
-async function handleContentGenerateWeek(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const topic=(body.topic||'').trim().slice(0,300);
-  if(!topic) return json({error:'topic required'}, 400);
-  const days=Math.min(14, Math.max(1, Number(body.days)||7));
-  const startDate=body.start_date&&/^\d{4}-\d{2}-\d{2}$/.test(body.start_date) ? body.start_date : new Date(Date.now()+86400000).toISOString().slice(0,10);
-
-  const raw=await engineGeminiGenerate(env,
-    `You are a social media content planner. Given a topic/theme, propose exactly ${days} distinct Instagram post ideas spread across ${days} consecutive days (one per day, in order). Reply with ONLY compact JSON: {"posts":[{"title":"...", "caption":"...", "hashtags":["...","..."]}, ...]} with exactly ${days} items in that array, in day order. title: a short internal label (not shown to followers), max 60 chars. caption: 1-3 sentences, no hashtags inside it, matching the topic's tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.`,
-    topic, {json:true, maxOutputTokens:200*days});
-  let ideas=null;
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(Array.isArray(parsed?.posts) && parsed.posts.length) ideas=parsed.posts;
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  if(!ideas){
-    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
-    ideas=Array.from({length:days}, (_,i)=>({title:`${topic} — day ${i+1}`, caption:`${topic} (day ${i+1} of ${days}).`, hashtags:['smallbusiness','instagram']}));
-  }
-  ideas=ideas.slice(0,days);
-
-  const c=await getClientById(env, payload.cid);
-  const now=new Date().toISOString();
-  const created=[];
-  for(let i=0;i<ideas.length;i++){
-    const idea=ideas[i]||{};
-    const date=new Date(new Date(startDate+'T00:00:00Z').getTime()+i*86400000).toISOString().slice(0,10);
-    const title=String(idea.title||`${topic} — day ${i+1}`).trim().slice(0,120);
-    const hashtags=(Array.isArray(idea.hashtags)?idea.hashtags:[]).map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8);
-    const caption=[String(idea.caption||'').trim(), hashtags.length?hashtags.map(h=>'#'+h).join(' '):''].filter(Boolean).join('\n\n').slice(0,2200);
-    const scheduledAt=`${date}T10:00`;
-    const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, scheduled_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), title, caption, 'instagram', 'scheduled', scheduledAt, now, now).run();
-    const id=result.meta.last_row_id;
-    if(c?.gcal_refresh_token&&c?.gcal_calendar_id) await marketingContentSyncGcal(env, payload.cid, id);
-    const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(id).first();
-    created.push(marketingSerializeContentPost(env,row));
-  }
-  return json({ok:true, source:raw?'ai':'heuristic', list:created});
-}
-
-// "Turn a customer into a post" — source a testimonial/case-study draft straight from a closed
-// deal record (a Leads row whose Stage is 'won'/'converted', same literal values Human Deals'
-// one-click "✅ Won" button writes — see dashboard.html's isWonLead/HD_OUTCOME_STAGE) instead of a
-// free-text topic. Same lazy-image-later shape as "Generate a week" above: lands as a text-only
-// draft, no fal.ai cost until an image is added and the post is approved.
-// Deliberately anonymized by default — the generated CAPTION never includes the customer's real
-// name/phone (only the internal `title`, never shown to followers, may reference them, purely so
-// the marketer can tell drafts apart) — this endpoint has no way to know consent was given to name
-// a real customer publicly, so it doesn't assume it. A marketer with actual consent can still type
-// the name into the caption by hand afterward from the Edit form.
-async function handleContentCustomersList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const where=`(ClientId,eq,${Number(payload.cid)})~and((Stage,eq,won)~or(Stage,eq,converted))`;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-ClosedAt`);
-  if(!r.ok) return json({list:[]});
-  const data=await r.json().catch(()=>({}));
-  const list=(data?.list||[]).map(l=>({id:l.Id, name:l.Name||'(unnamed)', interested_product:l.InterestedProduct||'', deal_value:l.DealValue||null, closed_at:l.ClosedAt||null}));
-  return json({list});
-}
-
-async function handleContentFromCustomer(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const leadId=Number(body.lead_id);
-  if(!leadId) return json({error:'lead_id required'}, 400);
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
-  if(!leadR.ok) return json({error:'Customer record not found'}, 404);
-  const lead=await leadR.json().catch(()=>({}));
-  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Customer record not found'}, 404);
-  if(!(lead.Stage==='won'||lead.Stage==='converted')) return json({error:'This lead is not a closed/won deal.'}, 400);
-
-  const facts=[
-    lead.InterestedProduct?`Interested in / bought: ${lead.InterestedProduct}`:null,
-    lead.DealValue?`Deal value: ${lead.DealValue}`:null,
-    lead.ClosedAt?`Closed: ${new Date(lead.ClosedAt).toLocaleDateString()}`:null,
-  ].filter(Boolean).join('\n');
-  const userText=facts||'A customer recently closed a deal with us.';
-
-  const raw=await engineGeminiGenerate(env,
-    'You write a short Instagram case-study/social-proof caption celebrating a real customer win, given a few internal facts about the deal. NEVER include the customer\'s real name, phone, or any other identifying detail — refer to them generically ("a local business", "one of our clients", "a customer looking for [product]"). Reply with ONLY compact JSON: {"title":"...", "caption":"...", "hashtags":["...","..."]}. title: a short internal label (not shown to followers), max 60 chars. caption: 2-4 sentences, upbeat, no hashtags inside it. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
-    userText, {json:true, maxOutputTokens:250});
-  let title=null, caption=null, hashtags=[];
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(parsed && typeof parsed.caption==='string'){ title=parsed.title; caption=parsed.caption; hashtags=Array.isArray(parsed.hashtags)?parsed.hashtags:[]; }
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  if(!caption){
-    // Heuristic fallback — no GEMINI_API_KEY configured, or the model didn't return valid JSON.
-    caption=`Another happy customer! ${lead.InterestedProduct?`Proud to have helped with ${lead.InterestedProduct}.`:'Thank you for trusting us.'}`;
-    hashtags=['customerstory','testimonial','smallbusiness'];
-  }
-  title=(title||`Customer story — ${lead.Name||('lead #'+leadId)}`).toString().slice(0,120);
-  const hashtagLine=hashtags.map(h=>'#'+String(h).replace(/^#/,'').trim()).filter(h=>h.length>1).join(' ');
-  const fullCaption=[String(caption).trim(), hashtagLine].filter(Boolean).join('\n\n').slice(0,2200);
-
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_content_posts (client_id, title, caption, platform, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, fullCaption, 'instagram', 'draft', now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, source:raw?'ai':'heuristic', post:marketingSerializeContentPost(env,row)});
-}
-
-/* ── IMAGE STUDIO (SETUP.md "Marketing Studio module — Image Studio") ─────────────────────────
-   Two distinct kinds of operation, deliberately NOT unified into one "AI does everything" call:
-   - Generative work that genuinely needs an ML model (fal.ai, paid, client-supplied key only —
-     same policy as AI B-roll, see marketing_client_settings.fal_api_key): text-to-image,
-     image-to-image restyling, background removal.
-   - Deterministic pixel work that doesn't need a model at all — logo watermarking, compositing a
-     cutout onto a solid brand color, and burning in a headline/subtext — delegated to the render
-     pipeline's new POST /image-compose (render-pipeline/lib/imageCompose.js), a plain ffmpeg
-     filter pass. Free (no fal spend), pixel-exact, and for in-image TEXT specifically actually
-     MORE reliable than a diffusion model, which is notoriously bad at rendering legible text.
-   NOT verified against a live fal.ai key or a live render-pipeline deploy in this sandbox (same
-   caveat as AI B-roll/falBroll.js) — every failure path below surfaces the raw upstream response,
-   so a wrong field/model name is a one-line fix once tested against real credentials. */
-const FAL_TEXT_TO_IMAGE_MODEL='fal-ai/flux/dev';
-const FAL_TEXT_TO_IMAGE_MODEL_DRAFT='fal-ai/flux/schnell'; // distilled/turbo variant — faster and cheaper, for exploring ideas before committing to a 'final' quality generation
-const FAL_IMAGE_EDIT_MODEL='fal-ai/flux-pro/kontext'; // single reference image + text instruction — "restyle a real photo"
-const FAL_BG_REMOVE_MODEL='fal-ai/imageutils/rembg';
-const FAL_ASPECT_TO_IMAGE_SIZE={'1:1':'square_hd', '4:5':'portrait_4_3', '9:16':'portrait_16_9', '16:9':'landscape_16_9'};
-
-function mediaUrlFor(env, key){ return key?`${env.WORKER_BASE_URL}/marketing/media/${key}`:null; }
-function marketingImageKey(clientId, ext){ return `marketing/${clientId}/images/${crypto.randomUUID()}.${ext||'png'}`; }
-// Random-UUID keys aren't reconstructible from client input (same reasoning as marketingClipKey),
-// so ownership is a prefix match against this client's own image/logo namespace rather than an
-// exact-key rebuild — still exactly scoped to what this session owns, same pattern the multi-clip
-// upload-finish check above already established for this codebase.
-function marketingImageKeyOwnedBy(key, clientId){ return typeof key==='string' && (key.startsWith(`marketing/${clientId}/images/`) || key.startsWith(`marketing/${clientId}/logo.`)); }
-
-// Curated starter prompts — no fal cost, purely a UI helper for a non-designer who doesn't know
-// how to write an image-gen prompt from scratch. Each just pre-fills the generate form; still
-// fully editable before actually generating.
-const MARKETING_IMAGE_PROMPT_TEMPLATES=[
-  {id:'product-table', label:'Product on a table', prompt:'A professional product photo of {product} on a clean wooden table, soft natural lighting, minimal background, high detail'},
-  {id:'quote-card', label:'Quote / testimonial card', prompt:'A minimalist social media quote card background, soft gradient, elegant, plenty of empty space in the center for text overlay'},
-  {id:'sale-announcement', label:'Sale announcement backdrop', prompt:'A bold, colorful sale announcement background for social media, vibrant gradient, dynamic shapes, plenty of empty space for text overlay'},
-  {id:'before-after', label:'Before / after backdrop', prompt:'A clean split-screen style background for a before-and-after comparison post, neutral studio background, soft shadows'},
-  {id:'lifestyle', label:'Lifestyle scene', prompt:'A warm, candid lifestyle photo of people enjoying {product} in a cozy setting, natural light, authentic, not staged'},
-];
-async function handleMarketingImagePromptTemplates(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_IMAGE_PROMPT_TEMPLATES});
-}
-
-// One log row per successful image operation of ANY kind (generate/restyle/etc.), purely so
-// "images generated this month" can be shown as a usage counter — same reasoning/shape as
-// marketing_minutes_used, just derived by COUNT(*) instead of a running total column since this
-// number never needs to be decremented/reset by anything other than the calendar turning over.
-async function marketingImageLog(env, clientId, kind, imageKey, promptHash){
-  await env.DB.prepare(`INSERT INTO marketing_image_log (client_id, kind, image_key, prompt_hash, created_at) VALUES (?,?,?,?,?)`)
-    .bind(Number(clientId), kind, imageKey||null, promptHash||null, new Date().toISOString()).run();
-}
-// Only counts the fal.ai-billed operations (generate/restyle/remove-background) — watermark/
-// composite-background/text-overlay/reframe are free ffmpeg passes and a stock-photo import costs
-// nothing either, so counting those here would make this "money spent" signal misleadingly high.
-const MARKETING_IMAGE_PAID_KINDS=['generate','restyle','remove-background'];
-async function handleMarketingImageUsage(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const monthStart=new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0,0,0,0);
-  const placeholders=MARKETING_IMAGE_PAID_KINDS.map(()=>'?').join(',');
-  const row=await env.DB.prepare(`SELECT COUNT(*) AS n FROM marketing_image_log WHERE client_id=? AND created_at>=? AND kind IN (${placeholders})`).bind(Number(payload.cid), monthStart.toISOString(), ...MARKETING_IMAGE_PAID_KINDS).first();
-  return json({used:Number(row?.n)||0});
-}
-
-async function falSubmit(model, apiKey, input){
-  const r=await fetch(`https://queue.fal.run/${model}`, {method:'POST', headers:{Authorization:`Key ${apiKey}`, 'Content-Type':'application/json'}, body:JSON.stringify(input)});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data?.detail || data?.error?.message || `fal.ai submit failed: HTTP ${r.status}`);
-  if(!data.request_id) throw new Error('fal.ai did not return a request_id.');
-  return data.request_id;
-}
-function extractFalImageUrls(result){
-  if(Array.isArray(result?.images)&&result.images.length) return result.images.map(i=>i?.url).filter(Boolean);
-  if(result?.image?.url) return [result.image.url];
-  if(result?.image_url) return [result.image_url];
-  return [];
-}
-async function falPollImages(model, requestId, apiKey){
-  const statusUrl=`https://queue.fal.run/${model}/requests/${requestId}/status`;
-  const resultUrl=`https://queue.fal.run/${model}/requests/${requestId}`;
-  const deadline=Date.now()+120000;
-  while(Date.now()<deadline){
-    const r=await fetch(statusUrl, {headers:{Authorization:`Key ${apiKey}`}});
-    const data=await r.json().catch(()=>({}));
-    if(data.status==='COMPLETED'){
-      const rr=await fetch(resultUrl, {headers:{Authorization:`Key ${apiKey}`}});
-      const result=await rr.json().catch(()=>({}));
-      const urls=extractFalImageUrls(result);
-      if(!urls.length) throw new Error('fal.ai completed but no image URL was found in the result: '+JSON.stringify(result).slice(0,300));
-      return urls;
-    }
-    if(data.status==='ERROR'||data.status==='FAILED') throw new Error('fal.ai generation failed: '+(data.error||data.status));
-    await new Promise(res=>setTimeout(res, 3000));
-  }
-  throw new Error('fal.ai generation timed out after 2 minutes.');
-}
-// Fetches an already-produced image (a fal.ai result URL, or a render-pipeline local-fallback
-// output_url) and stores it into OUR OWN R2 bucket — every image this module hands back to the
-// frontend is addressed the same way (an R2 key under marketing/<client>/images/) regardless of
-// which upstream produced it.
-async function marketingStoreExternalImage(env, clientId, imageUrl, kind, promptHash){
-  const imgR=await fetch(imageUrl);
-  if(!imgR.ok) throw new Error('Could not download the generated image.');
-  const key=marketingImageKey(clientId);
-  await env.MARKETING_MEDIA.put(key, imgR.body, {httpMetadata:{contentType:imgR.headers.get('content-type')||'image/png'}});
-  await marketingImageLog(env, clientId, kind, key, promptHash);
-  return key;
-}
-
-async function marketingGetImageBrandStyle(env, clientId){
-  const row=await env.DB.prepare(`SELECT image_brand_style FROM marketing_client_settings WHERE client_id=?`).bind(Number(clientId)).first();
-  return row?.image_brand_style||'';
-}
-
-// prompt-hash caching — a repeated identical generate call (most commonly: re-running "Generate a
-// week" with the same topic, or a marketer clicking Generate again without changing anything)
-// reuses the last matching result instead of spending fresh fal.ai credits. Scoped to this client +
-// exact prompt/aspect/quality combination, and only looks back 24h — long enough to catch an
-// accidental double-click or a same-day re-run, not so long that "generate a fresh take on this"
-// stays permanently stuck on an old result.
-async function marketingImageCacheLookup(env, clientId, promptHash, numImages){
-  const since=new Date(Date.now()-24*3600*1000).toISOString();
-  const {results}=await env.DB.prepare(`SELECT image_key FROM marketing_image_log WHERE client_id=? AND kind='generate' AND prompt_hash=? AND created_at>=? ORDER BY id DESC LIMIT ?`)
-    .bind(Number(clientId), promptHash, since, Number(numImages)).all();
-  const keys=(results||[]).map(r=>r.image_key).filter(Boolean);
-  return keys.length>=numImages ? keys.slice(0,numImages) : null;
-}
-
-async function marketingGenerateImages(env, clientId, {prompt, aspectRatio, numImages, quality}){
-  const n=Math.min(4,Math.max(1,Number(numImages)||1));
-  const brandStyle=await marketingGetImageBrandStyle(env, clientId);
-  const fullPrompt=brandStyle?`${prompt}. Style: ${brandStyle}`:prompt;
-  const model=quality==='draft'?FAL_TEXT_TO_IMAGE_MODEL_DRAFT:FAL_TEXT_TO_IMAGE_MODEL;
-  const promptHash=await marketingSha256Hex(`${fullPrompt}|${aspectRatio||''}|${n}|${model}`);
-
-  const cached=await marketingImageCacheLookup(env, clientId, promptHash, n);
-  if(cached) return {images:cached.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'cache'};
-
-  const keys=await marketingGetClientKeys(env, clientId);
-  if(!keys.fal_api_key) throw {status:400, message:'Add a fal.ai API key first — Settings → API Keys.'};
-  const requestId=await falSubmit(model, keys.fal_api_key, {prompt:fullPrompt, image_size:FAL_ASPECT_TO_IMAGE_SIZE[aspectRatio]||'square_hd', num_images:n});
-  const urls=await falPollImages(model, requestId, keys.fal_api_key);
-  const keysOut=[];
-  for(const url of urls) keysOut.push(await marketingStoreExternalImage(env, clientId, url, 'generate', promptHash));
-  return {images:keysOut.map(k=>({image_key:k, image_url:mediaUrlFor(env,k)})), source:'fal'};
-}
-
-async function handleMarketingImageGenerate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const prompt=(body.prompt||'').trim().slice(0,2000);
-  if(!prompt) return json({error:'prompt required'}, 400);
-  try{
-    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
-    return json({ok:true, images, source});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// Reuses a Content Calendar draft's own title/caption as the prompt seed instead of asking the
-// marketer to describe the image separately from the post they already wrote — closes the loop
-// between the two halves of this module. Returns candidates only; the marketer still picks one via
-// /marketing/images/attach below (never auto-attaches, so a bad generation never silently lands on
-// a post).
-async function handleMarketingImageGenerateForPost(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const postId=Number(body.post_id);
-  if(!postId) return json({error:'post_id required'}, 400);
-  const post=await env.DB.prepare(`SELECT title, caption FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(postId, Number(payload.cid)).first();
-  if(!post) return json({error:'Post not found'}, 404);
-  const seed=(post.caption||post.title||'').replace(/#\S+/g,'').trim().slice(0,300);
-  if(!seed) return json({error:'This post has no title/caption yet to generate an image from.'}, 400);
-  const prompt=`A social media image for this post: ${seed}. Photorealistic, high quality, no text or logos in the image.`;
-  try{
-    const {images, source}=await marketingGenerateImages(env, payload.cid, {prompt, aspectRatio:body.aspect_ratio, numImages:body.num_images, quality:body.quality});
-    return json({ok:true, images, source});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// "Generate a themed set" (carousel material) — N images in one flow, each nudged toward a
-// distinct role in a short sequence (intro/detail/detail/CTA) rather than N unrelated takes on the
-// same prompt. NOTE: this only produces the images — Content Calendar posts still hold a single
-// image_key (marketing_content_posts has no multi-image column), and there is no Instagram
-// publish step in this app yet at all, so an actual multi-image carousel POST isn't wired end to
-// end. Deliberately not building that part yet: it would mean guessing at a schema/publish shape
-// ahead of the real auto-post feature actually existing. What this DOES give a marketer today: a
-// thematically coherent set of images to review and pick the single best one from via the normal
-// /marketing/images/attach flow.
-const MARKETING_CAROUSEL_SLOT_HINTS=['an eye-catching opening image that introduces the topic', 'a close-up detail shot related to the topic', 'a supporting/contextual shot related to the topic', 'a clear call-to-action closing image related to the topic'];
-async function handleMarketingImageGenerateCarousel(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const topic=(body.prompt||'').trim().slice(0,2000);
-  if(!topic) return json({error:'prompt required'}, 400);
-  const count=Math.min(4,Math.max(2,Number(body.count)||3));
-  try{
-    const images=[];
-    for(let i=0;i<count;i++){
-      const slotPrompt=`${topic}. This is ${MARKETING_CAROUSEL_SLOT_HINTS[i]||'another image in the same themed set'}. Keep a consistent visual style across the set.`;
-      const {images:one}=await marketingGenerateImages(env, payload.cid, {prompt:slotPrompt, aspectRatio:body.aspect_ratio, numImages:1, quality:body.quality});
-      images.push(...one);
-    }
-    return json({ok:true, images});
-  }catch(e){ return json({error:String(e.message||e)}, e.status||502); }
-}
-
-// Saved brand-style hint (e.g. "warm earthy tones, minimalist, natural light") appended to every
-// generate/generate-for-post/carousel prompt automatically — so a marketer doesn't have to
-// remember to retype their look every single time, same reasoning as the video module's Brand
-// Styles. Plain text, no masking needed (unlike the API-key settings above, this isn't a secret).
-async function handleMarketingImageBrandStyleGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({style:await marketingGetImageBrandStyle(env, payload.cid)});
-}
-async function handleMarketingImageBrandStyleSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const style=String(body.style||'').trim().slice(0,500);
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(existing) await env.DB.prepare(`UPDATE marketing_client_settings SET image_brand_style=?, updated_at=? WHERE client_id=?`).bind(style||null, now, Number(payload.cid)).run();
-  else await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, image_brand_style, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(payload.cid), style||null, now, now).run();
-  return json({ok:true});
-}
-
-// Free stock-photo fallback (SETUP.md "Marketing Studio module — Image Studio") — reuses the SAME
-// Pexels/Pixabay API keys already stored for video B-roll (marketing_client_settings), just
-// against their PHOTO search endpoints instead of video. Makes Image Studio usable for a client
-// who hasn't (or won't) add a paid fal.ai key — search, then /marketing/images/stock-import below
-// pulls the chosen photo into this client's own R2 namespace so it behaves identically to any
-// generated image afterward (watermark/text-overlay/attach all just take an image_key).
-async function marketingSearchPexelsPhotos(query, apiKey){
-  const r=await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=12`, {headers:{Authorization:apiKey}});
-  if(!r.ok) throw new Error(`Pexels search failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  return (data.photos||[]).map(p=>({source:'pexels', id:String(p.id), thumbnail_url:p.src?.medium||p.src?.small, full_url:p.src?.large2x||p.src?.original}));
-}
-async function marketingSearchPixabayPhotos(query, apiKey){
-  const r=await fetch(`https://pixabay.com/api/?key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(query)}&per_page=12`);
-  if(!r.ok) throw new Error(`Pixabay search failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  return (data.hits||[]).map(h=>({source:'pixabay', id:String(h.id), thumbnail_url:h.webformatURL, full_url:h.largeImageURL||h.webformatURL}));
-}
-async function handleMarketingImageStockSearch(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const url=new URL(request.url);
-  const q=(url.searchParams.get('q')||'').trim().slice(0,200);
-  if(!q) return json({error:'q required'}, 400);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.pexels_api_key && !keys.pixabay_api_key) return json({error:'Add a free Pexels or Pixabay API key first — Settings → API Keys.'}, 400);
-  const [pexels, pixabay]=await Promise.all([
-    keys.pexels_api_key?marketingSearchPexelsPhotos(q, keys.pexels_api_key).catch(()=>[]):[],
-    keys.pixabay_api_key?marketingSearchPixabayPhotos(q, keys.pixabay_api_key).catch(()=>[]):[],
-  ]);
-  return json({list:[...pexels, ...pixabay]});
-}
-// Free (no image_log entry under a paid kind — see MARKETING_IMAGE_PAID_KINDS) — still logged
-// under kind='stock-import' for the same history/audit trail every other image operation gets.
-async function handleMarketingImageStockImport(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const fullUrl=String(body.full_url||'');
-  if(!fullUrl || !/^https:\/\//.test(fullUrl)) return json({error:'full_url required'}, 400);
-  try{
-    const key=await marketingStoreExternalImage(env, payload.cid, fullUrl, 'stock-import');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-// "Multi-aspect from one generation" — center-crops an already-approved image to a different
-// platform aspect (see render-pipeline/lib/imageCompose.js's reframeToAspect) instead of paying
-// for a second fal.ai generation just to get a different shape of the same shot. Deterministic,
-// free, same render-pipeline delegation as watermark/composite-background/text-overlay.
-async function handleMarketingImageReframe(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  const aspect=String(body.aspect||'');
-  if(!imageKey||!aspect) return json({error:'image_key and aspect required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'reframe', {image_url:mediaUrlFor(env,imageKey), aspect});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageAttach(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const postId=Number(body.post_id);
-  const imageKey=String(body.image_key||'');
-  if(!postId||!imageKey) return json({error:'post_id and image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const post=await env.DB.prepare(`SELECT id, status FROM marketing_content_posts WHERE id=? AND client_id=?`).bind(postId, Number(payload.cid)).first();
-  if(!post) return json({error:'Post not found'}, 404);
-  if(post.status==='posted') return json({error:'This post has already gone out — it cannot be edited.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_content_posts SET image_key=?, updated_at=? WHERE id=?`).bind(imageKey, new Date().toISOString(), postId).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_content_posts WHERE id=?`).bind(postId).first();
-  return json({ok:true, post:marketingSerializeContentPost(env,row)});
-}
-
-// Upload an arbitrary photo (a real product/shop photo, not an AI generation) — shared by Restyle
-// ("turn a real photo into a polished graphic") and anything else in this module that needs a
-// starting image beyond what's already been generated.
-async function handleMarketingImageUpload(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  const file=form?.get('file');
-  if(!file||typeof file==='string') return json({error:'file required'}, 400);
-  const mimeExt={'image/png':'png', 'image/jpeg':'jpg', 'image/webp':'webp'};
-  const ext=mimeExt[file.type];
-  if(!ext) return json({error:'Upload a PNG, JPG or WebP image.'}, 400);
-  const key=marketingImageKey(payload.cid, ext);
-  await env.MARKETING_MEDIA.put(key, file.stream(), {httpMetadata:{contentType:file.type}});
-  return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-}
-
-async function handleMarketingImageRestyle(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  const prompt=(body.prompt||'').trim().slice(0,2000);
-  if(!imageKey||!prompt) return json({error:'image_key and prompt required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.fal_api_key) return json({error:'Add a fal.ai API key first — Settings → API Keys.'}, 400);
-  try{
-    const requestId=await falSubmit(FAL_IMAGE_EDIT_MODEL, keys.fal_api_key, {prompt, image_url:mediaUrlFor(env,imageKey)});
-    const urls=await falPollImages(FAL_IMAGE_EDIT_MODEL, requestId, keys.fal_api_key);
-    const key=await marketingStoreExternalImage(env, payload.cid, urls[0], 'restyle');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-async function handleMarketingImageRemoveBackground(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const keys=await marketingGetClientKeys(env, payload.cid);
-  if(!keys.fal_api_key) return json({error:'Add a fal.ai API key first — Settings → API Keys.'}, 400);
-  try{
-    const requestId=await falSubmit(FAL_BG_REMOVE_MODEL, keys.fal_api_key, {image_url:mediaUrlFor(env,imageKey)});
-    const urls=await falPollImages(FAL_BG_REMOVE_MODEL, requestId, keys.fal_api_key);
-    const key=await marketingStoreExternalImage(env, payload.cid, urls[0], 'remove-background');
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:String(e.message||e)}, 502); }
-}
-
-// Shared caller for the render pipeline's deterministic (ffmpeg, no fal) POST /image-compose —
-// same HMAC-over-raw-body + fetch pattern handleMarketingDetectScenes etc. already use.
-// output_key (R2-backed render pipeline) is already a key in OUR OWN MARKETING_MEDIA bucket (see
-// render-pipeline/lib/storage.js's own comment — same bucket the Worker serves from) so it's used
-// directly; output_url (local-fallback render pipeline, no R2 there) is re-fetched into our bucket
-// via marketingStoreExternalImage so every image in this module is addressed the same way either way.
-async function marketingRenderPipelineImageCompose(env, clientId, mode, extraBody){
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) throw {status:400, message:'This needs the render pipeline configured — see SETUP.md "Marketing Studio module".'};
-  const reqBody=JSON.stringify({mode, client_id:clientId, ...extraBody});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/image-compose`;
-  let resp;
-  try{
-    resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-  }catch(e){ throw {status:502, message:'Could not reach the render pipeline: '+e.message}; }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) throw {status:502, message:data.error||('HTTP '+resp.status)};
-  if(data.output_key){ await marketingImageLog(env, clientId, mode, data.output_key); return data.output_key; }
-  if(data.output_url) return await marketingStoreExternalImage(env, clientId, data.output_url, mode);
-  throw {status:502, message:'The render pipeline did not return an image.'};
-}
-
-async function handleMarketingImageWatermark(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  const settings=await env.DB.prepare(`SELECT logo_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(!settings?.logo_key) return json({error:'Upload a logo first — Image Studio → Brand logo.'}, 400);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'watermark', {image_url:mediaUrlFor(env,imageKey), logo_url:mediaUrlFor(env,settings.logo_key), position:body.position});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageCompositeBackground(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'composite-background', {cutout_url:mediaUrlFor(env,imageKey), color:body.color});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingImageTextOverlay(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const imageKey=String(body.image_key||'');
-  if(!imageKey) return json({error:'image_key required'}, 400);
-  if(!body.headline&&!body.subtext) return json({error:'headline or subtext required'}, 400);
-  if(!marketingImageKeyOwnedBy(imageKey, payload.cid)) return json({error:'Image not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(imageKey);
-  if(!head) return json({error:'Image not found'}, 404);
-  try{
-    const key=await marketingRenderPipelineImageCompose(env, payload.cid, 'text-overlay', {image_url:mediaUrlFor(env,imageKey), headline:body.headline, subtext:body.subtext, text_color:body.text_color, box_color:body.box_color, position:body.position});
-    return json({ok:true, image_key:key, image_url:mediaUrlFor(env,key)});
-  }catch(e){ return json({error:e.message||String(e)}, e.status||502); }
-}
-
-async function handleMarketingLogoUpload(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const form=await request.formData().catch(()=>null);
-  const file=form?.get('file');
-  if(!file||typeof file==='string') return json({error:'file required'}, 400);
-  const mimeExt={'image/png':'png', 'image/jpeg':'jpg', 'image/webp':'webp'};
-  const ext=mimeExt[file.type];
-  if(!ext) return json({error:'Logo must be a PNG, JPG or WebP image.'}, 400);
-  const key=`marketing/${payload.cid}/logo.${ext}`;
-  await env.MARKETING_MEDIA.put(key, file.stream(), {httpMetadata:{contentType:file.type}});
-  const now=new Date().toISOString();
-  const existing=await env.DB.prepare(`SELECT client_id FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  if(existing) await env.DB.prepare(`UPDATE marketing_client_settings SET logo_key=?, updated_at=? WHERE client_id=?`).bind(key, now, Number(payload.cid)).run();
-  else await env.DB.prepare(`INSERT INTO marketing_client_settings (client_id, logo_key, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(payload.cid), key, now, now).run();
-  return json({ok:true, logo_key:key, logo_url:mediaUrlFor(env,key)});
-}
-async function handleMarketingLogoGet(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const row=await env.DB.prepare(`SELECT logo_key FROM marketing_client_settings WHERE client_id=?`).bind(Number(payload.cid)).first();
-  return json({logo_key:row?.logo_key||null, logo_url:row?.logo_key?mediaUrlFor(env,row.logo_key):null});
-}
-
-async function handleMarketingStylePresets(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_STYLE_PRESETS});
-}
-
-async function handleMarketingBrandStylesList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_brand_styles WHERE client_id=? ORDER BY id DESC`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(r=>({id:r.id, name:r.name, config:JSON.parse(r.config_json||'{}'), created_at:r.created_at}))});
-}
-async function handleMarketingBrandStyleCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  if(!body.name||!body.config) return json({error:'name and config required'}, 400);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_brand_styles (client_id, name, config_json, created_at) VALUES (?,?,?,?)`)
-    .bind(Number(payload.cid), String(body.name).slice(0,60), JSON.stringify(body.config), now).run();
-  return json({ok:true, id:result.meta.last_row_id});
-}
-async function handleMarketingBrandStyleDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  await env.DB.prepare(`DELETE FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
-  return json({ok:true});
-}
-
-async function handleMarketingProjectsList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE client_id=? ORDER BY updated_at DESC LIMIT 200`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(marketingSerializeProject)});
-}
-
-async function handleMarketingProjectCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const title=(body.title||'').trim().slice(0,120)||'Untitled project';
-  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, language, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), title, targetAspect, body.language||null, 'uploading', now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, project:marketingSerializeProject(row)});
-}
-
-async function handleMarketingProjectUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const assignable={title:'title', target_aspect:'target_aspect', trim_start_sec:'trim_start_sec', trim_end_sec:'trim_end_sec', language:'language', style_id:'style_id'};
-  const sets=[], vals=[];
-  Object.entries(assignable).forEach(([field,col])=>{ if(body[field]!==undefined){ sets.push(`${col}=?`); vals.push(body[field]); } });
-  if(body.style_overrides!==undefined){ sets.push('style_overrides_json=?'); vals.push(JSON.stringify(body.style_overrides||{})); }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_projects SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(id).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-async function handleMarketingProjectDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(project.source_key) await env.MARKETING_MEDIA.delete(project.source_key).catch(()=>{});
-  if(project.output_key) await env.MARKETING_MEDIA.delete(project.output_key).catch(()=>{});
-  await env.DB.prepare(`DELETE FROM marketing_jobs WHERE project_id=?`).bind(id).run();
-  await env.DB.prepare(`DELETE FROM marketing_projects WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-// Two-step direct-to-R2 upload (replaces a single multipart-through-the-Worker POST, which
-// couldn't exceed Cloudflare's own ~100 MB-on-most-plans request-body ceiling regardless of any
-// limit this app chose): 1) upload-init returns a short-lived presigned R2 PUT URL, the browser
-// PUTs the file straight to R2 with it — the Worker never sees the file bytes, so its own
-// request-body limit is irrelevant; 2) upload-finish is called once that PUT succeeds, confirms
-// the object actually landed in R2 (a client calling this without a real successful PUT
-// shouldn't be able to point a project at a nonexistent/empty key), and does the exact same
-// D1 bookkeeping the old single-step handler did.
-async function handleMarketingProjectUploadInit(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const mime=(body.content_type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!projectId) return json({error:'project_id required'}, 400);
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const key=marketingSourceKey(payload.cid, projectId, ext);
-  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
-  return json({ok:true, upload_url:uploadUrl, source_key:key});
-}
-
-async function handleMarketingProjectUploadFinish(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const key=String(body.source_key||'');
-  const durationSec=Number(body.duration_sec)||null; // reported by the browser's <video>.duration — the Worker never decodes video
-  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(key!==marketingSourceKey(payload.cid, projectId, key.split('.').pop())) return json({error:'source_key does not match this project.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
-  if(head.size>MARKETING_SOURCE_MAX_BYTES){
-    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
-    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
-  }
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
-    .bind(key, durationSec, durationSec, now, projectId).run();
-  // Also registered as clip #0 (marketing_project_clips) — see the "MULTI-CLIP PROJECTS" block
-  // below — so a project that only ever gets this one direct upload behaves identically to
-  // before (no extra step), while one that later adds more clips via /marketing/projects/clips
-  // has a consistent, complete clip list to combine (this upload included) rather than a gap.
-  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE project_id=? AND order_index=0`).bind(projectId).run();
-  await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,0,?)`)
-    .bind(projectId, Number(payload.cid), key, durationSec, now).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-/* ── MULTI-CLIP PROJECTS (SETUP.md "Marketing Studio module — Multi-clip projects & template
-   library") — a project can hold several uploaded clips (marketing_project_clips), stitched by
-   render-pipeline's POST /concat-clips into one combined source video before the existing
-   transcribe/caption/render pipeline runs on it unchanged. Clips are addressed by their own R2
-   keys (marketingClipKey), separate from the project's own source_key (the COMBINED output). ── */
-function marketingClipKey(clientId, projectId, ext){ return `marketing/${clientId}/${projectId}/clips/${crypto.randomUUID()}.${ext}`; }
-function marketingSerializeClip(row){
-  return {id:row.id, source_key:row.source_key, source_duration_sec:row.source_duration_sec, order_index:row.order_index, created_at:row.created_at};
-}
-
-async function handleMarketingClipsList(request, env, url){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const projectId=Number(url.searchParams.get('project_id'));
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
-  return json({list:(results||[]).map(marketingSerializeClip)});
-}
-
-// Same two-step direct-to-R2 pattern as handleMarketingProjectUploadInit/Finish above — see that
-// pair's comment for why. The clip key embeds a random UUID (marketingClipKey) generated here at
-// init time, not reconstructible from client input the way the project's source key is, so
-// upload-finish's ownership check is a prefix match against this client+project's own clip
-// namespace instead of an exact-key rebuild — still exactly scoped to what this session owns.
-async function handleMarketingClipUploadInit(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!marketingR2Configured(env)) return json({error:'Large video uploads require R2 credentials on the Worker — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const mime=(body.content_type||'').split(';')[0];
-  const ext=MARKETING_VIDEO_MIME_EXT[mime];
-  if(!projectId) return json({error:'project_id required'}, 400);
-  if(!ext) return json({error:'Upload an mp4, mov, webm or m4v file.'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const key=marketingClipKey(payload.cid, projectId, ext);
-  const uploadUrl=await marketingR2PresignUrl(env, 'PUT', key, 3600);
-  return json({ok:true, upload_url:uploadUrl, source_key:key});
-}
-
-async function handleMarketingClipUploadFinish(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const key=String(body.source_key||'');
-  const durationSec=Number(body.duration_sec)||null;
-  if(!projectId||!key) return json({error:'project_id and source_key required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!key.startsWith(`marketing/${payload.cid}/${projectId}/clips/`)) return json({error:'source_key does not match this project.'}, 400);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Upload did not complete — the file was not found in storage. Try again.'}, 400);
-  if(head.size>MARKETING_SOURCE_MAX_BYTES){
-    await env.MARKETING_MEDIA.delete(key).catch(()=>{});
-    return json({error:`Video is too large — max ${Math.round(MARKETING_SOURCE_MAX_BYTES/1024/1024)} MB.`}, 400);
-  }
-  const maxOrder=await env.DB.prepare(`SELECT COALESCE(MAX(order_index),-1) AS m FROM marketing_project_clips WHERE project_id=?`).bind(projectId).first();
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_project_clips (project_id, client_id, source_key, source_duration_sec, order_index, created_at) VALUES (?,?,?,?,?,?)`)
-    .bind(projectId, Number(payload.cid), key, durationSec, (maxOrder?.m ?? -1)+1, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, clip:marketingSerializeClip(row)});
-}
-
-async function handleMarketingClipDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const clip=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!clip) return json({error:'Not found'}, 404);
-  await env.MARKETING_MEDIA.delete(clip.source_key).catch(()=>{});
-  await env.DB.prepare(`DELETE FROM marketing_project_clips WHERE id=?`).bind(id).run();
-  return json({ok:true});
-}
-
-async function handleMarketingClipsReorder(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const order=Array.isArray(body.order)?body.order.map(Number):[];
-  if(!projectId||!order.length) return json({error:'project_id and order (an array of clip ids) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  for(let i=0;i<order.length;i++){
-    await env.DB.prepare(`UPDATE marketing_project_clips SET order_index=? WHERE id=? AND project_id=?`).bind(i, order[i], projectId).run();
-  }
-  return json({ok:true});
-}
-
-// Stitches every clip (in order_index order) into one combined video via render-pipeline's
-// POST /concat-clips, then treats that combined video exactly like a normal single-video upload
-// (sets source_key/source_duration_sec, status='uploaded') — everything downstream (transcribe,
-// captions, render) never needs to know this project started out as several clips. Clips
-// themselves aren't deleted after combining, so re-adding/reordering/re-combining stays possible.
-async function handleMarketingCombineClips(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Combining clips needs the render pipeline configured — see SETUP.md "Marketing Studio module".'}, 400);
-  const {results:clips}=await env.DB.prepare(`SELECT * FROM marketing_project_clips WHERE project_id=? ORDER BY order_index ASC`).bind(projectId).all();
-  if(!clips||clips.length<1) return json({error:'Upload at least one clip first.'}, 400);
-
-  const sourceUrls=clips.map(c=>`${env.WORKER_BASE_URL}/marketing/media/${c.source_key}`);
-  const resolution=MARKETING_RESOLUTIONS[project.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
-  const reqBody=JSON.stringify({source_urls:sourceUrls, resolution, client_id:Number(payload.cid), project_id:projectId});
-  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const concatEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/concat-clips`;
-  let resp;
-  try{
-    resp=await fetch(concatEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:reqBody});
-  }catch(e){
-    return json({error:'Could not reach the render pipeline to combine clips: '+e.message}, 502);
-  }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok||!data.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
-
-  const key=data.output_key||null;
-  const now=new Date().toISOString();
-  if(key){
-    await env.DB.prepare(`UPDATE marketing_projects SET source_key=?, source_duration_sec=?, trim_end_sec=?, status='uploaded', updated_at=? WHERE id=?`)
-      .bind(key, data.duration_sec||null, data.duration_sec||null, now, projectId).run();
-  } else if(data.output_url){
-    // Local-fallback storage mode (no R2) — the combined file lives outside this app's own
-    // media serving, so store the URL directly rather than a key (marketingSerializeProject/
-    // the frontend's video player both already accept a full absolute source_key... no — the
-    // frontend builds mediaUrl() from source_key assuming it's an R2 key. In local-fallback mode
-    // there's no R2 key to store, so this path isn't supported — surface that clearly instead of
-    // silently storing a URL the rest of the app can't use.
-    return json({error:'Combining clips requires the render pipeline to be configured with R2 storage (LOCAL_PUBLIC_BASE_URL fallback mode is not supported for this feature).'}, 400);
-  }
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-// Direct-from-Worker Whisper call — the fallback path in handleMarketingTranscribe when the
-// render pipeline isn't configured (render-pipeline/lib/transcribe.js has its own copy of this
-// for the primary path, since it runs in a different runtime). Throws on any non-2xx response
-// with the API's own error message, so callers can pattern-match specific errors (e.g. retrying
-// without an unsupported `language` hint) without re-parsing the response themselves.
-async function marketingCallWhisper(env, fileBytes, fileMime, fileName, language){
-  const form=new FormData();
-  form.append('file', new Blob([fileBytes], {type:fileMime}), fileName);
-  form.append('model', 'whisper-1');
-  form.append('response_format', 'verbose_json');
-  form.append('timestamp_granularities[]', 'word');
-  if(language) form.append('language', language); // omit to let the API auto-detect
-  const r=await fetch(env.MARKETING_TRANSCRIBE_API_URL||'https://api.openai.com/v1/audio/transcriptions', {
-    method:'POST', headers:{Authorization:`Bearer ${env.MARKETING_TRANSCRIBE_API_KEY}`}, body:form,
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
-  return data;
-}
-
-// Transcription runs inline (one HTTP call, no async job needed on this end) — see the module
-// header comment above for why this is real, in-Worker work while rendering is not.
-async function handleMarketingTranscribe(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  const renderPipelineConfigured=!!(env.MARKETING_RENDER_WEBHOOK_URL && env.MARKETING_RENDER_WEBHOOK_SECRET);
-  if(!renderPipelineConfigured && !env.MARKETING_TRANSCRIBE_API_KEY) return json({error:'Transcription is not configured — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const now0=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET status='transcribing', updated_at=? WHERE id=?`).bind(now0, projectId).run();
-  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(payload.cid), 'transcribe', 'processing', JSON.stringify({language:body.language||project.language||null}), now0, now0).run();
-  const jobId=jobResult.meta.last_row_id;
-  const languageHint=body.language||project.language;
-
-  // OpenAI's Whisper endpoint blocks requests whose source IP resolves to certain
-  // countries/regions AND hard-caps requests at 25 MB. Cloudflare Workers run on a globally
-  // distributed edge network with an unpredictable egress IP per request, so calling OpenAI
-  // directly from HERE can hit the country block even when the account/user's actual location is
-  // fine — this really happened ("Country, region, or territory not supported"), not a
-  // hypothetical. When the render pipeline is configured, route the actual OpenAI call through it
-  // instead (render-pipeline/lib/transcribe.js) — it runs on one fixed host, so its egress IP is
-  // stable, and it extracts audio-only first (same fix /extract-audio already applied elsewhere),
-  // solving the 25 MB cap too. Falls back to calling OpenAI directly from here (raw video,
-  // Worker-held key) when the render pipeline isn't configured, so transcription still works
-  // without it set up — just subject to both the 25 MB cap and the country-block risk.
-  let data;
-  if(renderPipelineConfigured){
-    const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-    const reqBody=JSON.stringify({source_url:sourceUrl, language:languageHint||null});
-    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-    const transcribeEndpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/transcribe`;
-    let resp;
-    try{
-      resp=await fetch(transcribeEndpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-    }catch(e){
-      await marketingFailJob(env, jobId, projectId, 'Could not reach the render pipeline to transcribe: '+e.message, 'uploaded');
-      return json({error:'Could not reach the render pipeline to transcribe.'}, 502);
-    }
-    data=await resp.json().catch(()=>({}));
-    if(!resp.ok){
-      const errMsg=data?.error||('HTTP '+resp.status);
-      await marketingFailJob(env, jobId, projectId, errMsg, 'uploaded');
-      return json({error:errMsg}, 502);
-    }
-  } else {
-    const obj=await env.MARKETING_MEDIA.get(project.source_key);
-    if(!obj) return json({error:'Source video not found in storage.'}, 404);
-    const fileBytes=await obj.arrayBuffer();
-    const ext=(project.source_key.split('.').pop()||'mp4');
-    const fileMime=obj.httpMetadata?.contentType||'video/mp4';
-    const fileName=`source.${ext}`;
-    try{
-      data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, languageHint);
-    }catch(e){
-      // A language hint a project can be tagged with (e.g. Malayalam, "ml") isn't necessarily in
-      // OpenAI's Whisper API's accepted `language` parameter list — confirmed via a real
-      // "Language 'ml' is not supported." response — even though the model can often still
-      // transcribe that audio correctly through auto-detection; the parameter is only a decoding
-      // hint. Retry once without it instead of failing the whole transcription.
-      if(languageHint && /language .* is not supported/i.test(e.message||'')){
-        try{ data=await marketingCallWhisper(env, fileBytes, fileMime, fileName, null); }
-        catch(e2){ await marketingFailJob(env, jobId, projectId, e2.message, 'uploaded'); return json({error:e2.message}, 502); }
-      } else {
-        await marketingFailJob(env, jobId, projectId, e.message, 'uploaded');
-        return json({error:e.message}, 502);
-      }
-    }
-  }
-
-  const words=marketingWordsFromTranscription(data);
-  const transcript={language:data.language||languageHint||null, text:data.text||'', words};
-  const now=new Date().toISOString();
-  await env.DB.prepare(`UPDATE marketing_projects SET transcript_json=?, captions_json=?, language=?, status='ready', updated_at=? WHERE id=?`)
-    .bind(JSON.stringify(transcript), JSON.stringify(transcript), transcript.language, now, projectId).run();
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, completed_at=?, updated_at=? WHERE id=?`).bind(now, now, jobId).run();
-  const updated=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=?`).bind(projectId).first();
-  return json({ok:true, project:marketingSerializeProject(updated)});
-}
-
-async function handleMarketingCaptionsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!body.captions) return json({error:'project_id and captions required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET captions_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.captions), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Auto-translate captions — MyMemory Translation API (api.mymemory.translated.net), genuinely
-// free with NO API key/signup at all: 5,000 chars/day anonymously by IP, or 50,000/day if a
-// contact email is set via the `de=` param (env.MYMEMORY_EMAIL, a shared server-level setting, not
-// per-client — it's just a quota-multiplier, not a real credential like the Pexels/Pixabay/
-// Freesound/fal.ai keys). Splits into ~450-char chunks (MyMemory's own per-query limit is small)
-// joined on word boundaries, translated sequentially (not parallel — the daily budget is shared
-// across every chunk/project/client on this Worker, so bursts don't help and risk 429s).
-function marketingChunkText(text, maxLen){
-  const words=text.split(/\s+/);
-  const chunks=[]; let cur='';
-  for(const w of words){
-    if(cur && (cur+' '+w).length>maxLen){ chunks.push(cur); cur=w; }
-    else cur=cur?cur+' '+w:w;
-  }
-  if(cur) chunks.push(cur);
-  return chunks;
-}
-async function marketingTranslateChunk(text, sourceLang, targetLang, env){
-  const emailParam=env.MYMEMORY_EMAIL?`&de=${encodeURIComponent(env.MYMEMORY_EMAIL)}`:'';
-  const url=`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}${emailParam}`;
-  const r=await fetch(url);
-  if(!r.ok) throw new Error(`MyMemory translation failed: HTTP ${r.status}`);
-  const data=await r.json().catch(()=>({}));
-  if(data.responseStatus && Number(data.responseStatus)!==200) throw new Error(data.responseDetails||'MyMemory translation error');
-  return data.responseData?.translatedText||'';
-}
-async function handleMarketingTranslateCaptions(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  const targetLang=(body.target_language||'').trim();
-  if(!id||!targetLang) return json({error:'project_id and target_language required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — translation is derived from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const words=transcript.words||[];
-  if(!words.length) return json({error:'Transcript has no words to translate.'}, 400);
-  // Capped well under MyMemory's smallest free daily budget (5,000 chars/day with no email set)
-  // so one long project can't exhaust the WHOLE Worker's shared quota by itself.
-  const text=(transcript.text||words.map(w=>w.word).join(' ')).slice(0, 4500);
-  const sourceLang=project.language||'en';
-  const chunks=marketingChunkText(text, 450);
-  let translatedText='';
-  try{
-    for(const chunk of chunks){
-      const piece=await marketingTranslateChunk(chunk, sourceLang, targetLang, env);
-      translatedText+=(translatedText?' ':'')+piece;
-    }
-  }catch(e){ return json({error:'Translation failed: '+e.message}, 502); }
-
-  // Word-level timing can't survive translation (word order/count changes across languages) — the
-  // translated words are evenly spread across the SAME total time span the original transcript
-  // covered, the same honest "equal split" approximation this module already uses elsewhere
-  // (splitSceneEvenly/redistributeCaptionsAcrossScenes) rather than a false claim of exact sync.
-  const translatedWords=translatedText.split(/\s+/).filter(Boolean);
-  if(!translatedWords.length) return json({error:'Translation returned no text.'}, 502);
-  const firstStart=Number(words[0]?.start)||0;
-  const lastEnd=Number(words[words.length-1]?.end)||firstStart+1;
-  const totalDur=Math.max(0.1, lastEnd-firstStart);
-  const perWord=totalDur/translatedWords.length;
-  const newWords=translatedWords.map((w,i)=>({word:w, start:firstStart+i*perWord, end:firstStart+(i+1)*perWord}));
-  return json({ok:true, captions:{words:newWords}, language:targetLang});
-}
-
-// AI voiceover/dubbing — free, fully local text-to-speech (render-pipeline/lib/tts.js, espeak-ng)
-// generating a standalone narration track from the transcript (or custom text). v1 scope: produces
-// a real, downloadable audio file — it does NOT automatically dub/time-align itself into the
-// video render (the original speech and a synthesized voiceover generally run different lengths
-// for the same text, and reconciling that against the existing silence-cut/caption-timing
-// machinery is real additional work, not attempted here). A natural future addition, not built.
-async function handleMarketingGenerateVoiceover(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Voiceover generation requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json, language FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  let text=(body.text||'').trim();
-  if(!text && project.transcript_json){
-    try{ const t=JSON.parse(project.transcript_json); text=(t.text||(t.words||[]).map(w=>w.word).join(' ')||'').trim(); }catch(e){}
-  }
-  if(!text) return json({error:'No text to synthesize — transcribe first, or type custom voiceover text.'}, 400);
-  text=text.slice(0, 5000);
-
-  const reqBody=JSON.stringify({text, language:body.language||project.language||'en', client_id:Number(payload.cid), project_id:projectId});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voiceover`;
-  let resp;
-  try{ resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody}); }
-  catch(e){ return json({error:'Could not reach the render pipeline: '+e.message}, 502); }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) return json({error:data?.error||('HTTP '+resp.status)}, 502);
-  const outputUrl=data.output_url||(data.output_key?`${env.WORKER_BASE_URL}/marketing/media/${data.output_key}`:null);
-  return json({ok:true, output_url:outputUrl});
-}
-
-async function handleMarketingAutoeditPresets(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_AUTOEDIT_PRESETS});
-}
-
-// Free (no external call) cue suggestion pass — see marketingSuggestCuesHeuristic. Overwrites
-// any previously suggested-but-unreviewed cues; a project's already-reviewed cues can still be
-// edited afterwards via handleMarketingCuesSave, same "suggest, then edit" shape as transcribe→
-// caption-edit above.
-async function handleMarketingSuggestCues(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — cue suggestions are derived from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const cues=marketingSuggestCuesHeuristic(transcript);
-  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(cues), new Date().toISOString(), id).run();
-  return json({ok:true, cues});
-}
-
-async function handleMarketingCuesSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!Array.isArray(body.cues)) return json({error:'project_id and cues (an array) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET cues_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.cues), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Auto-edit toggle selections ("apply without clicking Save, can still amend") — the frontend
-// autosaves here (debounced) on every chip/select change in Editor step 3, so a returning visit
-// restores exactly what was picked, same edit-in-place shape as cues_json/captions_json. Note this
-// is purely about PERSISTING the selections for next time — a render/preview already reads these
-// values live off the DOM at the moment you click Render/Preview (marketingBuildRenderSpec takes
-// `opts` straight from that request body), so nothing here is required for a render to pick up
-// current toggle state; this only prevents the picks themselves from being lost on reload.
-async function handleMarketingAutoeditOptionsSave(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id||!body.options||typeof body.options!=='object') return json({error:'project_id and options (an object) required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  await env.DB.prepare(`UPDATE marketing_projects SET autoedit_options_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(body.options), new Date().toISOString(), id).run();
-  return json({ok:true});
-}
-
-// Social caption + hashtags for the post itself ("what do I write when I share this clip") —
-// reuses the same shared GEMINI_API_KEY/engineGeminiGenerate the Conversation Engine already
-// calls, not a new integration. Best-effort: if no key is configured or the call fails, a plain
-// heuristic fallback (first sentence + a couple of generic hashtags) still returns something
-// usable rather than erroring the whole request — this is a nice-to-have suggestion, not something
-// that should block "Send to WhatsApp."
-async function handleMarketingSuggestCaption(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT transcript_json FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.transcript_json) return json({error:'Transcribe first — the caption is drafted from the transcript.'}, 400);
-  let transcript; try{ transcript=JSON.parse(project.transcript_json); }catch(e){ return json({error:'Transcript is corrupted — re-transcribe.'}, 400); }
-  const text=(transcript.text||(transcript.words||[]).map(w=>w.word).join(' ')||'').slice(0, 4000);
-  if(!text.trim()) return json({error:'Transcript is empty.'}, 400);
-
-  const raw=await engineGeminiGenerate(env,
-    'You write short, punchy social captions for a video clip, based on its transcript. Reply with ONLY compact JSON: {"caption":"...", "hashtags":["...", "..."]}. caption: 1-2 sentences, no hashtags inside it, matching the transcript\'s own language/tone. hashtags: 4-6 relevant lowercase hashtags WITHOUT the # symbol.',
-    text, {json:true, maxOutputTokens:250});
-  if(raw){
-    try{
-      const parsed=JSON.parse(raw);
-      if(parsed && typeof parsed.caption==='string' && Array.isArray(parsed.hashtags)){
-        return json({ok:true, caption:parsed.caption.trim(), hashtags:parsed.hashtags.map(h=>String(h).replace(/^#/,'').trim()).filter(Boolean).slice(0,8), source:'ai'});
-      }
-    }catch(e){ /* fall through to heuristic */ }
-  }
-  // Heuristic fallback — no key configured, or the model didn't return valid JSON.
-  const firstSentence=(text.match(/^[^.!?]*[.!?]/)||[text.slice(0,140)])[0].trim();
-  return json({ok:true, caption:firstSentence, hashtags:['reels','video','smallbusiness'], source:'heuristic'});
-}
-
-// Real shot/cut detection (render-pipeline/lib/sceneDetect.js) — not a heuristic, actual ffmpeg
-// frame-difference analysis, same "delegate what a Worker structurally can't do" boundary as
-// transcription/rendering. Scenes group the caption editor's word list for per-scene editing
-// (SETUP.md "Marketing Studio module — Scene detection & per-scene editing").
-async function handleMarketingDetectScenes(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'Scene detection requires the render pipeline — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  if(!id) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT source_key FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  const sourceUrl=`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`;
-  const reqBody=JSON.stringify({source_url:sourceUrl, client_id:payload.cid, project_id:id});
-  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-  const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/detect-scenes`;
-  let resp;
-  try{
-    resp=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody});
-  }catch(e){
-    return json({error:'Could not reach the render pipeline to detect scenes: '+e.message}, 502);
-  }
-  const data=await resp.json().catch(()=>({}));
-  if(!resp.ok) return json({error:data.error||('HTTP '+resp.status)}, 502);
-  // Same output_key/output_url duality the render-complete webhook already resolves (R2-backed vs.
-  // local-fallback render pipeline) — thumbnails go through the identical GET /marketing/media/:key
-  // route either way once resolved to a full URL.
-  const scenes=(data.scenes||[]).map(s=>({...s, thumbnail_url:s.output_url||(s.output_key?`${env.WORKER_BASE_URL}/marketing/media/${s.output_key}`:null), output_key:undefined, output_url:undefined}));
-  await env.DB.prepare(`UPDATE marketing_projects SET scenes_json=?, updated_at=? WHERE id=?`).bind(JSON.stringify(scenes), new Date().toISOString(), id).run();
-  return json({ok:true, scenes});
-}
-
-// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — resolves a
-// style_id ('custom:<marketing_brand_styles.id>' or a MARKETING_STYLE_PRESETS id) to its config.
-async function marketingResolveStyle(env, clientId, styleId){
-  if((styleId||'').startsWith('custom:')){
-    const brandStyleId=Number(styleId.slice(7));
-    const row=await env.DB.prepare(`SELECT config_json FROM marketing_brand_styles WHERE id=? AND client_id=?`).bind(brandStyleId, Number(clientId)).first();
-    if(row){ try{ return JSON.parse(row.config_json); }catch(e){} }
-    return MARKETING_STYLE_PRESETS[0];
-  }
-  return MARKETING_STYLE_PRESETS.find(p=>p.id===styleId)||MARKETING_STYLE_PRESETS[0];
-}
-
-// No active/trialing subscription → watermarked export (#14 "watermark-free export on paid tier").
-function marketingIsWatermarked(client){ return !['active','trialing'].includes(client?.plan_status); }
-
-// Shared by handleMarketingRenderStart and handleMarketingTemplateGenerate — creates the
-// marketing_jobs row, signs + posts the spec to the external render pipeline, and marks the
-// project 'rendering' (or reverts both to a failed/retryable state if the pipeline can't be
-// reached). Returns {ok, job_id} or {ok:false, error}.
-// jobType/updateProjectStatus let a preview render (handleMarketingPreview below) reuse the exact
-// same submit path as a real render without disturbing the project row — a preview must never
-// overwrite the project's real output/status, since it's a throwaway short/draft-quality clip,
-// not the deliverable.
-async function marketingSubmitRenderJob(env, clientId, projectId, spec, revertStatusOnFail, jobType='render', updateProjectStatus=true){
-  const now=new Date().toISOString();
-  const jobResult=await env.DB.prepare(`INSERT INTO marketing_jobs (project_id, client_id, type, status, spec_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`)
-    .bind(projectId, Number(clientId), jobType, 'queued', JSON.stringify(spec), now, now).run();
-  const jobId=jobResult.meta.last_row_id;
-
-  const outboundBody=JSON.stringify({job_id:jobId, client_id:Number(clientId), project_id:projectId, callback_url:`${env.WORKER_BASE_URL}/marketing/webhook/render-complete`, spec});
-  const signature=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, outboundBody);
-  let sendErr=null;
-  try{
-    const r=await fetch(env.MARKETING_RENDER_WEBHOOK_URL, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':signature}, body:outboundBody});
-    if(!r.ok) sendErr='Render pipeline returned HTTP '+r.status;
-  }catch(e){ sendErr=e.message; }
-  if(sendErr){
-    await marketingFailJob(env, jobId, projectId, sendErr, updateProjectStatus?revertStatusOnFail:null);
-    return {ok:false, error:sendErr};
-  }
-
-  await env.DB.prepare(`UPDATE marketing_jobs SET status='processing', updated_at=? WHERE id=?`).bind(now, jobId).run();
-  if(updateProjectStatus) await env.DB.prepare(`UPDATE marketing_projects SET status='rendering', watermarked=?, updated_at=? WHERE id=?`).bind(spec.watermark?1:0, now, projectId).run();
-  return {ok:true, job_id:jobId};
-}
-
-// Shared by handleMarketingRenderStart and handleMarketingPreview — everything about turning a
-// project + its current auto-edit/cue options into a render spec, independent of trim
-// range/quality/billing (each caller decides those). Throws (caller catches) rather than
-// returning a Response, since a preview needs the same validation without duplicating it.
-const MARKETING_HEX_COLOR_RE=/^#?[0-9a-fA-F]{6}$/;
-function marketingSanitizeHexColor(c, fallback){ return MARKETING_HEX_COLOR_RE.test(c||'')?c:fallback; }
-
-async function marketingBuildRenderSpec(env, clientId, project, opts, trimStart, trimEnd, watermarked, qualityOverride, aspectOverride){
-  const style=await marketingResolveStyle(env, clientId, project.style_id);
-  let overrides={}; try{ overrides=JSON.parse(project.style_overrides_json||'{}'); }catch(e){}
-  let captions; try{ captions=JSON.parse(project.captions_json); }catch(e){ throw new Error('Captions are corrupted — re-transcribe.'); }
-
-  // Auto-Edit Templates just pre-fill these three fields — an explicit opts.silence_cut/
-  // auto_zoom/background_music (the frontend always sends all three) still wins, so picking a
-  // preset and then hand-tweaking one toggle behaves as expected.
-  const preset=MARKETING_AUTOEDIT_PRESETS.find(p=>p.id===opts.autoedit_preset);
-  const silenceCut=opts.silence_cut!==undefined?!!opts.silence_cut:!!preset?.silence_cut;
-  const autoZoom=opts.auto_zoom!==undefined?!!opts.auto_zoom:!!preset?.auto_zoom;
-  const backgroundMusic=opts.background_music!==undefined?(opts.background_music||null):(preset?.background_music||null);
-
-  let cues=[]; try{ cues=(JSON.parse(project.cues_json||'[]')||[]).filter(cue=>cue.accepted!==false); }catch(e){}
-  const clientKeys=await marketingGetClientKeys(env, clientId);
-  const aspect=['9:16','1:1','16:9'].includes(aspectOverride)?aspectOverride:(project.target_aspect||'9:16');
-
-  // Chroma key (green screen) — off unless explicitly enabled with a color; hex colors
-  // re-sanitized here (not just trusted from the request body) since they're interpolated
-  // straight into an ffmpeg filter string on the render pipeline (see filtergraph.js's own
-  // defense-in-depth re-check of the same fields — belt and suspenders, not redundant, since a
-  // spec could in principle reach the render pipeline from a future caller other than this one).
-  const chromaKeyOpts=opts.chroma_key;
-  const chromaKey=(chromaKeyOpts && chromaKeyOpts.enabled) ? {
-    enabled:true,
-    color:marketingSanitizeHexColor(chromaKeyOpts.color, '#00FF00'),
-    similarity:Math.min(0.6, Math.max(0.05, Number(chromaKeyOpts.similarity)||0.3)),
-    blend:Math.min(0.5, Math.max(0, Number(chromaKeyOpts.blend)||0.1)),
-    background_color:marketingSanitizeHexColor(chromaKeyOpts.background_color, '#000000'),
-  } : null;
-
-  return {
-    mode:'caption-clip',
-    // Only present when the client configured their own (see marketingGetClientKeys) — the
-    // render pipeline falls back to its own shared env vars for whichever of these is absent
-    // (lib/assets.js's resolveBroll/resolveSfx), so this is additive, never a hard requirement.
-    client_keys:clientKeys,
-    source_url:`${env.WORKER_BASE_URL}/marketing/media/${project.source_key}`,
-    trim_start_sec:trimStart, trim_end_sec:trimEnd,
-    // aspectOverride lets a batch multi-aspect export (see handleMarketingRenderStart) render the
-    // SAME project at a different aspect than its own saved target_aspect, without touching the
-    // project row itself.
-    target_aspect:aspect,
-    resolution:MARKETING_RESOLUTIONS[aspect]||MARKETING_RESOLUTIONS['9:16'],
-    captions, style:{...style, ...overrides},
-    silence_cut:silenceCut, auto_zoom:autoZoom, background_music:backgroundMusic,
-    // Zero-cost extension of silence-cut using the transcript's own word-level timestamps — no
-    // new API, see render-pipeline/lib/fillerWords.js.
-    filler_word_cut:!!opts.filler_word_cut,
-    broll_density:preset?.broll_density||'none', cues,
-    // Export quality (#"export as MP4 and control quality" — output is always MP4, already the
-    // only format this pipeline produces; this controls encode quality/speed tradeoff). Validated
-    // against MARKETING_QUALITY_LEVELS rather than passed through raw, so a typo/garbage value
-    // can't silently reach ffmpeg — falls back to 'standard'. qualityOverride forces 'draft' for
-    // previews regardless of what the project's real export quality is set to.
-    quality:qualityOverride||(MARKETING_QUALITY_LEVELS.includes(opts.quality)?opts.quality:'standard'),
-    // "Text behind subject" (beta) — local ONNX person-matting on the render pipeline, no
-    // per-video API cost. Doesn't combine with silence-cut/auto-zoom/B-roll/SFX/VFX in v1 (see
-    // render-pipeline/lib/textBehindSubject.js) — the pipeline itself enforces that (silence-cut
-    // becomes a no-op when this is set), not just documentation.
-    text_behind_subject:!!opts.text_behind_subject,
-    // A single clip-wide speed change (slow-mo <1 / time-lapse >1), not CapCut's full per-segment
-    // ramping — see render-pipeline/lib/filtergraph.js's comment on this v1 scope decision.
-    // Clamped here too (not just in the filtergraph), matching ffmpeg's own atempo range.
-    speed_factor:Math.min(2, Math.max(0.5, Number(opts.speed_factor)||1)),
-    // ffmpeg's built-in FFT denoiser — no new API, no model file to ship.
-    denoise:!!opts.denoise,
-    chroma_key:chromaKey,
-    // Smart auto-reframe — reuses the same local RVM person-matting model text_behind_subject
-    // uses (render-pipeline/lib/autoReframe.js), tracking the subject horizontally instead of
-    // always center-cropping. Best-effort on the render pipeline (falls back to center-crop).
-    auto_reframe:!!opts.auto_reframe,
-    // Beat-synced cuts — snaps B-roll/SFX cue start times to the nearest detected beat in the
-    // background music (render-pipeline/lib/beatDetect.js). A no-op unless background_music is
-    // also set — there's no music track to detect beats in otherwise.
-    beat_sync:!!opts.beat_sync,
-    watermark:watermarked,
-  };
-}
-
-// Kicks off an async render on the external pipeline — see the module header comment for why
-// this can't run inside the Worker itself. Also where usage metering (#18) and the free-tier
-// watermark (#14) are decided, both against the client's own Clients row (plan_status/
-// marketing_minutes_used/marketing_minutes_limit), never anything client-supplied.
-async function handleMarketingRenderStart(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const c=await getClientById(env, payload.cid);
-  const trimStart=Number(project.trim_start_sec)||0;
-  const trimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||trimStart);
-  const durationSec=Math.max(0, trimEnd-trimStart);
-  const minutesPerRender=Math.max(1, Math.ceil(durationSec/60));
-
-  // Batch multi-aspect export ("give me 9:16 AND 1:1 AND 16:9 from one click") — the project's own
-  // target_aspect always renders as the normal, primary render (jobType:'render', the one whose
-  // result becomes the project's output_key/output_url); any OTHER aspects requested in
-  // body.aspects render as jobType:'render_extra' — real, billable renders (same minutes cost as
-  // any other render), but their result only ever lives on their own job row
-  // (marketing_jobs.output_url), same as a preview/AI-broll job, so they never fight the primary
-  // render for the one output_key column a project has.
-  const extraAspects=Array.isArray(body.aspects)
-    ? [...new Set(body.aspects.filter(a=>['9:16','1:1','16:9'].includes(a) && a!==(project.target_aspect||'9:16')))]
-    : [];
-  const totalRenders=1+extraAspects.length;
-  const minutesNeeded=minutesPerRender*totalRenders;
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  if(used+minutesNeeded>limit) return json({error:`This render needs ~${minutesNeeded} min (${totalRenders} aspect${totalRenders>1?'s':''}) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
-
-  const watermarked=marketingIsWatermarked(c);
-  let spec;
-  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked); }
-  catch(e){ return json({error:e.message}, 400); }
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-
-  const extraJobIds=[];
-  for(const aspect of extraAspects){
-    let extraSpec;
-    try{ extraSpec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, trimStart, trimEnd, watermarked, null, aspect); }
-    catch(e){ continue; } // same captions/style as the primary render — shouldn't fail independently, but a batch export partially succeeding is better than the whole thing failing
-    const extraResult=await marketingSubmitRenderJob(env, payload.cid, projectId, extraSpec, null, 'render_extra', false);
-    if(extraResult.ok) extraJobIds.push({aspect, job_id:extraResult.job_id});
-  }
-  return json({ok:true, job_id:result.job_id, extra_jobs:extraJobIds});
-}
-
-// Apply/preview (SETUP.md "Marketing Studio module — Apply/preview renders") — a short (max 12s),
-// draft-quality render of the CURRENT auto-edit/cue settings, so they can be checked before
-// committing to a full render. Real render job on the real pipeline, not a mock — just capped
-// short and marked jobType:'preview' so marketingSubmitRenderJob/handleMarketingRenderWebhook
-// skip billing and never touch the project's actual output/status (see those functions' comments).
-async function handleMarketingPreview(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.source_key) return json({error:'Upload a video first.'}, 400);
-  if(!project.captions_json) return json({error:'Transcribe (or add captions) first.'}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const fullTrimStart=Number(project.trim_start_sec)||0;
-  const fullTrimEnd=project.trim_end_sec!=null?Number(project.trim_end_sec):(Number(project.source_duration_sec)||fullTrimStart);
-  const PREVIEW_MAX_SEC=12;
-  let previewStart=fullTrimStart, previewEnd=Math.min(fullTrimEnd, fullTrimStart+PREVIEW_MAX_SEC);
-  // A specific scene's own range if given (the per-scene "🔍 Preview" button), still capped —
-  // a scene can itself be longer than the preview window is worth spending render time on.
-  if(Number.isInteger(body.scene_index)){
-    let scenes=[]; try{ scenes=JSON.parse(project.scenes_json||'[]'); }catch(e){}
-    const scene=scenes[body.scene_index];
-    if(scene){ previewStart=Math.max(fullTrimStart, scene.start); previewEnd=Math.min(fullTrimEnd, Math.min(scene.end, scene.start+PREVIEW_MAX_SEC)); }
-  }
-  if(previewEnd<=previewStart) return json({error:'Nothing to preview in this range.'}, 400);
-
-  const c=await getClientById(env, payload.cid);
-  const watermarked=marketingIsWatermarked(c);
-  let spec;
-  try{ spec=await marketingBuildRenderSpec(env, payload.cid, project, body.options||{}, previewStart, previewEnd, watermarked, 'draft'); }
-  catch(e){ return json({error:e.message}, 400); }
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'preview', false);
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-  return json({ok:true, job_id:result.job_id});
-}
-
-// AI-generated B-roll (see render-pipeline/lib/falBroll.js) — fal.ai is PAID, so this only runs
-// when the client has set their own fal_api_key in Marketing Studio > 🔑 API Keys; there is no
-// shared server default to fall back to (unlike Pexels/Pixabay/Freesound), so a client's spend is
-// always billed to their own key. Runs on the SAME job queue/webhook as a real render
-// (jobType:'ai_broll', updateProjectStatus:false) — see handleMarketingRenderWebhook's job.type
-// branch for why it never touches the project's output/status/minutes.
-async function handleMarketingGenerateAiBroll(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-  const body=await request.json().catch(()=>({}));
-  const projectId=Number(body.project_id);
-  const tag=(body.tag||'').trim();
-  const prompt=(body.prompt||'').trim();
-  if(!projectId||!tag||!prompt) return json({error:'project_id, tag and prompt are required.'}, 400);
-  const project=await env.DB.prepare(`SELECT target_aspect FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const clientKeys=await marketingGetClientKeys(env, payload.cid);
-  if(!clientKeys.fal_api_key) return json({error:'Set your fal.ai API key first — Marketing Studio > 🔑 API Keys (fal.ai is paid; this feature bills to your own key, not a shared default).'}, 400);
-  const spec={mode:'ai-broll', tag, prompt, target_aspect:project.target_aspect||'9:16', client_keys:clientKeys};
-  const result=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, null, 'ai_broll', false);
-  if(!result.ok) return json({error:'Could not reach the render pipeline: '+result.error}, 502);
-  return json({ok:true, job_id:result.job_id});
-}
-
-async function handleMarketingJobsList(request, env, url){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const projectId=Number(url.searchParams.get('project_id'));
-  if(!projectId) return json({error:'project_id required'}, 400);
-  const project=await env.DB.prepare(`SELECT id FROM marketing_projects WHERE id=? AND client_id=?`).bind(projectId, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  const {results}=await env.DB.prepare(`SELECT id, type, status, progress_pct, error, output_url, created_at, updated_at, completed_at FROM marketing_jobs WHERE project_id=? ORDER BY id DESC LIMIT 20`).bind(projectId).all();
-  return json({list:results||[]});
-}
-
-// PUBLIC route — the external render pipeline calls this back, not the dashboard, so there's no
-// session token to check. Authenticated instead via MARKETING_RENDER_WEBHOOK_SECRET, same
-// HMAC-over-raw-body scheme as verifyShopifyWebhookHmac (just a generic secret instead of a
-// Shopify one, since the pipeline is whatever the operator wired up rather than a fixed vendor).
-async function handleMarketingRenderWebhook(request, env){
-  const rawBody=await request.text();
-  if(!env.MARKETING_RENDER_WEBHOOK_SECRET||!await verifyHmacSignature(env.MARKETING_RENDER_WEBHOOK_SECRET, rawBody, request.headers.get('X-Signature'))){
-    return json({error:'Invalid signature'}, 401);
-  }
-  const body=JSON.parse(rawBody);
-  const jobId=Number(body.job_id);
-  const job=await env.DB.prepare(`SELECT * FROM marketing_jobs WHERE id=?`).bind(jobId).first();
-  if(!job) return json({error:'Unknown job'}, 404);
-  const now=new Date().toISOString();
-  const outputUrl=body.output_url||(body.output_key?`${env.WORKER_BASE_URL}/marketing/media/${body.output_key}`:null);
-  if(body.status==='done'){
-    await env.DB.prepare(`UPDATE marketing_jobs SET status='done', progress_pct=100, output_url=?, completed_at=?, updated_at=? WHERE id=?`).bind(outputUrl, now, now, job.id).run();
-    // Previews/AI-broll-generation are never the project's deliverable, so they never touch the
-    // project row. 'render_extra' (a batch multi-aspect export's non-primary aspects — see
-    // handleMarketingRenderStart) IS a real deliverable render, just not the project's *canonical*
-    // one (the project only has one output_key column) — its result lives on the job row only
-    // (already written above), same place a preview's does, but unlike a preview it's still a real
-    // billable render, so minutes billing runs for it while the project-row update doesn't.
-    if(job.type==='render'){
-      await env.DB.prepare(`UPDATE marketing_projects SET status='done', output_key=?, output_url=?, output_duration_sec=?, updated_at=? WHERE id=?`)
-        .bind(body.output_key||null, outputUrl, Number(body.duration_sec)||null, now, job.project_id).run();
-    }
-    if(job.type==='render' || job.type==='render_extra'){
-      const minutes=Math.ceil((Number(body.duration_sec)||0)/60);
-      if(minutes>0){
-        const c=await getClientById(env, job.client_id);
-        await patchClientFields(env, job.client_id, {marketing_minutes_used:(Number(c?.marketing_minutes_used)||0)+minutes});
-      }
-    }
-  } else {
-    await marketingFailJob(env, job.id, job.project_id, body.error||'Render failed', ['preview','ai_broll','render_extra'].includes(job.type)?null:'ready');
-  }
-  return json({ok:true});
-}
-
-// Public, no session — same trust model as handleEcomCategoryMediaServe/handleHospitalityMediaServe
-// (the <video> tag / WhatsApp's own media fetch can't send an Authorization header; the key,
-// keyed by client+project, isn't guessable). Supports Range requests since video scrubbing in the
-// project editor's preview player needs them (plain full-body GETs stall Safari's seek bar).
-async function handleMarketingMediaServe(request, env, key){
-  if(!key) return json({error:'Not found'}, 404);
-  const head=await env.MARKETING_MEDIA.head(key);
-  if(!head) return json({error:'Not found'}, 404);
-  let range=null;
-  const rangeHeader=request.headers.get('Range');
-  if(rangeHeader){
-    const m=/bytes=(\d*)-(\d*)/.exec(rangeHeader);
-    if(m){
-      const start=m[1]?parseInt(m[1],10):0;
-      const end=m[2]?parseInt(m[2],10):head.size-1;
-      range={offset:start, length:Math.min(end,head.size-1)-start+1};
-    }
-  }
-  const obj=await env.MARKETING_MEDIA.get(key, range?{range}:undefined);
-  if(!obj) return json({error:'Not found'}, 404);
-  const headers=new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set('etag', obj.httpEtag);
-  headers.set('Cache-Control', 'public, max-age=86400');
-  headers.set('Accept-Ranges', 'bytes');
-  if(range){
-    headers.set('Content-Range', `bytes ${range.offset}-${range.offset+range.length-1}/${head.size}`);
-    return new Response(obj.body, {status:206, headers});
-  }
-  return new Response(obj.body, {headers});
-}
-
-// Direct send-to-WhatsApp (#17) — reuses the same wa_phone_id/wa_token Graph API credentials as
-// handleWaSend, just a `video` message (link, not upload) instead of `text`, fitting the
-// existing Chatwoot/WhatsApp infra rather than inventing a new delivery channel.
-async function handleMarketingSendWhatsapp(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.project_id);
-  const phone=(body.phone||'').replace(/[^0-9]/g,'');
-  if(!id||!phone) return json({error:'project_id and phone required'}, 400);
-  const project=await env.DB.prepare(`SELECT * FROM marketing_projects WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!project) return json({error:'Not found'}, 404);
-  if(!project.output_url) return json({error:'This project has not finished rendering yet.'}, 400);
-  const c=await getClientById(env, payload.cid);
-  if(!c?.wa_phone_id||!c?.wa_token) return json({error:'WhatsApp phone / token not configured.'}, 400);
-  const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-    method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({messaging_product:'whatsapp', to:phone, type:'video', video:{link:project.output_url, caption:project.title||''}}),
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  return json({ok:true});
-}
-
-/* ── VIDEO TEMPLATES (SETUP.md "Marketing Studio module — Video Templates") — "create videos
-   using code instead of editing, generate hundreds automatically": a template is a scene spec
-   (JSON, not a WYSIWYG editor) with {{variable}} placeholders; generating a batch substitutes
-   each row of data into that spec and submits one render job per row through the exact same
-   marketingSubmitRenderJob()/external pipeline as a regular project — a template-generated
-   project is a normal marketing_projects row (template_id/template_vars_json just record where
-   it came from), so it shows up in the ordinary Projects list/download/WhatsApp-send flow. ── */
-
-const MARKETING_TEMPLATE_BATCH_MAX=100; // "hundreds automatically" is the pitch; a hard cap keeps one request from fanning out an unbounded number of render jobs (and unbounded minutes spend) at once — regenerate in further batches for more than this.
-
-// Template Library ("create a template library like Captions.ai") — curated starter templates
-// any client can browse and clone into their own editable marketing_templates row
-// (handleMarketingTemplateLibraryClone below). Static list, same zero-cost shape as
-// MARKETING_STYLE_PRESETS/MARKETING_AUTOEDIT_PRESETS — no seed data in D1, nothing to migrate.
-const MARKETING_TEMPLATE_LIBRARY=[
-  {id:'flash-sale', name:'Flash Sale', category:'Ecommerce', description:'Bold discount announcement with an urgency close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'⚡ {{discount}}% OFF', duration_sec:3, text_color:'#FFFFFF', bg_color:'#DC2626'},
-      {type:'text', content:'{{product_name}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:'Ends {{end_date}} — Shop Now!', duration_sec:3, text_color:'#FFE600', bg_color:'#DC2626'},
-    ]},
-  {id:'product-launch', name:'Product Launch', category:'Ecommerce', description:'Three-beat reveal: intro, name, tagline.', target_aspect:'9:16', style_id:'gradient-glow', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'Introducing', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:'{{product_name}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{tagline}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'testimonial-quote', name:'Testimonial Quote', category:'Trust & Social Proof', description:'Customer quote card with attribution.', target_aspect:'9:16', style_id:'classic-white', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'"{{quote}}"', duration_sec:5, text_color:'#FFFFFF', bg_color:'#0F766E'},
-      {type:'text', content:'— {{customer_name}}', duration_sec:3, text_color:'#A7F3D0', bg_color:'#0F766E'},
-    ]},
-  {id:'countdown-urgency', name:'Countdown / Urgency', category:'Ecommerce', description:'Time-boxed offer, built for a fast scroll-stop.', target_aspect:'9:16', style_id:'karaoke-yellow', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'⏰ Only {{hours_left}} hours left!', duration_sec:4, text_color:'#FFFFFF', bg_color:'#B45309'},
-      {type:'text', content:'{{offer_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'before-after', name:'Before & After', category:'Trust & Social Proof', description:'Transformation reveal in three beats.', target_aspect:'9:16', style_id:'boxed-caption', estimated_duration_sec:9,
-    scenes:[
-      {type:'text', content:'BEFORE', duration_sec:3, text_color:'#FFFFFF', bg_color:'#374151'},
-      {type:'text', content:'AFTER', duration_sec:3, text_color:'#FFFFFF', bg_color:'#059669'},
-      {type:'text', content:'{{result_description}}', duration_sec:3, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'welcome-intro', name:'Welcome / Business Intro', category:'Brand', description:'Founder/business introduction ending in a WhatsApp CTA.', target_aspect:'9:16', style_id:'clean-minimal', estimated_duration_sec:10,
-    scenes:[
-      {type:'text', content:"Hi, I'm {{name}}", duration_sec:3, text_color:'#FFFFFF', bg_color:'#1E3A8A'},
-      {type:'text', content:'{{business_description}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#111111'},
-      {type:'text', content:"Let's connect on WhatsApp", duration_sec:3, text_color:'#FFFFFF', bg_color:'#25D366'},
-    ]},
-  {id:'cta-contact', name:'Call-to-Action / Contact', category:'Brand', description:'Punchy CTA card with a phone number close.', target_aspect:'9:16', style_id:'bold-pop', estimated_duration_sec:6,
-    scenes:[
-      {type:'text', content:'{{cta_headline}}', duration_sec:3.5, text_color:'#FFFFFF', bg_color:'#DC2626'},
-      {type:'text', content:'📱 {{phone_number}}', duration_sec:2.5, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'weekly-tip', name:'Weekly Tip / Educational', category:'Content', description:'Recurring tip-of-the-week format.', target_aspect:'9:16', style_id:'neon-highlight', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'💡 Tip of the Week', duration_sec:3, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{tip_text}}', duration_sec:5, text_color:'#FFFFFF', bg_color:'#111111'},
-    ]},
-  {id:'square-promo', name:'Square Feed Promo', category:'Ecommerce', description:'1:1 format for Instagram/Facebook feed posts.', target_aspect:'1:1', style_id:'gradient-glow', estimated_duration_sec:8,
-    scenes:[
-      {type:'text', content:'{{headline}}', duration_sec:4, text_color:'#FFFFFF', bg_color:'#7C3AED'},
-      {type:'text', content:'{{cta_text}}', duration_sec:4, text_color:'#FFE600', bg_color:'#111111'},
-    ]},
-];
-
-async function handleMarketingTemplateLibrary(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_TEMPLATE_LIBRARY.map(({scenes, ...meta})=>({...meta, scene_count:scenes.length}))});
-}
-
-async function handleMarketingTemplateLibraryClone(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const libraryTemplate=MARKETING_TEMPLATE_LIBRARY.find(t=>t.id===body.library_id);
-  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), libraryTemplate.name, JSON.stringify(libraryTemplate.scenes), libraryTemplate.target_aspect, libraryTemplate.style_id, libraryTemplate.estimated_duration_sec, now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-// Remotion Library ("Remotion for the template/style layer") — real animated React/Remotion
-// compositions (spring/interpolate-driven motion), as opposed to the static text/image "scenes"
-// MARKETING_TEMPLATE_LIBRARY clones. Registry ids/props here must match
-// render-pipeline/remotion/Root.jsx's REGISTRY exactly — this is metadata only (labels, hints,
-// duration) for the picker UI and batch-generate form; the actual composition code lives in the
-// render pipeline. Cloning creates a normal marketing_templates row with engine='remotion', so it
-// flows through the exact same list/edit/generate/render machinery as an ffmpeg template.
-const MARKETING_REMOTION_LIBRARY=[
-  {id:'FlashSale', name:'Flash Sale (Animated)', category:'Ecommerce', description:'Pulsing discount badge with an animated reveal.', target_aspect:'9:16', estimated_duration_sec:3,
-    props_schema:[
-      {key:'discount', label:'Discount %', default:'50'},
-      {key:'product_name', label:'Product name', default:'Your Product'},
-      {key:'end_date', label:'Offer ends', default:'Sunday'},
-    ]},
-  {id:'ProductLaunch', name:'Product Launch (Animated)', category:'Ecommerce', description:'Animated name + tagline reveal for a new product.', target_aspect:'9:16', estimated_duration_sec:3.5,
-    props_schema:[
-      {key:'product_name', label:'Product name', default:'Your Product'},
-      {key:'tagline', label:'Tagline', default:'The next big thing.'},
-    ]},
-  {id:'Countdown', name:'Countdown / Urgency (Animated)', category:'Ecommerce', description:'Live-ticking hours-left counter with a pulsing animation.', target_aspect:'9:16', estimated_duration_sec:3,
-    props_schema:[
-      {key:'hours_left', label:'Hours left', default:'24'},
-      {key:'offer_description', label:'Offer description', default:'Limited time offer'},
-    ]},
-  {id:'Testimonial', name:'Testimonial Quote (Animated)', category:'Trust & Social Proof', description:'Animated quote card with attribution.', target_aspect:'9:16', estimated_duration_sec:3.5,
-    props_schema:[
-      {key:'quote', label:'Quote', default:'This changed everything for us.'},
-      {key:'customer_name', label:'Customer name', default:'A happy customer'},
-    ]},
-];
-
-async function handleMarketingRemotionLibrary(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  return json({list:MARKETING_REMOTION_LIBRARY});
-}
-
-async function handleMarketingRemotionLibraryClone(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const libraryTemplate=MARKETING_REMOTION_LIBRARY.find(t=>t.id===body.library_id);
-  if(!libraryTemplate) return json({error:'Unknown library template'}, 404);
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, engine, remotion_composition_id, props_schema_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), libraryTemplate.name, '[]', libraryTemplate.target_aspect, null, libraryTemplate.estimated_duration_sec, 'remotion', libraryTemplate.id, JSON.stringify(libraryTemplate.props_schema), now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-function marketingSerializeTemplate(row){
-  if(!row) return null;
-  let scenes=[]; try{ scenes=JSON.parse(row.scenes_json||'[]'); }catch(e){}
-  let propsSchema=null; try{ propsSchema=row.props_schema_json?JSON.parse(row.props_schema_json):null; }catch(e){}
-  return {id:row.id, name:row.name, scenes, target_aspect:row.target_aspect, style_id:row.style_id, estimated_duration_sec:row.estimated_duration_sec,
-    engine:row.engine||'ffmpeg', remotion_composition_id:row.remotion_composition_id||null, props_schema:propsSchema,
-    created_at:row.created_at, updated_at:row.updated_at};
-}
-
-// Substitutes {{key}} in every string field of a scene with vars[key] (blank if missing) —
-// deliberately dumb string substitution, not a template language, matching the "code, not a
-// visual editor" pitch without pulling in a templating dependency for eight scene fields.
-function marketingResolveScenes(scenes, vars){
-  const sub=(s)=>typeof s==='string'?s.replace(/\{\{\s*([\w.-]+)\s*\}\}/g,(m,k)=>(vars[k]!=null?String(vars[k]):'')):s;
-  return (scenes||[]).map(scene=>{
-    const resolved={};
-    Object.entries(scene).forEach(([k,v])=>{ resolved[k]=sub(v); });
-    return resolved;
-  });
-}
-
-async function handleMarketingTemplatesList(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {results}=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE client_id=? ORDER BY updated_at DESC`).bind(Number(payload.cid)).all();
-  return json({list:(results||[]).map(marketingSerializeTemplate)});
-}
-
-async function handleMarketingTemplateCreate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const name=(body.name||'').trim().slice(0,120);
-  if(!name) return json({error:'name required'}, 400);
-  if(!Array.isArray(body.scenes)||!body.scenes.length) return json({error:'scenes (a non-empty array) required'}, 400);
-  const targetAspect=['9:16','1:1','16:9'].includes(body.target_aspect)?body.target_aspect:'9:16';
-  const now=new Date().toISOString();
-  const result=await env.DB.prepare(`INSERT INTO marketing_templates (client_id, name, scenes_json, target_aspect, style_id, estimated_duration_sec, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)`)
-    .bind(Number(payload.cid), name, JSON.stringify(body.scenes), targetAspect, body.style_id||null, Number(body.estimated_duration_sec)||15, now, now).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(result.meta.last_row_id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-async function handleMarketingTemplateUpdate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  const existing=await env.DB.prepare(`SELECT id FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).first();
-  if(!existing) return json({error:'Not found'}, 404);
-  const sets=[], vals=[];
-  if(body.name!==undefined){ sets.push('name=?'); vals.push(String(body.name).slice(0,120)); }
-  if(body.scenes!==undefined){ sets.push('scenes_json=?'); vals.push(JSON.stringify(body.scenes)); }
-  if(body.target_aspect!==undefined && ['9:16','1:1','16:9'].includes(body.target_aspect)){ sets.push('target_aspect=?'); vals.push(body.target_aspect); }
-  if(body.style_id!==undefined){ sets.push('style_id=?'); vals.push(body.style_id); }
-  if(body.estimated_duration_sec!==undefined){ sets.push('estimated_duration_sec=?'); vals.push(Number(body.estimated_duration_sec)||15); }
-  if(!sets.length) return json({error:'Nothing to update'}, 400);
-  sets.push('updated_at=?'); vals.push(new Date().toISOString());
-  vals.push(id);
-  await env.DB.prepare(`UPDATE marketing_templates SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
-  const row=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=?`).bind(id).first();
-  return json({ok:true, template:marketingSerializeTemplate(row)});
-}
-
-async function handleMarketingTemplateDelete(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const id=Number(body.id);
-  if(!id) return json({error:'id required'}, 400);
-  await env.DB.prepare(`DELETE FROM marketing_templates WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
-  return json({ok:true});
-}
-
-// Batch-generate: one marketing_projects row + one render job per data row. Partial failure is
-// expected at this scale (a bad row, a flaky pipeline call) — every row is attempted and the
-// per-row outcome is returned rather than aborting the whole batch on the first error.
-async function handleMarketingTemplateGenerate(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const body=await request.json().catch(()=>({}));
-  const templateId=Number(body.template_id);
-  const rows=Array.isArray(body.rows)?body.rows:[];
-  if(!templateId) return json({error:'template_id required'}, 400);
-  if(!rows.length) return json({error:'rows (a non-empty array of variable objects) required'}, 400);
-  if(rows.length>MARKETING_TEMPLATE_BATCH_MAX) return json({error:`Max ${MARKETING_TEMPLATE_BATCH_MAX} rows per batch — split into more than one generate call.`}, 400);
-  if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return json({error:'The render pipeline is not configured yet — see SETUP.md "Marketing Studio module".'}, 400);
-
-  const template=await env.DB.prepare(`SELECT * FROM marketing_templates WHERE id=? AND client_id=?`).bind(templateId, Number(payload.cid)).first();
-  if(!template) return json({error:'Not found'}, 404);
-  let scenes=[]; try{ scenes=JSON.parse(template.scenes_json||'[]'); }catch(e){ return json({error:'Template scenes are corrupted.'}, 400); }
-
-  const c=await getClientById(env, payload.cid);
-  const perVideoMinutes=Math.max(1, Math.ceil((Number(template.estimated_duration_sec)||15)/60));
-  const minutesNeeded=perVideoMinutes*rows.length;
-  const limit=Number(c?.marketing_minutes_limit ?? env.MARKETING_DEFAULT_MINUTES_LIMIT ?? 30);
-  const used=Number(c?.marketing_minutes_used)||0;
-  if(used+minutesNeeded>limit) return json({error:`This batch needs ~${minutesNeeded} min (${rows.length} × ~${perVideoMinutes} min) but only ${Math.max(0, limit-used)} min are left this billing period.`}, 400);
-
-  const engine=template.engine||'ffmpeg';
-  const style=engine==='remotion'?null:await marketingResolveStyle(env, payload.cid, template.style_id);
-  const watermarked=marketingIsWatermarked(c);
-  const resolution=MARKETING_RESOLUTIONS[template.target_aspect]||MARKETING_RESOLUTIONS['9:16'];
-
-  const results=[];
-  for(const vars of rows){
-    const now=new Date().toISOString();
-    const title=(vars.title||vars.name||template.name).toString().slice(0,120);
-    const projectResult=await env.DB.prepare(`INSERT INTO marketing_projects (client_id, title, target_aspect, status, style_id, template_id, template_vars_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)`)
-      .bind(Number(payload.cid), title, template.target_aspect, 'ready', template.style_id, templateId, JSON.stringify(vars), now, now).run();
-    const projectId=projectResult.meta.last_row_id;
-    const spec=engine==='remotion'
-      ? {mode:'template', engine:'remotion', remotion_composition_id:template.remotion_composition_id, target_aspect:template.target_aspect, resolution, props:vars, watermark:watermarked}
-      : {mode:'template', target_aspect:template.target_aspect, resolution, style, scenes:marketingResolveScenes(scenes, vars), watermark:watermarked};
-    const submitResult=await marketingSubmitRenderJob(env, payload.cid, projectId, spec, 'ready');
-    results.push({project_id:projectId, ok:submitResult.ok, error:submitResult.error||null});
-  }
-  return json({ok:true, results});
-}
-
+/* Marketing Studio was retired. Historical D1 tables are intentionally preserved by the migration files. */
 /* ══════════════════════════════════════════════════════════════════════════════════════════
    REAL ESTATE MODULE (frontend/real-estate.html — "🏘️ Real Estate" dashboard nav tab, gated by
    CLIENTS.real_estate_enabled same as b2b_enabled/hospitality_enabled). Same iframe-embed pattern
@@ -21766,6 +24277,7 @@ const hcServicesCrud=reCrud('healthcare_services', [
   {key:'short_label', type:'text', maxLen:80}, {key:'aliases', type:'text', maxLen:1000},
   {key:'description', type:'text', required:true, maxLen:4000}, {key:'price', type:'number'},
   {key:'currency', type:'text', maxLen:20}, {key:'duration_minutes', type:'number'},
+  {key:'service_type', type:'text', maxLen:50},
   {key:'preparation', type:'text', maxLen:2000}, {key:'booking_url', type:'text', maxLen:1000},
   {key:'image_url', type:'text', maxLen:1000}, {key:'image_url_2', type:'text', maxLen:1000},
   {key:'image_url_3', type:'text', maxLen:1000}, {key:'image_url_4', type:'text', maxLen:1000},
@@ -21827,6 +24339,68 @@ async function hcRequireSessionClient(request, env){
   const c=await getClientById(env, payload.cid);
   return c?{payload,c}:null;
 }
+// ── Flowvyne plugin settings ──────────────────────────────────────────────
+// GET  /flowvyne/settings — returns whether Flowvyne is enabled for this client
+//                          and their published flows (fetched from Flowvyne via Service Binding)
+// POST /flowvyne/settings — { enabled: true|false } to enroll or remove the client
+// DELETE /flowvyne/contacts — reset all contacts' flow state (use after breaking flow changes)
+
+async function handleFlowvyneSettingsGet(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  if(!env.FLOWVYNE) return json({enabled:false, flows:[], unavailable:true});
+  try{
+    const [statusResp, flowsResp]=await Promise.all([
+      env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`)),
+      env.FLOWVYNE.fetch(new Request('https://flowvyne/api/flows', {headers:{'X-Tenant-Id':clientId}})),
+    ]);
+    const enabled=statusResp.ok && statusResp.status!==404;
+    const flows=flowsResp.ok?await flowsResp.json():[];
+    return json({enabled, flows});
+  }catch(e){
+    return json({enabled:false, flows:[], error:'Flowvyne unavailable'});
+  }
+}
+
+async function handleFlowvyneSettingsUpdate(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  if(!env.FLOWVYNE) return json({error:'Flowvyne binding not configured'}, 503);
+  const body=await request.json().catch(()=>({}));
+  const enable=body.enabled===true||body.enabled==='true';
+  try{
+    let fvResp;
+    if(enable){
+      fvResp=await env.FLOWVYNE.fetch(new Request('https://flowvyne/api/tenants',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({tenant_id:clientId, note:String(body.note||'').slice(0,200)||undefined}),
+      }));
+    } else {
+      fvResp=await env.FLOWVYNE.fetch(new Request(`https://flowvyne/api/tenants/${encodeURIComponent(clientId)}`,{method:'DELETE'}));
+    }
+    if(!fvResp.ok){
+      const errText=await fvResp.text().catch(()=>'');
+      return json({ok:false, error:`Flowvyne API error ${fvResp.status}: ${errText.slice(0,200)}`});
+    }
+    return json({ok:true, enabled:enable});
+  }catch(e){
+    return json({ok:false, error:`Flowvyne unreachable: ${String(e).slice(0,200)}`});
+  }
+}
+
+async function handleFlowvyneContactsReset(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const clientId=String(session.cid);
+  const {meta}=await env.DB.prepare(
+    'UPDATE flowvyne_conversation_state SET flow_current_node=NULL, flow_variables=\'{}\', updated_at=? WHERE client_id=?'
+  ).bind(new Date().toISOString(), Number(clientId)).run();
+  return json({ok:true, reset_count:meta.changes});
+}
+
 async function handleHcSettingsGet(request, env){
   const auth=await hcRequireSessionClient(request, env);
   if(!auth) return json({error:'Invalid or expired session'}, 401);
@@ -21916,206 +24490,82 @@ async function handleHcAvailability(request, env){
   return json({list:await hcAvailableSlots(env,auth.payload.cid,auth.c,doctorId,date,serviceId,appointmentId), gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
-function hcBookingExpiry(){ return new Date(Date.now()+30*60*1000).toISOString(); }
-async function hcBookingSession(env,clientId,phone){
-  const row=await env.DB.prepare(`SELECT * FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first();
-  if(row&&Date.parse(row.expires_at)<=Date.now()){
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    return null;
-  }
-  return row||null;
+async function hcSimpleSession(env,clientId,phone){
+  return env.DB.prepare(`SELECT * FROM healthcare_simple_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).first().catch(()=>null);
 }
-async function hcSaveBookingSession(env,clientId,phone,values={}){
-  const old=await hcBookingSession(env,clientId,phone)||{};
-  const row={...old,...values,client_id:Number(clientId),patient_phone:String(phone),expires_at:hcBookingExpiry(),updated_at:new Date().toISOString()};
-  await env.DB.prepare(`INSERT INTO healthcare_booking_sessions
-    (client_id,patient_phone,conversation_id,stage,service_id,doctor_id,appointment_date,start_time,end_time,patient_name,expires_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET
-    conversation_id=excluded.conversation_id,stage=excluded.stage,service_id=excluded.service_id,
-    doctor_id=excluded.doctor_id,appointment_date=excluded.appointment_date,start_time=excluded.start_time,
-    end_time=excluded.end_time,patient_name=excluded.patient_name,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
-    .bind(row.client_id,row.patient_phone,Number(row.conversation_id)||0,String(row.stage||''),Number(row.service_id)||0,
-      Number(row.doctor_id)||0,String(row.appointment_date||''),String(row.start_time||''),String(row.end_time||''),
-      String(row.patient_name||'').slice(0,200),row.expires_at,row.updated_at).run();
+async function hcSaveSimpleSession(env,clientId,phone,data){
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO healthcare_simple_sessions (client_id,patient_phone,stage,service_id,doctor_id,appt_date,appt_time,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id,patient_phone) DO UPDATE SET stage=excluded.stage,service_id=excluded.service_id,doctor_id=excluded.doctor_id,appt_date=excluded.appt_date,appt_time=excluded.appt_time,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),String(data.stage||''),Number(data.service_id)||0,Number(data.doctor_id)||0,String(data.appt_date||''),String(data.appt_time||''),now).run();
+
+}
+async function hcClearSimpleSession(env,clientId,phone){
+  await env.DB.prepare(`DELETE FROM healthcare_simple_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
+}
+async function hcEnsureSimpleSessionColumns(env){
+  for(const col of ['service_id INTEGER NOT NULL DEFAULT 0','doctor_id INTEGER NOT NULL DEFAULT 0']){
+    await env.DB.prepare(`ALTER TABLE healthcare_simple_sessions ADD COLUMN ${col}`).run().catch(()=>null);
+  }
+}
+async function hcCreateAppointmentInternal(env,clientId,c,{patientName,patientPhone,serviceId,doctorId,apptDate,apptTime}){
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,0,?,?,?,?,'','requested','whatsapp','','',?,?)`)
+    .bind(Number(clientId),String(patientName).slice(0,200),String(patientPhone).slice(0,40),Number(serviceId)||0,Number(doctorId)||0,String(apptDate),String(apptTime),now,now).run();
+  const row=await hcAppointmentRow(env,clientId,r.meta.last_row_id);
+  if(row) await hcQueueAppointmentAutomation(env,row,null,'upsert').catch(()=>null);
   return row;
 }
-function hcClinicDateAfter(c,days){
-  const timezone=hcClientTimezone(c), shifted=new Date(Date.now()+Number(days||0)*86400000);
-  try{
-    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(shifted);
-    const v=Object.fromEntries(parts.map(p=>[p.type,p.value]));
-    return `${v.year}-${v.month}-${v.day}`;
-  }catch(e){ return shifted.toISOString().slice(0,10); }
-}
-function hcBookingDateTitle(date){
-  try{return new Intl.DateTimeFormat('en',{weekday:'short',day:'2-digit',month:'short',timeZone:'UTC'}).format(new Date(`${date}T12:00:00Z`));}
-  catch(e){return date;}
-}
-function hcBookableSlots(c,date,slots){
-  const today=hcClinicDateAfter(c,0);
-  if(date!==today) return slots;
-  let current='00:00';
-  try{current=new Intl.DateTimeFormat('en-GB',{timeZone:hcClientTimezone(c),hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date());}catch(e){}
-  return (slots||[]).filter(slot=>slot.start_time>current);
-}
-async function hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang){
-  const items=[];
-  for(let day=0;day<14&&items.length<7;day++){
-    const date=hcClinicDateAfter(c,day);
-    const slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
-    if(slots.length) items.push({title:hcBookingDateTitle(date),value:`HC_BOOK_DATE:${date}`});
-  }
-  if(!items.length){
-    const text=await engineLocalizeReply(env,c,'No available appointment dates are configured. I will connect you to the clinic team.',replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
-    return {handled:true,text,quickReplies:null};
-  }
-  await hcSaveBookingSession(env,clientId,phone,{...session,conversation_id:Number(convId)||0,stage:'choose_date'});
-  const text=await engineLocalizeReply(env,c,'Please choose an available appointment date:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,items);
-  return {handled:true,text,quickReplies};
-}
-async function hcDoctorServices(env,clientId,doctorId){
-  // Services explicitly linked to this doctor via healthcare_doctor_services; falls back to
-  // department-based lookup so clinics that haven't set up explicit links still work.
-  const {results:linked}=await env.DB.prepare(
-    `SELECT s.* FROM healthcare_services s
-     INNER JOIN healthcare_doctor_services ds ON ds.service_id=s.id AND ds.client_id=s.client_id
-     WHERE ds.client_id=? AND ds.doctor_id=? AND s.status='active' ORDER BY s.name LIMIT 20`
-  ).bind(Number(clientId),Number(doctorId)).all().catch(()=>({results:[]}));
-  if(linked&&linked.length) return linked;
-  // Fallback: department-based
-  const doc=await env.DB.prepare(`SELECT department_id FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(Number(doctorId),Number(clientId)).first().catch(()=>null);
-  if(!doc?.department_id) return [];
-  const {results:dept}=await env.DB.prepare(`SELECT * FROM healthcare_services WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(Number(clientId),Number(doc.department_id)).all().catch(()=>({results:[]}));
-  return dept||[];
-}
-async function hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId=0,doctorId=0}={}){
-  const service=serviceId?await env.DB.prepare(`SELECT * FROM healthcare_services WHERE id=? AND client_id=? AND status='active'`).bind(Number(serviceId),Number(clientId)).first():null;
-  const doctor=doctorId?await env.DB.prepare(`SELECT * FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(Number(doctorId),Number(clientId)).first():null;
-  if((serviceId&&!service)||(doctorId&&!doctor)) return {handled:false};
-  const seed={conversation_id:Number(convId)||0,stage:'',service_id:Number(service?.id)||0,doctor_id:Number(doctor?.id)||0,appointment_date:'',start_time:'',end_time:'',patient_name:''};
-  if(doctor){
-    // When a doctor is chosen, check which services they handle. If multiple, ask the patient
-    // to pick a service first (so the appointment record has a service_id).
-    if(!service){
-      const doctorSvcs=await hcDoctorServices(env,clientId,doctor.id);
-      if(doctorSvcs.length>1){
-        await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_service'});
-        const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-        const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(doctorSvcs));
-        return {handled:true,text,quickReplies};
-      }
-      if(doctorSvcs.length===1) seed.service_id=Number(doctorSvcs[0].id);
-    }
-    return hcSendBookingDates(env,c,clientId,convId,phone,seed,replyLang);
-  }
-  // Service chosen first — find doctors who handle it (explicit links first, department fallback)
-  const {results:linkedDocs}=await env.DB.prepare(
-    `SELECT d.id,d.name FROM healthcare_doctors d
-     INNER JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id AND ds.client_id=d.client_id
-     WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 10`
-  ).bind(Number(clientId),Number(service.id)).all().catch(()=>({results:[]}));
-  let doctors=linkedDocs||[];
-  if(!doctors.length){
-    const {results}=await env.DB.prepare(`SELECT id,name FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 10`).bind(Number(clientId),Number(service?.department_id)||0).all();
-    doctors=results||[];
-  }
-  if(doctors.length===1) return hcSendBookingDates(env,c,clientId,convId,phone,{...seed,doctor_id:Number(doctors[0].id)},replyLang);
-  if(!doctors.length){
-    const text=await engineLocalizeReply(env,c,'No doctor is currently configured for online booking. I will connect you to the clinic team.',replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); await engineSendHandoverLabel(c,convId);
-    return {handled:true,text,quickReplies:null};
-  }
-  await hcSaveBookingSession(env,clientId,phone,{...seed,stage:'choose_doctor'});
-  const text=await engineLocalizeReply(env,c,'Please choose a doctor:',replyLang);
-  const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,doctors.map(d=>({title:d.name,value:`HC_BOOK_DOCTOR:${d.id}`})));
-  return {handled:true,text,quickReplies};
-}
-async function hcHandleWhatsappBooking(env,c,clientId,convId,phone,leadId,userText,replyLang){
-  await hcEnsureOperationsSchema(env);
+async function hcHandleWhatsappBookingLink(env,c,clientId,convId,phone,userText,replyLang){
   const action=String(userText||'').trim();
-  let match=action.match(/^HC_BOOK_SERVICE:(\d+)$/); if(match) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(match[1])});
-  match=action.match(/^HC_BOOK_DOCTOR:(\d+)$/);
-  if(match){
-    const session=await hcBookingSession(env,clientId,phone);
-    if(session?.stage==='choose_doctor') return hcSendBookingDates(env,c,clientId,convId,phone,{...session,doctor_id:Number(match[1])},replyLang);
-    return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{doctorId:Number(match[1])});
-  }
-  // Service name tapped while in choose_service stage (doctor already chosen, now picking service)
-  {
-    const preSession=await hcBookingSession(env,clientId,phone);
-    if(preSession?.stage==='choose_service'&&!action.startsWith('HC_BOOK_')){
-      const svc=await env.DB.prepare(`SELECT id FROM healthcare_services WHERE client_id=? AND (name=? OR short_label=?) AND status='active' LIMIT 1`).bind(Number(clientId),action,action).first().catch(()=>null);
-      if(svc) return hcSendBookingDates(env,c,clientId,convId,phone,{...preSession,service_id:Number(svc.id),stage:'choose_date'},replyLang);
+  // Handle structured booking button taps (values set by HC_BOOK_DOCTOR/HC_BOOK_SERVICE quick replies)
+  const docBookMatch=/^HC_BOOK_DOCTOR:(\d+)$/i.exec(action);
+  const svcBookMatch=/^HC_BOOK_SERVICE:(\d+)$/i.exec(action);
+  if(docBookMatch||svcBookMatch){
+    const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
+    let bookingLink='';
+    let label='';
+    if(docBookMatch){
+      const doctorId=Number(docBookMatch[1]);
+      const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=? LIMIT 1`).bind(doctorId,Number(clientId)).first().catch(()=>null);
+      label=doctor?.name||'your selected doctor';
+      bookingLink=(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&doctor_id=${doctorId}`;
+      if(c.external_store_link&&!/doctor_id/i.test(bookingLink)) bookingLink+=`${bookingLink.includes('?')?'&':'?'}doctor_id=${doctorId}`;
+    }else{
+      const serviceId=Number(svcBookMatch[1]);
+      const svc=await env.DB.prepare(`SELECT name,booking_url FROM healthcare_services WHERE id=? AND client_id=? LIMIT 1`).bind(serviceId,Number(clientId)).first().catch(()=>null);
+      label=svc?.name||'this service';
+      bookingLink=svc?.booking_url||(c.external_store_link||'').trim()||`${appBase}book.html?client=${clientId}&service_id=${serviceId}`;
     }
-  }
-  const session=await hcBookingSession(env,clientId,phone);
-  if(!session){
-    // Plain-text booking intent ("book", "schedule", "I want an appointment", etc.) — start the
-    // native WhatsApp flow directly instead of falling through to the FAQ LLM which can't offer
-    // the actual slot picker buttons.
-    if(!action.startsWith('HC_BOOK_') && /\b(?:book|schedule|appoint|reserv|slot|visit)\b/i.test(action)){
-      const allServices=await hcListActiveServices(env,clientId);
-      if(!allServices.length) return {handled:false};
-      if(allServices.length===1) return hcStartWhatsappBooking(env,c,clientId,convId,phone,replyLang,{serviceId:Number(allServices[0].id)});
-      const text=await engineLocalizeReply(env,c,'Please choose the service you would like to book:',replyLang);
-      const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,hcServiceChoiceItems(allServices));
-      return {handled:true,text,quickReplies};
-    }
-    return {handled:false};
-  }
-  if(action==='HC_BOOK_CANCEL'||/^(?:cancel|stop) booking$/i.test(action)){
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    const text=await engineLocalizeReply(env,c,'Appointment booking cancelled.',replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
+    if(!bookingLink) bookingLink=`${appBase}book.html?client=${clientId}`;
+    const msg=`To book an appointment for ${label}, use the link below:\n${bookingLink}`;
+    const text=await engineLocalizeReply(env,c,msg,replyLang);
+    await engineSendChatwootReply(env,c,clientId,convId,text);
     return {handled:true,text,quickReplies:null};
   }
-  if(action==='HC_BOOK_DATES') return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-  match=action.match(/^HC_BOOK_DATE:(\d{4}-\d{2}-\d{2})$/);
-  if(match&&session.doctor_id){
-    const date=match[1], slots=hcBookableSlots(c,date,await hcAvailableSlots(env,clientId,c,session.doctor_id,date,session.service_id,0));
-    if(!slots.length) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'choose_slot',appointment_date:date,start_time:'',end_time:''});
-    const text=await engineLocalizeReply(env,c,'Please choose an available time:',replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,slots.slice(0,10).map(s=>({title:`${s.start_time}–${s.end_time}`,value:`HC_BOOK_SLOT:${s.start_time}`})));
-    return {handled:true,text,quickReplies};
+  // Intercept clear booking intent; general questions (about doctors, services, availability) fall through to AI
+  if(!/\b(?:book(?:ing)?|appoint(?:ment)?|schedul(?:e|ing)|reserv(?:e|ation)?|slot|rebook|meeting|consult(?:ation)?|check.?up|walk.?in)\b/i.test(action)) return {handled:false};
+
+  await hcEnsureOperationsSchema(env);
+  // Resolve booking link: service-specific booking_url → client external_store_link → public book.html
+  const appBase=(env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html').replace(/dashboard\.html.*$/,'');
+  let bookingLink=(c.external_store_link||'').trim();
+  // Check if the message mentions a specific service and use that service's booking_url if set
+  const svcs=await hcListActiveServices(env,clientId);
+  if(svcs.length&&!bookingLink){
+    // Try to find a service mentioned in the message
+    const lower=action.toLowerCase();
+    const matched=svcs.find(s=>{
+      const names=[s.name,s.short_label,...(String(s.aliases||'').split(','))].map(x=>String(x||'').toLowerCase().trim()).filter(Boolean);
+      return names.some(n=>n&&lower.includes(n));
+    });
+    if(matched?.booking_url) bookingLink=matched.booking_url.trim();
   }
-  match=action.match(/^HC_BOOK_SLOT:(\d{2}:\d{2})$/);
-  if(match&&session.appointment_date&&session.doctor_id){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===match[1]);
-    if(!chosen) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'patient_name',start_time:chosen.start_time,end_time:chosen.end_time});
-    const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang); await engineSendChatwootReply(env,c,clientId,convId,text);
-    return {handled:true,text,quickReplies:null};
-  }
-  if(session.stage==='patient_name'&&!action.startsWith('HC_BOOK_')){
-    const patientName=action.replace(/\s+/g,' ').trim().slice(0,200);
-    if(patientName.length<2){const text=await engineLocalizeReply(env,c,"Please enter the patient's full name:",replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return {handled:true,text,quickReplies:null};}
-    const service=session.service_id?await env.DB.prepare(`SELECT name FROM healthcare_services WHERE id=? AND client_id=?`).bind(session.service_id,Number(clientId)).first():null;
-    const doctor=await env.DB.prepare(`SELECT name FROM healthcare_doctors WHERE id=? AND client_id=?`).bind(session.doctor_id,Number(clientId)).first();
-    await hcSaveBookingSession(env,clientId,phone,{...session,stage:'confirm',patient_name:patientName});
-    const summary=`Please confirm your appointment:\n\nPatient: ${patientName}\n${service?.name?`Service: ${service.name}\n`:''}Doctor: ${doctor?.name||''}\nDate: ${session.appointment_date}\nTime: ${session.start_time}`;
-    const text=await engineLocalizeReply(env,c,summary,replyLang);
-    const quickReplies=await engineSendChatwootQuickReply(env,c,clientId,convId,text,[{title:'Confirm Booking',value:'HC_BOOK_CONFIRM'},{title:'Change Date',value:'HC_BOOK_DATES'},{title:'Cancel',value:'HC_BOOK_CANCEL'}]);
-    return {handled:true,text,quickReplies};
-  }
-  if(action==='HC_BOOK_CONFIRM'&&session.stage==='confirm'){
-    const slots=hcBookableSlots(c,session.appointment_date,await hcAvailableSlots(env,clientId,c,session.doctor_id,session.appointment_date,session.service_id,0)), chosen=slots.find(s=>s.start_time===session.start_time);
-    if(!chosen){const text=await engineLocalizeReply(env,c,'That slot was just booked. Please choose another date.',replyLang);await engineSendChatwootReply(env,c,clientId,convId,text);return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);}
-    const now=new Date().toISOString(); let result;
-    try{
-      result=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'confirmed','whatsapp','','',?,?)`)
-        .bind(Number(clientId),session.patient_name,String(phone),Number(leadId)||0,Number(session.service_id)||0,Number(session.doctor_id),session.appointment_date,session.start_time,chosen.end_time,now,now).run();
-    }catch(error){
-      if(/unique|constraint/i.test(String(error?.message||error))) return hcSendBookingDates(env,c,clientId,convId,phone,session,replyLang);
-      throw error;
-    }
-    const row=await hcAppointmentRow(env,clientId,result.meta.last_row_id); await hcQueueAppointmentAutomation(env,row,null,'upsert');
-    await env.DB.prepare(`DELETE FROM healthcare_booking_sessions WHERE client_id=? AND patient_phone=?`).bind(Number(clientId),String(phone)).run();
-    const text=await engineLocalizeReply(env,c,`Appointment confirmed ✅\n\n${row.service_name?row.service_name+'\n':''}${row.doctor_name||''}\n${row.appointment_date} at ${row.start_time}`,replyLang);
-    await engineSendChatwootReply(env,c,clientId,convId,text); return {handled:true,text,quickReplies:null,appointmentId:row.id};
-  }
-  return {handled:false};
+  if(!bookingLink) bookingLink=`${appBase}book.html?client=${clientId}`;
+
+  const msg=`📅 To book an appointment, use the link below:\n${bookingLink}`;
+  const text=await engineLocalizeReply(env,c,msg,replyLang);
+  await engineSendChatwootReply(env,c,clientId,convId,text);
+  return {handled:true,text,quickReplies:null};
 }
 
 async function hcAppointmentRow(env, clientId, id){
@@ -22452,6 +24902,182 @@ async function handleHcAnalytics(request,env){
     gcal_connected:!!(auth.c.gcal_refresh_token&&auth.c.gcal_calendar_id)});
 }
 
+/* ── Healthcare Public Booking Form ──────────────────────────────────────────────────────────
+   Patient-facing, no authentication. Replaces the multi-step WhatsApp conversation: the bot
+   sends a short URL; the patient opens it in a browser and completes a step-by-step form.
+   Appointment creation goes through the same D1 path and queues the same reminders.
+   Routes: GET /hc/book  GET /hc/book/services  GET /hc/book/doctors
+           GET /hc/book/dates  GET /hc/book/slots  POST /hc/book/submit              ── */
+async function hcPublicClientForBooking(env,cidStr){
+  const clientId=Number(cidStr||0); if(!clientId) return null;
+  await hcEnsureOperationsSchema(env);
+  const c=await getClientById(env,clientId).catch(()=>null);
+  if(!c||c.industry!=='healthcare') return null;
+  return {clientId,c};
+}
+async function handleHcPublicBookPage(request,env){
+  const u=new URL(request.url), cid=u.searchParams.get('cid')||'', sid=u.searchParams.get('sid')||'', did=u.searchParams.get('did')||'';
+  const ctx=await hcPublicClientForBooking(env,cid);
+  if(!ctx) return new Response('Booking link not found.',{status:404,headers:{'Content-Type':'text/plain'}});
+  const clinicName=(ctx.c.name||'').replace(/</g,'&lt;');
+  const base=`${new URL(request.url).origin}/hc/book`;
+  const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Book Appointment — ${clinicName}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f7fa;color:#1a202c;min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:20px 16px}
+.card{background:#fff;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.08);width:100%;max-width:480px;padding:28px 24px}
+h1{font-size:1.2rem;font-weight:700;margin-bottom:4px}.sub{color:#718096;font-size:.85rem;margin-bottom:24px}
+.step{display:none}.step.active{display:block}
+h2{font-size:1rem;font-weight:600;margin-bottom:14px;color:#2d3748}
+.choices{display:flex;flex-direction:column;gap:10px}
+.choice{border:1.5px solid #e2e8f0;border-radius:10px;padding:13px 16px;cursor:pointer;font-size:.93rem;transition:border-color .15s,background .15s;text-align:left;background:#fff;width:100%}
+.choice:hover,.choice.selected{border-color:#4f46e5;background:#f0f0ff;color:#3730a3}
+.input-row{display:flex;flex-direction:column;gap:14px;margin-bottom:20px}
+label{font-size:.85rem;font-weight:500;color:#4a5568;display:block;margin-bottom:4px}
+input{width:100%;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.95rem;outline:none}
+input:focus{border-color:#4f46e5}
+.btn{width:100%;padding:13px;border:none;border-radius:10px;font-size:.95rem;font-weight:600;cursor:pointer;margin-top:8px}
+.btn-primary{background:#4f46e5;color:#fff}.btn-primary:hover{background:#4338ca}
+.btn-back{background:#f7fafc;color:#4a5568;border:1.5px solid #e2e8f0;margin-top:4px}.btn-back:hover{background:#edf2f7}
+.slots{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.summary{background:#f7fafc;border-radius:10px;padding:16px;font-size:.88rem;line-height:1.8;margin-bottom:16px}
+.summary b{color:#2d3748}.ok{text-align:center;padding:20px 0}.ok .icon{font-size:3rem;margin-bottom:12px}
+.ok h2{color:#2f855a}.ok p{color:#718096;margin-top:6px;font-size:.88rem}
+.err{color:#e53e3e;font-size:.82rem;margin-top:6px;display:none}.loading{color:#718096;font-size:.88rem;padding:8px 0}
+</style></head><body><div class="card">
+<h1>${clinicName}</h1><p class="sub">Book an appointment</p>
+<div id="s0" class="step active"><h2>Choose a service</h2><div id="svcList" class="choices"><p class="loading">Loading…</p></div></div>
+<div id="s1" class="step"><h2>Choose a doctor</h2><div id="docList" class="choices"><p class="loading">Loading…</p></div><button class="btn btn-back" onclick="goStep(0)">← Back</button></div>
+<div id="s2" class="step"><h2>Choose a date</h2><div id="dateList" class="choices"><p class="loading">Loading…</p></div><button class="btn btn-back" onclick="goStep(1)">← Back</button></div>
+<div id="s3" class="step"><h2>Choose a time</h2><div id="slotList" class="slots"></div><button class="btn btn-back" onclick="goStep(2)">← Back</button></div>
+<div id="s4" class="step"><h2>Your details</h2><div class="input-row">
+<div><label>Full name</label><input id="fname" placeholder="Patient name" autocomplete="name"></div>
+<div><label>Phone number</label><input id="fphone" placeholder="+971 50 123 4567" type="tel" autocomplete="tel"></div>
+</div><div id="ferr" class="err"></div>
+<button class="btn btn-primary" onclick="submitBooking()">Confirm Booking</button>
+<button class="btn btn-back" onclick="goStep(3)">← Back</button></div>
+<div id="s5" class="step ok"><div class="icon">✅</div><h2>Appointment Confirmed</h2><p id="confMsg"></p></div>
+</div>
+<script>
+const B='${base}',CID='${cid}',PRE_SID='${sid}',PRE_DID='${did}';
+let sel={sid:'',did:'',date:'',slot:''};
+function goStep(n){document.querySelectorAll('.step').forEach((s,i)=>s.classList.toggle('active',i===n));}
+async function api(path){const r=await fetch(B+path);return r.json();}
+async function loadServices(){
+  const d=await api('/services?cid='+CID);
+  const el=document.getElementById('svcList'); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading">No services available.</p>';return;}
+  if(PRE_SID){sel.sid=PRE_SID;loadDoctors();goStep(1);return;}
+  d.list.forEach(s=>{const b=document.createElement('button');b.className='choice';b.textContent=s.short_label||s.name;b.onclick=()=>{sel.sid=String(s.id);loadDoctors();goStep(1);};el.appendChild(b);});
+}
+async function loadDoctors(){
+  const el=document.getElementById('docList'); el.innerHTML='<p class="loading">Loading…</p>';
+  const d=await api('/doctors?cid='+CID+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading">No doctors available.</p>';return;}
+  if(PRE_DID&&!sel.did){sel.did=PRE_DID;loadDates();goStep(2);return;}
+  d.list.forEach(doc=>{const b=document.createElement('button');b.className='choice';
+    b.innerHTML='<b>'+doc.name+'</b>'+(doc.specialization?'<br><span style="font-size:.8rem;color:#718096">'+doc.specialization+'</span>':'');
+    b.onclick=()=>{sel.did=String(doc.id);loadDates();goStep(2);};el.appendChild(b);});
+}
+async function loadDates(){
+  const el=document.getElementById('dateList'); el.innerHTML='<p class="loading">Loading…</p>';
+  const d=await api('/dates?cid='+CID+'&doctor_id='+sel.did+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.dates||!d.dates.length){el.innerHTML='<p class="loading">No available dates. Please try another doctor.</p>';return;}
+  d.dates.forEach(dt=>{const b=document.createElement('button');b.className='choice';b.textContent=dt.label;
+    b.onclick=()=>{sel.date=dt.date;loadSlots();goStep(3);};el.appendChild(b);});
+}
+async function loadSlots(){
+  const el=document.getElementById('slotList'); el.innerHTML='<p class="loading" style="grid-column:1/-1">Loading…</p>';
+  const d=await api('/slots?cid='+CID+'&doctor_id='+sel.did+'&date='+sel.date+'&sid='+sel.sid); el.innerHTML='';
+  if(!d.list||!d.list.length){el.innerHTML='<p class="loading" style="grid-column:1/-1">No slots for this date. Please go back and choose another.</p>';return;}
+  d.list.forEach(s=>{const b=document.createElement('button');b.className='choice';b.textContent=s.start_time+' – '+s.end_time;
+    b.onclick=()=>{sel.slot=s.start_time;goStep(4);};el.appendChild(b);});
+}
+async function submitBooking(){
+  const name=document.getElementById('fname').value.trim(), phone=document.getElementById('fphone').value.trim();
+  const err=document.getElementById('ferr');
+  if(name.length<2){err.style.display='block';err.textContent='Please enter the patient name.';return;}
+  if(phone.length<5){err.style.display='block';err.textContent='Please enter a valid phone number.';return;}
+  err.style.display='none';
+  const r=await fetch(B+'/submit',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cid:CID,service_id:sel.sid,doctor_id:sel.did,appointment_date:sel.date,start_time:sel.slot,patient_name:name,patient_phone:phone})});
+  const d=await r.json();
+  if(!d.ok){err.style.display='block';err.textContent=d.error||'Booking failed. Please try again.';return;}
+  document.getElementById('confMsg').textContent='Date: '+d.appointment_date+' at '+d.start_time+(d.doctor_name?' · '+d.doctor_name:'');
+  goStep(5);
+}
+loadServices();
+</script></body></html>`;
+  return new Response(html,{status:200,headers:{'Content-Type':'text/html;charset=utf-8','Cache-Control':'no-store'}});
+}
+async function handleHcPublicBookServices(request,env){
+  const u=new URL(request.url); const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid'));
+  if(!ctx) return json({error:'Not found'},404);
+  const {results}=await env.DB.prepare(`SELECT id,name,short_label FROM healthcare_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 50`).bind(ctx.clientId).all();
+  return json({list:results||[]});
+}
+async function handleHcPublicBookDoctors(request,env){
+  const u=new URL(request.url), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  let doctors;
+  if(sid){
+    const linked=await env.DB.prepare(`SELECT d.id,d.name,d.specialization FROM healthcare_doctors d JOIN healthcare_doctor_services ds ON ds.doctor_id=d.id WHERE ds.client_id=? AND ds.service_id=? AND d.status='active' ORDER BY d.name LIMIT 20`).bind(ctx.clientId,sid).all().catch(()=>({results:[]}));
+    doctors=(linked.results||[]);
+    if(!doctors.length){
+      const svc=await env.DB.prepare(`SELECT department_id FROM healthcare_services WHERE id=? AND client_id=?`).bind(sid,ctx.clientId).first().catch(()=>null);
+      if(svc?.department_id){const r=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND department_id=? AND status='active' ORDER BY name LIMIT 20`).bind(ctx.clientId,Number(svc.department_id)).all().catch(()=>({results:[]}));doctors=r.results||[];}
+    }
+  } else {
+    const r=await env.DB.prepare(`SELECT id,name,specialization FROM healthcare_doctors WHERE client_id=? AND status='active' ORDER BY name LIMIT 20`).bind(ctx.clientId).all().catch(()=>({results:[]}));
+    doctors=r.results||[];
+  }
+  return json({list:doctors});
+}
+async function handleHcPublicBookDates(request,env){
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')||0), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  if(!doctorId) return json({error:'doctor_id required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const dates=[];
+  for(let day=0;day<14&&dates.length<7;day++){
+    const date=hcClinicDateAfter(ctx.c,day);
+    const slots=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,sid,0));
+    if(slots.length) dates.push({date,label:hcBookingDateTitle(date)});
+  }
+  return json({dates});
+}
+async function handleHcPublicBookSlots(request,env){
+  const u=new URL(request.url), doctorId=Number(u.searchParams.get('doctor_id')||0), date=String(u.searchParams.get('date')||''), sid=Number(u.searchParams.get('sid')||0);
+  const ctx=await hcPublicClientForBooking(env,u.searchParams.get('cid')); if(!ctx) return json({error:'Not found'},404);
+  if(!doctorId||!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'doctor_id and date required'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const list=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,sid,0));
+  return json({list});
+}
+async function handleHcPublicBookSubmit(request,env){
+  const b=await request.json().catch(()=>({}));
+  const ctx=await hcPublicClientForBooking(env,String(b.cid||'')); if(!ctx) return json({error:'Not found'},404);
+  const doctorId=Number(b.doctor_id||0), serviceId=Number(b.service_id||0), date=String(b.appointment_date||''), startTime=String(b.start_time||''), patientName=String(b.patient_name||'').trim().slice(0,200), patientPhone=String(b.patient_phone||'').trim().slice(0,40);
+  if(!doctorId||!date||!startTime||patientName.length<2||!patientPhone) return json({error:'All fields are required'},400);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({error:'Invalid date'},400);
+  const doctor=await env.DB.prepare(`SELECT id FROM healthcare_doctors WHERE id=? AND client_id=? AND status='active'`).bind(doctorId,ctx.clientId).first();
+  if(!doctor) return json({error:'Doctor not found'},404);
+  const slots=hcBookableSlots(ctx.c,date,await hcAvailableSlots(env,ctx.clientId,ctx.c,doctorId,date,serviceId,0));
+  const chosen=slots.find(s=>s.start_time===startTime);
+  if(!chosen) return json({error:'That time is no longer available. Please select another slot.'},409);
+  const now=new Date().toISOString(); let r;
+  try{
+    r=await env.DB.prepare(`INSERT INTO healthcare_appointments (client_id,patient_name,patient_phone,lead_id,service_id,doctor_id,appointment_date,start_time,end_time,status,source,notes,gcal_event_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'requested','form','','',?,?)`)
+      .bind(ctx.clientId,patientName,patientPhone,0,serviceId,doctorId,date,startTime,chosen.end_time,now,now).run();
+  }catch(e){
+    if(/unique|constraint/i.test(String(e?.message||e))) return json({error:'That time was just booked. Please select another slot.'},409);
+    throw e;
+  }
+  const row=await hcAppointmentRow(env,ctx.clientId,r.meta.last_row_id);
+  await hcQueueAppointmentAutomation(env,row,null,'upsert');
+  return json({ok:true,appointment_date:row.appointment_date,start_time:row.start_time,doctor_name:row.doctor_name||'',service_name:row.service_name||''});
+}
+
 /* ── Units — its own handlers (not the generic factory) for two side effects the generic CRUD
    can't express: sweeping expired holds back to "available" on every list, and writing a
    re_price_audit row whenever base_price/plc_charges/floor_rise_charges change (RERA compliance —
@@ -22724,10 +25350,1190 @@ async function handleReAnalytics(request, env){
    getWebSockets) rather than holding sockets in a plain in-memory field, so an idle DO with open
    connections isn't billed as continuously active. Push-only — the dashboard never sends
    anything meaningful back, so webSocketMessage is a no-op. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIVE TRAVEL AGENCY
+   A D1-backed, session-authenticated module kept deliberately separate from the
+   legacy Travel Agency/NocoDB implementation. Each client owns its supplier
+   credentials in encrypted D1 settings; saved secrets are never returned to the
+   browser. SerpApi is discovery-only; a fare is bookable only
+   after Riya or TripJack returns and subsequently revalidates it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const LT_SUPPLIERS=['serpapi','riya','tripjack','poomas'];
+const LT_BOOKABLE_SUPPLIERS=new Set(['riya','tripjack','poomas']);
+const LT_JSON_FIELDS=new Set(['itinerary_json','baggage_json','fare_rules_json','ticket_numbers_json','supplier_errors_json','frequent_flyer_json','raw_json','details_json']);
+let _ltSchemaEnsured=false;
+
+function ltNow(){ return new Date().toISOString(); }
+function ltRef(prefix){
+  const stamp=new Date().toISOString().replace(/\D/g,'').slice(2,14);
+  const rand=crypto.randomUUID().replace(/-/g,'').slice(0,6).toUpperCase();
+  return `${prefix}-${stamp}-${rand}`;
+}
+function ltText(value,max=250){ return String(value??'').trim().slice(0,max); }
+function ltJson(value,fallback){ try{return JSON.parse(value);}catch(e){return fallback;} }
+function ltRow(row){
+  if(!row)return row;
+  const out={...row};
+  for(const key of Object.keys(out)) if(LT_JSON_FIELDS.has(key)) out[key.replace(/_json$/,'')]=ltJson(out[key],key==='itinerary_json'||key==='ticket_numbers_json'?[]:{});
+  return out;
+}
+function ltPositiveInt(value,fallback,min=0,max=9){ const n=Math.floor(Number(value)); return Number.isFinite(n)?Math.min(max,Math.max(min,n)):fallback; }
+function ltMoney(value){ const n=Number(value); return Number.isFinite(n)?Math.max(0,Math.round(n*100)/100):0; }
+function ltMarkup(base,type,value){ const v=ltMoney(value); return type==='percent'?Math.round(base*v)/100:Math.min(v,1e9); }
+function ltSearchParams(body={}){
+  const tripType=['one_way','round_trip','multi_city'].includes(body.trip_type)?body.trip_type:'round_trip';
+  const origin=ltText(body.origin,3).toUpperCase(), destination=ltText(body.destination,3).toUpperCase();
+  const date=ltText(body.departure_date,10), ret=ltText(body.return_date,10);
+  if(!/^[A-Z]{3}$/.test(origin)||!/^[A-Z]{3}$/.test(destination)||origin===destination) throw new Error('Use different 3-letter origin and destination airport codes.');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('A valid departure date is required.');
+  if(tripType==='round_trip'&&!/^\d{4}-\d{2}-\d{2}$/.test(ret)) throw new Error('A valid return date is required for a round trip.');
+  const adults=ltPositiveInt(body.adults,1,1,9), children=ltPositiveInt(body.children,0), infants=ltPositiveInt(body.infants,0);
+  if(infants>adults) throw new Error('Infants cannot exceed adults.');
+  return {trip_type:tripType,origin,destination,departure_date:date,return_date:tripType==='round_trip'?ret:null,adults,children,infants,
+    cabin:['economy','premium_economy','business','first'].includes(body.cabin)?body.cabin:'economy',currency:/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED',lead_id:ltText(body.lead_id,80)};
+}
+
+export function ltNormalizeOffer(supplier,raw,ctx={}){
+  const source=String(supplier||'').toLowerCase();
+  if(source==='poomas'){
+    const isBook=Boolean(raw?.isBookable);
+    const fareId=ltOfferFareId(raw);
+    const total=ltMoney(raw?.displayPrice??raw?.totalFare??0);
+    const checkoutBase=String(ctx.checkout_base||'https://flypoomas.com');
+    const checkoutUrl=isBook&&fareId?`${checkoutBase}/book?fareId=${encodeURIComponent(fareId)}&supplier=${encodeURIComponent(String(raw?.supplier||''))}&source=leadvyne&client=${encodeURIComponent(String(ctx.client_id||''))}`:null;
+    return {
+      supplier:'poomas',supplier_offer_id:fareId,
+      bookable:isBook,validating:false,validating_supplier:'',
+      airline_code:ltText(raw?.airline||'',12).toUpperCase(),airline_name:ltText(raw?.airlineName||raw?.airline||'Flight',120),
+      flight_numbers:ltText(raw?.flightNumber||'',200),
+      itinerary:raw?.origin?[{origin:raw.origin,destination:raw.destination,departureTime:raw.departureTime,arrivalTime:raw.arrivalTime,duration:raw.duration,stops:raw.stops||0}]:[],
+      baggage:raw?.baggage||{},fare_rules:raw?.fareRules||{},
+      cabin:ltText(String(raw?.cabinClass||'economy').toLowerCase(),40),seats_left:Number.isFinite(Number(raw?.seatsLeft))?Number(raw.seatsLeft):null,
+      currency:ltText(raw?.currency||ctx.currency||'AED',3).toUpperCase(),
+      base_amount:ltMoney(raw?.baseFare||0),tax_amount:ltMoney(raw?.taxes||0),markup_amount:0,total_amount:total,
+      checkout_url:checkoutUrl,
+      raw:{...raw,_checkout_url:checkoutUrl,_checkout_base:checkoutBase,_poomas_supplier:String(raw?.supplier||'')},
+    };
+  }
+  const price=ltMoney(raw?.total_amount??raw?.totalPrice??raw?.total_price??raw?.price?.total??raw?.price??raw?.fare?.totalFare??raw?.fare?.total_amount);
+  const tax=ltMoney(raw?.tax_amount??raw?.taxes??raw?.price?.tax??raw?.fare?.totalTax);
+  const segments=raw?.itinerary||raw?.segments||raw?.flights||raw?.journeys||[];
+  const first=Array.isArray(segments)?segments[0]:{};
+  const airline=raw?.airline_name||raw?.airline||first?.airline||first?.airline_name||'';
+  const airlineCode=raw?.airline_code||raw?.carrier_code||first?.airline_code||first?.airlineCode||'';
+  const numbers=raw?.flight_numbers||raw?.flight_number||first?.flight_number||first?.flightNumber||'';
+  const base=ltMoney(raw?.base_amount??raw?.baseFare??raw?.base_fare??Math.max(0,price-tax));
+  const markup=ltMarkup(price||base,ctx.markup_type||'fixed',ctx.markup_value||0);
+  return {
+    supplier:source,supplier_offer_id:ltText(raw?.id??raw?.offer_id??raw?.result_index??raw?.token??raw?.booking_token,300),
+    bookable:LT_BOOKABLE_SUPPLIERS.has(source),validating:source==='serpapi',validating_supplier:source==='serpapi'?'riya_or_tripjack':'',
+    airline_code:ltText(airlineCode,12).toUpperCase(),airline_name:ltText(airline,120),flight_numbers:ltText(Array.isArray(numbers)?numbers.join(', '):numbers,200),
+    itinerary:Array.isArray(segments)?segments:[],baggage:raw?.baggage||raw?.baggage_info||{},fare_rules:raw?.fare_rules||raw?.fareRules||{},
+    cabin:ltText(raw?.cabin||ctx.cabin||'economy',40),seats_left:Number.isFinite(Number(raw?.seats_left??raw?.seats))?Number(raw?.seats_left??raw?.seats):null,
+    currency:ltText(raw?.currency||raw?.price?.currency||ctx.currency||'AED',3).toUpperCase(),base_amount:base,tax_amount:tax,markup_amount:markup,total_amount:ltMoney(price+markup),
+    checkout_url:null,raw,
+  };
+}
+
+async function ltAudit(env,cid,entityType,entityId,action,email,details={}){
+  await env.DB.prepare(`INSERT INTO live_travel_audit_log (client_id,entity_type,entity_id,action,actor_email,details_json,created_at) VALUES (?,?,?,?,?,?,?)`)
+    .bind(cid,entityType,String(entityId),action,ltText(email,250),JSON.stringify(details),ltNow()).run();
+}
+async function ltAuth(request,env){
+  const payload=await requireSession(request,env);
+  if(!payload)return null;
+  return {cid:Number(payload.cid),email:ltText(payload.email,250)};
+}
+async function ltSeedSuppliers(env,cid){
+  const now=ltNow(),stmt=`INSERT OR IGNORE INTO live_travel_suppliers (client_id,supplier,enabled,mode,priority,markup_type,markup_value,last_status,created_at,updated_at) VALUES (?,?,0,'sandbox',?,'fixed',0,'not_configured',?,?)`;
+  await env.DB.batch(LT_SUPPLIERS.map((s,i)=>env.DB.prepare(stmt).bind(cid,s,(i+1)*10,now,now)));
+}
+function ltBytesB64(bytes){return btoa(String.fromCharCode(...bytes));}
+function ltB64Bytes(value){return Uint8Array.from(atob(value),c=>c.charCodeAt(0));}
+async function ltCredentialsCryptoKey(env){
+  const secret=String(env.LIVE_TRAVEL_CREDENTIALS_KEY||env.SESSION_SIGNING_KEY||'');
+  if(!secret)throw new Error('Live Travel credential encryption is not configured.');
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(secret));
+  return crypto.subtle.importKey('raw',digest,{name:'AES-GCM'},false,['encrypt','decrypt']);
+}
+export async function ltEncryptCredentials(env,value){
+  const iv=crypto.getRandomValues(new Uint8Array(12)),key=await ltCredentialsCryptoKey(env);
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(JSON.stringify(value||{})));
+  return `${ltBytesB64(iv)}.${ltBytesB64(new Uint8Array(encrypted))}`;
+}
+export async function ltDecryptCredentials(env,value){
+  if(!value)return {};
+  try{
+    const [iv,cipher]=String(value).split('.'); if(!iv||!cipher)return {};
+    const key=await ltCredentialsCryptoKey(env),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:ltB64Bytes(iv)},key,ltB64Bytes(cipher));
+    return JSON.parse(new TextDecoder().decode(plain))||{};
+  }catch(e){throw new Error('Saved supplier credentials could not be decrypted.');}
+}
+async function ltSupplierRuntime(env,row){
+  return {...row,credentials:await ltDecryptCredentials(env,row?.credentials_encrypted),endpoints:ltJson(row?.endpoints_json,{})};
+}
+function ltSupplierConfigured(config){
+  const supplier=config?.supplier,credentials=config?.credentials||{},endpoints=config?.endpoints||{};
+  if(supplier==='serpapi')return !!credentials.api_key;
+  if(supplier==='riya'||supplier==='tripjack')return !!(credentials.api_key&&endpoints.search);
+  if(supplier==='poomas')return true; // uses platform-level integration key; no per-client credentials needed
+  return false;
+}
+function ltSupplierPublic(config){
+  const {credentials_encrypted,endpoints_json,credentials,...safe}=config;
+  return {...safe,endpoints:config.endpoints||{},credentials_configured:ltSupplierConfigured(config),credential_fields:Object.keys(credentials||{}).filter(k=>!!credentials[k])};
+}
+function ltSupplierHeaders(config){
+  const credentials=config.credentials||{};
+  if(config.supplier==='riya')return {'Content-Type':'application/json','Authorization':`Bearer ${credentials.api_key||''}`,'X-Client-Id':credentials.client_id||'','X-Api-Secret':credentials.api_secret||''};
+  return {'Content-Type':'application/json','apikey':credentials.api_key||'','Authorization':credentials.api_key?`Bearer ${credentials.api_key}`:''};
+}
+async function ltFetchJson(url,options={},timeoutMs=25000){
+  const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{
+    const r=await fetch(url,{...options,signal:ctl.signal});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error((typeof data?.error==='string'?data.error:data?.error?.message)||data?.message||`HTTP ${r.status}`);
+    return data;
+  }finally{clearTimeout(timer);}
+}
+function ltExtractOffers(supplier,data){
+  if(supplier==='serpapi')return [...(data?.best_flights||[]),...(data?.other_flights||[])];
+  if(supplier==='poomas')return Array.isArray(data?.fares)?data.fares:Array.isArray(data?.data?.fares)?data.data.fares:[];
+  for(const candidate of [data?.offers,data?.results,data?.data?.offers,data?.data?.results,data?.searchResult?.tripInfos?.ONWARD,data?.searchResult?.tripInfos?.RETURN]) if(Array.isArray(candidate)) return candidate;
+  return Array.isArray(data)?data:[];
+}
+async function ltSupplierSearch(config,input,env=null){
+  const supplier=config.supplier;
+  if(!ltSupplierConfigured(config)) throw new Error('Client credentials or search endpoint are not configured.');
+  if(supplier==='serpapi'){
+    const q=new URLSearchParams({engine:'google_flights',api_key:config.credentials.api_key,departure_id:input.origin,arrival_id:input.destination,outbound_date:input.departure_date,currency:input.currency,hl:'en',adults:String(input.adults),children:String(input.children),infants_in_seat:String(input.infants),travel_class:String({economy:1,premium_economy:2,business:3,first:4}[input.cabin]||1),type:input.trip_type==='one_way'?'2':'1'});
+    if(input.return_date)q.set('return_date',input.return_date);
+    return ltFetchJson(`${config.endpoints.search||'https://serpapi.com/search.json'}?${q}`);
+  }
+  if(supplier==='poomas'){
+    // Official POOMAS platform API contract: POST /api/search with X-API-Key.
+    // Keep POOMAS_INTEGRATION_KEY as a temporary fallback so existing deployments
+    // can migrate their secret name without downtime.
+    const apiKey=env?.POOMAS_API_KEY||env?.POOMAS_INTEGRATION_KEY;
+    if(!apiKey)throw new Error('POOMAS_API_KEY is not configured on this deployment.');
+    const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(config.client_id).first();
+    const apiBase=(poomasRow?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+    const currency=['AED','INR','USD'].includes(input.currency)?input.currency:'AED';
+    const payload={origin:input.origin,destination:input.destination,departureDate:input.departure_date,adults:input.adults,children:input.children,infants:input.infants,cabinClass:input.cabin.toUpperCase(),tripType:input.trip_type==='round_trip'?'ROUNDTRIP':'ONEWAY',currency};
+    if(input.return_date)payload.returnDate=input.return_date;
+    return ltFetchJson(`${apiBase}/api/search`,{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':apiKey,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(payload)});
+  }
+  return ltFetchJson(config.endpoints.search,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(input)});
+}
+async function ltSupplierAction(config,action,payload){
+  const endpoint=config.endpoints?.[action];
+  if(!endpoint||!ltSupplierConfigured(config)) throw new Error(`${config.supplier} client ${action} settings are not configured.`);
+  return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(payload)});
+}
+async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
+async function ltEnsureSchema(env){
+  if(_ltSchemaEnsured)return;
+  const stmts=[
+    `CREATE TABLE IF NOT EXISTS live_travel_agents (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,agent_ref TEXT NOT NULL,parent_agent_ref TEXT NOT NULL DEFAULT 'owner',agent_type TEXT NOT NULL DEFAULT 'agent',name TEXT NOT NULL,email TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',credit_limit REAL NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,agent_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_agents_client ON live_travel_agents(client_id,parent_agent_ref,status)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,supplier TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,mode TEXT NOT NULL DEFAULT 'sandbox',priority INTEGER NOT NULL DEFAULT 100,markup_type TEXT NOT NULL DEFAULT 'fixed',markup_value REAL NOT NULL DEFAULT 0,last_status TEXT NOT NULL DEFAULT 'not_configured',last_checked_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,credentials_encrypted TEXT,endpoints_json TEXT NOT NULL DEFAULT '{}',UNIQUE(client_id,supplier))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_suppliers_client ON live_travel_suppliers(client_id,enabled,priority)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_searches (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_ref TEXT NOT NULL,lead_id TEXT NOT NULL DEFAULT '',trip_type TEXT NOT NULL DEFAULT 'round_trip',origin TEXT NOT NULL,destination TEXT NOT NULL,departure_date TEXT NOT NULL,return_date TEXT,adults INTEGER NOT NULL DEFAULT 1,children INTEGER NOT NULL DEFAULT 0,infants INTEGER NOT NULL DEFAULT 0,cabin TEXT NOT NULL DEFAULT 'economy',currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'searching',supplier_errors_json TEXT NOT NULL DEFAULT '{}',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,expires_at TEXT NOT NULL,UNIQUE(client_id,search_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_searches_client ON live_travel_searches(client_id,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_offers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,search_id INTEGER NOT NULL,offer_ref TEXT NOT NULL,supplier TEXT NOT NULL,supplier_offer_id TEXT NOT NULL DEFAULT '',bookable INTEGER NOT NULL DEFAULT 0,validating INTEGER NOT NULL DEFAULT 0,validating_supplier TEXT NOT NULL DEFAULT '',airline_code TEXT NOT NULL DEFAULT '',airline_name TEXT NOT NULL DEFAULT '',flight_numbers TEXT NOT NULL DEFAULT '',itinerary_json TEXT NOT NULL DEFAULT '[]',baggage_json TEXT NOT NULL DEFAULT '{}',fare_rules_json TEXT NOT NULL DEFAULT '{}',cabin TEXT NOT NULL DEFAULT 'economy',seats_left INTEGER,currency TEXT NOT NULL DEFAULT 'AED',base_amount REAL NOT NULL DEFAULT 0,tax_amount REAL NOT NULL DEFAULT 0,markup_amount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,last_validated_at TEXT,expires_at TEXT NOT NULL,raw_json TEXT NOT NULL DEFAULT '{}',checkout_url TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,offer_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_offers_search ON live_travel_offers(client_id,search_id,total_amount)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_quotes (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,quote_ref TEXT NOT NULL,search_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',customer_name TEXT NOT NULL DEFAULT '',customer_phone TEXT NOT NULL DEFAULT '',customer_email TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'draft',currency TEXT NOT NULL DEFAULT 'AED',subtotal REAL NOT NULL DEFAULT 0,service_fee REAL NOT NULL DEFAULT 0,discount REAL NOT NULL DEFAULT 0,total_amount REAL NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',valid_until TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,quote_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_quotes_client ON live_travel_quotes(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_bookings (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_ref TEXT NOT NULL,quote_id INTEGER,offer_id INTEGER,lead_id TEXT NOT NULL DEFAULT '',supplier TEXT NOT NULL DEFAULT '',supplier_booking_id TEXT NOT NULL DEFAULT '',pnr TEXT NOT NULL DEFAULT '',ticket_numbers_json TEXT NOT NULL DEFAULT '[]',status TEXT NOT NULL DEFAULT 'draft',payment_status TEXT NOT NULL DEFAULT 'unpaid',currency TEXT NOT NULL DEFAULT 'AED',total_amount REAL NOT NULL DEFAULT 0,amount_paid REAL NOT NULL DEFAULT 0,balance_due REAL NOT NULL DEFAULT 0,hold_ref TEXT NOT NULL DEFAULT '',hold_expires_at TEXT,last_synced_at TEXT,created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,booking_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_bookings_client ON live_travel_bookings(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_passengers (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,passenger_type TEXT NOT NULL DEFAULT 'adult',title TEXT NOT NULL DEFAULT '',first_name TEXT NOT NULL,last_name TEXT NOT NULL,date_of_birth TEXT,gender TEXT NOT NULL DEFAULT '',nationality TEXT NOT NULL DEFAULT '',passport_number TEXT NOT NULL DEFAULT '',passport_expiry TEXT,issuing_country TEXT NOT NULL DEFAULT '',frequent_flyer_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_passengers_booking ON live_travel_passengers(client_id,booking_id)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_payments (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,payment_ref TEXT NOT NULL,method TEXT NOT NULL DEFAULT 'cash',direction TEXT NOT NULL DEFAULT 'receipt',amount REAL NOT NULL,currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'received',external_ref TEXT NOT NULL DEFAULT '',notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,payment_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_payments_booking ON live_travel_payments(client_id,booking_id,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_wallet_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,entry_ref TEXT NOT NULL,agent_ref TEXT NOT NULL DEFAULT 'owner',booking_id INTEGER,entry_type TEXT NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL DEFAULT 'AED',balance_after REAL NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,UNIQUE(client_id,entry_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_wallet_client ON live_travel_wallet_ledger(client_id,agent_ref,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_commissions (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,booking_id INTEGER NOT NULL,agent_ref TEXT NOT NULL DEFAULT 'owner',commission_type TEXT NOT NULL DEFAULT 'fixed',commission_value REAL NOT NULL DEFAULT 0,commission_amount REAL NOT NULL DEFAULT 0,currency TEXT NOT NULL DEFAULT 'AED',status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_commissions_client ON live_travel_commissions(client_id,status,created_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_service_requests (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,request_ref TEXT NOT NULL,booking_id INTEGER NOT NULL,request_type TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'open',reason TEXT NOT NULL DEFAULT '',supplier_reference TEXT NOT NULL DEFAULT '',estimated_amount REAL NOT NULL DEFAULT 0,currency TEXT NOT NULL DEFAULT 'AED',notes TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(client_id,request_ref))`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_service_requests_client ON live_travel_service_requests(client_id,status,updated_at)`,
+    `CREATE TABLE IF NOT EXISTS live_travel_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,entity_type TEXT NOT NULL,entity_id TEXT NOT NULL,action TEXT NOT NULL,actor_email TEXT NOT NULL DEFAULT '',details_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_live_travel_audit_client ON live_travel_audit_log(client_id,created_at)`,
+  ];
+  await env.DB.batch(stmts.map(s=>env.DB.prepare(s)));
+  // Idempotent column additions for existing deployments (ignore errors if columns already exist)
+  await Promise.allSettled([
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN hold_ref TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN checkout_url TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_poomas_settings (client_id INTEGER PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 0,api_base TEXT NOT NULL DEFAULT 'https://api.flypoomas.com',checkout_base TEXT NOT NULL DEFAULT 'https://flypoomas.com',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`).run(),
+  ]);
+  _ltSchemaEnsured=true;
+}
+
+async function handleLtBootstrap(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await Promise.all([ltEnsureSchema(env),ltSeedSuppliers(env,auth.cid)]);
+  const [suppliers,searches,quotes,bookings,service,wallet,walletEntries,agents,commissions]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? ORDER BY priority`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 20`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE client_id=? ORDER BY updated_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE client_id=? ORDER BY updated_at DESC LIMIT 50`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT currency,COALESCE(SUM(CASE WHEN entry_type IN ('credit','refund') THEN amount ELSE -amount END),0) balance FROM live_travel_wallet_ledger WHERE client_id=? GROUP BY currency`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? ORDER BY created_at DESC LIMIT 200`).bind(auth.cid).all(),
+    env.DB.prepare(`SELECT c.*,b.booking_ref,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 200`).bind(auth.cid).all()
+  ]);
+  const [supplierList,poomasRow]=await Promise.all([
+    Promise.all((suppliers.results||[]).map(async s=>ltSupplierPublic(await ltSupplierRuntime(env,s)))),
+    env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first(),
+  ]);
+  const poomasSettings={enabled:Boolean(poomasRow?.enabled),api_base:poomasRow?.api_base||'https://api.flypoomas.com',checkout_base:poomasRow?.checkout_base||'https://flypoomas.com'};
+  return json({suppliers:supplierList,poomas_settings:poomasSettings,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,hold:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
+}
+async function handleLtSuppliersUpdate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), supplier=String(body.supplier||'').toLowerCase();
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  const [,old]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first()]);
+  const previous=await ltSupplierRuntime(env,old);
+  const credentialKeys=supplier==='riya'?['api_key','api_secret','client_id']:supplier==='poomas'?[]:['api_key'];
+  const credentials=supplier==='poomas'?{}:body.clear_credentials?{}:{...(previous.credentials||{})};
+  for(const key of credentialKeys)if(body.credentials?.[key]!==undefined&&String(body.credentials[key]).trim())credentials[key]=ltText(body.credentials[key],1000);
+  const endpointKeys=supplier==='serpapi'?['search']:supplier==='poomas'?[]:['search','revalidate','book','ticket','sync','cancel'],endpoints=supplier==='poomas'?{}:{...(previous.endpoints||{})};
+  for(const key of endpointKeys)if(body.endpoints?.[key]!==undefined)endpoints[key]=ltText(body.endpoints[key],1000);
+  if(supplier==='serpapi'&&!endpoints.search)endpoints.search='https://serpapi.com/search.json';
+  const mode=['sandbox','production'].includes(body.mode)?body.mode:'sandbox', type=body.markup_type==='percent'?'percent':'fixed';
+  const runtime={...old,supplier,credentials,endpoints};
+  if(body.enabled&&!ltSupplierConfigured(runtime))return json({error:'Save this client’s required API key and search endpoint before enabling the supplier.'},400);
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET enabled=?,mode=?,priority=?,markup_type=?,markup_value=?,credentials_encrypted=?,endpoints_json=?,updated_at=? WHERE client_id=? AND supplier=?`)
+    .bind(body.enabled?1:0,mode,ltPositiveInt(body.priority,100,1,999),type,ltMoney(body.markup_value),await ltEncryptCredentials(env,credentials),JSON.stringify(endpoints),ltNow(),auth.cid,supplier).run();
+  await ltAudit(env,auth.cid,'supplier',supplier,'settings_updated',auth.email,{enabled:!!body.enabled,mode,markup_type:type,markup_value:ltMoney(body.markup_value),credential_fields:Object.keys(credentials),endpoint_fields:Object.keys(endpoints)});
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first();
+  return json(ltSupplierPublic(await ltSupplierRuntime(env,row)));
+}
+async function handleLtSupplierHealth(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const supplier=new URL(request.url).searchParams.get('supplier')||'';
+  if(!LT_SUPPLIERS.includes(supplier))return json({error:'Unknown supplier'},400);
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,supplier).first(),runtime=await ltSupplierRuntime(env,row);
+  const configured=ltSupplierConfigured(runtime), status=configured?'configured':'not_configured', now=ltNow();
+  await env.DB.prepare(`UPDATE live_travel_suppliers SET last_status=?,last_checked_at=?,updated_at=? WHERE client_id=? AND supplier=?`).bind(status,now,now,auth.cid,supplier).run();
+  return json({supplier,status,credentials_configured:configured,checked_at:now});
+}
+async function handleLtSearch(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  let input; try{input=ltSearchParams(await request.json().catch(()=>({})));}catch(e){return json({error:e.message},400);}
+  const [,{results:settings}]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all()]);
+  if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
+  const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
+  // Fetch POOMAS settings once if poomas is in the enabled supplier list
+  const poomasEnabled=(settings||[]).some(s=>s.supplier==='poomas');
+  const poomasRow=poomasEnabled?await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first():null;
+  const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
+    .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
+  const searchId=insert.meta.last_row_id, errors={}, offers=[];
+  const settled=await Promise.all((settings||[]).map(async setting=>{
+    try{const runtime=await ltSupplierRuntime(env,setting);runtime.client_id=auth.cid;return {setting,data:await ltSupplierSearch(runtime,input,env)};}catch(e){return {setting,error:String(e?.message||e)};}
+  }));
+  for(const result of settled){
+    const supplier=result.setting.supplier;
+    if(result.error){errors[supplier]=result.error;continue;}
+    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value};
+    if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;}
+    for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
+      const normalized=ltNormalizeOffer(supplier,raw,ctx);
+      if(!normalized.total_amount)continue;
+      const offerRef=ltRef('OF');
+      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,checkout_url,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),normalized.checkout_url||'',now).run();
+      offers.push(ltRow({id:saved.meta.last_row_id,search_id:searchId,offer_ref:offerRef,...normalized,expires_at:expires,created_at:now}));
+    }
+  }
+  offers.sort((a,b)=>a.total_amount-b.total_amount);
+  const status=offers.length?'complete':'failed';
+  await env.DB.prepare(`UPDATE live_travel_searches SET status=?,supplier_errors_json=? WHERE id=? AND client_id=?`).bind(status,JSON.stringify(errors),searchId,auth.cid).run();
+  await ltAudit(env,auth.cid,'search',searchRef,'completed',auth.email,{offer_count:offers.length,suppliers:(settings||[]).map(s=>s.supplier),errors});
+  return json({search:{id:searchId,search_ref:searchRef,...input,status,errors,created_at:now,expires_at:expires},offers});
+}
+async function handleLtSearchList(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const u=new URL(request.url), searchId=Number(u.searchParams.get('search_id')||0);
+  if(searchId){
+    const search=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE id=? AND client_id=?`).bind(searchId,auth.cid).first();
+    if(!search)return json({error:'Search not found'},404);
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_offers WHERE search_id=? AND client_id=? ORDER BY total_amount`).bind(searchId,auth.cid).all();
+    return json({search:ltRow(search),offers:(results||[]).map(ltRow)});
+  }
+  const {results}=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all();
+  return json({list:(results||[]).map(ltRow)});
+}
+async function handleLtRevalidate(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), offer=await ltOfferById(env,auth.cid,body.offer_id);
+  if(!offer)return json({error:'Offer not found'},404);
+  if(!offer.bookable)return json({error:'SerpApi prices are indicative only. Select a matching Riya or TripJack fare to continue.'},409);
+  if(new Date(offer.expires_at).getTime()<Date.now())return json({error:'This offer expired. Run a new search.'},409);
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,offer.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
+  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.currency,cabin:offer.cabin,markup_type:'fixed',markup_value:offer.markup_amount});
+  const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
+  await env.DB.prepare(`UPDATE live_travel_offers SET base_amount=?,tax_amount=?,total_amount=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
+    .bind(normalized.base_amount,normalized.tax_amount,normalized.total_amount,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'offer',offer.offer_ref,'revalidated',auth.email,{old_total:offer.total_amount,new_total:normalized.total_amount});
+  return json({offer:ltRow(await ltOfferById(env,auth.cid,offer.id)),price_changed:Number(offer.total_amount)!==Number(normalized.total_amount)});
+}
+async function handleLtQuotes(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT q.*,o.airline_name,o.flight_numbers FROM live_travel_quotes q LEFT JOIN live_travel_offers o ON o.id=q.offer_id AND o.client_id=q.client_id WHERE q.client_id=? ORDER BY q.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const offer=await ltOfferById(env,auth.cid,body.offer_id); if(!offer)return json({error:'Offer not found'},404);
+    const serviceFee=ltMoney(body.service_fee),discount=ltMoney(body.discount),subtotal=ltMoney(offer.total_amount),total=ltMoney(subtotal+serviceFee-discount),now=ltNow(),ref=ltRef('QT');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,search_id,offer_id,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,valid_until,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,ref,offer.search_id,offer.id,ltText(body.lead_id,80),ltText(body.customer_name,180),ltText(body.customer_phone,40),ltText(body.customer_email,250),offer.currency,subtotal,serviceFee,discount,total,ltText(body.notes,2000),body.valid_until||offer.expires_at,auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'quote',ref,'created',auth.email,{offer_ref:offer.offer_ref,total});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id||0), status=['draft','sent','accepted','expired','cancelled'].includes(body.status)?body.status:'draft';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Quote not found'},404);
+  const fee=body.service_fee===undefined?old.service_fee:ltMoney(body.service_fee), discount=body.discount===undefined?old.discount:ltMoney(body.discount), total=ltMoney(Number(old.subtotal)+fee-discount);
+  await env.DB.prepare(`UPDATE live_travel_quotes SET customer_name=?,customer_phone=?,customer_email=?,status=?,service_fee=?,discount=?,total_amount=?,notes=?,valid_until=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(ltText(body.customer_name??old.customer_name,180),ltText(body.customer_phone??old.customer_phone,40),ltText(body.customer_email??old.customer_email,250),status,fee,discount,total,ltText(body.notes??old.notes,2000),body.valid_until??old.valid_until,ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'quote',old.quote_ref,'updated',auth.email,{status,total});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+async function handleLtBookings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const u=new URL(request.url), id=Number(u.searchParams.get('id')||0);
+    if(id){
+      const booking=await ltBookingById(env,auth.cid,id); if(!booking)return json({error:'Booking not found'},404);
+      const [pax,pay,svc]=await Promise.all([
+        env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE booking_id=? AND client_id=? ORDER BY id`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_payments WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all(),
+        env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE booking_id=? AND client_id=? ORDER BY created_at DESC`).bind(id,auth.cid).all()]);
+      return json({booking:ltRow(booking),passengers:(pax.results||[]).map(ltRow),payments:pay.results||[],service_requests:svc.results||[]});
+    }
+    const {results}=await env.DB.prepare(`SELECT b.*,q.customer_name,q.customer_phone FROM live_travel_bookings b LEFT JOIN live_travel_quotes q ON q.id=b.quote_id AND q.client_id=b.client_id WHERE b.client_id=? ORDER BY b.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:(results||[]).map(ltRow)});
+  }
+  const body=await request.json().catch(()=>({})), quote=await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(Number(body.quote_id),auth.cid).first();
+  if(!quote)return json({error:'Quote not found'},404);
+  const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer, or a bookable POOMAS offer, is required.'},409);
+  if(offer.supplier!=='poomas'&&!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  const now=ltNow(),ref=ltRef('BK');
+  const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?, ?,?)`)
+    .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now).run();
+  const bookingId=r.meta.last_row_id;
+  await env.DB.prepare(`UPDATE live_travel_quotes SET status='accepted',updated_at=? WHERE id=? AND client_id=?`).bind(now,quote.id,auth.cid).run();
+  for(const pax of Array.isArray(body.passengers)?body.passengers:[]){
+    if(!ltText(pax.first_name,100)||!ltText(pax.last_name,100))continue;
+    await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,bookingId,['adult','child','infant'].includes(pax.passenger_type)?pax.passenger_type:'adult',ltText(pax.title,20),ltText(pax.first_name,100),ltText(pax.last_name,100),pax.date_of_birth||null,ltText(pax.gender,20),ltText(pax.nationality,80),ltText(pax.passport_number,80),pax.passport_expiry||null,ltText(pax.issuing_country,80),JSON.stringify(pax.frequent_flyer||{}),now,now).run();
+  }
+  await ltAudit(env,auth.cid,'booking',ref,'created',auth.email,{quote_ref:quote.quote_ref,supplier:offer.supplier});
+  return json(ltRow(await ltBookingById(env,auth.cid,bookingId)));
+}
+async function handleLtBookingAction(request,env,action){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const allowed={hold:['draft'],book:['draft','on_hold'],ticket:['confirmed','on_hold'],sync:['draft','on_hold','confirmed','ticketed'],cancel:['on_hold','confirmed','ticketed']}[action]||[];
+  if(!allowed.includes(booking.status))return json({error:`Cannot ${action} a ${booking.status} booking.`},409);
+  const now=ltNow();
+  // POOMAS bookings use external checkout flow; hold calls POOMAS API, book returns checkout URL
+  if(booking.supplier==='poomas'){
+    if(action==='hold'){
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on this deployment.'},503);
+      const offer=await ltOfferById(env,auth.cid,booking.offer_id);
+      const raw=ltJson(offer?.raw_json,{});
+      const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+      const apiBase=(poomasRow?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+      const holdPayload={fareId:String(raw._poomas_fare_id||raw.id||booking.supplier_booking_id||''),supplier:String(raw._poomas_supplier||''),passengers:body.passengers||[]};
+      let holdData; try{holdData=await ltFetchJson(`${apiBase}/api/integrations/v1/flights/hold`,{method:'POST',headers:{'Content-Type':'application/json','X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas','X-Channel':'LEADVYNE'},body:JSON.stringify(holdPayload)});}catch(e){return json({error:e.message},502);}
+      const holdRef=ltText(holdData?.holdId||holdData?.hold_id||holdData?.id||'',120);
+      const holdExpires=holdData?.expiresAt||holdData?.holdExpiry||holdData?.hold_expires_at||null;
+      await env.DB.prepare(`UPDATE live_travel_bookings SET status='on_hold',hold_ref=?,hold_expires_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(holdRef,holdExpires,now,booking.id,auth.cid).run();
+      await ltAudit(env,auth.cid,'booking',booking.booking_ref,'hold',auth.email,{hold_ref:holdRef,hold_expires_at:holdExpires});
+      return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+    }
+    if(action==='book'){
+      // Return the POOMAS checkout URL; the agent redirects the customer there
+      const checkoutUrl=booking.checkout_url||(await ltOfferById(env,auth.cid,booking.offer_id))?.checkout_url||'';
+      return json({booking:ltRow(booking),checkout_url:checkoutUrl,action:'redirect_to_poomas_checkout'});
+    }
+    if(action==='sync'){
+      // Sync booking status from POOMAS using booking_id or hold_ref
+      if(!env.POOMAS_INTEGRATION_KEY)return json({error:'POOMAS integration key is not configured on this deployment.'},503);
+      const lookupId=booking.supplier_booking_id||booking.hold_ref;
+      if(!lookupId)return json({error:'No POOMAS booking ID or hold reference to sync.'},409);
+      let syncData; try{syncData=await ltFetchJson(`https://api.flypoomas.com/api/integrations/v1/bookings/${encodeURIComponent(lookupId)}`,{headers:{'X-POOMAS-INTEGRATION-KEY':env.POOMAS_INTEGRATION_KEY,'x-tenant-slug':'poomas'}});}catch(e){return json({error:e.message},502);}
+      const status=ltText(syncData?.status||booking.status,30),pnr=ltText(syncData?.pnr||booking.pnr,40),supplierId=ltText(syncData?.bookingId||syncData?.booking_id||booking.supplier_booking_id,120);
+      await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,now,now,booking.id,auth.cid).run();
+      await ltAudit(env,auth.cid,'booking',booking.booking_ref,'sync',auth.email,{status,pnr});
+      return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+    }
+    if(action==='cancel')return json({error:'To cancel a POOMAS booking, submit a service request or contact POOMAS support.'},409);
+    return json({error:`Action ${action} is not supported for POOMAS bookings.`},409);
+  }
+  const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,booking.supplier).first();
+  let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),action,{supplier_booking_id:booking.supplier_booking_id,pnr:booking.pnr,booking_ref:booking.booking_ref,passengers:body.passengers||undefined});}catch(e){return json({error:e.message},502);}
+  const statuses={book:'confirmed',ticket:'ticketed',cancel:'cancelled',sync:ltText(data.status||booking.status,30)};
+  const status=statuses[action],pnr=ltText(data.pnr||booking.pnr,40),supplierId=ltText(data.booking_id||data.supplier_booking_id||booking.supplier_booking_id,120),tickets=data.ticket_numbers||data.tickets||ltJson(booking.ticket_numbers_json,[]);
+  await env.DB.prepare(`UPDATE live_travel_bookings SET status=?,supplier_booking_id=?,pnr=?,ticket_numbers_json=?,last_synced_at=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,supplierId,pnr,JSON.stringify(tickets),now,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,action,auth.email,{status,pnr});
+  return json(ltRow(await ltBookingById(env,auth.cid,booking.id)));
+}
+async function handleLtPassengers(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})),now=ltNow();
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    if(!ltText(body.first_name,100)||!ltText(body.last_name,100))return json({error:'Passenger first and last name are required'},400);
+    const r=await env.DB.prepare(`INSERT INTO live_travel_passengers (client_id,booking_id,passenger_type,title,first_name,last_name,date_of_birth,gender,nationality,passport_number,passport_expiry,issuing_country,frequent_flyer_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,booking.id,['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:'adult',ltText(body.title,20),ltText(body.first_name,100),ltText(body.last_name,100),body.date_of_birth||null,ltText(body.gender,20),ltText(body.nationality,80),ltText(body.passport_number,80),body.passport_expiry||null,ltText(body.issuing_country,80),JSON.stringify(body.frequent_flyer||{}),now,now).run();
+    await ltAudit(env,auth.cid,'booking',booking.booking_ref,'passenger_added',auth.email,{passenger_id:r.meta.last_row_id});
+    return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first()));
+  }
+  const old=await env.DB.prepare(`SELECT p.*,b.booking_ref FROM live_travel_passengers p JOIN live_travel_bookings b ON b.id=p.booking_id AND b.client_id=p.client_id WHERE p.id=? AND p.client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Passenger not found'},404);
+  if(request.method==='DELETE'){
+    if(['confirmed','ticketed'].includes((await ltBookingById(env,auth.cid,old.booking_id))?.status))return json({error:'Use a name-correction or cancellation request after supplier confirmation.'},409);
+    await env.DB.prepare(`DELETE FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).run();
+    await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_removed',auth.email,{passenger_id:old.id}); return json({ok:true});
+  }
+  await env.DB.prepare(`UPDATE live_travel_passengers SET passenger_type=?,title=?,first_name=?,last_name=?,date_of_birth=?,gender=?,nationality=?,passport_number=?,passport_expiry=?,issuing_country=?,frequent_flyer_json=?,updated_at=? WHERE id=? AND client_id=?`)
+    .bind(['adult','child','infant'].includes(body.passenger_type)?body.passenger_type:old.passenger_type,ltText(body.title??old.title,20),ltText(body.first_name??old.first_name,100),ltText(body.last_name??old.last_name,100),body.date_of_birth??old.date_of_birth,ltText(body.gender??old.gender,20),ltText(body.nationality??old.nationality,80),ltText(body.passport_number??old.passport_number,80),body.passport_expiry??old.passport_expiry,ltText(body.issuing_country??old.issuing_country,80),JSON.stringify(body.frequent_flyer??ltJson(old.frequent_flyer_json,{})),now,old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',old.booking_ref,'passenger_updated',auth.email,{passenger_id:old.id});
+  return json(ltRow(await env.DB.prepare(`SELECT * FROM live_travel_passengers WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first()));
+}
+async function handleLtPayment(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+  const amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const now=ltNow(),ref=ltRef('PY'),direction=body.direction==='refund'?'refund':'receipt';
+  await env.DB.prepare(`INSERT INTO live_travel_payments (client_id,booking_id,payment_ref,method,direction,amount,currency,status,external_ref,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,'received',?,?,?,?)`)
+    .bind(auth.cid,booking.id,ref,ltText(body.method||'cash',40),direction,amount,booking.currency,ltText(body.external_ref,120),ltText(body.notes,1000),auth.email,now).run();
+  const paid=ltMoney(Number(booking.amount_paid)+(direction==='receipt'?amount:-amount)),balance=ltMoney(Number(booking.total_amount)-paid),paymentStatus=balance<=0?'paid':paid>0?'partial':'unpaid';
+  await env.DB.prepare(`UPDATE live_travel_bookings SET amount_paid=?,balance_due=?,payment_status=?,updated_at=? WHERE id=? AND client_id=?`).bind(paid,balance,paymentStatus,now,booking.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'booking',booking.booking_ref,direction==='receipt'?'payment_received':'payment_refunded',auth.email,{amount,currency:booking.currency,reference:ref});
+  return json({payment_ref:ref,booking:ltRow(await ltBookingById(env,auth.cid,booking.id))});
+}
+async function handleLtWallet(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({})),amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const currency=/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED', agent=ltText(body.agent_ref||'owner',100),type=['credit','debit','refund','commission'].includes(body.entry_type)?body.entry_type:'credit';
+  const prev=await env.DB.prepare(`SELECT balance_after FROM live_travel_wallet_ledger WHERE client_id=? AND agent_ref=? AND currency=? ORDER BY id DESC LIMIT 1`).bind(auth.cid,agent,currency).first(), balance=ltMoney(Number(prev?.balance_after||0)+(type==='credit'||type==='refund'?amount:-amount)),now=ltNow(),ref=ltRef('WL');
+  await env.DB.prepare(`INSERT INTO live_travel_wallet_ledger (client_id,entry_ref,agent_ref,booking_id,entry_type,amount,currency,balance_after,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,agent,body.booking_id||null,type,amount,currency,balance,ltText(body.notes,1000),auth.email,now).run();
+  await ltAudit(env,auth.cid,'wallet',ref,'entry_created',auth.email,{type,amount,currency,agent_ref:agent});
+  return json({entry_ref:ref,balance});
+}
+async function handleLtServiceRequests(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT s.*,b.booking_ref,b.pnr FROM live_travel_service_requests s JOIN live_travel_bookings b ON b.id=s.booking_id AND b.client_id=s.client_id WHERE s.client_id=? ORDER BY s.updated_at DESC LIMIT 300`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const type=['cancel','refund','reissue','name_correction','baggage','seat','other'].includes(body.request_type)?body.request_type:'other',now=ltNow(),ref=ltRef('SR');
+    const r=await env.DB.prepare(`INSERT INTO live_travel_service_requests (client_id,request_ref,booking_id,request_type,status,reason,estimated_amount,currency,notes,created_by,created_at,updated_at) VALUES (?,?,?,?,'open',?,?,?,?,?,?,?)`).bind(auth.cid,ref,booking.id,type,ltText(body.reason,1000),ltMoney(body.estimated_amount),booking.currency,ltText(body.notes,2000),auth.email,now,now).run();
+    await ltAudit(env,auth.cid,'service_request',ref,'created',auth.email,{type,booking_ref:booking.booking_ref});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const id=Number(body.id),status=['open','submitted','approved','rejected','completed','cancelled'].includes(body.status)?body.status:'open';
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first(); if(!old)return json({error:'Service request not found'},404);
+  await env.DB.prepare(`UPDATE live_travel_service_requests SET status=?,supplier_reference=?,estimated_amount=?,notes=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltText(body.supplier_reference??old.supplier_reference,120),ltMoney(body.estimated_amount??old.estimated_amount),ltText(body.notes??old.notes,2000),ltNow(),id,auth.cid).run();
+  await ltAudit(env,auth.cid,'service_request',old.request_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_service_requests WHERE id=? AND client_id=?`).bind(id,auth.cid).first());
+}
+
+async function handleLtAgents(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT a.*,COALESCE((SELECT balance_after FROM live_travel_wallet_ledger w WHERE w.client_id=a.client_id AND w.agent_ref=a.agent_ref ORDER BY w.id DESC LIMIT 1),0) wallet_balance FROM live_travel_agents a WHERE a.client_id=? ORDER BY a.created_at DESC`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const name=ltText(body.name,180); if(!name)return json({error:'Agent name is required'},400);
+    const ref=ltText(body.agent_ref,80)||ltRef('AG'),parent=ltText(body.parent_agent_ref||'owner',80),type=['master_agent','agent','sub_agent'].includes(body.agent_type)?body.agent_type:'agent',now=ltNow();
+    try{await env.DB.prepare(`INSERT INTO live_travel_agents (client_id,agent_ref,parent_agent_ref,agent_type,name,email,phone,credit_limit,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,parent,type,name,ltText(body.email,250),ltText(body.phone,40),ltMoney(body.credit_limit),'active',now,now).run();}
+    catch(e){if(/unique|constraint/i.test(String(e?.message||e)))return json({error:'That agent reference already exists.'},409);throw e;}
+    await ltAudit(env,auth.cid,'agent',ref,'created',auth.email,{name,type,parent});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE client_id=? AND agent_ref=?`).bind(auth.cid,ref).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Agent not found'},404);
+  const status=['active','suspended','closed'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_agents SET name=?,email=?,phone=?,credit_limit=?,status=?,updated_at=? WHERE id=? AND client_id=?`).bind(ltText(body.name??old.name,180),ltText(body.email??old.email,250),ltText(body.phone??old.phone,40),ltMoney(body.credit_limit??old.credit_limit),status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'agent',old.agent_ref,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_agents WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+async function handleLtCommissions(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT c.*,b.booking_ref,b.pnr,a.name agent_name FROM live_travel_commissions c JOIN live_travel_bookings b ON b.id=c.booking_id AND b.client_id=c.client_id LEFT JOIN live_travel_agents a ON a.client_id=c.client_id AND a.agent_ref=c.agent_ref WHERE c.client_id=? ORDER BY c.updated_at DESC LIMIT 500`).bind(auth.cid).all();
+    return json({list:results||[]});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(request.method==='POST'){
+    const booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
+    const agent=ltText(body.agent_ref||'owner',80),type=body.commission_type==='percent'?'percent':'fixed',value=ltMoney(body.commission_value),amount=type==='percent'?Math.round(Number(booking.total_amount)*value)/100:value,now=ltNow();
+    const r=await env.DB.prepare(`INSERT INTO live_travel_commissions (client_id,booking_id,agent_ref,commission_type,commission_value,commission_amount,currency,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'pending',?,?)`).bind(auth.cid,booking.id,agent,type,value,amount,booking.currency,now,now).run();
+    await ltAudit(env,auth.cid,'commission',r.meta.last_row_id,'created',auth.email,{booking_ref:booking.booking_ref,agent_ref:agent,amount});
+    return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
+  }
+  const old=await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(Number(body.id),auth.cid).first(); if(!old)return json({error:'Commission not found'},404);
+  const status=['pending','approved','paid','cancelled'].includes(body.status)?body.status:old.status;
+  await env.DB.prepare(`UPDATE live_travel_commissions SET status=?,updated_at=? WHERE id=? AND client_id=?`).bind(status,ltNow(),old.id,auth.cid).run();
+  await ltAudit(env,auth.cid,'commission',old.id,'updated',auth.email,{status});
+  return json(await env.DB.prepare(`SELECT * FROM live_travel_commissions WHERE id=? AND client_id=?`).bind(old.id,auth.cid).first());
+}
+
+async function handleLtPoomasSettings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  await ltEnsureSchema(env);
+  if(request.method==='GET'){
+    const row=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+    return json({enabled:Boolean(row?.enabled),api_base:row?.api_base||'https://api.flypoomas.com',checkout_base:row?.checkout_base||'https://flypoomas.com'});
+  }
+  const body=await request.json().catch(()=>({}));
+  const apiBase=String(body.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+  const checkoutBase=String(body.checkout_base||'https://flypoomas.com').replace(/\/$/,'');
+  if(!apiBase.startsWith('https://')||!checkoutBase.startsWith('https://'))return json({error:'POOMAS endpoints must use HTTPS'},400);
+  const existing=await env.DB.prepare(`SELECT enabled FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first();
+  const enabled=ltPoomasEnabledAfterSettingsSave(body,existing);
+  const now=ltNow();
+  await env.DB.prepare(`INSERT INTO live_travel_poomas_settings (client_id,enabled,api_base,checkout_base,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET enabled=excluded.enabled,api_base=excluded.api_base,checkout_base=excluded.checkout_base,updated_at=excluded.updated_at`).bind(auth.cid,enabled?1:0,apiBase,checkoutBase,now,now).run();
+  await ltAudit(env,auth.cid,'poomas_settings','config','updated',auth.email,{enabled});
+  return json({enabled,api_base:apiBase,checkout_base:checkoutBase});
+}
+
+export function ltPoomasEnabledAfterSettingsSave(body={},existing=null){
+  return body.enabled===undefined?Boolean(existing?.enabled):Boolean(body.enabled);
+}
+
+// ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────
+// Only active for clients who enable followup_do_enabled='Yes' in the Follow-up Engine settings.
+// Each DO self-schedules alarms (setAlarm) timed to the ladder step's hours/days, resets on
+// customer reply, and respects the client's quiet-hours window — replacing the 15-min cron sweep
+// entirely for opted-in clients. The cron skips these clients at its own gate (below).
+export class LeadFollowupAgent{
+  constructor(state, env){ this.state=state; this.env=env; }
+
+  async fetch(request){
+    const url=new URL(request.url);
+    if(url.pathname==='/init')    return this._init(request);
+    if(url.pathname==='/replied') return this._replied();
+    if(url.pathname==='/cancel'){ await this.state.storage.deleteAlarm(); return new Response('ok'); }
+    return new Response('ok');
+  }
+
+  async _init(request){
+    const body=await request.json().catch(()=>({}));
+    const existing=await this.state.storage.get('leadId');
+    if(existing && !body.force) return new Response('ok'); // already running
+    await this.state.storage.put('leadId',   body.leadId);
+    await this.state.storage.put('clientId', body.clientId);
+    await this.state.storage.put('step',     body.step||1);
+    // lastMsgAt anchors all alarm times — step N fires at lastMsgAt + threshold_N, not now + threshold_N.
+    // This matches the cron's own silentHours check and prevents template steps from drifting late
+    // when the init is delayed (e.g. a DO that starts a minute after the lead was created still
+    // fires step 1 at the correct absolute time).
+    await this.state.storage.put('lastMsgAt', body.lastMsgAt||Date.now());
+    await this.state.storage.put('retries', 0);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  async _replied(){
+    await this.state.storage.deleteAlarm();
+    await this.state.storage.put('step', 1);
+    await this.state.storage.put('lastMsgAt', Date.now()); // re-anchor from the reply time
+    await this.state.storage.put('retries', 0);
+    await this._arm();
+    return new Response('ok');
+  }
+
+  // Arms the next alarm at exactly (lastMsgAt + step_threshold), so template steps at 2/4/7 days
+  // fire relative to the customer's last message — not relative to when the previous step was sent.
+  async _arm(){
+    const clientId  =await this.state.storage.get('clientId');
+    const step      =await this.state.storage.get('step');
+    const lastMsgAt =await this.state.storage.get('lastMsgAt')||Date.now();
+    if(!clientId||!step||step>5) return;
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // ladder exhausted or step not configured
+    const thresholdHours=cfg.type==='session'
+      ? (cfg.hours||1)
+      : (FOLLOWUP_LADDER_STEP_SHAPE.find(shape=>shape.step===step)?.defaultHours||((cfg.days||2)*24));
+    const thresholdMs=thresholdHours*3600000;
+    // fireAt = when this step becomes due relative to the customer's last message
+    const fireAt=Number(lastMsgAt)+thresholdMs;
+    const delay=Math.max(fireAt-Date.now(), 30000); // at least 30s to avoid immediate re-fire
+    await this.state.storage.setAlarm(Date.now()+delay);
+  }
+
+  async alarm(){
+    const leadId   =await this.state.storage.get('leadId');
+    const clientId =await this.state.storage.get('clientId');
+    let   step     =await this.state.storage.get('step');
+    let   retries  =await this.state.storage.get('retries')||0;
+    if(!leadId||!clientId||!step) return;
+
+    // Fetch fresh lead — bail on terminal states
+    const leadR=await ncFetch(this.env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!leadR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    const lead=await leadR.json().catch(()=>null);
+    if(!lead||PIPELINE_TERMINAL_STAGES.has(lead.Stage)||lead.OptOut==='Yes'||lead.Handover==='Yes') return;
+    // Skip if a human agent replied more recently than the customer — rep is already in contact.
+    const lastCustomerMs=new Date(lead.LastMsgAt||lead.Date||0).getTime();
+    if(lead.LastAgentMsgAt && new Date(lead.LastAgentMsgAt).getTime()>lastCustomerMs){ await this._arm(); return; }
+
+    // Fetch client — needed for quiet-hours + WA credentials
+    const cR=await ncFetch(this.env,`api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(`(Id,eq,${clientId})`)}&limit=1`);
+    if(!cR.ok){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    const cData=await cR.json().catch(()=>null);
+    const c=cData?.list?.[0];
+    if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+
+    if(!followupWithinQuietHours(c)){
+      await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
+      return;
+    }
+
+    const cfg=await this.env.DB.prepare(
+      `SELECT * FROM followup_ladder_steps WHERE client_id=? AND step=?`
+    ).bind(Number(clientId), step).first().catch(()=>null);
+    if(!cfg) return; // ladder exhausted
+
+    // Skip steps with no content configured — advance without counting as a retry
+    if((cfg.type==='session'&&!cfg.message)||(cfg.type==='template'&&!cfg.template_name)){
+      if(cfg.type==='template'){
+        console.warn('[LeadFollowupAgent] step',step,'for lead',leadId,'has no template_name — skipping');
+        this.env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, source, failed_at) VALUES (?,?,?,?,?,?)`)
+          .bind(Number(clientId), Number(leadId), step, 'No template_name configured for this step', 'do', new Date().toISOString())
+          .run().catch(()=>{});
+      }
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+    }
+
+    const silentHours=(Date.now()-new Date(lead.LastMsgAt||lead.Date||0).getTime())/3600000;
+
+    // Session steps are only valid inside WhatsApp's 24h customer-service window
+    if(cfg.type==='session'&&silentHours>=24){
+      step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+    }
+
+    // Pre-flight checks for template steps — permanent misconfigs should not retry forever
+    if(cfg.type==='template'){
+      if(!lead.Phone){
+        console.warn('[LeadFollowupAgent] lead',leadId,'has no phone — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
+      if(!c.wa_phone_id||!c.wa_token){
+        console.warn('[LeadFollowupAgent] client',clientId,'missing WA credentials — skipping step',step);
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm(); return;
+      }
+    }
+
+    try{
+      await sendFollowupLadderStep(this.env, c, lead, step, cfg);
+      // Step sent — advance and re-anchor lastMsgAt so subsequent steps time correctly
+      step++;
+      await this.state.storage.put('step', step);
+      await this.state.storage.put('retries', 0);
+      // Keep lastMsgAt as the customer's original last-message time so all remaining thresholds
+      // (e.g. 4 days, 7 days) are measured from the same anchor, matching the cron's behaviour.
+      await this._arm();
+    }catch(e){
+      retries++;
+      console.error('[LeadFollowupAgent] send failed lead',leadId,'step',step,'retry',retries,e.message);
+      const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
+      this.env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
+        .bind(Number(clientId), Number(leadId), step, String(e.message).slice(0,500), errCode?Number(errCode):null, 'do', new Date().toISOString())
+        .run().catch(()=>{});
+      if(retries>=3){
+        // 3 failed attempts on the same step — treat as undeliverable and advance
+        console.warn('[LeadFollowupAgent] giving up on step',step,'for lead',leadId,'after 3 retries');
+        step++; await this.state.storage.put('step', step); await this.state.storage.put('retries',0); await this._arm();
+      } else {
+        await this.state.storage.put('retries', retries);
+        await this.state.storage.setAlarm(Date.now()+1800000); // retry in 30 min
+      }
+    }
+  }
+}
+
+// Settings — GET returns current enabled state; PATCH flips it.
+async function handleFollowupSmartGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const c=await findClientById(env, payload.cid);
+  return json({enabled: c?.followup_do_enabled==='Yes'});
+}
+async function handleFollowupSmartPatch(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const body=await request.json().catch(()=>({}));
+  const val=body.enabled===true?'Yes':null;
+  await patchClientFields(env, String(payload.cid), {followup_do_enabled: val});
+  return json({ok:true, enabled: val==='Yes'});
+}
+// One-time migration — spawns a DO for every active lead of this client so they inherit the
+// smart ladder from their current next-unsent step.  Safe to call again; `force:false` means an
+// already-running DO for a lead is not reset.
+async function handleFollowupSmartMigrate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  if(!env.LEAD_AGENT) return json({error:'Smart Follow-ups DO not deployed yet'},501);
+  const clientId=String(payload.cid);
+  const c=await findClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'},404);
+  if(c.followup_do_enabled!=='Yes') return json({error:'Enable Smart Follow-ups first'},400);
+  const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
+  if(!configured?.length) return json({error:'No follow-up steps configured'},400);
+  const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,LastMsgAt,Date,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
+  if(!leadsR.ok) return json({error:'Failed to fetch leads'},502);
+  const {list:leads=[]}=await leadsR.json().catch(()=>({}));
+  let spawned=0;
+  for(const lead of leads){
+    if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+    const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
+    if(!nextStep) continue;
+    const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
+    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,lastMsgAt:new Date(lead.LastMsgAt||lead.Date||Date.now()).getTime(),force:true})}).catch(()=>{});
+    spawned++;
+  }
+  return json({ok:true, spawned});
+}
+// Returns the most recent template send failures for this client so the Follow-up Engine UI can
+// surface actionable errors (expired token, unapproved template, etc.) instead of silently hiding them.
+async function handleFollowupFailuresGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'},401);
+  const url=new URL(request.url);
+  const limit=Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit')||'50')));
+  const {results}=await env.DB.prepare(
+    `SELECT id, lead_id, step, error_message, error_code, source, failed_at FROM followup_send_failures WHERE client_id=? ORDER BY failed_at DESC LIMIT ?`
+  ).bind(Number(payload.cid), limit).all().catch(()=>({results:[]}));
+  return json({failures: results||[]});
+}
+
+// ─── Public Chat Page ─────────────────────────────────────────────────────────
+// Standalone full-page chat at chat.leadvyne.com?t=TOKEN (or any Vercel URL).
+// Each client generates a shareable token from Settings → Chat Page.
+// No auth required for visitors; sessions are keyed by a browser-generated UUID.
+
+async function chatTokenResolveClient(env, token){
+  if(!token) return null;
+  const row=await env.DB.prepare('SELECT client_id FROM chat_tokens WHERE token=?').bind(token).first().catch(()=>null);
+  if(!row) return null;
+  return getClientById(env, String(row.client_id));
+}
+
+// GET /public/chat/config?t=TOKEN → branding + greeting, no secrets returned
+async function handlePublicChatConfig(request, env){
+  const token=(new URL(request.url).searchParams.get('t')||'').trim();
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  return json({
+    client_name: c.client_name||'',
+    greeting:    c.chat_greeting||'Hi! How can I help you today? 👋',
+    brand_color: c.brand_color||'#0D9C93',
+  });
+}
+
+// POST /public/chat/message → {token, session_id, message} → {reply}
+async function handlePublicChatMessage(request, env){
+  const {t: tokenFromQs}=Object.fromEntries(new URL(request.url).searchParams);
+  const body=await request.json().catch(()=>({}));
+  const token=(body.token||tokenFromQs||'').trim();
+  const session_id=(body.session_id||'').trim();
+  const message=String(body.message||'').trim();
+  if(!token||!session_id||!message) return json({error:'token, session_id and message required'},400);
+  if(message.length>2000) return json({error:'Message too long'},400);
+
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+
+  const now=new Date().toISOString();
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'user', message, now).run().catch(()=>{});
+
+  // Recent history for multi-turn context (newest-first → reverse to chronological)
+  const hist=await env.DB.prepare(
+    'SELECT role,content FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at DESC LIMIT 12'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  const turns=(hist.results||[]).reverse();
+
+  // Build a lightweight system prompt from the client's existing knowledge base
+  let sys=`You are a helpful assistant for "${c.client_name||'this business'}". Answer questions naturally and concisely. Keep replies short — 1–3 sentences.`;
+  if(c.main_prompt) sys+='\n\n'+c.main_prompt;
+  if(c.kb_summary&&c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,2000);
+
+  // Inject prior turns into userText so engineCallLlm (single-turn API) sees the context
+  let userText=message;
+  if(turns.length>1){
+    const ctx=turns.slice(0,-1).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
+    userText=`[Conversation so far]\n${ctx}\n\n[New message from customer]\n${message}`;
+  }
+
+  const reply=await engineCallLlm(env, c, sys, userText, 350);
+  const botText=reply||"I'm sorry, I couldn't process that. Please try again.";
+
+  await env.DB.prepare('INSERT INTO public_chat_messages(token,session_id,role,content,created_at) VALUES(?,?,?,?,?)')
+    .bind(token, session_id, 'bot', botText, new Date().toISOString()).run().catch(()=>{});
+
+  return json({reply: botText});
+}
+
+// GET /public/chat/history?t=TOKEN&s=SESSION_ID → message history for page reload
+async function handlePublicChatHistory(request, env){
+  const params=new URL(request.url).searchParams;
+  const token=(params.get('t')||'').trim();
+  const session_id=(params.get('s')||'').trim();
+  if(!token||!session_id) return json({messages:[]});
+  const c=await chatTokenResolveClient(env, token);
+  if(!c) return json({error:'Not found'},404);
+  const rows=await env.DB.prepare(
+    'SELECT role,content,created_at FROM public_chat_messages WHERE token=? AND session_id=? ORDER BY created_at ASC LIMIT 60'
+  ).bind(token, session_id).all().catch(()=>({results:[]}));
+  return json({messages: rows.results||[]});
+}
+
+// GET /chat-tokens → list tokens for the authenticated client
+async function handleChatTokensList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const rows=await env.DB.prepare('SELECT token,label,created_at FROM chat_tokens WHERE client_id=? ORDER BY created_at DESC')
+    .bind(Number(payload.cid)).all().catch(()=>({results:[]}));
+  return json({tokens: rows.results||[]});
+}
+
+// POST /chat-tokens → {label} → create token
+async function handleChatTokensCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {label}=await request.json().catch(()=>({}));
+  const token=[...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,'0')).join('');
+  await env.DB.prepare('INSERT INTO chat_tokens(token,client_id,label,created_at) VALUES(?,?,?,?)')
+    .bind(token, Number(payload.cid), label||'', new Date().toISOString()).run();
+  return json({token, label: label||''});
+}
+
+// DELETE /chat-tokens → {token} → revoke token
+async function handleChatTokensDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const {token}=await request.json().catch(()=>({}));
+  if(!token) return json({error:'token required'},400);
+  await env.DB.prepare('DELETE FROM chat_tokens WHERE token=? AND client_id=?').bind(token, Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+// ── Internal AI assistant ──────────────────────────────────────────────────────
+// GET /internal-chat/history → last 40 turns for the authenticated client
+async function handleInternalChatHistory(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const _hc=await getClientById(env, String(Number(payload.cid)));
+  if(!_hc||_hc.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
+  const rows=await env.DB.prepare(
+    'SELECT role,content,created_at FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 40'
+  ).bind(Number(payload.cid)).all().catch(()=>({results:[]}));
+  return json({messages:(rows.results||[]).reverse()});
+}
+
+// POST /internal-chat/message → {message} → {reply}
+async function handleInternalChatMessage(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const body=await request.json().catch(()=>({}));
+  const message=body.message;
+  if(!message||!String(message).trim()) return json({error:'message required'},400);
+  const userText=String(message).trim().slice(0,2000);
+  const cid=Number(payload.cid);
+  const c=await getClientById(env, String(cid));
+  if(!c) return json({error:'Client not found'},404);
+  if(c.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
+  const now=new Date().toISOString();
+  const today=now.slice(0,10);
+
+  // Live, tenant-scoped sources. Leads are paginated from NocoDB; tasks/projects come from D1.
+  // Keep these queries independent so one unavailable module never blanks the other two.
+  const [leads, taskResult, followupResult]=await Promise.all([
+    (async()=>{
+      const rows=[];
+      for(let offset=0;offset<2000;offset+=200){
+        const r=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${cid})`)}&limit=200&offset=${offset}&sort=-Date`);
+        if(!r.ok) break;
+        const data=await r.json().catch(()=>({}));
+        const list=Array.isArray(data.list)?data.list:[];
+        rows.push(...list);
+        if(list.length<200) break;
+      }
+      return rows;
+    })().catch(()=>[]),
+    env.DB.prepare(`SELECT t.id,t.title,t.status,t.priority,t.due_date,t.assignee_email,t.project_id,t.created_at,p.name AS project_name
+      FROM pm_tasks t LEFT JOIN pm_projects p ON p.id=t.project_id AND p.client_id=t.client_id
+      WHERE t.client_id=? ORDER BY t.created_at DESC LIMIT 500`).bind(cid).all().catch(()=>({results:[]})),
+    env.DB.prepare('SELECT lead_id,stage,created_at FROM pipeline_followups WHERE client_id=? ORDER BY created_at DESC LIMIT 100').bind(cid).all().catch(()=>({results:[]})),
+  ]);
+  const tasks=taskResult.results||[];
+  const followups=followupResult.results||[];
+
+  const dayMs=864e5;
+  const weekAgo=new Date(Date.now()-7*dayMs).toISOString().slice(0,10);
+  const twoWeeksAgo=new Date(Date.now()-14*dayMs).toISOString().slice(0,10);
+  const monthAgo=new Date(Date.now()-30*dayMs).toISOString().slice(0,10);
+  const leadDate=l=>String(l.Date||'').slice(0,10);
+  const won=l=>reportIsWonLead(l);
+  const lost=l=>reportIsLostLead(l);
+  const active=l=>!won(l)&&!lost(l);
+
+  const stageMap={};
+  let newThisWeek=0,newLastWeek=0,newThisMonth=0;
+  for(const l of leads){
+    const stage=l.Stage||'Unknown';
+    stageMap[stage]=(stageMap[stage]||0)+1;
+    const d=leadDate(l);
+    if(d>=weekAgo) newThisWeek++;
+    else if(d>=twoWeeksAgo) newLastWeek++;
+    if(d>=monthAgo) newThisMonth++;
+  }
+  const stageSummary=Object.entries(stageMap).sort((a,b)=>b[1]-a[1]).map(([s,n])=>`${s}: ${n}`).join(', ')||'none';
+  const wonLeads=leads.filter(won), lostLeads=leads.filter(lost), activeLeads=leads.filter(active);
+  const currency=c.deal_currency||leads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const totalRevenue=wonLeads.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+  const conversionRate=leads.length?Math.round(wonLeads.length/leads.length*1000)/10:0;
+
+  const scoreRank={Hot:3,Warm:2,Cold:1};
+  const hotLeads=activeLeads.slice().sort((a,b)=>{
+    const scoreDiff=(scoreRank[b.Score]||Number(b.Score)||0)-(scoreRank[a.Score]||Number(a.Score)||0);
+    return scoreDiff||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||''));
+  }).slice(0,12);
+  const leadLine=l=>`${l.Name||l.Phone||'Unknown'} [ID ${l.Id}] — ${l.Stage||'Unknown'}, ${l.Score||'no score'}, owner: ${l.Owner||'Unassigned'}, last activity: ${String(l.LastMsgAt||l.Date||'never').slice(0,16)}`;
+  const recentLeads=leads.slice().sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,12);
+
+  const openTasks=tasks.filter(t=>t.status!=='done');
+  const doneTasks=tasks.filter(t=>t.status==='done');
+  const overdueTasks=openTasks.filter(t=>t.due_date&&String(t.due_date).slice(0,10)<today);
+  const dueTodayTasks=openTasks.filter(t=>t.due_date&&String(t.due_date).slice(0,10)===today);
+  const taskLine=t=>`${t.title||'(untitled)'} [ID ${t.id}] — ${t.status}, ${t.priority||'medium'} priority, due: ${t.due_date||'none'}, assignee: ${t.assignee_email||'Unassigned'}, project: ${t.project_name||'General'}`;
+
+  let teamNames={}; try{ teamNames=JSON.parse(c.team_names||'{}'); }catch(e){}
+  const ownerEmail=String(c.authentik_email||'').trim();
+  const configuredMembers=[ownerEmail,...String(c.team_emails||'').split(',').map(x=>x.trim()).filter(Boolean)];
+  const observedMembers=[...leads.map(l=>l.Owner),...tasks.map(t=>t.assignee_email)].filter(Boolean);
+  const memberEmails=[...new Set([...configuredMembers,...observedMembers].map(x=>String(x).trim()).filter(Boolean))];
+  const teamRows=memberEmails.map(email=>{
+    const norm=email.toLowerCase();
+    const mine=leads.filter(l=>String(l.Owner||'').toLowerCase()===norm);
+    const mineWon=mine.filter(won);
+    const mineTasks=tasks.filter(t=>String(t.assignee_email||'').toLowerCase()===norm);
+    const mineOpen=mineTasks.filter(t=>t.status!=='done');
+    const mineOverdue=mineOpen.filter(t=>t.due_date&&String(t.due_date).slice(0,10)<today);
+    const revenue=mineWon.reduce((sum,l)=>sum+(Number(l.DealValue)||0),0);
+    return {
+      email,
+      name:norm===ownerEmail.toLowerCase()?(c.client_name||email):(teamNames[email]||teamNames[norm]||email),
+      leads:mine.length,
+      won:mineWon.length,
+      conversion:mine.length?Math.round(mineWon.length/mine.length*1000)/10:0,
+      revenue,
+      tasks:mineTasks.length,
+      completed:mineTasks.filter(t=>t.status==='done').length,
+      open:mineOpen.length,
+      overdue:mineOverdue.length,
+    };
+  }).sort((a,b)=>b.won-a.won||b.revenue-a.revenue||b.leads-a.leads);
+  const teamSummary=teamRows.length?teamRows.map(r=>`${r.name} (${r.email}): ${r.leads} leads, ${r.won} won, ${r.conversion}% conversion, ${currency} ${r.revenue} revenue, ${r.completed}/${r.tasks} tasks completed, ${r.open} open, ${r.overdue} overdue`).join('\n- '):'No configured or assigned team members';
+
+  const snapshot=`## Live Business Data (tenant ${cid}, generated ${now})
+
+### Leads
+- Total: ${leads.length}; Active: ${activeLeads.length}; Won: ${wonLeads.length}; Lost: ${lostLeads.length}
+- Conversion rate: ${conversionRate}%
+- Won revenue: ${currency} ${totalRevenue}
+- New last 7 days: ${newThisWeek}; previous 7 days: ${newLastWeek}; last 30 days: ${newThisMonth}
+- By stage: ${stageSummary}
+- Priority active leads:
+${hotLeads.length?hotLeads.map(leadLine).join('\n'):'none'}
+- Recently added:
+${recentLeads.length?recentLeads.map(leadLine).join('\n'):'none'}
+
+### Tasks
+- Total: ${tasks.length}; Open: ${openTasks.length}; Completed: ${doneTasks.length}; Due today: ${dueTodayTasks.length}; Overdue: ${overdueTasks.length}
+- Overdue tasks:
+${overdueTasks.length?overdueTasks.slice(0,20).map(taskLine).join('\n'):'none'}
+- Due today:
+${dueTodayTasks.length?dueTodayTasks.slice(0,20).map(taskLine).join('\n'):'none'}
+- Other open tasks:
+${openTasks.length?openTasks.slice(0,30).map(taskLine).join('\n'):'none'}
+
+### Team Performance
+- ${teamSummary}
+
+### Follow-up Pipeline
+- Active/recent follow-up entries: ${followups.length}`;
+
+  // Deterministic answers for the dashboard's core data questions. These bypass the LLM so
+  // a model can never claim data is unavailable when the live snapshot already contains it.
+  const q=userText.toLowerCase();
+  let directReply='';
+  const explicitHot=activeLeads.filter(l=>String(l.Score||'').toLowerCase()==='hot');
+  const thisWeekLeads=leads.filter(l=>leadDate(l)>=weekAgo);
+  const lastWeekLeads=leads.filter(l=>{ const d=leadDate(l); return d>=twoWeeksAgo&&d<weekAgo; });
+  if(/(staff|team).*(performance|perform|report|workload)|performance.*(staff|team)/i.test(q)){
+    directReply=teamRows.length
+      ? 'Team performance:\n'+teamRows.map(r=>`• ${r.name}: ${r.leads} leads, ${r.won} won (${r.conversion}%), ${currency} ${r.revenue} revenue; ${r.completed}/${r.tasks} tasks completed, ${r.overdue} overdue.`).join('\n')
+      : 'No team members or assigned staff activity was found for this account.';
+  } else if(/hot\s*leads?|leads?.*hot/i.test(q)){
+    directReply=explicitHot.length
+      ? `Hot leads (${explicitHot.length}):\n`+explicitHot.slice(0,20).map(l=>'• '+leadLine(l)).join('\n')
+      : 'There are currently no leads whose Score is marked Hot.';
+  } else if(/last\s*week.*leads?|leads?.*last\s*week/i.test(q)){
+    directReply=lastWeekLeads.length
+      ? `Leads added in the previous 7-day period (${lastWeekLeads.length}):\n`+lastWeekLeads.slice(0,25).map(l=>'• '+leadLine(l)).join('\n')
+      : 'No leads were added in the previous 7-day period.';
+  } else if(/(new|this\s*week).*leads?|leads?.*(new|this\s*week)/i.test(q)){
+    directReply=thisWeekLeads.length
+      ? `New leads in the last 7 days (${thisWeekLeads.length}):\n`+thisWeekLeads.slice(0,25).map(l=>'• '+leadLine(l)).join('\n')
+      : 'No leads were added in the last 7 days.';
+  } else if(/overdue.*tasks?|tasks?.*overdue/i.test(q)){
+    directReply=overdueTasks.length
+      ? `Overdue tasks (${overdueTasks.length}):\n`+overdueTasks.slice(0,25).map(t=>'• '+taskLine(t)).join('\n')
+      : 'There are currently no overdue tasks.';
+  } else if(/(open|pending|today).*tasks?|tasks?.*(open|pending|today)/i.test(q)){
+    directReply=`Tasks: ${openTasks.length} open, ${dueTodayTasks.length} due today, ${overdueTasks.length} overdue, and ${doneTasks.length} completed.`
+      +(openTasks.length?'\n'+openTasks.slice(0,20).map(t=>'• '+taskLine(t)).join('\n'):'');
+  }
+  if(directReply){
+    await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
+    await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',directReply,new Date().toISOString()).run().catch(()=>{});
+    return json({reply:directReply, grounded:true, counts:{leads:leads.length,tasks:tasks.length,team:teamRows.length}});
+  }
+
+  const hist=await env.DB.prepare(
+    'SELECT role,content FROM internal_chat WHERE client_id=? ORDER BY created_at DESC LIMIT 10'
+  ).bind(cid).all().catch(()=>({results:[]}));
+  const prior=(hist.results||[]).reverse();
+
+  const sys=`You are the internal AI business assistant for "${c.client_name||'this business'}". Answer using ONLY the tenant-scoped live data below. Never invent names, counts, dates, owners, tasks, performance or revenue. If the requested detail is not present, say exactly what is unavailable. Understand natural questions about leads, individual lead status, tasks, overdue work, team workload, conversions, revenue, pipeline stages and comparisons between team members. For lists, use short bullets. For performance questions, explain both output and workload; do not rank someone with zero assigned data as poor. Today is ${today}.
+
+${snapshot}`;
+
+  let ctx='';
+  if(prior.length) ctx='[Prior conversation]\n'+prior.map(m=>`${m.role==='user'?'User':'Assistant'}: ${m.content}`).join('\n')+'\n\n[New question]\n';
+
+  await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'user',userText,now).run().catch(()=>{});
+  const reply=await engineCfAiGenerate(env,sys,ctx+userText,{maxOutputTokens:900,caller:'saas-ops'})
+    || await engineCallLlm(env,c,sys,ctx+userText,900);
+  const botText=reply||"I couldn't retrieve an answer right now. Please try again.";
+  await env.DB.prepare('INSERT INTO internal_chat(client_id,role,content,created_at) VALUES(?,?,?,?)').bind(cid,'assistant',botText,new Date().toISOString()).run().catch(()=>{});
+  return json({reply:botText});
+}
+
+// DELETE /internal-chat/history → clear chat history for the authenticated client
+async function handleInternalChatClear(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Unauthorized'},401);
+  const _cc=await getClientById(env, String(Number(payload.cid)));
+  if(!_cc||_cc.ai_assistant_enabled!=='Yes') return json({error:'AI Assistant is disabled'},403);
+  await env.DB.prepare('DELETE FROM internal_chat WHERE client_id=?').bind(Number(payload.cid)).run().catch(()=>{});
+  return json({ok:true});
+}
+
+const ENGINE_MESSAGE_AGGREGATION_MS=5000;
+const ENGINE_MESSAGE_AGGREGATION_MAX_MS=15000;
+
+function engineWebhookMessageId(body){
+  return String(body?.id||body?.message?.id||'');
+}
+
+export function engineCombineBufferedChatwootBodies(entries){
+  const ordered=(Array.isArray(entries)?entries:[])
+    .filter(x=>x?.body)
+    .sort((a,b)=>Number(a.receivedAt||0)-Number(b.receivedAt||0));
+  if(!ordered.length) return null;
+  const unique=[];
+  const seen=new Set();
+  for(const entry of ordered){
+    const id=engineWebhookMessageId(entry.body);
+    if(id&&seen.has(id)) continue;
+    if(id) seen.add(id);
+    unique.push(entry);
+  }
+  const latest=unique[unique.length-1];
+  const combined=unique.map(entry=>engineParseChatwootPayload(entry.body)?.text||'').map(x=>String(x).trim()).filter(Boolean).join('\n');
+  const body=structuredClone(latest.body);
+  if(combined){
+    body.content=combined;
+    if(body.message&&typeof body.message==='object') body.message.content=combined;
+  }
+  return body;
+}
+
+async function handleEngineWebhookBuffered(request,env,secret,ctx=null){
+  const raw=await request.text();
+  let body; try{ body=JSON.parse(raw); }catch(e){ return json({error:'Invalid JSON'},400); }
+  if(!env.CLIENT_UPDATES) return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
+  const c=secret?await findClientByField(env,'engine_webhook_secret',secret):null;
+  if(!c) return json({ok:true,skipped:secret?'invalid-secret':'no-secret'});
+  const parsed=engineParseChatwootPayload(body);
+  // Media needs its own transcription/download path and is never folded into adjacent text.
+  if(!parsed||parsed.mediaUrl||!String(parsed.text||'').trim()){
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
+  }
+  try{
+    const id=env.CLIENT_UPDATES.idFromName(String(c.Id));
+    return await env.CLIENT_UPDATES.get(id).fetch('https://internal/aggregate',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret,body,conversationId:String(parsed.convId||parsed.phone),receivedAt:Date.now()})
+    });
+  }catch(e){
+    await reportOpsError(env,'message aggregation failed open',e,{clientId:c.Id,convId:parsed.convId});
+    return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
+  }
+}
+
 export class ClientUpdatesHub{
   constructor(state, env){ this.state=state; this.env=env; }
   async fetch(request){
     const url=new URL(request.url);
+    if(request.method==='POST' && url.pathname==='/aggregate'){
+      const item=await request.json().catch(()=>null);
+      if(!item?.secret||!item?.body||!item?.conversationId) return new Response('invalid',{status:400});
+      const now=Number(item.receivedAt)||Date.now();
+      const messageId=engineWebhookMessageId(item.body);
+      const seen=await this.state.storage.get('aggregateSeen')||{};
+      for(const [id,at] of Object.entries(seen)) if(now-Number(at)>10*60*1000) delete seen[id];
+      if(messageId&&seen[messageId]) return json({ok:true,accepted:true,duplicate:true});
+      if(messageId) seen[messageId]=now;
+      const buffers=await this.state.storage.get('messageBuffers')||{};
+      const key=String(item.conversationId);
+      const current=buffers[key]||{firstAt:now,items:[]};
+      current.items.push({body:item.body,secret:item.secret,receivedAt:now});
+      current.items=current.items.slice(-20);
+      current.dueAt=Math.min(now+ENGINE_MESSAGE_AGGREGATION_MS,Number(current.firstAt)+ENGINE_MESSAGE_AGGREGATION_MAX_MS);
+      buffers[key]=current;
+      await this.state.storage.put({messageBuffers:buffers,aggregateSeen:seen});
+      const nextDue=Math.min(...Object.values(buffers).map(x=>Number(x.dueAt)||now));
+      await this.state.storage.setAlarm(nextDue);
+      return json({ok:true,accepted:true,aggregation_ms:ENGINE_MESSAGE_AGGREGATION_MS});
+    }
     if(request.method==='POST' && url.pathname==='/broadcast'){
       const body=await request.text();
       for(const ws of this.state.getWebSockets()){
@@ -22772,6 +26578,25 @@ export class ClientUpdatesHub{
       if(other===ws) continue;
       try{ other.send(out); }catch(e){}
     }
+  }
+  async alarm(){
+    const now=Date.now();
+    const buffers=await this.state.storage.get('messageBuffers')||{};
+    const due=[];
+    for(const [key,value] of Object.entries(buffers)){
+      if(Number(value.dueAt)<=now+100){ due.push(value); delete buffers[key]; }
+    }
+    await this.state.storage.put('messageBuffers',buffers);
+    const remaining=Object.values(buffers);
+    if(remaining.length) await this.state.storage.setAlarm(Math.min(...remaining.map(x=>Number(x.dueAt)||now+ENGINE_MESSAGE_AGGREGATION_MS)));
+    await Promise.all(due.map(async group=>{
+      const body=engineCombineBufferedChatwootBodies(group.items);
+      const secret=group.items?.[group.items.length-1]?.secret;
+      if(!body||!secret) return;
+      try{
+        await handleEngineWebhook(new Request(`https://internal/engine/webhook/${secret}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),this.env,secret);
+      }catch(e){ await reportOpsError(this.env,'aggregated conversation processing failed',e); }
+    }));
   }
   async webSocketClose(ws, code, reason, wasClean){ try{ ws.close(code, reason); }catch(e){} }
   async webSocketError(ws, error){}
@@ -22825,16 +26650,48 @@ export default {
 
     let res;
     try{
-      if(url.pathname.startsWith('/healthcare/')) await hcEnsureOperationsSchema(env);
+      if(url.pathname.startsWith('/healthcare/')||url.pathname.startsWith('/hc/book')) await hcEnsureOperationsSchema(env);
       if(url.pathname.startsWith('/pm/')) await pmEnsureAutomationSchema(env);
-      if(url.pathname==='/health'){ res=json({ok:true, marketing_build:MARKETING_BUILD_TAG}); }
+      if(url.pathname==='/health'){ res=json({
+        ok:true,
+        build:'2026-09-06-voice-only',
+        voice:{
+          sarvam_configured:!!env.SARVAM_API_KEY,
+          ai4bharat_voice_service_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
+          hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
+          legacy_ai4bharat_deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS,
+          reply_deadline_ms:ENGINE_VOICE_REPLY_DEADLINE_MS
+        }
+      }); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
       else if(url.pathname==='/session/exchange' && request.method==='POST'){ res=await handleSessionExchange(request, env); }
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
+      else if(url.pathname==='/voice/settings' && request.method==='GET'){ res=await handleVoiceSettingsGet(request, env); }
+      else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
+      else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
+      else if(url.pathname==='/live-travel/suppliers' && request.method==='PATCH'){ res=await handleLtSuppliersUpdate(request, env); }
+      else if(url.pathname==='/live-travel/suppliers/health' && request.method==='GET'){ res=await handleLtSupplierHealth(request, env); }
+      else if(url.pathname==='/live-travel/search' && request.method==='POST'){ res=await handleLtSearch(request, env); }
+      else if(url.pathname==='/live-travel/searches' && request.method==='GET'){ res=await handleLtSearchList(request, env); }
+      else if(url.pathname==='/live-travel/offers/revalidate' && request.method==='POST'){ res=await handleLtRevalidate(request, env); }
+      else if(url.pathname==='/live-travel/quotes' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtQuotes(request, env); }
+      else if(url.pathname==='/live-travel/bookings' && ['GET','POST'].includes(request.method)){ res=await handleLtBookings(request, env); }
+      else if(url.pathname.startsWith('/live-travel/bookings/') && request.method==='POST'){
+        const action=url.pathname.slice('/live-travel/bookings/'.length);
+        res=['hold','book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
+      }
+      else if(url.pathname==='/live-travel/poomas/settings' && ['GET','PATCH'].includes(request.method)){ res=await handleLtPoomasSettings(request,env); }
+      else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
+      else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
+      else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }
+      else if(url.pathname==='/live-travel/service-requests' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtServiceRequests(request, env); }
+      else if(url.pathname==='/live-travel/agents' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtAgents(request, env); }
+      else if(url.pathname==='/live-travel/commissions' && ['GET','POST','PATCH'].includes(request.method)){ res=await handleLtCommissions(request, env); }
       else if(url.pathname.startsWith('/nocodb/')){ res=await handleNocodbPassthrough(request, env, url.pathname.slice('/nocodb/'.length)); }
+      else if(url.pathname==='/chat/messages' && request.method==='GET'){ res=await handleGetChatMessages(request, env); }
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
@@ -22919,11 +26776,28 @@ export default {
       else if(url.pathname==='/ecom/testimonials' && request.method==='DELETE'){ res=await handleEcomTestimonialDelete(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='POST'){ res=await handleEcomCategoryMediaUpload(request, env); }
       else if(url.pathname==='/ecom/categories/media' && request.method==='DELETE'){ res=await handleEcomCategoryMediaDelete(request, env); }
+      else if(url.pathname==='/bs/client' && request.method==='GET'){ res=await handleBsClientGet(request, env); }
+      else if(url.pathname==='/bs/client' && request.method==='PATCH'){ res=await handleBsClientUpdate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='GET'){ res=await handleBsCategoriesList(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='POST'){ res=await handleBsCategoryCreate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='PATCH'){ res=await handleBsCategoryUpdate(request, env); }
+      else if(url.pathname==='/bs/categories' && request.method==='DELETE'){ res=await handleBsCategoryDelete(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='GET'){ res=await handleBsServicesList(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='POST'){ res=await handleBsServiceCreate(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='PATCH'){ res=await handleBsServiceUpdate(request, env); }
+      else if(url.pathname==='/bs/services' && request.method==='DELETE'){ res=await handleBsServiceDelete(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='GET'){ res=await handleAttestServicesList(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='POST'){ res=await handleAttestServiceCreate(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='PATCH'){ res=await handleAttestServiceUpdate(request, env); }
+      else if(url.pathname==='/attest/services' && request.method==='DELETE'){ res=await handleAttestServiceDelete(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='GET'){ res=await handleEduClientGet(request, env); }
       else if(url.pathname==='/edu/client' && request.method==='PATCH'){ res=await handleEduClientUpdate(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='GET'){ res=await handleEduStudentSearch(request, env); }
       else if(url.pathname==='/edu/students' && request.method==='POST'){ res=await handleEduStudentUpsert(request, env); }
       else if(url.pathname==='/edu/enroll' && request.method==='POST'){ res=await handleEduEnroll(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='GET'){ res=await handleEduAdmissionApplicationsList(request, env); }
+      else if(url.pathname==='/edu/admissions/detail' && request.method==='GET'){ res=await handleEduAdmissionApplicationDetail(request, env); }
+      else if(url.pathname==='/edu/admissions' && request.method==='PATCH'){ res=await handleEduAdmissionApplicationUpdate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='GET'){ res=await handleEduCoursesList(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='POST'){ res=await handleEduCourseCreate(request, env); }
       else if(url.pathname==='/edu/courses' && request.method==='PATCH'){ res=await handleEduCourseUpdate(request, env); }
@@ -22955,18 +26829,31 @@ export default {
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
-      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhook(request, env, url.pathname.slice('/engine/webhook/'.length)); }
+      else if(url.pathname==='/support/tickets' && request.method==='GET'){ res=await handleSupportTicketsList(request, env); }
+      else if(url.pathname==='/support/tickets' && request.method==='PATCH'){ res=await handleSupportTicketsUpdate(request, env); }
+      else if(url.pathname.startsWith('/engine/webhook/') && request.method==='POST'){ res=await handleEngineWebhookBuffered(request, env, url.pathname.slice('/engine/webhook/'.length), ctx); }
+      else if(url.pathname==='/public/chat/config'  && request.method==='GET'){  res=await handlePublicChatConfig(request, env); }
+      else if(url.pathname==='/public/chat/message' && request.method==='POST'){ res=await handlePublicChatMessage(request, env); }
+      else if(url.pathname==='/public/chat/history' && request.method==='GET'){  res=await handlePublicChatHistory(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='GET'){   res=await handleChatTokensList(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='POST'){  res=await handleChatTokensCreate(request, env); }
+      else if(url.pathname==='/chat-tokens' && request.method==='DELETE'){ res=await handleChatTokensDelete(request, env); }
+      else if(url.pathname==='/internal-chat/history' && request.method==='GET'){  res=await handleInternalChatHistory(request, env); }
+      else if(url.pathname==='/internal-chat/message' && request.method==='POST'){ res=await handleInternalChatMessage(request, env); }
+      else if(url.pathname==='/internal-chat/history' && request.method==='DELETE'){ res=await handleInternalChatClear(request, env); }
       else if(url.pathname==='/ecom/public/client' && request.method==='GET'){ res=await handleEcomPublicClient(request, env); }
       else if(url.pathname==='/ecom/public/products' && request.method==='GET'){ res=await handleEcomPublicProducts(request, env); }
       else if(url.pathname==='/ecom/public/order' && request.method==='POST'){ res=await handleEcomPublicOrder(request, env); }
       else if(url.pathname==='/ecom/public/stores' && request.method==='GET'){ res=await handleEcomPublicStores(request, env); }
       else if(url.pathname==='/appt/public/client' && request.method==='GET'){ res=await handleApptPublicClient(request, env); }
       else if(url.pathname==='/appt/public/services' && request.method==='GET'){ res=await handleApptPublicServices(request, env); }
+      else if(url.pathname==='/appt/public/doctors' && request.method==='GET'){ res=await handleApptPublicDoctors(request, env); }
       else if(url.pathname==='/appt/public/book' && request.method==='POST'){ res=await handleApptPublicBook(request, env); }
       else if(url.pathname==='/ecom/wa-templates' && request.method==='GET'){ res=await handleEcomWaTemplatesGet(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-preset' && request.method==='POST'){ res=await handleEcomWaTemplatesCreatePreset(request, env); }
       else if(url.pathname==='/ecom/wa-templates/create-from-library' && request.method==='POST'){ res=await handleEcomWaTemplatesCreateFromLibrary(request, env); }
       else if(url.pathname==='/ai/complete' && request.method==='POST'){ res=await handleAiComplete(request, env); }
+      else if(url.pathname==='/ai/business-chat' && request.method==='POST'){ res=await handleAiBusinessChat(request, env); }
       else if(url.pathname==='/ai/objection-reply' && request.method==='POST'){ res=await handleAiObjectionReply(request, env); }
       else if(url.pathname==='/ai/order-signal' && request.method==='POST'){ res=await handleAiOrderSignal(request, env); }
       else if(url.pathname==='/ai/booking-signal' && request.method==='POST'){ res=await handleAiBookingSignal(request, env); }
@@ -22979,7 +26866,15 @@ export default {
       else if(url.pathname==='/human-deals/coach' && request.method==='GET'){ res=await handleHumanDealsCoach(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='GET'){ res=await handleFollowupLadderGet(request, env); }
       else if(url.pathname==='/followups/ladder' && request.method==='POST'){ res=await handleFollowupLadderSave(request, env); }
+      else if(url.pathname==='/followups/session-steps' && request.method==='GET'){ res=await handleFollowupSessionStepsGet(request, env); }
+      else if(url.pathname==='/followups/session-steps' && request.method==='POST'){ res=await handleFollowupSessionStepsSave(request, env); }
+      else if(url.pathname==='/followups/template-steps' && request.method==='GET'){ res=await handleFollowupTemplateStepsGet(request, env); }
+      else if(url.pathname==='/followups/template-steps' && request.method==='POST'){ res=await handleFollowupTemplateStepsSave(request, env); }
       else if(url.pathname==='/followups/stats' && request.method==='GET'){ res=await handleFollowupStats(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='GET'){ res=await handleFollowupSmartGet(request, env); }
+      else if(url.pathname==='/followups/smart' && request.method==='PATCH'){ res=await handleFollowupSmartPatch(request, env); }
+      else if(url.pathname==='/followups/smart/migrate' && request.method==='POST'){ res=await handleFollowupSmartMigrate(request, env); }
+      else if(url.pathname==='/followups/failures' && request.method==='GET'){ res=await handleFollowupFailuresGet(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='GET'){ res=await handleAutomationFlowsList(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='POST'){ res=await handleAutomationFlowCreate(request, env); }
       else if(url.pathname==='/automations/flows' && request.method==='PATCH'){ res=await handleAutomationFlowUpdate(request, env); }
@@ -23000,11 +26895,16 @@ export default {
       else if(url.pathname==='/referrals/reward' && request.method==='POST'){ res=await handleReferralsReward(request, env); }
       else if(url.pathname==='/channels/create-account' && request.method==='POST'){ res=await handleChannelsCreateAccount(request, env); }
       else if(url.pathname==='/channels/whatsapp/connect' && request.method==='POST'){ res=await handleChannelsWhatsappConnect(request, env); }
+      else if(url.pathname==='/channels/whatsapp/extract-meta-creds' && request.method==='POST'){ res=await handleChannelsExtractMetaCreds(request, env); }
+      else if(url.pathname==='/channels/whatsapp/manual-meta-creds' && request.method==='POST'){ res=await handleChannelsManualMetaCreds(request, env); }
       else if(url.pathname==='/channels/inbox' && request.method==='POST'){ res=await handleChannelsInboxCreate(request, env); }
       else if(url.pathname==='/channels/status' && request.method==='GET'){ res=await handleChannelsStatus(request, env); }
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='GET'){ res=await handleChannelsWhatsappProfileGet(request, env); }
       else if(url.pathname==='/channels/whatsapp/profile-picture' && request.method==='POST'){ res=await handleChannelsWhatsappProfilePicture(request, env); }
       else if(url.pathname==='/channels/chatwoot-sso' && request.method==='GET'){ res=await handleChannelsChatwootSso(request, env); }
+      else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
+      else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
+      else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
@@ -23034,6 +26934,8 @@ export default {
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
+      else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }
+      else if(url.pathname==='/b2b/stock' && request.method==='POST'){ res=await handleB2bStockSave(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='GET'){ res=await handleB2bDocumentsList(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='POST'){ res=await handleB2bDocumentCreate(request, env); }
       else if(url.pathname==='/b2b/documents' && request.method==='PATCH'){ res=await handleB2bDocumentUpdate(request, env); }
@@ -23212,6 +27114,43 @@ export default {
       else if(url.pathname==='/healthcare/settings' && request.method==='GET'){ res=await handleHcSettingsGet(request, env); }
       else if(url.pathname==='/healthcare/settings' && request.method==='PATCH'){ res=await handleHcSettingsUpdate(request, env); }
       else if(url.pathname==='/healthcare/analytics' && request.method==='GET'){ res=await handleHcAnalytics(request, env); }
+      else if(url.pathname==='/hc/book' && request.method==='GET'){ res=await handleHcPublicBookPage(request,env); }
+      // MATRIMONIAL MODULE
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS,'full_name'); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_profiles',MATRIMONIAL_PROFILE_FIELDS); }
+      else if(url.pathname==='/matrimonial/profiles' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_profiles'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS,'profile_id_1'); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_matches',MATRIMONIAL_MATCH_FIELDS); }
+      else if(url.pathname==='/matrimonial/matches' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_matches'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_shortlists',MATRIMONIAL_SHORTLIST_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_shortlists',MATRIMONIAL_SHORTLIST_FIELDS,'profile_id'); }
+      else if(url.pathname==='/matrimonial/shortlists' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_shortlists'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='GET'){ res=await handleMatriList(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS,'id DESC'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='POST'){ res=await handleMatriCreate(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS,'bride_name'); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='PATCH'){ res=await handleMatriUpdate(request,env,'matrimonial_success_stories',MATRIMONIAL_STORY_FIELDS); }
+      else if(url.pathname==='/matrimonial/stories' && request.method==='DELETE'){ res=await handleMatriDelete(request,env,'matrimonial_success_stories'); }
+      else if(url.pathname==='/matrimonial/settings' && request.method==='GET'){ res=await handleMatriSettingsGet(request,env); }
+      else if(url.pathname==='/matrimonial/settings' && request.method==='PATCH'){ res=await handleMatriSettingsUpdate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='GET'){ res=await handleMatriActivatedList(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='POST'){ res=await handleMatriActivatedCreate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='PATCH'){ res=await handleMatriActivatedUpdate(request,env); }
+      else if(url.pathname==='/matrimonial/activated' && request.method==='DELETE'){ res=await handleMatriActivatedDelete(request,env); }
+      else if(url.pathname==='/matrimonial/razorpay/create-link' && request.method==='POST'){ res=await handleMatriCreatePaymentLink(request,env); }
+      // MATRIMONIAL WEBHOOKS (public, token-authenticated)
+      else if(url.pathname==='/matrimonial/webhook/profiles'   && request.method==='POST'){ res=await handleMatriWebhook(request,env,'profiles'); }
+      else if(url.pathname==='/matrimonial/webhook/matches'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'matches'); }
+      else if(url.pathname==='/matrimonial/webhook/shortlists' && request.method==='POST'){ res=await handleMatriWebhook(request,env,'shortlists'); }
+      else if(url.pathname==='/matrimonial/webhook/stories'    && request.method==='POST'){ res=await handleMatriWebhook(request,env,'stories'); }
+      else if(url.pathname==='/matrimonial/razorpay/webhook'   && request.method==='POST'){ res=await handleMatriPaymentWebhook(request,env); }
+      else if(url.pathname==='/matrimonial/tokens/regenerate'  && request.method==='POST'){ res=await handleMatriTokensRegenerate(request,env); }
+      else if(url.pathname==='/matrimonial/webhook/log'        && request.method==='GET') { res=await handleMatriWebhookLog(request,env); }
+      else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }
+      else if(url.pathname==='/hc/book/doctors' && request.method==='GET'){ res=await handleHcPublicBookDoctors(request,env); }
+      else if(url.pathname==='/hc/book/dates' && request.method==='GET'){ res=await handleHcPublicBookDates(request,env); }
+      else if(url.pathname==='/hc/book/slots' && request.method==='GET'){ res=await handleHcPublicBookSlots(request,env); }
+      else if(url.pathname==='/hc/book/submit' && request.method==='POST'){ res=await handleHcPublicBookSubmit(request,env); }
       else if(url.pathname==='/recruit/jobs' && request.method==='GET'){ res=await handleRecruitList(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'jobs'); }
       else if(url.pathname==='/recruit/jobs' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'jobs'); }
@@ -23267,77 +27206,13 @@ export default {
       else if(url.pathname==='/hospitality/units/media' && request.method==='DELETE'){ res=await handleHospitalityUnitMediaDelete(request, env); }
       else if(url.pathname.startsWith('/hospitality/media/') && request.method==='GET'){ res=await handleHospitalityMediaServe(env, url.pathname.slice('/hospitality/media/'.length)); }
       else if(url.pathname.startsWith('/ecom/category-media/') && request.method==='GET'){ res=await handleEcomCategoryMediaServe(env, url.pathname.slice('/ecom/category-media/'.length)); }
-      else if(url.pathname==='/marketing/usage' && request.method==='GET'){ res=await handleMarketingUsage(request, env); }
-      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='GET'){ res=await handleMarketingSettingsGet(request, env); }
-      else if(url.pathname==='/marketing/settings/api-keys' && request.method==='POST'){ res=await handleMarketingSettingsSave(request, env); }
-      else if(url.pathname==='/marketing/styles/presets' && request.method==='GET'){ res=await handleMarketingStylePresets(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='GET'){ res=await handleMarketingBrandStylesList(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='POST'){ res=await handleMarketingBrandStyleCreate(request, env); }
-      else if(url.pathname==='/marketing/brand-styles' && request.method==='DELETE'){ res=await handleMarketingBrandStyleDelete(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='GET'){ res=await handleContentPostsList(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='POST'){ res=await handleContentPostCreate(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='PATCH'){ res=await handleContentPostUpdate(request, env); }
-      else if(url.pathname==='/marketing/content/posts' && request.method==='DELETE'){ res=await handleContentPostDelete(request, env); }
-      else if(url.pathname==='/marketing/content/generate-week' && request.method==='POST'){ res=await handleContentGenerateWeek(request, env); }
-      else if(url.pathname==='/marketing/content/customers' && request.method==='GET'){ res=await handleContentCustomersList(request, env); }
-      else if(url.pathname==='/marketing/content/from-customer' && request.method==='POST'){ res=await handleContentFromCustomer(request, env); }
-      else if(url.pathname==='/marketing/images/prompt-templates' && request.method==='GET'){ res=await handleMarketingImagePromptTemplates(request, env); }
-      else if(url.pathname==='/marketing/images/usage' && request.method==='GET'){ res=await handleMarketingImageUsage(request, env); }
-      else if(url.pathname==='/marketing/images/generate' && request.method==='POST'){ res=await handleMarketingImageGenerate(request, env); }
-      else if(url.pathname==='/marketing/images/generate-for-post' && request.method==='POST'){ res=await handleMarketingImageGenerateForPost(request, env); }
-      else if(url.pathname==='/marketing/images/generate-carousel' && request.method==='POST'){ res=await handleMarketingImageGenerateCarousel(request, env); }
-      else if(url.pathname==='/marketing/images/attach' && request.method==='POST'){ res=await handleMarketingImageAttach(request, env); }
-      else if(url.pathname==='/marketing/images/upload' && request.method==='POST'){ res=await handleMarketingImageUpload(request, env); }
-      else if(url.pathname==='/marketing/images/restyle' && request.method==='POST'){ res=await handleMarketingImageRestyle(request, env); }
-      else if(url.pathname==='/marketing/images/remove-background' && request.method==='POST'){ res=await handleMarketingImageRemoveBackground(request, env); }
-      else if(url.pathname==='/marketing/images/watermark' && request.method==='POST'){ res=await handleMarketingImageWatermark(request, env); }
-      else if(url.pathname==='/marketing/images/composite-background' && request.method==='POST'){ res=await handleMarketingImageCompositeBackground(request, env); }
-      else if(url.pathname==='/marketing/images/text-overlay' && request.method==='POST'){ res=await handleMarketingImageTextOverlay(request, env); }
-      else if(url.pathname==='/marketing/images/reframe' && request.method==='POST'){ res=await handleMarketingImageReframe(request, env); }
-      else if(url.pathname==='/marketing/images/brand-style' && request.method==='GET'){ res=await handleMarketingImageBrandStyleGet(request, env); }
-      else if(url.pathname==='/marketing/images/brand-style' && request.method==='POST'){ res=await handleMarketingImageBrandStyleSave(request, env); }
-      else if(url.pathname==='/marketing/images/stock-search' && request.method==='GET'){ res=await handleMarketingImageStockSearch(request, env); }
-      else if(url.pathname==='/marketing/images/stock-import' && request.method==='POST'){ res=await handleMarketingImageStockImport(request, env); }
-      else if(url.pathname==='/marketing/logo' && request.method==='GET'){ res=await handleMarketingLogoGet(request, env); }
-      else if(url.pathname==='/marketing/logo' && request.method==='POST'){ res=await handleMarketingLogoUpload(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='GET'){ res=await handleMarketingProjectsList(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='POST'){ res=await handleMarketingProjectCreate(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='PATCH'){ res=await handleMarketingProjectUpdate(request, env); }
-      else if(url.pathname==='/marketing/projects' && request.method==='DELETE'){ res=await handleMarketingProjectDelete(request, env); }
-      else if(url.pathname==='/marketing/projects/upload-init' && request.method==='POST'){ res=await handleMarketingProjectUploadInit(request, env); }
-      else if(url.pathname==='/marketing/projects/upload-finish' && request.method==='POST'){ res=await handleMarketingProjectUploadFinish(request, env); }
-      else if(url.pathname==='/marketing/projects/clips' && request.method==='GET'){ res=await handleMarketingClipsList(request, env, url); }
-      else if(url.pathname==='/marketing/projects/clips/upload-init' && request.method==='POST'){ res=await handleMarketingClipUploadInit(request, env); }
-      else if(url.pathname==='/marketing/projects/clips/upload-finish' && request.method==='POST'){ res=await handleMarketingClipUploadFinish(request, env); }
-      else if(url.pathname==='/marketing/projects/clips' && request.method==='DELETE'){ res=await handleMarketingClipDelete(request, env); }
-      else if(url.pathname==='/marketing/projects/clips/reorder' && request.method==='PATCH'){ res=await handleMarketingClipsReorder(request, env); }
-      else if(url.pathname==='/marketing/projects/combine-clips' && request.method==='POST'){ res=await handleMarketingCombineClips(request, env); }
-      else if(url.pathname==='/marketing/projects/transcribe' && request.method==='POST'){ res=await handleMarketingTranscribe(request, env); }
-      else if(url.pathname==='/marketing/projects/captions' && request.method==='PATCH'){ res=await handleMarketingCaptionsSave(request, env); }
-      else if(url.pathname==='/marketing/projects/translate-captions' && request.method==='POST'){ res=await handleMarketingTranslateCaptions(request, env); }
-      else if(url.pathname==='/marketing/projects/generate-voiceover' && request.method==='POST'){ res=await handleMarketingGenerateVoiceover(request, env); }
-      else if(url.pathname==='/marketing/autoedit-presets' && request.method==='GET'){ res=await handleMarketingAutoeditPresets(request, env); }
-      else if(url.pathname==='/marketing/projects/suggest-cues' && request.method==='POST'){ res=await handleMarketingSuggestCues(request, env); }
-      else if(url.pathname==='/marketing/projects/suggest-caption' && request.method==='POST'){ res=await handleMarketingSuggestCaption(request, env); }
-      else if(url.pathname==='/marketing/projects/cues' && request.method==='PATCH'){ res=await handleMarketingCuesSave(request, env); }
-      else if(url.pathname==='/marketing/projects/autoedit-options' && request.method==='PATCH'){ res=await handleMarketingAutoeditOptionsSave(request, env); }
-      else if(url.pathname==='/marketing/projects/detect-scenes' && request.method==='POST'){ res=await handleMarketingDetectScenes(request, env); }
-      else if(url.pathname==='/marketing/projects/render' && request.method==='POST'){ res=await handleMarketingRenderStart(request, env); }
-      else if(url.pathname==='/marketing/projects/preview' && request.method==='POST'){ res=await handleMarketingPreview(request, env); }
-      else if(url.pathname==='/marketing/projects/generate-ai-broll' && request.method==='POST'){ res=await handleMarketingGenerateAiBroll(request, env); }
-      else if(url.pathname==='/marketing/projects/jobs' && request.method==='GET'){ res=await handleMarketingJobsList(request, env, url); }
-      else if(url.pathname==='/marketing/projects/send-whatsapp' && request.method==='POST'){ res=await handleMarketingSendWhatsapp(request, env); }
-      else if(url.pathname==='/marketing/webhook/render-complete' && request.method==='POST'){ res=await handleMarketingRenderWebhook(request, env); }
-      else if(url.pathname.startsWith('/marketing/media/') && request.method==='GET'){ res=await handleMarketingMediaServe(request, env, url.pathname.slice('/marketing/media/'.length)); }
-      else if(url.pathname==='/marketing/templates' && request.method==='GET'){ res=await handleMarketingTemplatesList(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='POST'){ res=await handleMarketingTemplateCreate(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='PATCH'){ res=await handleMarketingTemplateUpdate(request, env); }
-      else if(url.pathname==='/marketing/templates' && request.method==='DELETE'){ res=await handleMarketingTemplateDelete(request, env); }
-      else if(url.pathname==='/marketing/templates/generate' && request.method==='POST'){ res=await handleMarketingTemplateGenerate(request, env); }
-      else if(url.pathname==='/marketing/template-library' && request.method==='GET'){ res=await handleMarketingTemplateLibrary(request, env); }
-      else if(url.pathname==='/marketing/template-library/clone' && request.method==='POST'){ res=await handleMarketingTemplateLibraryClone(request, env); }
-      else if(url.pathname==='/marketing/remotion-library' && request.method==='GET'){ res=await handleMarketingRemotionLibrary(request, env); }
-      else if(url.pathname==='/marketing/remotion-library/clone' && request.method==='POST'){ res=await handleMarketingRemotionLibraryClone(request, env); }
+      // FLOWVYNE PLUGIN
+      else if(url.pathname==='/flowvyne/settings' && request.method==='GET'){ res=await handleFlowvyneSettingsGet(request,env); }
+      else if(url.pathname==='/flowvyne/settings' && request.method==='POST'){ res=await handleFlowvyneSettingsUpdate(request,env); }
+      else if(url.pathname==='/flowvyne/contacts' && request.method==='DELETE'){ res=await handleFlowvyneContactsReset(request,env); }
+      // Marketing Studio has been retired. Keep the old paths explicitly closed so stale browser
+      // tabs cannot submit render, image-generation or content-calendar work after deployment.
+      else if(url.pathname.startsWith('/marketing/')){ res=json({error:'Marketing Studio has been removed.'}, 410); }
       else{ res=json({error:'Not found'}, 404); }
     }catch(e){
       res=json({error:e.message||'Internal error'}, 500);
@@ -23371,7 +27246,7 @@ export default {
       ctx.waitUntil(runDailyHealthCheckForAllClients(env)); ctx.waitUntil(runPipelineFollowupsForAllClients(env)); ctx.waitUntil(runCalendarEventsForAllClients(env));
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
-      ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env)); ctx.waitUntil(runFinancialPlanningRemindersForAllClients(env));
+      ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env));
       // SaaS Ops — health score recompute, renewal/activation reminders, support-signal pull; all
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
