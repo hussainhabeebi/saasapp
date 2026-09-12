@@ -10968,7 +10968,7 @@ const ENGINE_OPT_OUT_WORDS=['stop','unsubscribe','opt out','opt-out','optout'];
 // Matches engine.json's "Google Gemini Chat Model" node (modelName: 'models/gemini-2.0-flash'),
 // which the "AI Agent · Sentiment & Intent" node ran on — a dedicated Gemini credential shared
 // across all clients (REPLACE_GEMINI_CRED), not each client's own per-tenant OpenRouter key.
-const ENGINE_GEMINI_MODEL='gemini-2.0-flash';
+const ENGINE_GEMINI_MODEL='gemini-3.6-flash';
 // Real observed failure: a customer asked about a free-trial offer that WAS explicitly written in
 // this client's own main_prompt (so the model had the correct answer in context) and still got
 // told there wasn't one — a plain accuracy/instruction-following gap in gemini-2.0-flash, the same
