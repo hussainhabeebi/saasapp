@@ -98,9 +98,12 @@ function ensureWorker() {
 async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
-  const timeoutMs = Math.max(5000, Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS || 30000));
+  // CPU-only VITS synthesis on a standard VPS takes 40–90 s. Default to 120 s so a single
+  // slow sentence doesn't kill the worker; set AI4BHARAT_TTS_TIMEOUT_MS=0 to disable entirely.
+  const rawTimeout = Number(process.env.AI4BHARAT_TTS_TIMEOUT_MS ?? 120000);
+  const timeoutMs = rawTimeout === 0 ? 0 : Math.max(5000, rawTimeout);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const timer = timeoutMs > 0 ? setTimeout(() => {
       pending.delete(id);
       const error = new Error(`AI4Bharat synthesis exceeded ${timeoutMs}ms`);
       reject(error);
@@ -109,7 +112,7 @@ async function requestWav(text, language, outputPath) {
       // burst of slow requests from repeatedly reloading several gigabytes of model.
       retryAfterMs = Date.now() + Math.max(10000, Number(process.env.AI4BHARAT_RESTART_COOLDOWN_MS || 60000));
       stopWorker(error);
-    }, timeoutMs);
+    }, timeoutMs) : null;
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, text: text.slice(0, 500), language, output_path: outputPath }) + '\n');
   });
