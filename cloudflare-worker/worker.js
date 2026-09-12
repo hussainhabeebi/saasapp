@@ -11061,7 +11061,7 @@ async function engineFetchWithRetry(url, options){
 
 const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
 
-// gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
+// gemini-2.5-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
 // measurably under-transcribes audio next to Gemini's newer models, and that gap is worse for
 // lower-resource Indic languages (Malayalam, etc.) than for English — accuracy, not just speed, is
 // what matters for a customer's actual words, so transcription gets its own, stronger model rather
