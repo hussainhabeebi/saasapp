@@ -14005,24 +14005,31 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
 // customer already received the text reply.
 async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
   try{
-    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-    if(!spokenText) return;
     const iso=(langCode||'').toLowerCase();
     const bcp47=ENGINE_TTS_LANG_MAP[iso];
+    // Pre-flight: if neither the render pipeline nor a Sarvam credential is reachable at all,
+    // skip synthesis immediately and alert ops with specific fix instructions rather than letting
+    // all three providers fail one-by-one before reporting. The text reply was already sent.
+    const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
+    const sarvamCredential=engineResolveSarvamCredential(env,c);
+    if(!hasRenderPipeline&&!sarvamCredential){
+      await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
+        new Error('No voice provider reachable. Fix: go to Settings → Voice in the dashboard and enter your Sarvam API key (fastest fix, no redeploy needed), OR add SARVAM_API_KEY to Cloudflare Worker secrets, OR configure MARKETING_RENDER_WEBHOOK_URL+MARKETING_RENDER_WEBHOOK_SECRET for Piper/AI4Bharat.'),
+        {clientId,convId,iso,bcp47:bcp47||'none'}).catch(()=>{});
+      return;
+    }
+    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+    if(!spokenText) return;
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    // Prefer the fast local Piper tier for the background follow-up. This prevents a long
-    // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages
-    // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.
-    // Prefer the fast local Piper tier for the background follow-up. For languages without a
-    // configured Piper voice, fall through to AI4Bharat and then Sarvam.
+    // Piper (fast, local) → AI4Bharat (self-hosted VITS, unlimited bg timeout) → Sarvam (API fallback)
     audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
     if(audio) provider='piper';
     if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
-    if(audio && !provider) provider='ai4bharat';
+    if(audio&&!provider) provider='ai4bharat';
     if(!audio) provider='';
 
-    if(!audio && bcp47){
+    if(!audio&&bcp47){
       const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
       if(credential){
         audio=await safe(engineSarvamTts(env,spokenText,bcp47,credential.apiKey,30000));
@@ -14030,13 +14037,14 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
       }
     }
     if(audio){
-      const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
-      if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
-      await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
-    } else {
-      // All three providers (Piper → AI4Bharat → Sarvam) returned null — text reply was already
-      // sent, but alert ops so the team can investigate TTS configuration.
-      await reportOpsError(env, 'engineBackgroundSendVoice — all TTS providers failed, no voice note sent', new Error(`iso=${iso}, bcp47=${bcp47||'none'}, render_url=${!!env.MARKETING_RENDER_WEBHOOK_URL}, sarvam_key=${!!engineResolveSarvamCredential(env,c)}`), {clientId, convId}).catch(()=>{});
+      const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
+      if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
+      await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
+    }else{
+      // At least one provider was configured but all failed — text reply was already sent.
+      await reportOpsError(env,'engineBackgroundSendVoice — all TTS providers failed, no voice note sent',
+        new Error(`iso=${iso}, bcp47=${bcp47||'none'}, render_url=${!!env.MARKETING_RENDER_WEBHOOK_URL}, sarvam_key=${!!sarvamCredential}`),
+        {clientId,convId}).catch(()=>{});
     }
   }catch(e){}
 }
