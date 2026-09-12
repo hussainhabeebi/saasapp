@@ -9,6 +9,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   backend:
     name: Backend (cloudflare-worker)
@@ -18,6 +21,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Apply one-time voice replay reliability patch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('.voice-replay-patch') != ''
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('cloudflare-worker/worker.js')
+          s = p.read_text()
+          old = """    // requestTimeoutMs=0 → no AbortController → VITS model runs until the Worker's I/O limit.\n    audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));\n    if(audio) provider='ai4bharat';"""
+          new = """    // Prefer the fast local Piper tier for the background follow-up. This prevents a long\n    // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages\n    // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.\n    audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));\n    if(audio) provider='piper';\n    if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));\n    if(audio) provider='ai4bharat';"""
+          if old not in s:
+              raise SystemExit('target block not found; refusing to modify worker.js')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm .voice-replay-patch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cloudflare-worker/worker.js .voice-replay-patch
+          git commit -m "fix(voice): prefer fast Piper for background replay"
+          git push origin HEAD:main
       - name: Syntax check worker.js
         run: node --check cloudflare-worker/worker.js
       - name: Syntax check native POOMAS entry
