@@ -16198,7 +16198,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
           const _attach1=sendProductImage||sendOnlyPrimaryImage;
           if(_attach1 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach1?product.image_url:null});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach1?product.image_url:null, ctx});
           if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
           else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
           else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
@@ -16222,7 +16222,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.humanReason='order_handoff';
           const _attach2=sendProductImage||sendOnlyPrimaryImage;
           if(_attach2 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach2?product.image_url:null});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach2?product.image_url:null, ctx});
           if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
           else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
           else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
@@ -16238,7 +16238,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             routing.reply=sentText;
             const _attach3=sendProductImage||sendOnlyPrimaryImage;
             if(_attach3 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach3?product.image_url:null});
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach3?product.image_url:null, ctx});
             if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
             else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
             else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
@@ -16256,7 +16256,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             routing.orderCollectSeed={sku:product.sku||detection.sku||'', productName:product.name||detection.productName||'', price:product.price||0, currency:product.currency||''};
             const _attach4=sendProductImage||sendOnlyPrimaryImage;
             if(_attach4 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach4?product.image_url:null});
+            await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach4?product.image_url:null, ctx});
             if(sendProductImage){ await engineMaybeSendProductDescription(env, c, clientId, convId, product); await engineMaybeSendProductMedia(env, c, clientId, convId, product); }
             else if(shopifyTier===2) await engineSendShopifyTier2(env, c, clientId, convId, product, {withDescription:true, withLink:true});
             else if(shopifyTier>=3) await engineSendShopifyTier3(env, c, clientId, convId, product, {withLink:true});
@@ -16314,7 +16314,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // comes up again the same day.
           const _attach6=sendProductImage||sendOnlyPrimaryImage;
           if(_attach6 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
-          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null});
+          await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null, ctx});
           // Primary image above; additional media follows. Description + link are already in sentText
           // for this enquiry branch, so Shopify tiers skip both (withDescription:false, withLink:false).
           if(sendProductImage) await engineMaybeSendProductMedia(env, c, clientId, convId, product);
