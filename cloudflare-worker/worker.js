@@ -11567,8 +11567,8 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
-    const raw=await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'})
-      || await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'});
+    const raw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
+      || await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'});
     if(raw){
       try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
       catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
@@ -12128,8 +12128,8 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
   let raw=null;
-  let generated=await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'})
-    ||await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250});
+  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250,caller:'flight-extract'})
+    ||await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'});
   if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
   if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
   raw=raw&&typeof raw==='object'?raw:{};
@@ -13562,8 +13562,8 @@ export async function engineExtractPlainOptionsFromReply(env, c, replyText){
   // this engine, so an option label must never be allowed to inherit the reply's own language here.
   const system=`Does this WhatsApp reply end by asking the customer to choose between 2 and 10 clear, short, named options (e.g. "Are you looking for skincare, wellness, or diet plan options today?" -> ["Skincare","Wellness","Diet plan"], "glowing skin, anti-ageing, or something else?" -> ["Glowing skin","Anti-ageing","Something else"])? If yes, respond with ONLY compact JSON {"options":["..."]} — each option a short 1-4 word label for that choice (strip filler words like "are you looking for"/"options today"), ALWAYS translated into English regardless of what language the reply itself is written in (e.g. a Malayalam reply ending "...മെത്തയാണോ, മരം കൊണ്ടുള്ള കട്ടിലാണോ?" -> ["Mattress","Wooden bed"]), in the same order as the reply. If the reply does not end in this kind of choice question, respond with ONLY {"options":[]}.`;
   try{
-    const raw=(await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'})
-      || await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'}))||'';
+    const raw=(await engineGeminiGenerateWithFallback(env, c, system, text, {temperature:0.1, maxOutputTokens:150, json:true, caller:'extract-options'})
+      || await engineCfAiGenerate(env, system, text, {temperature:0.1, maxOutputTokens:150, caller:'extract-options'}))||'';
     const m=raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/);
     if(!m) return null;
     const parsed=JSON.parse(m[0]);
