@@ -10931,9 +10931,8 @@ async function handleChatwootMessageHook(request, env){
 
    Ported field-for-field from the supplied engine.json ("Leadvyne · Engine v3"), with these
    deliberate deviations from what that workflow literally does today:
-   - Voice notes are still never transcribed — same "(sent a voice note)" placeholder text goes
-     to the AI. That's not a shortcut taken here; it's what engine.json itself actually does
-     (there's no transcription node wired to the voice branch despite docs describing one).
+   - Voice notes are transcribed via Gemini (engineGeminiTranscribeVoice) when a media URL is
+     present; "(sent a voice note)" is only used as a fallback when transcription fails.
    - Once a lead's Handover is 'Yes' or Stage is 'human_handover', the bot goes fully silent —
      matches engine.json's own Code·State hard-stop and SETUP.md's documented "never talk over a
      live agent" behavior. The HandoverFaqCount/_isPostHandover branch later in that workflow's
@@ -16618,7 +16617,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
-      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,c.handover_enabled==='No'?(botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?"):(botConfig.callback_msg||"I'll connect you with our team shortly."),replyLang);
+      if(!reply||reply.trim()==='One moment 🙏'){
+        let fallbackMsg;
+        if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
+        else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
+      }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       const {text:cleanReply, options:replyOptions}=engineExtractReplyOptions(reply);
       reply=cleanReply;
@@ -16713,7 +16718,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     } else if(routing.route==='objection'){
       const sysPrompt=engineBuildObjectionSystemPrompt(c, state, routing.objectionCategory, replyLang);
       let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-      if(!reply||reply.trim()==='One moment 🙏') reply=await engineLocalizeReply(env,c,c.handover_enabled==='No'?(botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?"):(botConfig.callback_msg||"I'll connect you with our team shortly."),replyLang);
+      if(!reply||reply.trim()==='One moment 🙏'){
+        let fallbackMsg;
+        if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
+        else if(c.handover_enabled==='No') fallbackMsg=botConfig.no_handover_fallback_msg||"I'm not sure I got that — could you share more details so I can help you?";
+        else fallbackMsg=botConfig.callback_msg||"I'll connect you with our team shortly.";
+        reply=await engineLocalizeReply(env,c,fallbackMsg,replyLang);
+      }
       reply=engineSubstituteOrderLinkPlaceholder(reply, c, clientId, '');
       routing.reply=reply; sentText=reply;
       // A customer who just raised an objection benefits from explicit, one-tap next steps
