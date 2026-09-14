@@ -2675,7 +2675,7 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   const system=`You are screening one incoming WhatsApp message for a business selling physical products. Classify it into exactly one of:
 - "order": the customer clearly wants to buy/order right now — "order this", "I'll take it", "buy it", "yes place my order", "order pls", confirming they want to proceed after being shown a product.
 - "enquiry": genuine interest in a specific product without yet committing to buy — a size/color/stock/price question about one item, "tell me more", "give me the details", "do you have it in red".
-- neither (not a signal at all) — general browsing, greetings, or unrelated questions.
+- neither (not a signal at all) — general browsing, greetings, unrelated questions, or any question about payment methods, delivery, or policies (cash on delivery, COD, UPI, card payment, delivery charges, shipping cost, return policy, refund, warranty). These are FAQ/policy questions even when asked right after discussing a product — always respond with {"signal":false} for them.
 If "order" or "enquiry", try to match it to exactly one product from the catalog below.
 - Search broadly across every catalog value shown: exact name, short label, SKU, category, brand, variant, style, color, size, shade, skin/hair type, concern, volume, ingredient and description. A customer's everyday phrase can match any of those stored Product fields.
 - Match by reasonable everyday judgment, not exact string equality — a customer writes informally, the catalog doesn't. "Green shirt" should match a catalog color of "Light Green" or "Bottle Green"; "greenshirt" and "green shirt" are the same query; a size like "S"/"small"/"S size" are the same detail. Don't withhold sku just because the wording isn't identical to the catalog fields — withhold it only when you genuinely can't tell which product (or no product) is meant.
@@ -16154,8 +16154,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // in Last Product Sku (write side just below) instead of asking them to repeat themselves.
         // Not used for the category branch (detection.category) — that's a genuinely different,
         // still-undecided request, not a short reply to what was already being discussed.
+        // resolvedFromHistory tracks whether the product came from this fallback (no SKU detected
+        // in the message itself) vs. a genuine new product selection by the classifier — used below
+        // to route enquiry follow-ups (COD, stock, delivery questions) through the FAQ LLM instead
+        // of resending the verbatim product description.
+        let resolvedFromHistory=false;
         if(!product && (detection.mode==='order' || (detection.mode==='enquiry' && !detection.category)) && state.lead?.['Last Product Sku']){
           product=await ecomFindProductBySku(env, clientId, state.lead['Last Product Sku']);
+          if(product) resolvedFromHistory=true;
         }
         if(product){
           matchedProduct=product;
@@ -16292,6 +16298,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product && resolvedFromHistory){
+          // Product came from the Last Product Sku fallback — the classifier found no SKU in the
+          // message itself, meaning this is a follow-up question (COD, delivery, stock, etc.) about
+          // a previously discussed product, not a fresh product selection. Sending the verbatim
+          // description again would ignore what was actually asked. Route to ecom_faq so the FAQ
+          // LLM can compose a relevant answer; matchedProduct is already set so the product's
+          // context (name, sku, description) flows into engineBuildEcomContext below.
+          routing.route='ecom_faq';
         } else if(detection.mode==='enquiry' && product){
           // Exact product selection is rendered directly from its saved Ecom row. No LLM rewrite:
           // product name/description/link stay verbatim and absent facts remain absent — a
