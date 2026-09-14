@@ -340,7 +340,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 /* ── BOTTOM NAV (mobile) — pill-style ── */
 #bottomNav{height:var(--nav);background:var(--card);border-top:1px solid var(--line);display:flex;align-items:center;flex-shrink:0;position:relative;z-index:50;padding:0 4px;padding-bottom:env(safe-area-inset-bottom)}
 @media(min-width:768px){#bottomNav{display:none}}
-.bnItem{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:none;cursor:pointer;padding:6px 2px;border-radius:14px;transition:background .15s;position:relative}
+.bnItem{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:none;cursor:pointer;padding:6px 2px;border-radius:14px;transition:background .15s;position:relative;min-height:48px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.bnItem:active{background:var(--accent-soft)}
 .bnIcon{font-size:22px;line-height:1;transition:transform .2s}
 .bnLabel{font-size:9.5px;font-weight:600;font-family:var(--disp);color:var(--muted);letter-spacing:.02em;transition:color .15s}
 .bnItem.active{background:var(--accent-soft)}
@@ -355,7 +356,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .more-sheet-handle{width:36px;height:4px;border-radius:3px;background:var(--ls);margin:2px auto 12px}
 .more-sheet-title{font-family:var(--disp);font-weight:700;font-size:14px;margin-bottom:12px}
 .more-sheet-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.more-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:none;background:var(--bg);cursor:pointer;padding:14px 4px;border-radius:14px;transition:background .15s}
+.more-item{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:none;background:var(--bg);cursor:pointer;padding:14px 4px;border-radius:14px;transition:background .15s;min-height:72px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 .more-item:active{background:var(--accent-soft)}
 .more-item .bnIcon{font-size:22px}
 .more-item .bnLabel{font-size:10.5px;font-weight:600;font-family:var(--disp);color:var(--muted)}
@@ -862,7 +863,8 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Activity card refinements */
 .activity-card{transition:box-shadow .2s}
 .activity-card:hover{box-shadow:0 2px 12px rgba(0,0,0,.07)}
-.act-row{transition:background .1s;border-radius:8px;margin:0 -8px;padding:9px 8px}
+.act-row{transition:background .1s;border-radius:8px;margin:0 -8px;padding:9px 8px;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.act-row:active{background:var(--accent-soft)}
 .act-row:last-child{border-bottom:none}
 
 /* Kanban polish */
@@ -3472,7 +3474,7 @@ const ROLES = {
     <button class="bnItem active" data-page="home"><span class="bnIcon">🏠</span><span class="bnLabel">Home</span></button>
     <button class="bnItem" data-page="chats" style="position:relative"><span class="bnIcon">💬</span><span class="bnLabel">Chats</span><span id="bnChatBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
     <button class="bnItem" data-page="humandeals" id="bnHumandealsTab" style="position:relative"><span class="bnIcon">🤝</span><span class="bnLabel">Deals</span><span id="bnHdBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
-    <button class="bnItem" data-page="tasks"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:2px;right:16px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
+    <button class="bnItem" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
     <button class="bnItem" id="bnMore" onclick="openMoreSheet()"><span class="bnIcon">⋯</span><span class="bnLabel">More</span></button>
   </div>
 
@@ -3483,7 +3485,7 @@ const ROLES = {
     <div class="more-sheet-title">More</div>
     <div class="more-sheet-grid">
       <button class="more-item" data-page="bizai" id="moreBizaiTab"><span class="bnIcon">🤖</span><span class="bnLabel">AI Assistant</span></button>
-      <button class="more-item" data-page="leads"><span class="bnIcon">👥</span><span class="bnLabel">Leads</span></button>
+      <button class="more-item" data-page="tasks" style="position:relative"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
       <button class="more-item" data-page="projects" id="moreProjectsTab"><span class="bnIcon">🗂️</span><span class="bnLabel">Projects</span></button>
       <button class="more-item" data-page="team" id="moreTeamTab"><span class="bnIcon">📊</span><span class="bnLabel">Team</span></button>
@@ -9064,7 +9066,7 @@ function populateCommandCenter(leads){
     const scoreDot=score==='Hot'?'🔴':score==='Warm'?'🟡':'⚪';
     const ts=l.LastMsgAt||l.Date||'';
     const when=ts?timeAgo(ts):'';
-    return `<div class="act-row" onclick="openLeadDetail(${l.Id})" style="cursor:pointer">
+    return `<div class="act-row" onclick="openDetail(${l.Id})" style="cursor:pointer;-webkit-tap-highlight-color:transparent">
       <div class="act-avatar">${initials}</div>
       <div style="flex:1;min-width:0">
         <div class="act-name">${esc(l.Name||'Unknown')} ${scoreDot}</div>
