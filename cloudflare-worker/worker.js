@@ -3200,18 +3200,21 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     // interested product and business prompt instead of the static template. Falls back to the
     // static message if the AI call produces nothing so the follow-up still goes out.
     let staticText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
-    if(stepCfg.ai_mode){
-      try{
-        const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
-        const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
-        const generated=await engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'});
-        if(generated) staticText=generated;
-      }catch(e){ /* AI failed — send static message */ }
-    }
-    sentText=staticText;
-    // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
-    // comment on why a template step can't carry this).
-    sentText+=await ecomFollowupScarcityLine(env, c, lead);
+    // Gemini generate and scarcity line are independent — run both in parallel.
+    const [aiGenerated, scarcityLine]=await Promise.all([
+      stepCfg.ai_mode
+        ? (()=>{
+            const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
+            const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
+            return engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'}).catch(()=>null);
+          })()
+        : Promise.resolve(null),
+      // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
+      // comment on why a template step can't carry this).
+      ecomFollowupScarcityLine(env, c, lead),
+    ]);
+    if(aiGenerated) staticText=aiGenerated;
+    sentText=staticText+(scarcityLine||'');
 
     // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
     // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
