@@ -9388,10 +9388,11 @@ let _orderCollectFieldEnsured=false;
 async function ensureOrderCollectField(env){
   if(_orderCollectFieldEnsured) return;
   try{
-    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
-    const existing=await existingR.json().catch(()=>({}));
-    const names=new Set((existing.list||[]).map(f=>f.title));
-    if(!names.has('OrderCollect')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'OrderCollect', uidt:'LongText'}});
+    const {names:existing}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
+    if(!existing.includes('OrderCollect')){
+      const r=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{column_name:'OrderCollect',title:'OrderCollect',uidt:'LongText'}});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); console.error('[ecom] ensureOrderCollectField: create failed', r.status, JSON.stringify(d)); return; }
+    }
     _orderCollectFieldEnsured=true;
   }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
 }
