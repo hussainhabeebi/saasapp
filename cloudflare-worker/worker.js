@@ -9397,6 +9397,38 @@ async function ensureOrderCollectField(env){
   }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
 }
 
+// Recovers missing electronics order seed fields from conversation history when the NocoDB
+// OrderCollect field is absent or incomplete. Parses the qty-confirmation bot message
+// ("N x ProductName — CurrencyPrice") and the user message just before "How would you like to pay?"
+function elecSeedFromHistory(history){
+  const recovered={};
+  const msgs=Array.isArray(history)?history:[];
+  for(let i=0;i<msgs.length;i++){
+    const m=msgs[i];
+    const txt=String(m.role==='assistant'?(m.content||m.text||''):'');
+    if(!txt) continue;
+    // Qty confirmation line: "2 x iPhone 15 Pro — ₹79,999"
+    const qm=txt.match(/^(\d+)\s+x\s+(.+?)\s+[—–\-]\s*([^\d]*)([\d,]+(?:\.\d+)?)/m);
+    if(qm){
+      recovered.qty=parseInt(qm[1],10);
+      recovered.productName=qm[2].trim();
+      recovered.currency=(qm[3]||'').trim();
+      recovered.totalPrice=parseFloat(qm[4].replace(/,/g,''))||0;
+      if(recovered.qty) recovered.unitPrice=Math.round((recovered.totalPrice/recovered.qty)*100)/100;
+    }
+    // Address: user message immediately before "How would you like to pay?"
+    if(/how would you like to pay/i.test(txt)){
+      for(let j=i-1;j>=0;j--){
+        if(msgs[j].role==='user'){
+          recovered.address=String(msgs[j].content||msgs[j].text||'').trim().slice(0,500);
+          break;
+        }
+      }
+    }
+  }
+  return recovered;
+}
+
 // Remembers whichever product this lead was last confidently matched to (written right below,
 // wherever `matchedProduct` gets set in the order/enquiry detection block), so a later message
 // with no product-identifying detail of its own ("proceed with order", a bare "yes") can still be
@@ -16265,6 +16297,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Stages: elec_order_qty → elec_order_address → elec_order_payment → elec_order_confirm
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isElectronicsEcom && state.stage && state.stage.startsWith('elec_order_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      // Fallback: recover any missing seed fields from conversation history so Order Summary
+      // is never blank even if the NocoDB OrderCollect field was not yet persisted.
+      if(!seed.productName||!seed.qty||!seed.unitPrice||!seed.address){
+        const _rec=elecSeedFromHistory(state.activeHistory||state.history||[]);
+        if(!seed.productName&&_rec.productName) seed.productName=_rec.productName;
+        if(!seed.qty&&_rec.qty) seed.qty=_rec.qty;
+        if(!seed.unitPrice&&_rec.unitPrice) seed.unitPrice=_rec.unitPrice;
+        if(!seed.totalPrice&&_rec.totalPrice) seed.totalPrice=_rec.totalPrice;
+        if(!seed.currency&&_rec.currency) seed.currency=_rec.currency;
+        if(!seed.address&&_rec.address) seed.address=_rec.address;
+      }
       if(/^ELEC_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
