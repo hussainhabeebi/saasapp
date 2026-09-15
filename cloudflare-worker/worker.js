@@ -3351,6 +3351,8 @@ async function classicFollowupProcessClient(env, c){
     const data=await leadsR.json().catch(()=>({}));
     const leadRows=data?.list||[];
     if(!leadRows.length) break;
+    // Phase 1: filter leads that are due this tick
+    const dueTasks=[];
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
@@ -3380,19 +3382,27 @@ async function classicFollowupProcessClient(env, c){
         continue;
       }
       if(silentHours<thresholdHours(nextStep)) continue; // not due yet
-      try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
-      catch(e){
-        console.error('[classic-followups] send failed for lead', lead.Id, 'step', nextStep, e.message);
-        if(stepCfg.type==='template'){
-          // Write to followup_send_failures so the dashboard can show WHY the after-24h template send
-          // failed (expired token, unapproved template, missing WA credentials, etc.) instead of silently swallowing it.
-          const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
-          env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
-            .bind(Number(c.Id), Number(lead.Id), nextStep, String(e.message).slice(0,500), errCode?Number(errCode):null, 'cron', new Date().toISOString())
-            .run().catch(()=>{});
+      dueTasks.push({lead, nextStep, stepCfg});
+    }
+    // Phase 2: send in parallel batches — each lead's Gemini call, TTS, and Chatwoot POST are
+    // all independent, so running them concurrently cuts cron time from O(N×latency) to
+    // O(ceil(N/BATCH)×latency). Cap at 5 to stay within API rate limits.
+    const FOLLOWUP_CONCURRENCY=5;
+    for(let i=0; i<dueTasks.length; i+=FOLLOWUP_CONCURRENCY){
+      await Promise.all(dueTasks.slice(i, i+FOLLOWUP_CONCURRENCY).map(async ({lead, nextStep, stepCfg})=>{
+        try{ await sendFollowupLadderStep(env, c, lead, nextStep, stepCfg); }
+        catch(e){
+          console.error('[classic-followups] send failed for lead', lead.Id, 'step', nextStep, e.message);
+          if(stepCfg.type==='template'){
+            // Write to followup_send_failures so the dashboard can show WHY the after-24h template send
+            // failed (expired token, unapproved template, missing WA credentials, etc.) instead of silently swallowing it.
+            const errCode=e.message?.match(/\b(1\d{5}|190|100)\b/)?.[0]||null;
+            env.DB.prepare(`INSERT INTO followup_send_failures (client_id, lead_id, step, error_message, error_code, source, failed_at) VALUES (?,?,?,?,?,?,?)`)
+              .bind(Number(c.Id), Number(lead.Id), nextStep, String(e.message).slice(0,500), errCode?Number(errCode):null, 'cron', new Date().toISOString())
+              .run().catch(()=>{});
+          }
         }
-      }
-      await new Promise(res=>setTimeout(res, 300)); // pacing, same spirit as recovery.js's SEND_DELAY_MS
+      }));
     }
     if(leadRows.length<200) break;
     page++;
