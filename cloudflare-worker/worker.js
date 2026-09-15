@@ -9480,6 +9480,7 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     order_date:new Date().toISOString().slice(0,10),
     items:(seed?.items||'').trim().slice(0,500)||'Collected via chat',
     total:seed?.price||0, currency:seed?.currency||'',
+    payment_method:seed?.paymentMethod||'',
     delivery_address:(address||'').trim().slice(0,500), status:'pending',
     notes:seed?.fashionFlow
       ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
