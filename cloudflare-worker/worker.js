@@ -11099,7 +11099,7 @@ async function engineFetchAudioBase64(env, mediaUrl){
     // Transcribing it anyway risks Gemini hallucinating plausible-sounding text from noise; treating
     // it as "too short" up front (tooShort, not null — a distinct outcome from a real fetch/size
     // failure) lets the caller ask the customer to resend instead of guessing.
-    if(buf.byteLength<800) return {tooShort:true};
+    if(buf.byteLength<200) return {tooShort:true};
     return {mimeType, base64:engineArrayBufferToBase64(buf)};
   }catch(e){ await reportOpsError(env, 'engineFetchAudioBase64 — fetch threw', e, {mediaUrl}); return null; }
 }
@@ -11143,9 +11143,21 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, 
     const data=await r.json().catch(()=>({}));
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const text=parts.map(p=>p.text||'').join('').trim();
-    if(!text) await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript in response', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
-    if(text) console.log('[gemini-call]', JSON.stringify({caller:'transcribe', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()}));
-    return text||null;
+    if(text){ console.log('[gemini-call]', JSON.stringify({caller:'transcribe', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()})); return text; }
+    // Empty transcript on first try — wait 1s and retry once before giving up. Gemini occasionally
+    // returns an empty candidate on valid speech audio (transient model hiccup, not a content issue).
+    await new Promise(r=>setTimeout(r,1000));
+    const r2=await engineFetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_TRANSCRIBE_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{role:'user', parts:[{text:prompt},{inline_data:{mime_type:mimeType, data:base64}}]}], generationConfig:{thinkingConfig:{thinkingBudget:0}}})
+    });
+    if(r2.ok){
+      const data2=await r2.json().catch(()=>({}));
+      const text2=(data2?.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('').trim();
+      if(text2){ console.log('[gemini-call]', JSON.stringify({caller:'transcribe-retry', model:ENGINE_TRANSCRIBE_MODEL, ts:new Date().toISOString()})); return text2; }
+    }
+    await reportOpsError(env, 'engineGeminiTranscribeVoice — empty transcript after retry', new Error(JSON.stringify(data).slice(0,500)), {mimeType});
+    return null;
   }catch(e){ await reportOpsError(env, 'engineGeminiTranscribeVoice — request threw', e, {mimeType}); return null; }
 }
 
@@ -11512,9 +11524,9 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
     // it hallucinating plausible-sounding text from noise. Distinct placeholder from the generic
     // one below so the AI's reply naturally asks the customer to resend, rather than answering a
     // fabricated question.
-    if(audio?.tooShort) return '(sent a voice note that was too short/silent to make out — ask them to resend)';
+    if(audio?.tooShort) return '(SYSTEM NOTE — NOT THE CUSTOMER\'S WORDS: the customer\'s voice note was too short/silent to transcribe. Ask them to speak for a few seconds and resend. Do NOT say you cannot give voice replies — voice replies are supported.)';
     const transcript=audio?await engineGeminiTranscribeVoice(env, audio.mimeType, audio.base64, c.language, engineBuildTranscribeVocabHint(c)):null;
-    return transcript || '(sent a voice note)';
+    return transcript || '(SYSTEM NOTE — NOT THE CUSTOMER\'S WORDS: the customer sent a voice note but transcription failed due to a technical issue. Ask them to please resend the voice note or type their question instead. Do NOT say you cannot give voice replies — voice replies are supported.)';
   }
   return text || (mediaType==='voice'?'(sent a voice note)':'');
 }
