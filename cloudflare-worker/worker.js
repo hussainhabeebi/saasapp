@@ -16294,6 +16294,75 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }
       }
     }
+    // ── Electronics Ecom: returning customer menu ────────────────────────────────
+    // When an existing customer (has a previous order) revisits or sends a greeting,
+    // show a 3-button menu instead of jumping straight to product detection.
+    // Stages: elec_return_menu (handles ELEC_NEW_ORDER / ELEC_CHECK_STATUS / ELEC_AMEND_ORDER taps)
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isElectronicsEcom && !orderHandledInline){
+      const _isReturnMenuStage=state.stage==='elec_return_menu';
+      const _isGreeting=mediaType==='text'&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon)|hlo|hii|hai|hy|howdy|sup|greetings)[!.,? ]*$/i.test(userText.trim());
+      const _shouldOfferMenu=!isNewLead&&!state.stage?.startsWith('elec_order_')&&(_isReturnMenuStage||_isGreeting||isRevisit);
+      if(_shouldOfferMenu){
+        // Check if this customer has a previous order in the orders table.
+        const _ordTable=await ecomResolveTable(env,clientId,'orders').catch(()=>null);
+        let _prevOrder=null;
+        if(_ordTable){
+          const _or=await ncFetch(env,`api/v2/tables/${_ordTable}/records?where=(customer_phone,eq,${encodeURIComponent(phone)})&sort=-order_date&limit=1`);
+          const _od=await _or.json().catch(()=>({}));
+          _prevOrder=(_od?.list||[])[0]||null;
+        }
+        if(_prevOrder){
+          if(/^ELEC_NEW_ORDER$/i.test(userText)){
+            // Customer wants a new order — clear return menu stage and let normal detection run.
+            routing.next='new'; routing.preserveCrmStage=false;
+            orderHandledInline=false; // allow detection pipeline to run normally
+          } else if(/^ELEC_CHECK_STATUS$/i.test(userText)){
+            const _statusLines=[
+              `*Your Latest Order*`,``,
+              `Order ID : ${_prevOrder.order_id||'—'}`,
+              `Items    : ${_prevOrder.items||'—'}`,
+              `Total    : ${_prevOrder.currency||''}${_prevOrder.total||'—'}`,
+              `Status   : ${_prevOrder.status||'pending'}`,
+              `Address  : ${_prevOrder.delivery_address||'—'}`,
+              `Payment  : ${_prevOrder.payment_method||'—'}`,
+            ].join('\n');
+            sentText=await engineLocalizeReply(env,c,_statusLines,replyLang);
+            routing.reply=sentText; routing.next='elec_return_menu'; routing.preserveCrmStage=false;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+            const _backMenu=await engineLocalizeReply(env,c,'What would you like to do?',replyLang);
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,_backMenu,[
+              {title:'New Order',value:'ELEC_NEW_ORDER'},
+              {title:'Amend Order',value:'ELEC_AMEND_ORDER'},
+            ]);
+            orderHandledInline=true;
+          } else if(/^ELEC_AMEND_ORDER$/i.test(userText)){
+            const _amendMsg=await engineLocalizeReply(env,c,`Sure! What would you like to change on your last order?\n\nOrder: ${_prevOrder.items||'—'}\nStatus: ${_prevOrder.status||'pending'}\n\nPlease describe the change (e.g. update address, change quantity):`,replyLang);
+            sentText=_amendMsg;
+            routing.reply=sentText; routing.next='elec_return_menu'; routing.preserveCrmStage=false;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+            orderHandledInline=true;
+          } else if(_isReturnMenuStage){
+            // Free-text reply while in return menu stage — treat as an amend description, hand to human.
+            sentText=await engineLocalizeReply(env,c,'Got it! Connecting you with our team to update your order.',replyLang);
+            routing.reply=sentText; routing.next='human_handover'; routing.route='human'; routing.humanReason='elec_amend_request';
+            await engineSendHandoverLabel(c,convId);
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+            orderHandledInline=true;
+          } else {
+            // Greeting or revisit — show returning customer menu.
+            const _menuText=await engineLocalizeReply(env,c,'Welcome back! 👋 What would you like to do?',replyLang);
+            sentText=_menuText;
+            routing.reply=sentText; routing.next='elec_return_menu'; routing.preserveCrmStage=false;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,_menuText,[
+              {title:'New Order',value:'ELEC_NEW_ORDER'},
+              {title:'Check Status',value:'ELEC_CHECK_STATUS'},
+              {title:'Amend Order',value:'ELEC_AMEND_ORDER'},
+            ]);
+            orderHandledInline=true;
+          }
+        }
+      }
+    }
     // ── Electronics Ecom: multi-step in-WhatsApp order collection ───────────────
     // Stages: elec_order_qty → elec_order_address → elec_order_payment → elec_order_confirm
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isElectronicsEcom && state.stage && state.stage.startsWith('elec_order_')){
