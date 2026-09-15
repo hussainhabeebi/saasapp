@@ -15792,7 +15792,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'
+    // For fashion ecom, skip the generic greeting when the first message already contains
+    // product/category content — let the product detection pipeline handle it directly.
+    const _fashionEcomNewWithProduct=isNewLead&&c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion'
+      &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_fashionEcomNewWithProduct
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -15904,6 +15908,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       }else if(state.stage==='fashion_order_details'){
+        // Price enquiry during order flow — answer with stored price instead of re-sending the form.
+        if(/\b(price|cost|rate|how much|what(?:'s| is)(?: the)? price)\b/i.test(userText)){
+          const priceText=seed.price!=null
+            ? `${seed.productName||'This item'} is priced at ${seed.currency||''}${seed.price}.`.trim()
+            : `Please check the product listing for the latest price.`;
+          sentText=await engineLocalizeReply(env,c,priceText,replyLang);
+          routing.reply=sentText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+        } else {
         // Parse a single reply that contains Colour, Size, and Delivery Address.
         // Accepts "Label: value" lines in any order (case-insensitive) or falls back to
         // reading the first three non-empty lines as colour, size, address respectively.
@@ -15936,12 +15949,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
           orderHandledInline=true;
         }
+        } // end else (not a price enquiry)
       }else if(state.stage==='fashion_order_confirm'){
         if(/^FASHION_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
           seed.items=ecomFashionOrderItems(seed);
           const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
           sentText=await engineLocalizeReply(env,c,order.ok
-            ? `Order confirmed ✅\nReference: ${order.order_id}`
+            ? `Order confirmed ✅`
             : 'I could not save the order. I will connect you with our team.',replyLang);
           routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
           if(!order.ok){routing.route='human';routing.humanReason='fashion_order_save_failed';await engineSendHandoverLabel(c,convId);}
