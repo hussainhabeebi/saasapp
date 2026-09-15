@@ -16748,7 +16748,27 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
           }
         }
-        if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
+        if(detection.mode==='order' && product && isElectronicsEcom){
+          // Electronics style: order signal with a resolved product → start multi-step WhatsApp flow.
+          await ensureOrderCollectField(env);
+          const prodCard=[`*${product.name}*`];
+          if(product.description) prodCard.push(String(product.description));
+          const priceStr=product.price!=null?`Price: ${product.currency||''}${product.price}`:'';
+          const warrantyStr=product.warranty_period?`Warranty: ${product.warranty_period}`:'';
+          [priceStr,warrantyStr].filter(Boolean).forEach(l=>prodCard.push(l));
+          sentText=prodCard.join('\n\n');
+          routing.reply=sentText;
+          const _attachElecOrd=sendProductImage||sendOnlyPrimaryImage;
+          if(_attachElecOrd&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attachElecOrd?product.image_url:null,ctx});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          const qtyAsk=await engineLocalizeReply(env,c,'How many units would you like to order?',replyLang);
+          routing.reply=qtyAsk;
+          const elecSeedOrd={electronicsFlow:true,sku:product.sku||'',productName:product.name,unitPrice:product.price||0,currency:product.currency||''};
+          routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeedOrd;
+          await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
           // instead: ask for the item(s) now, address next turn, then finalizeChatOrder writes the
           // order row. See the order_collect_items/order_collect_address handling above.
@@ -16852,8 +16872,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
-        } else if(detection.mode==='enquiry' && product && isElectronicsEcom && exactSelectedProduct){
-          // Customer selected a specific electronics product — start multi-step in-WhatsApp order.
+        } else if(detection.mode==='enquiry' && product && isElectronicsEcom && !resolvedFromHistory){
+          // Customer enquired about a specific electronics product — start multi-step in-WhatsApp order.
           await ensureOrderCollectField(env);
           // Show product card with key specs.
           const prodCard=[`*${product.name}*`];
