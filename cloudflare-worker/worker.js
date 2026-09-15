@@ -9388,10 +9388,11 @@ let _orderCollectFieldEnsured=false;
 async function ensureOrderCollectField(env){
   if(_orderCollectFieldEnsured) return;
   try{
-    const existingR=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
-    const existing=await existingR.json().catch(()=>({}));
-    const names=new Set((existing.list||[]).map(f=>f.title));
-    if(!names.has('OrderCollect')) await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{title:'OrderCollect', uidt:'LongText'}});
+    const {names:existing}=await ncTableMeta(env, DEFAULT_LEADS_TABLE);
+    if(!existing.includes('OrderCollect')){
+      const r=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{column_name:'OrderCollect',title:'OrderCollect',uidt:'LongText'}});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); console.error('[ecom] ensureOrderCollectField: create failed', r.status, JSON.stringify(d)); return; }
+    }
     _orderCollectFieldEnsured=true;
   }catch(e){ console.error('[ecom] ensureOrderCollectField failed', e.message); }
 }
@@ -16286,8 +16287,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }
       } else if(state.stage==='elec_order_address'){
-        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(userText.trim())
-          ||(userText.trim().split(/\s+/).length<=2 && !/\d/.test(userText));
+        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(userText.trim());
         if(_looksLikeEscape){
           sentText=await engineLocalizeReply(env,c,'Please share your delivery address to continue with the order:',replyLang);
           routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
@@ -16764,7 +16764,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
           const qtyAsk=await engineLocalizeReply(env,c,'How many units would you like to order?',replyLang);
           routing.reply=qtyAsk;
-          const elecSeedOrd={electronicsFlow:true,sku:product.sku||'',productName:product.name,unitPrice:product.price||0,currency:product.currency||''};
+          const _eNameOrd=product.name||exactSelectedProduct?.name||detection.productName||'';
+          const _ePriceOrd=product.price!=null?product.price:(exactSelectedProduct?.price??0);
+          const elecSeedOrd={electronicsFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_eNameOrd,unitPrice:Number(_ePriceOrd)||0,currency:product.currency||exactSelectedProduct?.currency||''};
           routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeedOrd;
           await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
@@ -16890,7 +16892,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // Ask for quantity to start the order flow.
           const qtyAsk=await engineLocalizeReply(env,c,'How many units would you like to order?',replyLang);
           routing.reply=qtyAsk;
-          const elecSeed={electronicsFlow:true,sku:product.sku||'',productName:product.name,unitPrice:product.price||0,currency:product.currency||''};
+          const _eName=product.name||exactSelectedProduct?.name||detection.productName||'';
+          const _ePrice=product.price!=null?product.price:(exactSelectedProduct?.price??0);
+          const elecSeed={electronicsFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_eName,unitPrice:Number(_ePrice)||0,currency:product.currency||exactSelectedProduct?.currency||''};
           routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeed;
           await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
