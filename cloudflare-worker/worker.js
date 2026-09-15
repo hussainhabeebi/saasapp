@@ -9523,6 +9523,25 @@ export function ecomElectronicsOrderItems(seed={}){
   return parts.filter(Boolean).join(' | ');
 }
 
+// Formats an electronics product card with emoji-bulleted description for WhatsApp.
+// Description lines are split by newline or ". " and prefixed with "•".
+// Price and warranty get dedicated emoji labels.
+export function ecomElectronicsProductCard(product={}){
+  const lines=[`*${product.name||''}*`];
+  if(product.description){
+    const raw=String(product.description).trim();
+    // Split on explicit newlines first; fall back to sentence splitting on ". "
+    const chunks=raw.includes('\n')
+      ? raw.split(/\n+/)
+      : raw.split(/\.\s+/);
+    const bullets=chunks.map(s=>s.trim().replace(/\.$/,'')).filter(Boolean).map(s=>`• ${s}`);
+    if(bullets.length) lines.push(bullets.join('\n'));
+  }
+  if(product.price!=null) lines.push(`💰 Price: ${product.currency||''}${product.price}`);
+  if(product.warranty_period) lines.push(`🛡️ Warranty: ${product.warranty_period}`);
+  return lines.join('\n\n');
+}
+
 // Builds a PDF order receipt that matches the existing accounting invoice format:
 // client logo (top-left) + large "ORDER RECEIPT" wordmark (top-right), item table
 // with clean dividers, accent-colored "Amount Due" total bar, "Thank you!" flourish,
@@ -16867,12 +16886,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(detection.mode==='order' && product && isElectronicsEcom){
           // Electronics style: order signal with a resolved product → start multi-step WhatsApp flow.
           await ensureOrderCollectField(env);
-          const prodCard=[`*${product.name}*`];
-          if(product.description) prodCard.push(String(product.description));
-          const priceStr=product.price!=null?`Price: ${product.currency||''}${product.price}`:'';
-          const warrantyStr=product.warranty_period?`Warranty: ${product.warranty_period}`:'';
-          [priceStr,warrantyStr].filter(Boolean).forEach(l=>prodCard.push(l));
-          sentText=prodCard.join('\n\n');
+          sentText=ecomElectronicsProductCard(product);
           routing.reply=sentText;
           const _attachElecOrd=sendProductImage||sendOnlyPrimaryImage;
           if(_attachElecOrd&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
@@ -16993,13 +17007,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         } else if(detection.mode==='enquiry' && product && isElectronicsEcom && !resolvedFromHistory){
           // Customer enquired about a specific electronics product — start multi-step in-WhatsApp order.
           await ensureOrderCollectField(env);
-          // Show product card with key specs.
-          const prodCard=[`*${product.name}*`];
-          if(product.description) prodCard.push(String(product.description));
-          const priceStr=product.price!=null?`Price: ${product.currency||''}${product.price}`:'';
-          const warrantyStr=product.warranty_period?`Warranty: ${product.warranty_period}`:'';
-          [priceStr,warrantyStr].filter(Boolean).forEach(l=>prodCard.push(l));
-          sentText=prodCard.join('\n\n');
+          // Show product card with emoji-bulleted specs.
+          sentText=ecomElectronicsProductCard(product);
           routing.reply=sentText;
           const _attachElec=sendProductImage||sendOnlyPrimaryImage;
           if(_attachElec&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
