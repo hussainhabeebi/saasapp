@@ -11061,7 +11061,7 @@ async function engineFetchWithRetry(url, options){
 
 const ENGINE_TRANSCRIBE_PROMPT='Transcribe this voice note to plain text, in whatever language it is spoken in. Respond with ONLY the transcription, written in that language\'s own native script — no commentary, no quotes, no translation, no romanization.';
 
-// gemini-2.0-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
+// gemini-2.5-flash (ENGINE_GEMINI_MODEL, used for the fast text classifier/reply calls elsewhere)
 // measurably under-transcribes audio next to Gemini's newer models, and that gap is worse for
 // lower-resource Indic languages (Malayalam, etc.) than for English — accuracy, not just speed, is
 // what matters for a customer's actual words, so transcription gets its own, stronger model rather
@@ -13998,41 +13998,176 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   return result.audio;
 }
 
+// PRIMARY TTS — Bhashini Dhruva inference API (https://bhashini.gov.in/). Government-backed,
+// supports all 10 scheduled Indic languages + English. Requires BHASHINI_USER_ID and
+// BHASHINI_INFERENCE_KEY in Cloudflare Worker secrets. Returns WAV from Bhashini → converted to
+// Ogg/Opus via render pipeline /wav-to-ogg; if the render pipeline is absent, falls through to
+// the next provider (Google TTS). Override service IDs via BHASHINI_SERVICE_MAP_JSON env var
+// ({"ml":"<serviceId>",...}) once you've confirmed the IDs from your Bhashini console.
+const BHASHINI_TTS_LANG_CODES={
+  ml:'ml',hi:'hi',ta:'ta',te:'te',kn:'kn',
+  bn:'bn',gu:'gu',mr:'mr',pa:'pa',or:'or',en:'en',
+};
+// Bhashini service IDs — Dravidian vs Indo-Aryan model groups. Override specific languages via
+// BHASHINI_SERVICE_MAP_JSON if your console shows different IDs for your approved key.
+let BHASHINI_SERVICE_MAP={
+  ml:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
+  ta:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
+  te:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
+  kn:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
+  hi:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  bn:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  mr:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  gu:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  pa:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  or:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  en:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+};
+if(typeof process!=='undefined'&&process.env?.BHASHINI_SERVICE_MAP_JSON){
+  try{BHASHINI_SERVICE_MAP={...BHASHINI_SERVICE_MAP,...JSON.parse(process.env.BHASHINI_SERVICE_MAP_JSON)};}
+  catch(e){}
+}
+async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
+  if(!env.BHASHINI_USER_ID||!env.BHASHINI_INFERENCE_KEY) return null;
+  const srcLang=BHASHINI_TTS_LANG_CODES[isoLangCode];
+  if(!srcLang) return null;
+  const serviceId=BHASHINI_SERVICE_MAP[isoLangCode];
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const r=await fetch('https://dhruva-api.bhashini.gov.in/services/inference/pipeline',{
+      method:'POST', signal:controller.signal,
+      headers:{'Content-Type':'application/json','Authorization':env.BHASHINI_INFERENCE_KEY,'userID':env.BHASHINI_USER_ID},
+      body:JSON.stringify({
+        pipelineTasks:[{
+          taskType:'tts',
+          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:8000}
+        }],
+        inputData:{input:[{source:text.slice(0,500)}]}
+      })
+    });
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env,'engineBhashiniTts — non-OK response',new Error(`HTTP ${r.status}: ${bodyText.slice(0,300)}`),{isoLangCode});
+      return null;
+    }
+    const data=await r.json();
+    const wavB64=data?.pipelineResponse?.[0]?.audio?.[0]?.audioContent;
+    if(!wavB64) return null;
+    // WAV → Ogg/Opus via render pipeline. If pipeline absent, fall through to next provider.
+    if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
+    const reqBody=JSON.stringify({wav_base64:wavB64});
+    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET,reqBody);
+    const conv=await fetch(`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/wav-to-ogg`,{
+      method:'POST',headers:{'Content-Type':'application/json','X-Signature':sig},body:reqBody
+    });
+    if(!conv.ok){
+      const convBody=await conv.text().catch(()=>'');
+      await reportOpsError(env,'engineBhashiniTts — wav-to-ogg conversion failed',new Error(`HTTP ${conv.status}: ${convBody.slice(0,200)}`),{isoLangCode});
+      return null;
+    }
+    const buf=await conv.arrayBuffer();
+    if(buf.byteLength<200) return null;
+    return buf;
+  }catch(e){
+    await reportOpsError(env,'engineBhashiniTts — threw',e,{isoLangCode});
+    return null;
+  }finally{ clearTimeout(timer); }
+}
+
+// SECONDARY TTS — Google Cloud Text-to-Speech (WaveNet voices). Requires GOOGLE_TTS_API_KEY in
+// Cloudflare Worker secrets (Cloud TTS API enabled on the project). Returns Ogg/Opus at 16kHz
+// directly — no render pipeline or audio conversion needed. Strong Indic language coverage via
+// WaveNet voices; falls back silently if the key is absent or the language is unsupported.
+const GOOGLE_TTS_VOICE_MAP={
+  ml:{languageCode:'ml-IN',name:'ml-IN-Wavenet-A'},
+  hi:{languageCode:'hi-IN',name:'hi-IN-Wavenet-A'},
+  ta:{languageCode:'ta-IN',name:'ta-IN-Wavenet-A'},
+  te:{languageCode:'te-IN',name:'te-IN-Wavenet-A'},
+  kn:{languageCode:'kn-IN',name:'kn-IN-Wavenet-A'},
+  bn:{languageCode:'bn-IN',name:'bn-IN-Wavenet-A'},
+  gu:{languageCode:'gu-IN',name:'gu-IN-Wavenet-A'},
+  mr:{languageCode:'mr-IN',name:'mr-IN-Wavenet-A'},
+  en:{languageCode:'en-IN',name:'en-IN-Wavenet-A'},
+};
+async function engineGoogleTts(env, text, isoLangCode, timeoutMs=12000){
+  if(!env.GOOGLE_TTS_API_KEY) return null;
+  const voice=GOOGLE_TTS_VOICE_MAP[isoLangCode];
+  if(!voice) return null;
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const r=await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(env.GOOGLE_TTS_API_KEY)}`,
+      {
+        method:'POST', signal:controller.signal,
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          input:{text:text.slice(0,500)},
+          voice:{...voice,ssmlGender:'FEMALE'},
+          audioConfig:{audioEncoding:'OGG_OPUS',sampleRateHertz:16000}
+        })
+      }
+    );
+    if(!r.ok){
+      const bodyText=await r.text().catch(()=>'');
+      await reportOpsError(env,'engineGoogleTts — non-OK response',new Error(`HTTP ${r.status}: ${bodyText.slice(0,300)}`),{isoLangCode});
+      return null;
+    }
+    const data=await r.json();
+    const b64=data?.audioContent;
+    if(!b64) return null;
+    const binary=atob(b64);
+    const buf=new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i++) buf[i]=binary.charCodeAt(i);
+    if(buf.byteLength<200) return null;
+    return buf.buffer;
+  }catch(e){
+    await reportOpsError(env,'engineGoogleTts — threw',e,{isoLangCode});
+    return null;
+  }finally{ clearTimeout(timer); }
+}
+
 // Two-phase voice follow-up — called via ctx.waitUntil after the text reply has already been
-// sent. Tries Piper (fast local), then AI4Bharat with no request timeout (the Worker stays alive
-// on the I/O wait however long the VITS model needs), then Sarvam as final fallback. On success
-// sends a voice-note follow-up on the same conversation. Errors are silently swallowed since the
-// customer already received the text reply.
+// sent. Provider chain: Bhashini (primary) → Google TTS (secondary) → AI4Bharat (self-hosted
+// legacy, unlimited bg timeout) → text fallback (already sent). On success sends a voice-note
+// follow-up on the same conversation. Errors are silently swallowed since the customer already
+// received the text reply.
 async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
   try{
-    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-    if(!spokenText) return;
     const iso=(langCode||'').toLowerCase();
     const bcp47=ENGINE_TTS_LANG_MAP[iso];
+    // Pre-flight: if no provider is reachable at all, skip synthesis immediately and alert ops
+    // with specific fix instructions. The text reply was already sent; this is config-only.
+    const hasBhashini=!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY&&BHASHINI_TTS_LANG_CODES[iso]);
+    const hasGoogle=!!(env.GOOGLE_TTS_API_KEY&&GOOGLE_TTS_VOICE_MAP[iso]);
+    const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
+    if(!hasBhashini&&!hasGoogle&&!hasRenderPipeline){
+      await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
+        new Error('No voice provider reachable. Fix: add BHASHINI_USER_ID+BHASHINI_INFERENCE_KEY (primary), or GOOGLE_TTS_API_KEY (secondary), or MARKETING_RENDER_WEBHOOK_URL+SECRET for AI4Bharat.'),
+        {clientId,convId,iso,bcp47:bcp47||'none'}).catch(()=>{});
+      return;
+    }
+    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
+    if(!spokenText) return;
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    // Prefer the fast local Piper tier for the background follow-up. This prevents a long
-    // AI4Bharat CPU synthesis from being the first/only job tied to ctx.waitUntil. For languages
-    // without a configured Piper voice, fall through to AI4Bharat and then Sarvam.
-    // Prefer the fast local Piper tier for the background follow-up. For languages without a
-    // configured Piper voice, fall through to AI4Bharat and then Sarvam.
-    audio=await safe(enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS));
-    if(audio) provider='piper';
-    if(!audio) audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
-    if(audio && !provider) provider='ai4bharat';
-    if(!audio) provider='';
+    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline)
+    audio=await safe(engineBhashiniTts(env,spokenText,iso,10000));
+    if(audio) provider='bhashini';
+    // 2. Google TTS (secondary — Ogg/Opus natively, no render pipeline needed)
+    if(!audio){ audio=await safe(engineGoogleTts(env,spokenText,iso,12000)); if(audio) provider='google'; }
+    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout)
+    if(!audio){ audio=await safe(engineAi4BharatTts(env,spokenText,iso,0)); if(audio) provider='ai4bharat'; }
 
-    if(!audio && bcp47){
-      const credential=await safe(engineClaimSarvamCredential(env,c,clientId));
-      if(credential){
-        audio=await safe(engineSarvamTts(env,spokenText,bcp47,credential.apiKey,30000));
-        if(audio) provider='sarvam';
-      }
-    }
     if(audio){
-      const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText).catch(()=>null);
-      if(cacheKey) void engineVoiceCachePut(env, cacheKey, audio, provider);
-      await engineSendChatwootAudioReply(env, c, clientId, convId, audio, engineExtractLinkPriceCaption(replyText), replyText);
+      const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
+      if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
+      await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
+    }else{
+      await reportOpsError(env,'engineBackgroundSendVoice — all TTS providers failed, no voice note sent',
+        new Error(`iso=${iso}, bcp47=${bcp47||'none'}, bhashini=${hasBhashini}, google=${hasGoogle}, render=${hasRenderPipeline}`),
+        {clientId,convId}).catch(()=>{});
     }
   }catch(e){}
 }
@@ -14094,9 +14229,11 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 503 here just means AI4BHARAT_TTS_ENABLED isn't set on the render pipeline — expected/
-      // unconfigured, not worth an ops alert, same as SARVAM_API_KEY missing above.
-      if(r.status!==503) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 503 whose body says "not installed and enabled" means AI4BHARAT_TTS_ENABLED isn't set —
+      // expected/unconfigured, silent. Any other 503 (render pipeline crashed, nginx upstream down)
+      // is unexpected and must be reported so the team knows voice synthesis is broken.
+      const isExpectedDisabled=r.status===503&&bodyText.includes('not installed and enabled');
+      if(!isExpectedDisabled) await reportOpsError(env, 'engineAi4BharatTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
@@ -14240,10 +14377,11 @@ async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
-      // A 400 here just means no Piper voice is configured for this language — expected/
-      // unconfigured for anything beyond English by default, same convention as the other
-      // providers' "not set up yet" cases above.
-      if(r.status!==400) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
+      // A 400 means no Piper voice is configured for this language — expected/unconfigured, silent.
+      // A 503 whose body says "not installed" or similar means render pipeline not set up — silent.
+      // Any other status (502, 500, unexpected 503) is reported so the team knows.
+      const isExpectedPiper=r.status===400||(r.status===503&&(bodyText.includes('not installed')||bodyText.includes('not found')));
+      if(!isExpectedPiper) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
       return null;
     }
     const buf=await r.arrayBuffer();
