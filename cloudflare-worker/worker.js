@@ -9450,7 +9450,9 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     delivery_address:(address||'').trim().slice(0,500), status:'pending',
     notes:seed?.fashionFlow
       ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
-      : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+      : seed?.electronicsFlow
+        ? `Electronics order — Payment: ${seed?.paymentMethod||'not specified'}. Verify items and pricing before fulfilling.`
+        : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
   };
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
@@ -9474,6 +9476,93 @@ export function ecomFashionOrderItems(seed={}){
   return [String(seed.productName||'').trim(),seed.size?`Size: ${seed.size}`:'',seed.color?`Color: ${seed.color}`:'']
     .filter(Boolean).join(' | ');
 }
+
+// ── Electronics Ecom helpers ─────────────────────────────────────────────────
+
+export function ecomElectronicsOrderItems(seed={}){
+  const parts=[String(seed.productName||'').trim()];
+  if(seed.qty) parts.push(`Qty: ${seed.qty}`);
+  if(seed.paymentMethod) parts.push(`Payment: ${seed.paymentMethod}`);
+  return parts.filter(Boolean).join(' | ');
+}
+
+// Builds a minimal but well-structured PDF receipt using only standard Type1 fonts (no embedding).
+// All text is truncated and sanitised to ASCII so every PDF viewer can render it without font loading.
+function ecomBuildElectronicsOrderPdf({order_id='',productName='',qty=1,unitPrice=0,totalPrice=0,currency='',address='',paymentMethod='',customerName='',phone='',orderDate=''}={}){
+  const esc=s=>String(s||'').replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)').replace(/[\r\n\t]/g,' ').replace(/[^\x20-\x7E]/g,'?');
+  const tr=(s,n)=>esc(String(s||'').slice(0,n));
+
+  const rows=[
+    {t:'ORDER RECEIPT',sz:18,bold:true},
+    {t:''},
+    {t:`Order ID : ${tr(order_id,30)}`,sz:10},
+    {t:`Date     : ${tr(orderDate,20)}`,sz:10},
+    {t:''},
+    {t:'PRODUCT DETAILS',sz:13,bold:true},
+    {t:`Product  : ${tr(productName,60)}`,sz:10},
+    {t:`Quantity : ${qty}`,sz:10},
+    {t:`Unit Price: ${tr(currency,5)}${unitPrice}`,sz:10},
+    {t:`Total    : ${tr(currency,5)}${totalPrice}`,sz:11,bold:true},
+    {t:''},
+    {t:'DELIVERY',sz:13,bold:true},
+    {t:`Address  : ${tr(address,80)}`,sz:10},
+    {t:`Payment  : ${tr(paymentMethod,30)}`,sz:10},
+    {t:''},
+    {t:'CUSTOMER',sz:13,bold:true},
+    {t:`Name     : ${tr(customerName,50)}`,sz:10},
+    {t:`Phone    : ${tr(phone,20)}`,sz:10},
+    {t:''},
+    {t:'This is a system-generated receipt.',sz:8},
+    {t:'Our team will confirm order details with you shortly.',sz:8},
+  ];
+
+  let y=760;
+  const cmds=[];
+  for(const r of rows){
+    if(!r.t){y-=10;continue;}
+    cmds.push(`BT ${r.bold?'/F2':'/F1'} ${r.sz||10} Tf 50 ${y} Td (${r.t}) Tj ET`);
+    y-=((r.sz||10)+7);
+  }
+  const content=cmds.join('\n');
+  const clen=content.length;
+
+  const segs=[];
+  const offs={};
+  const pushSeg=(s)=>segs.push(s);
+  const objStart=(n)=>{offs[n]=segs.reduce((a,b)=>a+b.length,0);};
+
+  pushSeg('%PDF-1.4\n');
+  objStart(1); pushSeg('1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n');
+  objStart(2); pushSeg('2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n');
+  objStart(3); pushSeg('3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 6 0 R /Resources <</Font <</F1 4 0 R /F2 5 0 R>>>>>>\nendobj\n');
+  objStart(4); pushSeg('4 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>\nendobj\n');
+  objStart(5); pushSeg('5 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold>>\nendobj\n');
+  objStart(6); pushSeg(`6 0 obj\n<</Length ${clen}>>\nstream\n${content}\nendstream\nendobj\n`);
+
+  const xrefStart=segs.reduce((a,b)=>a+b.length,0);
+  pushSeg('xref\n0 7\n0000000000 65535 f \n');
+  for(let i=1;i<=6;i++) pushSeg(String(offs[i]).padStart(10,'0')+' 00000 n \n');
+  pushSeg(`trailer\n<</Size 7 /Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF\n`);
+
+  return new TextEncoder().encode(segs.join(''));
+}
+
+async function ecomSendElectronicsOrderPdf(c, convId, details){
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return false;
+  try{
+    const bytes=ecomBuildElectronicsOrderPdf(details);
+    const blob=new Blob([bytes],{type:'application/pdf'});
+    const fd=new FormData();
+    fd.append('content','Your order receipt is attached.');
+    fd.append('message_type','outgoing');
+    fd.append('private','false');
+    fd.append('attachments[]',blob,`order-${String(details.order_id||'receipt').replace(/[^a-zA-Z0-9-]/g,'_')}.pdf`);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{method:'POST',headers:{api_access_token:c.chatwoot_token},body:fd});
+    return r.ok;
+  }catch(e){console.error('[ecom-electronics] pdf send failed',e.message);return false;}
+}
+
+// ── End electronics helpers ──────────────────────────────────────────────────
 
 async function ecomFindProductBySku(env, clientId, sku){
   if(!sku) return null;
@@ -15814,11 +15903,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    // For fashion ecom, skip the generic greeting when the first message already contains
-    // product/category content — let the product detection pipeline handle it directly.
-    const _fashionEcomNewWithProduct=isNewLead&&c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion'
+    // For fashion and electronics ecom, skip the generic greeting when the first message already
+    // contains product/category content — let the product detection pipeline handle it directly.
+    const _ecomStylesWithProductGreeting=new Set(['fashion','electronics']);
+    const _ecomNewWithProduct=isNewLead&&c.industry==='ecommerce'
+      &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_fashionEcomNewWithProduct
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -15896,6 +15987,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
+    const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
     let sentText=null;
@@ -15990,6 +16082,107 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }
       }
     }
+    // ── Electronics Ecom: multi-step in-WhatsApp order collection ───────────────
+    // Stages: elec_order_qty → elec_order_address → elec_order_payment → elec_order_confirm
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isElectronicsEcom && state.stage && state.stage.startsWith('elec_order_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(/^ELEC_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
+        sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
+        routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(state.stage==='elec_order_qty'){
+        // Parse quantity — accept digits or common English words.
+        const wordNums={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||0;
+        if(rawQty<1||rawQty>999){
+          sentText=await engineLocalizeReply(env,c,'Please enter a valid quantity (e.g. 1, 2, 3):',replyLang);
+          routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+        } else {
+          seed.qty=rawQty;
+          seed.totalPrice=Math.round((Number(seed.unitPrice||0)*rawQty)*100)/100;
+          const qtyConfirm=`${rawQty} x ${seed.productName} — ${seed.currency||''}${seed.totalPrice}\n\nPlease share your delivery address:`;
+          sentText=await engineLocalizeReply(env,c,qtyConfirm,replyLang);
+          routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+        }
+      } else if(state.stage==='elec_order_address'){
+        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(userText.trim())
+          ||(userText.trim().split(/\s+/).length<=2 && !/\d/.test(userText));
+        if(_looksLikeEscape){
+          sentText=await engineLocalizeReply(env,c,'Please share your delivery address to continue with the order:',replyLang);
+          routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+        } else {
+          seed.address=userText.trim().slice(0,500);
+          const paymentAsk=await engineLocalizeReply(env,c,'How would you like to pay?',replyLang);
+          sentText=paymentAsk;
+          routing.reply=sentText; routing.next='elec_order_payment'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,paymentAsk,[
+            {title:'Cash on Delivery',value:'Cash on Delivery'},
+            {title:'UPI',value:'UPI'},
+            {title:'Card',value:'Card'},
+            {title:'Bank Transfer',value:'Bank Transfer'},
+          ]); orderHandledInline=true;
+        }
+      } else if(state.stage==='elec_order_payment'){
+        // Normalise payment method whether tapped as a button or typed freeform.
+        const pm=userText.trim().toLowerCase();
+        const paymentMethod=/\bcod\b|cash/.test(pm)?'Cash on Delivery':/\bupi\b|gpay|phonepe|paytm|google\s*pay/.test(pm)?'UPI':/\bcard\b|credit|debit/.test(pm)?'Card':/\bbank\b|transfer|neft|rtgs/.test(pm)?'Bank Transfer':userText.trim();
+        seed.paymentMethod=paymentMethod;
+        const summary=[
+          `*Order Summary*`,
+          ``,
+          `Product  : ${seed.productName}`,
+          `Quantity : ${seed.qty}`,
+          `Unit Price: ${seed.currency||''}${seed.unitPrice}`,
+          `Total    : *${seed.currency||''}${seed.totalPrice}*`,
+          ``,
+          `Address  : ${seed.address}`,
+          `Payment  : ${paymentMethod}`,
+        ].join('\n');
+        sentText=await engineLocalizeReply(env,c,summary,replyLang);
+        routing.reply=sentText; routing.next='elec_order_confirm'; routing.orderCollectSeed=seed;
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Confirm Order',value:'ELEC_CONFIRM'},
+          {title:'Cancel',value:'ELEC_CANCEL'},
+        ]); orderHandledInline=true;
+      } else if(state.stage==='elec_order_confirm'){
+        if(/^ELEC_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
+          seed.items=ecomElectronicsOrderItems(seed);
+          seed.price=seed.totalPrice;
+          const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
+          if(order.ok){
+            sentText=await engineLocalizeReply(env,c,'Order confirmed. Your receipt will be sent shortly.',replyLang);
+            routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+            // Generate and send PDF receipt — best-effort, never blocks the confirmation.
+            ecomSendElectronicsOrderPdf(c,convId,{
+              order_id:order.order_id, productName:seed.productName,
+              qty:seed.qty, unitPrice:seed.unitPrice, totalPrice:seed.totalPrice,
+              currency:seed.currency||'', address:seed.address, paymentMethod:seed.paymentMethod,
+              customerName:name||'', phone, orderDate:new Date().toISOString().slice(0,10),
+            }).catch(()=>{});
+          } else {
+            sentText=await engineLocalizeReply(env,c,'I could not save the order. Connecting you with our team.',replyLang);
+            routing.reply=sentText; routing.next='human_handover'; routing.clearOrderCollect=true;
+            routing.route='human'; routing.humanReason='elec_order_save_failed';
+            await engineSendHandoverLabel(c,convId);
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          }
+          orderHandledInline=true;
+        } else {
+          sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Confirm Order',value:'ELEC_CONFIRM'},
+            {title:'Cancel',value:'ELEC_CANCEL'},
+          ]); orderHandledInline=true;
+        }
+      }
+    }
+    // ── End electronics order handler ────────────────────────────────────────────
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(state.stage==='order_collect_items'){
@@ -16480,6 +16673,28 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
           routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else if(detection.mode==='enquiry' && product && isElectronicsEcom && exactSelectedProduct){
+          // Customer selected a specific electronics product — start multi-step in-WhatsApp order.
+          await ensureOrderCollectField(env);
+          // Show product card with key specs.
+          const prodCard=[`*${product.name}*`];
+          if(product.description) prodCard.push(String(product.description));
+          const priceStr=product.price!=null?`Price: ${product.currency||''}${product.price}`:'';
+          const warrantyStr=product.warranty_period?`Warranty: ${product.warranty_period}`:'';
+          [priceStr,warrantyStr].filter(Boolean).forEach(l=>prodCard.push(l));
+          sentText=prodCard.join('\n\n');
+          routing.reply=sentText;
+          const _attachElec=sendProductImage||sendOnlyPrimaryImage;
+          if(_attachElec&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attachElec?product.image_url:null,ctx});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          // Ask for quantity to start the order flow.
+          const qtyAsk=await engineLocalizeReply(env,c,'How many units would you like to order?',replyLang);
+          routing.reply=qtyAsk;
+          const elecSeed={electronicsFlow:true,sku:product.sku||'',productName:product.name,unitPrice:product.price||0,currency:product.currency||''};
+          routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeed;
+          await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
         } else if(detection.mode==='enquiry' && product && resolvedFromHistory){
           // Product came from the Last Product Sku fallback — the classifier found no SKU in the
