@@ -104,6 +104,29 @@ app.post('/pcm-to-ogg', async (req, res) => {
   }
 });
 
+// Bhashini TTS returns WAV; this converts it to 16kHz mono Ogg/Opus so the Worker can send it
+// as a WhatsApp voice note without needing ffmpeg inside the Cloudflare runtime.
+app.post('/wav-to-ogg', async (req, res) => {
+  if (!requireSignature(req, res)) return;
+  const { wav_base64 } = req.body || {};
+  if (!wav_base64) return res.status(400).json({ error: 'wav_base64 required' });
+  const { run } = require('./lib/exec');
+  const os = require('os');
+  const workDir = fs.mkdtempSync(require('path').join(os.tmpdir(), 'mkt-wav-'));
+  try {
+    const wavPath = require('path').join(workDir, 'in.wav');
+    const oggPath = require('path').join(workDir, 'out.ogg');
+    fs.writeFileSync(wavPath, Buffer.from(wav_base64, 'base64'));
+    await run('ffmpeg', ['-y', '-i', wavPath, '-ac', '1', '-ar', '16000', '-c:a', 'libopus', oggPath]);
+    res.type('audio/ogg').send(fs.readFileSync(oggPath));
+  } catch (err) {
+    console.error('WAV conversion failed:', err.message || err);
+    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
 app.use((_req, res) => res.status(404).json({ error: 'Voice endpoint not found' }));
 
 app.listen(PORT, () => {
