@@ -9486,71 +9486,249 @@ export function ecomElectronicsOrderItems(seed={}){
   return parts.filter(Boolean).join(' | ');
 }
 
-// Builds a minimal but well-structured PDF receipt using only standard Type1 fonts (no embedding).
-// All text is truncated and sanitised to ASCII so every PDF viewer can render it without font loading.
-function ecomBuildElectronicsOrderPdf({order_id='',productName='',qty=1,unitPrice=0,totalPrice=0,currency='',address='',paymentMethod='',customerName='',phone='',orderDate=''}={}){
-  const esc=s=>String(s||'').replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)').replace(/[\r\n\t]/g,' ').replace(/[^\x20-\x7E]/g,'?');
-  const tr=(s,n)=>esc(String(s||'').slice(0,n));
+// Builds a PDF order receipt that matches the existing accounting invoice format:
+// client logo (top-left) + large "ORDER RECEIPT" wordmark (top-right), item table
+// with clean dividers, accent-colored "Amount Due" total bar, "Thank you!" flourish,
+// company name + footer address (bottom-right), and a footer rule with page number.
+// All branding is read from the CLIENTS record — same fields the accounting module
+// uses for quotations/invoices (quote_logo_url, quote_accent_color, quote_header_title,
+// quote_footer_address, client_name).
+// Fonts: Helvetica, Helvetica-Bold, Times-Italic, Times-BoldItalic — all standard
+// Type1 faces, no embedding required, renders in every PDF viewer.
+// Logo: fetched from quote_logo_url and embedded as a JPEG DCT stream when the URL
+// returns a valid JPEG; falls back to text business name for other formats or errors.
+async function ecomBuildElectronicsOrderPdf(c, details){
+  const {order_id='',productName='',qty=1,unitPrice=0,totalPrice=0,currency='',
+         address='',paymentMethod='',customerName='',phone='',orderDate=''}=details;
 
-  const rows=[
-    {t:'ORDER RECEIPT',sz:18,bold:true},
-    {t:''},
-    {t:`Order ID : ${tr(order_id,30)}`,sz:10},
-    {t:`Date     : ${tr(orderDate,20)}`,sz:10},
-    {t:''},
-    {t:'PRODUCT DETAILS',sz:13,bold:true},
-    {t:`Product  : ${tr(productName,60)}`,sz:10},
-    {t:`Quantity : ${qty}`,sz:10},
-    {t:`Unit Price: ${tr(currency,5)}${unitPrice}`,sz:10},
-    {t:`Total    : ${tr(currency,5)}${totalPrice}`,sz:11,bold:true},
-    {t:''},
-    {t:'DELIVERY',sz:13,bold:true},
-    {t:`Address  : ${tr(address,80)}`,sz:10},
-    {t:`Payment  : ${tr(paymentMethod,30)}`,sz:10},
-    {t:''},
-    {t:'CUSTOMER',sz:13,bold:true},
-    {t:`Name     : ${tr(customerName,50)}`,sz:10},
-    {t:`Phone    : ${tr(phone,20)}`,sz:10},
-    {t:''},
-    {t:'This is a system-generated receipt.',sz:8},
-    {t:'Our team will confirm order details with you shortly.',sz:8},
-  ];
+  // Branding
+  const businessName=(c?.quote_header_title||c?.client_name||'').trim();
+  const footerAddr=(c?.quote_footer_address||'').trim();
+  const accentHex=((c?.quote_accent_color||'#0D9C93').replace('#','')+'000000').slice(0,6);
+  const acR=parseInt(accentHex.slice(0,2),16)/255;
+  const acG=parseInt(accentHex.slice(2,4),16)/255;
+  const acB=parseInt(accentHex.slice(4,6),16)/255;
 
-  let y=760;
-  const cmds=[];
-  for(const r of rows){
-    if(!r.t){y-=10;continue;}
-    cmds.push(`BT ${r.bold?'/F2':'/F1'} ${r.sz||10} Tf 50 ${y} Td (${r.t}) Tj ET`);
-    y-=((r.sz||10)+7);
+  // Fetch and attempt to embed JPEG logo
+  let logoJpeg=null, imgPixW=0, imgPixH=0, logoDisplayW=0, logoDisplayH=0;
+  const logoUrl=(c?.quote_logo_url||'').trim();
+  if(logoUrl && (logoUrl.startsWith('http')||logoUrl.startsWith('https'))){
+    try{
+      const ctrl=new AbortController();
+      const tid=setTimeout(()=>ctrl.abort(),5000);
+      const lr=await fetch(logoUrl,{signal:ctrl.signal}).catch(()=>null);
+      clearTimeout(tid);
+      if(lr?.ok){
+        const buf=await lr.arrayBuffer();
+        const bytes=new Uint8Array(buf);
+        // JPEG magic: FF D8 FF
+        if(bytes[0]===0xFF&&bytes[1]===0xD8&&bytes[2]===0xFF){
+          logoJpeg=bytes;
+          // Parse pixel dimensions from first SOF0/SOF1/SOF2 marker
+          let i=2;
+          while(i<bytes.length-8){
+            if(bytes[i]!==0xFF){i++;continue;}
+            const m=bytes[i+1];
+            if(m>=0xC0&&m<=0xC3){
+              imgPixH=(bytes[i+5]<<8)|bytes[i+6];
+              imgPixW=(bytes[i+7]<<8)|bytes[i+8];
+              break;
+            }
+            if(m===0xDA) break;
+            const sl=(bytes[i+2]<<8)|bytes[i+3];
+            if(sl<2) break;
+            i+=2+sl;
+          }
+          if(imgPixW>0&&imgPixH>0){
+            const maxPts=56, ratio=Math.min(maxPts/imgPixW,maxPts/imgPixH);
+            logoDisplayW=Math.round(imgPixW*ratio);
+            logoDisplayH=Math.round(imgPixH*ratio);
+          } else {
+            logoDisplayW=56; logoDisplayH=56; imgPixW=56; imgPixH=56;
+          }
+        }
+      }
+    }catch(e){ logoJpeg=null; }
   }
-  const content=cmds.join('\n');
-  const clen=content.length;
 
-  const segs=[];
+  // ASCII-safe PDF string escape
+  const esc=s=>String(s||'').replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)')
+    .replace(/[\r\n\t]/g,' ').replace(/[^\x20-\x7E]/g,'?');
+  const tr=(s,n)=>esc(String(s||'').slice(0,n));
+  const fmt=v=>`${tr(currency,6)}${esc(String(v))}`;
+
+  // Page geometry (A4 points)
+  const MX=48, PW=595, PH=842, RX=PW-MX;
+
+  // Content stream ops
+  const ops=[];
+  const o=s=>ops.push(s);
+
+  // Helpers
+  const txt=(x,y,t,font='/F1',sz=10)=>o(`BT ${font} ${sz} Tf ${x} ${y} Td (${t}) Tj ET`);
+  const hLine=(x1,yy,x2,lw=0.6,r=0.82,g=0.82,b=0.82)=>
+    o(`${r.toFixed(3)} ${g.toFixed(3)} ${b.toFixed(3)} RG ${lw} w ${x1} ${yy} m ${x2} ${yy} l S 0 0 0 RG`);
+
+  // ── HEADER ──
+  let y=PH-54;
+  const logoPlacedY=PH-54-logoDisplayH; // bottom-left y of logo image
+
+  if(logoJpeg&&logoDisplayW>0){
+    o(`q ${logoDisplayW} 0 0 ${logoDisplayH} ${MX} ${logoPlacedY} cm /Im1 Do Q`);
+    y=logoPlacedY-12;
+  } else if(businessName){
+    txt(MX, y, tr(businessName,45), '/F2', 13);
+    y-=22;
+  }
+
+  // "ORDER RECEIPT" — large Times BoldItalic, top-right
+  txt(RX-228, PH-58, 'ORDER RECEIPT', '/F4', 26);
+
+  // Thin accent rule under header
+  y-=10;
+  o(`${acR.toFixed(3)} ${acG.toFixed(3)} ${acB.toFixed(3)} RG 1 w ${MX} ${y} m ${RX} ${y} l S 0 0 0 RG`);
+  y-=24;
+
+  // ── BILLED TO / ORDER META ──
+  txt(MX, y, 'Billed to:', '/F2', 10);
+  txt(RX-205, y, `Order No. ${tr(order_id,25)}`, '/F1', 10);
+  y-=14;
+  if(customerName) txt(MX, y, tr(customerName,42), '/F1', 10);
+  txt(RX-205, y, `Date: ${tr(orderDate,20)}`, '/F1', 10);
+  y-=13;
+  if(phone) txt(MX, y, tr(phone,28), '/F1', 10);
+  y-=28;
+
+  // ── ITEM TABLE ──
+  const CD=MX, CQ=340, CU=400, CT=478;
+
+  // Header row
+  hLine(MX, y+4, RX, 1.1, 0, 0, 0);
+  txt(CD, y-9, 'Item', '/F2', 10);
+  txt(CQ, y-9, 'Qty', '/F2', 10);
+  txt(CU, y-9, 'Unit Price', '/F2', 10);
+  txt(CT, y-9, 'Total', '/F2', 10);
+  y-=22;
+  hLine(MX, y, RX, 1.1, 0, 0, 0);
+  y-=18;
+
+  // Data row
+  txt(CD, y, tr(productName,48));
+  txt(CQ, y, esc(String(qty)));
+  txt(CU, y, fmt(unitPrice));
+  txt(CT, y, fmt(totalPrice));
+  y-=18;
+  hLine(MX, y, RX, 0.5);
+  y-=20;
+
+  // ── DELIVERY + PAYMENT ──
+  txt(MX, y, 'Delivery Address:', '/F2', 10);
+  y-=14;
+  txt(MX, y, tr(address,72), '/F1', 9);
+  y-=13;
+  txt(MX, y, 'Payment Method:', '/F2', 10);
+  txt(168, y, tr(paymentMethod,32), '/F1', 10);
+  y-=30;
+
+  // ── SUMMARY BLOCK ──
+  hLine(348, y+4, RX, 0.5, 0.82, 0.82, 0.82);
+  txt(388, y-8, 'Subtotal', '/F1', 10);
+  txt(CT, y-8, fmt(totalPrice), '/F1', 10);
+  y-=22;
+  // Double rule above total (standard invoice convention)
+  hLine(348, y-2, RX, 1.0, 0.62, 0.62, 0.62);
+  o(`0.35 w`); hLine(348, y+3, RX, 0.35, 0.62, 0.62, 0.62);
+  y-=18;
+  // Total in accent color
+  o(`${acR.toFixed(3)} ${acG.toFixed(3)} ${acB.toFixed(3)} rg`);
+  txt(388, y, 'Amount Due', '/F2', 12);
+  o('0 0 0 rg');
+  txt(CT, y, fmt(totalPrice), '/F2', 12);
+  y-=38;
+
+  // ── THANK YOU ──
+  txt(MX, y, 'Thank you!', '/F3', 24);
+  y-=40;
+
+  // ── COMPANY / FOOTER ADDRESS (right-aligned) ──
+  let ry=y;
+  if(businessName){
+    txt(RX-185, ry, tr(businessName,40), '/F3', 12);
+    ry-=14;
+  }
+  if(footerAddr){
+    o('0.35 0.35 0.35 rg');
+    footerAddr.split('\n').slice(0,5).forEach(line=>{
+      txt(RX-185, ry, tr(line.trim(),48), '/F1', 9);
+      ry-=12;
+    });
+    o('0 0 0 rg');
+  }
+
+  // ── FOOTER: rule + address + page number ──
+  const FY=42;
+  hLine(MX, FY+18, RX, 0.6, 0.86, 0.86, 0.86);
+  o('0.47 0.47 0.47 rg');
+  if(footerAddr){
+    txt(MX, FY+7, tr(footerAddr.replace(/\n/g,' '),88), '/F1', 8);
+  }
+  txt(RX-58, FY+7, 'Page 1 of 1', '/F1', 8);
+  o('0 0 0 rg');
+
+  // ── ASSEMBLE PDF OBJECTS ──
+  const content=ops.join('\n');
+  const clen=content.length; // all ASCII → bytes = chars
+
+  // Mixed-mode assembly: text strings + optional binary JPEG blob
+  const enc=new TextEncoder();
+  const parts=[]; // {s:string} | {b:Uint8Array}
+  let bytePos=0;
   const offs={};
-  const pushSeg=(s)=>segs.push(s);
-  const objStart=(n)=>{offs[n]=segs.reduce((a,b)=>a+b.length,0);};
+  const addS=s=>{ parts.push({s}); bytePos+=s.length; };
+  const addB=b=>{ parts.push({b}); bytePos+=b.length; };
+  const markObj=n=>{ offs[n]=bytePos; };
 
-  pushSeg('%PDF-1.4\n');
-  objStart(1); pushSeg('1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n');
-  objStart(2); pushSeg('2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n');
-  objStart(3); pushSeg('3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 6 0 R /Resources <</Font <</F1 4 0 R /F2 5 0 R>>>>>>\nendobj\n');
-  objStart(4); pushSeg('4 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>\nendobj\n');
-  objStart(5); pushSeg('5 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold>>\nendobj\n');
-  objStart(6); pushSeg(`6 0 obj\n<</Length ${clen}>>\nstream\n${content}\nendstream\nendobj\n`);
+  const hasLogo=!!(logoJpeg&&imgPixW>0);
+  const fontRes='/Font <</F1 4 0 R /F2 5 0 R /F3 6 0 R /F4 7 0 R>>';
+  const xobjRes=hasLogo?' /XObject <</Im1 9 0 R>>':'';
+  const objCount=hasLogo?10:9;
 
-  const xrefStart=segs.reduce((a,b)=>a+b.length,0);
-  pushSeg('xref\n0 7\n0000000000 65535 f \n');
-  for(let i=1;i<=6;i++) pushSeg(String(offs[i]).padStart(10,'0')+' 00000 n \n');
-  pushSeg(`trailer\n<</Size 7 /Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF\n`);
+  addS('%PDF-1.4\n');
+  markObj(1); addS('1 0 obj\n<</Type /Catalog /Pages 2 0 R>>\nendobj\n');
+  markObj(2); addS('2 0 obj\n<</Type /Pages /Kids [3 0 R] /Count 1>>\nendobj\n');
+  markObj(3); addS(`3 0 obj\n<</Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 8 0 R /Resources <<${fontRes}${xobjRes}>>>> \nendobj\n`);
+  markObj(4); addS('4 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>\nendobj\n');
+  markObj(5); addS('5 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold>>\nendobj\n');
+  markObj(6); addS('6 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Times-Italic>>\nendobj\n');
+  markObj(7); addS('7 0 obj\n<</Type /Font /Subtype /Type1 /BaseFont /Times-BoldItalic>>\nendobj\n');
+  markObj(8); addS(`8 0 obj\n<</Length ${clen}>>\nstream\n${content}\nendstream\nendobj\n`);
+  if(hasLogo){
+    const components=3; // JPEG: assume DeviceRGB
+    const colorSpace=components===1?'/DeviceGray':components===4?'/DeviceCMYK':'/DeviceRGB';
+    const imgHdr=`9 0 obj\n<</Type /XObject /Subtype /Image /Width ${imgPixW} /Height ${imgPixH} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /DCTDecode /Length ${logoJpeg.length}>>\nstream\n`;
+    markObj(9); addS(imgHdr); addB(logoJpeg); addS('\nendstream\nendobj\n');
+  }
 
-  return new TextEncoder().encode(segs.join(''));
+  // xref
+  const xrefStart=bytePos;
+  addS(`xref\n0 ${objCount}\n0000000000 65535 f \n`);
+  for(let i=1;i<objCount;i++) addS(String(offs[i]).padStart(10,'0')+' 00000 n \n');
+  addS(`trailer\n<</Size ${objCount} /Root 1 0 R>>\nstartxref\n${xrefStart}\n%%EOF\n`);
+
+  // Flatten to Uint8Array
+  let total=0; for(const p of parts) total+=p.s?p.s.length:p.b.length;
+  const out=new Uint8Array(total); let pos=0;
+  for(const p of parts){
+    if(p.s){ const b=enc.encode(p.s); out.set(b,pos); pos+=b.length; }
+    else { out.set(p.b,pos); pos+=p.b.length; }
+  }
+  return out;
 }
 
 async function ecomSendElectronicsOrderPdf(c, convId, details){
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return false;
   try{
-    const bytes=ecomBuildElectronicsOrderPdf(details);
+    const bytes=await ecomBuildElectronicsOrderPdf(c, details);
     const blob=new Blob([bytes],{type:'application/pdf'});
     const fd=new FormData();
     fd.append('content','Your order receipt is attached.');
