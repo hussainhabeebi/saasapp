@@ -16001,9 +16001,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
       } else if(state.stage==='order_collect_address'){
+        // If the customer's reply is clearly not an address (browse/escape intent), break out of the
+        // order flow and let the normal routing pipeline handle it.
+        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list)\b/i.test(userText.trim())
+          || userText.trim().split(/\s+/).length<=3 && !/\d/.test(userText);
+        if(_looksLikeEscape){
+          routing.next='new'; routing.clearOrderCollect=true;
+          // Fall through to normal routing — do NOT set orderHandledInline so the pipeline runs.
+        } else {
         const order=await finalizeChatOrder(env, c, clientId, phone, name, seed, userText);
         sentText=await engineLocalizeReply(env, c, order.ok
-          ? `Thank you! ✅ Your order is in (Ref: ${order.order_id}). Our team will confirm the details with you shortly.`
+          ? `Thank you! ✅ Your order is in. Our team will confirm the details with you shortly.`
           : "Thanks — I've noted your order details. Our team will follow up shortly to confirm everything.", replyLang);
         routing.reply=sentText;
         // Funnel-neutral once finalized — leaves this lead free to fall back into normal FAQ/flow
@@ -16013,6 +16021,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.clearOrderCollect=true;
         await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, ctx});
         orderHandledInline=true;
+        }
       }
     }
     // Healthcare is grounded before the general FAQ LLM. Emergency phrases deterministically
