@@ -16447,7 +16447,32 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       } else if(state.stage==='elec_order_qty'){
-        // Parse quantity — accept digits, English words, and common Malayalam/regional words.
+        const _qtyTrimmed=userText.trim();
+
+        // ── "Continue Order" button after answering a question — re-ask for quantity ──
+        if(/^ELEC_CONTINUE_QTY$/i.test(_qtyTrimmed)){
+          sentText=await engineLocalizeReply(env,c,`How many would you like to order? (e.g. 1, 2, 3):`,replyLang);
+          routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+
+        // ── Detect mid-flow questions and answer them, then offer Continue/Cancel ──
+        } else if(
+          _qtyTrimmed.endsWith('?')||
+          /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power)\b/i.test(_qtyTrimmed)||
+          /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|മൂടൽ|കപ്പാസിറ്റി|പ്രവർത്തിക്ക/.test(_qtyTrimmed)
+        ){
+          const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice} per unit`:'';
+          const _prodLine=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
+          const _qAnswerBase=`Here's what I have on *${_prodLine}*${_unitP?` — ${_unitP}`:''}.\n\nFor more detailed specs or questions our team can help you further. Would you like to continue with the order?`;
+          sentText=await engineLocalizeReply(env,c,_qAnswerBase,replyLang);
+          routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Continue Order',value:'ELEC_CONTINUE_QTY'},
+            {title:'Cancel Order',value:'ELEC_CANCEL'},
+          ]); orderHandledInline=true;
+
+        // ── Parse quantity — accept digits, English words, common Malayalam/regional words ──
+        } else {
         const wordNums={
           one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
           // Malayalam
@@ -16458,7 +16483,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // Hindi
           'ek':1,'ek piece':1,'do':2,'teen':3,'char':4,'paanch':5,
         };
-        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||wordNums[userText.trim()]||0;
+        const rawQty=parseInt(_qtyTrimmed,10)||wordNums[_qtyTrimmed.toLowerCase()]||wordNums[_qtyTrimmed]||0;
         if(rawQty<1||rawQty>999){
           sentText=await engineLocalizeReply(env,c,'Please enter a valid quantity (e.g. 1, 2, 3):',replyLang);
           routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
@@ -16471,6 +16496,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }
+        } // end else (not a question / not ELEC_CONTINUE_QTY)
       } else if(state.stage==='elec_order_address'){
         const _trimmed=userText.trim();
 
