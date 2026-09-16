@@ -16434,9 +16434,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       } else if(state.stage==='elec_order_qty'){
-        // Parse quantity — accept digits or common English words.
-        const wordNums={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
-        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||0;
+        // Parse quantity — accept digits, English words, and common Malayalam/regional words.
+        const wordNums={
+          one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
+          // Malayalam
+          'ഒന്ന്':1,'ഒന്നു':1,'ഒട്ടൊന്നു':1,'ഒന്നേ':1,
+          'രണ്ട്':2,'രണ്ടു':2,'മൂന്ന്':3,'മൂന്നു':3,
+          'നാല്':4,'നാലു':4,'അഞ്ച്':5,'അഞ്ചു':5,
+          'ആറ്':6,'ഏഴ്':7,'എട്ട്':8,'ഒൻപത്':9,'പത്ത്':10,
+          // Hindi
+          'ek':1,'ek piece':1,'do':2,'teen':3,'char':4,'paanch':5,
+        };
+        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||wordNums[userText.trim()]||0;
         if(rawQty<1||rawQty>999){
           sentText=await engineLocalizeReply(env,c,'Please enter a valid quantity (e.g. 1, 2, 3):',replyLang);
           routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
@@ -16450,13 +16459,22 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }
       } else if(state.stage==='elec_order_address'){
-        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(userText.trim());
+        const _trimmed=userText.trim();
+        // Reject bare numbers (e.g. "1") and very short single-word replies that contain no digits —
+        // a real address always has at least a locality/PIN or building name with multiple tokens.
+        const _looksLikeBareNumber=/^\d+$/.test(_trimmed);
+        const _tooShortNoDigits=_trimmed.split(/\s+/).length<=2&&!/\d/.test(_trimmed)&&_trimmed.length<15;
+        // English escape-intent keywords.
+        const _englishEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(_trimmed);
+        // Malayalam price/help-related keywords that a customer might send instead of an address.
+        const _malayalamEscape=/പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ഡെലിവറി|ചാർജ്|ഹെൽപ്|കാൻസൽ|നിർത്ത്|ഉൽപ്പന്ന|ക്യാൻസൽ|ഒഴിവ്|ഒരു|ഒന്ന്|ഒരെണ്ണ/.test(_trimmed);
+        const _looksLikeEscape=_looksLikeBareNumber||_tooShortNoDigits||_englishEscape||_malayalamEscape;
         if(_looksLikeEscape){
           sentText=await engineLocalizeReply(env,c,'Please share your delivery address to continue with the order:',replyLang);
           routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         } else {
-          seed.address=userText.trim().slice(0,500);
+          seed.address=_trimmed.slice(0,500);
           const paymentAsk=await engineLocalizeReply(env,c,'How would you like to pay?',replyLang);
           sentText=paymentAsk;
           routing.reply=sentText; routing.next='elec_order_payment'; routing.orderCollectSeed=seed;
