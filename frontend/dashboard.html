@@ -1014,6 +1014,8 @@ const INDUSTRIES = {
     theme:{accent:'#7C3AED',accentInk:'#6D28D9',accentSoft:'#EDE9FE',bg:'#F5F3FF',line:'#DDD6FE'} },
   matrimonial: { label:'Matrimonial Service', booked:'Matches Made', active:'Active Prospects', tags:['Hot Lead','Profile Sent','Meeting Arranged','Family Consent','Match Confirmed','Not Interested'],
     theme:{accent:'#BE185D',accentInk:'#9D174D',accentSoft:'#FCE7F3',bg:'#FDF2F8',line:'#FBCFE8'} },
+  ev_charging: { label:'EV Charging Stations', booked:'Units Sold', active:'Active Inquiries', tags:['Hot Lead','Quote Sent','Site Survey','Installation Booked','Not Interested'],
+    theme:{accent:'#16A34A',accentInk:'#166534',accentSoft:'#DCFCE7',bg:'#F0FDF4',line:'#BBF7D0'} },
 };
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 const TODAY = new Date().toISOString().slice(0,10);
@@ -1089,6 +1091,12 @@ const CROSS_SELL_DEFAULTS = {
     {trigger:'match, family meet, meeting, horoscope', suggestion:'Compatibility consultation', message:'Congratulations on the match! Would you like to book a compatibility consultation with our expert to guide the next steps?'},
     {trigger:'engaged, engagement, confirmed, fixed', suggestion:'Wedding planning package', message:'Warmest congratulations on the engagement! We have tie-ups with wedding planners, venues, caterers, and photographers — would you like an introduction?'},
   ],
+  ev_charging: [
+    {trigger:'charger, bought, purchased, order confirmed, installed', suggestion:'Consumables bundle', message:'Along with your charger, would you like to grab a spare Type 2 cable or a weatherproof cover? Most of our customers pick these up at the same time — happy to put together a bundle price.'},
+    {trigger:'cable, adapter, connector', suggestion:'Compatible charging station', message:'Since you\'re looking at cables, have you also checked out our home charging stations? I can send a few options that pair well with what you\'re buying.'},
+    {trigger:'home charging, home charger, residential', suggestion:'Annual service plan', message:'We offer an annual service plan that covers inspection, firmware updates, and priority support — want me to share the details?'},
+    {trigger:'fleet, commercial, office, workplace', suggestion:'Multi-point installation', message:'For commercial setups we have multi-point charger packages with load management built in — want me to put together a quote based on the number of charging points you need?'},
+  ],
 };
 
 // Travel leads are separated into these service-line categories (a *what are they buying*
@@ -1127,6 +1135,7 @@ const MODULE_PERMISSIONS = [
   {key:'realestate', label:'🏘️ Real Estate'},
   {key:'healthcare', label:'🏥 Healthcare'},
   {key:'matrimonial', label:'💍 Matrimonial'},
+  {key:'evcharging', label:'⚡ EV Charging'},
   {key:'broadcast', label:'📢 Campaigns'},
   {key:'settings', label:'⚙️ Settings'},
 ];
@@ -1219,6 +1228,7 @@ const ROLES = {
     <button class="dnTab" data-page="realestate" id="dnRealestateTab" style="display:none">🏘️ Real Estate</button>
     <button class="dnTab" data-page="healthcare" id="dnHealthcareTab" style="display:none">🏥 Healthcare</button>
     <button class="dnTab" data-page="matrimonial" id="dnMatrimonialTab" style="display:none">💍 Matrimonial</button>
+    <button class="dnTab" data-page="evcharging" id="dnEvChargingTab" style="display:none">⚡ EV Charging</button>
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
@@ -1778,6 +1788,11 @@ const ROLES = {
     <!-- MATRIMONIAL MODULE (same iframe-embed pattern as Healthcare above) -->
     <div class="page hidden" id="pageMatrimonial">
       <iframe id="matrimonialFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
+    <!-- EV CHARGING MODULE — session-token-gated so the iframe can hit /ev/* Worker routes -->
+    <div class="page hidden" id="pageEvcharging">
+      <iframe id="evChargingFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
 
     <!-- EDUCATION MODULE (same iframe-embed pattern as Ecommerce above — education.html is its own
@@ -3205,6 +3220,14 @@ const ROLES = {
               <span id="matrimonialModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>⚡ EV Charging Stations</b><div class="s-note" style="margin:2px 0 0">Station catalog, EV consumables inventory, order management, installation tracking, and quotes — for businesses selling EV chargers and accessories.</div></div>
+              <select class="form-input" id="cfgEvChargingEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveEvChargingEnabled">Save</button>
+              <span class="save-msg" id="saveEvChargingEnabledMsg"></span>
+              <span id="evChargingModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
           </div>
         </div>
 
@@ -3565,6 +3588,7 @@ const ROLES = {
       <button class="more-item" data-page="realestate" id="moreRealestateTab" style="display:none"><span class="bnIcon">🏘️</span><span class="bnLabel">Real Estate</span></button>
       <button class="more-item" data-page="healthcare" id="moreHealthcareTab" style="display:none"><span class="bnIcon">🏥</span><span class="bnLabel">Healthcare</span></button>
       <button class="more-item" data-page="matrimonial" id="moreMatrimonialTab" style="display:none"><span class="bnIcon">💍</span><span class="bnLabel">Matrimonial</span></button>
+      <button class="more-item" data-page="evcharging" id="moreEvChargingTab" style="display:none"><span class="bnIcon">⚡</span><span class="bnLabel">EV Charging</span></button>
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
@@ -4954,6 +4978,7 @@ function navigate(page){
   if(page==='realestate') renderRealEstate();
   if(page==='healthcare') renderHealthcare();
   if(page==='matrimonial') renderMatrimonial();
+  if(page==='evcharging') renderEvCharging();
   if(page==='education') renderEducation();
   if(page==='businessservices') renderBusinessServices();
   if(page==='settings') populateSettings();
@@ -5671,6 +5696,11 @@ function renderHealthcare(){
 function renderMatrimonial(){
   const frame=$id('matrimonialFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`matrimonial.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+}
+
+function renderEvCharging(){
+  const frame=$id('evChargingFrame');
+  if(frame && !frame.getAttribute('src')) frame.src=`ev-charging.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
 }
 
 // Home tab widget for the Real Estate module — hits its /re/* Worker routes directly (same
@@ -16963,6 +16993,7 @@ function populateModulesPage(){
   initRealEstateSettings();
   initHealthcareSettings();
   initMatrimonialSettings();
+  initEvChargingSettings();
   initEcomSettings();
   updateFeatureTabVisibility();
 }
@@ -17910,6 +17941,39 @@ $id('saveMatrimonialEnabled').addEventListener('click',async()=>{
     await patchClient({matrimonial_enabled:val});
     updateMatrimonialTabVisibility();
     _renderModuleBadge('matrimonialModuleStatusBadge',val==='Yes');
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+function updateEvChargingTabVisibility(){
+  const enabled=(clientRecord.ev_charging_enabled==='Yes');
+  [$id('dnEvChargingTab'),$id('moreEvChargingTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+}
+
+async function ensureEvChargingEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('ev_charging_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'ev_charging_enabled',title:'ev_charging_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+function initEvChargingSettings(){
+  const sel=$id('cfgEvChargingEnabled'); if(sel) sel.value=(clientRecord.ev_charging_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('evChargingModuleStatusBadge',clientRecord.ev_charging_enabled==='Yes');
+  updateEvChargingTabVisibility();
+}
+
+$id('saveEvChargingEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveEvChargingEnabled'),msg=$id('saveEvChargingEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgEvChargingEnabled').value;
+  try{
+    await ensureEvChargingEnabledColumn();
+    await patchClient({ev_charging_enabled:val});
+    updateEvChargingTabVisibility();
+    _renderModuleBadge('evChargingModuleStatusBadge',val==='Yes');
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}

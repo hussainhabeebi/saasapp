@@ -64,8 +64,8 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 const PLAN_TIERS = {
   basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
   standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
-  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] },
-  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled'] }
+  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] },
+  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] }
 };
 // Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
 // (so dashboard.html can render a modules grid without hardcoding this list twice) and the
@@ -73,7 +73,7 @@ const PLAN_TIERS = {
 const PLAN_GATED_MODULES = {
   ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
   b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
-  matrimonial_enabled:'Matrimonial Service'
+  matrimonial_enabled:'Matrimonial Service', ev_charging_enabled:'EV Charging Stations'
 };
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
@@ -12840,6 +12840,58 @@ function engineSelectKb(kb, intent, objection){
   return matched.length ? matched.join('\n').slice(0,2000) : full;
 }
 
+async function engineBuildEvChargingContext(env, clientId){
+  const cid=Number(clientId);
+  const lines=['\n\n## VERIFIED EV CHARGING PRODUCT DATA (use ONLY these facts for product names, specs, prices, and stock — never invent or infer anything not listed)'];
+  const [{results:stations},{results:consumables}]=await Promise.all([
+    env.DB.prepare('SELECT * FROM ev_charging_stations WHERE client_id=? AND status=? ORDER BY name ASC').bind(cid,'active').all().catch(()=>({results:[]})),
+    env.DB.prepare('SELECT * FROM ev_consumables WHERE client_id=? AND status=? ORDER BY name ASC').bind(cid,'active').all().catch(()=>({results:[]})),
+  ]);
+  const stList=stations||[], conList=consumables||[];
+  const settings=await env.DB.prepare('SELECT * FROM ev_charging_settings WHERE client_id=?').bind(cid).first().catch(()=>null);
+  const cur=settings?.default_currency||'INR';
+  if(stList.length){
+    lines.push('\n### Charging Stations');
+    for(const s of stList){
+      let line=`- **${s.name}**`;
+      if(s.brand) line+=` (${s.brand}${s.model?', '+s.model:''})`;
+      if(s.charger_type) line+=` | Type: ${s.charger_type}`;
+      if(s.power_kw) line+=` | Power: ${s.power_kw} kW`;
+      if(s.connector_types){ try{ const c=JSON.parse(s.connector_types||'[]'); if(c.length) line+=` | Connectors: ${c.join(', ')}`; }catch(e){} }
+      if(s.phases) line+=` | ${s.phases}`;
+      if(s.installation_type) line+=` | Mount: ${s.installation_type}`;
+      if(s.suitable_for){ try{ const sf=JSON.parse(s.suitable_for||'[]'); if(sf.length) line+=` | Suitable for: ${sf.join(', ')}`; }catch(e){} }
+      if(s.warranty_years) line+=` | Warranty: ${s.warranty_years}yr`;
+      if(s.outdoor_rated) line+=` | Outdoor rated`;
+      if(s.smart_features){ try{ const sf=JSON.parse(s.smart_features||'[]'); if(sf.length) line+=` | Smart: ${sf.join(', ')}`; }catch(e){} }
+      if(s.price!=null) line+=` | Price: ${cur} ${Number(s.price).toLocaleString('en-IN')}`;
+      line+=` | Stock: ${s.stock_qty>0?s.stock_qty+' available':'Out of stock'}`;
+      if(s.description) line+=` | ${String(s.description).trim().slice(0,200)}`;
+      lines.push(line);
+    }
+  }
+  if(conList.length){
+    lines.push('\n### EV Consumables & Accessories');
+    for(const c of conList){
+      let line=`- **${c.name}**`;
+      if(c.brand) line+=` (${c.brand})`;
+      if(c.category) line+=` | Category: ${c.category}`;
+      if(c.connector_standard) line+=` | Standard: ${c.connector_standard}`;
+      if(c.cable_length_m) line+=` | Length: ${c.cable_length_m}m`;
+      if(c.max_current_a) line+=` | Max current: ${c.max_current_a}A`;
+      if(c.max_power_kw) line+=` | Max power: ${c.max_power_kw} kW`;
+      if(c.ip_rating) line+=` | IP: ${c.ip_rating}`;
+      if(c.compatible_with){ try{ const cp=JSON.parse(c.compatible_with||'[]'); if(cp.length) line+=` | Compatible with: ${cp.join(', ')}`; }catch(e){} }
+      if(c.price!=null) line+=` | Price: ${cur} ${Number(c.price).toLocaleString('en-IN')}`;
+      line+=` | Stock: ${c.stock_qty>0?c.stock_qty+' available':'Out of stock'}`;
+      if(c.description) line+=` | ${String(c.description).trim().slice(0,150)}`;
+      lines.push(line);
+    }
+  }
+  if(stList.length===0 && conList.length===0) return '';
+  return lines.join('\n');
+}
+
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
@@ -13117,6 +13169,9 @@ BUTTONS — mandatory after EVERY reply:
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else if(industry==='saas_digital_marketing'){
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
+  } else if(industry==='ev_charging'){
+    sys+='\n\nEV CHARGING SAFETY LOCK: Never invent charger specifications, cable compatibility, power ratings, installation requirements, or government incentive amounts. Only quote specs, prices, and scheme details that are explicitly present in the verified product data or business prompt above. If a detail is not there, say you will check and get back to them — never guess.';
+    sys+=`\n\nEV CHARGING CONVERSATION STYLE — sound like a knowledgeable, friendly showroom consultant, not a technical brochure:\n- Lead with what matters to the customer (their vehicle, home setup, or fleet size) before listing specs.\n- Use plain language for technical terms: say "charges your car to full in about 4 hours" rather than "32A AC Type 2 EVSE". Add the technical term in parentheses only if the customer seems technical.\n- When a customer asks "which charger is right for me", ask one practical question first — their car model or whether it's for home or commercial use — rather than listing every option.\n- For consumables (cables, adapters), always confirm compatibility with their charger brand or car before recommending.\n- Acknowledge range anxiety or switching concerns naturally — meet the customer where they are.\n- Never oversell — if a product doesn't fit the customer's use case, say so honestly and suggest the right one.\n- Current stage: ${state.stage||'new'}. Respond ONLY in ${lang}. Never switch languages. For anything not covered by the data above, say you'll get the team to confirm.`;
   } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
@@ -17545,6 +17600,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       else if(routing.route==='saas_faq') contextBlock=await engineBuildSaasContext(env, c, clientId, phone);
       else if(c.industry==='healthcare') contextBlock=await engineBuildHealthcareContext(env, clientId);
       else if(c.industry==='education') contextBlock=await engineBuildEduContext(env, clientId, phone);
+      else if(c.industry==='ev_charging' && c.ev_charging_enabled==='Yes') contextBlock=await engineBuildEvChargingContext(env, clientId);
       // Resort follow-up: inject verified D1 property+room data so the LLM answers from real records
       // only — prices, names, amenities. First-ever enquiries are suppressed by orderHandledInline above.
       if(c.hospitality_enabled==='Yes' && c.hospitality_style==='resort'){
@@ -20575,6 +20631,154 @@ async function handleMatriWebhookLog(request, env){
   const {results}=await env.DB.prepare(`SELECT * FROM matrimonial_webhook_log WHERE client_id=? ORDER BY id DESC LIMIT 50`)
     .bind(String(payload.cid)).all();
   return json({list:results||[]});
+}
+
+/* ── EV CHARGING STATIONS MODULE (frontend/ev-charging.html, migrations/0096_ev_charging.sql)
+   Stations catalog, EV consumables, order management, and settings. Session-gated via Bearer
+   token (same pattern as Real Estate / Healthcare). All routes: GET/POST /ev?client=…&action=…  */
+
+async function handleEvCharging(request, env){
+  const session=await requireSession(request, env);
+  if(!session) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const action=url.searchParams.get('action')||'';
+  const cid=String(session.cid);
+  const now=new Date().toISOString();
+
+  if(request.method==='GET'){
+    if(action==='list_stations'){
+      const {results}=await env.DB.prepare('SELECT * FROM ev_charging_stations WHERE client_id=? ORDER BY id DESC').bind(cid).all();
+      return json({ok:true,data:results||[]});
+    }
+    if(action==='list_consumables'){
+      const {results}=await env.DB.prepare('SELECT * FROM ev_consumables WHERE client_id=? ORDER BY id DESC').bind(cid).all();
+      return json({ok:true,data:results||[]});
+    }
+    if(action==='list_orders'){
+      const {results}=await env.DB.prepare('SELECT * FROM ev_charging_orders WHERE client_id=? ORDER BY id DESC LIMIT 500').bind(cid).all();
+      const orders=results||[];
+      // Attach items to each order
+      if(orders.length){
+        const ids=orders.map(o=>o.id);
+        const {results:items}=await env.DB.prepare(`SELECT * FROM ev_charging_order_items WHERE order_id IN (${ids.map(()=>'?').join(',')}) ORDER BY id`).bind(...ids).all().catch(()=>({results:[]}));
+        const byOrder={};
+        (items||[]).forEach(i=>{ (byOrder[i.order_id]=byOrder[i.order_id]||[]).push(i); });
+        orders.forEach(o=>{ o._items=byOrder[o.id]||[]; });
+      }
+      return json({ok:true,data:orders});
+    }
+    if(action==='get_settings'){
+      const row=await env.DB.prepare('SELECT * FROM ev_charging_settings WHERE client_id=?').bind(cid).first();
+      return json({ok:true,data:row||{}});
+    }
+    return json({ok:false,error:'Unknown action'},400);
+  }
+
+  if(request.method==='POST'){
+    let payload={};
+    try{ payload=await request.json(); }catch(e){ return json({ok:false,error:'Invalid JSON'},400); }
+
+    if(action==='create_station'){
+      const {name,brand,model,charger_type,connector_types,power_kw,voltage,current_type,phases,suitable_for,warranty_years,installation_type,outdoor_rated,smart_features,price,stock_qty,sku,image_url,description,datasheet_url,status}=payload;
+      if(!name) return json({ok:false,error:'name required'},400);
+      const r=await env.DB.prepare(`INSERT INTO ev_charging_stations (client_id,name,brand,model,charger_type,connector_types,power_kw,voltage,current_type,phases,suitable_for,warranty_years,installation_type,outdoor_rated,smart_features,price,stock_qty,sku,image_url,description,datasheet_url,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(cid,name,brand||null,model||null,charger_type||null,connector_types||'[]',power_kw||null,voltage||null,current_type||null,phases||null,suitable_for||'[]',warranty_years||null,installation_type||null,outdoor_rated||0,smart_features||'[]',price||null,stock_qty||0,sku||null,image_url||null,description||null,datasheet_url||null,status||'active',now,now).run();
+      return json({ok:true,id:r.meta?.last_row_id});
+    }
+    if(action==='update_station'){
+      const {id,...rest}=payload;
+      if(!id) return json({ok:false,error:'id required'},400);
+      const sets=[];const vals=[];
+      const fields=['name','brand','model','charger_type','connector_types','power_kw','voltage','current_type','phases','suitable_for','warranty_years','installation_type','outdoor_rated','smart_features','price','stock_qty','sku','image_url','description','datasheet_url','status'];
+      fields.forEach(f=>{ if(f in rest){ sets.push(`${f}=?`); vals.push(rest[f]??null); } });
+      sets.push('updated_at=?'); vals.push(now); vals.push(String(id)); vals.push(cid);
+      await env.DB.prepare(`UPDATE ev_charging_stations SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
+      return json({ok:true});
+    }
+    if(action==='delete_station'){
+      const {id}=payload;
+      if(!id) return json({ok:false,error:'id required'},400);
+      await env.DB.prepare('DELETE FROM ev_charging_stations WHERE id=? AND client_id=?').bind(String(id),cid).run();
+      return json({ok:true});
+    }
+
+    if(action==='create_consumable'){
+      const {name,category,brand,compatible_with,cable_length_m,connector_standard,max_current_a,max_power_kw,ip_rating,material,color,price,stock_qty,sku,image_url,description,status}=payload;
+      if(!name) return json({ok:false,error:'name required'},400);
+      const r=await env.DB.prepare(`INSERT INTO ev_consumables (client_id,name,category,brand,compatible_with,cable_length_m,connector_standard,max_current_a,max_power_kw,ip_rating,material,color,price,stock_qty,sku,image_url,description,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(cid,name,category||null,brand||null,compatible_with||'[]',cable_length_m||null,connector_standard||null,max_current_a||null,max_power_kw||null,ip_rating||null,material||null,color||null,price||null,stock_qty||0,sku||null,image_url||null,description||null,status||'active',now,now).run();
+      return json({ok:true,id:r.meta?.last_row_id});
+    }
+    if(action==='update_consumable'){
+      const {id,...rest}=payload;
+      if(!id) return json({ok:false,error:'id required'},400);
+      const sets=[];const vals=[];
+      const fields=['name','category','brand','compatible_with','cable_length_m','connector_standard','max_current_a','max_power_kw','ip_rating','material','color','price','stock_qty','sku','image_url','description','status'];
+      fields.forEach(f=>{ if(f in rest){ sets.push(`${f}=?`); vals.push(rest[f]??null); } });
+      sets.push('updated_at=?'); vals.push(now); vals.push(String(id)); vals.push(cid);
+      await env.DB.prepare(`UPDATE ev_consumables SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
+      return json({ok:true});
+    }
+    if(action==='delete_consumable'){
+      const {id}=payload;
+      if(!id) return json({ok:false,error:'id required'},400);
+      await env.DB.prepare('DELETE FROM ev_consumables WHERE id=? AND client_id=?').bind(String(id),cid).run();
+      return json({ok:true});
+    }
+
+    if(action==='create_order'){
+      const {customer_name,customer_phone,customer_email,customer_address,order_type,status,subtotal,discount,tax,total,currency,payment_status,payment_method,lead_id,installation_required,installation_date,installation_address,installer_name,site_survey_done,notes,items}=payload;
+      if(!customer_name) return json({ok:false,error:'customer_name required'},400);
+      const settings=await env.DB.prepare('SELECT * FROM ev_charging_settings WHERE client_id=?').bind(cid).first();
+      const prefix=settings?.order_prefix||'EVC';
+      const ts=Date.now();
+      const orderNumber=`${prefix}-${ts.toString().slice(-6)}`;
+      const r=await env.DB.prepare(`INSERT INTO ev_charging_orders (client_id,order_number,lead_id,customer_name,customer_phone,customer_email,customer_address,order_type,status,subtotal,discount,tax,total,currency,payment_status,payment_method,installation_required,installation_date,installation_address,installer_name,site_survey_done,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(cid,orderNumber,lead_id||null,customer_name,customer_phone||null,customer_email||null,customer_address||null,order_type||'sale',status||'pending',subtotal||0,discount||0,tax||0,total||0,currency||'INR',payment_status||'unpaid',payment_method||null,installation_required||0,installation_date||null,installation_address||null,installer_name||null,site_survey_done||0,notes||null,now,now).run();
+      const orderId=r.meta?.last_row_id;
+      if(orderId && items?.length){
+        for(const it of items){
+          await env.DB.prepare(`INSERT INTO ev_charging_order_items (order_id,item_type,item_id,item_name,sku,qty,unit_price,discount,total,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+            .bind(orderId,it.item_type,it.item_id,it.item_name,it.sku||null,it.qty||1,it.unit_price||0,it.discount||0,it.total||0,now).run();
+        }
+      }
+      return json({ok:true,id:orderId,order_number:orderNumber});
+    }
+    if(action==='update_order'){
+      const {id,items,...rest}=payload;
+      if(!id) return json({ok:false,error:'id required'},400);
+      const sets=[];const vals=[];
+      const fields=['customer_name','customer_phone','customer_email','customer_address','order_type','status','subtotal','discount','tax','total','currency','payment_status','payment_method','lead_id','installation_required','installation_date','installation_address','installer_name','site_survey_done','notes'];
+      fields.forEach(f=>{ if(f in rest){ sets.push(`${f}=?`); vals.push(rest[f]??null); } });
+      sets.push('updated_at=?'); vals.push(now); vals.push(String(id)); vals.push(cid);
+      await env.DB.prepare(`UPDATE ev_charging_orders SET ${sets.join(',')} WHERE id=? AND client_id=?`).bind(...vals).run();
+      if(items){
+        await env.DB.prepare('DELETE FROM ev_charging_order_items WHERE order_id=?').bind(String(id)).run().catch(()=>{});
+        for(const it of items){
+          await env.DB.prepare(`INSERT INTO ev_charging_order_items (order_id,item_type,item_id,item_name,sku,qty,unit_price,discount,total,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+            .bind(String(id),it.item_type,it.item_id,it.item_name,it.sku||null,it.qty||1,it.unit_price||0,it.discount||0,it.total||0,now).run();
+        }
+      }
+      return json({ok:true});
+    }
+
+    if(action==='save_settings'){
+      const {business_name,default_currency,tax_label,tax_rate_pct,order_prefix,low_stock_threshold,installation_charge,include_installation_by_default}=payload;
+      const existing=await env.DB.prepare('SELECT id FROM ev_charging_settings WHERE client_id=?').bind(cid).first();
+      if(existing){
+        await env.DB.prepare(`UPDATE ev_charging_settings SET business_name=?,default_currency=?,tax_label=?,tax_rate_pct=?,order_prefix=?,low_stock_threshold=?,installation_charge=?,include_installation_by_default=?,updated_at=? WHERE client_id=?`)
+          .bind(business_name||null,default_currency||'INR',tax_label||'GST',tax_rate_pct||18,order_prefix||'EVC',low_stock_threshold||5,installation_charge||0,include_installation_by_default||0,now,cid).run();
+      } else {
+        await env.DB.prepare(`INSERT INTO ev_charging_settings (client_id,business_name,default_currency,tax_label,tax_rate_pct,order_prefix,low_stock_threshold,installation_charge,include_installation_by_default,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+          .bind(cid,business_name||null,default_currency||'INR',tax_label||'GST',tax_rate_pct||18,order_prefix||'EVC',low_stock_threshold||5,installation_charge||0,include_installation_by_default||0,now,now).run();
+      }
+      return json({ok:true});
+    }
+
+    return json({ok:false,error:'Unknown action'},400);
+  }
+
+  return json({ok:false,error:'Method not allowed'},405);
 }
 
 /* ── PROJECTS MODULE (frontend/projects.html — standalone tool, migrations/0050_pm_projects_tasks.sql,
@@ -28113,6 +28317,8 @@ export default {
       else if(url.pathname==='/matrimonial/razorpay/webhook'   && request.method==='POST'){ res=await handleMatriPaymentWebhook(request,env); }
       else if(url.pathname==='/matrimonial/tokens/regenerate'  && request.method==='POST'){ res=await handleMatriTokensRegenerate(request,env); }
       else if(url.pathname==='/matrimonial/webhook/log'        && request.method==='GET') { res=await handleMatriWebhookLog(request,env); }
+      // EV CHARGING MODULE — session-gated, action-based
+      else if(url.pathname==='/ev'){ res=await handleEvCharging(request,env); }
       else if(url.pathname==='/hc/book/services' && request.method==='GET'){ res=await handleHcPublicBookServices(request,env); }
       else if(url.pathname==='/hc/book/doctors' && request.method==='GET'){ res=await handleHcPublicBookDoctors(request,env); }
       else if(url.pathname==='/hc/book/dates' && request.method==='GET'){ res=await handleHcPublicBookDates(request,env); }
