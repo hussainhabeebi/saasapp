@@ -11,7 +11,6 @@ const {
   preloadAi4Bharat,
   isAi4BharatReady,
 } = require('./lib/ai4bharatTts');
-const { synthesizeWithPiper, supportsLanguage: piperSupportsLanguage, PIPER_VOICE_MAP } = require('./lib/piperTts');
 const { pcmToOggOpus } = require('./lib/pcmToOgg');
 const { createLiveSemaphore } = require('./lib/liveSemaphore');
 
@@ -40,7 +39,6 @@ function requireSignature(req, res) {
 }
 
 app.get('/health', (_req, res) => {
-  const piperBin = env.PIPER_BIN || '/opt/piper/piper';
   res.json({
     ok: true,
     service: 'leadvyne-voice',
@@ -51,8 +49,6 @@ app.get('/health', (_req, res) => {
     ai4bharat_tts_enabled: ai4bharatEnabled,
     ai4bharat_model_ready: isAi4BharatReady(),
     ai4bharat_tts_timeout_ms: 'unlimited',
-    piper_available: fs.existsSync(piperBin),
-    piper_voices: Object.keys(PIPER_VOICE_MAP).filter(language => piperSupportsLanguage(language)),
   });
 });
 
@@ -77,19 +73,6 @@ app.post('/synthesize-voice-reply', async (req, res) => {
   }
 });
 
-app.post('/synthesize-piper-tts', async (req, res) => {
-  if (!requireSignature(req, res)) return;
-  const { text, language } = req.body || {};
-  if (!text || !language) return res.status(400).json({ error: 'text and language required' });
-  if (!piperSupportsLanguage(language)) return res.status(400).json({ error: `Unsupported language: ${language}` });
-  try {
-    const audio = await synthesizeWithPiper(text, language);
-    res.type('audio/ogg').send(audio);
-  } catch (err) {
-    console.error('Piper synthesis failed:', err.message || err);
-    res.status(502).json({ error: String(err.message || err).slice(0, 500) });
-  }
-});
 
 app.post('/pcm-to-ogg', async (req, res) => {
   if (!requireSignature(req, res)) return;

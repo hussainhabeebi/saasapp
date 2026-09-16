@@ -3026,25 +3026,15 @@ const ROLES = {
 
         <div class="card-title" style="margin-bottom:14px">🎙️ Voice</div>
 
-        <!-- Voice-to-voice is automatic for inbound voice notes. Sarvam is the only live provider;
-             this card stores an optional per-client key without ever reading it back into the
-             browser. A blank client key uses the Worker-level SARVAM_API_KEY. -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🎙️ Voice-to-Voice Replies</div>
-            <div class="s-note">Automatic for incoming voice notes: cached audio first, then Sarvam. If voice is unavailable after 10 seconds, the customer receives the text answer. Add a client Sarvam API key below, or leave it empty to use Leadvyne's platform key.</div>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <input class="form-input" id="cfgSarvamApiKey" type="password" autocomplete="new-password" placeholder="Enter client Sarvam API key" style="max-width:360px">
-              <button class="save-btn" onclick="saveSarvamApiKey()">Save key</button>
-              <button class="save-btn" onclick="clearSarvamApiKey()">Use platform key</button>
-              <span class="save-msg" id="saveSarvamApiKeyMsg"></span>
-            </div>
-            <div class="s-note" id="sarvamApiKeyStatus" style="margin-top:10px">Checking configuration…</div>
+            <div class="s-note">Automatic for incoming voice notes. Provider chain: Bhashini (primary) → Google TTS (secondary) → AI4Bharat (self-hosted). Credentials are configured as Worker secrets — no per-client key needed. Falls back to a text reply if all providers are unavailable.</div>
           </div>
         </div>
 
-        <!-- Voice Follow-ups — same Sarvam voice/pipeline as the reply toggle above, applied to
-             scheduled outbound messages instead of live replies: the classic follow-up sequence
+        <!-- Voice Follow-ups — same Bhashini→Google→AI4Bharat provider chain as live voice-to-voice
+             replies, applied to scheduled outbound messages: the classic follow-up sequence
              (Follow-ups tab / POST /broadcast/followup-send) and the automated recovery/win-back
              ladder (backend/recovery.js). Independent toggle from Voice-to-Voice Reply — a client
              may want the bot to talk back live but keep scheduled nudges as text, or vice versa. -->
@@ -11612,9 +11602,8 @@ async function flowvyneResetContacts(){
   }catch(e){msg.textContent='Error resetting.';}
 }
 
-// pageVoice — Voice-to-Voice Reply (moved from Integrations) + Voice Follow-ups.
+// pageVoice — Voice Follow-ups + Pipeline Follow-ups.
 function voiceInit(){
-  loadVoiceSettings();
   renderVoiceFollowupCard();
   renderPipelineFollowupCard();
 }
@@ -11777,39 +11766,6 @@ async function logsInit(){
   }).join('')}</div>`;
 }
 
-async function loadVoiceSettings(){
-  const status=$id('sarvamApiKeyStatus');
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{headers:ncAuthHeaders()});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'Could not load voice settings');
-    status.textContent=data.client_key_configured?'Client Sarvam key configured.':(data.worker_fallback_available?'Using Leadvyne platform Sarvam key.':'No Sarvam key configured — voice will fall back to text.');
-  }catch(e){ status.textContent='Could not check Sarvam configuration: '+e.message; }
-}
-
-async function saveSarvamApiKey(){
-  const input=$id('cfgSarvamApiKey'),msg=$id('saveSarvamApiKeyMsg');
-  const apiKey=input.value.trim();
-  if(!apiKey){ msg.textContent='Enter a key, or choose Use platform key.';msg.className='save-msg err';return; }
-  input.disabled=true;msg.textContent='Saving…';msg.className='save-msg';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({api_key:apiKey})});
-    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Save failed');
-    input.value='';msg.textContent='✓ Client key saved';await loadVoiceSettings();
-  }catch(e){ msg.textContent='Error: '+e.message;msg.className='save-msg err'; }
-  finally{ input.disabled=false;setTimeout(()=>msg.textContent='',4000); }
-}
-
-async function clearSarvamApiKey(){
-  const input=$id('cfgSarvamApiKey'),msg=$id('saveSarvamApiKeyMsg');
-  input.disabled=true;msg.textContent='Saving…';msg.className='save-msg';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({api_key:''})});
-    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Save failed');
-    input.value='';msg.textContent='✓ Platform key selected';await loadVoiceSettings();
-  }catch(e){ msg.textContent='Error: '+e.message;msg.className='save-msg err'; }
-  finally{ input.disabled=false;setTimeout(()=>msg.textContent='',4000); }
-}
 
 // Voice Follow-ups toggle — independent of Voice-to-Voice Reply above, same pattern. Read by
 // handleBroadcastFollowupSend (worker.js, classic sequence) and backend/recovery.js (automated

@@ -174,7 +174,6 @@ async function checkRateLimit(env, bucket, ip, limit, windowSec){
 async function cleanupRateLimitCounters(env){
   if(!env.DB) return;
   try{ await env.DB.prepare(`DELETE FROM rate_limit_counters WHERE expires_at < ?`).bind(Math.floor(Date.now()/1000)).run(); }catch(e){}
-  try{ await env.DB.prepare(`DELETE FROM voice_sarvam_daily_usage WHERE usage_date < date('now','-30 days')`).run(); }catch(e){}
 }
 
 /* ── Engine event log (SETUP.md "Engine event log — Settings → Logs") ───────────────────────────
@@ -479,7 +478,7 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 export function safeClient(rec){
   const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
+  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -1092,7 +1091,6 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // would show up, so the check has to live here rather than only in the Settings UI.
   if(isClientPatch && parsedBody){
     if(META_CHANNEL_CREDENTIALS_FIELD in parsedBody) return json({error:'Per-channel credentials are managed by the secure channel connection flow.'},403);
-    if('sarvam_api_key' in parsedBody) return json({error:'Sarvam credentials are managed by the secure Voice settings flow.'},403);
     // plan_tier is billing-controlled — never something a client's own session can set, no matter
     // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
     // client-writable) because this one has no legitimate client-side writer at all.
@@ -1177,17 +1175,6 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   });
   let data=await r.text();
 
-  // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
-  // browser after unrelated saves. Only the dedicated /voice/settings endpoint exposes a boolean.
-  if(r.ok && method==='GET' && singleClientRecord){
-    try{
-      const rec=JSON.parse(data);
-      const configured=!!rec.sarvam_api_key;
-      delete rec.sarvam_api_key;
-      rec.sarvam_api_key_configured=configured;
-      data=JSON.stringify(rec);
-    }catch(_e){}
-  }
 
   // dashboard.html's Settings saves write most CLIENTS fields straight through this generic
   // passthrough (no dedicated handler per field). Any successful PATCH to the client's own row is
@@ -3213,12 +3200,11 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     // comment on why a template step can't carry this).
     sentText+=await ecomFollowupScarcityLine(env, c, lead);
 
-    // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live
-    // voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording is
-    // fixed by Meta, so there is no text to speak in its place for steps 3-5.
+    // Voice Follow-ups (Settings → Voice) — Bhashini→Google→AI4Bharat provider chain, same as
+    // live voice-to-voice replies. Only applies to steps 1-2: a WhatsApp template's approved wording
+    // is fixed by Meta, so there is no text to speak in its place for steps 3-5.
     if(c.voice_followup_enabled==='Yes'){
-      const bcp47=ENGINE_TTS_LANG_MAP[(lead.Language||c.language||'en').toLowerCase()];
-      if(bcp47){
+      {
         const audioBuf=await engineTtsWithFallback(env, sentText, (lead.Language||c.language||'en'), c.voice_tts_provider);
         if(audioBuf){
           const vfd=new FormData();
@@ -11045,7 +11031,7 @@ function engineArrayBufferToBase64(buf){
 
 // Retries a fetch once (after a short fixed delay) on a thrown network error or a likely-transient
 // status (429 rate limit, or 5xx) — covers the "momentary blip" case for the voice-to-voice
-// pipeline's external calls (media download, Gemini STT, Sarvam TTS) without retrying a real
+// pipeline's external calls (media download, Gemini STT, TTS APIs) without retrying a real
 // client error (bad key, malformed request) that would just fail identically a second time. Not
 // applied engine-wide — scoped to this one pipeline, where a customer getting silently downgraded
 // to text/placeholder on a single transient failure is the specific problem being solved here.
@@ -11082,7 +11068,7 @@ const ENGINE_LANG_NAMES={en:'English', ml:'Malayalam', hi:'Hindi', ta:'Tamil', t
 // time) and base64-encodes it. Null on any fetch failure or an unexpectedly large file. Every
 // failure branch reports via reportOpsError (not just STT's own two functions below) since a
 // silent null here was previously indistinguishable from "transcription itself failed" — same
-// blind spot that let the Sarvam TTS speaker-name bug go unnoticed. Retries once on a transient
+// blind spot on the inbound side. Retries once on a transient
 // network/5xx blip (engineFetchWithRetry) before giving up.
 async function engineFetchAudioBase64(env, mediaUrl){
   try{
@@ -11576,7 +11562,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // null, customerLanguage below falls back to c.language (usually 'en'), so a classifier failure
   // silently reads as "reply in English" for a customer who spoke/wrote another language entirely,
   // with zero trace of why. reportOpsError here closes that blind spot (same fix already applied
-  // to voice transcription and Sarvam TTS above).
+  // to voice transcription above).
   let aiResult=null;
   try{
     const raw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
@@ -13788,10 +13774,10 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 }
 
 
-// Sends a Sarvam AI-generated voice note (female speaker) as the customer's reply attachment,
-// same Chatwoot-attachment relay engineSendChatwootImageReply already uses for product photos.
-// Sent as .ogg/audio+opus (matching engineSarvamTts's output_audio_codec) — that's the one format
-// WhatsApp's Cloud API renders as a native voice-note bubble instead of a generic file attachment.
+// Sends a TTS-generated voice note as the customer's reply attachment, same Chatwoot-attachment
+// relay engineSendChatwootImageReply already uses for product photos.
+// Sent as .ogg/audio+opus — that's the one format WhatsApp's Cloud API renders as a native
+// voice-note bubble instead of a generic file attachment.
 // Falls back to a plain text reply (engineSendChatwootReply) on any failure — a customer getting
 // the text-only reply they'd have gotten before this existed is a far better failure mode than
 // getting nothing at all, same reasoning as the image-reply fallback above.
@@ -13817,135 +13803,13 @@ async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, 
   }
 }
 
-// ISO 639-1 (engineClassifyIntent's `customerLanguage`) → Sarvam's BCP-47 target_language_code.
-// Sarvam AI's TTS is Indic-language-focused — deliberately not a general-purpose fallback for
-// every language this engine can detect (e.g. Arabic customers, common in this product's UAE
-// client base, get a normal text reply instead of voice, not a mistranslated/unsupported one).
-// Endpoint, header, request/response shape, and this language list have been checked against
-// Sarvam's current docs (docs.sarvam.ai) and confirmed correct for bulbul:v2.
+// ISO 639-1 → BCP-47 for TTS provider language matching.
 const ENGINE_TTS_LANG_MAP={en:'en-IN', ml:'ml-IN', hi:'hi-IN', ta:'ta-IN', te:'te-IN', kn:'kn-IN', bn:'bn-IN', gu:'gu-IN', mr:'mr-IN', pa:'pa-IN', or:'od-IN'};
-const ENGINE_TTS_SPEAKER='anushka'; // bulbul:v2's default female voice — 'meera' (previously used here) isn't a valid bulbul:v2 speaker, which made every real Sarvam call fail
-
-// Real TTS call — env.SARVAM_API_KEY (Worker secret, see wrangler.toml). Returns a decoded audio
-// ArrayBuffer, or null on any failure so callers fall back to text. Text is capped defensively —
-// a long FAQ paragraph shouldn't become a multi-minute voice note even after
-// engineBuildSpokenReply's own shortening.
-// output_audio_codec:'opus' (Ogg/Opus) instead of Sarvam's default WAV — WhatsApp's Cloud API only
-// renders audio as a native voice-note bubble for Ogg/Opus; a WAV attachment either gets rejected
-// outright or arrives as a generic file, not a playable voice note (this was the "message format
-// not suitable" bug). speech_sample_rate:16000 because Opus itself only supports 8/12/16/24/48kHz —
-// Sarvam's general 22050Hz default (valid for its other codecs) isn't a legal Opus rate.
-// Every failure branch reports via reportOpsError instead of just returning null silently, so any
-// future regression (bad speaker name, changed API shape, etc.) surfaces instead of every
-// voice-note customer silently and permanently getting a text reply with zero trace of why.
-// Missing SARVAM_API_KEY is the one expected/unconfigured case and does NOT report — that's
-// just voice-to-voice not being set up yet for this environment, not a bug.
-async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', requestTimeoutMs=0){
-  if(!text || !targetLangCode) return null;
-  const apiKey=String(clientApiKey||env.SARVAM_API_KEY||'').trim();
-  if(!apiKey){ await reportOpsError(env, 'engineSarvamTts — no client or Worker SARVAM_API_KEY configured', new Error('missing secret')); return null; }
-  const controller=requestTimeoutMs?new AbortController():null;
-  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
-  try{
-    const r=await engineFetchWithRetry('https://api.sarvam.ai/text-to-speech', {
-      method:'POST',
-      headers:{'api-subscription-key':apiKey, 'Content-Type':'application/json'},
-      body:JSON.stringify({text:text.slice(0,500), target_language_code:targetLangCode, speaker:ENGINE_TTS_SPEAKER, model:'bulbul:v2', speech_sample_rate:16000, output_audio_codec:'opus'}),
-      ...(controller?{signal:controller.signal}:{})
-    });
-    if(!r.ok){
-      const bodyText=await r.text().catch(()=>'');
-      await reportOpsError(env, 'engineSarvamTts — Sarvam API returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {targetLangCode});
-      return null;
-    }
-    const data=await r.json().catch(()=>({}));
-    const b64=data?.audios?.[0];
-    if(!b64){
-      await reportOpsError(env, 'engineSarvamTts — no audio in Sarvam response', new Error(JSON.stringify(data).slice(0,500)), {targetLangCode});
-      return null;
-    }
-    const bin=atob(b64);
-    const bytes=new Uint8Array(bin.length);
-    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-    // A well-formed Opus reply is never this small (even a one-word reply is comfortably above a
-    // few hundred bytes) — guards against sending a customer a broken/silent "voice note" that's
-    // actually just container bytes with no real audio, same principle as the too-short-recording
-    // check on the inbound side above.
-    if(bytes.buffer.byteLength<200){
-      await reportOpsError(env, 'engineSarvamTts — decoded audio suspiciously small, treating as failure', new Error(`${bytes.buffer.byteLength} bytes`), {targetLangCode});
-      return null;
-    }
-    return bytes.buffer;
-  }catch(e){
-    await reportOpsError(env, 'engineSarvamTts — request threw', e, {targetLangCode});
-    return null;
-  }finally{
-    if(timer) clearTimeout(timer);
-  }
-}
-
-const ENGINE_VOICE_REPLY_DEADLINE_MS=65000;  // Piper 2.5s + AI4Bharat up to 30s + Sarvam up to 30s + 2.5s buffer
 const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
-const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
-const ENGINE_AI4BHARAT_HEDGE_MS=30000;  // wait 30s for AI4Bharat VITS before starting Sarvam
-const ENGINE_LIVE_TTS_DEADLINE_MS=60000;  // 30s AI4Bharat + 30s Sarvam total budget
-const ENGINE_SARVAM_DAILY_FALLBACK_LIMIT=25;
-
-export function engineResolveSarvamApiKey(env, c){
-  return String(c?.sarvam_api_key||env?.SARVAM_API_KEY||'').trim();
-}
-
-export function engineResolveSarvamCredential(env, c){
-  const clientKey=String(c?.sarvam_api_key||'').trim();
-  if(clientKey) return {apiKey:clientKey, source:'client'};
-  const workerKey=String(env?.SARVAM_API_KEY||'').trim();
-  return workerKey?{apiKey:workerKey, source:'worker'}:null;
-}
-
-function engineSarvamDailyFallbackLimit(env){
-  const configured=Number(env?.SARVAM_DAILY_FALLBACK_LIMIT);
-  return Number.isFinite(configured)?Math.max(0,Math.floor(configured)):ENGINE_SARVAM_DAILY_FALLBACK_LIMIT;
-}
-
-// Client-owned Sarvam keys are never charged to LeadVyne's allowance. The shared Worker key is
-// protected by an atomic D1 daily counter; if D1/migration is unavailable, fail closed to the text
-// reply instead of accidentally creating unbounded paid usage.
-async function engineClaimSarvamCredential(env, c, clientId){
-  const credential=engineResolveSarvamCredential(env,c);
-  if(!credential || credential.source==='client') return credential;
-  const limit=engineSarvamDailyFallbackLimit(env);
-  if(!env.DB || limit<=0) return null;
-  const usageDate=new Date().toISOString().slice(0,10);
-  try{
-    await env.DB.prepare(`INSERT OR IGNORE INTO voice_sarvam_daily_usage
-      (client_id,usage_date,usage_count,updated_at) VALUES (?,?,0,CURRENT_TIMESTAMP)`)
-      .bind(String(clientId),usageDate).run();
-    const claimed=await env.DB.prepare(`UPDATE voice_sarvam_daily_usage
-      SET usage_count=usage_count+1,updated_at=CURRENT_TIMESTAMP
-      WHERE client_id=? AND usage_date=? AND usage_count<? RETURNING usage_count`)
-      .bind(String(clientId),usageDate,limit).first();
-    return claimed?credential:null;
-  }catch(e){
-    await reportOpsError(env,'engineClaimSarvamCredential — Worker fallback quota unavailable',e,{clientId});
-    return null;
-  }
-}
-
-export async function engineWithDeadline(promise, deadlineMs){
-  let timer;
-  try{
-    return await Promise.race([
-      promise,
-      new Promise(resolve=>{ timer=setTimeout(()=>resolve(null),deadlineMs); })
-    ]);
-  }finally{
-    clearTimeout(timer);
-  }
-}
 
 async function engineVoiceCacheKey(clientId, langCode, replyText){
   const normalized=String(replyText||'').trim().replace(/\s+/g,' ').toLowerCase();
-  const digest=await sha256Hex(`${langCode}|${ENGINE_TTS_SPEAKER}|${normalized}`);
+  const digest=await sha256Hex(`${langCode}|${normalized}`);
   return `${ENGINE_VOICE_CACHE_PREFIX}/${clientId}/${langCode}/${digest}.ogg`;
 }
 
@@ -13966,49 +13830,6 @@ async function engineVoiceCachePut(env, key, audioBuf, provider){
   }catch(_e){}
 }
 
-// Free Piper gets a short first attempt (2.5s). If it is unavailable/unsupported, AI4Bharat VITS
-// starts and is the primary provider — Sarvam only fires after 30s if AI4Bharat hasn't responded.
-// Sarvam is the strong backup: it requires a client key or a Worker quota slot.
-// Kept as an injectable coordinator so ordering and deadlines are covered without live APIs.
-export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sarvamCall, piperDeadlineMs=ENGINE_PIPER_TTS_DEADLINE_MS){
-  const safeCall=call=>Promise.resolve().then(call).catch(()=>null);
-  const piper=await engineWithDeadline(safeCall(piperCall),piperDeadlineMs);
-  if(piper) return {audio:piper,provider:'piper'};
-  const live=await engineHedgeAi4BharatTts(
-    ()=>safeCall(ai4bharatCall).then(audio=>audio?{audio,provider:'ai4bharat'}:null),
-    ()=>safeCall(sarvamCall).then(audio=>audio?{audio,provider:'sarvam'}:null),
-    ENGINE_AI4BHARAT_HEDGE_MS,
-    ENGINE_LIVE_TTS_DEADLINE_MS
-  );
-  return live||{audio:null,provider:'text'};
-}
-
-// Voice-to-voice only: exact final replies are safe to reuse. Text-message delivery and scheduled
-// follow-ups do not call this function and therefore retain their existing behaviour.
-async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
-  // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
-  // call and every TTS provider. The cache prefix changes when the provider/voice ladder changes.
-  const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
-  const cached=await engineVoiceCacheGet(env, cacheKey);
-  if(cached) return cached;
-  const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-  if(!spokenText) return null;
-  const iso=(langCode||'').toLowerCase();
-  const bcp47=ENGINE_TTS_LANG_MAP[iso];
-  const result=await engineRunLiveVoiceTtsRotation(
-    ()=>enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS),
-    ()=>engineAi4BharatTts(env,spokenText,iso,ENGINE_LIVE_TTS_DEADLINE_MS),
-    async()=>{
-      if(!bcp47) return null;
-      const credential=await engineClaimSarvamCredential(env,c,clientId);
-      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,15000):null;  // 15s — fires only after AI4Bharat 30s wait
-    }
-  );
-  // Cache writes must never delay the first live send. R2 is best-effort here; the generated
-  // audio remains immediately usable even if this background write is interrupted or fails.
-  if(result.audio) void engineVoiceCachePut(env,cacheKey,result.audio,result.provider);
-  return result.audio;
-}
 
 // PRIMARY TTS — Bhashini Dhruva inference API (https://bhashini.gov.in/). Government-backed,
 // supports all 10 scheduled Indic languages + English. Requires BHASHINI_USER_ID and
@@ -14187,20 +14008,11 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
 async function handleVoiceSettingsGet(request, env){
   const session=await requireSession(request,env);
   if(!session) return json({error:'Invalid or expired session'},401);
-  const c=await getClientById(env,session.cid);
-  if(!c) return json({error:'Client not found'},404);
-  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY});
-}
-
-async function handleVoiceSettingsUpdate(request, env){
-  const session=await requireSession(request,env);
-  if(!session) return json({error:'Invalid or expired session'},401);
-  const body=await request.json().catch(()=>({}));
-  const apiKey=String(body.api_key||'').trim();
-  if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
-  await ensureClientColumns(env,['sarvam_api_key']);
-  await patchClientFields(env,session.cid,{sarvam_api_key:apiKey});
-  return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
+  return json({
+    bhashini_configured:!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY),
+    google_tts_configured:!!env.GOOGLE_TTS_API_KEY,
+    ai4bharat_reachable:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
+  });
 }
 
 // Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
@@ -14210,22 +14022,12 @@ async function handleVoiceSettingsUpdate(request, env){
 // BCP-47 values — the two providers need different formats, handled in engineTtsWithFallback below.
 const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
 
-// STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
-// dedicated Coolify voice service (see
-// render-pipeline/lib/ai4bharatTts.js / render-pipeline/tts/synthesize_ai4bharat.py for what is and
-// isn't verified about the model itself — no live test was possible without a real deploy). Sarvam
-// AI (engineSarvamTts above) stays the PRIMARY TTS provider everywhere — this only exists to be
-// called from engineTtsWithFallback below when Sarvam's call already failed or SARVAM_API_KEY isn't
-// configured, so a customer still gets a real voice-note reply instead of silently downgrading
-// straight to text. Requires the voice service configured (the legacy-named
-// MARKETING_RENDER_WEBHOOK_URL/_SECRET settings) AND AI4BHARAT_TTS_ENABLED set on that
-// service. Missing either is the expected/unconfigured case (silent null, no ops report), same
-// convention as engineSarvamTts's own missing-SARVAM_API_KEY case — this feature simply isn't set
-// up yet for this environment, not a bug.
-// Real, honest cost: this calls a self-hosted PyTorch model over HTTP on another server, not a fast
-// managed API — expect real added latency (seconds, possibly tens of seconds on CPU) on top of
-// whatever Sarvam's own failed attempt already cost. Acceptable for "customer still gets voice
-// instead of instantly falling back to text", not tuned for low latency.
+// TERTIARY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the
+// dedicated Coolify voice service (render-pipeline/lib/ai4bharatTts.js). Only reached after
+// Bhashini and Google TTS both fail/time out. Requires MARKETING_RENDER_WEBHOOK_URL/_SECRET and
+// AI4BHARAT_TTS_ENABLED set on the service. Missing either is the expected/unconfigured case
+// (silent null, no ops report). Real cost: a self-hosted PyTorch model over HTTP — expect seconds
+// of added latency on CPU, but still better than silently dropping to text.
 async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
   if(!text || !isoLangCode) return null;
   if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
@@ -14237,7 +14039,7 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
     const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
     const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-voice-reply`;
     // No retry here: live AI4Bharat is protected by a two-job semaphore. A 429 means the VPS is
-    // deliberately saturated and must trigger the hedged Sarvam path, not another heavy request.
+    // deliberately saturated — not another heavy request.
     const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
     if(!r.ok){
       const bodyText=await r.text().catch(()=>'');
@@ -14249,7 +14051,7 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
       return null;
     }
     const buf=await r.arrayBuffer();
-    // Same "suspiciously small = failure" guard as engineSarvamTts.
+    // Same "suspiciously small = failure" guard used across all TTS providers.
     if(buf.byteLength<200){
       await reportOpsError(env, 'engineAi4BharatTts — returned audio suspiciously small, treating as failure', new Error(`${buf.byteLength} bytes`), {isoLangCode});
       return null;
@@ -14264,11 +14066,9 @@ async function engineAi4BharatTts(env, text, isoLangCode, requestTimeoutMs=0){
 }
 
 // OPTIONAL voice provider — Gemini Live API (Settings → Voice → 🔧 TTS Provider →
-// CLIENTS.voice_tts_provider==='gemini_live'). Unlike Sarvam/AI4Bharat above this is opt-in ONLY
-// (never an automatic fallback for anyone who hasn't explicitly chosen it) — the Live API is a
-// real-time bidirectional session, a materially heavier/slower mechanism to reach for one turn's
-// worth of speech than a plain TTS REST call, so it stays a deliberate per-client choice rather
-// than folded into the Sarvam→AI4Bharat auto-fallback ladder.
+// CLIENTS.voice_tts_provider==='gemini_live'). Explicit opt-in only — the Live API is a
+// real-time bidirectional session, a materially heavier mechanism than a plain TTS REST call,
+// so it stays a deliberate per-client choice rather than folded into the auto-fallback chain.
 //
 // GEMINI_API_KEY is the same shared Worker secret the intent classifier/transcriber already use
 // (see engineGeminiGenerateWithFallback) — no new secret needed. Reuses the exact same
@@ -14352,119 +14152,19 @@ async function engineGeminiLiveTts(env, text, isoLangCode){
   }
 }
 
-// Single entry point every voice-reply call site should use instead of calling engineSarvamTts
-// directly — tries Sarvam (PRIMARY) first, and only reaches for the self-hosted AI4Bharat standby
-// (engineAi4BharatTts above) when Sarvam's own call returns null (missing key, unsupported
-// language, transient failure, whatever). Takes the plain ISO 639-1 langCode (this app's own
-// convention, e.g. lead.Language/CLIENTS.language) rather than Sarvam's BCP-47 code — the two
-// providers need different formats internally, and this is the one place that difference is
-// handled, so callers don't need to know about it. Returns null (caller falls back to text) only
-// if BOTH providers fail or aren't configured.
-//
-// `provider` is CLIENTS.voice_tts_provider (Settings → Voice → 🔧 TTS Provider (testing),
-// dashboard.html) — blank/unset means this normal auto behavior, unchanged. 'ai4bharat'/'sarvam'
-// were added so each standby could be tested against real WhatsApp traffic for one client without
-// touching the shared SARVAM_API_KEY (which affects every client at once). 'gemini_live' is a
-// distinct, fully opt-in third option (see engineGeminiLiveTts above) — chosen explicitly, never
-// reached as an automatic fallback the way AI4Bharat is. 'piper' (below) is the same treatment.
 
-// OPTIONAL voice provider — Piper TTS (Settings → Voice → 🔧 TTS Provider →
-// CLIENTS.voice_tts_provider==='piper'). Free, fully local, no API key, no per-request cost — see
-// render-pipeline/lib/piperTts.js for the full rationale. Explicit opt-in ONLY, never an automatic
-// fallback: unlike AI4Bharat (which covers the same ~10 Indic languages this app targets
-// elsewhere), Piper's language coverage on the render pipeline defaults to English only (see that
-// file's PIPER_VOICE_MAP comment on why more languages aren't guessed at) — auto-falling back to
-// it for an Indic-language customer would silently downgrade them to an English-accented voice.
-// Same voice service as engineAi4BharatTts/engineGeminiLiveTts
-// (MARKETING_RENDER_WEBHOOK_URL/_SECRET) — reused, not a new service to configure.
-async function enginePiperTts(env, text, isoLangCode, requestTimeoutMs=0){
-  if(!text || !isoLangCode) return null;
-  if(!env.MARKETING_RENDER_WEBHOOK_URL || !env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
-  const controller=requestTimeoutMs?new AbortController():null;
-  const timer=controller?setTimeout(()=>controller.abort(),requestTimeoutMs):null;
-  try{
-    const reqBody=JSON.stringify({text:text.slice(0,500), language:isoLangCode});
-    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, reqBody);
-    const endpoint=`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/synthesize-piper-tts`;
-    const r=await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json', 'X-Signature':sig}, body:reqBody, ...(controller?{signal:controller.signal}:{})});
-    if(!r.ok){
-      const bodyText=await r.text().catch(()=>'');
-      // A 400 means no Piper voice is configured for this language — expected/unconfigured, silent.
-      // A 503 whose body says "not installed" or similar means render pipeline not set up — silent.
-      // Any other status (502, 500, unexpected 503) is reported so the team knows.
-      const isExpectedPiper=r.status===400||(r.status===503&&(bodyText.includes('not installed')||bodyText.includes('not found')));
-      if(!isExpectedPiper) await reportOpsError(env, 'enginePiperTts — render pipeline returned non-OK', new Error(`HTTP ${r.status}: ${bodyText.slice(0,500)}`), {isoLangCode});
-      return null;
-    }
-    const buf=await r.arrayBuffer();
-    if(buf.byteLength<200) return null;
-    return buf;
-  }catch(e){
-    await reportOpsError(env, 'enginePiperTts — request threw', e, {isoLangCode});
-    return null;
-  }finally{
-    if(timer) clearTimeout(timer);
-  }
-}
-
-// AI4Bharat is self-hosted and can occasionally cold-start or wait behind another synthesis.
-// Start Sarvam after a short hedge
-// delay and return the first *valid* audio result. A null/failed provider never wins the race.
-// Keeping this coordinator independent of fetch makes the latency/fallback behaviour testable.
-export async function engineHedgeAi4BharatTts(ai4bharatCall, sarvamCall, hedgeMs=ENGINE_AI4BHARAT_HEDGE_MS, deadlineMs=ENGINE_LIVE_TTS_DEADLINE_MS){
-  const started=Date.now();
-  const ai4bharatPromise=Promise.resolve().then(ai4bharatCall);
-  let hedgeTimer;
-  const early=await Promise.race([
-    ai4bharatPromise.then(audio=>({finished:true,audio})),
-    new Promise(resolve=>{ hedgeTimer=setTimeout(()=>resolve({finished:false,audio:null}), hedgeMs); })
-  ]);
-  clearTimeout(hedgeTimer);
-  if(early.finished && early.audio) return early.audio;
-  const remainingMs=Math.max(0,deadlineMs-(Date.now()-started));
-  if(early.finished){
-    if(!remainingMs) return null;
-    return engineWithDeadline(Promise.resolve().then(sarvamCall).catch(()=>null),remainingMs);
-  }
-
-  // AI4Bharat is still running. Sarvam now starts in parallel; Promise.any ignores null results
-  // and resolves with whichever provider produces usable audio first.
-  const requireAudio=promise=>promise.then(audio=>audio||Promise.reject(new Error('TTS provider returned no audio')));
-  let deadlineTimer;
-  try{
-    const firstValid=Promise.any([
-      requireAudio(ai4bharatPromise),
-      requireAudio(Promise.resolve().then(sarvamCall))
-    ]);
-    return await Promise.race([
-      firstValid,
-      new Promise(resolve=>{ deadlineTimer=setTimeout(()=>resolve(null), remainingMs); })
-    ]);
-  }catch(_e){
-    return null;
-  }finally{
-    clearTimeout(deadlineTimer);
-  }
-}
-
+// Provider chain for follow-up voice sends: Bhashini (primary) → Google TTS (secondary) →
+// AI4Bharat (self-hosted legacy). gemini_live is a special opt-in for clients who set it in
+// CLIENTS.voice_tts_provider; all other provider values use the auto chain.
 async function engineTtsWithFallback(env, text, langCode, provider){
   const iso=(langCode||'').toLowerCase();
-  const bcp47=ENGINE_TTS_LANG_MAP[iso];
-  const mode=(provider||'').toLowerCase();
-  if(mode==='gemini_live') return engineGeminiLiveTts(env, text, iso);
-  if(mode==='piper') return enginePiperTts(env, text, iso);
-  if(mode==='ai4bharat'){
-    return engineHedgeAi4BharatTts(
-      ()=>engineAi4BharatTts(env, text, iso),
-      ()=>bcp47?engineSarvamTts(env, text, bcp47):null
-    );
-  }
-  if(bcp47){
-    const sarvamBuf=await engineSarvamTts(env, text, bcp47);
-    if(sarvamBuf) return sarvamBuf;
-  }
-  if(mode==='sarvam') return null;
-  return engineAi4BharatTts(env, text, iso);
+  if((provider||'').toLowerCase()==='gemini_live') return engineGeminiLiveTts(env, text, iso);
+  const safe=p=>Promise.resolve(p).catch(()=>null);
+  let audio=await safe(engineBhashiniTts(env,text,iso,10000));
+  if(audio) return audio;
+  audio=await safe(engineGoogleTts(env,text,iso,12000));
+  if(audio) return audio;
+  return safe(engineAi4BharatTts(env,text,iso,0));
 }
 
 /* ── NATIVE FORMS (WhatsApp Flows) ────────────────────────────────────────────────────────────
@@ -14802,7 +14502,7 @@ function engineExtractLinkPriceCaption(replyText){
 // voice note and this client has the paid voice add-on (voice_addon_active), reply with a
 // WhatsApp voice note instead of text — mirrors the customer's own input modality, which is the
 // point of the feature. Falls back to the normal text/image reply whenever voice isn't possible
-// (no add-on, no Sarvam key, unsupported/undetected language, a product-image reply already in
+// (no add-on, unsupported/undetected language, a product-image reply already in
 // play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
 // Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
 // out of scope for now, this only covers live conversational replies.
@@ -26814,11 +26514,9 @@ export default {
         ok:true,
         build:'2026-09-06-voice-only',
         voice:{
-          sarvam_configured:!!env.SARVAM_API_KEY,
-          ai4bharat_voice_service_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
-          hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
-          legacy_ai4bharat_deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS,
-          reply_deadline_ms:ENGINE_VOICE_REPLY_DEADLINE_MS
+          bhashini_configured:!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY),
+          google_tts_configured:!!env.GOOGLE_TTS_API_KEY,
+          ai4bharat_reachable:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
         }
       }); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
@@ -26826,7 +26524,6 @@ export default {
       else if(url.pathname==='/session/auto-provision' && request.method==='POST'){ res=await handleAutoProvision(request, env); }
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/voice/settings' && request.method==='GET'){ res=await handleVoiceSettingsGet(request, env); }
-      else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
