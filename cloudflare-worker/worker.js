@@ -12973,6 +12973,11 @@ BUTTONS — mandatory after EVERY reply:
   // skip the actual fact being asked for — so the two failure modes get distinct instructions
   // instead of one rule that (as observed) can be read as license for either.
   sys+='\n\nDefault style (follow this unless the persona/instructions above specify a different tone, reply length, closing style, or message format — in that case, follow those instead): a short greeting or small talk deserves a short, natural reply, not a long pitch covering everything you could possibly say — but a short, specific question (a number, a policy, a fact) always deserves the real, complete answer, even if that makes the reply a bit longer than the question itself; never trade accuracy or completeness for brevity. Do not volunteer price unless the customer asked about price/cost or you genuinely need to state it to answer their question. Sound like a real person texting, not a scripted sales script — warm and natural, no corporate phrasing, no more than one emoji per message. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+  const _botCfg=engineParseJsonField(c.bot_config,{});
+  if(_botCfg.chat_style==='prompt_first'){
+    sys+='\n\nANSWER-FIRST RULE: Always give the direct answer from your business prompt, Services, or Knowledge Base above first. If the fact is there, state it immediately — do not ask a clarifying question before answering. Only ask a follow-up question after giving the answer, and only when it is genuinely needed to help further.';
+    sys+='\n\nNO PRESSURE RULE: Do not propose a call, demo, onboarding session, or meeting unless the customer explicitly asks for one. Let the conversation flow naturally — never push a next step unprompted.';
+  }
 
   // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
   // more about them?", the customer replied "yes", and the reply was essentially the SAME pitch
@@ -13413,7 +13418,11 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   if(kbText) sys+='\n\n## Knowledge Base\n'+kbText;
   sys+=`\n\n## Objection Handling\nThe lead just raised a "${objectionCategory}" objection.`;
   if(match && match.approved_response) sys+=` Use this approved response strategy: ${match.approved_response}`;
-  else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  else{
+    const _objBotCfg=engineParseJsonField(c.bot_config,{});
+    if(_objBotCfg.chat_style==='prompt_first') sys+=' Acknowledge the concern honestly using facts from the prompt above and answer it directly. Do not push the customer toward a call, demo, or meeting — let them lead.';
+    else sys+=' Acknowledge the concern briefly and honestly, respond confidently without over-promising. Default closing (follow this unless the persona/instructions above specify a different closing style): always end by proposing one concrete next step (a call, a demo, or answering one more question) rather than just apologising.';
+  }
   if(objectionCategory==='price'){
     sys+=c.quote_validity_days
       ? ` Create gentle urgency: mention that this pricing is confirmed for the next ${c.quote_validity_days} day(s) and encourage a decision within that window.`
