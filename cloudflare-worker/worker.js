@@ -16472,38 +16472,23 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
         orderHandledInline=true;
 
-      // ── Universal: detect any question at any elec_order_* stage — answer + Continue/Cancel ──
+      // ── Universal: detect any question at any elec_order_* stage — AI-answered + Continue/Cancel ──
       } else if(
         userText.trim().endsWith('?')||
         /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
         /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
       ){
-        const _prodName=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
         const _cur=seed.currency||'';
-        const _lines=[];
-        // Header
-        _lines.push(`🛍️ *${_prodName}*`);
-        // Product description — most useful part of the answer
-        if(seed.description){
-          _lines.push('');
-          _lines.push(`📋 ${seed.description.trim()}`);
-        }
-        // Price block
-        if(seed.unitPrice){
-          _lines.push('');
-          _lines.push(`💰 Price: *${_cur}${seed.unitPrice}* per unit`);
-          if(seed.totalPrice&&seed.qty){
-            _lines.push(`🧾 Your total (${seed.qty} unit${seed.qty>1?'s':''}): *${_cur}${seed.totalPrice}*`);
-          }
-        }
-        // Delivery note
-        _lines.push('');
-        _lines.push(`🚚 Fast delivery across India`);
-        _lines.push(`✅ Easy returns & support`);
-        _lines.push('');
-        _lines.push(`Would you like to continue with the order?`);
-        const _qReply=_lines.join('\n');
-        sentText=await engineLocalizeReply(env,c,_qReply,replyLang);
+        const _prodCtx=[
+          `Product: ${seed.productName||''}`,
+          seed.description?`Description: ${seed.description}`:'',
+          seed.unitPrice?`Price: ${_cur}${seed.unitPrice} per unit`:'',
+          seed.totalPrice&&seed.qty?`Order total: ${_cur}${seed.totalPrice} for ${seed.qty} unit${seed.qty>1?'s':''}`:'',
+        ].filter(Boolean).join('\n');
+        const _qSys=`You are a helpful WhatsApp sales assistant for an electronics/home-appliance ecommerce brand. Answer the customer's question directly and naturally using the product details below — no hallucination, no invented specs. Keep the reply concise (2-5 lines), friendly, and use 1-2 fitting emojis. Do NOT include phrases like "Would you like to continue" or offer buttons — just answer the question. Respond in the same language as the customer's message.\n\n${_prodCtx}`;
+        const _aiAnswer=await engineCallLlm(env,c,_qSys,userText.trim(),180);
+        const _finalReply=`${_aiAnswer}\n\nWould you like to continue with the order?`;
+        sentText=await engineLocalizeReply(env,c,_finalReply,replyLang);
         routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
           {title:'Continue Order',value:'ELEC_CONTINUE_ORDER'},
