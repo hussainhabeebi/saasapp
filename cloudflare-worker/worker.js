@@ -15422,6 +15422,7 @@ async function handleSupportTicketsUpdate(request, env){
 // exact secret, a request is rejected before any client data is touched — same practical
 // unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
 // (both are exposed in various places already) no longer gets an attacker anywhere.
+let engineDedupTableEnsured=false;
 async function handleEngineWebhook(request, env, secret, ctx=null){
   const startMs=Date.now();
   // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
@@ -15473,6 +15474,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   const earlyMessageId=String(body.id||body.message?.id||'');
   if(earlyMessageId){
     try{
+      // Self-migrate: create the table if the manual migration was never applied to this D1
+      // instance. Cached per-isolate so the DDL only fires once per cold start, not per request.
+      if(!engineDedupTableEnsured){
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS engine_processed_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, message_id TEXT NOT NULL, at TEXT NOT NULL)`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_engine_processed_messages_unique ON engine_processed_messages(client_id, message_id)`).run().catch(()=>{});
+        engineDedupTableEnsured=true;
+      }
       const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
         .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
       if(!dedupR.meta.changes){ await logEngineSkip(env, clientId, null, null, 'duplicate-delivery-fast', `message ${earlyMessageId}`); return json({ok:true, skipped:'duplicate-delivery-fast'}); }
