@@ -128,6 +128,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 .loading-row td{text-align:center;padding:30px;color:var(--muted)}
 .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:10px}
+
+/* LAYOUT WRAPPER */
+#layout{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+
+/* DESKTOP LEFT SIDEBAR */
+@media(min-width:768px){
+  #layout{flex-direction:row}
+  #tabs{flex-direction:column;width:170px;flex-shrink:0;border-bottom:none;border-right:1px solid var(--line);padding:10px 0;overflow-x:hidden;overflow-y:auto}
+  #tabs .tab{border-bottom:none;border-left:3px solid transparent;margin-bottom:0;margin-left:-1px;text-align:left;padding:10px 16px;white-space:normal}
+  #tabs .tab.active{border-bottom-color:transparent;border-left-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+  main{overflow-y:auto;flex:1}
+  .inner{max-width:none}
+}
 </style>
 </head>
 <body>
@@ -139,6 +152,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
 </header>
 
+<div id="layout">
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
@@ -681,6 +695,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
 </div><!-- /inner -->
 </main>
+</div><!-- /layout -->
 
 <script>
 // All NocoDB access goes through the Worker's /ecom/* routes — the master
