@@ -82,7 +82,20 @@ const RECOVERY_FIELDS = [
   { title: 'recovery_last_sent_at',    uidt: 'DateTime' },
   { title: 'recovery_last_msg_snap',   uidt: 'DateTime' },
   { title: 'recovery_last_message',    uidt: 'LongText' },
+  { title: 'recovery_skip_reason',     uidt: 'LongText' },
 ];
+
+// WhatsApp 24h session window — after 24h without an inbound customer message,
+// only approved template messages can be sent; plain text will be rejected.
+const WA_SESSION_WINDOW_HOURS = 24;
+
+function isSessionOpen(lead) {
+  // LastMsgAt tracks the most recent message timestamp (inbound or outbound).
+  // We use it as a conservative proxy: if it's within 24h, we assume the
+  // session window may still be open (the customer could have sent the last msg).
+  // If it's >24h old, the window is definitely closed.
+  return hoursSince(lead.LastMsgAt || lead.Date) < WA_SESSION_WINDOW_HOURS;
+}
 
 async function ensureRecoveryFields(tableId, token) {
   try {
@@ -201,6 +214,7 @@ function decide(lead, client) {
     lastRealMs,
     message: (messages[stage] || messages[messages.length - 1]).replace('{name}', lead.Name || 'there'),
     templateName: templates[stage] || null,
+    sessionOpen: isSessionOpen(lead),
   };
 }
 
@@ -420,13 +434,43 @@ async function processClient(client) {
 
     try {
       let sentText = plan.message;
-      if (plan.templateName) {
-        await sendTemplateMessage(client, convId, plan.templateName, lead.Name);
-        sentText = `[template:${plan.templateName}]`;
+      // Resolve which template to use (stage-specific wins over the default fallback).
+      const effectiveTemplate = plan.templateName || client.recovery_default_template || null;
+
+      if (!plan.sessionOpen && !effectiveTemplate) {
+        // 24h session window is closed and no template is configured — sending plain
+        // text would fail with a WhatsApp error. Record a skip so it surfaces in logs.
+        const skipReason = `session_closed_no_template (stage=${plan.stage}, lastMsg=${lead.LastMsgAt || lead.Date})`;
+        console.warn(`  [skip] lead ${lead.Id}: ${skipReason}`);
+        await ncPatch(`${NOCODB_BASE}/api/v2/tables/${tableId}/records`, {
+          Id: lead.Id,
+          recovery_skip_reason: skipReason,
+        }, NOCODB_TOKEN);
+        continue;
+      }
+
+      if (!plan.sessionOpen || effectiveTemplate) {
+        // Session is closed (must use template) or caller explicitly requested one.
+        await sendTemplateMessage(client, convId, effectiveTemplate, lead.Name);
+        sentText = `[template:${effectiveTemplate}]`;
       } else {
         sentText = await personalize(plan.message, lead, client);
         const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText, lead.Language));
-        if (!sentViaVoice) await sendPlainMessage(client, convId, sentText);
+        if (!sentViaVoice) {
+          try {
+            await sendPlainMessage(client, convId, sentText);
+          } catch (plainErr) {
+            // Plain-text send rejected — likely the 24h window closed between our check
+            // and the actual send. Retry with a template if one is available.
+            if (effectiveTemplate) {
+              console.warn(`  [plain→template retry] lead ${lead.Id}: ${plainErr.message}`);
+              await sendTemplateMessage(client, convId, effectiveTemplate, lead.Name);
+              sentText = `[template:${effectiveTemplate}]`;
+            } else {
+              throw plainErr; // no fallback, surface the error
+            }
+          }
+        }
       }
 
       await ncPatch(`${NOCODB_BASE}/api/v2/tables/${tableId}/records`, {
