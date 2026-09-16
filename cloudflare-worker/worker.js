@@ -14514,7 +14514,7 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
         new Error(`iso=${iso}, bcp47=${bcp47||'none'}, bhashini=${hasBhashini}, google=${hasGoogle}, render=${hasRenderPipeline}`),
         {clientId,convId}).catch(()=>{});
     }
-  }catch(e){}
+  }catch(e){ await reportOpsError(env,'engineBackgroundSendVoice — unexpected error',e,{clientId,convId}).catch(()=>{}); }
 }
 
 async function handleVoiceSettingsGet(request, env){
@@ -15158,16 +15158,21 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
-  const bcp47=ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()];
+  // Resolve TTS language: prefer the classifier-returned langCode; fall back to the client's
+  // configured language if langCode is absent or not in the TTS map. This ensures voice-to-voice
+  // never silently degrades to text-only just because the classifier returned an unmapped code.
+  const _ttsLang=(ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()]?(langCode||'').toLowerCase():null)||
+                 (ENGINE_TTS_LANG_MAP[(c.language||'').toLowerCase()]?(c.language||'').toLowerCase():null);
+  const bcp47=_ttsLang?ENGINE_TTS_LANG_MAP[_ttsLang]:null;
   // Voice messages: cache hit → instant voice reply; otherwise → text immediately + voice follow-up
   // via ctx.waitUntil. AI4Bharat has no request timeout in the background path — it runs until the
   // Worker's own I/O limit instead of an arbitrary ceiling that would abort mid-generation.
   if(mediaType==='voice' && !imageUrl && bcp47){
-    const cacheKey=await engineVoiceCacheKey(clientId, langCode, trimmed).catch(()=>null);
+    const cacheKey=await engineVoiceCacheKey(clientId, _ttsLang, trimmed).catch(()=>null);
     const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
     if(cached) return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
     await engineSendChatwootReply(env, c, clientId, convId, trimmed);
-    if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, langCode));
+    if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, _ttsLang));
     return;
   }
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
@@ -15809,7 +15814,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
         .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
       if(!dedupR.meta.changes){ await logEngineSkip(env, clientId, null, null, 'duplicate-delivery-fast', `message ${earlyMessageId}`); return json({ok:true, skipped:'duplicate-delivery-fast'}); }
-    }catch(e){ /* best-effort — a D1 hiccup should never block a real customer message */ }
+    }catch(e){
+      // Retry once after 50ms — transient D1 hiccup; if still failing, alert ops but pass through
+      // so a real customer message is never silently dropped due to a database glitch.
+      await new Promise(r=>setTimeout(r,50));
+      try{
+        const dedupR2=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`)
+          .bind(Number(clientId), earlyMessageId, new Date().toISOString()).run();
+        if(!dedupR2.meta.changes){ await logEngineSkip(env, clientId, null, null, 'duplicate-delivery-fast', `message ${earlyMessageId}`); return json({ok:true, skipped:'duplicate-delivery-fast'}); }
+      }catch(e2){ await reportOpsError(env,'D1 dedup gate failed twice — duplicate reply may occur',e2,{clientId,earlyMessageId}).catch(()=>{}); }
+    }
   }
 
   // Human agent reply tracking — fires when a real human (not the bot) sends an outgoing
