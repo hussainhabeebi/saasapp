@@ -16441,46 +16441,62 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(!seed.currency&&_rec.currency) seed.currency=_rec.currency;
         if(!seed.address&&_rec.address) seed.address=_rec.address;
       }
+      // ── Universal: cancel at any stage ───────────────────────────────────────────
       if(/^ELEC_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
         sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
+
+      // ── Universal: "Continue Order" button — re-prompt whatever the current stage needs ──
+      } else if(/^ELEC_CONTINUE_ORDER$/i.test(userText.trim())){
+        const _stageReprompts={
+          elec_order_qty:   async()=>{ const m=await engineLocalizeReply(env,c,'How many would you like to order? (e.g. 1, 2, 3):',replyLang); await engineDeliverReply(env,c,clientId,convId,m,{mediaType,langCode:replyLang,ctx}); return m; },
+          elec_order_address: async()=>{ const m=await engineLocalizeReply(env,c,'Please share your full delivery address (building/house name, street, city, PIN code):',replyLang); await engineDeliverReply(env,c,clientId,convId,m,{mediaType,langCode:replyLang,ctx}); return m; },
+          elec_order_payment: async()=>{
+            const m=await engineLocalizeReply(env,c,'How would you like to pay?',replyLang);
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,m,[
+              {title:'Cash on Delivery',value:'Cash on Delivery'},{title:'UPI',value:'UPI'},
+              {title:'Card',value:'Card'},{title:'Bank Transfer',value:'Bank Transfer'},
+            ]); return m;
+          },
+          elec_order_confirm: async()=>{
+            const m=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,m,[
+              {title:'Confirm Order',value:'ELEC_CONFIRM'},{title:'Cancel',value:'ELEC_CANCEL'},
+            ]); return m;
+          },
+        };
+        const _fn=_stageReprompts[state.stage];
+        sentText=_fn?await _fn():await engineLocalizeReply(env,c,'Please continue with your order:',replyLang);
+        routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
+        orderHandledInline=true;
+
+      // ── Universal: detect any question at any elec_order_* stage — answer + Continue/Cancel ──
+      } else if(
+        userText.trim().endsWith('?')||
+        /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
+        /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
+      ){
+        const _prodLine=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
+        const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice} per unit`:'';
+        const _totalP=seed.totalPrice&&seed.qty?` Your total for ${seed.qty} unit${seed.qty>1?'s':''}: *${seed.currency||''}${seed.totalPrice}*`:'';
+        const _qReply=`*${_prodLine}*${_unitP?` — ${_unitP}`:''}${_totalP}.\n\nFor detailed specs our team can help. Would you like to continue with the order?`;
+        sentText=await engineLocalizeReply(env,c,_qReply,replyLang);
+        routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Continue Order',value:'ELEC_CONTINUE_ORDER'},
+          {title:'Cancel Order',value:'ELEC_CANCEL'},
+        ]); orderHandledInline=true;
+
       } else if(state.stage==='elec_order_qty'){
         const _qtyTrimmed=userText.trim();
-
-        // ── "Continue Order" button after answering a question — re-ask for quantity ──
-        if(/^ELEC_CONTINUE_QTY$/i.test(_qtyTrimmed)){
-          sentText=await engineLocalizeReply(env,c,`How many would you like to order? (e.g. 1, 2, 3):`,replyLang);
-          routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
-
-        // ── Detect mid-flow questions and answer them, then offer Continue/Cancel ──
-        } else if(
-          _qtyTrimmed.endsWith('?')||
-          /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power)\b/i.test(_qtyTrimmed)||
-          /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|മൂടൽ|കപ്പാസിറ്റി|പ്രവർത്തിക്ക/.test(_qtyTrimmed)
-        ){
-          const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice} per unit`:'';
-          const _prodLine=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
-          const _qAnswerBase=`Here's what I have on *${_prodLine}*${_unitP?` — ${_unitP}`:''}.\n\nFor more detailed specs or questions our team can help you further. Would you like to continue with the order?`;
-          sentText=await engineLocalizeReply(env,c,_qAnswerBase,replyLang);
-          routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-            {title:'Continue Order',value:'ELEC_CONTINUE_QTY'},
-            {title:'Cancel Order',value:'ELEC_CANCEL'},
-          ]); orderHandledInline=true;
-
-        // ── Parse quantity — accept digits, English words, common Malayalam/regional words ──
-        } else {
         const wordNums={
           one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
-          // Malayalam
           'ഒന്ന്':1,'ഒന്നു':1,'ഒട്ടൊന്നു':1,'ഒന്നേ':1,
           'രണ്ട്':2,'രണ്ടു':2,'മൂന്ന്':3,'മൂന്നു':3,
           'നാല്':4,'നാലു':4,'അഞ്ച്':5,'അഞ്ചു':5,
           'ആറ്':6,'ഏഴ്':7,'എട്ട്':8,'ഒൻപത്':9,'പത്ത്':10,
-          // Hindi
           'ek':1,'ek piece':1,'do':2,'teen':3,'char':4,'paanch':5,
         };
         const rawQty=parseInt(_qtyTrimmed,10)||wordNums[_qtyTrimmed.toLowerCase()]||wordNums[_qtyTrimmed]||0;
@@ -16496,35 +16512,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }
-        } // end else (not a question / not ELEC_CONTINUE_QTY)
       } else if(state.stage==='elec_order_address'){
         const _trimmed=userText.trim();
-
-        // ── "Continue Order" button response — re-prompt for address cleanly ──
-        if(/^ELEC_CONTINUE_ADDRESS$/i.test(_trimmed)){
-          sentText=await engineLocalizeReply(env,c,'Please share your full delivery address (building/house name, street, city, PIN code):',replyLang);
-          routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
-          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
-
-        // ── Detect mid-flow questions and answer them, then offer Continue/Cancel ──
-        } else if(
-          _trimmed.endsWith('?')||
-          /\b(price|cost|rate|how much|why|charge|delivery charge|shipping cost|what is the price|total)\b/i.test(_trimmed)||
-          /പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ഡെലിവറി ചാർജ്|ഷിപ്പിങ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(_trimmed)
-        ){
-          const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice}`:'(see catalog)';
-          const _totalP=seed.totalPrice?`${seed.currency||''}${seed.totalPrice}`:'';
-          const _priceInfo=`${seed.productName||'This product'} — ${_unitP} per unit.`+(_totalP?` Your order total (${seed.qty||1} unit${(seed.qty||1)>1?'s':''}): *${_totalP}*`:'');
-          const _questionReply=`${_priceInfo}\n\nWould you like to continue with the order?`;
-          sentText=await engineLocalizeReply(env,c,_questionReply,replyLang);
-          routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-            {title:'Continue Order',value:'ELEC_CONTINUE_ADDRESS'},
-            {title:'Cancel Order',value:'ELEC_CANCEL'},
-          ]); orderHandledInline=true;
-
         // ── Detect non-address input (escape intent, bare numbers, too short) ──
-        } else {
+        {
           const _words=_trimmed.split(/\s+/);
           const _looksLikeBareNumber=/^\d+$/.test(_trimmed);
           const _tooShort=_words.length<=2&&_trimmed.length<12;
