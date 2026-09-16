@@ -12977,6 +12977,11 @@ BUTTONS — mandatory after EVERY reply:
   if(_botCfg.chat_style==='prompt_first'){
     sys+='\n\nANSWER-FIRST RULE: Always give the direct answer from your business prompt, Services, or Knowledge Base above first. If the fact is there, state it immediately — do not ask a clarifying question before answering. Only ask a follow-up question after giving the answer, and only when it is genuinely needed to help further.';
     sys+='\n\nNO PRESSURE RULE: Do not propose a call, demo, onboarding session, or meeting unless the customer explicitly asks for one. Let the conversation flow naturally — never push a next step unprompted.';
+    const _pfServices=engineParseJsonField(c.services,[]);
+    if(_pfServices.length){
+      const _pfNames=_pfServices.slice(0,3).map(s=>String(s.name).slice(0,24)).join(' | ');
+      sys+=`\n\nFOLLOW-UP BUTTONS: After giving your answer, you may optionally end with OPTIONS: ${_pfNames} — use this only when it would genuinely help the customer pick their next topic. The system will render these as tappable buttons; do not mention them in your prose.`;
+    }
   }
 
   // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
@@ -17480,6 +17485,32 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             faqQuickReplies=[{title:'Book Appointment',value:`HC_BOOK_SERVICE:${hcServices[0].id}`},{title:'Talk to a human',value:'Talk to a human'}];
           } else if(hcServices.length>1){
             faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
+          }
+        }
+        // Prompt-First style: always surface follow-up buttons after the answer so the customer
+        // can tap their next step instead of typing it.
+        // Priority: 1) pf_followup_buttons (custom labels), 2) services list, 3) generic fallback.
+        if(!faqQuickReplies && botConfig.chat_style==='prompt_first'){
+          const pfCustom=typeof botConfig.pf_followup_buttons==='string'&&botConfig.pf_followup_buttons.trim()
+            ?botConfig.pf_followup_buttons.split('|').map(s=>s.trim()).filter(Boolean).slice(0,3)
+            :null;
+          if(pfCustom&&pfCustom.length){
+            faqQuickReplies=[
+              ...pfCustom.map(label=>({title:label.slice(0,24),value:label.slice(0,24)})),
+              ...(c.handover_enabled!=='No'?[{title:'Talk to a human',value:'Talk to a human'}]:[]),
+            ];
+          } else {
+            const pfServices=engineParseJsonField(c.services,[]);
+            if(pfServices.length){
+              const svcBtns=pfServices.slice(0,3).map(s=>({title:String(s.name).slice(0,24),value:String(s.name).slice(0,24)}));
+              if(c.handover_enabled!=='No') svcBtns.push({title:'Talk to a human',value:'Talk to a human'});
+              faqQuickReplies=svcBtns;
+            } else {
+              faqQuickReplies=[
+                {title:'Ask Another Question',value:'I have another question'},
+                ...(c.handover_enabled!=='No'?[{title:'Talk to a human',value:'Talk to a human'}]:[]),
+              ];
+            }
           }
         }
       }

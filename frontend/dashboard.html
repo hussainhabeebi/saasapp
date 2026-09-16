@@ -3387,6 +3387,21 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="pfFollowupButtonsCard" style="display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔘 Prompt-First Follow-up Buttons</div>
+            <div class="s-note">When Prompt-First is on, these buttons appear after every reply so the customer can tap their next topic instead of typing. Leave blank to auto-use your configured Services list. Enter up to 3 labels separated by <b>|</b> — each under 24 characters (e.g. <code>Pricing | Features | Book a Call</code>).</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:480px">
+                <label class="form-label">Button labels (pipe-separated)</label>
+                <input class="form-input" id="cfgPfFollowupButtons" placeholder="e.g. Pricing | Features | Book a Call">
+              </div>
+              <button class="save-btn" id="savePfFollowupButtons">Save</button>
+              <span class="save-msg" id="savePfFollowupButtonsMsg"></span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -11006,8 +11021,14 @@ $id('saveEduCommunicationStyle').addEventListener('click',async()=>{
 function populateBotBehaviorPage(){
   let botConfig={};
   try{ botConfig=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
-  $id('cfgChatStyle').value=botConfig.chat_style||'';
+  const style=botConfig.chat_style||'';
+  $id('cfgChatStyle').value=style;
+  $id('pfFollowupButtonsCard').style.display=style==='prompt_first'?'block':'none';
+  $id('cfgPfFollowupButtons').value=botConfig.pf_followup_buttons||'';
 }
+$id('cfgChatStyle').addEventListener('change',function(){
+  $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
+});
 $id('saveChatStyle').addEventListener('click',async()=>{
   let botConfig={};
   try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
@@ -11015,6 +11036,14 @@ $id('saveChatStyle').addEventListener('click',async()=>{
   if(selected) botConfig.chat_style=selected;
   else delete botConfig.chat_style;
   await saveField('saveChatStyle','saveChatStyleMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('savePfFollowupButtons').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const val=$id('cfgPfFollowupButtons').value.trim();
+  if(val) botConfig.pf_followup_buttons=val;
+  else delete botConfig.pf_followup_buttons;
+  await saveField('savePfFollowupButtons','savePfFollowupButtonsMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
