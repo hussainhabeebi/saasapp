@@ -17041,9 +17041,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         detection.sku=undefined;
         detection.productName=undefined;
         detection.brand=undefined;
-      }else if(detection.signal && detection.mode==='enquiry' && state.lead?.['Last Product Sku'] && !broadMatches.length && !ecomIsGenericProductCatalogueQuery(userText) && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText)){
-        // Follow-up question about the already selected product: answer from the configured prompt
-        // plus verified catalogue context below. Do not restart navigation or invent a new option.
+      }else if(state.lead?.['Last Product Sku'] && !broadMatches.length && !/\b(show|list|browse|categories|catalog(?:ue)?)\b/i.test(userText) && !/what\s+(?:do\s+)?(?:you|u)\s+(?:sell|have|stock|offer)\b/i.test(userText)){
+        // Customer already has a product in context — let the prompt + industry module answer.
+        // Do not show the catalog picker just because a word like "items" or "products" appears
+        // in a post-order or follow-up question. Only genuine "show me your catalog" intent
+        // (explicit browse verbs above, or an actual product broad-match) goes to the picker.
         detection.signal=false;
         routing.route='ecom_faq';
       }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
