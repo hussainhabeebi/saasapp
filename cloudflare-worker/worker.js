@@ -16473,10 +16473,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         orderHandledInline=true;
 
       // ── Universal: detect any question at any elec_order_* stage — AI-answered + Continue/Cancel ──
+      // Bypass: if we're at the payment stage and the input looks like a payment method,
+      // let the payment handler below process it (prevents "Cash on Delivery" → hallucination).
       } else if(
-        userText.trim().endsWith('?')||
-        /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
-        /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
+        !(state.stage==='elec_order_payment'&&/\bcod\b|cash\s+on\s+delivery|\bupi\b|gpay|phonepe|paytm|google\s*pay|\bcard\b|credit|debit|\bbank\b|transfer|neft|rtgs/i.test(userText.trim()))&&
+        (
+          userText.trim().endsWith('?')||
+          /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
+          /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
+        )
       ){
         const _cur=seed.currency||'';
         const _prodCtx=[
