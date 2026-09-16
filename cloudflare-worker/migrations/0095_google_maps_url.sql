@@ -1,3 +1,4 @@
--- Add Google Maps URL field to CLIENTS so bots can share an actual link
--- when customers ask for directions or the shop location.
-ALTER TABLE clients ADD COLUMN google_maps_url TEXT NOT NULL DEFAULT '';
+-- google_maps_url is stored in NocoDB (clients table), not in D1.
+-- Column is created at runtime via ensureGoogleMapsUrlColumn() in dashboard.html.
+-- This migration is intentionally a no-op.
+SELECT 1;
