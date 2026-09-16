@@ -17155,6 +17155,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // (explicit browse verbs above, or an actual product broad-match) goes to the picker.
         detection.signal=false;
         routing.route='ecom_faq';
+      }else if(state.lead?.['Last Product Sku'] && /\b(courier|tracking|track|dispatch|shipped|shipment|delivery\s+status|when\s+will|order\s+status|my\s+order|where\s+is|estimated|arrive|transit|out\s+for\s+delivery)\b/i.test(userText)){
+        // Post-order support question (courier, tracking, dispatch) from a customer who already has
+        // a product on record. "items" in the query would otherwise hit ecomIsGenericProductCatalogueQuery
+        // and show the catalog picker — route to FAQ LLM instead.
+        detection.signal=false;
+        routing.route='ecom_faq';
       }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
         // One self-contained verified catalogue response: active categories plus broad-matched
         // active products. The same exact rows are included in the message body and interactive
