@@ -281,10 +281,60 @@ async function chatwootPlatformFetch(env, path, {method='GET', body}={}){
     body: body?JSON.stringify(body):undefined
   });
 }
+// KV client-config cache — reuses MATRI_CACHE with namespaced keys so no new
+// KV namespace or wrangler.toml change is needed. Falls back silently when the
+// binding is absent or KV is unavailable.
+// client_cfg:{id}          → full CLIENTS row (TTL 600 s)
+// client_secret_id:{secret} → clientId string only (TTL 600 s); the full row is
+//                             always fetched via getClientById which is itself cached,
+//                             so patchClientFields' invalidation of client_cfg:{id}
+//                             is enough to keep both paths fresh.
+const _CLIENT_CFG_TTL=600;
+function _kv(env){ return env.MATRI_CACHE||null; }
+async function kvGetClient(env,clientId){
+  const kv=_kv(env); if(!kv) return null;
+  try{ const v=await kv.get(`client_cfg:${clientId}`); return v?JSON.parse(v):null; }catch(e){ return null; }
+}
+async function kvSetClient(env,client){
+  const kv=_kv(env); if(!kv||!client?.Id) return;
+  try{ await kv.put(`client_cfg:${client.Id}`,JSON.stringify(client),{expirationTtl:_CLIENT_CFG_TTL}); }catch(e){}
+}
+async function kvDelClient(env,clientId){
+  const kv=_kv(env); if(!kv) return;
+  try{ await kv.delete(`client_cfg:${clientId}`); }catch(e){}
+}
+async function kvGetClientIdBySecret(env,secret){
+  const kv=_kv(env); if(!kv) return null;
+  try{ return await kv.get(`client_secret_id:${secret}`); }catch(e){ return null; }
+}
+async function kvSetClientIdBySecret(env,secret,clientId){
+  const kv=_kv(env); if(!kv) return;
+  try{ await kv.put(`client_secret_id:${secret}`,String(clientId),{expirationTtl:_CLIENT_CFG_TTL}); }catch(e){}
+}
+
 async function getClientById(env, clientId){
+  const cached=await kvGetClient(env,clientId);
+  if(cached) return cached;
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
   if(!r.ok) return null;
-  return r.json();
+  const data=await r.json();
+  await kvSetClient(env,data);
+  return data;
+}
+// Cached lookup by engine_webhook_secret — the hot path for every inbound WhatsApp
+// message. Stores secret→clientId in KV (TTL 600 s) and delegates the full-object
+// load to getClientById, which is itself KV-cached and properly invalidated on writes.
+async function findClientBySecret(env,secret){
+  if(!secret) return null;
+  const cachedId=await kvGetClientIdBySecret(env,secret);
+  if(cachedId){
+    const c=await getClientById(env,cachedId);
+    if(c) return c;
+    // cached id points to a deleted/changed row — fall through to live query
+  }
+  const c=await findClientByField(env,'engine_webhook_secret',secret);
+  if(c) await kvSetClientIdBySecret(env,secret,c.Id);
+  return c;
 }
 // client_slug is the short, human-readable handle used in onshope.com URLs (onshope.com/<slug>)
 // instead of the raw numeric client_id, so a storefront link doesn't reveal or let visitors
@@ -317,6 +367,7 @@ async function getClientByAuthentikEmail(env, email){
 async function patchClientFields(env, clientId, fields){
   const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
   if(!r.ok) throw new Error('Failed to save client record: HTTP '+r.status);
+  await kvDelClient(env,clientId);
   return r.json().catch(()=>({}));
 }
 
@@ -1198,6 +1249,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // already correct, so this is safe to run on every save rather than sniffing for one field.
   if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
     try{
+      await kvDelClient(env,payload.cid);
       const c=await getClientById(env, payload.cid);
       if(c) await engineSyncChatwootWebhook(env, c);
     }catch(e){}
@@ -15796,7 +15848,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   // "stop replying" is the safer failure mode than "keep executing possibly-broken logic."
   if(env.ENGINE_ENABLED==='false') return json({ok:true, skipped:'engine-disabled-global'});
   if(!secret) return json({ok:true, skipped:'no-secret'});
-  const c=await findClientByField(env, 'engine_webhook_secret', secret);
+  const c=await findClientBySecret(env, secret);
   if(!c) return json({ok:true, skipped:'invalid-secret'});
   // Attach D1 stock rows so engineBuildFaqSystemPrompt can reference current stock without
   // an extra NocoDB round trip — just overwrites the (now unused) NocoDB field with the
@@ -27405,7 +27457,7 @@ async function handleEngineWebhookBuffered(request,env,secret,ctx=null){
   const raw=await request.text();
   let body; try{ body=JSON.parse(raw); }catch(e){ return json({error:'Invalid JSON'},400); }
   if(!env.CLIENT_UPDATES) return handleEngineWebhook(new Request(request.url,{method:'POST',headers:{'Content-Type':'application/json'},body:raw}),env,secret,ctx);
-  const c=secret?await findClientByField(env,'engine_webhook_secret',secret):null;
+  const c=secret?await findClientBySecret(env,secret):null;
   if(!c) return json({ok:true,skipped:secret?'invalid-secret':'no-secret'});
   const parsed=engineParseChatwootPayload(body);
   // Media needs its own transcription/download path and is never folded into adjacent text.
