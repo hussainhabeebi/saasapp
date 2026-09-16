@@ -16447,9 +16447,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       } else if(state.stage==='elec_order_qty'){
-        // Parse quantity — accept digits or common English words.
-        const wordNums={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
-        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||0;
+        // Parse quantity — accept digits, English words, and common Malayalam/regional words.
+        const wordNums={
+          one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
+          // Malayalam
+          'ഒന്ന്':1,'ഒന്നു':1,'ഒട്ടൊന്നു':1,'ഒന്നേ':1,
+          'രണ്ട്':2,'രണ്ടു':2,'മൂന്ന്':3,'മൂന്നു':3,
+          'നാല്':4,'നാലു':4,'അഞ്ച്':5,'അഞ്ചു':5,
+          'ആറ്':6,'ഏഴ്':7,'എട്ട്':8,'ഒൻപത്':9,'പത്ത്':10,
+          // Hindi
+          'ek':1,'ek piece':1,'do':2,'teen':3,'char':4,'paanch':5,
+        };
+        const rawQty=parseInt(userText,10)||wordNums[userText.toLowerCase().trim()]||wordNums[userText.trim()]||0;
         if(rawQty<1||rawQty>999){
           sentText=await engineLocalizeReply(env,c,'Please enter a valid quantity (e.g. 1, 2, 3):',replyLang);
           routing.reply=sentText; routing.next='elec_order_qty'; routing.orderCollectSeed=seed;
@@ -16463,27 +16472,89 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
         }
       } else if(state.stage==='elec_order_address'){
-        const _looksLikeEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list|payment)\b/i.test(userText.trim());
-        if(_looksLikeEscape){
-          sentText=await engineLocalizeReply(env,c,'Please share your delivery address to continue with the order:',replyLang);
+        const _trimmed=userText.trim();
+
+        // ── "Continue Order" button response — re-prompt for address cleanly ──
+        if(/^ELEC_CONTINUE_ADDRESS$/i.test(_trimmed)){
+          sentText=await engineLocalizeReply(env,c,'Please share your full delivery address (building/house name, street, city, PIN code):',replyLang);
           routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+
+        // ── Detect mid-flow questions and answer them, then offer Continue/Cancel ──
+        } else if(
+          _trimmed.endsWith('?')||
+          /\b(price|cost|rate|how much|why|charge|delivery charge|shipping cost|what is the price|total)\b/i.test(_trimmed)||
+          /പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ഡെലിവറി ചാർജ്|ഷിപ്പിങ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(_trimmed)
+        ){
+          const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice}`:'(see catalog)';
+          const _totalP=seed.totalPrice?`${seed.currency||''}${seed.totalPrice}`:'';
+          const _priceInfo=`${seed.productName||'This product'} — ${_unitP} per unit.`+(_totalP?` Your order total (${seed.qty||1} unit${(seed.qty||1)>1?'s':''}): *${_totalP}*`:'');
+          const _questionReply=`${_priceInfo}\n\nWould you like to continue with the order?`;
+          sentText=await engineLocalizeReply(env,c,_questionReply,replyLang);
+          routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Continue Order',value:'ELEC_CONTINUE_ADDRESS'},
+            {title:'Cancel Order',value:'ELEC_CANCEL'},
+          ]); orderHandledInline=true;
+
+        // ── Detect non-address input (escape intent, bare numbers, too short) ──
         } else {
-          seed.address=userText.trim().slice(0,500);
-          const paymentAsk=await engineLocalizeReply(env,c,'How would you like to pay?',replyLang);
-          sentText=paymentAsk;
+          const _words=_trimmed.split(/\s+/);
+          const _looksLikeBareNumber=/^\d+$/.test(_trimmed);
+          const _tooShort=_words.length<=2&&_trimmed.length<12;
+          const _englishEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|show me|help|hi|hello|stop|exit|menu|list)\b/i.test(_trimmed);
+          const _malayalamEscape=/ഹെൽപ്|കാൻസൽ|നിർത്ത്|ഉൽപ്പന്ന|ക്യാൻസൽ|ഒഴിവ്|ഒരെണ്ണ/.test(_trimmed);
+
+          // A valid address must have: a 6-digit PIN, OR ≥4 words with at least one digit,
+          // OR ≥5 words and ≥20 characters (e.g. a house name + locality).
+          const _hasPin=/\b\d{6}\b/.test(_trimmed);
+          const _hasDigit=/\d/.test(_trimmed);
+          const _looksLikeAddress=_hasPin||(_words.length>=4&&_hasDigit)||(_words.length>=5&&_trimmed.length>=20);
+
+          if(_looksLikeBareNumber||_tooShort||_englishEscape||_malayalamEscape){
+            // Clear escape — re-ask
+            sentText=await engineLocalizeReply(env,c,'Please share your full delivery address (building/house name, street, city, PIN code):',replyLang);
+            routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+          } else if(!_looksLikeAddress){
+            // Incomplete address format — guide the customer
+            sentText=await engineLocalizeReply(env,c,'Please share your complete address including house/building name, street, city, and PIN code:',replyLang);
+            routing.reply=sentText; routing.next='elec_order_address'; routing.orderCollectSeed=seed;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+          } else {
+            seed.address=_trimmed.slice(0,500);
+            const paymentAsk=await engineLocalizeReply(env,c,'How would you like to pay?',replyLang);
+            sentText=paymentAsk;
+            routing.reply=sentText; routing.next='elec_order_payment'; routing.orderCollectSeed=seed;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,paymentAsk,[
+              {title:'Cash on Delivery',value:'Cash on Delivery'},
+              {title:'UPI',value:'UPI'},
+              {title:'Card',value:'Card'},
+              {title:'Bank Transfer',value:'Bank Transfer'},
+            ]); orderHandledInline=true;
+          }
+        }
+      } else if(state.stage==='elec_order_payment'){
+        const pm=userText.trim().toLowerCase();
+        // Normalise to one of the 4 recognised methods; reject anything else.
+        const paymentMethod=
+          /\bcod\b|cash/.test(pm)?'Cash on Delivery':
+          /\bupi\b|gpay|phonepe|paytm|google\s*pay/.test(pm)?'UPI':
+          /\bcard\b|credit|debit/.test(pm)?'Card':
+          /\bbank\b|transfer|neft|rtgs/.test(pm)?'Bank Transfer':
+          null;
+        if(!paymentMethod){
+          // Not a recognised payment method — re-show the buttons
+          const _retryAsk=await engineLocalizeReply(env,c,'Please select a valid payment method from the options below:',replyLang);
+          sentText=_retryAsk;
           routing.reply=sentText; routing.next='elec_order_payment'; routing.orderCollectSeed=seed;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,paymentAsk,[
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,_retryAsk,[
             {title:'Cash on Delivery',value:'Cash on Delivery'},
             {title:'UPI',value:'UPI'},
             {title:'Card',value:'Card'},
             {title:'Bank Transfer',value:'Bank Transfer'},
           ]); orderHandledInline=true;
-        }
-      } else if(state.stage==='elec_order_payment'){
-        // Normalise payment method whether tapped as a button or typed freeform.
-        const pm=userText.trim().toLowerCase();
-        const paymentMethod=/\bcod\b|cash/.test(pm)?'Cash on Delivery':/\bupi\b|gpay|phonepe|paytm|google\s*pay/.test(pm)?'UPI':/\bcard\b|credit|debit/.test(pm)?'Card':/\bbank\b|transfer|neft|rtgs/.test(pm)?'Bank Transfer':userText.trim();
+        } else {
         seed.paymentMethod=paymentMethod;
         const summary=[
           `*Order Summary*`,
@@ -16502,6 +16573,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           {title:'Confirm Order',value:'ELEC_CONFIRM'},
           {title:'Cancel',value:'ELEC_CANCEL'},
         ]); orderHandledInline=true;
+        } // end else (valid paymentMethod)
       } else if(state.stage==='elec_order_confirm'){
         if(/^ELEC_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
           seed.items=ecomElectronicsOrderItems(seed);
