@@ -825,6 +825,19 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .dnTab.active::after{left:0;right:0}
 .dnTab.active{color:var(--accent-ink)}
 
+/* Desktop nav group dropdowns */
+.dnGroup{position:relative;display:flex;align-items:stretch}
+.dnGroupBtn{font-family:var(--disp);font-size:13px;font-weight:600;padding:12px 14px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;display:flex;align-items:center;gap:4px;white-space:nowrap;letter-spacing:-.01em}
+.dnGroupBtn span.arr{font-size:10px;opacity:.5}
+.dnGroup:hover .dnGroupBtn,.dnGroup:focus-within .dnGroupBtn{color:var(--accent-ink)}
+.dnGroup:has(.dnTab.active) .dnGroupBtn{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.dnDropdown{display:none;position:absolute;top:100%;left:0;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.12);z-index:200;min-width:160px;padding:6px;flex-direction:column;gap:2px}
+.dnGroup:hover .dnDropdown,.dnGroup:focus-within .dnDropdown{display:flex}
+.dnDropdown .dnTab{text-align:left;padding:9px 12px !important;border-radius:7px;width:100%;border-bottom:none !important;margin-bottom:0 !important}
+.dnDropdown .dnTab::after{display:none !important}
+.dnDropdown .dnTab:hover{background:var(--accent-soft);color:var(--accent-ink)}
+.dnDropdown .dnTab.active{background:var(--accent-soft);color:var(--accent-ink)}
+
 /* Bottom nav pill refinement */
 .bnItem{border-radius:12px;transition:background .15s,transform .1s}
 .bnItem:active{transform:scale(.93)}
@@ -1208,14 +1221,32 @@ const ROLES = {
   <!-- Desktop nav -->
   <div id="desktopNav">
     <button class="dnTab active" data-page="home">🏠 Home</button>
-    <button class="dnTab" data-page="humandeals" id="dnHumandealsTab">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+    <!-- Sales group: Leads + Human Deals -->
+    <div class="dnGroup">
+      <button class="dnGroupBtn">👥 Sales <span class="arr">▾</span></button>
+      <div class="dnDropdown">
+        <button class="dnTab" data-page="leads">👥 Leads</button>
+        <button class="dnTab" data-page="humandeals" id="dnHumandealsTab">🤝 Human Deals<span id="dnHdBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+      </div>
+    </div>
     <button class="dnTab" data-page="bizai" id="dnBizaiTab">🤖 AI Assistant</button>
     <button class="dnTab" data-page="chats">💬 Chats<span id="dnChatBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab" data-page="leads">👥 Leads</button>
-    <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
-    <button class="dnTab" data-page="team" id="dnTeamTab">📊 Team</button>
-    <button class="dnTab" data-page="reports" id="dnReportsTab">📈 Reports</button>
-    <button class="dnTab" data-page="knowledgebase" id="dnKbTab">📚 Knowledge Base</button>
+    <!-- Work group: Tasks + Projects -->
+    <div class="dnGroup">
+      <button class="dnGroupBtn">🗂️ Work <span class="arr">▾</span></button>
+      <div class="dnDropdown">
+        <button class="dnTab" data-page="tasks">✅ Tasks<span id="dnTaskBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
+        <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
+      </div>
+    </div>
+    <!-- Insights group: Reports + Team -->
+    <div class="dnGroup">
+      <button class="dnGroupBtn">📊 Insights <span class="arr">▾</span></button>
+      <div class="dnDropdown">
+        <button class="dnTab" data-page="reports" id="dnReportsTab">📈 Reports</button>
+        <button class="dnTab" data-page="team" id="dnTeamTab">📊 Team</button>
+      </div>
+    </div>
     <button class="dnTab" data-page="accounting" id="dnAccountingTab">💰 Accounting</button>
     <button class="dnTab" data-page="billing">💳 Billing<span id="dnBillingBadge" style="display:none;margin-left:5px;background:#ef4444;color:#fff;border-radius:99px;font-size:10px;padding:0 5px;min-width:16px;text-align:center;font-family:var(--mono)"></span></button>
     <button class="dnTab" id="dnEcomTab" style="display:none" data-page="ecommerce">🛒 Ecommerce</button>
@@ -1232,7 +1263,6 @@ const ROLES = {
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
-    <button class="dnTab" data-page="projects" id="dnProjectsTab">🗂️ Projects</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1692,8 +1722,19 @@ const ROLES = {
     </div>
 
     <!-- KNOWLEDGE BASE -->
-    <div class="page hidden" id="pageKnowledgebase">
-      <div class="page-pad">
+    <div class="page s-page hidden" id="pageKnowledgebase">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+        <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn active" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
+      </nav>
+      <div class="page-pad s-content">
         <div style="margin-bottom:18px">
           <div class="card-title" style="margin-bottom:2px">📚 Knowledge Base</div>
           <div style="font-size:13px;color:var(--muted)">Individual FAQ entries the bot grounds its answers in — searchable and categorized, instead of one long pasted document. These are combined with the freeform notes/uploaded files still in Settings → Knowledge Base; nothing there needs to change.</div>
@@ -2084,6 +2125,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -2499,6 +2541,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -2661,6 +2704,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3043,6 +3087,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3118,6 +3163,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3291,6 +3337,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3354,6 +3401,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3387,6 +3435,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -3440,6 +3489,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
         <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
         <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
       </nav>
       <div class="page-pad s-content">
 
@@ -4921,7 +4971,7 @@ function toggleDarkMode(){
 initDarkMode();
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','knowledgebase']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
