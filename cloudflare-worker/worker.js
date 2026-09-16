@@ -16478,10 +16478,31 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
         /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
       ){
-        const _prodLine=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
-        const _unitP=seed.unitPrice?`${seed.currency||''}${seed.unitPrice} per unit`:'';
-        const _totalP=seed.totalPrice&&seed.qty?` Your total for ${seed.qty} unit${seed.qty>1?'s':''}: *${seed.currency||''}${seed.totalPrice}*`:'';
-        const _qReply=`*${_prodLine}*${_unitP?` — ${_unitP}`:''}${_totalP}.\n\nFor detailed specs our team can help. Would you like to continue with the order?`;
+        const _prodName=seed.productName||(seed.sku?`SKU: ${seed.sku}`:'this product');
+        const _cur=seed.currency||'';
+        const _lines=[];
+        // Header
+        _lines.push(`🛍️ *${_prodName}*`);
+        // Product description — most useful part of the answer
+        if(seed.description){
+          _lines.push('');
+          _lines.push(`📋 ${seed.description.trim()}`);
+        }
+        // Price block
+        if(seed.unitPrice){
+          _lines.push('');
+          _lines.push(`💰 Price: *${_cur}${seed.unitPrice}* per unit`);
+          if(seed.totalPrice&&seed.qty){
+            _lines.push(`🧾 Your total (${seed.qty} unit${seed.qty>1?'s':''}): *${_cur}${seed.totalPrice}*`);
+          }
+        }
+        // Delivery note
+        _lines.push('');
+        _lines.push(`🚚 Fast delivery across India`);
+        _lines.push(`✅ Easy returns & support`);
+        _lines.push('');
+        _lines.push(`Would you like to continue with the order?`);
+        const _qReply=_lines.join('\n');
         sentText=await engineLocalizeReply(env,c,_qReply,replyLang);
         routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
@@ -17149,7 +17170,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.reply=qtyAsk;
           const _eName=product.name||exactSelectedProduct?.name||detection.productName||'';
           const _ePrice=product.price!=null?product.price:(exactSelectedProduct?.price??0);
-          const elecSeed={electronicsFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_eName,unitPrice:Number(_ePrice)||0,currency:product.currency||exactSelectedProduct?.currency||''};
+          const elecSeed={electronicsFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_eName,unitPrice:Number(_ePrice)||0,currency:product.currency||exactSelectedProduct?.currency||'',description:String(product.description||exactSelectedProduct?.description||'').slice(0,600)};
           routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeed;
           await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
