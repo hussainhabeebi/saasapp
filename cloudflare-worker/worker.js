@@ -12983,6 +12983,19 @@ BUTTONS — mandatory after EVERY reply:
       sys+=`\n\nFOLLOW-UP BUTTONS: After giving your answer, you may optionally end with OPTIONS: ${_pfNames} — use this only when it would genuinely help the customer pick their next topic. The system will render these as tappable buttons; do not mention them in your prose.`;
     }
   }
+  if(_botCfg.chat_style==='instafone'){
+    sys+='\n\nINSTAFONE SALES STYLE — follow these rules strictly for every reply:\n'
+      +'1. IMMEDIATE PRODUCT PRESENTATION: On the very first message (or any product enquiry), immediately present the product — name, key features in bullet points (in the customer\'s own language), offer price, original/crossed-out price, and delivery info. Never ask "what do you want?" — the product is already known from the prompt above.\n'
+      +'2. OFFER PRICE FIRST: Always show the offer price prominently, then the original price as a strikethrough reference. Mention COD (Cash on Delivery) availability.\n'
+      +'3. FEATURES IN LOCAL LANGUAGE: Write feature bullet points in the customer\'s language (match the language they wrote in).\n'
+      +'4. THREE BUTTONS ALWAYS: End every product-presenting reply with exactly: OPTIONS: Buy Now | Product Details | Talk to Agent\n'
+      +'5. ADDRESS COLLECTION (after Buy Now): Collect the delivery address one field at a time in this order — Full Name → House/Building Name → Place/Locality → Post Office → PIN Code. Ask one field per message, thank them for each answer before asking the next.\n'
+      +'6. ORDER SUMMARY BEFORE CONFIRM: Once all address fields are collected, show a clean summary card (Name, Address, Product, Total, COD) and offer: OPTIONS: Confirm Order | Edit Address\n'
+      +'7. PAYMENT STEP (after Confirm): Offer payment options: OPTIONS: Cash on Delivery | UPI / Online Payment\n'
+      +'8. ORDER SUCCESS: After payment choice, confirm the order with a unique order ID, tell them the team will pack and dispatch within 2–3 days.\n'
+      +'9. DELIVERY QUERIES: If customer asks about delivery or order status, share the tracking info from context if available; otherwise say you will check and update them shortly.\n'
+      +'10. PRODUCT DETAILS (if tapped): Give full product details — all specs, all features, warranty, what\'s in the box — then show: OPTIONS: Buy Now | Talk to Agent';
+  }
 
   // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
   // more about them?", the customer replied "yes", and the reply was essentially the SAME pitch
@@ -17486,6 +17499,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           } else if(hcServices.length>1){
             faqQuickReplies=[{title:'Book Appointment',value:'book appointment'},{title:'Talk to a human',value:'Talk to a human'}];
           }
+        }
+        // InstaFone style: always show the 3-button D2C sales CTA after a product-presenting reply,
+        // unless the LLM already produced an OPTIONS: line (e.g. address steps, order confirmation).
+        if(!faqQuickReplies && botConfig.chat_style==='instafone'){
+          faqQuickReplies=[
+            {title:'🛒 Buy Now',value:'Buy Now'},
+            {title:'📋 Product Details',value:'Product Details'},
+            {title:'🙋 Talk to Agent',value:'Talk to a human'},
+          ];
         }
         // Prompt-First style: always surface follow-up buttons after the answer so the customer
         // can tap their next step instead of typing it.
