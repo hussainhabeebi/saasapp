@@ -856,9 +856,12 @@ async function handleSignup(request, env){
 
   // Pre-provision CLIENTS row (signup_status:'pending' triggers full onboard on first real login)
   await ensureClientColumns(env, ['signup_status']);
+  const newClientName=deriveBusinessNameServer(emailNorm);
+  const defaultMainPrompt=`You are a helpful AI assistant for ${newClientName}. Greet visitors warmly, answer questions about products and services, and help capture contact information from interested leads.`;
   const createClientR=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'POST', body:{
-    client_name:deriveBusinessNameServer(emailNorm), authentik_email:emailNorm,
-    language:'en', industry:'general', signup_status:'pending'
+    client_name:newClientName, authentik_email:emailNorm,
+    language:'en', industry:'general', signup_status:'pending',
+    main_prompt:defaultMainPrompt
   }});
   if(!createClientR.ok){
     await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
