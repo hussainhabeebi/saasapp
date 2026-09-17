@@ -16664,25 +16664,33 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.reply=sentText; routing.next=state.stage; routing.orderCollectSeed=seed;
         orderHandledInline=true;
 
-      // ── Universal: detect any question at any elec_order_* stage — AI-answered + Continue/Cancel ──
+      // ── Universal: detect any question or greeting at any elec_order_* stage — AI-answered + Continue/Cancel ──
       // Bypass: if we're at the payment stage and the input looks like a payment method,
       // let the payment handler below process it (prevents "Cash on Delivery" → hallucination).
       } else if(
         !(state.stage==='elec_order_payment'&&/\bcod\b|cash\s+on\s+delivery|\bupi\b|gpay|phonepe|paytm|google\s*pay|\bcard\b|credit|debit|\bbank\b|transfer|neft|rtgs/i.test(userText.trim()))&&
         (
           userText.trim().endsWith('?')||
+          /^(?:hi|hello|hey|hii|helo|hai|ഹലോ|ഹായ്|namaste|namaskar|سلام|مرحبا|howdy|sup|good\s*(?:morning|afternoon|evening|night|day))[!.\s]*$/i.test(userText.trim())||
           /\b(how|what|why|does|do|is|are|will|can|works?|working|features?|specs?|difference|warranty|guarantee|return|refund|delivery|charge|shipping|battery|compatible|range|quality|material|colour|color|size|weight|capacity|power|price|cost|rate|total|discount)\b/i.test(userText.trim())||
           /എങ്ങനെ|എന്ത്|എന്താ|എന്തോ|ഫീച്ചർ|ഗ്യാരണ്ടി|വാറന്റി|ഡെലിവറി|ഷിപ്പിങ്|ബാറ്ററി|ചാർജ്|നിറം|സൈസ്|ഗുണം|കപ്പാസിറ്റി|പ്രവർത്തിക്ക|പ്രൈസ്|വില|കോസ്റ്റ്|എത്ര|റേറ്റ്|ആകെ|ടോട്ടൽ|ഡിസ്കൗണ്ട്/.test(userText.trim())
         )
       ){
         const _cur=seed.currency||'';
+        const _isGreeting=/^(?:hi|hello|hey|hii|helo|hai|ഹലോ|ഹായ്|namaste|namaskar|سلام|مرحبا|howdy|sup|good\s*(?:morning|afternoon|evening|night|day))[!.\s]*$/i.test(userText.trim());
+        const _stageLabel=state.stage==='elec_order_qty'?'quantity':state.stage==='elec_order_address'?'delivery address':state.stage==='elec_order_payment'?'payment method':'order confirmation';
         const _prodCtx=[
           `Product: ${seed.productName||''}`,
           seed.description?`Description: ${seed.description}`:'',
           seed.unitPrice?`Price: ${_cur}${seed.unitPrice} per unit`:'',
-          seed.totalPrice&&seed.qty?`Order total: ${_cur}${seed.totalPrice} for ${seed.qty} unit${seed.qty>1?'s':''}`:'',
+          seed.qty?`Quantity selected: ${seed.qty}`:'',
+          seed.totalPrice&&seed.qty?`Order total: ${_cur}${seed.totalPrice}`:'',
+          seed.address?`Delivery address: ${seed.address}`:'',
+          `Current order step: waiting for customer's ${_stageLabel}`,
         ].filter(Boolean).join('\n');
-        const _qSys=`You are a helpful WhatsApp sales assistant for an electronics/home-appliance ecommerce brand. Answer the customer's question directly and naturally using the product details below — no hallucination, no invented specs. Keep the reply concise (2-5 lines), friendly, and use 1-2 fitting emojis. Do NOT include phrases like "Would you like to continue" or offer buttons — just answer the question. Respond in the same language as the customer's message.\n\n${_prodCtx}`;
+        const _qSys=_isGreeting
+          ? `You are a friendly WhatsApp sales assistant for an electronics ecommerce brand. The customer has greeted you while they have an active order in progress. Welcome them warmly (1 line), then briefly remind them what step their order is at (the current order step in the context below) and let them know they can continue or cancel. Use 1 emoji. Do NOT answer product questions. Respond in the same language as the customer's message.\n\n${_prodCtx}`
+          : `You are a helpful WhatsApp sales assistant for an electronics/home-appliance ecommerce brand. Answer the customer's question directly and naturally using the product details below — no hallucination, no invented specs. Keep the reply concise (2-5 lines), friendly, and use 1-2 fitting emojis. Do NOT include phrases like "Would you like to continue" or offer buttons — just answer the question. Respond in the same language as the customer's message.\n\n${_prodCtx}`;
         const _aiAnswer=await engineCallLlm(env,c,_qSys,userText.trim(),180);
         const _finalReply=`${_aiAnswer}\n\nWould you like to continue with the order?`;
         sentText=await engineLocalizeReply(env,c,_finalReply,replyLang);
