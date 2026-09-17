@@ -312,6 +312,23 @@ async function kvSetClientIdBySecret(env,secret,clientId){
   try{ await kv.put(`client_secret_id:${secret}`,String(clientId),{expirationTtl:_CLIENT_CFG_TTL}); }catch(e){}
 }
 
+// Active product list cache — 90 s TTL, invalidated on every product write.
+// Checked by ecomListActiveProducts before hitting D1/NocoDB; deleted by
+// handleEcomCreate/Update/Delete so the next bot turn sees the fresh catalog.
+const _ECOM_PRODUCTS_TTL=90;
+async function kvGetEcomProducts(env,clientId){
+  const kv=_kv(env); if(!kv) return null;
+  try{ const v=await kv.get(`ecom_products:${clientId}`); return v?JSON.parse(v):null; }catch(e){ return null; }
+}
+async function kvSetEcomProducts(env,clientId,products){
+  const kv=_kv(env); if(!kv) return;
+  try{ await kv.put(`ecom_products:${clientId}`,JSON.stringify(products),{expirationTtl:_ECOM_PRODUCTS_TTL}); }catch(e){}
+}
+async function kvDelEcomProducts(env,clientId){
+  const kv=_kv(env); if(!kv) return;
+  try{ await kv.delete(`ecom_products:${clientId}`); }catch(e){}
+}
+
 async function getClientById(env, clientId){
   const cached=await kvGetClient(env,clientId);
   if(cached) return cached;
@@ -2711,15 +2728,11 @@ async function fetchRecentChatwootContext(c, conversationId, limit){
 async function detectOrderSignal(env, c, clientId, message, contextText){
   if(!env.GEMINI_API_KEY && !c.openrouter_key) return {signal:false, error:'No AI provider configured.'};
 
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
   let productList='';
   let categoryList=[];
-  if(productsTable){
-    // Full rows keep this compatible with older Products tables where some optional style fields
-    // do not exist yet; only fields actually present on each row are added to the classifier text.
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})&limit=100`);
-    const pd=await pr.json().catch(()=>({}));
-    const products=pd?.list||[];
+  {
+    // Reuses the cached product list (KV → D1 → NocoDB) — no separate fetch needed.
+    const products=await ecomListActiveProducts(env, clientId);
     productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
     categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
@@ -7288,6 +7301,7 @@ async function handleEcomCreate(request, env, kind){
   let droppedFields=[];
   if(kind==='products' && r.ok && data?.Id) droppedFields=await ecomVerifyProductWrite(env, clientId, tableId, data.Id, fields);
   if(kind==='products' && r.ok && data?.Id) await engineMemoryIndexProduct(env, clientId, data);
+  if(kind==='products' && r.ok) await kvDelEcomProducts(env, clientId);
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -7311,6 +7325,7 @@ async function handleEcomUpdate(request, env, kind){
   // PATCH response isn't reliably the full row, and re-embedding needs every field regardless of
   // which ones this particular save actually touched.
   if(kind==='products' && r.ok) await engineMemoryIndexProduct(env, clientId, {...existing, ...fields, Id:id});
+  if(kind==='products' && r.ok) await kvDelEcomProducts(env, clientId);
   return json(droppedFields.length?{...data, dropped_fields:droppedFields}:data, r.status);
 }
 
@@ -7415,6 +7430,7 @@ async function handleEcomDelete(request, env, kind){
     const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'DELETE', body:chunk.map(id=>({Id:id}))});
     if(r.ok) deleted+=chunk.length;
   }
+  if(kind==='products' && deleted) await kvDelEcomProducts(env, clientId);
   return json({deleted, requested:ids.length});
 }
 
@@ -10072,20 +10088,35 @@ async function engineMaybeSendProductMedia(env, c, clientId, convId, product){
 // ecomDetectMentionedCategories (the free-text-reply safety net above) — both need the same
 // "what are this client's categories" answer, so this is the one place that fetches it.
 async function ecomListCategories(env, clientId){
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return [];
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100&fields=category`);
-  const pd=await pr.json().catch(()=>({}));
-  const products=pd?.list||[];
+  // Derived in-memory from the already-cached product list — no separate NocoDB call.
+  const products=await ecomListActiveProducts(env, clientId);
   return [...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))].slice(0,10);
 }
 
 async function ecomListActiveProducts(env, clientId){
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(!productsTable) return [];
-  const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
-  const pd=await pr.json().catch(()=>({}));
-  return pd?.list||[];
+  // 1. KV — warm within 90 s of last fetch or product write
+  const cached=await kvGetEcomProducts(env, clientId);
+  if(cached) return cached;
+  // 2. D1 mirror — fast local query, written on every product save
+  let products=null;
+  if(env.DB){
+    try{
+      const {results}=await env.DB.prepare(
+        `SELECT * FROM ecom_products_mirror WHERE client_id=? AND (status IS NULL OR status!='inactive') ORDER BY id LIMIT 100`
+      ).bind(Number(clientId)).all();
+      if(results&&results.length) products=results;
+    }catch(e){}
+  }
+  // 3. NocoDB fallback — used when D1 mirror is empty (e.g. first run before any product save)
+  if(!products){
+    const productsTable=await ecomResolveTable(env, clientId, 'products');
+    if(!productsTable) return [];
+    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=100`);
+    const pd=await pr.json().catch(()=>({}));
+    products=pd?.list||[];
+  }
+  await kvSetEcomProducts(env, clientId, products);
+  return products;
 }
 
 // Build one WhatsApp menu containing both database categories and database products. WhatsApp
@@ -12299,11 +12330,9 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
 // ecom.html and /ecom/* already read.
 async function engineBuildEcomContext(env, c, clientId, phone){
   const lines=[];
-  const productsTable=await ecomResolveTable(env, clientId, 'products');
-  if(productsTable){
-    const pr=await ncFetch(env, `api/v2/tables/${productsTable}/records?where=(client_id,eq,${clientId})~and(status,neq,inactive)&limit=30&fields=name,sku,price,currency,stock,color,size,category,style,shade,skin_type,volume_ml,expiry_date,hair_type,concern,ingredient,brand,variant,warranty_period`);
-    const pd=await pr.json().catch(()=>({}));
-    const products=pd?.list||[];
+  {
+    // Reuses the cached product list (KV → D1 → NocoDB), sliced to the first 30 for context size.
+    const products=(await ecomListActiveProducts(env, clientId)).slice(0,30);
     if(products.length){
       lines.push('## Product Catalog (partial — ask if something specific isn\'t listed)');
       products.forEach(p=>{
