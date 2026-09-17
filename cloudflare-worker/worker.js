@@ -302,6 +302,8 @@ async function kvSetClient(env,client){
 async function kvDelClient(env,clientId){
   const kv=_kv(env); if(!kv) return;
   try{ await kv.delete(`client_cfg:${clientId}`); }catch(e){}
+  // also bust the in-process table-id memo so the next resolve re-reads fresh config
+  for(const k of _ecomTableIdMemo.keys()) if(k.startsWith(`${clientId}:`)) _ecomTableIdMemo.delete(k);
 }
 async function kvGetClientIdBySecret(env,secret){
   const kv=_kv(env); if(!kv) return null;
@@ -328,6 +330,11 @@ async function kvDelEcomProducts(env,clientId){
   const kv=_kv(env); if(!kv) return;
   try{ await kv.delete(`ecom_products:${clientId}`); }catch(e){}
 }
+
+// In-process memo for resolved ecom table IDs — keyed "clientId:kind".
+// Worker isolates are reused across requests so this stays warm between turns.
+// Cleared by kvDelClient whenever the client config is updated.
+const _ecomTableIdMemo=new Map();
 
 async function getClientById(env, clientId){
   const cached=await kvGetClient(env,clientId);
@@ -7026,10 +7033,14 @@ const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_ord
 const ECOM_DEFAULT_TABLE_IDS={products:'mjlc2vi6iqbp87c', orders:'mjqaeatoe88gay6'};
 
 async function ecomResolveTable(env, clientId, kind){
+  const memoKey=`${clientId}:${kind}`;
+  if(_ecomTableIdMemo.has(memoKey)) return _ecomTableIdMemo.get(memoKey);
   const c=await getClientById(env, clientId);
   if(!c) return null;
   let ids={}; try{ ids=JSON.parse(c.ecom_table_ids||'{}'); }catch(e){}
-  return ids[kind]||ECOM_DEFAULT_TABLE_IDS[kind]||null;
+  const tableId=ids[kind]||ECOM_DEFAULT_TABLE_IDS[kind]||null;
+  _ecomTableIdMemo.set(memoKey, tableId);
+  return tableId;
 }
 
 // Auto-creates the product "style" columns (Fashion & Garments stays the implicit default via a
