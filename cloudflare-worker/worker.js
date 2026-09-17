@@ -17181,6 +17181,21 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,categories.map(cat=>({title:cat,value:cat})));
             orderHandledInline=true;
           }
+        }else if(isElectronicsEcom){
+          // Electronics: buttons only — no duplicate text list.
+          // Show matched products when there's a broad match; show all products otherwise.
+          // Never mix in category buttons when products are available (avoids duplicates/noise).
+          const elecProductItems=ecomProductChoiceItems(broadMatches.length?broadMatches:activeProducts);
+          const elecItems=elecProductItems.length?elecProductItems:categories.map(cat=>({title:cat,value:cat}));
+          if(elecItems.length){
+            const _elecIntro=broadMatches.length
+              ? await engineLocalizeReply(env,c,`Here's what we found 👇`,replyLang)
+              : await engineLocalizeReply(env,c,`Here's our current lineup ✨ Tap to choose:`,replyLang);
+            sentText=_elecIntro;
+            routing.reply=sentText;
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,_elecIntro,elecItems);
+            orderHandledInline=true;
+          }
         }else{
           const productChoices=broadMatches.length?broadMatches:activeProducts;
           const items=ecomAvailableCatalogueItems(categories,productChoices);
@@ -17813,7 +17828,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // Ecom Product rows only.
         if(!faqQuickReplies && routing.route==='ecom_faq'){
           const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
-          faqQuickReplies=ecomAvailableCatalogueItems(categories,products);
+          // Electronics: show product-only buttons — no category clutter mixed in.
+          faqQuickReplies=isElectronicsEcom
+            ? ecomProductChoiceItems(products)
+            : ecomAvailableCatalogueItems(categories,products);
         }
         // Healthcare: when the LLM answered a question but offered no tappable choice, always
         // surface a "Book Appointment" CTA so the customer can act without typing a command.
