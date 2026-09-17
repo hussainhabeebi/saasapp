@@ -10603,6 +10603,22 @@ function ecomProductChoiceItems(products){
   }
   return items.slice(0,10);
 }
+// Fashion-specific variant: deduplicates strictly by product name so colour variants of the same
+// product appear as one button. The colour picker follow-up (fashion_order_color_select) then
+// resolves which exact row the customer wants before starting the order form.
+export function ecomFashionProductChoiceItems(products){
+  const seen=new Set();
+  const items=[];
+  for(const p of products||[]){
+    const value=String(p?.name||'').trim();
+    if(!value) continue;
+    const key=ecomNormalizeCatalogueText(value);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    items.push({title:String(p.short_label||p.name).trim(),value});
+  }
+  return items.slice(0,10);
+}
 async function ecomFindBroadProductMatches(env, clientId, message){
   const productsTable=await ecomResolveTable(env, clientId, 'products');
   if(!productsTable) return [];
@@ -16462,6 +16478,35 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[{title:'Confirm Order',value:'FASHION_CONFIRM'},{title:'Cancel',value:'FASHION_CANCEL'}]);
           orderHandledInline=true;
         }
+      }else if(state.stage==='fashion_order_color_select'){
+        // Customer tapped a colour from the colour picker — resolve to the exact product variant
+        // and proceed with the standard fashion order form (pre-filled colour).
+        const chosenColor=userText.trim();
+        const allVariants=await ecomListActiveProducts(env,clientId);
+        const productName=seed.productName||'';
+        const nameVariants=allVariants.filter(p=>ecomNormalizeCatalogueText(p.name||'')===ecomNormalizeCatalogueText(productName));
+        const matched=nameVariants.find(p=>ecomNormalizeCatalogueText(p.color||'')===ecomNormalizeCatalogueText(chosenColor))||nameVariants[0];
+        if(matched){
+          await ensureOrderCollectField(env);
+          const descLines=[`*${matched.name}*`];
+          if(matched.description) descLines.push(String(matched.description));
+          sentText=descLines.join('\n\n');
+          routing.reply=sentText;
+          if(matched.image_url) routing.media={url:engineResolveDirectImageUrl(matched.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:matched.image_url||null,ctx});
+          await engineMaybeSendProductMedia(env,c,clientId,convId,matched);
+          const newSeed={fashionFlow:true,sku:matched.sku||'',productName:matched.name,price:matched.price||0,currency:matched.currency||'',sizeOptions:matched.size||'',colorOptions:matched.color||''};
+          const orderFormText=`Please share your order details:\n\nColour: ${matched.color||chosenColor}\nSize: ___\nDelivery Address: ___\n\n(Reply with all three on separate lines)`;
+          const choiceText=await engineLocalizeReply(env,c,orderFormText,replyLang);
+          routing.reply=choiceText; routing.next='fashion_order_details'; routing.orderCollectSeed=newSeed;
+          await engineDeliverReply(env,c,clientId,convId,choiceText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        }else{
+          sentText=await engineLocalizeReply(env,c,'Sorry, I could not find that colour variant. Please choose a product again.',replyLang);
+          routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        }
       }
     }
     // ── Electronics Ecom: returning customer menu ────────────────────────────────
@@ -17028,6 +17073,28 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           orderHandledInline=true;
         }
       }
+      // Fashion: when the customer taps a product name with multiple colour variants,
+      // ecomExactProductSelection returns null (matches.length > 1). Show a colour picker
+      // and let the fashion_order_color_select stage resolve the exact variant next turn.
+      if(isFashionEcom && !exactSelectedProduct && !matchedCategory && !orderHandledInline){
+        const normedText=ecomNormalizeCatalogueText(userText);
+        if(normedText){
+          const nameVariants=activeProducts.filter(p=>ecomNormalizeCatalogueText(p.name||'')===normedText);
+          if(nameVariants.length>1){
+            const colors=[...new Set(nameVariants.map(p=>(p.color||'').trim()).filter(Boolean))];
+            if(colors.length>1){
+              await ensureOrderCollectField(env);
+              const colorAsk=await engineLocalizeReply(env,c,`Which colour would you like for ${nameVariants[0].name}?`,replyLang);
+              sentText=colorAsk;
+              routing.reply=sentText;
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,colorAsk,colors.slice(0,10).map(col=>({title:col,value:col})));
+              routing.next='fashion_order_color_select';
+              routing.orderCollectSeed={fashionFlow:true,productName:nameVariants[0].name};
+              orderHandledInline=true;
+            }
+          }
+        }
+      }
       if(exactSelectedProduct){
         detection.signal=true;
         detection.mode='enquiry';
@@ -17343,7 +17410,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
               }
               sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
               routing.reply=sentText;
-              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(fashionProducts));
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomFashionProductChoiceItems(fashionProducts));
             }else{
               const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
               const remaining=categoryProducts.slice(recommended.length,10);
