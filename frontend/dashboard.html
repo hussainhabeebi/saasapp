@@ -4360,15 +4360,17 @@ const ROLES = {
     <button class="btn btn-primary" onclick="saveWelcomeSetup()">Continue</button>
     <span class="save-msg" id="wsModalMsg"></span>
   </div>
-  <!-- Step 2 — Chatwoot's own account was already created silently in the background the moment
-       login finished (autoCreateChatwootAccountSilently), so all that's left for the customer to
-       do by hand is the one step Meta requires their own authorization for. -->
+  <!-- Step 2 — Chatwoot account was auto-created on login; hand the user a one-click SSO link
+       to app.aiingo.com so they can connect WhatsApp (or any channel) there without any token
+       copying. showWelcomeWhatsappStep pre-fetches the SSO token and a visibilitychange listener
+       auto-checks when they tab back. -->
   <div class="modal-body" id="wsStepWhatsapp" style="display:none">
-    <div class="s-note" style="margin-bottom:14px">Connect your WhatsApp Business number so leads can start reaching you right away — this opens Meta's secure connection popup, no manual token copying.</div>
-    <button class="btn btn-primary" onclick="connectWhatsApp('wsWaMsg','welcome')" style="width:100%">💬 Connect WhatsApp</button>
+    <div class="s-note" style="margin-bottom:14px">Your messaging account is ready. Connect your WhatsApp Business number (or any other channel) on app.aiingo.com — you'll be logged in automatically. Then come back and click <b>I've connected it</b>.</div>
+    <button class="btn btn-primary" id="wsOpenChatwootBtn" onclick="wsOpenChatwootInbox()" style="width:100%">Open app.aiingo.com →</button>
     <div class="save-msg" id="wsWaMsg" style="margin-top:10px"></div>
   </div>
   <div class="modal-footer" id="wsFooterWhatsapp" style="display:none">
+    <button class="btn btn-primary" id="wsIveConnectedBtn" onclick="checkWelcomeInboxConnected()">I've connected it</button>
     <button class="btn btn-secondary" onclick="closeModal('modalWelcomeSetup');renderOnboardingChecklist()">Skip for now</button>
   </div>
 </div>
@@ -10353,7 +10355,7 @@ async function saveWelcomeSetup(){
     // authorize it live — but the Chatwoot account behind it already was, in the background,
     // the moment login finished. Skip straight past this step if that's already connected
     // (or if this deploy has no Meta app configured to offer it at all).
-    if(CONFIG.META_APP_ID && !(clientRecord.chatwoot_inbox_id && clientRecord.wa_phone_id)){
+    if(!clientRecord.chatwoot_inbox_id){
       await showWelcomeWhatsappStep();
     }else{
       closeModal('modalWelcomeSetup');
@@ -10361,14 +10363,59 @@ async function saveWelcomeSetup(){
     }
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
+let _wsSsoUrl=null;
+let _wsChatwootOpened=false;
+let _wsVisibilityHandler=null;
+
 async function showWelcomeWhatsappStep(){
   $id('wsStepBusiness').style.display='none';
   $id('wsFooterBusiness').style.display='none';
   $id('wsStepWhatsapp').style.display='block';
   $id('wsFooterWhatsapp').style.display='flex';
-  _loadFbSdk();
   if(_autoChatwootPromise) await _autoChatwootPromise;
-  $id('wsWaMsg').textContent=clientRecord.chatwoot_account_id?'':'Couldn\'t prepare your Chatwoot account automatically — you can still connect WhatsApp later from Settings → Channels.';
+  const msg=$id('wsWaMsg');
+  if(!clientRecord.chatwoot_account_id){
+    msg.textContent='Couldn\'t prepare your account automatically — connect an inbox later from Settings → Channels.';
+    $id('wsOpenChatwootBtn').disabled=true;
+    return;
+  }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/chatwoot-sso?email=${encodeURIComponent(myEmail)}`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    if(r.ok && data.url) _wsSsoUrl=data.url;
+  }catch(e){}
+  if(!_wsVisibilityHandler){
+    _wsVisibilityHandler=()=>{ if(document.visibilityState==='visible' && _wsChatwootOpened) checkWelcomeInboxConnected(true); };
+    document.addEventListener('visibilitychange',_wsVisibilityHandler);
+  }
+}
+
+function wsOpenChatwootInbox(){
+  const url=_wsSsoUrl||null;
+  _wsSsoUrl=null; // one-time token consumed
+  _wsChatwootOpened=true;
+  if(url){ window.open(url,'_blank','noopener'); }
+  else{ openChatwootSso(); } // fallback: fetch fresh SSO link the normal way
+}
+
+async function checkWelcomeInboxConnected(auto){
+  const msg=$id('wsWaMsg');
+  const btn=$id('wsIveConnectedBtn');
+  if(!auto){ msg.textContent='Checking…'; msg.className='save-msg'; if(btn) btn.disabled=true; }
+  try{
+    await loadChannelsStatus();
+    if((_channelsStatus?.inboxes||[]).length>0){
+      if(_wsVisibilityHandler){ document.removeEventListener('visibilitychange',_wsVisibilityHandler); _wsVisibilityHandler=null; }
+      closeModal('modalWelcomeSetup');
+      renderOnboardingChecklist();
+    }else{
+      if(!auto){ msg.textContent='No inbox found yet — connect one on app.aiingo.com first.'; msg.className='save-msg err'; }
+      if(btn) btn.disabled=false;
+    }
+  }catch(e){
+    if(!auto){ msg.textContent='Error checking status — try again.'; msg.className='save-msg err'; }
+    if(btn) btn.disabled=false;
+  }
 }
 
 // hospitality_enabled is a brand-new CLIENTS column (unlike ta_enabled/recruit_enabled, which
