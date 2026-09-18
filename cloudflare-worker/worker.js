@@ -13199,6 +13199,16 @@ BUTTONS — mandatory after EVERY reply:
     }
     // Answer-first: answer the question directly before anything else
     sys+='\n\nANSWER-FIRST: When the customer asks a specific question, answer it directly and completely in the first sentence — never open with a greeting, pitch, or clarifying question when a question was asked. Give the real answer first; offer a natural next step after if useful.';
+    // Industry-specific answer lead: what to surface first in each reply
+    if(industry==='ecommerce'){
+      sys+='\n\nANSWER STYLE: When a product is asked about, lead with price and availability first — that is what the customer wants before anything else. Features and details come after.';
+    } else if(industry==='travel'){
+      sys+='\n\nANSWER STYLE: Lead with package price and available dates first, then itinerary highlights. Give the number the customer is most likely asking about before the description.';
+    } else if(industry==='healthcare'){
+      sys+='\n\nANSWER STYLE: Lead with doctor availability and the next open slot — that is the most urgent fact. Then mention other relevant details.';
+    } else if(industry==='real_estate'){
+      sys+='\n\nANSWER STYLE: Lead with unit size and price range first, then location, amenities, and other details.';
+    }
     // Industry-aware soft closing
     if(industry==='ecommerce'){
       sys+='\n\nSOFT CLOSE: If the customer is clearly interested (asking about price, delivery, or sizes), naturally invite them to proceed once — in Malayalam: "എടുക്കട്ടേ?" / in Hindi: "ले लेते हैं?" / in English: "Shall I place the order for you?" One soft close, no repeat pressure.';
@@ -13212,6 +13222,21 @@ BUTTONS — mandatory after EVERY reply:
       sys+='\n\nSOFT CLOSE: If the customer is interested, invite a site visit or callback naturally — "Want to visit the site?" or "Shall I have someone call you?" Consultative, never pushy.';
     } else {
       sys+='\n\nSOFT CLOSE: If the customer seems ready, offer the next step once in a friendly way — in Malayalam: "Confirm ആക്കട്ടേ?" / in Hindi: "Confirm करें?" / in English: "Shall we go ahead?" No repeat pressure — one natural close per conversation.';
+    }
+    // Win probability driven closing nudge (classifier result)
+    const _hmWinProb=intent?.win_probability??null;
+    if(_hmWinProb!==null && _hmWinProb>=70){
+      sys+='\n\nCLOSING SIGNAL: This customer is highly interested right now. If there is a natural opening in this reply, offer a clear and friendly next step — do not let the moment pass without a gentle close.';
+    } else if(_hmWinProb!==null && _hmWinProb>=40){
+      sys+='\n\nENGAGEMENT SIGNAL: The customer is warming up. Keep the conversation engaging — answer well and show genuine interest in their need. A light check-in ("anything else I can help clarify?") is fine but do not push for a close yet.';
+    }
+    // Quote validity urgency on price objection
+    if(c.quote_validity_days && intent?.objection==='price'){
+      sys+=`\n\nURGENCY (mention naturally once if it fits — never repeat or make it sound like pressure): The current pricing is valid for ${c.quote_validity_days} more days.`;
+    }
+    // Objection playbook: rephrase naturally in the customer's language
+    if(c.objection_playbook){
+      sys+='\n\nOBJECTION HANDLING: If you draw on the objection playbook, rephrase the response naturally in the customer\'s language and WhatsApp tone — keep the meaning but lose any stiff or formal phrasing. It should sound like you said it, not like a translated script.';
     }
   }
 
