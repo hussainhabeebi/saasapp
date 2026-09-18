@@ -3476,6 +3476,22 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="manglishWordsCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🔤 Malayalam Manglish Words</div>
+            <div class="s-note">Some English words — like <b>Affordable</b> or <b>Luxury</b> — have no natural Malayalam equivalent and sound awkward when force-translated. List them here and the bot will keep them in their English/Manglish form instead of translating them into Malayalam script. Tap a suggestion to add it, or type your own.</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 8px" id="manglishSuggestions"></div>
+            <div style="flex:1;min-width:240px;max-width:520px">
+              <label class="form-label">Words to keep in Manglish (comma-separated)</label>
+              <input class="form-input" id="cfgManglishWords" placeholder="e.g. Affordable, Luxury, Premium, Budget, Offer">
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+              <button class="save-btn" id="saveManglishWords">Save</button>
+              <span class="save-msg" id="saveManglishWordsMsg"></span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -11147,6 +11163,21 @@ $id('saveEduCommunicationStyle').addEventListener('click',async()=>{
   await saveField('saveEduCommunicationStyle','saveEduCommunicationStyleMsg',{bot_config:JSON.stringify(botConfig)});
 });
 
+const MANGLISH_SUGGESTIONS=['Affordable','Luxury','Premium','Budget','Offer','Discount','Deluxe','Exclusive','Combo','Deal','Package','Value','Free','Special','Upgrade','Standard','Classic','Basic','Pro','Elite','Sale','Collection','Brand','Quality','Service'];
+function renderManglishSuggestions(currentWords){
+  const el=$id('manglishSuggestions');
+  if(!el) return;
+  const active=new Set(currentWords.map(w=>w.toLowerCase()));
+  el.innerHTML=MANGLISH_SUGGESTIONS.map(w=>`<span onclick="toggleManglishWord('${w}')" style="cursor:pointer;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:600;font-family:var(--disp);border:1px solid ${active.has(w.toLowerCase())?'var(--accent)':'var(--line)'};background:${active.has(w.toLowerCase())?'var(--accent-soft)':'transparent'};color:${active.has(w.toLowerCase())?'var(--accent-ink)':'var(--muted)'};user-select:none">${w}</span>`).join('');
+}
+function toggleManglishWord(word){
+  const inp=$id('cfgManglishWords');
+  const current=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
+  const idx=current.findIndex(w=>w.toLowerCase()===word.toLowerCase());
+  if(idx>=0) current.splice(idx,1); else current.push(word);
+  inp.value=current.join(', ');
+  renderManglishSuggestions(current);
+}
 function populateBotBehaviorPage(){
   let botConfig={};
   try{ botConfig=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
@@ -11154,6 +11185,12 @@ function populateBotBehaviorPage(){
   $id('cfgChatStyle').value=style;
   $id('pfFollowupButtonsCard').style.display=style==='prompt_first'?'block':'none';
   $id('cfgPfFollowupButtons').value=botConfig.pf_followup_buttons||'';
+  const mw=Array.isArray(botConfig.manglish_words)?botConfig.manglish_words:[];
+  $id('cfgManglishWords').value=mw.join(', ');
+  renderManglishSuggestions(mw);
+  $id('cfgManglishWords').addEventListener('input',function(){
+    renderManglishSuggestions(this.value.split(',').map(s=>s.trim()).filter(Boolean));
+  },{once:true});
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -11173,6 +11210,14 @@ $id('savePfFollowupButtons').addEventListener('click',async()=>{
   if(val) botConfig.pf_followup_buttons=val;
   else delete botConfig.pf_followup_buttons;
   await saveField('savePfFollowupButtons','savePfFollowupButtonsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveManglishWords').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const words=$id('cfgManglishWords').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(words.length) botConfig.manglish_words=words;
+  else delete botConfig.manglish_words;
+  await saveField('saveManglishWords','saveManglishWordsMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
