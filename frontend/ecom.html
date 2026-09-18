@@ -105,6 +105,15 @@ tbody tr:hover{background:var(--bg)}
 .icon-btn:hover{background:var(--bg)}
 .icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
 
+/* FLOW EDITOR */
+.flow-section{margin-bottom:28px}
+.flow-section-title{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;padding-bottom:7px;border-bottom:2px solid var(--accent-soft)}
+.flow-option-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.flow-option-row input{border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:100%}
+.flow-option-row input:focus{outline:none;border-color:var(--accent);background:#fff}
+.flow-col-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+@media(max-width:600px){.flow-option-row{grid-template-columns:1fr auto}}
+
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.active{display:flex}
@@ -161,6 +170,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+  <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')" style="display:none">🔀 Flow</button>
 </div>
 
 <main>
@@ -466,6 +476,105 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- FLOW TAB -->
+<div id="tabFlow" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">👶 Baby Care — Custom Order Flow</div>
+      <div class="card-actions">
+        <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Defaults</button>
+        <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+        <span class="save-msg" id="flowSaveMsg"></span>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:22px">Edit every message and button label your bot sends during the custom baby-set ordering conversation. Changes take effect immediately on the next customer message.</div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">👋 Welcome</div>
+      <div class="s-sec">
+        <span class="s-lbl">New visitor message</span>
+        <textarea class="s-input" id="flWelcomeNew" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Returning visitor message</span>
+        <textarea class="s-input" id="flWelcomeReturn" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🍼 Step 1 — Fabric / Quality Selection</div>
+      <div class="s-sec">
+        <span class="s-lbl">Intro message <span style="font-weight:400;text-transform:none;font-size:11px">(supports *bold* WhatsApp formatting)</span></span>
+        <textarea class="s-input" id="flQualityIntro" rows="6" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px">
+          <div><span class="s-lbl">Affordable — button label</span><input class="s-input" id="flAffordableLabel" type="text"></div>
+          <div><span class="s-lbl">Affordable — name in order summary</span><input class="s-input" id="flAffordableName" type="text"></div>
+          <div><span class="s-lbl">Premium — button label</span><input class="s-input" id="flPremiumLabel" type="text"></div>
+          <div><span class="s-lbl">Premium — name in order summary</span><input class="s-input" id="flPremiumName" type="text"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎨 Step 2 — Colour Options <span style="font-weight:400;font-size:11px;opacity:.65">(max 4 — WhatsApp button limit)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label is what the customer taps. "Name in order" is saved in the order summary. Leave it blank to ask for free-text input (e.g. an "Other colour" option).</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flColorRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flColorRows','BABY_COLOR_')">+ Add Colour</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🌸 Step 3 — Print Themes <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and the theme name saved in the order. Leave name blank for a "Custom / describe your own" option.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flThemeRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flThemeRows','BABY_THEME_')">+ Add Theme</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎀 Step 4 — Add-ons <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and add-on name. Include a "No add-ons" option so customers can skip this step.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flAddonRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flAddonRows','BABY_ADDON_')">+ Add Add-on</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">📦 Delivery &amp; Confirmation Messages</div>
+      <div class="s-sec">
+        <span class="s-lbl">Delivery details prompt</span>
+        <textarea class="s-input" id="flDeliveryPrompt" rows="5" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Order confirmed message</span>
+        <textarea class="s-input" id="flOrderConfirmed" rows="3" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Cancel message</span>
+        <input class="s-input" id="flCancelMsg" type="text">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Talk-to-team message</span>
+        <input class="s-input" id="flTalkMsg" type="text">
+      </div>
+    </div>
+
+    <div class="s-row">
+      <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+      <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Reset Defaults</button>
+      <span class="save-msg" id="flowSaveMsg2"></span>
+    </div>
+  </div>
+</div>
+
 <!-- ADD/EDIT PRODUCT MODAL -->
 <div class="modal-overlay" id="productModalOverlay" onclick="if(event.target===this) closeProductModal()">
   <div class="modal-card">
@@ -716,6 +825,7 @@ let clientId = params.get('client') || '';
 // page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
 const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
+let botConfig = {};
 let ecomTableIds = {};
 
 const PRODUCT_FIELDS = [
@@ -810,6 +920,10 @@ async function init() {
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
+  try { botConfig = JSON.parse(clientRecord.bot_config || '{}'); } catch(e) { botConfig = {}; }
+  if (botConfig.ecom_communication_style === 'baby_care') {
+    document.getElementById('tabFlowBtn').style.display = '';
+  }
 
   // Populate settings
   // Default table IDs if not yet saved in client record
@@ -884,6 +998,8 @@ function showTab(name) {
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
+  document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
+  if (name === 'flow' && !_flowLoaded) loadFlow();
 }
 
 // ── PRODUCTS ──────────────────────────────────────
@@ -2307,6 +2423,143 @@ async function syncSheet(type) {
     showMsg(msgId, 'Sync sent ✓', 5000);
     setTimeout(loadOrders, 4000);
   }
+}
+
+// ── BABY CARE FLOW EDITOR ──────────────────────────
+const BABY_FLOW_DEF = {
+  welcome_new: 'Welcome! 👶🏻 How can we help you today?',
+  welcome_return: 'Welcome back! 👶🏻 What would you like to do?',
+  cancel_msg: 'No problem! Feel free to message us any time. 🌸',
+  talk_msg: "Sure! I'll connect you with our team now. 🌸",
+  quality_intro: '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',
+  affordable_label: 'Affordable (₹650+)',
+  affordable_name: 'Affordable Range — Single Jersey (from ₹650)',
+  premium_label: 'Premium (₹850+)',
+  premium_name: 'Premium Range — Interlock (from ₹850)',
+  delivery_prompt: 'Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)',
+  order_confirmed: "Order confirmed! 🎉 Your custom baby set is now with our team. We'll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸",
+  colors: [
+    {label:'Pink 🩷', value:'BABY_COLOR_PINK', name:'Pink'},
+    {label:'Blue 💙', value:'BABY_COLOR_BLUE', name:'Blue'},
+    {label:'Mint Green 🌿', value:'BABY_COLOR_MINT', name:'Mint Green'},
+    {label:'Other colour ✏️', value:'BABY_COLOR_OTHER', name:''},
+  ],
+  themes: [
+    {label:'Floral 🌸', value:'BABY_THEME_FLORAL', name:'Floral'},
+    {label:'Stars ⭐', value:'BABY_THEME_STARS', name:'Stars'},
+    {label:'Animals 🐻', value:'BABY_THEME_ANIMAL', name:'Animals'},
+    {label:'Custom theme ✏️', value:'BABY_THEME_CUSTOM', name:''},
+  ],
+  addons: [
+    {label:'Bows (Neck/Cap) 🎀', value:'BABY_ADDON_BOWS', name:'Bows'},
+    {label:'Boots 👟', value:'BABY_ADDON_BOOTS', name:'Boots'},
+    {label:'Hand Socks 🧤', value:'BABY_ADDON_HANDSOCKS', name:'Hand Socks'},
+    {label:'No add-ons ✓', value:'BABY_ADDON_NONE', name:'None'},
+  ],
+};
+let _flowLoaded = false;
+const _flowOptionCounters = {};
+
+function _renderOptionRows(containerId, items) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  (items || []).forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'flow-option-row';
+    row.dataset.value = item.value || '';
+    row.innerHTML =
+      `<input type="text" placeholder="Button label" value="${escAttr(item.label || '')}">` +
+      `<input type="text" placeholder="Blank = free-text input" value="${escAttr(item.name || '')}">` +
+      `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+    c.appendChild(row);
+  });
+}
+
+function _collectOptionRows(containerId) {
+  return Array.from(document.getElementById(containerId).querySelectorAll('.flow-option-row'))
+    .map(row => {
+      const [i1, i2] = row.querySelectorAll('input');
+      return { label: i1.value.trim(), value: row.dataset.value || '', name: i2.value.trim() || null };
+    }).filter(r => r.label);
+}
+
+function addFlowOptionRow(containerId, prefix) {
+  const c = document.getElementById(containerId);
+  if (c.querySelectorAll('.flow-option-row').length >= 4) {
+    alert('WhatsApp supports a maximum of 4 buttons per message.');
+    return;
+  }
+  _flowOptionCounters[prefix] = (_flowOptionCounters[prefix] || 5) + 1;
+  const val = prefix + 'CUSTOM' + _flowOptionCounters[prefix];
+  const row = document.createElement('div');
+  row.className = 'flow-option-row';
+  row.dataset.value = val;
+  row.innerHTML =
+    `<input type="text" placeholder="Button label">` +
+    `<input type="text" placeholder="Blank = free-text input">` +
+    `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+  c.appendChild(row);
+  row.querySelector('input').focus();
+}
+
+function loadFlow() {
+  const saved = (botConfig && botConfig.baby_care_flow) || {};
+  const f = Object.assign({}, BABY_FLOW_DEF, saved);
+  if (!Array.isArray(f.colors) || !f.colors.length) f.colors = BABY_FLOW_DEF.colors;
+  if (!Array.isArray(f.themes) || !f.themes.length) f.themes = BABY_FLOW_DEF.themes;
+  if (!Array.isArray(f.addons) || !f.addons.length) f.addons = BABY_FLOW_DEF.addons;
+  document.getElementById('flWelcomeNew').value = f.welcome_new;
+  document.getElementById('flWelcomeReturn').value = f.welcome_return;
+  document.getElementById('flQualityIntro').value = f.quality_intro;
+  document.getElementById('flAffordableLabel').value = f.affordable_label;
+  document.getElementById('flAffordableName').value = f.affordable_name;
+  document.getElementById('flPremiumLabel').value = f.premium_label;
+  document.getElementById('flPremiumName').value = f.premium_name;
+  document.getElementById('flDeliveryPrompt').value = f.delivery_prompt;
+  document.getElementById('flOrderConfirmed').value = f.order_confirmed;
+  document.getElementById('flCancelMsg').value = f.cancel_msg;
+  document.getElementById('flTalkMsg').value = f.talk_msg;
+  _renderOptionRows('flColorRows', f.colors);
+  _renderOptionRows('flThemeRows', f.themes);
+  _renderOptionRows('flAddonRows', f.addons);
+  _flowLoaded = true;
+}
+
+async function saveFlow() {
+  const flow = {
+    welcome_new: document.getElementById('flWelcomeNew').value.trim(),
+    welcome_return: document.getElementById('flWelcomeReturn').value.trim(),
+    cancel_msg: document.getElementById('flCancelMsg').value.trim(),
+    talk_msg: document.getElementById('flTalkMsg').value.trim(),
+    quality_intro: document.getElementById('flQualityIntro').value.trim(),
+    affordable_label: document.getElementById('flAffordableLabel').value.trim(),
+    affordable_name: document.getElementById('flAffordableName').value.trim(),
+    premium_label: document.getElementById('flPremiumLabel').value.trim(),
+    premium_name: document.getElementById('flPremiumName').value.trim(),
+    delivery_prompt: document.getElementById('flDeliveryPrompt').value.trim(),
+    order_confirmed: document.getElementById('flOrderConfirmed').value.trim(),
+    colors: _collectOptionRows('flColorRows'),
+    themes: _collectOptionRows('flThemeRows'),
+    addons: _collectOptionRows('flAddonRows'),
+  };
+  botConfig.baby_care_flow = flow;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('flowSaveMsg', 'Saved ✓');
+    showMsg('flowSaveMsg2', 'Saved ✓');
+  } catch(e) {
+    showMsg('flowSaveMsg', 'Error: ' + e.message);
+    showMsg('flowSaveMsg2', 'Error: ' + e.message);
+  }
+}
+
+function resetFlowDefaults() {
+  if (!confirm('Reset all flow messages and buttons to their default values?')) return;
+  delete botConfig.baby_care_flow;
+  _flowLoaded = false;
+  loadFlow();
+  showMsg('flowSaveMsg', 'Reset to defaults — click Save to apply');
+  showMsg('flowSaveMsg2', 'Reset to defaults — click Save to apply');
 }
 
 // ── HELPERS ───────────────────────────────────────
