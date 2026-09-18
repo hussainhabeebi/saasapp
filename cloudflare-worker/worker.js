@@ -16395,8 +16395,27 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
+    // Skip the expensive AI classification for ecom clients that are mid-flow in a
+    // button-driven stage — the stage handler will deterministically handle the turn
+    // regardless of intent. Opt-out and resub keywords still bypass this fast path so
+    // ENGINE_OPT_OUT_WORDS / "start" re-subscribe remain honoured.
+    const _ecomStyle=c.industry==='ecommerce'?(botConfig.ecom_communication_style||''):'';
+    const _isActiveEcomStage=
+      (_ecomStyle==='fashion'     && state.stage?.startsWith('fashion_order_')) ||
+      (_ecomStyle==='baby_care'   && state.stage?.startsWith('baby_'))          ||
+      (_ecomStyle==='electronics' && state.stage?.startsWith('elec_order_'));
+    // Baby care: only fast-path on recognised BABY_* button values — free-text (questions, colour
+    // names) goes through full AI so the FAQ path can answer from prompt/KB and append action buttons.
+    // Fashion / electronics: any text in an active stage fast-paths (stage handler is deterministic).
+    const _isEcomButtonValue=/^(?:BABY|FASHION|ELEC)_[A-Z0-9_]+$/i.test(userText.trim());
+    const _ecomFastPath=_isActiveEcomStage
+      && (_ecomStyle!=='baby_care' || _isEcomButtonValue)
+      && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
+      && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+      : _ecomFastPath
+      ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
@@ -16582,6 +16601,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isBabyCareEcom && !orderHandledInline){
       const _isBabyStage=state.stage&&state.stage.startsWith('baby_');
       const _isBabyGreeting=mediaType==='text'&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon)|hlo|hii|hai|hy|howdy|sup|greetings)[!.,? ]*$/i.test(userText.trim());
+      // Free-text mid-flow that looks like a question should fall through to the ecom_faq LLM
+      // (answered from prompt + action buttons appended) instead of being caught by stage fallbacks.
+      const _babyIsQuestion=/[?]/.test(userText)||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim());
       // CANCEL: any stage
       if(_isBabyStage&&/^BABY_CANCEL$/i.test(userText)){
         sentText=await engineLocalizeReply(env,c,'No problem! Feel free to message us any time. 🌸',replyLang);
@@ -16618,25 +16640,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineSendHandoverLabel(c,convId);
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
-      } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||state.stage==='baby_quality_select'){
-        // Step 1 — Quality / fabric tier selection
-        await ensureOrderCollectField(env);
-        const qualityText=await engineLocalizeReply(env,c,
-          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
-        sentText=qualityText;
-        routing.reply=sentText; routing.next='baby_quality_select';
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
-          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
-          {title:'Cancel ❌',value:'BABY_CANCEL'},
-        ]);
-        orderHandledInline=true;
       } else if(state.stage==='baby_quality_select'&&(/^BABY_QUALITY_AFFORDABLE$/i.test(userText)||/^BABY_QUALITY_PREMIUM$/i.test(userText))){
+        // Step 2 — specific quality button tapped → advance to colour selection
         const isAffordable=/^BABY_QUALITY_AFFORDABLE$/i.test(userText);
         const tierLabel=isAffordable?'Affordable Range — Single Jersey (from ₹650)':'Premium Range — Interlock (from ₹850)';
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         seed.qualityTier=tierLabel; seed.babyCareFlow=true;
-        // Step 2 — Customization: accent colour
         const customizeText=await engineLocalizeReply(env,c,
           `Great choice! 🌟 You selected *${tierLabel}*.\n\n*Base colour is white.* Now let's personalise it!\n\nWhat accent colour would you like for the prints and details?\n(e.g. Pink, Blue, Mint Green, Lavender, Peach, Yellow)`,replyLang);
         sentText=customizeText;
@@ -16646,6 +16655,19 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           {title:'Blue 💙',value:'BABY_COLOR_BLUE'},
           {title:'Mint Green 🌿',value:'BABY_COLOR_MINT'},
           {title:'Other colour ✏️',value:'BABY_COLOR_OTHER'},
+        ]);
+        orderHandledInline=true;
+      } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||(state.stage==='baby_quality_select'&&!_babyIsQuestion)){
+        // Step 1 — show quality/fabric selection screen (also fallback reshow if unrecognised non-question input)
+        await ensureOrderCollectField(env);
+        const qualityText=await engineLocalizeReply(env,c,
+          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
+        sentText=qualityText;
+        routing.reply=sentText; routing.next='baby_quality_select';
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
+          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
+          {title:'Cancel ❌',value:'BABY_CANCEL'},
         ]);
         orderHandledInline=true;
       } else if(state.stage==='baby_customize'){
@@ -17313,9 +17335,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
-    // Baby care ecom uses a fully deterministic button flow handled above; generic product
-    // detection would bypass it and send raw product cards — skip the entire detection block.
-    if(isBabyCareEcom && !orderHandledInline){
+    // Baby care: catch genuinely unhandled non-question turns (random text with no clear intent
+    // that would otherwise fall through to the general product-detection pipeline, which doesn't
+    // apply to a customisable set). Questions and order-intent messages fall through to
+    // detectOrderSignal + ecom_faq below, which answers from the business prompt and appends
+    // baby care action buttons as the last-resort ecom_faq button fallback.
+    const _babyCareUnhandledIsQuestion=/[?]/.test(userText)||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim());
+    if(isBabyCareEcom && !orderHandledInline && !_babyCareUnhandledIsQuestion){
       sentText=await engineLocalizeReply(env,c,'How can we help you today? Tap below to get started! 👶🏻',replyLang);
       routing.reply=sentText;
       routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
@@ -18069,6 +18095,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           faqQuickReplies=isElectronicsEcom
             ? ecomProductChoiceItems(products)
             : ecomAvailableCatalogueItems(categories,products);
+          // Baby care: if the merchant hasn't configured a product catalog, the catalogue call
+          // above returns nothing. Fall back to the main action buttons so the customer always
+          // has a clear next step alongside the prompt-answered FAQ reply.
+          if((!faqQuickReplies||!faqQuickReplies.length) && isBabyCareEcom){
+            faqQuickReplies=[
+              {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+              {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+              {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+            ];
+          }
         }
         // Healthcare: when the LLM answered a question but offered no tappable choice, always
         // surface a "Book Appointment" CTA so the customer can act without typing a command.
