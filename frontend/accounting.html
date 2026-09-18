@@ -211,6 +211,7 @@ tbody tr:hover{background:var(--bg)}
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
     <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
+    <button class="tab" data-tab="bankcash" onclick="showTab('bankcash')">🏦 Bank &amp; Cash</button>
     <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
   </div>
 
@@ -561,6 +562,8 @@ tbody tr:hover{background:var(--bg)}
         <button class="fp-pill" data-repsub="ap" onclick="showReportSub('ap')">📤 Payables Aging</button>
         <button class="fp-pill" data-repsub="expbreak" onclick="showReportSub('expbreak')">🧾 Expense Breakdown</button>
         <button class="fp-pill" data-repsub="sales" onclick="showReportSub('sales')">🧮 Sales Summary</button>
+        <button class="fp-pill" data-repsub="trial" onclick="showReportSub('trial')">⚖️ Trial Balance</button>
+        <button class="fp-pill" data-repsub="cashflow" onclick="showReportSub('cashflow')">🌊 Cash Flow</button>
       </div>
 
       <!-- PROFIT & LOSS -->
@@ -641,11 +644,140 @@ tbody tr:hover{background:var(--bg)}
           <div id="repSalesContent"><div class="empty-state">Pick a date range and click Run.</div></div>
         </div>
       </div>
+
+      <!-- TRIAL BALANCE -->
+      <div id="repSubTrial" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Trial Balance</div>
+            <div class="card-actions">
+              <input class="s-input" id="repTrialFrom" type="date" style="width:auto">
+              <span style="color:var(--muted);font-size:13px">to</span>
+              <input class="s-input" id="repTrialTo" type="date" style="width:auto">
+              <button class="save-btn sec" onclick="loadReportTrialBalance()">Run</button>
+            </div>
+          </div>
+          <div id="repTrialContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+        </div>
+      </div>
+
+      <!-- CASH FLOW STATEMENT -->
+      <div id="repSubCashflow" class="fp-sub">
+        <div class="card">
+          <div class="card-title-row">
+            <div class="card-title">Cash Flow Statement</div>
+            <div class="card-actions">
+              <input class="s-input" id="repCfFrom" type="date" style="width:auto">
+              <span style="color:var(--muted);font-size:13px">to</span>
+              <input class="s-input" id="repCfTo" type="date" style="width:auto">
+              <button class="save-btn sec" onclick="loadReportCashFlow()">Run</button>
+            </div>
+          </div>
+          <div id="repCfContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+        </div>
+      </div>
     </div>
 
     <!-- SaaS Ops moved — the "🚀 SaaS Ops" module now lives in its own standalone top-level tab
          (frontend/saas-ops.html, iframe-embedded from dashboard.html), backed directly by the
          client's own live NocoDB customers table instead of fp_customers below. -->
+
+    <!-- ── BANK & CASH TAB ── -->
+    <div id="tabBankcash" class="page">
+      <div class="inner">
+        <!-- Sub-nav -->
+        <div id="bcSubnav" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+          <button class="fp-pill active" data-bcsub="accounts" onclick="showBcSub('accounts')">🏦 Accounts</button>
+          <button class="fp-pill" data-bcsub="payments" onclick="showBcSub('payments')">💳 Payment Entries</button>
+          <button class="fp-pill" data-bcsub="recon" onclick="showBcSub('recon')">🔄 Reconciliation</button>
+        </div>
+
+        <!-- ACCOUNTS sub-tab -->
+        <div id="bcSubAccounts" class="fp-sub active">
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">Bank &amp; Cash Accounts</div>
+              <button class="save-btn" onclick="openBankAccountModal()">+ Add Account</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Type</th><th>Bank</th><th>Currency</th><th>Opening Bal.</th><th>Balance</th><th>Active</th><th></th></tr></thead>
+                <tbody id="bcAccountsTbody"><tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- PAYMENT ENTRIES sub-tab -->
+        <div id="bcSubPayments" class="fp-sub">
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">Payment Entries</div>
+              <div class="card-actions">
+                <select class="s-input" id="peFilterAccount" style="width:160px" onchange="renderPaymentEntriesTable()"><option value="">All Accounts</option></select>
+                <button class="save-btn" onclick="openPaymentEntryModal()">+ New Entry</button>
+              </div>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Type</th><th>Account</th><th>Mode</th><th>Party</th><th>Reference</th><th>Amount</th><th>Reconciled</th><th></th></tr></thead>
+                <tbody id="bcPaymentsTbody"><tr class="loading-row"><td colspan="9"><span class="spinner"></span>Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- RECONCILIATION sub-tab -->
+        <div id="bcSubRecon" class="fp-sub">
+          <!-- Upload card -->
+          <div class="card">
+            <div class="card-title">Upload Bank Statement</div>
+            <div class="s-hint" style="margin-bottom:14px">Paste the text content of your bank statement PDF, or paste CSV rows below — Cloudflare AI will extract every transaction and auto-match it against your Payment Entries.</div>
+            <div class="modal-grid" style="grid-template-columns:1fr 1fr">
+              <div><label class="s-lbl">Account</label>
+                <select class="s-input" id="reconAccountId"><option value="">— Select Account —</option></select>
+              </div>
+              <div><label class="s-lbl">Statement File Name (optional)</label><input class="s-input" id="reconFilename" placeholder="e.g. HDFC_Aug_2026.pdf"></div>
+              <div><label class="s-lbl">Statement From</label><input class="s-input" id="reconFrom" type="date"></div>
+              <div><label class="s-lbl">Statement To</label><input class="s-input" id="reconTo" type="date"></div>
+              <div><label class="s-lbl">Closing Balance (optional)</label><input class="s-input" id="reconClosingBal" type="number" placeholder="e.g. 125000"></div>
+            </div>
+            <label class="s-lbl" style="margin-top:10px">Paste Statement Text (PDF text / CSV rows)</label>
+            <textarea class="s-input" id="reconText" rows="6" style="resize:vertical;font-family:var(--mono);font-size:12px" placeholder="Paste raw text from your bank statement PDF, or CSV rows with date, description, debit, credit columns…"></textarea>
+            <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+              <button class="save-btn" id="reconUploadBtn" onclick="uploadBankStatement()">🤖 Parse &amp; Match with AI</button>
+              <span id="reconUploadMsg" style="font-size:13px;color:var(--muted)"></span>
+            </div>
+          </div>
+          <!-- Sessions list -->
+          <div class="card">
+            <div class="card-title-row">
+              <div class="card-title">Reconciliation Sessions</div>
+              <button class="save-btn sec" onclick="loadReconSessions()">Refresh</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Account</th><th>Date Range</th><th>Lines</th><th>Matched</th><th>Status</th><th>Created</th><th></th></tr></thead>
+                <tbody id="reconSessionsTbody"><tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <!-- Lines detail (shown when a session is selected) -->
+          <div class="card" id="reconLinesCard" style="display:none">
+            <div class="card-title-row">
+              <div class="card-title" id="reconLinesTitle">Statement Lines</div>
+              <button class="save-btn sec" onclick="document.getElementById('reconLinesCard').style.display='none'">Close</button>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Balance</th><th>Reference</th><th>Status</th><th>Matched Entry</th><th></th></tr></thead>
+                <tbody id="reconLinesTbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
   </div>
   </main>
@@ -988,6 +1120,71 @@ tbody tr:hover{background:var(--bg)}
       <button class="save-btn" onclick="confirmSendDocumentEmail()">Send</button>
     </div>
     <div class="save-msg" id="emailSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── BANK ACCOUNT MODAL ── -->
+<div class="modal-overlay" id="bankAccountModal">
+  <div class="modal-card" style="max-width:480px">
+    <div class="modal-title" id="bankAccountModalTitle">Add Bank / Cash Account</div>
+    <input type="hidden" id="baId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Account Name</label><input class="s-input" id="baName" placeholder="e.g. HDFC Current, Office Cash"></div>
+      <div><label class="s-lbl">Type</label>
+        <select class="s-input" id="baType"><option value="bank">Bank</option><option value="cash">Cash</option></select>
+      </div>
+      <div><label class="s-lbl">Bank Name (optional)</label><input class="s-input" id="baBankName" placeholder="e.g. HDFC Bank"></div>
+      <div><label class="s-lbl">Account Number (optional)</label><input class="s-input" id="baAccountNumber" placeholder="e.g. 5020012345"></div>
+      <div><label class="s-lbl">IFSC (optional)</label><input class="s-input" id="baIfsc" placeholder="e.g. HDFC0001234"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="baCurrency" value="INR"></div>
+      <div><label class="s-lbl">Opening Balance</label><input class="s-input" id="baOpeningBalance" type="number" placeholder="0"></div>
+      <div><label class="s-lbl">Opening Balance Date</label><input class="s-input" id="baOpeningBalDate" type="date"></div>
+    </div>
+    <label class="s-lbl">Notes</label>
+    <textarea class="s-input" id="baNotes" rows="2" style="resize:vertical"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closeBankAccountModal()">Cancel</button>
+      <button class="save-btn" onclick="saveBankAccount()">Save</button>
+    </div>
+    <div class="save-msg" id="baSaveMsg" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- ── PAYMENT ENTRY MODAL ── -->
+<div class="modal-overlay" id="paymentEntryModal">
+  <div class="modal-card" style="max-width:520px">
+    <div class="modal-title" id="paymentEntryModalTitle">New Payment Entry</div>
+    <input type="hidden" id="peId">
+    <div class="modal-grid">
+      <div><label class="s-lbl">Type</label>
+        <select class="s-input" id="peType"><option value="receive">Receive (Money In)</option><option value="pay">Pay (Money Out)</option></select>
+      </div>
+      <div><label class="s-lbl">Date</label><input class="s-input" id="peDate" type="date"></div>
+      <div><label class="s-lbl">Amount</label><input class="s-input" id="peAmount" type="number" placeholder="e.g. 5000"></div>
+      <div><label class="s-lbl">Currency</label><input class="s-input" id="peCurrency" placeholder="INR" value="INR"></div>
+      <div><label class="s-lbl">Account</label>
+        <select class="s-input" id="peAccountId"><option value="">— Select Account —</option></select>
+      </div>
+      <div><label class="s-lbl">Mode</label>
+        <select class="s-input" id="peMode"><option value="bank">Bank Transfer</option><option value="upi">UPI</option><option value="cash">Cash</option><option value="cheque">Cheque</option><option value="card">Card</option><option value="other">Other</option></select>
+      </div>
+      <div><label class="s-lbl">Reference / UTR / Cheque No.</label><input class="s-input" id="peRef" placeholder="optional"></div>
+      <div><label class="s-lbl">Party (optional)</label>
+        <select class="s-input" id="pePartyType" onchange="renderPePartyPicker()"><option value="">— None —</option><option value="customer">Customer</option><option value="supplier">Supplier</option></select>
+      </div>
+      <div id="pePartyPickerWrap" style="display:none">
+        <label class="s-lbl" id="pePartyLabel">Party Name</label>
+        <input class="s-input" id="pePartyName" list="pePartyDatalist" placeholder="Type to search…">
+        <datalist id="pePartyDatalist"></datalist>
+      </div>
+    </div>
+    <label class="s-lbl">Description / Remarks</label>
+    <textarea class="s-input" id="peDescription" rows="2" style="resize:vertical"></textarea>
+    <div class="modal-actions">
+      <button class="save-btn sec" onclick="closePaymentEntryModal()">Cancel</button>
+      <button class="save-btn" onclick="savePaymentEntry()">Save</button>
+    </div>
+    <div class="save-msg" id="peSaveMsg" style="margin-top:8px"></div>
   </div>
 </div>
 
@@ -2803,6 +3000,367 @@ async function confirmSendDocumentEmail(){
 }
 
 init();
+
+/* ══════════════════ BANK & CASH MODULE ══════════════════ */
+let allBankAccounts=[], allPaymentEntries=[];
+let _bcPaymentsLoaded=false, _bcReconLoaded=false;
+
+function showBcSub(name){
+  const root=document.getElementById('tabBankcash');
+  root.querySelectorAll('.fp-sub').forEach(p=>p.classList.remove('active'));
+  root.querySelectorAll('.fp-pill').forEach(t=>t.classList.remove('active'));
+  document.getElementById('bcSub'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  root.querySelector(`.fp-pill[data-bcsub="${name}"]`).classList.add('active');
+  if(name==='payments' && !_bcPaymentsLoaded){ _bcPaymentsLoaded=true; loadPaymentEntries(); }
+  if(name==='recon' && !_bcReconLoaded){ _bcReconLoaded=true; loadReconSessions(); }
+}
+
+async function loadBankAccounts(){
+  try{
+    const d=await acctFetch('/accounting/bank-accounts',{method:'GET'});
+    allBankAccounts=d.list||[];
+    renderBankAccountsTable();
+    populateBankAccountPickers();
+  }catch(e){ document.getElementById('bcAccountsTbody').innerHTML=`<tr><td colspan="8" class="empty-state">Error: ${esc(e.message)}</td></tr>`; }
+}
+function populateBankAccountPickers(){
+  const opts='<option value="">— Select Account —</option>'+allBankAccounts.map(a=>`<option value="${a.id}">${esc(a.name)} (${esc(a.type)})</option>`).join('');
+  ['peAccountId','reconAccountId'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=opts; });
+  const filt=document.getElementById('peFilterAccount');
+  if(filt) filt.innerHTML='<option value="">All Accounts</option>'+allBankAccounts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
+}
+function renderBankAccountsTable(){
+  const tbody=document.getElementById('bcAccountsTbody');
+  if(!allBankAccounts.length){ tbody.innerHTML='<tr><td colspan="8" class="empty-state">No accounts yet — click + Add Account.</td></tr>'; return; }
+  tbody.innerHTML=allBankAccounts.map(a=>`<tr>
+    <td><strong>${esc(a.name)}</strong></td>
+    <td><span class="badge ${a.type==='cash'?'draft':'sent'}">${a.type}</span></td>
+    <td>${esc(a.bank_name||'—')}</td>
+    <td>${esc(a.currency)}</td>
+    <td style="font-family:var(--mono)">${fmtMoney(a.opening_balance,a.currency)}</td>
+    <td style="font-family:var(--mono)"><span id="acctBal_${a.id}">—</span></td>
+    <td>${a.is_active?'✅':'⏸'}</td>
+    <td><button class="save-btn sec" style="padding:4px 8px;font-size:12px" onclick="openBankAccountModal(${a.id})">Edit</button>
+        <button class="save-btn sec" style="padding:4px 8px;font-size:12px;color:var(--red)" onclick="deleteBankAccount(${a.id})">Del</button></td>
+  </tr>`).join('');
+  // Load live balances asynchronously
+  allBankAccounts.forEach(async a=>{
+    try{
+      const d=await acctFetch(`/accounting/bank-accounts/balance?account_id=${a.id}`,{method:'GET'});
+      const el=document.getElementById('acctBal_'+a.id);
+      if(el) el.textContent=fmtMoney(d.balance,d.currency);
+    }catch(e){}
+  });
+}
+
+let _editBankAccountId=null;
+function openBankAccountModal(id){
+  _editBankAccountId=id||null;
+  document.getElementById('bankAccountModalTitle').textContent=id?'Edit Account':'Add Bank / Cash Account';
+  if(id){
+    const a=allBankAccounts.find(x=>x.id===id);
+    if(a){
+      document.getElementById('baId').value=a.id;
+      document.getElementById('baName').value=a.name||'';
+      document.getElementById('baType').value=a.type||'bank';
+      document.getElementById('baBankName').value=a.bank_name||'';
+      document.getElementById('baAccountNumber').value=a.account_number||'';
+      document.getElementById('baIfsc').value=a.ifsc_code||'';
+      document.getElementById('baCurrency').value=a.currency||'INR';
+      document.getElementById('baOpeningBalance').value=a.opening_balance||0;
+      document.getElementById('baOpeningBalDate').value=a.opening_balance_date||'';
+      document.getElementById('baNotes').value=a.notes||'';
+    }
+  } else {
+    ['baId','baName','baBankName','baAccountNumber','baIfsc','baNotes'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('baType').value='bank';
+    document.getElementById('baCurrency').value=getDefaultCurrency();
+    document.getElementById('baOpeningBalance').value='0';
+    document.getElementById('baOpeningBalDate').value=new Date().toISOString().slice(0,10);
+  }
+  document.getElementById('baSaveMsg').textContent='';
+  document.getElementById('bankAccountModal').classList.add('open');
+}
+function closeBankAccountModal(){ document.getElementById('bankAccountModal').classList.remove('open'); }
+async function saveBankAccount(){
+  const msg=document.getElementById('baSaveMsg');
+  msg.textContent='Saving…'; msg.className='save-msg';
+  const id=document.getElementById('baId').value;
+  const body={name:document.getElementById('baName').value.trim(), type:document.getElementById('baType').value,
+    bank_name:document.getElementById('baBankName').value.trim(), account_number:document.getElementById('baAccountNumber').value.trim(),
+    ifsc_code:document.getElementById('baIfsc').value.trim(), currency:document.getElementById('baCurrency').value.trim()||getDefaultCurrency(),
+    opening_balance:parseFloat(document.getElementById('baOpeningBalance').value)||0,
+    opening_balance_date:document.getElementById('baOpeningBalDate').value||null,
+    notes:document.getElementById('baNotes').value.trim()};
+  try{
+    if(id) await acctFetch('/accounting/bank-accounts',{method:'PATCH',body:JSON.stringify({...body,id:Number(id)})});
+    else await acctFetch('/accounting/bank-accounts',{method:'POST',body:JSON.stringify(body)});
+    msg.textContent='Saved!'; msg.className='save-msg ok';
+    await loadBankAccounts();
+    setTimeout(closeBankAccountModal, 600);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deleteBankAccount(id){
+  if(!confirm('Delete this account? This will not delete payment entries linked to it.')) return;
+  try{ await acctFetch('/accounting/bank-accounts',{method:'DELETE',body:JSON.stringify({id})}); await loadBankAccounts(); }
+  catch(e){ alert('Error: '+e.message); }
+}
+
+/* ── Payment Entries ── */
+async function loadPaymentEntries(){
+  try{
+    const d=await acctFetch('/accounting/payment-entries',{method:'GET'});
+    allPaymentEntries=d.list||[];
+    renderPaymentEntriesTable();
+  }catch(e){ document.getElementById('bcPaymentsTbody').innerHTML=`<tr><td colspan="9" class="empty-state">Error: ${esc(e.message)}</td></tr>`; }
+}
+function renderPaymentEntriesTable(){
+  const tbody=document.getElementById('bcPaymentsTbody');
+  const filterAcct=document.getElementById('peFilterAccount')?.value||'';
+  const rows=filterAcct?allPaymentEntries.filter(p=>String(p.account_id)===String(filterAcct)):allPaymentEntries;
+  if(!rows.length){ tbody.innerHTML='<tr><td colspan="9" class="empty-state">No payment entries yet.</td></tr>'; return; }
+  tbody.innerHTML=rows.map(p=>`<tr>
+    <td>${esc(p.payment_date)}</td>
+    <td><span class="badge ${p.payment_type==='receive'?'paid':'void'}">${p.payment_type==='receive'?'In':'Out'}</span></td>
+    <td>${esc(p.account_name||'—')}</td>
+    <td>${esc(p.mode)}</td>
+    <td>${esc(p.party_name||'—')}</td>
+    <td style="font-family:var(--mono);font-size:11px">${esc(p.reference_no||'—')}</td>
+    <td style="font-family:var(--mono);color:${p.payment_type==='receive'?'var(--green)':'var(--red)'};font-weight:600">${p.payment_type==='receive'?'+':'−'}${fmtMoney(p.amount,p.currency)}</td>
+    <td>${p.is_reconciled?'<span class="badge paid">✓ Reconciled</span>':'<span class="badge draft">Pending</span>'}</td>
+    <td><button class="save-btn sec" style="padding:4px 8px;font-size:12px;color:var(--red)" onclick="deletePaymentEntry(${p.id})">Del</button></td>
+  </tr>`).join('');
+}
+
+let _editPaymentEntryId=null;
+function openPaymentEntryModal(id){
+  _editPaymentEntryId=id||null;
+  document.getElementById('paymentEntryModalTitle').textContent=id?'Edit Payment Entry':'New Payment Entry';
+  if(!id){
+    ['peId','peRef','peDescription'].forEach(x=>document.getElementById(x).value='');
+    document.getElementById('peType').value='receive';
+    document.getElementById('peDate').value=new Date().toISOString().slice(0,10);
+    document.getElementById('peAmount').value='';
+    document.getElementById('peCurrency').value=getDefaultCurrency();
+    document.getElementById('peMode').value='bank';
+    document.getElementById('pePartyType').value='';
+    renderPePartyPicker();
+  }
+  document.getElementById('peSaveMsg').textContent='';
+  document.getElementById('paymentEntryModal').classList.add('open');
+}
+function closePaymentEntryModal(){ document.getElementById('paymentEntryModal').classList.remove('open'); }
+function renderPePartyPicker(){
+  const pt=document.getElementById('pePartyType').value;
+  const wrap=document.getElementById('pePartyPickerWrap');
+  if(!pt){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  document.getElementById('pePartyLabel').textContent=pt==='customer'?'Customer':'Supplier';
+  const list=pt==='customer'?fpCustomers:fpSuppliers;
+  document.getElementById('pePartyDatalist').innerHTML=list.map(x=>`<option value="${esc(x.name)}">`).join('');
+}
+async function savePaymentEntry(){
+  const msg=document.getElementById('peSaveMsg');
+  msg.textContent='Saving…'; msg.className='save-msg';
+  const partyType=document.getElementById('pePartyType').value||null;
+  const partyName=document.getElementById('pePartyName')?.value?.trim()||'';
+  const list=partyType==='customer'?fpCustomers:fpSuppliers;
+  const found=list.find(x=>x.name===partyName);
+  const body={
+    payment_type:document.getElementById('peType').value,
+    payment_date:document.getElementById('peDate').value,
+    amount:parseFloat(document.getElementById('peAmount').value)||0,
+    currency:document.getElementById('peCurrency').value||getDefaultCurrency(),
+    account_id:document.getElementById('peAccountId').value||null,
+    mode:document.getElementById('peMode').value,
+    reference_no:document.getElementById('peRef').value.trim(),
+    party_type:partyType, party_id:found?.id||found?.Id||null, party_name:partyName,
+    description:document.getElementById('peDescription').value.trim(),
+  };
+  try{
+    await acctFetch('/accounting/payment-entries',{method:'POST',body:JSON.stringify(body)});
+    msg.textContent='Saved!'; msg.className='save-msg ok';
+    await loadPaymentEntries();
+    setTimeout(closePaymentEntryModal, 600);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function deletePaymentEntry(id){
+  if(!confirm('Delete this payment entry?')) return;
+  try{ await acctFetch('/accounting/payment-entries',{method:'DELETE',body:JSON.stringify({id})}); await loadPaymentEntries(); }
+  catch(e){ alert('Error: '+e.message); }
+}
+
+/* ── Bank Reconciliation ── */
+async function loadReconSessions(){
+  try{
+    const d=await acctFetch('/accounting/bank-recon/sessions',{method:'GET'});
+    renderReconSessionsTable(d.list||[]);
+  }catch(e){ document.getElementById('reconSessionsTbody').innerHTML=`<tr><td colspan="7" class="empty-state">Error: ${esc(e.message)}</td></tr>`; }
+}
+function renderReconSessionsTable(sessions){
+  const tbody=document.getElementById('reconSessionsTbody');
+  if(!sessions.length){ tbody.innerHTML='<tr><td colspan="7" class="empty-state">No reconciliation sessions yet.</td></tr>'; return; }
+  tbody.innerHTML=sessions.map(s=>`<tr>
+    <td>${esc(s.account_name||'—')}</td>
+    <td>${esc(s.statement_from||'—')} – ${esc(s.statement_to||'—')}</td>
+    <td>${s.total_lines}</td>
+    <td>${s.matched_lines}</td>
+    <td><span class="badge ${s.status==='completed'?'paid':s.status==='in_progress'?'sent':'draft'}">${s.status}</span></td>
+    <td>${esc((s.created_at||'').slice(0,10))}</td>
+    <td><button class="save-btn sec" style="padding:4px 8px;font-size:12px" onclick="viewReconSession(${s.id})">View Lines</button></td>
+  </tr>`).join('');
+}
+async function viewReconSession(sessionId){
+  document.getElementById('reconLinesCard').style.display='block';
+  document.getElementById('reconLinesTbody').innerHTML='<tr><td colspan="8"><span class="spinner"></span>Loading…</td></tr>';
+  try{
+    const d=await acctFetch(`/accounting/bank-recon/lines?session_id=${sessionId}`,{method:'GET'});
+    document.getElementById('reconLinesTitle').textContent=`Statement Lines — ${esc(d.session?.account_name||'')} (${d.lines?.length||0} rows)`;
+    const lines=d.lines||[];
+    document.getElementById('reconLinesTbody').innerHTML=lines.length?lines.map(l=>`<tr>
+      <td>${esc(l.txn_date||'—')}</td>
+      <td style="font-size:12px">${esc((l.description||'').slice(0,80))}</td>
+      <td style="font-family:var(--mono);color:${(l.amount||0)>=0?'var(--green)':'var(--red)'};font-weight:600">${(l.amount||0)>=0?'+':''}${fmtMoney(l.amount,'')}</td>
+      <td style="font-family:var(--mono);font-size:12px">${l.balance!=null?fmtMoney(l.balance,''):'—'}</td>
+      <td style="font-size:12px">${esc(l.reference||'—')}</td>
+      <td><span class="badge ${l.match_status==='matched'?'paid':l.match_status==='ignored'?'void':'draft'}">${l.match_status}</span></td>
+      <td style="font-size:12px">${l.matched_payment_entry_id?'Entry #'+l.matched_payment_entry_id:'—'}</td>
+      <td style="white-space:nowrap">
+        ${l.match_status==='unmatched'?`<button class="save-btn sec" style="padding:3px 7px;font-size:11px" onclick="ignoreReconLine(${l.id})">Ignore</button>`:''}
+        ${l.match_status==='matched'?`<button class="save-btn sec" style="padding:3px 7px;font-size:11px" onclick="unmatchReconLine(${l.id})">Unmatch</button>`:''}
+      </td>
+    </tr>`).join(''):'<tr><td colspan="8" class="empty-state">No lines found.</td></tr>';
+    document.getElementById('reconLinesCard').scrollIntoView({behavior:'smooth',block:'nearest'});
+  }catch(e){ document.getElementById('reconLinesTbody').innerHTML=`<tr><td colspan="8" class="empty-state">Error: ${esc(e.message)}</td></tr>`; }
+}
+async function ignoreReconLine(lineId){
+  try{ await acctFetch('/accounting/bank-recon/match',{method:'POST',body:JSON.stringify({line_id:lineId,action:'ignore'})}); loadReconSessions(); }
+  catch(e){ alert('Error: '+e.message); }
+}
+async function unmatchReconLine(lineId){
+  try{ await acctFetch('/accounting/bank-recon/match',{method:'POST',body:JSON.stringify({line_id:lineId,action:'unmatch'})}); loadReconSessions(); }
+  catch(e){ alert('Error: '+e.message); }
+}
+async function uploadBankStatement(){
+  const btn=document.getElementById('reconUploadBtn');
+  const msg=document.getElementById('reconUploadMsg');
+  const acctId=document.getElementById('reconAccountId').value;
+  const text=document.getElementById('reconText').value.trim();
+  if(!acctId){ alert('Please select an account first.'); return; }
+  if(!text){ alert('Paste your bank statement text first.'); return; }
+  btn.disabled=true; msg.textContent='Parsing with AI…';
+  try{
+    const d=await acctFetch('/accounting/bank-recon/upload',{method:'POST',body:JSON.stringify({
+      account_id:Number(acctId), text,
+      statement_from:document.getElementById('reconFrom').value||null,
+      statement_to:document.getElementById('reconTo').value||null,
+      closing_balance:document.getElementById('reconClosingBal').value?parseFloat(document.getElementById('reconClosingBal').value):null,
+      filename:document.getElementById('reconFilename').value||'',
+    })});
+    msg.textContent=`Done! ${d.total_lines} lines parsed, ${d.matched_lines} auto-matched, ${d.unmatched_lines} need review.`;
+    document.getElementById('reconText').value='';
+    await loadReconSessions();
+    if(_bcPaymentsLoaded) await loadPaymentEntries();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+  finally{ btn.disabled=false; }
+}
+
+/* ══════════════════ REPORTS — Trial Balance & Cash Flow ══════════════════ */
+let _repTrialLoaded=false, _repCfLoaded=false;
+
+// Extend existing showReportSub to handle new sub-tabs
+const _origShowReportSub=showReportSub;
+showReportSub=function(name){
+  _origShowReportSub(name);
+  if(name==='trial' && !_repTrialLoaded){ _repTrialLoaded=true; initReportDatePair('repTrialFrom','repTrialTo'); }
+  if(name==='cashflow' && !_repCfLoaded){ _repCfLoaded=true; initReportDatePair('repCfFrom','repCfTo'); }
+};
+function initReportDatePair(fromId, toId){
+  const to=new Date(), from=new Date(); from.setMonth(from.getMonth()-2); from.setDate(1);
+  document.getElementById(fromId).value=from.toISOString().slice(0,7)+'-01';
+  document.getElementById(toId).value=to.toISOString().slice(0,7)+'-'+String(to.getDate()).padStart(2,'0');
+}
+
+async function loadReportTrialBalance(){
+  const el=document.getElementById('repTrialContent');
+  const from=document.getElementById('repTrialFrom').value, to=document.getElementById('repTrialTo').value;
+  if(!from||!to){ el.innerHTML='<div class="empty-state">Pick a date range and click Run.</div>'; return; }
+  el.innerHTML='<span class="spinner"></span> Computing…';
+  try{
+    const d=await acctFetch(`/financial/reports/trial-balance?from=${from}&to=${to}`,{method:'GET'});
+    const cur=d.currency||'';
+    const balBadge=d.balanced?'<span class="badge paid">✓ Balanced</span>':'<span class="badge void">⚠ Out of Balance</span>';
+    el.innerHTML=`
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="flex:1;min-width:160px"><div class="card-title">Total Credits</div><div style="font-size:22px;font-weight:700;font-family:var(--disp);color:var(--green)">${fmtMoney(d.total_credit,cur)}</div></div>
+        <div style="flex:1;min-width:160px"><div class="card-title">Total Debits</div><div style="font-size:22px;font-weight:700;font-family:var(--disp);color:var(--red)">${fmtMoney(d.total_debit,cur)}</div></div>
+        <div style="flex:1;min-width:160px"><div class="card-title">Difference</div><div style="font-size:22px;font-weight:700;font-family:var(--disp)">${fmtMoney(Math.abs(d.difference),cur)}</div>${balBadge}</div>
+      </div>
+      <table><thead><tr><th>Account</th><th>Type</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th></tr></thead><tbody>
+      ${(d.accounts||[]).map(a=>`<tr>
+        <td><strong>${esc(a.account)}</strong>${(a.breakdown||[]).map(b=>`<div style="font-size:11px;color:var(--muted);padding-left:12px">${esc(b.category)}: ${fmtMoney(b.amount,cur)}</div>`).join('')}</td>
+        <td><span class="badge ${a.type==='income'?'paid':a.type==='asset'?'sent':'draft'}">${a.type}</span></td>
+        <td style="text-align:right;font-family:var(--mono);color:var(--red)">${a.debit?fmtMoney(a.debit,cur):'—'}</td>
+        <td style="text-align:right;font-family:var(--mono);color:var(--green)">${a.credit?fmtMoney(a.credit,cur):'—'}</td>
+      </tr>`).join('')}
+      <tr style="font-weight:700;border-top:2px solid var(--line)">
+        <td colspan="2">Totals</td>
+        <td style="text-align:right;font-family:var(--mono);color:var(--red)">${fmtMoney(d.total_debit,cur)}</td>
+        <td style="text-align:right;font-family:var(--mono);color:var(--green)">${fmtMoney(d.total_credit,cur)}</td>
+      </tr></tbody></table>`;
+  }catch(e){ el.innerHTML=`<div class="empty-state">Error: ${esc(e.message)}</div>`; }
+}
+
+async function loadReportCashFlow(){
+  const el=document.getElementById('repCfContent');
+  const from=document.getElementById('repCfFrom').value?.slice(0,7), to=document.getElementById('repCfTo').value?.slice(0,7);
+  if(!from||!to){ el.innerHTML='<div class="empty-state">Pick a date range and click Run.</div>'; return; }
+  el.innerHTML='<span class="spinner"></span> Computing…';
+  try{
+    const d=await acctFetch(`/financial/reports/cash-flow?from=${from}&to=${to}`,{method:'GET'});
+    const cur=d.currency||'';
+    const netColor=d.net_cash_flow>=0?'var(--green)':'var(--red)';
+    let html=`
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+        <div style="flex:1;min-width:140px"><div class="card-title">Total Inflow</div><div style="font-size:20px;font-weight:700;font-family:var(--disp);color:var(--green)">${fmtMoney(d.total_inflow,cur)}</div></div>
+        <div style="flex:1;min-width:140px"><div class="card-title">Total Outflow</div><div style="font-size:20px;font-weight:700;font-family:var(--disp);color:var(--red)">${fmtMoney(d.total_outflow,cur)}</div></div>
+        <div style="flex:1;min-width:140px"><div class="card-title">Net Cash Flow</div><div style="font-size:20px;font-weight:700;font-family:var(--disp);color:${netColor}">${fmtMoney(d.net_cash_flow,cur)}</div></div>
+      </div>`;
+    for(const sec of (d.sections||[])){
+      html+=`<div style="margin-bottom:16px"><div style="font-family:var(--disp);font-weight:700;font-size:14px;margin-bottom:8px">${esc(sec.name)}</div>`;
+      if(sec.items&&sec.items.length){
+        html+=`<table><tbody>${sec.items.map(it=>`<tr>
+          <td>${esc(it.label)}</td>
+          <td style="text-align:right;font-family:var(--mono);color:${it.type==='inflow'?'var(--green)':'var(--red)'};width:140px">${it.type==='inflow'?'+':'-'}${fmtMoney(it.amount,cur)}</td>
+        </tr>`).join('')}
+        <tr style="font-weight:700;border-top:1px solid var(--line)"><td>Net</td><td style="text-align:right;font-family:var(--mono);color:${sec.net>=0?'var(--green)':'var(--red)'}">${fmtMoney(sec.net,cur)}</td></tr>
+        </tbody></table>`;
+      } else {
+        html+=`<div class="s-hint">No activity in this period.</div>`;
+      }
+      html+=`</div>`;
+    }
+    // Month-by-month series table
+    if(d.series&&d.series.length){
+      html+=`<div style="margin-top:20px"><div style="font-family:var(--disp);font-weight:700;font-size:14px;margin-bottom:8px">Monthly Breakdown</div>
+        <table><thead><tr><th>Month</th><th style="text-align:right">Inflow</th><th style="text-align:right">Outflow</th><th style="text-align:right">Net</th></tr></thead><tbody>
+        ${d.series.map(m=>`<tr>
+          <td>${esc(m.month)}</td>
+          <td style="text-align:right;font-family:var(--mono);color:var(--green)">${fmtMoney(m.inflow,cur)}</td>
+          <td style="text-align:right;font-family:var(--mono);color:var(--red)">${fmtMoney(m.outflow,cur)}</td>
+          <td style="text-align:right;font-family:var(--mono);font-weight:600;color:${m.net>=0?'var(--green)':'var(--red)'}">${fmtMoney(m.net,cur)}</td>
+        </tr>`).join('')}</tbody></table></div>`;
+    }
+    el.innerHTML=html;
+  }catch(e){ el.innerHTML=`<div class="empty-state">Error: ${esc(e.message)}</div>`; }
+}
+
+/* ── Hook Bank Accounts into init ── */
+const _origInit=init;
+init=async function(){
+  await _origInit();
+  try{ await loadBankAccounts(); }catch(e){ console.error('[bank-accounts]', e.message); }
+};
 </script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>

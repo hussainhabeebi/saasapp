@@ -19989,6 +19989,442 @@ async function handleVendorBillMarkPaid(request, env){
   return json({ok:true, paid_at:now});
 }
 
+/* ── BANK & CASH ACCOUNTS (migration 0098_accounting_bank_cash.sql) ──────────────────────────────
+   A named account master (bank or cash) that all payment entries, expenses and vendor bill
+   payments can reference so the running balance is always computable.  CRUD follows the same
+   thin pattern as fp_suppliers above. ── */
+async function handleBankAccountsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {results}=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
+  return json({list:results||[]});
+}
+async function handleBankAccountCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.name) return json({error:'name required'}, 400);
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO acc_bank_accounts (client_id,name,type,bank_name,account_number,ifsc_code,currency,opening_balance,opening_balance_date,notes,is_active,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)`)
+    .bind(Number(payload.cid),String(body.name).trim().slice(0,140),['bank','cash'].includes(body.type)?body.type:'bank',
+      String(body.bank_name||'').slice(0,140),String(body.account_number||'').slice(0,80),
+      String(body.ifsc_code||'').slice(0,20),String(body.currency||'INR').slice(0,10).toUpperCase(),
+      Number(body.opening_balance)||0,body.opening_balance_date?String(body.opening_balance_date).slice(0,10):null,
+      String(body.notes||'').slice(0,500),now).run();
+  return json({Id:r.meta.last_row_id});
+}
+async function handleBankAccountUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
+  if(!existing) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  for(const [f,max] of [['name',140],['bank_name',140],['account_number',80],['ifsc_code',20],['notes',500]]){
+    if(body[f]!==undefined){ sets.push(`${f}=?`); vals.push(String(body[f]).slice(0,max)); }
+  }
+  if(body.type!==undefined && ['bank','cash'].includes(body.type)){ sets.push('type=?'); vals.push(body.type); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).slice(0,10).toUpperCase()); }
+  if(body.opening_balance!==undefined){ sets.push('opening_balance=?'); vals.push(Number(body.opening_balance)||0); }
+  if(body.opening_balance_date!==undefined){ sets.push('opening_balance_date=?'); vals.push(body.opening_balance_date||null); }
+  if(body.is_active!==undefined){ sets.push('is_active=?'); vals.push(body.is_active?1:0); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE acc_bank_accounts SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handleBankAccountDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`DELETE FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+/* ── PAYMENT ENTRIES (migration 0098) ── first-class record for every money movement ── */
+function accPaymentEntryOut(row){ return {...row, Id:row.id}; }
+async function handlePaymentEntriesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const clientId=Number(payload.cid);
+  let sql=`SELECT * FROM acc_payment_entries WHERE client_id=?`;
+  const binds=[clientId];
+  if(url.searchParams.get('account_id')){ sql+=` AND account_id=?`; binds.push(Number(url.searchParams.get('account_id'))); }
+  if(url.searchParams.get('from')){ sql+=` AND payment_date>=?`; binds.push(url.searchParams.get('from')); }
+  if(url.searchParams.get('to')){ sql+=` AND payment_date<=?`; binds.push(url.searchParams.get('to')); }
+  sql+=` ORDER BY payment_date DESC, id DESC LIMIT 1000`;
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:(results||[]).map(accPaymentEntryOut)});
+}
+async function handlePaymentEntryCreate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.payment_date || !body.amount) return json({error:'payment_date and amount required'}, 400);
+  const now=new Date().toISOString();
+  const accountId=body.account_id?Number(body.account_id):null;
+  let accountName=body.account_name?String(body.account_name).slice(0,140):'';
+  if(accountId && !accountName){
+    const acc=await env.DB.prepare(`SELECT name FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(accountId,Number(payload.cid)).first();
+    if(acc) accountName=acc.name;
+  }
+  const r=await env.DB.prepare(`INSERT INTO acc_payment_entries (client_id,payment_type,payment_date,amount,currency,account_id,account_name,mode,reference_no,party_type,party_id,party_name,source_type,source_id,description,is_reconciled,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+    .bind(Number(payload.cid),['receive','pay'].includes(body.payment_type)?body.payment_type:'receive',
+      String(body.payment_date).slice(0,10),Number(body.amount)||0,
+      String(body.currency||'INR').slice(0,10).toUpperCase(),accountId,accountName,
+      ['bank','upi','cash','cheque','card','other'].includes(body.mode)?body.mode:'bank',
+      String(body.reference_no||'').slice(0,140),
+      body.party_type&&['customer','supplier'].includes(body.party_type)?body.party_type:null,
+      body.party_id?Number(body.party_id):null, String(body.party_name||'').slice(0,140),
+      body.source_type?String(body.source_type).slice(0,40):null,
+      body.source_id?Number(body.source_id):null,
+      String(body.description||'').slice(0,500),now).run();
+  const entryId=r.meta.last_row_id;
+  // Back-link to source document when provided
+  if(body.source_type==='receipt' && body.source_id)
+    await env.DB.prepare(`UPDATE accounting_documents SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(entryId,Number(body.source_id),Number(payload.cid)).run();
+  if(body.source_type==='expense' && body.source_id)
+    await env.DB.prepare(`UPDATE accounting_expenses SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(entryId,Number(body.source_id),Number(payload.cid)).run();
+  if(body.source_type==='vendor_bill' && body.source_id)
+    await env.DB.prepare(`UPDATE accounting_vendor_bills SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(entryId,Number(body.source_id),Number(payload.cid)).run();
+  return json({Id:entryId});
+}
+async function handlePaymentEntryUpdate(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const existing=await env.DB.prepare(`SELECT * FROM acc_payment_entries WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
+  if(!existing) return json({error:'Not found'}, 404);
+  const sets=[], vals=[];
+  if(body.payment_type!==undefined && ['receive','pay'].includes(body.payment_type)){ sets.push('payment_type=?'); vals.push(body.payment_type); }
+  if(body.payment_date!==undefined){ sets.push('payment_date=?'); vals.push(String(body.payment_date).slice(0,10)); }
+  if(body.amount!==undefined){ sets.push('amount=?'); vals.push(Number(body.amount)||0); }
+  if(body.currency!==undefined){ sets.push('currency=?'); vals.push(String(body.currency).slice(0,10).toUpperCase()); }
+  if(body.account_id!==undefined){ sets.push('account_id=?'); vals.push(body.account_id?Number(body.account_id):null); }
+  if(body.account_name!==undefined){ sets.push('account_name=?'); vals.push(String(body.account_name||'').slice(0,140)); }
+  if(body.mode!==undefined && ['bank','upi','cash','cheque','card','other'].includes(body.mode)){ sets.push('mode=?'); vals.push(body.mode); }
+  if(body.reference_no!==undefined){ sets.push('reference_no=?'); vals.push(String(body.reference_no||'').slice(0,140)); }
+  if(body.description!==undefined){ sets.push('description=?'); vals.push(String(body.description||'').slice(0,500)); }
+  if(body.party_name!==undefined){ sets.push('party_name=?'); vals.push(String(body.party_name||'').slice(0,140)); }
+  if(!sets.length) return json({ok:true});
+  vals.push(Number(body.id));
+  await env.DB.prepare(`UPDATE acc_payment_entries SET ${sets.join(', ')} WHERE id=?`).bind(...vals).run();
+  return json({ok:true});
+}
+async function handlePaymentEntryDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.id) return json({error:'id required'}, 400);
+  const pe=await env.DB.prepare(`SELECT * FROM acc_payment_entries WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
+  if(!pe) return json({error:'Not found'}, 404);
+  await env.DB.prepare(`DELETE FROM acc_payment_entries WHERE id=?`).bind(Number(body.id)).run();
+  // Clear back-links
+  if(pe.source_type==='receipt' && pe.source_id) await env.DB.prepare(`UPDATE accounting_documents SET payment_entry_id=NULL WHERE id=? AND client_id=?`).bind(pe.source_id,Number(payload.cid)).run();
+  if(pe.source_type==='expense' && pe.source_id) await env.DB.prepare(`UPDATE accounting_expenses SET payment_entry_id=NULL WHERE id=? AND client_id=?`).bind(pe.source_id,Number(payload.cid)).run();
+  if(pe.source_type==='vendor_bill' && pe.source_id) await env.DB.prepare(`UPDATE accounting_vendor_bills SET payment_entry_id=NULL WHERE id=? AND client_id=?`).bind(pe.source_id,Number(payload.cid)).run();
+  return json({ok:true});
+}
+
+/* Get running balance for a bank account — opening_balance plus all payment entries posted to it */
+async function handleBankAccountBalance(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const accountId=Number(url.searchParams.get('account_id'));
+  if(!accountId) return json({error:'account_id required'}, 400);
+  const acc=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(accountId,Number(payload.cid)).first();
+  if(!acc) return json({error:'Not found'}, 404);
+  const asOf=url.searchParams.get('as_of')||new Date().toISOString().slice(0,10);
+  const {results:entries}=await env.DB.prepare(`SELECT payment_type, amount FROM acc_payment_entries WHERE account_id=? AND client_id=? AND payment_date<=?`).bind(accountId,Number(payload.cid),asOf).all();
+  let balance=acc.opening_balance||0;
+  for(const e of (entries||[])){
+    balance += e.payment_type==='receive' ? e.amount : -(e.amount);
+  }
+  return json({account_id:accountId, account_name:acc.name, currency:acc.currency, as_of:asOf, opening_balance:acc.opening_balance, balance:Math.round(balance*100)/100});
+}
+
+/* ── BANK RECONCILIATION (migration 0098) ─────────────────────────────────────────────────────────
+   Upload a bank statement (PDF text or CSV/Excel rows) → Cloudflare AI parses each transaction
+   line → auto-match against existing payment entries by date+amount proximity → user reviews and
+   confirms matches. ── */
+
+async function handleBankReconUpload(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AI) return json({error:'Cloudflare AI binding (AI) is not configured for this Worker — add it in wrangler.toml.'}, 503);
+  const body=await request.json().catch(()=>({}));
+  if(!body.account_id) return json({error:'account_id required'}, 400);
+  if(!body.text && !body.rows) return json({error:'text (PDF extracted text) or rows (CSV/Excel array) required'}, 400);
+
+  const acc=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(Number(body.account_id),Number(payload.cid)).first();
+  if(!acc) return json({error:'Account not found'}, 404);
+
+  // Ask CF AI to extract transaction lines from raw statement text or row strings
+  const inputText=body.text
+    ? String(body.text).slice(0,12000)
+    : (Array.isArray(body.rows)?body.rows.slice(0,500).map(r=>Array.isArray(r)?r.join('\t'):String(r)).join('\n'):'').slice(0,12000);
+
+  const systemPrompt=`You are a bank statement parser. Extract every transaction row from the text below and return ONLY a JSON array (no markdown, no commentary) where each element has:
+{"date":"YYYY-MM-DD","description":"merchant or narration text","amount":number,"balance":number_or_null,"reference":"ref/cheque/UTR or empty string"}
+Rules:
+- amount is positive for credits (money deposited / received) and negative for debits (money withdrawn / paid).
+- date must be in YYYY-MM-DD format. Infer the year from context if not printed.
+- If balance column is absent or not legible, set balance to null.
+- Skip header rows, opening/closing balance summary lines, and any row that is not an individual transaction.
+- Return [] if no transactions are found.`;
+
+  let parsed=[];
+  try{
+    const raw=await engineCfAiGenerate(env, systemPrompt, inputText, {maxOutputTokens:4000, temperature:0.0, caller:'bank-recon-parse'});
+    if(raw){
+      const match=raw.match(/\[[\s\S]*\]/);
+      if(match) parsed=JSON.parse(match[0]);
+    }
+  }catch(e){ parsed=[]; }
+
+  if(!Array.isArray(parsed)||!parsed.length) return json({error:"Couldn't extract any transaction rows from the uploaded text. Try copying the text content of the PDF directly, or use the CSV rows format."}, 422);
+
+  const now=new Date().toISOString();
+  // Create reconciliation session
+  const sessionR=await env.DB.prepare(`INSERT INTO acc_bank_recon_sessions (client_id,account_id,account_name,statement_from,statement_to,closing_balance,currency,total_lines,matched_lines,status,upload_filename,notes,created_at) VALUES (?,?,?,?,?,?,?,?,0,'pending',?,?,?)`)
+    .bind(Number(payload.cid),Number(body.account_id),acc.name,
+      body.statement_from||null, body.statement_to||null,
+      body.closing_balance!=null?Number(body.closing_balance):null,
+      acc.currency, parsed.length,
+      String(body.filename||'').slice(0,200), String(body.notes||'').slice(0,500), now).run();
+  const sessionId=sessionR.meta.last_row_id;
+
+  // Insert parsed lines and auto-match against payment entries by date+amount
+  let matchedCount=0;
+  for(const txn of parsed){
+    const txnDate=String(txn.date||'').slice(0,10);
+    const txnAmt=Number(txn.amount)||0;
+    const txnRef=String(txn.reference||'').slice(0,140);
+    const txnDesc=String(txn.description||'').slice(0,500);
+
+    // Auto-match: find a payment entry on the same date, same sign, same amount (±0.01)
+    const peType=txnAmt>=0?'receive':'pay';
+    const searchAmt=Math.abs(txnAmt);
+    const matched=await env.DB.prepare(
+      `SELECT id FROM acc_payment_entries WHERE client_id=? AND account_id=? AND payment_type=? AND ABS(amount-?)<=0.01 AND payment_date=? AND is_reconciled=0 LIMIT 1`
+    ).bind(Number(payload.cid),Number(body.account_id),peType,searchAmt,txnDate).first();
+
+    const matchStatus=matched?'matched':'unmatched';
+    if(matched) matchedCount++;
+
+    await env.DB.prepare(`INSERT INTO acc_bank_recon_lines (client_id,session_id,txn_date,description,amount,balance,reference,match_status,matched_payment_entry_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .bind(Number(payload.cid),sessionId,txnDate,txnDesc,txnAmt,
+        txn.balance!=null?Number(txn.balance):null,txnRef,matchStatus,
+        matched?matched.id:null,now).run();
+
+    if(matched){
+      await env.DB.prepare(`UPDATE acc_payment_entries SET is_reconciled=1, reconciled_at=?, recon_session_id=?, recon_line_id=(SELECT id FROM acc_bank_recon_lines WHERE session_id=? AND matched_payment_entry_id=? ORDER BY id DESC LIMIT 1) WHERE id=?`)
+        .bind(now,sessionId,sessionId,matched.id,matched.id).run();
+    }
+  }
+
+  await env.DB.prepare(`UPDATE acc_bank_recon_sessions SET matched_lines=?, status=? WHERE id=?`)
+    .bind(matchedCount, matchedCount===parsed.length?'completed':'in_progress', sessionId).run();
+
+  return json({session_id:sessionId, total_lines:parsed.length, matched_lines:matchedCount, unmatched_lines:parsed.length-matchedCount});
+}
+
+async function handleBankReconSessionsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const clientId=Number(payload.cid);
+  let sql=`SELECT * FROM acc_bank_recon_sessions WHERE client_id=? ORDER BY created_at DESC LIMIT 100`;
+  const binds=[clientId];
+  if(url.searchParams.get('account_id')){ sql=`SELECT * FROM acc_bank_recon_sessions WHERE client_id=? AND account_id=? ORDER BY created_at DESC LIMIT 100`; binds.push(Number(url.searchParams.get('account_id'))); }
+  const {results}=await env.DB.prepare(sql).bind(...binds).all();
+  return json({list:results||[]});
+}
+
+async function handleBankReconLinesList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const url=new URL(request.url);
+  const sessionId=Number(url.searchParams.get('session_id'));
+  if(!sessionId) return json({error:'session_id required'}, 400);
+  const session=await env.DB.prepare(`SELECT * FROM acc_bank_recon_sessions WHERE id=? AND client_id=?`).bind(sessionId,Number(payload.cid)).first();
+  if(!session) return json({error:'Not found'}, 404);
+  const {results:lines}=await env.DB.prepare(`SELECT * FROM acc_bank_recon_lines WHERE session_id=? ORDER BY txn_date ASC, id ASC`).bind(sessionId).all();
+  return json({session, lines:lines||[]});
+}
+
+async function handleBankReconMatchLine(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.line_id) return json({error:'line_id required'}, 400);
+  const line=await env.DB.prepare(`SELECT * FROM acc_bank_recon_lines WHERE id=? AND client_id=?`).bind(Number(body.line_id),Number(payload.cid)).first();
+  if(!line) return json({error:'Not found'}, 404);
+  const now=new Date().toISOString();
+  if(body.action==='ignore'){
+    await env.DB.prepare(`UPDATE acc_bank_recon_lines SET match_status='ignored', matched_payment_entry_id=NULL WHERE id=?`).bind(line.id).run();
+  } else if(body.action==='unmatch'){
+    if(line.matched_payment_entry_id)
+      await env.DB.prepare(`UPDATE acc_payment_entries SET is_reconciled=0, reconciled_at=NULL, recon_session_id=NULL, recon_line_id=NULL WHERE id=?`).bind(line.matched_payment_entry_id).run();
+    await env.DB.prepare(`UPDATE acc_bank_recon_lines SET match_status='unmatched', matched_payment_entry_id=NULL WHERE id=?`).bind(line.id).run();
+  } else if(body.payment_entry_id){
+    const pe=await env.DB.prepare(`SELECT * FROM acc_payment_entries WHERE id=? AND client_id=?`).bind(Number(body.payment_entry_id),Number(payload.cid)).first();
+    if(!pe) return json({error:'Payment entry not found'}, 404);
+    if(line.matched_payment_entry_id && line.matched_payment_entry_id!==pe.id)
+      await env.DB.prepare(`UPDATE acc_payment_entries SET is_reconciled=0, reconciled_at=NULL WHERE id=?`).bind(line.matched_payment_entry_id).run();
+    await env.DB.prepare(`UPDATE acc_bank_recon_lines SET match_status='matched', matched_payment_entry_id=? WHERE id=?`).bind(pe.id,line.id).run();
+    await env.DB.prepare(`UPDATE acc_payment_entries SET is_reconciled=1, reconciled_at=?, recon_session_id=?, recon_line_id=? WHERE id=?`).bind(now,line.session_id,line.id,pe.id).run();
+  } else {
+    return json({error:'Provide payment_entry_id to match, or action=ignore/unmatch'}, 400);
+  }
+  // Refresh session matched count
+  const {results:lines}=await env.DB.prepare(`SELECT match_status FROM acc_bank_recon_lines WHERE session_id=?`).bind(line.session_id).all();
+  const matched=(lines||[]).filter(l=>l.match_status==='matched').length;
+  const total=lines?.length||0;
+  await env.DB.prepare(`UPDATE acc_bank_recon_sessions SET matched_lines=?, status=? WHERE id=?`)
+    .bind(matched, matched===total?'completed':'in_progress', line.session_id).run();
+  return json({ok:true, matched_lines:matched});
+}
+
+/* ── TRIAL BALANCE (migration 0098) ──────────────────────────────────────────────────────────────
+   Computed from the four transaction tables the app already maintains.  Accounts are synthetic
+   (built from the data, not a separate Chart of Accounts) so no extra setup is required.
+   Every income (receipts + fp_collections) = Credit; every expense / vendor bill payment = Debit.
+   Payment entries are the primary source when they exist; the older tables are the fallback for
+   records created before migration 0098 was applied. ── */
+async function handleFpReportTrialBalance(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const {from, to}=fpReportsDateRange(url);
+  const toExclusive=to+' 23:59:59';
+
+  // Income — receipts from Documents module
+  const {results:receipts}=await env.DB.prepare(`SELECT total, currency, customer_name FROM accounting_documents WHERE client_id=? AND type='receipt' AND doc_created_at>=? AND doc_created_at<=?`).bind(clientId,from,toExclusive).all();
+  // Income — recurring collections from Financial Planning
+  const {results:collections}=await env.DB.prepare(`SELECT amount, currency FROM fp_collections WHERE client_id=? AND collected_at>=? AND collected_at<=?`).bind(clientId,from,to).all();
+  // Expenses — Expense Entry
+  const {results:acctExps}=await env.DB.prepare(`SELECT amount, currency, category FROM accounting_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId,from,to).all();
+  // Expenses — FP recurring expenses
+  const {results:fpExps}=await env.DB.prepare(`SELECT amount, currency, category FROM fp_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId,from,to).all();
+  // Vendor bill payments
+  const {results:paidBills}=await env.DB.prepare(`SELECT total, currency, supplier FROM accounting_vendor_bills WHERE client_id=? AND status='paid' AND bill_date>=? AND bill_date<=?`).bind(clientId,from,to).all();
+  // Payment entries (for reconciled accounts balance)
+  const {results:payEntries}=await env.DB.prepare(`SELECT payment_type, amount, currency, account_name, party_name, description FROM acc_payment_entries WHERE client_id=? AND payment_date>=? AND payment_date<=?`).bind(clientId,from,to).all();
+
+  const currency=(receipts?.[0]||collections?.[0]||acctExps?.[0])?.currency||'INR';
+
+  const totalSalesIncome=(receipts||[]).reduce((s,r)=>s+(r.total||0),0);
+  const totalCollectionsIncome=(collections||[]).reduce((s,c)=>s+(c.amount||0),0);
+  const totalExpenses=(acctExps||[]).reduce((s,e)=>s+(e.amount||0),0)+(fpExps||[]).reduce((s,e)=>s+(e.amount||0),0);
+  const totalPayables=(paidBills||[]).reduce((s,b)=>s+(b.total||0),0);
+
+  // Expense by category breakdown
+  const expByCategory={};
+  for(const e of [...(acctExps||[]), ...(fpExps||[])]){ const c=e.category||'Uncategorized'; expByCategory[c]=(expByCategory[c]||0)+e.amount; }
+
+  // Bank/cash account balances from payment entries
+  const accountBalances={};
+  for(const pe of (payEntries||[])){
+    const acct=pe.account_name||'Unassigned';
+    if(!accountBalances[acct]) accountBalances[acct]={debit:0, credit:0};
+    if(pe.payment_type==='receive') accountBalances[acct].credit+=pe.amount;
+    else accountBalances[acct].debit+=pe.amount;
+  }
+
+  const totalCredit=Math.round((totalSalesIncome+totalCollectionsIncome)*100)/100;
+  const totalDebit=Math.round((totalExpenses+totalPayables)*100)/100;
+
+  return json({
+    from, to, currency,
+    accounts:[
+      {account:'Sales Income (Receipts)', type:'income', credit:Math.round(totalSalesIncome*100)/100, debit:0},
+      {account:'Collections Income (Recurring)', type:'income', credit:Math.round(totalCollectionsIncome*100)/100, debit:0},
+      {account:'Operating Expenses', type:'expense', credit:0, debit:Math.round(totalExpenses*100)/100,
+        breakdown:Object.entries(expByCategory).sort((a,b)=>b[1]-a[1]).map(([cat,amt])=>({category:cat, amount:Math.round(amt*100)/100}))},
+      {account:'Accounts Payable (Vendor Bill Payments)', type:'expense', credit:0, debit:Math.round(totalPayables*100)/100},
+      ...Object.entries(accountBalances).map(([acct,b])=>({account:'Bank/Cash — '+acct, type:'asset', debit:Math.round(b.debit*100)/100, credit:Math.round(b.credit*100)/100})),
+    ],
+    total_credit:totalCredit,
+    total_debit:totalDebit,
+    difference:Math.round((totalCredit-totalDebit)*100)/100,
+    balanced:Math.abs(totalCredit-totalDebit)<0.02,
+  });
+}
+
+/* ── CASH FLOW STATEMENT (migration 0098) ─────────────────────────────────────────────────────────
+   Three sections: Operating (receipts + collections - expenses), Investing (none by default —
+   placeholder row), Financing (none by default).  Month-by-month series for the chosen range.
+   When payment entries exist for an account they provide the most accurate cash position;
+   the older sources are used as the primary fallback for periods before migration 0098. ── */
+async function handleFpReportCashFlow(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const url=new URL(request.url);
+  const {from, to}=fpReportsDateRange(url);
+
+  // Build month list between from and to
+  const months=[];
+  let cur=new Date(from+'-01');
+  const endDate=new Date(to+'-01');
+  while(cur<=endDate){ months.push(cur.toISOString().slice(0,7)); cur=new Date(cur.getFullYear(), cur.getMonth()+1, 1); }
+
+  // Fetch all rows once and group by month
+  const toExclusive=to+' 23:59:59';
+  const {results:receipts}=await env.DB.prepare(`SELECT total, doc_created_at FROM accounting_documents WHERE client_id=? AND type='receipt' AND doc_created_at>=? AND doc_created_at<=?`).bind(clientId,from,toExclusive).all();
+  const {results:collections}=await env.DB.prepare(`SELECT amount, collected_at FROM fp_collections WHERE client_id=? AND collected_at>=? AND collected_at<=?`).bind(clientId,from,to).all();
+  const {results:acctExps}=await env.DB.prepare(`SELECT amount, expense_date FROM accounting_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId,from,to).all();
+  const {results:fpExps}=await env.DB.prepare(`SELECT amount, expense_date FROM fp_expenses WHERE client_id=? AND expense_date>=? AND expense_date<=?`).bind(clientId,from,to).all();
+  const {results:paidBills}=await env.DB.prepare(`SELECT total, bill_date FROM accounting_vendor_bills WHERE client_id=? AND status='paid' AND bill_date>=? AND bill_date<=?`).bind(clientId,from,to).all();
+
+  function sumByMonth(rows, dateField, amtField){
+    const m={}; for(const r of (rows||[])){ const k=String(r[dateField]||'').slice(0,7); m[k]=(m[k]||0)+Number(r[amtField]||0); } return m;
+  }
+  const recByM=sumByMonth(receipts,'doc_created_at','total');
+  const colByM=sumByMonth(collections,'collected_at','amount');
+  const expByM=sumByMonth([...(acctExps||[]),...(fpExps||[])],'expense_date','amount');
+  const billByM=sumByMonth(paidBills,'bill_date','total');
+
+  const series=months.map(m=>{
+    const inflow=Math.round(((recByM[m]||0)+(colByM[m]||0))*100)/100;
+    const outflow=Math.round(((expByM[m]||0)+(billByM[m]||0))*100)/100;
+    return {month:m, inflow, outflow, net:Math.round((inflow-outflow)*100)/100};
+  });
+
+  const totalInflow=Math.round(series.reduce((s,m)=>s+m.inflow,0)*100)/100;
+  const totalOutflow=Math.round(series.reduce((s,m)=>s+m.outflow,0)*100)/100;
+  const currency=(receipts?.[0]||collections?.[0])?.currency||'INR';
+
+  return json({
+    from, to, currency,
+    sections:[
+      {
+        name:'Operating Activities',
+        items:[
+          {label:'Cash from Sales (Receipts)', amount:Math.round((receipts||[]).reduce((s,r)=>s+(r.total||0),0)*100)/100, type:'inflow'},
+          {label:'Cash from Collections (Recurring)', amount:Math.round((collections||[]).reduce((s,c)=>s+(c.amount||0),0)*100)/100, type:'inflow'},
+          {label:'Operating Expenses Paid', amount:Math.round([...(acctExps||[]),...(fpExps||[])].reduce((s,e)=>s+(e.amount||0),0)*100)/100, type:'outflow'},
+          {label:'Vendor Bill Payments', amount:Math.round((paidBills||[]).reduce((s,b)=>s+(b.total||0),0)*100)/100, type:'outflow'},
+        ],
+        net:Math.round((totalInflow-totalOutflow)*100)/100,
+      },
+      {name:'Investing Activities', items:[], net:0},
+      {name:'Financing Activities', items:[], net:0},
+    ],
+    series,
+    total_inflow:totalInflow,
+    total_outflow:totalOutflow,
+    net_cash_flow:Math.round((totalInflow-totalOutflow)*100)/100,
+  });
+}
+
 /* ── RECRUITMENT MODULE (frontend/dashboard.html — 💼 Recruit tab, migrations/0032_recruitment.sql)
    Jobs/Candidates/Placements, one shared D1 table each (client_id-scoped), replacing the old
    per-client dynamic NocoDB tables the browser used to provision for itself on first use — same
@@ -28637,6 +29073,19 @@ export default {
       else if(url.pathname==='/accounting/vendor-bills/submit-erpnext' && request.method==='POST'){ res=await handleVendorBillSubmitErpnext(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/record-payment' && request.method==='POST'){ res=await handleVendorBillRecordPayment(request, env); }
       else if(url.pathname==='/accounting/vendor-bills/mark-paid' && request.method==='POST'){ res=await handleVendorBillMarkPaid(request, env); }
+      else if(url.pathname==='/accounting/bank-accounts' && request.method==='GET'){ res=await handleBankAccountsList(request, env); }
+      else if(url.pathname==='/accounting/bank-accounts' && request.method==='POST'){ res=await handleBankAccountCreate(request, env); }
+      else if(url.pathname==='/accounting/bank-accounts' && request.method==='PATCH'){ res=await handleBankAccountUpdate(request, env); }
+      else if(url.pathname==='/accounting/bank-accounts' && request.method==='DELETE'){ res=await handleBankAccountDelete(request, env); }
+      else if(url.pathname==='/accounting/bank-accounts/balance' && request.method==='GET'){ res=await handleBankAccountBalance(request, env); }
+      else if(url.pathname==='/accounting/payment-entries' && request.method==='GET'){ res=await handlePaymentEntriesList(request, env); }
+      else if(url.pathname==='/accounting/payment-entries' && request.method==='POST'){ res=await handlePaymentEntryCreate(request, env); }
+      else if(url.pathname==='/accounting/payment-entries' && request.method==='PATCH'){ res=await handlePaymentEntryUpdate(request, env); }
+      else if(url.pathname==='/accounting/payment-entries' && request.method==='DELETE'){ res=await handlePaymentEntryDelete(request, env); }
+      else if(url.pathname==='/accounting/bank-recon/upload' && request.method==='POST'){ res=await handleBankReconUpload(request, env); }
+      else if(url.pathname==='/accounting/bank-recon/sessions' && request.method==='GET'){ res=await handleBankReconSessionsList(request, env); }
+      else if(url.pathname==='/accounting/bank-recon/lines' && request.method==='GET'){ res=await handleBankReconLinesList(request, env); }
+      else if(url.pathname==='/accounting/bank-recon/match' && request.method==='POST'){ res=await handleBankReconMatchLine(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='GET'){ res=await handleFpCustomersList(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='POST'){ res=await handleFpCustomerCreate(request, env); }
       else if(url.pathname==='/financial/customers' && request.method==='PATCH'){ res=await handleFpCustomerUpdate(request, env); }
@@ -28667,6 +29116,8 @@ export default {
       else if(url.pathname==='/financial/reports/ap-aging' && request.method==='GET'){ res=await handleFpReportApAging(request, env); }
       else if(url.pathname==='/financial/reports/expense-breakdown' && request.method==='GET'){ res=await handleFpReportExpenseBreakdown(request, env); }
       else if(url.pathname==='/financial/reports/sales-summary' && request.method==='GET'){ res=await handleFpReportSalesSummary(request, env); }
+      else if(url.pathname==='/financial/reports/trial-balance' && request.method==='GET'){ res=await handleFpReportTrialBalance(request, env); }
+      else if(url.pathname==='/financial/reports/cash-flow' && request.method==='GET'){ res=await handleFpReportCashFlow(request, env); }
       else if(url.pathname==='/financial/ai/parse-expense' && request.method==='POST'){ res=await handleFpAiParseExpense(request, env); }
       else if(url.pathname==='/financial/ai/ask' && request.method==='POST'){ res=await handleFpAiAsk(request, env); }
       else if(url.pathname==='/financial/ai/snapshot' && request.method==='GET'){ res=await handleFpAiSnapshotGet(request, env); }
