@@ -170,7 +170,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
-  <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')" style="display:none">🔀 Flow</button>
+  <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')">🔀 Flow</button>
 </div>
 
 <main>
@@ -921,9 +921,6 @@ async function init() {
   if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
   try { botConfig = JSON.parse(clientRecord.bot_config || '{}'); } catch(e) { botConfig = {}; }
-  if (botConfig.ecom_communication_style === 'baby_care') {
-    document.getElementById('tabFlowBtn').style.display = '';
-  }
 
   // Populate settings
   // Default table IDs if not yet saved in client record
