@@ -2743,7 +2743,7 @@ async function detectOrderSignal(env, c, clientId, message, contextText){
   {
     // Reuses the cached product list (KV → D1 → NocoDB) — no separate fetch needed.
     const products=await ecomListActiveProducts(env, clientId);
-    productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
+    productList=products.map(p=>`- ${p.name}${p.short_label?' short label:'+p.short_label:''}${p.sku?' [sku:'+p.sku+']':''}${p.category?' category:'+p.category:''}${p.brand?' brand:'+p.brand:''}${p.variant?' variant:'+p.variant:''}${p.style?' style:'+p.style:''}${p.color?' color:'+p.color:''}${p.size?' size:'+p.size:''}${p.shade?' shade:'+p.shade:''}${p.skin_type?' skin type:'+p.skin_type:''}${p.hair_type?' hair type:'+p.hair_type:''}${p.concern?' concern:'+p.concern:''}${p.volume_ml?' volume:'+p.volume_ml:''}${p.ingredient?' ingredient:'+p.ingredient:''}${p.age_group?' age group:'+p.age_group:''}${p.fabric_type?' fabric:'+p.fabric_type:''}${p.set_includes?' set includes:'+p.set_includes:''}${p.accent_colors?' accent colours:'+p.accent_colors:''}${p.description?' description:'+String(p.description).slice(0,500):''}`).join('\n');
     categoryList=[...new Set(products.map(p=>(p.category||'').trim()).filter(Boolean))];
   }
 
@@ -5545,7 +5545,7 @@ async function handleShopifyAnalytics(request, env){
   const productsTableId=await ecomResolveTable(env, payload.cid, 'products');
   if(productsTableId){
     try{
-      const ppr=await ncFetch(env, `api/v2/tables/${productsTableId}/records?where=(client_id,eq,${payload.cid})&limit=1000&fields=sku,name,style,shade,skin_type,hair_type,concern,brand,variant`);
+      const ppr=await ncFetch(env, `api/v2/tables/${productsTableId}/records?where=(client_id,eq,${payload.cid})&limit=1000&fields=sku,name,style,shade,skin_type,hair_type,concern,brand,variant,age_group,fabric_type`);
       const ppd=await ppr.json().catch(()=>({}));
       (ppd?.list||[]).forEach(p=>{
         if(p.sku) productByKey['sku:'+String(p.sku).toLowerCase()]=p;
@@ -5553,7 +5553,7 @@ async function handleShopifyAnalytics(request, env){
       });
     }catch(e){}
   }
-  const styleBreakdown={cosmetics:{by_shade:{}, by_skin_type:{}}, haircare:{by_hair_type:{}, by_concern:{}}, general:{by_brand:{}, by_variant:{}}};
+  const styleBreakdown={cosmetics:{by_shade:{}, by_skin_type:{}}, haircare:{by_hair_type:{}, by_concern:{}}, general:{by_brand:{}, by_variant:{}}, baby_care:{by_age_group:{}, by_quality_tier:{}}};
   function bumpStyleBucket(bucket, key, qty, revenue){
     if(!bucket[key]) bucket[key]={key, quantity:0, revenue:0};
     bucket[key].quantity+=qty; bucket[key].revenue+=revenue;
@@ -5571,6 +5571,9 @@ async function handleShopifyAnalytics(request, env){
     }else if(product.style==='general'){
       if(product.brand) bumpStyleBucket(styleBreakdown.general.by_brand, product.brand, qty, revenue);
       if(product.variant) bumpStyleBucket(styleBreakdown.general.by_variant, product.variant, qty, revenue);
+    }else if(product.style==='baby_care'){
+      if(product.age_group) bumpStyleBucket(styleBreakdown.baby_care.by_age_group, product.age_group, qty, revenue);
+      if(product.fabric_type) bumpStyleBucket(styleBreakdown.baby_care.by_quality_tier, product.fabric_type, qty, revenue);
     }
   }
 
@@ -5654,6 +5657,10 @@ async function handleShopifyAnalytics(request, env){
       general:{
         by_brand:Object.values(styleBreakdown.general.by_brand).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
         by_variant:Object.values(styleBreakdown.general.by_variant).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+      },
+      baby_care:{
+        by_age_group:Object.values(styleBreakdown.baby_care.by_age_group).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
+        by_quality_tier:Object.values(styleBreakdown.baby_care.by_quality_tier).sort((a,b)=>b.revenue-a.revenue||b.quantity-a.quantity).slice(0,10),
       },
     },
     total_checkouts:totalCheckouts, completed_checkouts:completedCheckouts,
@@ -7072,7 +7079,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options'];
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -7368,7 +7375,7 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
 // repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
 // stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
 // here is logged and swallowed rather than ever failing the product save itself.
-const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options'];
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options','age_group','fabric_type','set_includes','accent_colors'];
 async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
   if(!env.DB || !clientId || !nocodbId) return;
   try{
@@ -9596,6 +9603,16 @@ export function ecomFashionOrderItems(seed={}){
     .filter(Boolean).join(' | ');
 }
 
+export function ecomBabyCareOrderItems(seed={}){
+  return [
+    String(seed.productName||'').trim(),
+    seed.qualityTier?`Quality: ${seed.qualityTier}`:'',
+    seed.accentColor?`Accent colour: ${seed.accentColor}`:'',
+    seed.printTheme?`Print theme: ${seed.printTheme}`:'',
+    seed.addOns?`Add-ons: ${seed.addOns}`:'',
+  ].filter(Boolean).join(' | ');
+}
+
 // ── Electronics Ecom helpers ─────────────────────────────────────────────────
 
 export function ecomElectronicsOrderItems(seed={}){
@@ -10756,6 +10773,11 @@ function ecomStyleAttributeLines(product){
     if(product.brand) lines.push(`Brand: ${product.brand}`);
     if(product.variant) lines.push(`Variant: ${product.variant}`);
     if(product.warranty_period) lines.push(`Warranty: ${product.warranty_period}`);
+  }else if(style==='baby_care'){
+    if(product.age_group) lines.push(`Age group: ${product.age_group}`);
+    if(product.fabric_type) lines.push(`Fabric: ${product.fabric_type}`);
+    if(product.set_includes) lines.push(`Set includes: ${product.set_includes}`);
+    if(product.accent_colors) lines.push(`Accent colours available: ${product.accent_colors}`);
   }
   return lines;
 }
@@ -13032,7 +13054,8 @@ REPLY RULES:
 • Sound clear, friendly and conversion-focused.
 • Keep replies compact — one clear answer and one obvious next action.
 • Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
-      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.\n\nPRICING RULE (strict — no exceptions): Never calculate, estimate, derive, or infer a price from a product\'s size, dimensions, or inches. Only quote the exact price that appears in the VERIFIED ECOM PRODUCT DATA for that specific product entry — never attribute a catalog price to a customer-requested dimension (e.g. do not say "these prices are for 5×6.25 ft"). If a customer asks about pricing for a size or configuration that is not explicitly priced in the Product Catalog, say you do not have a confirmed price for that specific option and offer to connect them with a team member who can help.\n\nIMAGE RULE: Never write placeholder text like "(Image of X)", "(Photo of Cot)", "[Image]", or any bracket/parenthesis notation to indicate an image. Real product photos are sent separately by the system — if no real image URL is present in the product data, do not reference images in your reply at all.'
+      furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.\n\nPRICING RULE (strict — no exceptions): Never calculate, estimate, derive, or infer a price from a product\'s size, dimensions, or inches. Only quote the exact price that appears in the VERIFIED ECOM PRODUCT DATA for that specific product entry — never attribute a catalog price to a customer-requested dimension (e.g. do not say "these prices are for 5×6.25 ft"). If a customer asks about pricing for a size or configuration that is not explicitly priced in the Product Catalog, say you do not have a confirmed price for that specific option and offer to connect them with a team member who can help.\n\nIMAGE RULE: Never write placeholder text like "(Image of X)", "(Photo of Cot)", "[Image]", or any bracket/parenthesis notation to indicate an image. Real product photos are sent separately by the system — if no real image URL is present in the product data, do not reference images in your reply at all.',
+      baby_care:'BABY CARE & APPAREL COMMUNICATION STYLE: Sound warm, reassuring and detail-oriented — parents want to feel confident every choice is safe and made with care. The deterministic Baby Care flow controls shopping: button-led welcome, fabric/quality tier selection, customisation questions (base set is always white; customer chooses accent colours, print theme and optional add-ons), delivery details, then order confirmation followed by a warm human handoff. Answer additional questions from the configured business prompt and VERIFIED ECOM PRODUCT DATA only. Never invent fabric properties, age suitability, safety claims, pricing, or add-on availability. PRICING RULE: Only quote the exact starting price stored in the product entry — never compute a per-accessory or per-item breakdown unless it is explicitly listed. IMAGE RULE: Never write placeholder text for images — real product photos are sent separately by the system.'
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
@@ -16344,9 +16367,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'matrimonial_chat',step:matriChatTurn.step});
     }
-    // For fashion and electronics ecom, skip the generic greeting when the first message already
-    // contains product/category content — let the product detection pipeline handle it directly.
-    const _ecomStylesWithProductGreeting=new Set(['fashion','electronics']);
+    // For fashion, electronics and baby_care ecom, skip the generic greeting when the first message
+    // already contains product/category content — let the product detection pipeline handle it.
+    const _ecomStylesWithProductGreeting=new Set(['fashion','electronics','baby_care']);
     const _ecomNewWithProduct=isNewLead&&c.industry==='ecommerce'
       &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
@@ -16429,6 +16452,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const replyLang=routing.customerLanguage||c.language||'en';
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
     const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
+    const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
     let sentText=null;
@@ -16548,6 +16572,204 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           sentText=await engineLocalizeReply(env,c,'Sorry, I could not find that colour variant. Please choose a product again.',replyLang);
           routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
           await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        }
+      }
+    }
+    // ── Baby Care Ecom: button-led custom-order flow ─────────────────────────────
+    // Stages: baby_quality_select → baby_customize → baby_addons → baby_order_details → baby_order_confirm
+    // A fully deterministic, button-only flow for custom baby apparel orders.
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isBabyCareEcom && !orderHandledInline){
+      const _isBabyStage=state.stage&&state.stage.startsWith('baby_');
+      const _isBabyGreeting=mediaType==='text'&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon)|hlo|hii|hai|hy|howdy|sup|greetings)[!.,? ]*$/i.test(userText.trim());
+      // CANCEL: any stage
+      if(_isBabyStage&&/^BABY_CANCEL$/i.test(userText)){
+        sentText=await engineLocalizeReply(env,c,'No problem! Feel free to message us any time. 🌸',replyLang);
+        routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&(isNewLead||isRevisit))){
+        // Welcome message with main action buttons
+        const welcomeIntro=isNewLead
+          ? await engineBuildFirstTouchIntro(env,c,'Welcome! 👶🏻 How can we help you today?',replyLang,state.name||state.lead?.Name)
+          : await engineLocalizeReply(env,c,'Welcome back! 👶🏻 What would you like to do?',replyLang);
+        sentText=welcomeIntro;
+        routing.reply=sentText; routing.next='new';
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+          {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+          {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+        ]);
+        orderHandledInline=true;
+      } else if(/^BABY_VIEW_CATALOG$/i.test(userText)){
+        const catalogLink=(c.external_store_link||'').trim();
+        sentText=await engineLocalizeReply(env,c,catalogLink
+          ?`Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`
+          :'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+        routing.reply=sentText; routing.next='new';
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+          {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+        ]);
+        orderHandledInline=true;
+      } else if(/^BABY_TALK_TO_TEAM$/i.test(userText)){
+        sentText=await engineLocalizeReply(env,c,"Sure! I'll connect you with our team now. 🌸",replyLang);
+        routing.reply=sentText; routing.route='human'; routing.humanReason='baby_care_talk_request';
+        await engineSendHandoverLabel(c,convId);
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||state.stage==='baby_quality_select'){
+        // Step 1 — Quality / fabric tier selection
+        await ensureOrderCollectField(env);
+        const qualityText=await engineLocalizeReply(env,c,
+          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
+        sentText=qualityText;
+        routing.reply=sentText; routing.next='baby_quality_select';
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
+          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
+          {title:'Cancel ❌',value:'BABY_CANCEL'},
+        ]);
+        orderHandledInline=true;
+      } else if(state.stage==='baby_quality_select'&&(/^BABY_QUALITY_AFFORDABLE$/i.test(userText)||/^BABY_QUALITY_PREMIUM$/i.test(userText))){
+        const isAffordable=/^BABY_QUALITY_AFFORDABLE$/i.test(userText);
+        const tierLabel=isAffordable?'Affordable Range — Single Jersey (from ₹650)':'Premium Range — Interlock (from ₹850)';
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        seed.qualityTier=tierLabel; seed.babyCareFlow=true;
+        // Step 2 — Customization: accent colour
+        const customizeText=await engineLocalizeReply(env,c,
+          `Great choice! 🌟 You selected *${tierLabel}*.\n\n*Base colour is white.* Now let's personalise it!\n\nWhat accent colour would you like for the prints and details?\n(e.g. Pink, Blue, Mint Green, Lavender, Peach, Yellow)`,replyLang);
+        sentText=customizeText;
+        routing.reply=sentText; routing.next='baby_customize'; routing.orderCollectSeed=seed;
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Pink 🩷',value:'BABY_COLOR_PINK'},
+          {title:'Blue 💙',value:'BABY_COLOR_BLUE'},
+          {title:'Mint Green 🌿',value:'BABY_COLOR_MINT'},
+          {title:'Other colour ✏️',value:'BABY_COLOR_OTHER'},
+        ]);
+        orderHandledInline=true;
+      } else if(state.stage==='baby_customize'){
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        // Accept a button value or typed colour
+        const colorMap={'BABY_COLOR_PINK':'Pink','BABY_COLOR_BLUE':'Blue','BABY_COLOR_MINT':'Mint Green','BABY_COLOR_OTHER':null};
+        const mappedColor=colorMap[userText.trim().toUpperCase()];
+        const chosenColor=(mappedColor===undefined?userText.trim():mappedColor)||userText.trim();
+        if(!chosenColor||chosenColor.length<2){
+          const retryText=await engineLocalizeReply(env,c,'Please type the accent colour you would like (e.g. Pink, Lavender, Yellow):',replyLang);
+          sentText=retryText; routing.reply=sentText; routing.next='baby_customize'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else {
+          seed.accentColor=chosenColor;
+          // Step 3 — Print theme
+          const themeText=await engineLocalizeReply(env,c,
+            `Lovely choice — *${chosenColor}* accent! 🎨\n\nWhat print theme would you like?\n(e.g. Floral, Stars, Animal, Geometric, Solid — or describe your own idea)`,replyLang);
+          sentText=themeText;
+          routing.reply=sentText; routing.next='baby_print_theme'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Floral 🌸',value:'BABY_THEME_FLORAL'},
+            {title:'Stars ⭐',value:'BABY_THEME_STARS'},
+            {title:'Animals 🐻',value:'BABY_THEME_ANIMAL'},
+            {title:'Custom theme ✏️',value:'BABY_THEME_CUSTOM'},
+          ]);
+          orderHandledInline=true;
+        }
+      } else if(state.stage==='baby_print_theme'){
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        const themeMap={'BABY_THEME_FLORAL':'Floral','BABY_THEME_STARS':'Stars','BABY_THEME_ANIMAL':'Animals','BABY_THEME_CUSTOM':null};
+        const mappedTheme=themeMap[userText.trim().toUpperCase()];
+        const chosenTheme=(mappedTheme===undefined?userText.trim():mappedTheme)||userText.trim();
+        seed.printTheme=chosenTheme||'Custom';
+        // Step 4 — Add-ons
+        const addOnsText=await engineLocalizeReply(env,c,
+          `*${chosenTheme||'Custom'}* theme — great! 🎀\n\nWould you like any optional add-ons?\n(Tap all that apply, then tap *Done* when finished)`,replyLang);
+        sentText=addOnsText;
+        routing.reply=sentText; routing.next='baby_addons'; routing.orderCollectSeed=seed;
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Bows (Neck/Cap) 🎀',value:'BABY_ADDON_BOWS'},
+          {title:'Boots 👟',value:'BABY_ADDON_BOOTS'},
+          {title:'Hand Socks 🧤',value:'BABY_ADDON_HANDSOCKS'},
+          {title:'No add-ons ✓',value:'BABY_ADDON_NONE'},
+        ]);
+        orderHandledInline=true;
+      } else if(state.stage==='baby_addons'){
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        const addonMap={'BABY_ADDON_BOWS':'Bows','BABY_ADDON_BOOTS':'Boots','BABY_ADDON_HANDSOCKS':'Hand Socks','BABY_ADDON_NONE':'None'};
+        const chosenAddon=addonMap[userText.trim().toUpperCase()]||userText.trim()||'None';
+        const existingAddons=(seed.addOns&&seed.addOns!=='None')?seed.addOns:'';
+        if(chosenAddon==='None'||!existingAddons){
+          seed.addOns=chosenAddon==='None'?'None':(existingAddons?`${existingAddons}, ${chosenAddon}`:chosenAddon);
+        }else{
+          seed.addOns=`${existingAddons}, ${chosenAddon}`;
+        }
+        // Step 5 — Collect delivery details
+        const deliveryText=await engineLocalizeReply(env,c,
+          `Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)`,replyLang);
+        sentText=deliveryText;
+        routing.reply=sentText; routing.next='baby_order_details'; routing.orderCollectSeed=seed;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(state.stage==='baby_order_details'){
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        const lines=String(userText||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+        const extract=(keys)=>{
+          for(const line of lines){
+            for(const key of keys){
+              const m=line.match(new RegExp(`^${key}\\s*[:\\-]\\s*(.+)$`,'i'));
+              if(m&&m[1].trim()) return m[1].trim();
+            }
+          }
+          return null;
+        };
+        const parsedName=extract(['name','customer'])||lines[0]||name||'';
+        const parsedAddress=extract(['(?:delivery\\s*)?address','addr','location','city'])||lines[1]||'';
+        if(!parsedName||parsedAddress.length<3){
+          const retryText=await engineLocalizeReply(env,c,'Please share your Name and Delivery Address (on separate lines) so we can process your order:',replyLang);
+          sentText=retryText; routing.reply=sentText; routing.next='baby_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else {
+          seed.customerName=parsedName; seed.address=parsedAddress.slice(0,500);
+          const summaryLines=[
+            `*Order Summary* 📋`,``,
+            `Product   : ${seed.productName||'Custom Baby Set'}`,
+            `Quality   : ${seed.qualityTier||'—'}`,
+            `Base      : White`,
+            `Accent    : ${seed.accentColor||'—'}`,
+            `Theme     : ${seed.printTheme||'—'}`,
+            `Add-ons   : ${seed.addOns||'None'}`,
+            ``,
+            `Name      : ${seed.customerName}`,
+            `Address   : ${seed.address}`,
+          ];
+          sentText=await engineLocalizeReply(env,c,summaryLines.join('\n'),replyLang);
+          routing.reply=sentText; routing.next='baby_order_confirm'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Confirm Order ✅',value:'BABY_CONFIRM'},
+            {title:'Cancel ❌',value:'BABY_CANCEL'},
+          ]);
+          orderHandledInline=true;
+        }
+      } else if(state.stage==='baby_order_confirm'){
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        if(/^BABY_CONFIRM$/i.test(userText)||/^(?:confirm|yes|ok|proceed)$/i.test(userText.trim())){
+          seed.items=ecomBabyCareOrderItems(seed);
+          const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
+          sentText=await engineLocalizeReply(env,c,order.ok
+            ?`Order confirmed! 🎉 Your custom baby set is now with our team. We'll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸`
+            :'I could not save the order. Connecting you with our team now.',replyLang);
+          routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
+          if(!order.ok){routing.route='human';routing.humanReason='baby_order_save_failed';await engineSendHandoverLabel(c,convId);}
+          else{routing.route='human';routing.humanReason='baby_order_confirmed';await engineSendHandoverLabel(c,convId);}
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else {
+          sentText=await engineLocalizeReply(env,c,'Please confirm or cancel your order:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Confirm Order ✅',value:'BABY_CONFIRM'},
+            {title:'Cancel ❌',value:'BABY_CANCEL'},
+          ]);
           orderHandledInline=true;
         }
       }
@@ -17091,6 +17313,18 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // whenever the checkout link goes out (order, or enquiry with the link toggle on) — link
     // presence no longer gates the photo, only whether a product was actually identified.
     const humanBlocksOrderCheck=routing.route==='human' && routing.humanReason==='explicit';
+    // Baby care ecom uses a fully deterministic button flow handled above; generic product
+    // detection would bypass it and send raw product cards — skip the entire detection block.
+    if(isBabyCareEcom && !orderHandledInline){
+      sentText=await engineLocalizeReply(env,c,'How can we help you today? Tap below to get started! 👶🏻',replyLang);
+      routing.reply=sentText;
+      routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+        {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+        {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+        {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+      ]);
+      orderHandledInline=true;
+    }
     if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);

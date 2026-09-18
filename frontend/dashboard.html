@@ -2176,6 +2176,7 @@ const ROLES = {
                   <option value="electronics">Electronics</option>
                   <option value="shopify">Shopify / general store</option>
                   <option value="furniture_appliances">Furniture &amp; home appliances</option>
+                  <option value="baby_care">Baby Care &amp; Apparel</option>
                 </select>
               </div>
               <button class="save-btn" id="saveEcomCommunicationStyle">Save Style</button>
@@ -16239,6 +16240,7 @@ function ecomStyleBreakdownCards(sb, fmt){
     {style:'cosmetics', title:'Cosmetics Breakdown', buckets:[['by_shade','Shade'],['by_skin_type','Skin Type']]},
     {style:'haircare', title:'Haircare Breakdown', buckets:[['by_hair_type','Hair Type'],['by_concern','Concern']]},
     {style:'general', title:'General Breakdown', buckets:[['by_brand','Brand'],['by_variant','Variant']]},
+    {style:'baby_care', title:'Baby Care Breakdown', buckets:[['by_age_group','Age Group'],['by_quality_tier','Fabric / Quality Tier']]},
   ];
   return groups.map(g=>{
     const data=sb[g.style];

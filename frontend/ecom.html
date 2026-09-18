@@ -492,10 +492,15 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <option value="general">General</option>
           <option value="cosmetics">Cosmetics</option>
           <option value="haircare">Haircare</option>
+          <option value="baby_care">Baby Care &amp; Apparel</option>
         </select>
       </div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Age Group</span><input class="s-input" id="pmAgeGroup" type="text" placeholder="e.g. 0-6 months, 6-12 months"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Fabric Type</span><input class="s-input" id="pmFabricType" type="text" placeholder="e.g. Single Jersey (Affordable), Interlock (Premium)"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Set Includes</span><input class="s-input" id="pmSetIncludes" type="text" placeholder="e.g. Top, Skirt, Cap, Boots, Hand Socks"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Custom Accent Colors</span><input class="s-input" id="pmAccentColors" type="text" placeholder="e.g. Pink, Blue, Mint Green"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Shade</span><input class="s-input" id="pmShade" type="text" placeholder="e.g. Rose Nude"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Skin Type</span><input class="s-input" id="pmSkinType" type="text" placeholder="e.g. Oily, Dry, Combination"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Expiry Date</span><input class="s-input" id="pmExpiryDate" type="text" placeholder="e.g. 2027-03"></div>
@@ -730,6 +735,10 @@ const PRODUCT_FIELDS = [
   { key:'brand',       label:'Brand' },
   { key:'variant',     label:'Variant' },
   { key:'warranty_period', label:'Warranty' },
+  { key:'age_group',     label:'Age Group' },
+  { key:'fabric_type',   label:'Fabric Type' },
+  { key:'set_includes',  label:'Set Includes' },
+  { key:'accent_colors', label:'Accent Colors' },
   { key:'shopify_product_url', label:'Shopify Product Link' },
   { key:'product_link', label:'Product Link' },
   { key:'price',       label:'Price' },
@@ -1014,10 +1023,10 @@ async function bulkDeleteProducts() {
 }
 
 // ── ADD / EDIT / DELETE PRODUCT ───────────────────
-const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare' };
+const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare', baby_care:'Baby Care & Apparel' };
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
-const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
+const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod','pmAgeGroup','pmFabricType','pmSetIncludes','pmAccentColors'];
 const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
@@ -1061,6 +1070,10 @@ function openEditProductModal(id) {
   document.getElementById('pmBrand').value = p.brand || '';
   document.getElementById('pmVariant').value = p.variant || '';
   document.getElementById('pmWarrantyPeriod').value = p.warranty_period || '';
+  document.getElementById('pmAgeGroup').value = p.age_group || '';
+  document.getElementById('pmFabricType').value = p.fabric_type || '';
+  document.getElementById('pmSetIncludes').value = p.set_includes || '';
+  document.getElementById('pmAccentColors').value = p.accent_colors || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
   document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
@@ -1168,6 +1181,10 @@ async function submitProductForm() {
     brand: document.getElementById('pmBrand').value.trim(),
     variant: document.getElementById('pmVariant').value.trim(),
     warranty_period: document.getElementById('pmWarrantyPeriod').value.trim(),
+    age_group: document.getElementById('pmAgeGroup').value.trim(),
+    fabric_type: document.getElementById('pmFabricType').value.trim(),
+    set_includes: document.getElementById('pmSetIncludes').value.trim(),
+    accent_colors: document.getElementById('pmAccentColors').value.trim(),
     shopify_product_url: document.getElementById('pmShopifyUrl').value.trim(),
     product_link: document.getElementById('pmProductLink').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
@@ -1262,10 +1279,11 @@ function downloadProductTemplate() {
   // One sample row per style, so importers see how the style-specific columns line up — every
   // row leaves the columns that don't apply to its own style blank.
   const samples = [
-    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
-    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
-    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
-    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
+    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
+    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
+    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Princess Baby Set','BABY-PINK-01','Baby Sets','baby_care','','','','','','','','','','','','','0-6 months','Single Jersey (Affordable)','Top, Skirt, Cap','Pink, Mint Green','650','INR','20','active','Custom 0-6 month baby set — white base with floral print accents','https://example.com/images/baby-pink-set.jpg','','',''],
   ];
   const csv = [headers.join(','), ...samples.map(row => row.map(csvCell).join(','))].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
