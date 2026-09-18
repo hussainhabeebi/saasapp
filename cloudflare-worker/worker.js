@@ -16395,8 +16395,22 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
       }
     }
+    // Skip the expensive AI classification for ecom clients that are mid-flow in a
+    // button-driven stage — the stage handler will deterministically handle the turn
+    // regardless of intent. Opt-out and resub keywords still bypass this fast path so
+    // ENGINE_OPT_OUT_WORDS / "start" re-subscribe remain honoured.
+    const _ecomStyle=c.industry==='ecommerce'?(botConfig.ecom_communication_style||''):'';
+    const _isActiveEcomStage=
+      (_ecomStyle==='fashion'     && state.stage?.startsWith('fashion_order_')) ||
+      (_ecomStyle==='baby_care'   && state.stage?.startsWith('baby_'))          ||
+      (_ecomStyle==='electronics' && state.stage?.startsWith('elec_order_'));
+    const _ecomFastPath=_isActiveEcomStage
+      && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
+      && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+      : _ecomFastPath
+      ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
