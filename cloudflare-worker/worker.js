@@ -16598,6 +16598,27 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // ── Baby Care Ecom: button-led custom-order flow ─────────────────────────────
     // Stages: baby_quality_select → baby_customize → baby_addons → baby_order_details → baby_order_confirm
     // A fully deterministic, button-only flow for custom baby apparel orders.
+    // Flow config is editable by the merchant via the Ecom → Flow tab and stored in botConfig.baby_care_flow.
+    const _bcf=(isBabyCareEcom&&botConfig&&botConfig.baby_care_flow)||{};
+    const _bcMsg=(k,d)=>(_bcf[k]||d);
+    const _bcColors=Array.isArray(_bcf.colors)&&_bcf.colors.length?_bcf.colors:[
+      {label:'Pink 🩷',value:'BABY_COLOR_PINK',name:'Pink'},
+      {label:'Blue 💙',value:'BABY_COLOR_BLUE',name:'Blue'},
+      {label:'Mint Green 🌿',value:'BABY_COLOR_MINT',name:'Mint Green'},
+      {label:'Other colour ✏️',value:'BABY_COLOR_OTHER',name:''},
+    ];
+    const _bcThemes=Array.isArray(_bcf.themes)&&_bcf.themes.length?_bcf.themes:[
+      {label:'Floral 🌸',value:'BABY_THEME_FLORAL',name:'Floral'},
+      {label:'Stars ⭐',value:'BABY_THEME_STARS',name:'Stars'},
+      {label:'Animals 🐻',value:'BABY_THEME_ANIMAL',name:'Animals'},
+      {label:'Custom theme ✏️',value:'BABY_THEME_CUSTOM',name:''},
+    ];
+    const _bcAddons=Array.isArray(_bcf.addons)&&_bcf.addons.length?_bcf.addons:[
+      {label:'Bows (Neck/Cap) 🎀',value:'BABY_ADDON_BOWS',name:'Bows'},
+      {label:'Boots 👟',value:'BABY_ADDON_BOOTS',name:'Boots'},
+      {label:'Hand Socks 🧤',value:'BABY_ADDON_HANDSOCKS',name:'Hand Socks'},
+      {label:'No add-ons ✓',value:'BABY_ADDON_NONE',name:'None'},
+    ];
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isBabyCareEcom && !orderHandledInline){
       const _isBabyStage=state.stage&&state.stage.startsWith('baby_');
       const _isBabyGreeting=mediaType==='text'&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon)|hlo|hii|hai|hy|howdy|sup|greetings)[!.,? ]*$/i.test(userText.trim());
@@ -16606,15 +16627,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const _babyIsQuestion=/[?]/.test(userText)||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim());
       // CANCEL: any stage
       if(_isBabyStage&&/^BABY_CANCEL$/i.test(userText)){
-        sentText=await engineLocalizeReply(env,c,'No problem! Feel free to message us any time. 🌸',replyLang);
+        sentText=await engineLocalizeReply(env,c,_bcMsg('cancel_msg','No problem! Feel free to message us any time. 🌸'),replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
       } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&(isNewLead||isRevisit))){
         // Welcome message with main action buttons
         const welcomeIntro=isNewLead
-          ? await engineBuildFirstTouchIntro(env,c,'Welcome! 👶🏻 How can we help you today?',replyLang,state.name||state.lead?.Name)
-          : await engineLocalizeReply(env,c,'Welcome back! 👶🏻 What would you like to do?',replyLang);
+          ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new','Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
+          : await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
         sentText=welcomeIntro;
         routing.reply=sentText; routing.next='new';
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
@@ -16635,7 +16656,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         ]);
         orderHandledInline=true;
       } else if(/^BABY_TALK_TO_TEAM$/i.test(userText)){
-        sentText=await engineLocalizeReply(env,c,"Sure! I'll connect you with our team now. 🌸",replyLang);
+        sentText=await engineLocalizeReply(env,c,_bcMsg('talk_msg',"Sure! I'll connect you with our team now. 🌸"),replyLang);
         routing.reply=sentText; routing.route='human'; routing.humanReason='baby_care_talk_request';
         await engineSendHandoverLabel(c,convId);
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
@@ -16643,37 +16664,35 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       } else if(state.stage==='baby_quality_select'&&(/^BABY_QUALITY_AFFORDABLE$/i.test(userText)||/^BABY_QUALITY_PREMIUM$/i.test(userText))){
         // Step 2 — specific quality button tapped → advance to colour selection
         const isAffordable=/^BABY_QUALITY_AFFORDABLE$/i.test(userText);
-        const tierLabel=isAffordable?'Affordable Range — Single Jersey (from ₹650)':'Premium Range — Interlock (from ₹850)';
+        const tierLabel=isAffordable
+          ?_bcMsg('affordable_name','Affordable Range — Single Jersey (from ₹650)')
+          :_bcMsg('premium_name','Premium Range — Interlock (from ₹850)');
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         seed.qualityTier=tierLabel; seed.babyCareFlow=true;
         const customizeText=await engineLocalizeReply(env,c,
           `Great choice! 🌟 You selected *${tierLabel}*.\n\n*Base colour is white.* Now let's personalise it!\n\nWhat accent colour would you like for the prints and details?\n(e.g. Pink, Blue, Mint Green, Lavender, Peach, Yellow)`,replyLang);
         sentText=customizeText;
         routing.reply=sentText; routing.next='baby_customize'; routing.orderCollectSeed=seed;
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Pink 🩷',value:'BABY_COLOR_PINK'},
-          {title:'Blue 💙',value:'BABY_COLOR_BLUE'},
-          {title:'Mint Green 🌿',value:'BABY_COLOR_MINT'},
-          {title:'Other colour ✏️',value:'BABY_COLOR_OTHER'},
-        ]);
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,
+          _bcColors.map(c=>({title:c.label,value:c.value})));
         orderHandledInline=true;
       } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||(state.stage==='baby_quality_select'&&!_babyIsQuestion)){
         // Step 1 — show quality/fabric selection screen (also fallback reshow if unrecognised non-question input)
         await ensureOrderCollectField(env);
         const qualityText=await engineLocalizeReply(env,c,
-          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
+          _bcMsg('quality_intro','🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)'),replyLang);
         sentText=qualityText;
         routing.reply=sentText; routing.next='baby_quality_select';
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
-          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
+          {title:_bcMsg('affordable_label','Affordable (₹650+)'),value:'BABY_QUALITY_AFFORDABLE'},
+          {title:_bcMsg('premium_label','Premium (₹850+)'),value:'BABY_QUALITY_PREMIUM'},
           {title:'Cancel ❌',value:'BABY_CANCEL'},
         ]);
         orderHandledInline=true;
       } else if(state.stage==='baby_customize'){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
-        // Accept a button value or typed colour
-        const colorMap={'BABY_COLOR_PINK':'Pink','BABY_COLOR_BLUE':'Blue','BABY_COLOR_MINT':'Mint Green','BABY_COLOR_OTHER':null};
+        // Accept a button value or typed colour — map built from merchant-configured colours
+        const colorMap=Object.fromEntries(_bcColors.map(x=>[x.value.toUpperCase(),x.name||null]));
         const mappedColor=colorMap[userText.trim().toUpperCase()];
         const chosenColor=(mappedColor===undefined?userText.trim():mappedColor)||userText.trim();
         if(!chosenColor||chosenColor.length<2){
@@ -16688,45 +16707,39 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             `Lovely choice — *${chosenColor}* accent! 🎨\n\nWhat print theme would you like?\n(e.g. Floral, Stars, Animal, Geometric, Solid — or describe your own idea)`,replyLang);
           sentText=themeText;
           routing.reply=sentText; routing.next='baby_print_theme'; routing.orderCollectSeed=seed;
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-            {title:'Floral 🌸',value:'BABY_THEME_FLORAL'},
-            {title:'Stars ⭐',value:'BABY_THEME_STARS'},
-            {title:'Animals 🐻',value:'BABY_THEME_ANIMAL'},
-            {title:'Custom theme ✏️',value:'BABY_THEME_CUSTOM'},
-          ]);
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,
+            _bcThemes.map(t=>({title:t.label,value:t.value})));
           orderHandledInline=true;
         }
       } else if(state.stage==='baby_print_theme'){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
-        const themeMap={'BABY_THEME_FLORAL':'Floral','BABY_THEME_STARS':'Stars','BABY_THEME_ANIMAL':'Animals','BABY_THEME_CUSTOM':null};
+        const themeMap=Object.fromEntries(_bcThemes.map(x=>[x.value.toUpperCase(),x.name||null]));
         const mappedTheme=themeMap[userText.trim().toUpperCase()];
         const chosenTheme=(mappedTheme===undefined?userText.trim():mappedTheme)||userText.trim();
         seed.printTheme=chosenTheme||'Custom';
         // Step 4 — Add-ons
         const addOnsText=await engineLocalizeReply(env,c,
-          `*${chosenTheme||'Custom'}* theme — great! 🎀\n\nWould you like any optional add-ons?\n(Tap all that apply, then tap *Done* when finished)`,replyLang);
+          `*${chosenTheme||'Custom'}* theme — great! 🎀\n\nWould you like any optional add-ons?`,replyLang);
         sentText=addOnsText;
         routing.reply=sentText; routing.next='baby_addons'; routing.orderCollectSeed=seed;
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Bows (Neck/Cap) 🎀',value:'BABY_ADDON_BOWS'},
-          {title:'Boots 👟',value:'BABY_ADDON_BOOTS'},
-          {title:'Hand Socks 🧤',value:'BABY_ADDON_HANDSOCKS'},
-          {title:'No add-ons ✓',value:'BABY_ADDON_NONE'},
-        ]);
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,
+          _bcAddons.map(a=>({title:a.label,value:a.value})));
         orderHandledInline=true;
       } else if(state.stage==='baby_addons'){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
-        const addonMap={'BABY_ADDON_BOWS':'Bows','BABY_ADDON_BOOTS':'Boots','BABY_ADDON_HANDSOCKS':'Hand Socks','BABY_ADDON_NONE':'None'};
+        const addonMap=Object.fromEntries(_bcAddons.map(x=>[x.value.toUpperCase(),x.name||null]));
+        const _noneVal=(_bcAddons.find(a=>a.name==='None'||a.name==null&&a.label.toLowerCase().includes('no'))||_bcAddons[_bcAddons.length-1]).value.toUpperCase();
         const chosenAddon=addonMap[userText.trim().toUpperCase()]||userText.trim()||'None';
+        const isNoneAddon=userText.trim().toUpperCase()===_noneVal||chosenAddon==='None';
         const existingAddons=(seed.addOns&&seed.addOns!=='None')?seed.addOns:'';
-        if(chosenAddon==='None'||!existingAddons){
-          seed.addOns=chosenAddon==='None'?'None':(existingAddons?`${existingAddons}, ${chosenAddon}`:chosenAddon);
+        if(isNoneAddon||!existingAddons){
+          seed.addOns=isNoneAddon?'None':(existingAddons?`${existingAddons}, ${chosenAddon}`:chosenAddon);
         }else{
           seed.addOns=`${existingAddons}, ${chosenAddon}`;
         }
         // Step 5 — Collect delivery details
         const deliveryText=await engineLocalizeReply(env,c,
-          `Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)`,replyLang);
+          _bcMsg('delivery_prompt','Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)'),replyLang);
         sentText=deliveryText;
         routing.reply=sentText; routing.next='baby_order_details'; routing.orderCollectSeed=seed;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
@@ -16778,8 +16791,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           seed.items=ecomBabyCareOrderItems(seed);
           const order=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
           sentText=await engineLocalizeReply(env,c,order.ok
-            ?`Order confirmed! 🎉 Your custom baby set is now with our team. We'll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸`
-            :'I could not save the order. Connecting you with our team now.',replyLang);
+            ?_bcMsg('order_confirmed','Order confirmed! 🎉 Your custom baby set is now with our team. We\'ll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸')
+            :_bcMsg('order_failed','I could not save the order. Connecting you with our team now.'),replyLang);
           routing.reply=sentText; routing.next=order.ok?'new':'human_handover'; routing.clearOrderCollect=true;
           if(!order.ok){routing.route='human';routing.humanReason='baby_order_save_failed';await engineSendHandoverLabel(c,convId);}
           else{routing.route='human';routing.humanReason='baby_order_confirmed';await engineSendHandoverLabel(c,convId);}
