@@ -16632,25 +16632,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         await engineSendHandoverLabel(c,convId);
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
-      } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||state.stage==='baby_quality_select'){
-        // Step 1 — Quality / fabric tier selection
-        await ensureOrderCollectField(env);
-        const qualityText=await engineLocalizeReply(env,c,
-          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
-        sentText=qualityText;
-        routing.reply=sentText; routing.next='baby_quality_select';
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
-          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
-          {title:'Cancel ❌',value:'BABY_CANCEL'},
-        ]);
-        orderHandledInline=true;
       } else if(state.stage==='baby_quality_select'&&(/^BABY_QUALITY_AFFORDABLE$/i.test(userText)||/^BABY_QUALITY_PREMIUM$/i.test(userText))){
+        // Step 2 — specific quality button tapped → advance to colour selection
         const isAffordable=/^BABY_QUALITY_AFFORDABLE$/i.test(userText);
         const tierLabel=isAffordable?'Affordable Range — Single Jersey (from ₹650)':'Premium Range — Interlock (from ₹850)';
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         seed.qualityTier=tierLabel; seed.babyCareFlow=true;
-        // Step 2 — Customization: accent colour
         const customizeText=await engineLocalizeReply(env,c,
           `Great choice! 🌟 You selected *${tierLabel}*.\n\n*Base colour is white.* Now let's personalise it!\n\nWhat accent colour would you like for the prints and details?\n(e.g. Pink, Blue, Mint Green, Lavender, Peach, Yellow)`,replyLang);
         sentText=customizeText;
@@ -16660,6 +16647,19 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           {title:'Blue 💙',value:'BABY_COLOR_BLUE'},
           {title:'Mint Green 🌿',value:'BABY_COLOR_MINT'},
           {title:'Other colour ✏️',value:'BABY_COLOR_OTHER'},
+        ]);
+        orderHandledInline=true;
+      } else if(/^BABY_CUSTOM_ORDER$/i.test(userText)||state.stage==='baby_quality_select'){
+        // Step 1 — show quality/fabric selection screen (also fallback reshow if unrecognised input)
+        await ensureOrderCollectField(env);
+        const qualityText=await engineLocalizeReply(env,c,
+          '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',replyLang);
+        sentText=qualityText;
+        routing.reply=sentText; routing.next='baby_quality_select';
+        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+          {title:'Affordable (₹650+)',value:'BABY_QUALITY_AFFORDABLE'},
+          {title:'Premium (₹850+)',value:'BABY_QUALITY_PREMIUM'},
+          {title:'Cancel ❌',value:'BABY_CANCEL'},
         ]);
         orderHandledInline=true;
       } else if(state.stage==='baby_customize'){
