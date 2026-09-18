@@ -16404,12 +16404,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       (_ecomStyle==='fashion'     && state.stage?.startsWith('fashion_order_')) ||
       (_ecomStyle==='baby_care'   && state.stage?.startsWith('baby_'))          ||
       (_ecomStyle==='electronics' && state.stage?.startsWith('elec_order_'));
-    // Only fast-path on recognised button values (BABY_*/FASHION_*/ELEC_*). Free-text — questions,
-    // addresses, colour names typed by the customer — goes through full AI classification so the
-    // prompt/KB can answer it and the ecom_faq path can append appropriate follow-up buttons.
+    // Baby care: only fast-path on recognised BABY_* button values — free-text (questions, colour
+    // names) goes through full AI so the FAQ path can answer from prompt/KB and append action buttons.
+    // Fashion / electronics: any text in an active stage fast-paths (stage handler is deterministic).
     const _isEcomButtonValue=/^(?:BABY|FASHION|ELEC)_[A-Z0-9_]+$/i.test(userText.trim());
     const _ecomFastPath=_isActiveEcomStage
-      && _isEcomButtonValue
+      && (_ecomStyle!=='baby_care' || _isEcomButtonValue)
       && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
       && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
     const cls=introAction
