@@ -13182,6 +13182,63 @@ BUTTONS — mandatory after EVERY reply:
       +'9. DELIVERY QUERIES: If customer asks about delivery or order status, share the tracking info from context if available; otherwise say you will check and update them shortly.\n'
       +'10. PRODUCT DETAILS (if tapped): Give full product details — all specs, all features, warranty, what\'s in the box — then show: OPTIONS: Buy Now | Talk to Agent';
   }
+  if(_botCfg.chat_style==='humanized'){
+    // Language-specific natural tone
+    if(replyLang==='ml'){
+      sys+='\n\nCHAT TONE — MALAYALAM: Write like a friendly Keralite sales rep on WhatsApp. Use casual everyday Malayalam — short sentences, warm and direct. Naturally mix common English words (ok, sure, thanks, perfect, no problem, order, delivery, confirm) without translating them to Malayalam script. Avoid formal or literary Malayalam. Example feel: "ശരി, നോക്കട്ടെ 😊" or "okay ആകും, ഞാൻ confirm ചെയ്യാം" — never "ഞാൻ ഇക്കാര്യം അന്വേഷിക്കുന്നതാണ്".';
+    } else if(replyLang==='hi'){
+      sys+='\n\nCHAT TONE — HINDI: Write like a helpful, friendly shopkeeper texting on WhatsApp. Use simple everyday Hindi — warm, direct, and conversational. Natural Hinglish is completely fine. Avoid stiff or formal Urdu-heavy phrasing. Example feel: "हाँ बिल्कुल!" or "देखते हैं, एक second रुकिए" — never "मैं आपकी सहायता करने का प्रयास करूँगा".';
+    } else if(replyLang==='ta'){
+      sys+='\n\nCHAT TONE — TAMIL: Write like a friendly Tamil-speaking sales rep on WhatsApp. Use everyday spoken Tamil, not formal written Tamil. Natural English mix is fine. Short, warm sentences.';
+    } else if(replyLang==='te'){
+      sys+='\n\nCHAT TONE — TELUGU: Write like a friendly Telugu-speaking sales rep on WhatsApp. Use everyday spoken Telugu — warm and natural. Natural English mix is fine. Keep replies short and personal.';
+    } else if(replyLang==='kn'){
+      sys+='\n\nCHAT TONE — KANNADA: Write like a friendly Kannadiga sales rep on WhatsApp. Use everyday spoken Kannada — casual, warm, direct. Natural English mix is fine.';
+    } else {
+      sys+='\n\nCHAT TONE: Sound like a real, friendly person texting — not a scripted bot or a formal assistant. Short and warm. Match the customer\'s energy and effort. One emoji max if it fits naturally.';
+    }
+    // Answer-first: answer the question directly before anything else
+    sys+='\n\nANSWER-FIRST: When the customer asks a specific question, answer it directly and completely in the first sentence — never open with a greeting, pitch, or clarifying question when a question was asked. Give the real answer first; offer a natural next step after if useful.';
+    // Industry-specific answer lead: what to surface first in each reply
+    if(industry==='ecommerce'){
+      sys+='\n\nANSWER STYLE: When a product is asked about, lead with price and availability first — that is what the customer wants before anything else. Features and details come after.';
+    } else if(industry==='travel'){
+      sys+='\n\nANSWER STYLE: Lead with package price and available dates first, then itinerary highlights. Give the number the customer is most likely asking about before the description.';
+    } else if(industry==='healthcare'){
+      sys+='\n\nANSWER STYLE: Lead with doctor availability and the next open slot — that is the most urgent fact. Then mention other relevant details.';
+    } else if(industry==='real_estate'){
+      sys+='\n\nANSWER STYLE: Lead with unit size and price range first, then location, amenities, and other details.';
+    }
+    // Industry-aware soft closing
+    if(industry==='ecommerce'){
+      sys+='\n\nSOFT CLOSE: If the customer is clearly interested (asking about price, delivery, or sizes), naturally invite them to proceed once — in Malayalam: "എടുക്കട്ടേ?" / in Hindi: "ले लेते हैं?" / in English: "Shall I place the order for you?" One soft close, no repeat pressure.';
+    } else if(industry==='travel'){
+      sys+='\n\nSOFT CLOSE: If the customer seems interested in a package, naturally offer to check availability for their dates — "Want me to check if this is open for your dates?" One ask, no pressure.';
+    } else if(industry==='healthcare'){
+      sys+='\n\nSOFT CLOSE: If the customer wants to proceed, gently offer to book — in Malayalam: "ഇപ്പോൾ slot book ചെയ്യട്ടേ?" / in Hindi: "अभी slot book करें?" Caring and unhurried tone, never pushy.';
+    } else if(industry==='education'){
+      sys+='\n\nSOFT CLOSE: If the customer seems interested, invite the next step naturally — "Would you like to enroll now, or shall I share more details first?" No pressure.';
+    } else if(industry==='real_estate'){
+      sys+='\n\nSOFT CLOSE: If the customer is interested, invite a site visit or callback naturally — "Want to visit the site?" or "Shall I have someone call you?" Consultative, never pushy.';
+    } else {
+      sys+='\n\nSOFT CLOSE: If the customer seems ready, offer the next step once in a friendly way — in Malayalam: "Confirm ആക്കട്ടേ?" / in Hindi: "Confirm करें?" / in English: "Shall we go ahead?" No repeat pressure — one natural close per conversation.';
+    }
+    // Win probability driven closing nudge (classifier result)
+    const _hmWinProb=intent?.win_probability??null;
+    if(_hmWinProb!==null && _hmWinProb>=70){
+      sys+='\n\nCLOSING SIGNAL: This customer is highly interested right now. If there is a natural opening in this reply, offer a clear and friendly next step — do not let the moment pass without a gentle close.';
+    } else if(_hmWinProb!==null && _hmWinProb>=40){
+      sys+='\n\nENGAGEMENT SIGNAL: The customer is warming up. Keep the conversation engaging — answer well and show genuine interest in their need. A light check-in ("anything else I can help clarify?") is fine but do not push for a close yet.';
+    }
+    // Quote validity urgency on price objection
+    if(c.quote_validity_days && intent?.objection==='price'){
+      sys+=`\n\nURGENCY (mention naturally once if it fits — never repeat or make it sound like pressure): The current pricing is valid for ${c.quote_validity_days} more days.`;
+    }
+    // Objection playbook: rephrase naturally in the customer's language
+    if(c.objection_playbook){
+      sys+='\n\nOBJECTION HANDLING: If you draw on the objection playbook, rephrase the response naturally in the customer\'s language and WhatsApp tone — keep the meaning but lose any stiff or formal phrasing. It should sound like you said it, not like a translated script.';
+    }
+  }
 
   // Real observed failure (Wellness Virtue): the previous turn ended "...Would you like to know
   // more about them?", the customer replied "yes", and the reply was essentially the SAME pitch
