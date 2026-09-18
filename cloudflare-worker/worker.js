@@ -19321,16 +19321,20 @@ async function handleAccountingDocumentCreate(request, env){
 // fp_collections row, so it shows in Financial Planning → Collections and counts toward the
 // Dashboard's Collected total). paid_recorded_at (migration 0037) guards against double-booking
 // if the status is flipped away from and back to 'paid'.
-async function fpRecordInvoicePaidSideEffects(env, clientId, invoice){
+async function fpRecordInvoicePaidSideEffects(env, clientId, invoice, opts={}){
   const now=new Date().toISOString();
+  let receiptId=null;
   const existingReceipt=await env.DB.prepare(`SELECT id FROM accounting_documents WHERE client_id=? AND linked_doc_id=? AND type='receipt'`).bind(clientId, invoice.id).first();
   if(!existingReceipt){
-    await env.DB.prepare(`INSERT INTO accounting_documents
+    const rr=await env.DB.prepare(`INSERT INTO accounting_documents
       (client_id, lead_id, type, title, line_items_json, currency, subtotal, tax_pct, tax_amount, total, status, linked_doc_id, notes, customer_name, customer_id, doc_created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(clientId, invoice.lead_id||null, 'receipt', invoice.title||'', invoice.line_items_json||'[]', invoice.currency||'',
         invoice.subtotal||0, invoice.tax_pct||0, invoice.tax_amount||0, invoice.total||0, 'paid', invoice.id,
         invoice.notes||'', invoice.customer_name||null, invoice.customer_id||null, now).run();
+    receiptId=rr.meta.last_row_id;
+  } else {
+    receiptId=existingReceipt.id;
   }
 
   let customerId=invoice.customer_id||null;
@@ -19351,6 +19355,24 @@ async function fpRecordInvoicePaidSideEffects(env, clientId, invoice){
   if(customerId){
     await env.DB.prepare(`INSERT INTO fp_collections (client_id, customer_id, expected_due_id, amount, currency, mode, collected_at, notes, created_at) VALUES (?,?,NULL,?,?,?,?,?,?)`)
       .bind(clientId, customerId, invoice.total||0, invoice.currency||'', 'other', now, `Auto-recorded from Invoice #${invoice.id} marked paid`, now).run();
+  }
+
+  // Auto-create payment entry linked to the receipt if account_id is provided
+  if(opts.account_id && receiptId){
+    try{
+      await accAutoCreatePaymentEntry(env, clientId, {
+        payment_type:'receive',
+        payment_date:now.slice(0,10),
+        amount:invoice.total||0,
+        currency:invoice.currency||'INR',
+        account_id:opts.account_id,
+        party_name:invoice.customer_name||null,
+        source_type:'receipt',
+        source_id:receiptId,
+        description:`Receipt for Invoice #${invoice.id}${invoice.title?' — '+invoice.title:''}`,
+        mode:opts.payment_mode||'bank',
+      });
+    }catch(e){}
   }
 
   await env.DB.prepare(`UPDATE accounting_documents SET paid_recorded_at=? WHERE id=?`).bind(now, invoice.id).run();
@@ -19397,7 +19419,7 @@ async function handleAccountingDocumentUpdate(request, env){
   // See fpRecordInvoicePaidSideEffects's own comment — only on a genuine draft/sent→paid
   // transition for an Invoice, and only once (paid_recorded_at guards a later flip-back-and-forth).
   if(body.status==='paid' && existing.status!=='paid' && existing.type==='invoice' && !existing.paid_recorded_at){
-    try{ await fpRecordInvoicePaidSideEffects(env, Number(payload.cid), {...existing, ...body}); }
+    try{ await fpRecordInvoicePaidSideEffects(env, Number(payload.cid), {...existing, ...body}, {account_id:body.account_id||null, payment_mode:body.payment_mode||'bank'}); }
     catch(e){ await reportOpsError(env, 'fpRecordInvoicePaidSideEffects failed', e, {clientId:payload.cid, docId:existing.id}); }
   }
   return json({ok:true});
@@ -19773,7 +19795,25 @@ async function handleAccountingExpenseCreate(request, env){
       String(body.paid_from_account||'').slice(0,140), String(body.paid_from_account_name||'').slice(0,140), Number(body.amount)||0, String(body.currency||'USD').slice(0,10).toUpperCase(),
       String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
       'unsynced', now).run();
-  return json({Id:r.meta.last_row_id});
+  const expId=r.meta.last_row_id;
+  // Auto-create payment entry if account_id supplied
+  if(body.account_id){
+    try{
+      await accAutoCreatePaymentEntry(env, payload.cid, {
+        payment_type:'pay',
+        payment_date:String(body.expense_date).slice(0,10),
+        amount:Number(body.amount)||0,
+        currency:String(body.currency||'USD').slice(0,10).toUpperCase(),
+        account_id:body.account_id,
+        party_name:body.vendor||null,
+        source_type:'expense',
+        source_id:expId,
+        description:`Expense: ${body.expense_account||body.category||''}${body.vendor?' — '+body.vendor:''}`,
+        mode:body.payment_mode||'cash',
+      });
+    }catch(e){}
+  }
+  return json({Id:expId});
 }
 async function handleAccountingExpenseUpdate(request, env){
   const payload=await requireSession(request, env);
@@ -19986,7 +20026,88 @@ async function handleVendorBillMarkPaid(request, env){
   if(!bill || String(bill.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   const now=new Date().toISOString();
   await env.DB.prepare(`UPDATE accounting_vendor_bills SET status='paid', paid_at=? WHERE id=?`).bind(now, bill.id).run();
-  return json({ok:true, paid_at:now});
+  // Auto-create payment entry if account_id supplied
+  let payment_entry_id=null;
+  if(body.account_id){
+    try{
+      payment_entry_id=await accAutoCreatePaymentEntry(env, payload.cid, {
+        payment_type:'pay',
+        payment_date:(bill.bill_date||now.slice(0,10)),
+        amount:bill.total||0,
+        currency:bill.currency||'INR',
+        account_id:body.account_id,
+        party_name:bill.supplier||null,
+        source_type:'vendor_bill',
+        source_id:bill.id,
+        description:`Vendor Bill #${bill.id}${bill.vendor_invoice_no?' — '+bill.vendor_invoice_no:''}`,
+        mode:body.payment_mode||'bank',
+      });
+    }catch(e){}
+  }
+  return json({ok:true, paid_at:now, payment_entry_id});
+}
+
+/* ── ACC SCHEMA BOOTSTRAP ─────────────────────────────────────────────────────────────────────────
+   D1 migrations (migration files) are a separate deployment step from `wrangler deploy`.  This
+   inline schema bootstrap ensures the four acc_ tables exist in every Worker isolate regardless
+   of whether migration 0098 was applied via wrangler.  Every statement is additive/idempotent
+   (CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS + ALTER TABLE IF NOT EXISTS) so it
+   never drops or overwrites existing data.  Cached per D1 binding to run at most once per isolate.
+── */
+const accSchemaReady=new WeakMap();
+async function accEnsureSchema(env){
+  if(!env?.DB) return;
+  const cached=accSchemaReady.get(env.DB);
+  if(cached) return cached;
+  const pending=(async()=>{
+    const stmts=[
+      `CREATE TABLE IF NOT EXISTS acc_bank_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,name TEXT NOT NULL,type TEXT NOT NULL DEFAULT 'bank',bank_name TEXT,account_number TEXT,ifsc_code TEXT,currency TEXT NOT NULL DEFAULT 'INR',opening_balance REAL NOT NULL DEFAULT 0,opening_balance_date TEXT,notes TEXT,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_acc_bank_accounts_client ON acc_bank_accounts(client_id)`,
+      `CREATE TABLE IF NOT EXISTS acc_payment_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,payment_type TEXT NOT NULL DEFAULT 'receive',payment_date TEXT NOT NULL,amount REAL NOT NULL DEFAULT 0,currency TEXT NOT NULL DEFAULT 'INR',account_id INTEGER,account_name TEXT,mode TEXT NOT NULL DEFAULT 'bank',reference_no TEXT,party_type TEXT,party_id INTEGER,party_name TEXT,source_type TEXT,source_id INTEGER,description TEXT,is_reconciled INTEGER NOT NULL DEFAULT 0,reconciled_at TEXT,recon_session_id INTEGER,recon_line_id INTEGER,created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_acc_payment_entries_client ON acc_payment_entries(client_id,payment_date)`,
+      `CREATE INDEX IF NOT EXISTS idx_acc_payment_entries_account ON acc_payment_entries(account_id)`,
+      `CREATE TABLE IF NOT EXISTS acc_bank_recon_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,account_id INTEGER NOT NULL,account_name TEXT,statement_from TEXT,statement_to TEXT,closing_balance REAL,currency TEXT,total_lines INTEGER NOT NULL DEFAULT 0,matched_lines INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',upload_filename TEXT,notes TEXT,created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_acc_bank_recon_sessions_client ON acc_bank_recon_sessions(client_id)`,
+      `CREATE TABLE IF NOT EXISTS acc_bank_recon_lines (id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,session_id INTEGER NOT NULL,txn_date TEXT,description TEXT,amount REAL,balance REAL,reference TEXT,match_status TEXT NOT NULL DEFAULT 'unmatched',matched_payment_entry_id INTEGER,created_at TEXT NOT NULL)`,
+      `CREATE INDEX IF NOT EXISTS idx_acc_bank_recon_lines_session ON acc_bank_recon_lines(session_id)`,
+    ];
+    for(const s of stmts) await env.DB.prepare(s).run().catch(()=>{});
+    // Idempotent column additions — ignore errors if already present
+    const alters=[
+      `ALTER TABLE accounting_documents ADD COLUMN payment_entry_id INTEGER`,
+      `ALTER TABLE accounting_expenses ADD COLUMN payment_entry_id INTEGER`,
+      `ALTER TABLE accounting_vendor_bills ADD COLUMN payment_entry_id INTEGER`,
+    ];
+    for(const a of alters) await env.DB.prepare(a).run().catch(()=>{});
+  })();
+  accSchemaReady.set(env.DB,pending);
+  try{ await pending; }
+  catch(e){ accSchemaReady.delete(env.DB); throw e; }
+}
+
+// Helper: auto-create a payment entry for an income/expense record if account_id is provided.
+// source_type: 'receipt'|'expense'|'vendor_bill'|'collection'
+// Checks for an existing entry with same source_type+source_id to avoid duplicates.
+async function accAutoCreatePaymentEntry(env, clientId, opts){
+  const {payment_type,payment_date,amount,currency,account_id,party_name,source_type,source_id,description,mode}=opts;
+  if(!account_id||!source_id||!amount) return null;
+  await accEnsureSchema(env);
+  const existing=await env.DB.prepare(`SELECT id FROM acc_payment_entries WHERE client_id=? AND source_type=? AND source_id=?`)
+    .bind(Number(clientId),source_type,Number(source_id)).first();
+  if(existing) return existing.id;
+  const acc=await env.DB.prepare(`SELECT name,currency FROM acc_bank_accounts WHERE id=? AND client_id=?`)
+    .bind(Number(account_id),Number(clientId)).first();
+  const now=new Date().toISOString();
+  const r=await env.DB.prepare(`INSERT INTO acc_payment_entries (client_id,payment_type,payment_date,amount,currency,account_id,account_name,mode,party_type,party_name,source_type,source_id,description,is_reconciled,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+    .bind(Number(clientId),payment_type,payment_date,Number(amount),currency||acc?.currency||'INR',Number(account_id),acc?.name||null,mode||'bank',payment_type==='receive'?'customer':'supplier',party_name||null,source_type,Number(source_id),description||null,now).run();
+  const peId=r.meta.last_row_id;
+  // Back-link source record to payment entry
+  try{
+    if(source_type==='receipt') await env.DB.prepare(`UPDATE accounting_documents SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(peId,Number(source_id),Number(clientId)).run();
+    else if(source_type==='expense') await env.DB.prepare(`UPDATE accounting_expenses SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(peId,Number(source_id),Number(clientId)).run();
+    else if(source_type==='vendor_bill') await env.DB.prepare(`UPDATE accounting_vendor_bills SET payment_entry_id=? WHERE id=? AND client_id=?`).bind(peId,Number(source_id),Number(clientId)).run();
+  }catch(e){}
+  return peId;
 }
 
 /* ── BANK & CASH ACCOUNTS (migration 0098_accounting_bank_cash.sql) ──────────────────────────────
@@ -19996,12 +20117,14 @@ async function handleVendorBillMarkPaid(request, env){
 async function handleBankAccountsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const {results}=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE client_id=? ORDER BY name ASC`).bind(Number(payload.cid)).all();
   return json({list:results||[]});
 }
 async function handleBankAccountCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.name) return json({error:'name required'}, 400);
   const now=new Date().toISOString();
@@ -20016,6 +20139,7 @@ async function handleBankAccountCreate(request, env){
 async function handleBankAccountUpdate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await env.DB.prepare(`SELECT * FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
@@ -20037,6 +20161,7 @@ async function handleBankAccountUpdate(request, env){
 async function handleBankAccountDelete(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.id) return json({error:'id required'}, 400);
   await env.DB.prepare(`DELETE FROM acc_bank_accounts WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).run();
@@ -20048,6 +20173,7 @@ function accPaymentEntryOut(row){ return {...row, Id:row.id}; }
 async function handlePaymentEntriesList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const url=new URL(request.url);
   const clientId=Number(payload.cid);
   let sql=`SELECT * FROM acc_payment_entries WHERE client_id=?`;
@@ -20062,6 +20188,7 @@ async function handlePaymentEntriesList(request, env){
 async function handlePaymentEntryCreate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.payment_date || !body.amount) return json({error:'payment_date and amount required'}, 400);
   const now=new Date().toISOString();
@@ -20095,6 +20222,7 @@ async function handlePaymentEntryCreate(request, env){
 async function handlePaymentEntryUpdate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.id) return json({error:'id required'}, 400);
   const existing=await env.DB.prepare(`SELECT * FROM acc_payment_entries WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
@@ -20118,6 +20246,7 @@ async function handlePaymentEntryUpdate(request, env){
 async function handlePaymentEntryDelete(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.id) return json({error:'id required'}, 400);
   const pe=await env.DB.prepare(`SELECT * FROM acc_payment_entries WHERE id=? AND client_id=?`).bind(Number(body.id),Number(payload.cid)).first();
@@ -20134,6 +20263,7 @@ async function handlePaymentEntryDelete(request, env){
 async function handleBankAccountBalance(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const url=new URL(request.url);
   const accountId=Number(url.searchParams.get('account_id'));
   if(!accountId) return json({error:'account_id required'}, 400);
@@ -20156,6 +20286,7 @@ async function handleBankAccountBalance(request, env){
 async function handleBankReconUpload(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   if(!env.AI) return json({error:'Cloudflare AI binding (AI) is not configured for this Worker — add it in wrangler.toml.'}, 503);
   const body=await request.json().catch(()=>({}));
   if(!body.account_id) return json({error:'account_id required'}, 400);
@@ -20237,6 +20368,7 @@ Rules:
 async function handleBankReconSessionsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const url=new URL(request.url);
   const clientId=Number(payload.cid);
   let sql=`SELECT * FROM acc_bank_recon_sessions WHERE client_id=? ORDER BY created_at DESC LIMIT 100`;
@@ -20249,6 +20381,7 @@ async function handleBankReconSessionsList(request, env){
 async function handleBankReconLinesList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const url=new URL(request.url);
   const sessionId=Number(url.searchParams.get('session_id'));
   if(!sessionId) return json({error:'session_id required'}, 400);
@@ -20261,6 +20394,7 @@ async function handleBankReconLinesList(request, env){
 async function handleBankReconMatchLine(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const body=await request.json().catch(()=>({}));
   if(!body.line_id) return json({error:'line_id required'}, 400);
   const line=await env.DB.prepare(`SELECT * FROM acc_bank_recon_lines WHERE id=? AND client_id=?`).bind(Number(body.line_id),Number(payload.cid)).first();
@@ -20300,6 +20434,7 @@ async function handleBankReconMatchLine(request, env){
 async function handleFpReportTrialBalance(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const clientId=Number(payload.cid);
   const url=new URL(request.url);
   const {from, to}=fpReportsDateRange(url);
@@ -20366,6 +20501,7 @@ async function handleFpReportTrialBalance(request, env){
 async function handleFpReportCashFlow(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await accEnsureSchema(env);
   const clientId=Number(payload.cid);
   const url=new URL(request.url);
   const {from, to}=fpReportsDateRange(url);

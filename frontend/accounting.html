@@ -650,14 +650,17 @@ tbody tr:hover{background:var(--bg)}
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Trial Balance</div>
-            <div class="card-actions">
+            <div class="card-actions" style="flex-wrap:wrap;gap:6px">
+              <select class="s-input" id="repTrialFy" style="width:auto" onchange="applyFyPreset('trial')">
+                <option value="">Custom range</option>
+              </select>
               <input class="s-input" id="repTrialFrom" type="date" style="width:auto">
               <span style="color:var(--muted);font-size:13px">to</span>
               <input class="s-input" id="repTrialTo" type="date" style="width:auto">
               <button class="save-btn sec" onclick="loadReportTrialBalance()">Run</button>
             </div>
           </div>
-          <div id="repTrialContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+          <div id="repTrialContent"><div class="empty-state">Pick a financial year or date range and click Run.</div></div>
         </div>
       </div>
 
@@ -666,14 +669,17 @@ tbody tr:hover{background:var(--bg)}
         <div class="card">
           <div class="card-title-row">
             <div class="card-title">Cash Flow Statement</div>
-            <div class="card-actions">
+            <div class="card-actions" style="flex-wrap:wrap;gap:6px">
+              <select class="s-input" id="repCfFy" style="width:auto" onchange="applyFyPreset('cf')">
+                <option value="">Custom range</option>
+              </select>
               <input class="s-input" id="repCfFrom" type="date" style="width:auto">
               <span style="color:var(--muted);font-size:13px">to</span>
               <input class="s-input" id="repCfTo" type="date" style="width:auto">
               <button class="save-btn sec" onclick="loadReportCashFlow()">Run</button>
             </div>
           </div>
-          <div id="repCfContent"><div class="empty-state">Pick a date range and click Run.</div></div>
+          <div id="repCfContent"><div class="empty-state">Pick a financial year or date range and click Run.</div></div>
         </div>
       </div>
     </div>
@@ -925,6 +931,23 @@ tbody tr:hover{background:var(--bg)}
       <div><label class="s-lbl">Category</label><input class="s-input" id="expCategory" placeholder="e.g. Rent, Software, Travel"></div>
       <div><label class="s-lbl">Vendor / Paid To</label><input class="s-input" id="expVendor" list="fpSuppliersDatalist" placeholder="e.g. AWS, Landlord"></div>
       <div><label class="s-lbl">Cost Center (optional)</label><input class="s-input" id="expCostCenter" placeholder="Optional label"></div>
+      <div>
+        <label class="s-lbl">Bank / Cash Account <span style="color:var(--muted);font-weight:400">(record payment)</span></label>
+        <select class="s-input" id="expBankAccountId">
+          <option value="">— None / record manually —</option>
+        </select>
+      </div>
+      <div>
+        <label class="s-lbl">Payment Mode</label>
+        <select class="s-input" id="expPaymentMode">
+          <option value="cash">Cash</option>
+          <option value="bank">Bank Transfer</option>
+          <option value="upi">UPI</option>
+          <option value="cheque">Cheque</option>
+          <option value="card">Card</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
     </div>
     <label class="s-lbl">Description / Remarks</label>
     <textarea class="s-input" id="expDescription" rows="2" style="resize:vertical"></textarea>
@@ -2362,17 +2385,26 @@ async function saveDocType(type){
 
 const DOC_STATUS_OPTIONS=['draft','sent','paid','void'];
 async function setDocumentStatus(id, status){
+  const doc=allDocuments.find(d=>d.Id===id);
+  let account_id=null, payment_mode='bank';
+  // When marking an invoice paid, offer to link a bank/cash account for the payment entry
+  if(doc?.type==='invoice' && status==='paid' && doc.status!=='paid' && allBankAccounts&&allBankAccounts.length){
+    const opts=allBankAccounts.map(a=>`${a.id}: ${a.name} (${a.type})`).join('\n');
+    const choice=prompt(`Received in which account? Enter the account ID or leave blank to skip.\n\n${opts}`);
+    if(choice&&choice.trim()){
+      account_id=Number(choice.trim())||null;
+      const modeChoice=prompt('Payment mode? (bank / cash / upi / cheque / card / other)','bank');
+      payment_mode=modeChoice?.trim()||'bank';
+    }
+  }
   try{
-    await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id, status})});
-    const doc=allDocuments.find(d=>d.Id===id);
+    await acctFetch('/accounting/documents',{method:'PATCH',body:JSON.stringify({id, status, account_id, payment_mode})});
     const wasUnpaid=doc&&doc.status!=='paid';
     if(doc) doc.status=status;
     renderDocumentsTable();
-    // Marking an Invoice paid auto-records income (a Receipt) and a collection server-side (see
-    // worker.js fpRecordInvoicePaidSideEffects) — silently refresh Financial Planning so the
-    // Dashboard/Collections reflect it immediately instead of only after a page reload.
     if(doc?.type==='invoice' && status==='paid' && wasUnpaid){
       try{ await loadFinancialPlanning(); renderFinancialPlanning(); }catch(e){}
+      if(account_id) try{ await loadBankAccounts(); }catch(e){}
     }
   }catch(e){ alert('Failed to update status: '+e.message); }
 }
@@ -2472,6 +2504,8 @@ function openExpenseModal(){
   document.getElementById('expDescription').value='';
   document.getElementById('expExpenseAccount').value='';
   document.getElementById('expPaidFromAccount').value='';
+  document.getElementById('expBankAccountId').value='';
+  document.getElementById('expPaymentMode').value='cash';
   document.getElementById('expenseModal').classList.add('active');
 }
 function closeExpenseModal(){ document.getElementById('expenseModal').classList.remove('active'); }
@@ -2482,6 +2516,7 @@ async function saveExpense(){
   if(!expenseDate){ alert('Pick a date.'); return; }
   const expenseAccount=document.getElementById('expExpenseAccount').value.trim();
   const vendor=document.getElementById('expVendor').value.trim();
+  const bankAccountId=document.getElementById('expBankAccountId').value;
   const body={
     expense_account:expenseAccount||'General',
     expense_account_name:expenseAccount,
@@ -2493,12 +2528,15 @@ async function saveExpense(){
     vendor, supplier_id:vendor?await ensureFpSupplierByName(vendor):null,
     cost_center:document.getElementById('expCostCenter').value.trim(),
     description:document.getElementById('expDescription').value.trim(),
+    account_id:bankAccountId?Number(bankAccountId):null,
+    payment_mode:document.getElementById('expPaymentMode').value,
   };
   try{
     const created=await acctFetch('/accounting/expenses',{method:'POST',body:JSON.stringify(body)});
     allExpenses.unshift({...body, Id:created.Id, id:created.Id});
     closeExpenseModal();
     renderExpensesTable();
+    if(bankAccountId) try{ await loadBankAccounts(); }catch(e){}
   }catch(e){ alert('Failed to save: '+e.message); }
 }
 async function deleteExpense(id){
@@ -2604,10 +2642,22 @@ async function saveVendorBill(){
 }
 async function markVendorBillPaid(id){
   if(!confirm('Mark this bill as paid?')) return;
+  // Offer to record against a bank account if any exist
+  let account_id=null, payment_mode='bank';
+  if(allBankAccounts&&allBankAccounts.length){
+    const opts=allBankAccounts.map(a=>`${a.id}: ${a.name} (${a.type})`).join('\n');
+    const choice=prompt(`Paid from which account? Enter the account ID or leave blank to skip.\n\n${opts}`);
+    if(choice&&choice.trim()){
+      account_id=Number(choice.trim())||null;
+      const modeChoice=prompt('Payment mode? (bank / cash / upi / cheque / card / other)','bank');
+      payment_mode=modeChoice?.trim()||'bank';
+    }
+  }
   try{
-    await acctFetch('/accounting/vendor-bills/mark-paid',{method:'POST',body:JSON.stringify({id})});
+    await acctFetch('/accounting/vendor-bills/mark-paid',{method:'POST',body:JSON.stringify({id, account_id, payment_mode})});
     await loadVendorBills();
     renderVendorBillsTable();
+    if(account_id) try{ await loadBankAccounts(); }catch(e){}
   }catch(e){ alert('Failed: '+e.message); }
 }
 async function deleteVendorBill(id){
@@ -3025,7 +3075,9 @@ async function loadBankAccounts(){
 }
 function populateBankAccountPickers(){
   const opts='<option value="">— Select Account —</option>'+allBankAccounts.map(a=>`<option value="${a.id}">${esc(a.name)} (${esc(a.type)})</option>`).join('');
+  const optsNone='<option value="">— None / record manually —</option>'+allBankAccounts.map(a=>`<option value="${a.id}">${esc(a.name)} (${esc(a.type)})</option>`).join('');
   ['peAccountId','reconAccountId'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=opts; });
+  ['expBankAccountId'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=optsNone; });
   const filt=document.getElementById('peFilterAccount');
   if(filt) filt.innerHTML='<option value="">All Accounts</option>'+allBankAccounts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
 }
@@ -3355,10 +3407,47 @@ async function loadReportCashFlow(){
   }catch(e){ el.innerHTML=`<div class="empty-state">Error: ${esc(e.message)}</div>`; }
 }
 
-/* ── Hook Bank Accounts into init ── */
+/* ── Financial Year (April – March) presets ── */
+function buildFyOptions(){
+  const today=new Date();
+  // Current FY: if month >= April (3) the FY started this year, otherwise last year
+  const fyStartYear=today.getMonth()>=3?today.getFullYear():today.getFullYear()-1;
+  const options=[];
+  for(let y=fyStartYear;y>=fyStartYear-4;y--){
+    options.push({label:`FY ${y}-${String(y+1).slice(2)} (Apr ${y} – Mar ${y+1})`, from:`${y}-04-01`, to:`${y+1}-03-31`});
+  }
+  return options;
+}
+function populateFySelects(){
+  const opts='<option value="">Custom range</option>'+buildFyOptions().map(o=>`<option value="${o.from}|${o.to}">${esc(o.label)}</option>`).join('');
+  ['repTrialFy','repCfFy'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML=opts; });
+}
+function applyFyPreset(reportKey){
+  const fySelectId=reportKey==='trial'?'repTrialFy':'repCfFy';
+  const fromId=reportKey==='trial'?'repTrialFrom':'repCfFrom';
+  const toId=reportKey==='trial'?'repTrialTo':'repCfTo';
+  const val=document.getElementById(fySelectId)?.value;
+  if(!val) return;
+  const [from,to]=val.split('|');
+  document.getElementById(fromId).value=from;
+  document.getElementById(toId).value=to;
+}
+
+/* ── Hook Bank Accounts and FY presets into init ── */
 const _origInit=init;
 init=async function(){
   await _origInit();
+  populateFySelects();
+  // Pre-select current FY in both report date pickers
+  const fyOpts=buildFyOptions();
+  if(fyOpts.length){
+    const [from,to]=fyOpts[0].from+'|'+fyOpts[0].to ? [fyOpts[0].from,fyOpts[0].to] : [];
+    if(from){ document.getElementById('repTrialFrom').value=from; document.getElementById('repTrialTo').value=to; }
+    if(from){ document.getElementById('repCfFrom').value=from.slice(0,7); document.getElementById('repCfTo').value=to.slice(0,7); }
+    // Set FY selectors to current FY
+    const fyVal=fyOpts[0].from+'|'+fyOpts[0].to;
+    ['repTrialFy','repCfFy'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=fyVal; });
+  }
   try{ await loadBankAccounts(); }catch(e){ console.error('[bank-accounts]', e.message); }
 };
 </script>
