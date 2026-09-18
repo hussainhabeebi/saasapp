@@ -3445,7 +3445,7 @@ const ROLES = {
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">💬 Chat Style</div>
-            <div class="s-note">Controls how the bot answers customer questions.<br><b>Prompt-First</b> — always gives a direct answer from your prompt or KB before asking anything; no pressure to call.<br><b>InstaFone</b> — D2C ad-to-order flow: immediately presents the product with photo, features &amp; offer price, then shows Buy Now / Product Details / Talk to Agent buttons. Collects delivery address step-by-step, shows order summary, handles COD &amp; UPI payment, sends order confirmation. Designed for products sold via Facebook/Instagram Ads.</div>
+            <div class="s-note">Controls how the bot answers customer questions.<br><b>Prompt-First</b> — always gives a direct answer from your prompt or KB before asking anything; no pressure to call.<br><b>InstaFone</b> — D2C ad-to-order flow: immediately presents the product with photo, features &amp; offer price, then shows Buy Now / Product Details / Talk to Agent buttons. Collects delivery address step-by-step, shows order summary, handles COD &amp; UPI payment, sends order confirmation. Designed for products sold via Facebook/Instagram Ads.<br><b>Humanized</b> — warm, natural WhatsApp tone adapted to the customer's language (Malayalam, Hindi, Tamil, Telugu, Kannada, or English). Answers questions directly, avoids robotic phrasing, and closes with a soft, natural nudge based on your industry. Best for businesses where the personal touch matters.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
               <div style="flex:1;min-width:240px;max-width:420px">
                 <label class="form-label">Chat Style</label>
@@ -3453,6 +3453,7 @@ const ROLES = {
                   <option value="">Default</option>
                   <option value="prompt_first">Prompt-First (answer before asking)</option>
                   <option value="instafone">InstaFone (D2C ad-to-order flow)</option>
+                  <option value="humanized">Humanized (natural local language)</option>
                 </select>
               </div>
               <button class="save-btn" id="saveChatStyle">Save</button>
