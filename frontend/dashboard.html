@@ -2161,6 +2161,48 @@ const ROLES = {
               <span class="save-msg" id="saveIndustryMsg"></span>
             </div>
           </div>
+
+          <div class="settings-section" style="border-top:1px solid var(--line);padding-top:14px">
+            <div class="s-head">🏢 Multi-Industry <span style="font-size:11px;font-weight:400;color:var(--muted);font-family:var(--body)">(optional)</span></div>
+            <div class="s-note">Run a second industry vertical from the same account — e.g. a healthcare clinic that also operates a travel desk. The secondary industry's conversations are handled exclusively on its dedicated channel; its product and service details are never sent to your main number.</div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">
+              <div>
+                <label class="form-label">Enable Multi-Industry</label>
+                <select class="form-input" id="cfgMultiIndustryEnabled" onchange="toggleMultiIndustrySection()" style="max-width:160px">
+                  <option value="No">Disabled</option>
+                  <option value="Yes">Enabled</option>
+                </select>
+              </div>
+            </div>
+            <div id="multiIndustryOptions" style="display:none;margin-top:14px">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                <div>
+                  <label class="form-label">Secondary Industry</label>
+                  <select class="form-input" id="cfgSecondaryIndustry"></select>
+                </div>
+                <div>
+                  <label class="form-label">Dedicated Channel <span style="font-size:11px;color:var(--muted)">(secondary only)</span></label>
+                  <select class="form-input" id="cfgSecondaryIndustryChannel">
+                    <option value="">— select a channel —</option>
+                  </select>
+                  <div style="font-size:11px;color:var(--muted);margin-top:4px">Messages on this channel use the secondary industry context. All other channels use your primary industry.</div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+                <div>
+                  <label class="form-label">Enable Secondary Industry Module</label>
+                  <select class="form-input" id="cfgSecondaryIndustryModuleEnabled" style="max-width:160px">
+                    <option value="No">Disabled</option>
+                    <option value="Yes">Enabled</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+              <button class="save-btn" id="saveMultiIndustryBtn" onclick="saveMultiIndustry()">Save Multi-Industry</button>
+              <span class="save-msg" id="saveMultiIndustryMsg"></span>
+            </div>
+          </div>
         </div>
 
         <div class="card" style="margin-bottom:14px" id="ecomCommunicationStyleCard">
@@ -10094,6 +10136,7 @@ function populateSettings(){
   // industry
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
+  populateMultiIndustrySection();
   // prompt / test — followup_count/hours/messages retired from this page, see the Follow-up
   // Messages settings-section note above; broadcast.html's Follow-up Engine is now the only place
   // that reads/writes follow-up config (followup_ladder_steps, D1).
@@ -10342,6 +10385,67 @@ async function saveIndustry(){
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
 }
+
+// ── MULTI-INDUSTRY ──────────────────────────────────────────────────────────
+function toggleMultiIndustrySection(){
+  const enabled=$id('cfgMultiIndustryEnabled').value==='Yes';
+  $id('multiIndustryOptions').style.display=enabled?'block':'none';
+  if(enabled) populateSecondaryIndustryChannelSelect();
+}
+
+function populateMultiIndustrySection(){
+  if(!clientRecord) return;
+  const enabled=clientRecord.multi_industry_enabled==='Yes';
+  $id('cfgMultiIndustryEnabled').value=enabled?'Yes':'No';
+  // Secondary industry list — all industries except the current primary
+  const primaryInd=clientRecord.industry||'general';
+  const secEl=$id('cfgSecondaryIndustry');
+  secEl.innerHTML=Object.entries(INDUSTRIES)
+    .filter(([k])=>k!==primaryInd)
+    .map(([k,v])=>`<option value="${k}"${clientRecord.secondary_industry===k?' selected':''}>${esc(v.label)}</option>`)
+    .join('');
+  $id('cfgSecondaryIndustryModuleEnabled').value=clientRecord.secondary_industry_module_enabled==='Yes'?'Yes':'No';
+  $id('multiIndustryOptions').style.display=enabled?'block':'none';
+  if(enabled) populateSecondaryIndustryChannelSelect();
+}
+
+function populateSecondaryIndustryChannelSelect(){
+  const sel=$id('cfgSecondaryIndustryChannel');
+  if(!sel) return;
+  if(!_channelsStatus){
+    sel.innerHTML=`<option value="">Loading channels…</option>`;
+    loadChannelsStatus().then(()=>populateSecondaryIndustryChannelSelect()).catch(()=>{});
+    return;
+  }
+  const inboxes=(_channelsStatus.inboxes)||[];
+  const savedChannel=clientRecord.secondary_industry_channel_id||'';
+  sel.innerHTML=`<option value="">— select a channel —</option>`+
+    inboxes.map(ib=>`<option value="${esc(String(ib.id))}"${String(ib.id)===String(savedChannel)?' selected':''}>${esc(ib.name||'Inbox '+ib.id)}${ib.phone_number?' — '+esc(ib.phone_number):''}</option>`).join('');
+  if(!inboxes.length) sel.innerHTML=`<option value="">No channels configured yet — set up on Channels page</option>`;
+}
+
+async function saveMultiIndustry(){
+  const btn=$id('saveMultiIndustryBtn'),msg=$id('saveMultiIndustryMsg');
+  btn.disabled=true; msg.textContent=''; msg.className='save-msg';
+  try{
+    const enabled=$id('cfgMultiIndustryEnabled').value;
+    const patch={multi_industry_enabled:enabled};
+    if(enabled==='Yes'){
+      const secInd=$id('cfgSecondaryIndustry').value;
+      const secChannel=$id('cfgSecondaryIndustryChannel').value;
+      const secMod=$id('cfgSecondaryIndustryModuleEnabled').value;
+      if(!secInd) throw new Error('Select a secondary industry');
+      if(!secChannel) throw new Error('Select a dedicated channel for the secondary industry');
+      patch.secondary_industry=secInd;
+      patch.secondary_industry_channel_id=secChannel;
+      patch.secondary_industry_module_enabled=secMod;
+    }
+    await patchClient(patch);
+    msg.textContent='✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message; msg.className='save-msg err';}
+  finally{btn.disabled=false; setTimeout(()=>msg.textContent='',3000);}
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 // Welcome Setup modal — shown once, right after a brand-new signup (see completeLoginResult's
 // session.isFreshSignup check). No skip/close button by design: every account needs *some*
