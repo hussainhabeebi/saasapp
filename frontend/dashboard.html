@@ -3582,6 +3582,74 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">⚡ Speed &amp; AI Usage</div>
+            <div class="s-note">Turn off optional AI round trips to speed up the bot and reduce AI costs. The bot reply is never affected — only the supplementary analysis calls.</div>
+
+            <div style="margin-top:16px">
+              <label class="form-label">Intent &amp; Sentiment Analysis</label>
+              <div class="s-note">The bot runs an AI call on every message to classify intent, sentiment, win probability, language, and product interest. Turning this off uses keyword-only routing — faster and cheaper, but no win probability scoring or product tagging.</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                <div style="flex:1;min-width:200px;max-width:300px">
+                  <select class="form-input" id="cfgClassificationEnabled">
+                    <option value="Yes">On — AI classifies every message</option>
+                    <option value="No">Off — keyword-only routing (faster)</option>
+                  </select>
+                </div>
+                <button class="save-btn" id="saveClassificationEnabled">Save</button>
+                <span class="save-msg" id="saveClassificationEnabledMsg"></span>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Objection Handling</label>
+              <div class="s-note">When the bot detects a price, competitor, timing, or trust objection, it fires an AI-powered response from your Objection Playbook. Turn off to skip this extra step.</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                <div style="flex:1;min-width:200px;max-width:300px">
+                  <select class="form-input" id="cfgObjectionHandlingEnabled">
+                    <option value="Yes">On — bot handles objections automatically</option>
+                    <option value="No">Off — skip objection detection</option>
+                  </select>
+                </div>
+                <button class="save-btn" id="saveObjectionHandlingEnabled">Save</button>
+                <span class="save-msg" id="saveObjectionHandlingEnabledMsg"></span>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Proactive Handover</label>
+              <div class="s-note">When AI confidence on a reply is very low, the bot proactively hands the lead to a human instead of guessing. Off by default — turn on if you'd rather a human step in than have the bot send a low-confidence reply.</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                <div style="flex:1;min-width:200px;max-width:300px">
+                  <select class="form-input" id="cfgProactiveHandoverEnabled">
+                    <option value="No">Off — bot always attempts a reply</option>
+                    <option value="Yes">On — hand over on low-confidence replies</option>
+                  </select>
+                </div>
+                <button class="save-btn" id="saveProactiveHandoverEnabled">Save</button>
+                <span class="save-msg" id="saveProactiveHandoverEnabledMsg"></span>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">Cross-Sell Suggestions</label>
+              <div class="s-note">Shows matched cross-sell / upsell suggestions to your agents in the lead panel when a conversation triggers a rule. Suggestions are always agent-facing only — the bot never sends them automatically.</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                <div style="flex:1;min-width:200px;max-width:300px">
+                  <select class="form-input" id="cfgCrosssellSuggestionsEnabled">
+                    <option value="Yes">On — show suggestions in lead panel</option>
+                    <option value="No">Off — hide cross-sell suggestions</option>
+                  </select>
+                </div>
+                <button class="save-btn" id="saveCrosssellSuggestionsEnabled">Save</button>
+                <span class="save-msg" id="saveCrosssellSuggestionsEnabledMsg"></span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -4098,8 +4166,9 @@ const ROLES = {
       <div id="trustSignalsCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
     <!-- Cross-Sell Suggestions — matches this lead's conversation against the rules saved in
-         Settings → Cross-Sell & Upsell, same "insert into reply box" pattern as Trust Signals. -->
-    <div style="margin-top:12px">
+         Settings → Cross-Sell & Upsell, same "insert into reply box" pattern as Trust Signals.
+         Hidden when bot_config.crosssell_suggestions_enabled === false. -->
+    <div style="margin-top:12px" id="crossSellWrap">
       <button class="btn btn-secondary btn-sm" onclick="toggleCrossSell()">🔄 Cross-Sell</button>
       <div id="crossSellCard" class="coach-card" style="display:none;margin-top:10px"></div>
     </div>
@@ -8258,6 +8327,8 @@ function openDetail(id){
   $id('dealCoachCard').style.display='none';
   $id('trustSignalsCard').style.display='none';
   $id('crossSellCard').style.display='none';
+  {let _bc={}; try{_bc=JSON.parse(clientRecord?.bot_config||'{}');}catch(e){}
+   $id('crossSellWrap').style.display=_bc.crosssell_suggestions_enabled===false?'none':'block';}
   renderNbaChip(lead);
   renderRecoveryChip(lead);
   renderLeadProfile(lead);
@@ -11359,6 +11430,11 @@ function populateBotBehaviorPage(){
   const langSel=$id('cfgDefaultLanguage');
   const curLang=clientRecord?.language||'en';
   langSel.value=langSel.querySelector(`option[value="${curLang}"]`)?curLang:'en';
+  // Speed & AI Usage toggles
+  $id('cfgClassificationEnabled').value=botConfig.classification_enabled===false?'No':'Yes';
+  $id('cfgObjectionHandlingEnabled').value=botConfig.objection_handling_enabled===false?'No':'Yes';
+  $id('cfgProactiveHandoverEnabled').value=botConfig.proactive_handover_enabled===true?'Yes':'No';
+  $id('cfgCrosssellSuggestionsEnabled').value=botConfig.crosssell_suggestions_enabled===false?'No':'Yes';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -11391,6 +11467,30 @@ $id('saveDefaultLanguage').addEventListener('click',async()=>{
   const lang=$id('cfgDefaultLanguage').value||'en';
   await saveField('saveDefaultLanguage','saveDefaultLanguageMsg',{language:lang});
   if(clientRecord) clientRecord.language=lang;
+});
+$id('saveClassificationEnabled').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const off=$id('cfgClassificationEnabled').value==='No';
+  if(off) botConfig.classification_enabled=false; else delete botConfig.classification_enabled;
+  await saveField('saveClassificationEnabled','saveClassificationEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveObjectionHandlingEnabled').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const off=$id('cfgObjectionHandlingEnabled').value==='No';
+  if(off) botConfig.objection_handling_enabled=false; else delete botConfig.objection_handling_enabled;
+  await saveField('saveObjectionHandlingEnabled','saveObjectionHandlingEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveProactiveHandoverEnabled').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const on=$id('cfgProactiveHandoverEnabled').value==='Yes';
+  if(on) botConfig.proactive_handover_enabled=true; else delete botConfig.proactive_handover_enabled;
+  await saveField('saveProactiveHandoverEnabled','saveProactiveHandoverEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveCrosssellSuggestionsEnabled').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const off=$id('cfgCrosssellSuggestionsEnabled').value==='No';
+  if(off) botConfig.crosssell_suggestions_enabled=false; else delete botConfig.crosssell_suggestions_enabled;
+  await saveField('saveCrosssellSuggestionsEnabled','saveCrosssellSuggestionsEnabledMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
