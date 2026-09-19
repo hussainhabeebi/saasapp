@@ -16534,9 +16534,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       && (_ecomStyle!=='baby_care' || _isEcomButtonValue)
       && !ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
       && !(userText.toLowerCase().trim()==='start' && state.leadOptOut==='Yes');
+    const _classificationDisabled=botConfig.classification_enabled===false;
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
-      : _ecomFastPath
+      : (_ecomFastPath||_classificationDisabled)
       ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
@@ -18707,7 +18708,10 @@ export async function processInstagramWebhookBody(env, body){
       }
       let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
       if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
-      const cls=await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
+      const _igBotConfig=(()=>{try{return JSON.parse(c.bot_config||'{}');}catch(e){return {};}})();
+      const cls=_igBotConfig.classification_enabled===false
+        ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+        : await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
       const routing=engineRouteFlow(c,state,userText,cls,parsed.mediaType);
       Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
       if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
