@@ -11,11 +11,22 @@ import assert from 'node:assert/strict';
 import {
   engineTruncateButtonTitle,
   engineTextSimilarity,
+  engineCombineBufferedChatwootBodies,
   engineQualQuestionText,
   engineQualQuestionOptional,
   engineQualQuestionOptions,
   engineExtractReplyOptions,
   engineHandoverCannedTexts,
+  engineHealthcareHandoverSilenceActive,
+  HEALTHCARE_HANDOVER_SILENCE_MS,
+  engineIsGreetingOnly,
+  engineNormalizeIntroButtons,
+  engineResolveIntroInternalAction,
+  engineIndustryFlowEnabled,
+  engineShouldUseConfiguredFlowIntro,
+  engineIndustryFlowMemory,
+  engineBuildIndustryFlowButtons,
+  engineResolveIndustryFlowTurn,
   engineRouteFlow,
   engineFindHallucinatedLink,
   engineSendChatwootReply,
@@ -47,7 +58,535 @@ import {
   ecomIsGenericProductCatalogueQuery,
   ecomFashionFieldChoices,
   ecomFashionOrderItems,
+  eduAdmissionWantsStart,
+  eduAdmissionWantsAdvisor,
+  eduResolveAdmissionCourse,
+  eduNormalizePhone,
+  eduEmailValid,
+  eduYearValid,
+  eduResolveCourseForMedia,
+  eduVerifiedChoicesFromReply,
+  eduEnrollmentCourseFromChat,
+  eduCoursePdfUrlError,
+  driveFileId,
+  sendDriveMediaToChatwoot,
+  ltNormalizeOffer,
+  ltEncryptCredentials,
+  ltDecryptCredentials,
+  parseMetaChannelCredentials,
+  mergeMetaChannelCredential,
+  resolveMetaCredentials,
+  metaCredentialFromInbox,
+  metaCredentialSummary,
+  matchMetaPhoneNumber,
+  safeClient,
+  ltChatFlightIntent,
+  ltNormalizeChatFlightRequest,
+  ltFormatChatOffers,
+  ltBookableChatOffers,
+  ltBookButtons,
+  ltCheckoutCtaPayload,
+  ltStoredOfferSelectionIndex,
+  ltExactRouteOffers,
+  ltLiveAgencyEnabled,
+  ltParseFlightRoute,
+  ltPoomasEnabledAfterSettingsSave,
+  engineHedgeAi4BharatTts,
+  engineResolveSarvamApiKey,
+  engineWithDeadline,
 } from './worker.js';
+
+describe('Opt-in industry flow engine',()=>{
+  const flow={
+    flow_engine:{enabled:true,published:true},
+    stages:{new:{},stage_1:{},stage_2:{}},
+    messages:{msg_stage_1:'Choose a service',msg_stage_2:'Selected {{service_label}}'},
+    stage_config:{
+      stage_1:{ai_mode:'fallback',answers:[{id:'dental',title:'Dental Care',next:'stage_2',entity_type:'service',entity_id:'svc_18',link_url:'https://example.com/dental',media_url:'https://drive.google.com/file/d/demo/view'}]},
+      stage_2:{ai_mode:'off',answers:[]}
+    }
+  };
+  const client={Id:7,industry:'healthcare',language:'en',flow_json:JSON.stringify(flow)};
+
+  test('does nothing until a flow is both enabled and published',()=>{
+    assert.equal(engineIndustryFlowEnabled({flow_json:JSON.stringify({...flow,flow_engine:{enabled:false,published:false}})}),false);
+    assert.equal(engineIndustryFlowEnabled({flow_json:JSON.stringify({...flow,flow_engine:{enabled:true,published:false}})}),false);
+    assert.equal(engineResolveIndustryFlowTurn({flow_json:'{}'},{stage:'new',qualAnswers:{}},'hello'),null);
+  });
+
+  test('builds stable internal actions instead of using visible button text as routing',()=>{
+    assert.deepEqual(engineBuildIndustryFlowButtons(flow,'stage_1'),[
+      {title:'Dental Care',value:'FLOW_ANSWER:stage_1:dental'}
+    ]);
+  });
+
+  test('branches by answer and stores linked industry entity variables',()=>{
+    const turn=engineResolveIndustryFlowTurn(client,{stage:'stage_1',qualAnswers:{}},'FLOW_ANSWER:stage_1:dental');
+    assert.equal(turn.route,'industry_flow');
+    assert.equal(turn.next,'stage_2');
+    assert.equal(turn.qualAnswers._flow_variables.service_id,'svc_18');
+    assert.equal(turn.qualAnswers._flow_variables.service_label,'Dental Care');
+    assert.match(turn.reply,/Selected Dental Care/);
+    assert.match(turn.reply,/https:\/\/example\.com\/dental/);
+    assert.match(turn.mediaUrl,/drive\.google\.com/);
+  });
+
+  test('uses prompt fallback unless a stage explicitly turns AI off',()=>{
+    assert.equal(engineResolveIndustryFlowTurn(client,{stage:'stage_1',qualAnswers:{}},'an unusual question'),null);
+    const controlled=engineResolveIndustryFlowTurn(client,{stage:'stage_2',qualAnswers:{}},'anything');
+    assert.equal(controlled.route,'industry_flow');
+    assert.equal(controlled.next,'stage_2');
+  });
+
+  test('keeps flow stage and CRM stage separate in structured memory',()=>{
+    const turn=engineResolveIndustryFlowTurn(client,{stage:'qualified',qualAnswers:{
+      _flow_state:{status:'active',current_stage:'stage_1',previous_stage:null,variables:{},stage_history:[],interruption_count:0}
+    }},'FLOW_ANSWER:stage_1:dental');
+    assert.equal(turn.preserveCrmStage,true);
+    assert.equal(turn.qualAnswers._flow_state.current_stage,'stage_2');
+    assert.equal(turn.qualAnswers._flow_state.previous_stage,'stage_1');
+    assert.equal(turn.qualAnswers._flow_state.stage_history.length,1);
+    assert.equal(turn.next,'stage_2');
+  });
+
+  test('migrates a lead already on an existing configured stage when flow is enabled',()=>{
+    const memory=engineIndustryFlowMemory(client,{stage:'stage_1',qualAnswers:{legacy_answer:'kept'}});
+    assert.equal(memory.status,'active');
+    assert.equal(memory.current_stage,'stage_1');
+    assert.deepEqual(memory.variables,{});
+  });
+
+  test('continue returns to the exact remembered stage and resets interruption count',()=>{
+    const state={stage:'qualified',qualAnswers:{_flow_state:{
+      status:'active',current_stage:'stage_2',previous_stage:'stage_1',variables:{service_label:'Dental Care'},stage_history:[],interruption_count:3
+    }}};
+    const turn=engineResolveIndustryFlowTurn(client,state,'FLOW_CONTINUE');
+    assert.equal(turn.route,'industry_flow');
+    assert.equal(turn.next,'stage_2');
+    assert.equal(turn.qualAnswers._flow_state.interruption_count,0);
+    assert.equal(turn.preserveCrmStage,true);
+  });
+});
+
+describe('Global Stage 1 greeting introduction',()=>{
+  test('only intercepts a short greeting, not a real customer question',()=>{
+    assert.equal(engineIsGreetingOnly('Hello 👋'),true);
+    assert.equal(engineIsGreetingOnly('Good morning!'),true);
+    assert.equal(engineIsGreetingOnly('Hello, what services do you offer?'),false);
+  });
+
+  test('uses a saved published intro for returning contacts without AI',()=>{
+    const client={flow_json:JSON.stringify({
+      flow_engine:{enabled:true,published:true},
+      intro:{enabled:true,text:'Thank you for contacting Sahara Medical Centre.'},
+      stages:{new:{},stage_1:{}}
+    })};
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'hi','text'),true);
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'What are your timings?','text'),false);
+    assert.equal(engineShouldUseConfiguredFlowIntro(client,'hi','image'),false);
+  });
+
+  test('does not intercept greetings when the intro is empty or the Flow is off',()=>{
+    const empty={flow_json:JSON.stringify({flow_engine:{enabled:true,published:true},intro:{text:''}})};
+    const disabled={flow_json:JSON.stringify({flow_engine:{enabled:false,published:false},intro:{text:'Saved intro'}})};
+    assert.equal(engineShouldUseConfiguredFlowIntro(empty,'hello'),false);
+    assert.equal(engineShouldUseConfiguredFlowIntro(disabled,'hello'),false);
+  });
+
+  test('uses only allow-listed internal action values and caps buttons at three',()=>{
+    const buttons=engineNormalizeIntroButtons([
+      {title:'Services',action:'INTRO_SERVICES'},
+      {title:'Book now',action:'INTRO_BOOK'},
+      {title:'Unsafe',action:'DELETE_ACCOUNT'},
+      {title:'Human',action:'INTRO_HUMAN'}
+    ],{industry:'healthcare'});
+    assert.deepEqual(buttons,[
+      {title:'Services',value:'INTRO_SERVICES'},
+      {title:'Book now',value:'INTRO_BOOK'},
+      {title:'Human',value:'INTRO_HUMAN'}
+    ]);
+  });
+
+  test('maps internal actions deterministically without an AI classifier',()=>{
+    assert.deepEqual(engineResolveIntroInternalAction('INTRO_BOOK','en'),{
+      text:'I want to book an appointment',intent:'BOOKING',customerLanguage:'en'
+    });
+    assert.equal(engineResolveIntroInternalAction('DELETE_ACCOUNT'),null);
+  });
+
+  test('supplies safe industry defaults when buttons are not configured',()=>{
+    assert.deepEqual(engineNormalizeIntroButtons([],{industry:'healthcare',handover_enabled:'Yes'}).map(x=>x.value),[
+      'INTRO_SERVICES','INTRO_BOOK','INTRO_HUMAN'
+    ]);
+  });
+});
+
+describe('Fast voice-to-voice TTS',()=>{
+  test('prefers a client Sarvam key and otherwise uses the Worker key',()=>{
+    assert.equal(engineResolveSarvamApiKey({SARVAM_API_KEY:'worker-key'},{sarvam_api_key:'client-key'}),'client-key');
+    assert.equal(engineResolveSarvamApiKey({SARVAM_API_KEY:'worker-key'},{}),'worker-key');
+  });
+
+  test('enforces a total voice deadline without leaving a live timer behind',async()=>{
+    assert.equal(await engineWithDeadline(new Promise(()=>{}),10),null);
+  });
+  test('uses AI4Bharat without starting Sarvam when it finishes inside the hedge window',async()=>{
+    let sarvamCalls=0;
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>new Uint8Array([1]).buffer,
+      async()=>{ sarvamCalls++; return new Uint8Array([2]).buffer; },
+      20
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[1]);
+    assert.equal(sarvamCalls,0);
+  });
+
+  test('starts Sarvam after the hedge and returns the first valid audio',async()=>{
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>{ await new Promise(resolve=>setTimeout(resolve,40)); return new Uint8Array([1]).buffer; },
+      async()=>new Uint8Array([2]).buffer,
+      5
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[2]);
+  });
+
+  test('waits for AI4Bharat when the hedged Sarvam call fails',async()=>{
+    const audio=await engineHedgeAi4BharatTts(
+      async()=>{ await new Promise(resolve=>setTimeout(resolve,20)); return new Uint8Array([1]).buffer; },
+      async()=>null,
+      5
+    );
+    assert.deepEqual([...new Uint8Array(audio)],[1]);
+  });
+
+  test('never leaves the customer waiting indefinitely when both providers stall',async()=>{
+    const started=Date.now();
+    const audio=await engineHedgeAi4BharatTts(
+      ()=>new Promise(()=>{}),
+      ()=>new Promise(()=>{}),
+      2,
+      15
+    );
+    assert.equal(audio,null);
+    assert.ok(Date.now()-started<100);
+  });
+});
+
+describe('Live Travel ticketing in chat',()=>{
+  test('recognizes a live fare request but does not hijack PNR/status questions',()=>{
+    assert.equal(ltChatFlightIntent('I need a flight from Dubai to Kochi next Friday'),true);
+    assert.equal(ltChatFlightIntent('ticket rate Dubai to Kochi'),true);
+    assert.equal(ltChatFlightIntent('check tickets from DXB to COK on 2026-09-20'),true);
+    assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
+    assert.equal(ltChatFlightIntent('Please update my support ticket'),false);
+    assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    // Compact hyphenated IATA routes (no spaces around dash)
+    assert.equal(ltChatFlightIntent('COK-DXB ON 15 SEP'),true);
+    assert.equal(ltChatFlightIntent('DXB-COK 20 sep 1 adult'),true);
+    assert.equal(ltChatFlightIntent('COK - DXB on 2026-09-15'),true);
+    // Ordinal date formats (10th sep, 1st oct, 3rd nov)
+    assert.equal(ltChatFlightIntent('Get fare for 10th sep dxb-trv'),true);
+    assert.equal(ltChatFlightIntent('flight dxb to cok 1st october'),true);
+    assert.equal(ltChatFlightIntent('need ticket cok-dxb 3rd nov'),true);
+    // City-name routes without IATA codes
+    assert.equal(ltChatFlightIntent('Dubai to Kochi on 20 sep'),true);
+    assert.equal(ltChatFlightIntent('Mumbai to Dubai 15th december economy'),true);
+    assert.equal(ltChatFlightIntent('fare from Dubai to Kochi'),true);
+    assert.equal(ltChatFlightIntent('ticket from Riyadh to Kochi'),true);
+    // Relative dates (tomorrow, next Friday, next week, this weekend)
+    assert.equal(ltChatFlightIntent('flight from DXB to COK tomorrow'),true);
+    assert.equal(ltChatFlightIntent('DXB to COK next Friday'),true);
+    assert.equal(ltChatFlightIntent('Dubai to Kochi next week economy'),true);
+    assert.equal(ltChatFlightIntent('COK-DXB this weekend'),true);
+    assert.equal(ltChatFlightIntent('flight Dubai to Kochi next month'),true);
+    // plane ticket phrasing
+    assert.equal(ltChatFlightIntent('need plane tickets from Dubai to Kochi'),true);
+    // looking for phrasing
+    assert.equal(ltChatFlightIntent('looking for flights from Dubai to Kochi 20 sep'),true);
+    // Non-flight queries that must NOT trigger
+    assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    assert.equal(ltChatFlightIntent('Dubai to Kochi tour package'),false);
+    assert.equal(ltChatFlightIntent('What visa do I need to travel from India to Dubai'),false);
+  });
+
+  test('normalizes safe search defaults and reports required missing fields',()=>{
+    assert.deepEqual(ltNormalizeChatFlightRequest({origin:'dxb',destination:'cok',departure_date:'2026-09-20',adults:'2'}),{
+      origin:'DXB',destination:'COK',departure_date:'2026-09-20',return_date:'',trip_type:'one_way',adults:2,children:0,infants:0,cabin:'economy',currency:'AED',missing:[]
+    });
+    assert.deepEqual(ltNormalizeChatFlightRequest({origin:'Dubai',destination:'COK'}).missing,['origin airport code','departure date']);
+  });
+
+  test('formats only verified offer fields and checkout links for chat',()=>{
+    const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
+    assert.match(text,/✈️ \*1 Live Flight Option\*/);
+    assert.match(text,/DXB → CCJ · 22 Sept 2026 · economy/);
+    assert.match(text,/\*1\. Example Air · EA101\*/);
+    assert.match(text,/→ Bags: Cabin 7 KG · Check-in 15 KG/);
+    assert.match(text,/→ \*AED 425\.50\* · 3 seats left/);
+    assert.doesNotMatch(text,/📍|📅|💺|🕒|🧳|💰|1️⃣|👇/);
+    assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
+  });
+
+  test('displayed options use only the validated fare list',()=>{
+    const oldOrInvalid={airline_name:'Invalid Cheap Fare',total_amount:100,bookable:true,supplier_offer_id:''};
+    const option1={airline_name:'Bookable One',total_amount:250,bookable:true,supplier_offer_id:'fare-1'};
+    const option2={airline_name:'Bookable Two',total_amount:300,bookable:true,supplier_offer_id:'fare-2'};
+    const prepared=ltBookableChatOffers([oldOrInvalid,option2,option1]);
+    assert.deepEqual(prepared,[option1,option2]);
+    assert.deepEqual(ltBookButtons(prepared),[
+      {title:'Book Option 1',value:'book first'},
+      {title:'Book Option 2',value:'book second'}
+    ]);
+  });
+
+  test('resolves numbered buttons and airline or flight-number booking replies',()=>{
+    const offers=[{airline:'Etihad Airways',flightNumber:'EY0362'},{airline:'Air India',flightNumber:'AI9058'}];
+    assert.equal(ltStoredOfferSelectionIndex(offers,'Book Option 2'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'book second'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'Book Air India'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'AI9058'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'book'),-1);
+  });
+
+  test('builds a WhatsApp Book Now CTA for the exact POOMAS checkout URL',()=>{
+    const payload=ltCheckoutCtaPayload('+971 58 130 1595','https://flypoomas.com/book?fareId=fare-2');
+    assert.equal(payload.to,'971581301595');
+    assert.equal(payload.interactive.action.parameters.display_text,'Book Now');
+    assert.equal(payload.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=fare-2');
+  });
+
+  test('saving only POOMAS URLs preserves the existing enabled flag',()=>{
+    assert.equal(ltPoomasEnabledAfterSettingsSave({api_base:'https://api.flypoomas.com'},{enabled:1}),true);
+    assert.equal(ltPoomasEnabledAfterSettingsSave({enabled:false},{enabled:1}),false);
+  });
+
+  test('keeps only exact-route offers without collecting passport in WhatsApp',()=>{
+    const offers=[
+      {itinerary:[{origin:'CCJ',destination:'MCT'}]},
+      {itinerary:[{origin:'CCJ',destination:'BOM'},{origin:'BOM',destination:'SHJ'}]},
+    ];
+    assert.deepEqual(ltExactRouteOffers(offers,'CCJ','SHJ'),[offers[1]]);
+  });
+
+  test('recognizes every stored travel-industry label used by live agencies',()=>{
+    assert.equal(ltLiveAgencyEnabled({industry:'Travel Agency'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'live-travel'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'healthcare',ta_enabled:'Yes'}),true);
+    assert.equal(ltLiveAgencyEnabled({industry:'healthcare'}),false);
+  });
+
+  test('converts natural GCC and Kerala city routes without depending on customer memory',()=>{
+    assert.deepEqual(ltParseFlightRoute('Dubai to Calicut 20/10/2026'),{origin:'DXB',destination:'CCJ'});
+    assert.deepEqual(ltParseFlightRoute('flight from Sharjah to Kochi tomorrow'),{origin:'SHJ',destination:'COK'});
+    assert.deepEqual(ltParseFlightRoute('AUH to CNN'),{origin:'AUH',destination:'CNN'});
+    assert.equal(ltParseFlightRoute('Dubai flight price'),null);
+  });
+});
+
+describe('per-channel Meta credential resolution',()=>{
+  const stored={meta_channel_credentials:JSON.stringify([
+    {inbox_id:'11',waba_id:'waba-a',wa_phone_id:'phone-a',wa_token:'secret-a'},
+    {inbox_id:'22',waba_id:'waba-b',wa_phone_id:'phone-b',wa_token:'secret-b'}
+  ])};
+
+  test('resolves the credential belonging to the selected inbox',()=>{
+    assert.equal(resolveMetaCredentials(stored,{inbox_id:22}).wa_token,'secret-b');
+    assert.equal(resolveMetaCredentials(stored,{inbox_id:11}).wa_phone_id,'phone-a');
+  });
+
+  test('preserves the legacy single-channel fallback',()=>{
+    const legacy={chatwoot_inbox_id:'7',waba_id:'old-waba',wa_phone_id:'old-phone',wa_token:'old-secret'};
+    assert.equal(resolveMetaCredentials(legacy,{}).wa_token,'old-secret');
+    assert.equal(resolveMetaCredentials(legacy,{inbox_id:'8'}),null);
+  });
+
+  test('merges by inbox without overwriting another number',()=>{
+    const merged=mergeMetaChannelCredential(stored,{inbox_id:'22',wa_token:'rotated',waba_id:'waba-b',wa_phone_id:'phone-b'});
+    assert.equal(merged.length,2);
+    assert.equal(merged.find(x=>x.inbox_id==='11').wa_token,'secret-a');
+    assert.equal(merged.find(x=>x.inbox_id==='22').wa_token,'rotated');
+  });
+
+  test('extracts common Chatwoot config shapes and exposes only boolean status',()=>{
+    const credential=metaCredentialFromInbox({channel_config:{business_account_id:'w',phone_number_id:'p',api_key:'top-secret'}},9);
+    assert.deepEqual(credential,{inbox_id:'9',waba_id:'w',wa_token:'top-secret',wa_phone_id:'p',display_phone:''});
+    const summary=metaCredentialSummary({meta_channel_credentials:JSON.stringify([credential])});
+    assert.deepEqual(summary,[{inbox_id:'9',configured:true,has_phone_id:true,has_waba_id:true,display_phone:''}]);
+    assert.equal(JSON.stringify(summary).includes('top-secret'),false);
+    const wrapped=metaCredentialFromInbox({data:{payload:{id:12,phone_number:'+971500000000',channel:{provider_config:{business_account_id:'w2',phone_number_id:'p2',api_key:'another-secret'}}}}});
+    assert.deepEqual(wrapped,{inbox_id:'12',waba_id:'w2',wa_token:'another-secret',wa_phone_id:'p2',display_phone:'+971500000000'});
+  });
+
+  test('matches a selected Chatwoot number to exactly one accessible Meta number',()=>{
+    const rows=[{id:'p1',display_phone_number:'+971 50 111 2222'},{id:'p2',display_phone_number:'+91 94969 71950'}];
+    assert.equal(matchMetaPhoneNumber('+91 94969-71950',rows)?.id,'p2');
+    assert.equal(matchMetaPhoneNumber('+1 555 123 4567',[{id:'a',display_phone_number:'+1 555 123 4567'},{id:'b',display_phone_number:'+1 555 123 4567'}]),null);
+  });
+
+  test('safe client payload never exposes global or per-channel tokens',()=>{
+    const safe=safeClient({...stored,wa_token:'legacy-secret',sarvam_api_key:'sarvam-secret',client_name:'Example'});
+    assert.equal(safe.meta_channel_credentials,undefined);
+    assert.equal(safe.wa_token,undefined);
+    assert.equal(safe.wa_token_connected,true);
+    assert.equal(safe.sarvam_api_key,undefined);
+    assert.equal(safe.sarvam_api_key_configured,true);
+  });
+});
+
+describe('Live Travel supplier normalization and booking safety', () => {
+  test('encrypts client supplier credentials and rejects a different tenant key', async () => {
+    const encrypted=await ltEncryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},{api_key:'client-secret'});
+    assert.equal(encrypted.includes('client-secret'),false);
+    assert.deepEqual(await ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-one'},encrypted),{api_key:'client-secret'});
+    await assert.rejects(()=>ltDecryptCredentials({LIVE_TRAVEL_CREDENTIALS_KEY:'tenant-key-two'},encrypted),/could not be decrypted/);
+  });
+
+  test('keeps SerpApi Google Flights results comparison-only', () => {
+    const offer=ltNormalizeOffer('serpapi',{
+      price:1250,
+      flights:[{airline:'Example Air',flight_number:'EA 101'}]
+    },{currency:'AED',cabin:'economy',markup_type:'fixed',markup_value:50});
+    assert.equal(offer.supplier,'serpapi');
+    assert.equal(offer.bookable,false);
+    assert.equal(offer.validating,true);
+    assert.equal(offer.total_amount,1300);
+    assert.equal(offer.airline_name,'Example Air');
+  });
+
+  test('normalizes a TripJack supplier fare as bookable with percentage markup', () => {
+    const offer=ltNormalizeOffer('tripjack',{
+      id:'TJ-1',totalPrice:1000,taxes:200,currency:'INR',airline_code:'6E',
+      segments:[{flightNumber:'6E 145'}],seats:3,baggage:{check_in:'15 KG'}
+    },{cabin:'economy',markup_type:'percent',markup_value:5});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,1050);
+    assert.equal(offer.base_amount,800);
+    assert.equal(offer.seats_left,3);
+    assert.deepEqual(offer.baggage,{check_in:'15 KG'});
+  });
+
+  test('normalizes a Riya fare without inventing absent details', () => {
+    const offer=ltNormalizeOffer('riya',{offer_id:'R-1',fare:{totalFare:720,totalTax:120}},{currency:'AED'});
+    assert.equal(offer.bookable,true);
+    assert.equal(offer.total_amount,720);
+    assert.equal(offer.base_amount,600);
+    assert.equal(offer.airline_name,'');
+    assert.deepEqual(offer.itinerary,[]);
+  });
+});
+
+describe('Education chat-only admission intent safety', () => {
+  test('starts only from explicit application intent, not ordinary admission questions', () => {
+    assert.equal(eduAdmissionWantsStart('Apply for admission'),true);
+    assert.equal(eduAdmissionWantsStart('I want admission'),true);
+    assert.equal(eduAdmissionWantsStart('📚 Choose Course'),true);
+    assert.equal(eduAdmissionWantsStart('What is the admission fee?'),false);
+    assert.equal(eduAdmissionWantsStart('Tell me about your admission process'),false);
+  });
+
+  test('routes advisor choices away from saved form answers', () => {
+    assert.equal(eduAdmissionWantsAdvisor('👤 Talk to Advisor'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Book Consultation'),true);
+    assert.equal(eduAdmissionWantsAdvisor('Habeeb Khan'),false);
+  });
+
+  test('resolves the truncated WhatsApp title for a long verified course', () => {
+    const courses=[
+      {id:11,name:'B.Voc in Oil & Gas Safety Management',short_label:''},
+      {id:12,name:'Diploma in Logistics and Supply Chain',short_label:''},
+    ];
+    const visibleTitle='📘 B.Voc in Oil & Gas S';
+    assert.equal(visibleTitle,'📘 B.Voc in Oil & Gas S');
+    assert.equal(eduResolveAdmissionCourse(courses,visibleTitle)?.id,11);
+    assert.equal(eduResolveAdmissionCourse(courses,courses[0].name)?.id,11);
+  });
+
+  test('does not guess when two long course titles truncate identically', () => {
+    const courses=[
+      {id:21,name:'Advanced Petroleum Engineering One',short_label:''},
+      {id:22,name:'Advanced Petroleum Engineering Two',short_label:''},
+    ];
+    const visibleTitle=engineTruncateButtonTitle(`📘 ${courses[0].name}`,24);
+    assert.equal(eduResolveAdmissionCourse(courses,visibleTitle),null);
+  });
+
+  test('validates normalized contact and education fields', () => {
+    assert.equal(eduNormalizePhone(' +971 (50) 123-4567 '),'+971501234567');
+    assert.equal(eduEmailValid('student@example.com'),true);
+    assert.equal(eduEmailValid('student@example'),false);
+    assert.equal(eduYearValid('Completed in 2024'),true);
+    assert.equal(eduYearValid('1940'),false);
+  });
+
+  test('continues enrollment for the one course already selected even when duration is unset', () => {
+    const courses=[{id:7,name:'PG Diploma in Food Safety',duration:''}];
+    const history=[{role:'assistant',content:'• 📚 PG Diploma in Food Safety\n• ⏱ Duration is not confirmed.\n\nWould you like to know more about its syllabus or eligibility?'}];
+    assert.equal(eduEnrollmentCourseFromChat(courses,'yes',history)?.id,7);
+    assert.equal(eduEnrollmentCourseFromChat(courses,'Enroll Now',history)?.id,7);
+  });
+});
+
+describe('Education Google Drive brochure delivery', () => {
+  const courses=[
+    {id:1,name:'Digital Marketing',short_label:'DM',pdf_url:'https://drive.google.com/file/d/PDF_ONE/view'},
+    {id:2,name:'Graphic Design',short_label:'Design',pdf_url:'https://drive.google.com/file/d/PDF_TWO/view'},
+  ];
+
+  test('recognizes Drive files and Google-native document share links', () => {
+    assert.equal(driveFileId('https://drive.google.com/file/d/FILE_123/view?usp=sharing'),'FILE_123');
+    assert.equal(driveFileId('https://drive.google.com/open?id=FILE_456'),'FILE_456');
+    assert.equal(driveFileId('https://docs.google.com/document/d/DOC_123/edit'),'DOC_123');
+    assert.equal(driveFileId('https://docs.google.com/presentation/d/SLIDE_123/edit'),'SLIDE_123');
+    assert.equal(driveFileId('https://docs.google.com/spreadsheets/d/SHEET_123/edit'),'SHEET_123');
+    assert.equal(driveFileId('https://example.com/file/d/FILE_123/view'),null);
+  });
+
+  test('rejects a Drive folder in the PDF field and accepts a direct file link', () => {
+    assert.match(eduCoursePdfUrlError('https://drive.google.com/drive/folders/FOLDER_123'),/PDF file, not a Drive folder/i);
+    assert.equal(eduCoursePdfUrlError('https://drive.google.com/file/d/PDF_123/view'),'');
+  });
+
+  test('resolves only one verified course and refuses an ambiguous course list', () => {
+    assert.equal(eduResolveCourseForMedia(courses,['Please send the Digital Marketing syllabus'])?.id,1);
+    assert.equal(eduResolveCourseForMedia(courses,['Digital Marketing or Graphic Design'])?.id,undefined);
+    assert.equal(eduResolveCourseForMedia(courses,['Please send a brochure']),null);
+  });
+
+  test('turns multiple verified course names in a reply into a native list source', () => {
+    const items=eduVerifiedChoicesFromReply(courses,[],'Choose Digital Marketing or Graphic Design.');
+    assert.deepEqual(items,[
+      {title:'Digital Marketing',value:'Digital Marketing'},
+      {title:'Graphic Design',value:'Graphic Design'},
+    ]);
+    assert.deepEqual(eduVerifiedChoicesFromReply(courses,[],'Digital Marketing is available.'),[]);
+  });
+
+  test('uploads the actual PDF bytes to Chatwoot with a downloadable filename', async (t) => {
+    const calls=[];
+    t.mock.method(global,'fetch',async (url,options)=>{
+      calls.push({url:String(url),options});
+      if(String(url).includes('drive.google.com/uc')) return new Response(new Blob(['%PDF-1.7'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://drive.google.com/file/d/PDF_ONE/view','', 'Digital-Marketing-brochure.pdf');
+    assert.equal(ok,true);
+    assert.match(calls[0].url,/export=download/);
+    assert.equal(calls[1].options.body.get('attachments[]').name,'Digital-Marketing-brochure.pdf');
+    assert.equal(calls[1].options.body.get('attachments[]').type,'application/pdf');
+  });
+
+  test('exports a shared Google Doc as PDF before attaching it', async (t) => {
+    const urls=[];
+    t.mock.method(global,'fetch',async (url)=>{
+      urls.push(String(url));
+      if(String(url).includes('/export?format=pdf')) return new Response(new Blob(['%PDF'],{type:'application/pdf'}),{status:200,headers:{'Content-Type':'application/pdf'}});
+      return new Response('{}',{status:200});
+    });
+    const ok=await sendDriveMediaToChatwoot({chatwoot_base:'https://chatwoot.example',chatwoot_account_id:'1',chatwoot_token:'token'},'99','https://docs.google.com/document/d/DOC_123/edit','', 'prospectus.pdf');
+    assert.equal(ok,true);
+    assert.equal(urls[0],'https://docs.google.com/document/d/DOC_123/export?format=pdf');
+  });
+});
 
 describe('Ecom category button and minimal matching', () => {
   const categories=['Mattress','Wooden Bed','Sofa Sets'];
@@ -207,8 +746,8 @@ describe('Healthcare verified-data routing', () => {
       {id:3,name:'Root Canal Treatment',short_label:'Duplicate'},
     ];
     assert.deepEqual(hcServiceChoiceItems(rows), [
-      {title:'Root Canal',value:'Root Canal Treatment'},
-      {title:'Dental Cleaning',value:'Dental Cleaning'},
+      {title:'Root Canal',value:'HC_BOOK_SERVICE:1'},
+      {title:'Dental Cleaning',value:'HC_BOOK_SERVICE:2'},
     ]);
   });
 
@@ -238,7 +777,7 @@ describe('Healthcare verified-data routing', () => {
     const DB={prepare(sql){statements.push(sql);return {async run(){return {success:true};}};}};
     await hcEnsureOperationsSchema({DB});
     await hcEnsureOperationsSchema({DB});
-    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures','booking_sessions']){
+    for(const table of ['departments','doctors','services','doctor_schedules','appointments','insurance','settings','media_sent','automation_settings','appointment_automation','appointment_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS healthcare_${table}`)).length,1,table);
     }
     assert.equal(statements.filter(sql=>sql.includes('idx_healthcare_insurance_client')).length,1);
@@ -291,7 +830,7 @@ describe('Healthcare verified-data routing', () => {
 });
 
 describe('Project Queues and Workflows', () => {
-  test('repairs Project automation tables and settings columns once per D1 binding', async () => {
+  test('repairs Project automation tables once per D1 binding', async () => {
     const statements=[];
     const DB={prepare(sql){
       statements.push(sql);
@@ -299,8 +838,6 @@ describe('Project Queues and Workflows', () => {
     }};
     await pmEnsureAutomationSchema({DB});
     await pmEnsureAutomationSchema({DB});
-    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN task_reminders_enabled')).length,1);
-    assert.equal(statements.filter(sql=>sql.includes('ADD COLUMN overdue_escalation_enabled')).length,1);
     for(const table of ['task_automation','task_notifications','queue_failures']){
       assert.equal(statements.filter(sql=>sql.includes(`CREATE TABLE IF NOT EXISTS pm_${table}`)).length,1,table);
     }
@@ -347,17 +884,17 @@ describe('engineTruncateButtonTitle — WhatsApp title-length safety (FIXES.md #
     assert.equal(engineTruncateButtonTitle('Mattress', 24), 'Mattress');
   });
 
-  test('truncates a long title at a word boundary with an ellipsis', () => {
+  test('truncates a long title at a word boundary without an ellipsis', () => {
     const out = engineTruncateButtonTitle('Semi Medicated Orthopedic Mattress', 24);
     assert.ok(out.length <= 24, `expected <=24 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
-    assert.ok(!out.includes('  '), 'should not leave a double space before the ellipsis');
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
+    assert.ok(!out.includes('  '), 'should not leave a double space');
   });
 
   test('never exceeds the cap even with no good word boundary', () => {
     const out = engineTruncateButtonTitle('Supercalifragilisticexpialidocious', 20);
     assert.ok(out.length <= 20, `expected <=20 chars, got ${out.length}: "${out}"`);
-    assert.ok(out.endsWith('…'));
+    assert.ok(!out.endsWith('…'), 'should not append ellipsis');
   });
 });
 
@@ -442,6 +979,12 @@ describe('engineExtractReplyOptions — the OPTIONS: marker parser', () => {
     assert.equal(text, 'We deliver within 3-5 days.');
     assert.equal(options, null);
   });
+
+  test('strips legacy square-bracket Education choices and converts them to buttons', () => {
+    const {text,options}=engineExtractReplyOptions('Choose a course.\nReply with: [Browse Courses] [Talk to Advisor] [About Us]');
+    assert.equal(text,'Choose a course.');
+    assert.deepEqual(options,['Browse Courses','Talk to Advisor','About Us']);
+  });
 });
 
 describe('engineRouteFlow — anti-loop escalation (FIXES.md #1, #13, #14)', () => {
@@ -467,6 +1010,83 @@ describe('engineRouteFlow — anti-loop escalation (FIXES.md #1, #13, #14)', () 
     const state = { looping: true, botMsgs: ['Reworded pitch again.'], stage: 'new', qualAnswers: {}, leadOptOut: 'No' };
     const result = engineRouteFlow(c, state, 'yes', baseCls);
     assert.equal(result.loopDetected, false);
+  });
+});
+
+describe('engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff', () => {
+  const twoStageFlow = JSON.stringify({ stages: { intro: { msg: 'Hi' }, closing: { msg: 'Ready?' } } });
+  const baseC = { bot_config: '{}', qual_questions: '[]', flow_json: twoStageFlow, industry: 'travel' };
+  const affirmativeCls = { intent: 'AFFIRMATIVE', sentiment: 'Positive', objectionCategory: 'none', aiWinProbability: null, customerLanguage: 'en', nextStage: null, confidence: 0.9, productInterest: '' };
+
+  function engagedHistory(n = 5) {
+    const h = [];
+    for (let i = 0; i < n; i++) { h.push({ role: 'user', content: 'hi' }); h.push({ role: 'assistant', content: 'reply' }); }
+    return h;
+  }
+
+  test('text affirmative at final stage (after 5 bot turns) routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: engagedHistory(5) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls, 'text');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'final_stage_positive');
+  });
+
+  test('voice note affirmative at final stage does NOT route to human (even after 5 turns)', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: engagedHistory(5) };
+    const result = engineRouteFlow(baseC, state, '(sent a voice note)', affirmativeCls, 'voice');
+    assert.notEqual(result.route, 'human', 'voice note should not trigger isFinalStage+POSITIVE human handoff');
+  });
+
+  test('explicit WANTS_HUMAN intent from voice note still routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const wantsCls = { ...affirmativeCls, intent: 'WANTS_HUMAN' };
+    const result = engineRouteFlow(baseC, state, 'please connect me with someone', wantsCls, 'voice');
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'explicit');
+  });
+});
+
+describe('engineRouteFlow — initial phase (< 5 bot turns) handled by industry module', () => {
+  const twoStageFlow = JSON.stringify({ stages: { intro: { msg: 'Hi' }, closing: { msg: 'Ready?' } } });
+  const baseC = { bot_config: '{}', qual_questions: '[]', flow_json: twoStageFlow, industry: 'travel' };
+  const affirmativeCls = { intent: 'AFFIRMATIVE', sentiment: 'Positive', objectionCategory: 'none', aiWinProbability: null, customerLanguage: 'en', nextStage: null, confidence: 0.9, productInterest: '' };
+  const wantsCls = { ...affirmativeCls, intent: 'WANTS_HUMAN' };
+
+  function historyWithBotTurns(n) {
+    const h = [];
+    for (let i = 0; i < n; i++) {
+      h.push({ role: 'user', content: 'hi' });
+      h.push({ role: 'assistant', content: 'reply' });
+    }
+    return h;
+  }
+
+  test('final-stage positive with 0 bot turns routes to industry FAQ, not human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.notEqual(result.route, 'human', 'no handoff before 5 bot turns');
+    assert.equal(result.route, 'travel_faq');
+  });
+
+  test('final-stage positive with 4 bot turns still routes to industry FAQ', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: historyWithBotTurns(4) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.notEqual(result.route, 'human');
+    assert.equal(result.route, 'travel_faq');
+  });
+
+  test('final-stage positive with exactly 5 bot turns allows handoff', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: historyWithBotTurns(5) };
+    const result = engineRouteFlow(baseC, state, 'yes', affirmativeCls);
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'final_stage_positive');
+  });
+
+  test('explicit WANTS_HUMAN on turn 1 always routes to human', () => {
+    const state = { looping: false, botMsgs: [], stage: 'closing', qualAnswers: {}, leadOptOut: 'No', history: [] };
+    const result = engineRouteFlow(baseC, state, 'speak to a human please', wantsCls);
+    assert.equal(result.route, 'human');
+    assert.equal(result.humanReason, 'explicit');
   });
 });
 
@@ -585,5 +1205,90 @@ describe('Fashion ecommerce verified order flow', () => {
 
   test('confirmed order item text contains only selected product variants', () => {
     assert.equal(ecomFashionOrderItems({productName:'Linen Shirt',size:'M',color:'Blue'}),'Linen Shirt | Size: M | Color: Blue');
+  });
+});
+
+
+describe('Healthcare human handover silence and natural communication', () => {
+  const at='2026-09-05T08:00:00.000Z';
+  const start=Date.parse(at);
+
+  test('silences repeat taps and patient messages for exactly five hours', () => {
+    const c={industry:'healthcare'};
+    const state={stage:'human_handover',lead:{Handover:'Yes',HandoverAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start),true);
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start+HEALTHCARE_HANDOVER_SILENCE_MS-1),true);
+    assert.equal(engineHealthcareHandoverSilenceActive(c,state,start+HEALTHCARE_HANDOVER_SILENCE_MS),false);
+  });
+
+  test('uses LastMsgAt for older handed-over records without HandoverAt', () => {
+    const state={stage:'human_handover',lead:{Handover:'Yes',LastMsgAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive({industry:'healthcare'},state,start+60_000),true);
+  });
+
+  test('does not apply the five-hour healthcare rule to other industries', () => {
+    const state={stage:'human_handover',lead:{Handover:'Yes',HandoverAt:at}};
+    assert.equal(engineHealthcareHandoverSilenceActive({industry:'education'},state,start),false);
+  });
+
+  test('healthcare prompt prevents repeated, robotic conversation patterns', () => {
+    const sys=engineBuildFaqSystemPrompt({main_prompt:'',services:'[]',kb_summary:''},{activeHistory:[]},null,'healthcare','en',false);
+    assert.match(sys,/calm, attentive clinic receptionist/i);
+    assert.match(sys,/never repeat information or a question already answered/i);
+    assert.match(sys,/ask only one necessary question at a time/i);
+    assert.match(sys,/Once human handover is requested, do not add more questions or buttons/i);
+  });
+
+  test('healthcare resumes normal routing after the timed hard stop instead of permanent drop', () => {
+    const c={industry:'healthcare',handover_silence_enabled:'Yes',bot_config:'{}',qual_questions:'[]',flow_json:'{}'};
+    const state={stage:'human_handover',qualAnswers:{},leadOptOut:'No',looping:false,botMsgs:[]};
+    const cls={intent:'QUESTION',sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:'en',nextStage:null,confidence:1,productInterest:'',productCategory:''};
+    assert.equal(engineRouteFlow(c,state,'What time do you open?',cls).route,'faq');
+  });
+});
+
+
+describe('Global consecutive-message aggregation', () => {
+  const makeBody=(id,content,conversationId=77)=>({
+    id,
+    message_type:'incoming',
+    private:false,
+    content,
+    conversation:{
+      id:conversationId,
+      inbox_id:5,
+      meta:{sender:{phone_number:'+971500000000',name:'Customer'}}
+    }
+  });
+
+  test('combines consecutive text messages in arrival order into one AI turn', () => {
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:300,body:makeBody('m3','How much?')},
+      {receivedAt:100,body:makeBody('m1','Hi')},
+      {receivedAt:200,body:makeBody('m2','Need dental cleaning tomorrow')}
+    ]);
+    assert.equal(body.content,'Hi\nNeed dental cleaning tomorrow\nHow much?');
+    assert.equal(body.id,'m3');
+    assert.equal(body.conversation.id,77);
+  });
+
+  test('deduplicates webhook retries while combining different messages', () => {
+    const repeated=makeBody('m1','Hello');
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:100,body:repeated},
+      {receivedAt:110,body:structuredClone(repeated)},
+      {receivedAt:200,body:makeBody('m2','I need support')}
+    ]);
+    assert.equal(body.content,'Hello\nI need support');
+  });
+
+  test('does not mutate the original latest webhook payload', () => {
+    const latest=makeBody('m2','Tomorrow');
+    const body=engineCombineBufferedChatwootBodies([
+      {receivedAt:100,body:makeBody('m1','Book dental cleaning')},
+      {receivedAt:200,body:latest}
+    ]);
+    assert.equal(latest.content,'Tomorrow');
+    assert.equal(body.content,'Book dental cleaning\nTomorrow');
   });
 });

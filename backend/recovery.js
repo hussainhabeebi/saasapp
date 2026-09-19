@@ -32,7 +32,7 @@ const AI_TIMEOUT_MS   = 10000;
 // since this is a separate Node process with no access to that Worker's own secrets/helpers. One
 // shared key for all clients, same pattern as NOCODB_TOKEN above — not per-client.
 const SARVAM_API_KEY  = process.env.SARVAM_API_KEY  || '';
-// STANDBY for the same feature — self-hosted AI4Bharat TTS running on the Marketing Studio render
+// STANDBY for the same feature — self-hosted AI4Bharat TTS running on the Coolify voice
 // pipeline (see cloudflare-worker/worker.js's engineAi4BharatTts / engineTtsWithFallback for the
 // same fallback wired into the live-reply and manual-send paths). Sarvam stays PRIMARY here too;
 // this is only reached when sarvamTts() above already returned null. Both vars must be set (same
@@ -323,7 +323,7 @@ function hmacSignBase64(secret, body) {
   return crypto.createHmac('sha256', secret).update(body).digest('base64');
 }
 
-// STANDBY text-to-speech — self-hosted AI4Bharat Indic Parler-TTS on the Marketing Studio render
+// STANDBY text-to-speech — self-hosted AI4Bharat Indic Parler-TTS on the Coolify voice
 // pipeline server, reached over the same signed-HTTP contract worker.js's engineAi4BharatTts uses.
 // Sarvam (sarvamTts above) stays PRIMARY; this only runs when that call already returned null. See
 // render-pipeline/lib/ai4bharatTts.js / tts/synthesize_ai4bharat.py for what is and isn't verified

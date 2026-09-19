@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leadvyne · Business Services</title>
+<link rel="icon" type="image/webp" href="http://aiingo.com/wp-content/uploads/2026/01/cropped-Aiingo-1.png.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F5F3FF;--card:#FFFFFF;--ink:#0C0A1E;--muted:#5B5280;
+  --accent:#7C3AED;--accent-ink:#6D28D9;--accent-soft:#EDE9FE;
+  --line:#E4E0F5;--ls:#C8C0E8;
+  --shadow:0 1px 3px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.06);
+  --r:16px;--r-sm:10px;
+  --mono:"JetBrains Mono",monospace;--disp:"Space Grotesk",sans-serif;--body:"Inter",sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column}
+
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 20px;height:56px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+@media(max-width:480px){header{flex-wrap:wrap;height:auto;min-height:56px;padding:8px 14px}}
+.brand{font-family:var(--disp);font-size:16px;font-weight:700;display:inline-flex;align-items:center;gap:6px}
+.brand span{color:var(--accent)}
+.chip{background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px}
+.hback{margin-left:auto;background:none;border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:var(--muted);font-family:var(--body)}
+.hback:hover{background:var(--bg)}
+
+#tabs{background:var(--card);border-bottom:1px solid var(--line);display:flex;padding:0 20px;flex-shrink:0;overflow-x:auto}
+.tab{font-family:var(--disp);font-size:13px;font-weight:600;padding:11px 16px;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2.5px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;white-space:nowrap}
+.tab.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+
+main{flex:1;overflow-y:auto;overflow-x:hidden;padding:20px;min-height:0}
+.inner{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.page{display:none}
+.page.active{display:block}
+
+.card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);padding:20px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--disp);font-size:14px;font-weight:700;color:var(--muted);margin-bottom:14px;text-transform:uppercase;letter-spacing:.04em}
+.card-title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-title-row .card-title{margin-bottom:0}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{background:var(--card);border-radius:var(--r-sm);border:1px solid var(--line);padding:16px 18px}
+.stat-val{font-family:var(--disp);font-size:26px;font-weight:700;color:var(--accent-ink)}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:2px}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:10px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg)}
+.badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:var(--accent-soft);color:var(--accent-ink)}
+.badge.inactive{background:#FEE2E2;color:#991B1B}
+.row-actions{display:flex;gap:6px}
+.icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
+.icon-btn:hover{background:var(--bg)}
+.icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.thumb{width:36px;height:36px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+
+.s-sec{margin-bottom:24px}
+.s-lbl{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--muted);margin-bottom:8px;display:block;text-transform:uppercase;letter-spacing:.04em}
+.s-input{width:100%;border:1.5px solid var(--line);border-radius:10px;padding:11px 14px;font-family:var(--body);font-size:14px;color:var(--ink);background:var(--bg);transition:border-color .2s;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.s-hint{font-size:12px;color:var(--muted);margin-top:5px}
+.s-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.save-btn{background:linear-gradient(135deg,#7C3AED,#9F5CF5);color:#fff;border:none;border-radius:10px;padding:10px 18px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
+.save-btn:hover{opacity:.9}
+.save-btn.sec{background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)}
+.save-msg{font-size:12px;color:var(--accent);align-self:center}
+.search-input{border:1.5px solid var(--line);border-radius:10px;padding:8px 12px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:200px}
+.search-input:focus{outline:none;border-color:var(--accent);background:#fff}
+
+/* CATEGORY INLINE EDITING */
+.cat-media-inline{display:flex;gap:5px}
+.cat-media-slot{width:36px;height:36px;border:1.5px dashed var(--ls);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative;overflow:hidden;background:var(--bg);font-size:16px;color:var(--muted);flex-shrink:0}
+.cat-media-slot img{width:100%;height:100%;object-fit:cover}
+.cat-media-remove{position:absolute;top:-1px;right:-1px;background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:50%;width:15px;height:15px;font-size:9px;cursor:pointer;line-height:1;padding:0}
+.cat-name-input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);min-width:160px}
+.cat-name-input:focus{outline:none;border-color:var(--accent);background:#fff}
+.cat-desc-input{border:1.5px solid var(--line);border-radius:8px;padding:7px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);min-width:200px}
+.cat-desc-input:focus{outline:none;border-color:var(--accent);background:#fff}
+
+/* MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal-card{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:620px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-title{font-family:var(--disp);font-size:18px;font-weight:700;margin-bottom:18px}
+.modal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px}
+.modal-grid .s-sec{margin-bottom:0}
+textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
+
+/* LOADING */
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-row td{text-align:center;padding:30px;color:var(--muted)}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Leadvyne<span>.</span></span>
+  <span class="chip">🏢 Business Services</span>
+  <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
+</header>
+
+<div id="tabs">
+  <button class="tab active" data-tab="services" onclick="showTab('services')">🗂️ Services</button>
+  <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
+  <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+</div>
+
+<main>
+<div class="inner">
+
+<!-- SERVICES TAB -->
+<div id="tabServices" class="page active">
+  <div class="stats">
+    <div class="stat"><div class="stat-val" id="statTotal">—</div><div class="stat-lbl">Total Services</div></div>
+    <div class="stat"><div class="stat-val" id="statActive">—</div><div class="stat-lbl">Active</div></div>
+    <div class="stat"><div class="stat-val" id="statCategories">—</div><div class="stat-lbl">Categories</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Services</div>
+      <div class="card-actions">
+        <input class="search-input" id="serviceSearch" type="text" placeholder="🔍 Search…" oninput="renderServicesTable()">
+        <select class="search-input" id="categoryFilter" style="width:auto" onchange="renderServicesTable()">
+          <option value="">All Categories</option>
+        </select>
+        <button class="save-btn" onclick="openAddServiceModal()">+ Add Service</button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Image</th><th>Name</th><th>Category</th><th>Fee</th><th>Turnaround</th><th>Appt?</th><th>Status</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="servicesTbody">
+          <tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- CATEGORIES TAB -->
+<div id="tabCategories" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">Categories</div>
+      <div class="card-actions">
+        <button class="save-btn" onclick="addCategoryRow()">+ Add Category</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:12px">Categories let you group services (e.g. "Government Services", "Financial", "Utilities"). You can add up to 3 photos per category — the bot sends them when a customer asks about that category. Click a name or description to edit; click a photo slot to paste a Google Drive link (shared as "Anyone with the link can view").</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Description</th><th>Photos</th><th>Actions</th></tr></thead>
+        <tbody id="categoriesTbody">
+          <tr class="loading-row"><td colspan="4"><span class="spinner"></span>Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS TAB -->
+<div id="tabSettings" class="page">
+  <div class="card">
+    <div class="card-title">Module Settings</div>
+    <div class="s-sec">
+      <span class="s-lbl">Client Name</span>
+      <input class="s-input" id="cfgClientName" type="text" disabled>
+      <div class="s-hint">Your account name from Leadvyne. Edit it in the CRM Settings.</div>
+    </div>
+    <div class="s-row" style="margin-top:0">
+      <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+      <span class="save-msg" id="settingsSaveMsg"></span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /inner -->
+</main>
+
+<!-- SERVICE MODAL -->
+<div class="modal-overlay" id="serviceModalOverlay" onclick="if(event.target===this) closeServiceModal()">
+  <div class="modal-card">
+    <div class="modal-title" id="serviceModalTitle">Add Service</div>
+    <input type="hidden" id="smId">
+    <div class="modal-grid">
+      <div class="s-sec">
+        <span class="s-lbl">Name *</span>
+        <input class="s-input" id="smName" type="text" placeholder="e.g. Aadhaar Card Update">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Category</span>
+        <select class="s-input" id="smCategory">
+          <option value="">— None —</option>
+        </select>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Service Type</span>
+        <input class="s-input" id="smServiceType" type="text" placeholder="e.g. Government, Financial, Utility">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Fee</span>
+        <input class="s-input" id="smFee" type="text" placeholder="e.g. ₹100, Free">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Turnaround Time</span>
+        <input class="s-input" id="smTurnaround" type="text" placeholder="e.g. Same day, 3–5 working days">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Appointment Required?</span>
+        <select class="s-input" id="smAppt">
+          <option value="0">No</option>
+          <option value="1">Yes</option>
+        </select>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Status</span>
+        <select class="s-input" id="smStatus">
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Description</span>
+      <textarea class="s-input" id="smDescription" rows="3" placeholder="Brief description of this service"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Required Documents</span>
+      <textarea class="s-input" id="smRequiredDocs" rows="3" placeholder="e.g. Aadhaar card, Passport photo, Address proof"></textarea>
+    </div>
+    <div class="s-sec">
+      <span class="s-lbl">Government Portal Link</span>
+      <input class="s-input" id="smGovUrl" type="url" placeholder="Official government website URL (optional)">
+    </div>
+    <div class="modal-grid">
+      <div class="s-sec">
+        <span class="s-lbl">Image 1</span>
+        <input class="s-input" id="smImage1" type="url" placeholder="Google Drive share link">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Image 2</span>
+        <input class="s-input" id="smImage2" type="url" placeholder="Google Drive share link">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Image 3</span>
+        <input class="s-input" id="smImage3" type="url" placeholder="Google Drive share link">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">PDF / Brochure Link</span>
+        <input class="s-input" id="smPdf" type="url" placeholder="Google Drive share link">
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:14px">Images and PDF are Google Drive share links (shared as "Anyone with the link can view"). The bot sends them when a customer asks about this service.</div>
+    <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" onclick="closeServiceModal()">Cancel</button>
+      <button class="save-btn" id="serviceModalSaveBtn" onclick="submitServiceForm()">Save Service</button>
+      <span class="save-msg" id="serviceModalMsg"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
+const params = new URLSearchParams(location.search);
+let clientId = params.get('client') || '';
+const isEmbedded = params.get('embed') === '1';
+let clientRecord = null;
+let allServices = [];
+let allCategories = [];
+let editingServiceId = null;
+
+// ── TAB ───────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  const page = document.getElementById('tab' + name.charAt(0).toUpperCase() + name.slice(1));
+  if (page) page.classList.add('active');
+  document.querySelectorAll('.tab[data-tab="' + name + '"]').forEach(t => t.classList.add('active'));
+  if (name === 'services') { loadServices(); loadCategories(); }
+  if (name === 'categories') loadCategories();
+}
+
+// ── INIT ─────────────────────────────────────────
+async function init() {
+  if (isEmbedded) {
+    const hdr = document.querySelector('header');
+    if (hdr) hdr.style.display = 'none';
+  }
+  if (!clientId) { clientId = prompt('Enter your Client ID:') || ''; }
+  if (!clientId) return;
+
+  const res = await fetch(`${WORKER_BASE}/bs/client?client_id=${encodeURIComponent(clientId)}`);
+  clientRecord = await res.json();
+  if (clientRecord.error) { alert(clientRecord.error); return; }
+
+  document.getElementById('cfgClientName').value = clientRecord.client_name || '';
+
+  await Promise.all([loadCategories(), loadServices()]);
+}
+
+// ── CATEGORIES ────────────────────────────────────
+async function loadCategories() {
+  const res = await fetch(`${WORKER_BASE}/bs/categories?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json();
+  allCategories = data.list || [];
+  renderCategoriesTable();
+  populateCategorySelects();
+  document.getElementById('statCategories').textContent = allCategories.length;
+}
+
+function populateCategorySelects() {
+  const opts = '<option value="">— None —</option>' + allCategories.map(c => `<option value="${c.Id}">${esc(c.name)}</option>`).join('');
+  document.getElementById('smCategory').innerHTML = opts;
+  const filter = document.getElementById('categoryFilter');
+  filter.innerHTML = '<option value="">All Categories</option>' + allCategories.map(c => `<option value="${c.Id}">${esc(c.name)}</option>`).join('');
+}
+
+function renderCategoriesTable() {
+  const tbody = document.getElementById('categoriesTbody');
+  if (!allCategories.length) {
+    tbody.innerHTML = '<tr><td colspan="4"><div class="empty-state"><div class="empty-icon">🏷️</div><p>No categories yet. Add one to organise your services.</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = allCategories.map(cat => `
+    <tr data-cat-id="${cat.Id}">
+      <td>
+        <input class="cat-name-input" value="${esc(cat.name)}" data-field="name"
+          onblur="patchCategory(${cat.Id}, 'name', this.value)"
+          onkeydown="if(event.key==='Enter')this.blur()">
+      </td>
+      <td>
+        <input class="cat-desc-input" value="${esc(cat.description||'')}" placeholder="Description (optional)" data-field="description"
+          onblur="patchCategory(${cat.Id}, 'description', this.value)"
+          onkeydown="if(event.key==='Enter')this.blur()">
+      </td>
+      <td>
+        <div class="cat-media-inline">
+          ${[1,2,3].map(slot => catPhotoSlot(cat, slot)).join('')}
+        </div>
+      </td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn danger" onclick="deleteCategory(${cat.Id})">🗑</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function catPhotoSlot(cat, slot) {
+  const url = cat[`image_url_${slot}`];
+  if (url) {
+    return `<div class="cat-media-slot" onclick="setCategoryPhoto(${cat.Id},${slot})">
+      <img src="${driveThumb(url)}" onerror="this.style.display='none';this.parentNode.textContent='📷'">
+      <button class="cat-media-remove" onclick="event.stopPropagation();removeCategoryPhoto(${cat.Id},${slot})">×</button>
+    </div>`;
+  }
+  return `<div class="cat-media-slot" onclick="setCategoryPhoto(${cat.Id},${slot})">📷</div>`;
+}
+
+function driveThumb(url) {
+  const m = (url||'').match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w72`;
+  return url;
+}
+
+async function addCategoryRow() {
+  const name = prompt('Category name:');
+  if (!name || !name.trim()) return;
+  const res = await fetch(`${WORKER_BASE}/bs/categories`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ client_id: clientId, name: name.trim() })
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  await loadCategories();
+}
+
+async function patchCategory(id, field, value) {
+  await fetch(`${WORKER_BASE}/bs/categories`, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ client_id: clientId, Id: id, [field]: value })
+  });
+}
+
+async function setCategoryPhoto(id, slot) {
+  const link = prompt(`Paste Google Drive link for photo ${slot} (leave blank to remove):`);
+  if (link === null) return;
+  await patchCategory(id, `image_url_${slot}`, link.trim() || null);
+  await loadCategories();
+}
+
+async function removeCategoryPhoto(id, slot) {
+  await patchCategory(id, `image_url_${slot}`, null);
+  await loadCategories();
+}
+
+async function deleteCategory(id) {
+  if (!confirm('Delete this category? Services in this category will become uncategorised.')) return;
+  await fetch(`${WORKER_BASE}/bs/categories`, {
+    method: 'DELETE',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ client_id: clientId, Id: id })
+  });
+  await loadCategories();
+  await loadServices();
+}
+
+// ── SERVICES ──────────────────────────────────────
+async function loadServices() {
+  const res = await fetch(`${WORKER_BASE}/bs/services?client_id=${encodeURIComponent(clientId)}`);
+  const data = await res.json();
+  allServices = data.list || [];
+  renderServicesTable();
+  document.getElementById('statTotal').textContent = allServices.length;
+  document.getElementById('statActive').textContent = allServices.filter(s => s.status === 'active').length;
+}
+
+function renderServicesTable() {
+  const q = (document.getElementById('serviceSearch').value || '').toLowerCase();
+  const catFilter = document.getElementById('categoryFilter').value;
+  let list = allServices;
+  if (q) list = list.filter(s => (s.name||'').toLowerCase().includes(q) || (s.description||'').toLowerCase().includes(q) || (s.fee||'').toLowerCase().includes(q));
+  if (catFilter) list = list.filter(s => String(s.category_id) === catFilter);
+
+  const tbody = document.getElementById('servicesTbody');
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">🗂️</div><p>No services found. Click <strong>+ Add Service</strong> to get started.</p></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(s => {
+    const imgUrl = s.image_url_1 ? driveThumb(s.image_url_1) : '';
+    return `<tr>
+      <td>${imgUrl ? `<img class="thumb" src="${imgUrl}" onerror="this.style.display='none'">` : '<div class="thumb thumb-empty" style="background:var(--accent-soft);display:flex;align-items:center;justify-content:center;font-size:18px">🗂️</div>'}</td>
+      <td style="font-weight:600">${esc(s.name)}</td>
+      <td>${esc(s.category_name||'—')}</td>
+      <td>${esc(s.fee||'—')}</td>
+      <td>${esc(s.turnaround_time||'—')}</td>
+      <td>${s.appointment_required ? '✅' : '—'}</td>
+      <td><span class="badge ${s.status==='inactive'?'inactive':''}">${s.status==='inactive'?'Inactive':'Active'}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="icon-btn" onclick="openEditServiceModal(${s.Id})" title="Edit">✏️</button>
+          <button class="icon-btn danger" onclick="deleteService(${s.Id})" title="Delete">🗑</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openAddServiceModal() {
+  editingServiceId = null;
+  document.getElementById('serviceModalTitle').textContent = 'Add Service';
+  document.getElementById('serviceModalSaveBtn').textContent = 'Save Service';
+  document.getElementById('smId').value = '';
+  ['smName','smServiceType','smFee','smTurnaround','smDescription','smRequiredDocs','smGovUrl','smImage1','smImage2','smImage3','smPdf'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('smAppt').value = '0';
+  document.getElementById('smStatus').value = 'active';
+  document.getElementById('smCategory').value = '';
+  document.getElementById('serviceModalMsg').textContent = '';
+  document.getElementById('serviceModalOverlay').classList.add('active');
+}
+
+function openEditServiceModal(id) {
+  const s = allServices.find(x => x.Id === id);
+  if (!s) return;
+  editingServiceId = id;
+  document.getElementById('serviceModalTitle').textContent = 'Edit Service';
+  document.getElementById('serviceModalSaveBtn').textContent = 'Update Service';
+  document.getElementById('smId').value = id;
+  document.getElementById('smName').value = s.name || '';
+  document.getElementById('smCategory').value = s.category_id || '';
+  document.getElementById('smServiceType').value = s.service_type || '';
+  document.getElementById('smFee').value = s.fee || '';
+  document.getElementById('smTurnaround').value = s.turnaround_time || '';
+  document.getElementById('smAppt').value = s.appointment_required ? '1' : '0';
+  document.getElementById('smStatus').value = s.status || 'active';
+  document.getElementById('smDescription').value = s.description || '';
+  document.getElementById('smRequiredDocs').value = s.required_docs || '';
+  document.getElementById('smGovUrl').value = s.government_url || '';
+  document.getElementById('smImage1').value = s.image_url_1 || '';
+  document.getElementById('smImage2').value = s.image_url_2 || '';
+  document.getElementById('smImage3').value = s.image_url_3 || '';
+  document.getElementById('smPdf').value = s.pdf_url || '';
+  document.getElementById('serviceModalMsg').textContent = '';
+  document.getElementById('serviceModalOverlay').classList.add('active');
+}
+
+function closeServiceModal() {
+  document.getElementById('serviceModalOverlay').classList.remove('active');
+}
+
+async function submitServiceForm() {
+  const name = document.getElementById('smName').value.trim();
+  if (!name) { document.getElementById('serviceModalMsg').textContent = 'Name is required.'; return; }
+  const btn = document.getElementById('serviceModalSaveBtn');
+  const msg = document.getElementById('serviceModalMsg');
+  btn.disabled = true; btn.textContent = 'Saving…'; msg.textContent = '';
+  const body = {
+    client_id: clientId,
+    name,
+    category_id: document.getElementById('smCategory').value || null,
+    service_type: document.getElementById('smServiceType').value.trim(),
+    fee: document.getElementById('smFee').value.trim(),
+    turnaround_time: document.getElementById('smTurnaround').value.trim(),
+    appointment_required: document.getElementById('smAppt').value === '1' ? 1 : 0,
+    status: document.getElementById('smStatus').value,
+    description: document.getElementById('smDescription').value.trim(),
+    required_docs: document.getElementById('smRequiredDocs').value.trim(),
+    government_url: document.getElementById('smGovUrl').value.trim() || null,
+    image_url_1: document.getElementById('smImage1').value.trim() || null,
+    image_url_2: document.getElementById('smImage2').value.trim() || null,
+    image_url_3: document.getElementById('smImage3').value.trim() || null,
+    pdf_url: document.getElementById('smPdf').value.trim() || null,
+  };
+  if (editingServiceId) body.Id = editingServiceId;
+  const res = await fetch(`${WORKER_BASE}/bs/services`, {
+    method: editingServiceId ? 'PATCH' : 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  btn.disabled = false;
+  btn.textContent = editingServiceId ? 'Update Service' : 'Save Service';
+  if (data.error) { msg.textContent = data.error; return; }
+  closeServiceModal();
+  await loadServices();
+}
+
+async function deleteService(id) {
+  if (!confirm('Delete this service?')) return;
+  await fetch(`${WORKER_BASE}/bs/services`, {
+    method: 'DELETE',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ client_id: clientId, Id: id })
+  });
+  await loadServices();
+}
+
+// ── SETTINGS ─────────────────────────────────────
+async function saveSettings() {
+  const msg = document.getElementById('settingsSaveMsg');
+  msg.textContent = 'Saving…';
+  // Nothing extra to save in settings yet — placeholder for future config
+  setTimeout(() => { msg.textContent = 'Saved.'; setTimeout(() => { msg.textContent = ''; }, 2000); }, 400);
+}
+
+// ── HELPERS ───────────────────────────────────────
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

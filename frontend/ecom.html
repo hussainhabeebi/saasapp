@@ -105,6 +105,15 @@ tbody tr:hover{background:var(--bg)}
 .icon-btn:hover{background:var(--bg)}
 .icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
 
+/* FLOW EDITOR */
+.flow-section{margin-bottom:28px}
+.flow-section-title{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;padding-bottom:7px;border-bottom:2px solid var(--accent-soft)}
+.flow-option-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.flow-option-row input{border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:100%}
+.flow-option-row input:focus{outline:none;border-color:var(--accent);background:#fff}
+.flow-col-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+@media(max-width:600px){.flow-option-row{grid-template-columns:1fr auto}}
+
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.active{display:flex}
@@ -128,6 +137,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 .loading-row td{text-align:center;padding:30px;color:var(--muted)}
 .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:10px}
+
+/* LAYOUT WRAPPER */
+#layout{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+
+/* DESKTOP LEFT SIDEBAR */
+@media(min-width:768px){
+  #layout{flex-direction:row}
+  #tabs{flex-direction:column;width:170px;flex-shrink:0;border-bottom:none;border-right:1px solid var(--line);padding:10px 0;overflow-x:hidden;overflow-y:auto}
+  #tabs .tab{border-bottom:none;border-left:3px solid transparent;margin-bottom:0;margin-left:-1px;text-align:left;padding:10px 16px;white-space:normal}
+  #tabs .tab.active{border-bottom-color:transparent;border-left-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+  main{overflow-y:auto;flex:1}
+  .inner{max-width:none}
+}
 </style>
 </head>
 <body>
@@ -139,6 +161,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
 </header>
 
+<div id="layout">
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
@@ -147,6 +170,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+  <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')">🔀 Flow</button>
 </div>
 
 <main>
@@ -452,6 +476,105 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- FLOW TAB -->
+<div id="tabFlow" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">👶 Baby Care — Custom Order Flow</div>
+      <div class="card-actions">
+        <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Defaults</button>
+        <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+        <span class="save-msg" id="flowSaveMsg"></span>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:22px">Edit every message and button label your bot sends during the custom baby-set ordering conversation. Changes take effect immediately on the next customer message.</div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">👋 Welcome</div>
+      <div class="s-sec">
+        <span class="s-lbl">New visitor message</span>
+        <textarea class="s-input" id="flWelcomeNew" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Returning visitor message</span>
+        <textarea class="s-input" id="flWelcomeReturn" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🍼 Step 1 — Fabric / Quality Selection</div>
+      <div class="s-sec">
+        <span class="s-lbl">Intro message <span style="font-weight:400;text-transform:none;font-size:11px">(supports *bold* WhatsApp formatting)</span></span>
+        <textarea class="s-input" id="flQualityIntro" rows="6" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px">
+          <div><span class="s-lbl">Affordable — button label</span><input class="s-input" id="flAffordableLabel" type="text"></div>
+          <div><span class="s-lbl">Affordable — name in order summary</span><input class="s-input" id="flAffordableName" type="text"></div>
+          <div><span class="s-lbl">Premium — button label</span><input class="s-input" id="flPremiumLabel" type="text"></div>
+          <div><span class="s-lbl">Premium — name in order summary</span><input class="s-input" id="flPremiumName" type="text"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎨 Step 2 — Colour Options <span style="font-weight:400;font-size:11px;opacity:.65">(max 4 — WhatsApp button limit)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label is what the customer taps. "Name in order" is saved in the order summary. Leave it blank to ask for free-text input (e.g. an "Other colour" option).</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flColorRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flColorRows','BABY_COLOR_')">+ Add Colour</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🌸 Step 3 — Print Themes <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and the theme name saved in the order. Leave name blank for a "Custom / describe your own" option.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flThemeRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flThemeRows','BABY_THEME_')">+ Add Theme</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎀 Step 4 — Add-ons <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and add-on name. Include a "No add-ons" option so customers can skip this step.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flAddonRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flAddonRows','BABY_ADDON_')">+ Add Add-on</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">📦 Delivery &amp; Confirmation Messages</div>
+      <div class="s-sec">
+        <span class="s-lbl">Delivery details prompt</span>
+        <textarea class="s-input" id="flDeliveryPrompt" rows="5" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Order confirmed message</span>
+        <textarea class="s-input" id="flOrderConfirmed" rows="3" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Cancel message</span>
+        <input class="s-input" id="flCancelMsg" type="text">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Talk-to-team message</span>
+        <input class="s-input" id="flTalkMsg" type="text">
+      </div>
+    </div>
+
+    <div class="s-row">
+      <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+      <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Reset Defaults</button>
+      <span class="save-msg" id="flowSaveMsg2"></span>
+    </div>
+  </div>
+</div>
+
 <!-- ADD/EDIT PRODUCT MODAL -->
 <div class="modal-overlay" id="productModalOverlay" onclick="if(event.target===this) closeProductModal()">
   <div class="modal-card">
@@ -478,10 +601,15 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <option value="general">General</option>
           <option value="cosmetics">Cosmetics</option>
           <option value="haircare">Haircare</option>
+          <option value="baby_care">Baby Care &amp; Apparel</option>
         </select>
       </div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Age Group</span><input class="s-input" id="pmAgeGroup" type="text" placeholder="e.g. 0-6 months, 6-12 months"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Fabric Type</span><input class="s-input" id="pmFabricType" type="text" placeholder="e.g. Single Jersey (Affordable), Interlock (Premium)"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Set Includes</span><input class="s-input" id="pmSetIncludes" type="text" placeholder="e.g. Top, Skirt, Cap, Boots, Hand Socks"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Custom Accent Colors</span><input class="s-input" id="pmAccentColors" type="text" placeholder="e.g. Pink, Blue, Mint Green"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Shade</span><input class="s-input" id="pmShade" type="text" placeholder="e.g. Rose Nude"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Skin Type</span><input class="s-input" id="pmSkinType" type="text" placeholder="e.g. Oily, Dry, Combination"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Expiry Date</span><input class="s-input" id="pmExpiryDate" type="text" placeholder="e.g. 2027-03"></div>
@@ -681,6 +809,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
 </div><!-- /inner -->
 </main>
+</div><!-- /layout -->
 
 <script>
 // All NocoDB access goes through the Worker's /ecom/* routes — the master
@@ -696,6 +825,7 @@ let clientId = params.get('client') || '';
 // page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
 const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
+let botConfig = {};
 let ecomTableIds = {};
 
 const PRODUCT_FIELDS = [
@@ -715,6 +845,10 @@ const PRODUCT_FIELDS = [
   { key:'brand',       label:'Brand' },
   { key:'variant',     label:'Variant' },
   { key:'warranty_period', label:'Warranty' },
+  { key:'age_group',     label:'Age Group' },
+  { key:'fabric_type',   label:'Fabric Type' },
+  { key:'set_includes',  label:'Set Includes' },
+  { key:'accent_colors', label:'Accent Colors' },
   { key:'shopify_product_url', label:'Shopify Product Link' },
   { key:'product_link', label:'Product Link' },
   { key:'price',       label:'Price' },
@@ -786,6 +920,7 @@ async function init() {
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
+  try { botConfig = JSON.parse(clientRecord.bot_config || '{}'); } catch(e) { botConfig = {}; }
 
   // Populate settings
   // Default table IDs if not yet saved in client record
@@ -860,6 +995,8 @@ function showTab(name) {
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
+  document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
+  if (name === 'flow' && !_flowLoaded) loadFlow();
 }
 
 // ── PRODUCTS ──────────────────────────────────────
@@ -999,10 +1136,10 @@ async function bulkDeleteProducts() {
 }
 
 // ── ADD / EDIT / DELETE PRODUCT ───────────────────
-const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare' };
+const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare', baby_care:'Baby Care & Apparel' };
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
-const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
+const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod','pmAgeGroup','pmFabricType','pmSetIncludes','pmAccentColors'];
 const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
@@ -1046,6 +1183,10 @@ function openEditProductModal(id) {
   document.getElementById('pmBrand').value = p.brand || '';
   document.getElementById('pmVariant').value = p.variant || '';
   document.getElementById('pmWarrantyPeriod').value = p.warranty_period || '';
+  document.getElementById('pmAgeGroup').value = p.age_group || '';
+  document.getElementById('pmFabricType').value = p.fabric_type || '';
+  document.getElementById('pmSetIncludes').value = p.set_includes || '';
+  document.getElementById('pmAccentColors').value = p.accent_colors || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
   document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
@@ -1153,6 +1294,10 @@ async function submitProductForm() {
     brand: document.getElementById('pmBrand').value.trim(),
     variant: document.getElementById('pmVariant').value.trim(),
     warranty_period: document.getElementById('pmWarrantyPeriod').value.trim(),
+    age_group: document.getElementById('pmAgeGroup').value.trim(),
+    fabric_type: document.getElementById('pmFabricType').value.trim(),
+    set_includes: document.getElementById('pmSetIncludes').value.trim(),
+    accent_colors: document.getElementById('pmAccentColors').value.trim(),
     shopify_product_url: document.getElementById('pmShopifyUrl').value.trim(),
     product_link: document.getElementById('pmProductLink').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
@@ -1247,10 +1392,11 @@ function downloadProductTemplate() {
   // One sample row per style, so importers see how the style-specific columns line up — every
   // row leaves the columns that don't apply to its own style blank.
   const samples = [
-    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
-    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
-    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
-    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
+    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
+    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
+    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Princess Baby Set','BABY-PINK-01','Baby Sets','baby_care','','','','','','','','','','','','','0-6 months','Single Jersey (Affordable)','Top, Skirt, Cap','Pink, Mint Green','650','INR','20','active','Custom 0-6 month baby set — white base with floral print accents','https://example.com/images/baby-pink-set.jpg','','',''],
   ];
   const csv = [headers.join(','), ...samples.map(row => row.map(csvCell).join(','))].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -2274,6 +2420,143 @@ async function syncSheet(type) {
     showMsg(msgId, 'Sync sent ✓', 5000);
     setTimeout(loadOrders, 4000);
   }
+}
+
+// ── BABY CARE FLOW EDITOR ──────────────────────────
+const BABY_FLOW_DEF = {
+  welcome_new: 'Welcome! 👶🏻 How can we help you today?',
+  welcome_return: 'Welcome back! 👶🏻 What would you like to do?',
+  cancel_msg: 'No problem! Feel free to message us any time. 🌸',
+  talk_msg: "Sure! I'll connect you with our team now. 🌸",
+  quality_intro: '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',
+  affordable_label: 'Affordable (₹650+)',
+  affordable_name: 'Affordable Range — Single Jersey (from ₹650)',
+  premium_label: 'Premium (₹850+)',
+  premium_name: 'Premium Range — Interlock (from ₹850)',
+  delivery_prompt: 'Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)',
+  order_confirmed: "Order confirmed! 🎉 Your custom baby set is now with our team. We'll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸",
+  colors: [
+    {label:'Pink 🩷', value:'BABY_COLOR_PINK', name:'Pink'},
+    {label:'Blue 💙', value:'BABY_COLOR_BLUE', name:'Blue'},
+    {label:'Mint Green 🌿', value:'BABY_COLOR_MINT', name:'Mint Green'},
+    {label:'Other colour ✏️', value:'BABY_COLOR_OTHER', name:''},
+  ],
+  themes: [
+    {label:'Floral 🌸', value:'BABY_THEME_FLORAL', name:'Floral'},
+    {label:'Stars ⭐', value:'BABY_THEME_STARS', name:'Stars'},
+    {label:'Animals 🐻', value:'BABY_THEME_ANIMAL', name:'Animals'},
+    {label:'Custom theme ✏️', value:'BABY_THEME_CUSTOM', name:''},
+  ],
+  addons: [
+    {label:'Bows (Neck/Cap) 🎀', value:'BABY_ADDON_BOWS', name:'Bows'},
+    {label:'Boots 👟', value:'BABY_ADDON_BOOTS', name:'Boots'},
+    {label:'Hand Socks 🧤', value:'BABY_ADDON_HANDSOCKS', name:'Hand Socks'},
+    {label:'No add-ons ✓', value:'BABY_ADDON_NONE', name:'None'},
+  ],
+};
+let _flowLoaded = false;
+const _flowOptionCounters = {};
+
+function _renderOptionRows(containerId, items) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  (items || []).forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'flow-option-row';
+    row.dataset.value = item.value || '';
+    row.innerHTML =
+      `<input type="text" placeholder="Button label" value="${escAttr(item.label || '')}">` +
+      `<input type="text" placeholder="Blank = free-text input" value="${escAttr(item.name || '')}">` +
+      `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+    c.appendChild(row);
+  });
+}
+
+function _collectOptionRows(containerId) {
+  return Array.from(document.getElementById(containerId).querySelectorAll('.flow-option-row'))
+    .map(row => {
+      const [i1, i2] = row.querySelectorAll('input');
+      return { label: i1.value.trim(), value: row.dataset.value || '', name: i2.value.trim() || null };
+    }).filter(r => r.label);
+}
+
+function addFlowOptionRow(containerId, prefix) {
+  const c = document.getElementById(containerId);
+  if (c.querySelectorAll('.flow-option-row').length >= 4) {
+    alert('WhatsApp supports a maximum of 4 buttons per message.');
+    return;
+  }
+  _flowOptionCounters[prefix] = (_flowOptionCounters[prefix] || 5) + 1;
+  const val = prefix + 'CUSTOM' + _flowOptionCounters[prefix];
+  const row = document.createElement('div');
+  row.className = 'flow-option-row';
+  row.dataset.value = val;
+  row.innerHTML =
+    `<input type="text" placeholder="Button label">` +
+    `<input type="text" placeholder="Blank = free-text input">` +
+    `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+  c.appendChild(row);
+  row.querySelector('input').focus();
+}
+
+function loadFlow() {
+  const saved = (botConfig && botConfig.baby_care_flow) || {};
+  const f = Object.assign({}, BABY_FLOW_DEF, saved);
+  if (!Array.isArray(f.colors) || !f.colors.length) f.colors = BABY_FLOW_DEF.colors;
+  if (!Array.isArray(f.themes) || !f.themes.length) f.themes = BABY_FLOW_DEF.themes;
+  if (!Array.isArray(f.addons) || !f.addons.length) f.addons = BABY_FLOW_DEF.addons;
+  document.getElementById('flWelcomeNew').value = f.welcome_new;
+  document.getElementById('flWelcomeReturn').value = f.welcome_return;
+  document.getElementById('flQualityIntro').value = f.quality_intro;
+  document.getElementById('flAffordableLabel').value = f.affordable_label;
+  document.getElementById('flAffordableName').value = f.affordable_name;
+  document.getElementById('flPremiumLabel').value = f.premium_label;
+  document.getElementById('flPremiumName').value = f.premium_name;
+  document.getElementById('flDeliveryPrompt').value = f.delivery_prompt;
+  document.getElementById('flOrderConfirmed').value = f.order_confirmed;
+  document.getElementById('flCancelMsg').value = f.cancel_msg;
+  document.getElementById('flTalkMsg').value = f.talk_msg;
+  _renderOptionRows('flColorRows', f.colors);
+  _renderOptionRows('flThemeRows', f.themes);
+  _renderOptionRows('flAddonRows', f.addons);
+  _flowLoaded = true;
+}
+
+async function saveFlow() {
+  const flow = {
+    welcome_new: document.getElementById('flWelcomeNew').value.trim(),
+    welcome_return: document.getElementById('flWelcomeReturn').value.trim(),
+    cancel_msg: document.getElementById('flCancelMsg').value.trim(),
+    talk_msg: document.getElementById('flTalkMsg').value.trim(),
+    quality_intro: document.getElementById('flQualityIntro').value.trim(),
+    affordable_label: document.getElementById('flAffordableLabel').value.trim(),
+    affordable_name: document.getElementById('flAffordableName').value.trim(),
+    premium_label: document.getElementById('flPremiumLabel').value.trim(),
+    premium_name: document.getElementById('flPremiumName').value.trim(),
+    delivery_prompt: document.getElementById('flDeliveryPrompt').value.trim(),
+    order_confirmed: document.getElementById('flOrderConfirmed').value.trim(),
+    colors: _collectOptionRows('flColorRows'),
+    themes: _collectOptionRows('flThemeRows'),
+    addons: _collectOptionRows('flAddonRows'),
+  };
+  botConfig.baby_care_flow = flow;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('flowSaveMsg', 'Saved ✓');
+    showMsg('flowSaveMsg2', 'Saved ✓');
+  } catch(e) {
+    showMsg('flowSaveMsg', 'Error: ' + e.message);
+    showMsg('flowSaveMsg2', 'Error: ' + e.message);
+  }
+}
+
+function resetFlowDefaults() {
+  if (!confirm('Reset all flow messages and buttons to their default values?')) return;
+  delete botConfig.baby_care_flow;
+  _flowLoaded = false;
+  loadFlow();
+  showMsg('flowSaveMsg', 'Reset to defaults — click Save to apply');
+  showMsg('flowSaveMsg2', 'Reset to defaults — click Save to apply');
 }
 
 // ── HELPERS ───────────────────────────────────────

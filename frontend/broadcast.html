@@ -43,7 +43,8 @@ html,body{min-height:100%;background:var(--bg);color:var(--ink);font-family:var(
 .gerr{color:#FCA5A5;font-size:12.5px;min-height:20px;margin-top:10px}
 
 /* LAYOUT */
-.wrap{max-width:1120px;margin:0 auto;padding:20px 16px 60px}
+.wrap{max-width:100%;margin:0;padding:16px 20px 60px}
+@media(min-width:1400px){.wrap{padding:20px 40px 60px}}
 
 /* TOP BAR */
 .top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;gap:12px;flex-wrap:wrap}
@@ -187,6 +188,128 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
 ::-webkit-scrollbar-thumb{background:var(--ls);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 
+/* ── CAMPAIGN SHELL (sidebar + main) ── */
+.campaign-shell{display:flex;gap:0;align-items:flex-start}
+.campaign-sidebar{width:220px;flex-shrink:0;background:var(--card);border:1px solid var(--line);border-radius:var(--r);margin-right:18px;padding:16px 10px 20px;position:sticky;top:16px}
+.campaign-main{flex:1;min-width:0}
+.csb-section{margin-bottom:18px}
+.csb-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding:0 8px;margin-bottom:6px;display:block}
+.csb-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;cursor:pointer;color:var(--muted);font-size:12.5px;font-weight:500;transition:all .12s;user-select:none;border:none;background:none;width:100%;text-align:left;font-family:var(--body)}
+.csb-item:hover{background:var(--bg);color:var(--ink)}
+.csb-item.active{background:var(--accent-soft);color:var(--accent-ink);font-weight:700}
+.csb-icon{font-size:13px;width:18px;text-align:center;flex-shrink:0}
+.csb-count{margin-left:auto;font-size:10px;font-weight:700;background:var(--bg);color:var(--muted);padding:1px 6px;border-radius:99px}
+.csb-item.active .csb-count{background:var(--accent);color:#fff}
+.csb-stat{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:6px}
+.csb-stat-val{font-size:20px;font-weight:800;color:var(--accent);letter-spacing:-.03em;font-variant-numeric:tabular-nums;font-family:var(--disp)}
+.csb-stat-lbl{font-size:11px;color:var(--muted);margin-top:1px;line-height:1.35}
+@media(max-width:760px){.campaign-sidebar{display:none}.campaign-shell{display:block}}
+
+/* ── ENHANCED TEMPLATE CARDS ── */
+.tpl-card-rich{border:1.5px solid var(--line);border-radius:var(--r-sm);background:var(--card);transition:all .15s;overflow:hidden;margin-bottom:12px}
+.tpl-card-rich:hover{border-color:var(--accent);box-shadow:var(--shadow-md)}
+.tpl-card-head{display:flex;align-items:flex-start;gap:10px;padding:14px 16px 10px}
+.tpl-card-name{font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--ink);flex:1;min-width:0;word-break:break-all}
+.tpl-card-badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px}
+.tpl-card-body-txt{padding:0 16px 10px;font-size:12px;color:var(--muted);line-height:1.6;max-height:54px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.tpl-card-metrics{display:flex;gap:0;border-top:1px solid var(--line)}
+.tpl-metric{flex:1;padding:9px 12px;text-align:center;border-right:1px solid var(--line)}
+.tpl-metric:last-child{border-right:none}
+.tpl-metric-val{font-size:14px;font-weight:800;color:var(--accent);letter-spacing:-.02em;font-variant-numeric:tabular-nums;font-family:var(--disp)}
+.tpl-metric-lbl{font-size:10px;color:var(--muted);margin-top:1px;white-space:nowrap}
+.tpl-card-actions{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--line);background:var(--bg);flex-wrap:wrap}
+.tpl-variant-badge{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;background:#EFF6FF;color:#1D4ED8}
+.tpl-seq-badge{background:#FEF0DA;color:var(--warn);font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px}
+
+/* ── SEND BROADCAST MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:300;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(2px)}
+.modal-overlay.hidden{display:none!important}
+.modal-box{background:var(--card);border-radius:var(--r);box-shadow:0 24px 60px rgba(0,0,0,.2);width:100%;max-width:560px;max-height:90vh;overflow-y:auto}
+.modal-head{display:flex;align-items:center;gap:10px;padding:18px 20px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card);z-index:1}
+.modal-title{font-family:var(--disp);font-size:16px;font-weight:700;flex:1}
+.modal-close{background:none;border:none;font-size:20px;color:var(--muted);cursor:pointer;padding:4px 8px;line-height:1;border-radius:8px}
+.modal-close:hover{background:var(--bg);color:var(--ink)}
+.modal-body{padding:18px 20px 20px}
+.modal-footer{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;position:sticky;bottom:0;background:var(--card)}
+.fallback-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.fallback-var{font-family:var(--mono);font-size:11.5px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;color:var(--ink);flex-shrink:0}
+.fallback-arrow{color:var(--muted);font-size:12px}
+.fallback-input{flex:1;min-width:80px;max-width:160px;padding:5px 9px;font-size:12px}
+.blackout-warn{background:var(--warn-soft);color:var(--warn);border-radius:var(--r-sm);padding:10px 13px;font-size:12.5px;margin-bottom:12px}
+
+/* ── FOLLOW-UP SEQUENCE BUILDER ── */
+.seq-builder{margin-top:10px}
+.seq-step{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px}
+.seq-step-num{width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--disp);margin-top:6px}
+.seq-step-body{flex:1;border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px 14px;background:var(--bg)}
+.seq-step-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.seq-step-label{font-size:12.5px;font-weight:700;color:var(--ink);font-family:var(--disp);flex:1}
+.seq-step-remove{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 5px;border-radius:6px}
+.seq-step-remove:hover{color:var(--red);background:var(--bg)}
+.seq-add-btn{border:1.5px dashed var(--ls);border-radius:var(--r-sm);padding:9px 14px;background:none;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;transition:all .15s;width:100%;font-family:var(--disp)}
+.seq-add-btn:hover{border-style:solid;border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.seq-connector{display:flex;align-items:center;gap:8px;margin:4px 0 4px 12px}
+.seq-connector-line{width:2px;height:16px;background:var(--line);flex-shrink:0;margin-left:12px}
+.branch-card{border:1.5px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;background:var(--card);margin-top:8px}
+.branch-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:6px}
+
+/* ── LEAD CLASSIFICATION ── */
+.cls-tag{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;border:1.5px solid transparent;transition:all .12s;user-select:none}
+.cls-tag.hot{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
+.cls-tag.warm{background:#FEF0DA;color:var(--warn);border-color:#FCD34D}
+.cls-tag.cold{background:#EFF6FF;color:#1D4ED8;border-color:#BFDBFE}
+.cls-tag.nurture{background:#F3E8FF;color:#7C3AED;border-color:#DDD6FE}
+.cls-tag.disqualified{background:var(--bg);color:var(--muted);border-color:var(--line)}
+.cls-tag.optout{background:#FEE2E2;color:#991B1B;border-color:#FECACA;opacity:.7}
+.cls-card{border:1.5px solid var(--line);border-radius:var(--r-sm);padding:14px;background:var(--card);margin-bottom:10px;display:flex;align-items:flex-start;gap:12px}
+.cls-lead-name{font-size:13px;font-weight:600;color:var(--ink)}
+.cls-lead-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
+.cls-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.cls-history{font-size:11px;color:var(--muted);border-top:1px solid var(--line);margin-top:8px;padding-top:6px;line-height:1.7}
+.cls-timeline{display:flex;flex-direction:column;gap:5px;margin-top:10px}
+.cls-evt{display:flex;align-items:center;gap:8px;font-size:11.5px;padding:5px 0;border-bottom:1px solid var(--line)}
+.cls-evt:last-child{border-bottom:none}
+.cls-evt-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.cls-evt-dot.hot{background:#DC2626}
+.cls-evt-dot.warm{background:var(--warn)}
+.cls-evt-dot.cold{background:#2563EB}
+.cls-evt-dot.contacted{background:var(--accent)}
+.cls-evt-dot.default{background:var(--ls)}
+.intent-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:14px}
+.intent-card{border:2px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;cursor:pointer;transition:all .15s;background:var(--bg);text-align:center}
+.intent-card:hover{border-color:var(--accent)}
+.intent-card.active{border-color:var(--accent);background:var(--accent-soft)}
+.intent-icon{font-size:18px;margin-bottom:4px}
+.intent-label{font-size:11.5px;font-weight:700;color:var(--ink)}
+.intent-desc{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.4}
+
+/* ── LEAD ATTRIBUTES ── */
+.attr-group{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;margin-bottom:14px}
+.attr-group-head{background:var(--bg);padding:10px 14px;font-size:12px;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+.attr-row{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.attr-row:last-child{border-bottom:none}
+.attr-key{width:160px;flex-shrink:0;font-size:11.5px;font-weight:600;color:var(--muted)}
+.attr-val{flex:1;color:var(--ink)}
+.attr-type-pill{font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;background:var(--bg);color:var(--muted);border:1px solid var(--line);flex-shrink:0}
+.attr-required{color:var(--red);font-size:10px;font-weight:700;flex-shrink:0}
+.attr-fallback{font-size:11px;color:var(--muted);font-style:italic;margin-top:1px}
+.new-attr-form{border:1.5px dashed var(--ls);border-radius:var(--r-sm);padding:14px;margin-top:10px}
+.attr-type-grid{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.attr-type-btn{border:1.5px solid var(--line);background:var(--bg);border-radius:8px;padding:5px 12px;font-size:11.5px;font-weight:600;cursor:pointer;color:var(--muted);transition:all .12s;font-family:var(--body)}
+.attr-type-btn:hover,.attr-type-btn.active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.seg-builder{border:1px solid var(--line);border-radius:var(--r-sm);padding:14px;background:var(--bg);margin-top:8px}
+.seg-rule{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.seg-rule select,.seg-rule input{flex:1;min-width:80px;max-width:180px;font-size:12px;padding:6px 10px}
+.seg-op{font-size:12px;font-weight:600;color:var(--muted)}
+.seg-and-badge{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;background:var(--accent-soft);color:var(--accent-ink)}
+
+/* INBOX SELECTOR */
+.inbox-selector-row{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--accent-soft);border-radius:var(--r-sm);margin-bottom:16px;flex-wrap:wrap}
+.inbox-selector-row label{font-size:12px;font-weight:700;color:var(--accent-ink);margin:0;white-space:nowrap}
+.inbox-selector-row select{flex:1;min-width:180px;max-width:340px;font-size:13px;padding:7px 11px;border:1.5px solid var(--accent);border-radius:var(--r-sm);background:var(--card);color:var(--ink)}
+.inbox-pill{display:inline-flex;align-items:center;gap:5px;background:var(--accent);color:#fff;border-radius:20px;padding:3px 10px 3px 8px;font-size:11px;font-weight:700;font-family:var(--disp)}
+@media(max-width:600px){.inbox-selector-row{flex-direction:column;align-items:flex-start}}
+
 /* ── PROFESSIONAL POLISH ── */
 .card{border:1px solid var(--line);transition:box-shadow .2s}
 .card:hover{box-shadow:0 4px 20px rgba(0,0,0,.07)}
@@ -240,47 +363,62 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
   <div class="tabs">
     <button class="tab active" id="tab-dm" onclick="showTab('dm')">💬 Direct Message</button>
     <button class="tab" id="tab-meta" onclick="showTab('meta')">📣 Template Broadcast</button>
-    <button class="tab" id="tab-prospects" onclick="showTab('prospects')">🎯 Import Prospects</button>
     <button class="tab" id="tab-followups" onclick="showTab('followups')">🔁 Follow-ups</button>
     <button class="tab" id="tab-fuengine" onclick="showTab('fuengine')">💪 Follow-up Engine</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
     <button class="tab" id="tab-automations" onclick="showTab('automations')">⚡ Automations</button>
     <button class="tab" id="tab-reviews" onclick="showTab('reviews')">⭐ Reviews</button>
+    <button class="tab" id="tab-classification" onclick="showTab('classification')">🏷️ Lead Classification</button>
+    <button class="tab" id="tab-attributes" onclick="showTab('attributes')">🗂️ Lead Attributes</button>
   </div>
 
-  <!-- ══════════════════════════════════════
-       TAB: IMPORT PROSPECTS (merged in from dashboard.html's old standalone Prospects tab —
-       same Google Sheet import, now sharing this page's own template list/management instead
-       of a second duplicate template picker)
-  ══════════════════════════════════════ -->
-  <div id="view-prospects" style="display:none">
-    <div class="msg info">
-      🎯 Import a list of new contacts from a Google Sheet and send them a first-touch WhatsApp template message — 50 at a time. Uses the same approved templates as Template Broadcast/Manage Templates above.
-    </div>
+  <!-- CAMPAIGN SHELL: sidebar + main -->
+  <div class="campaign-shell">
 
-    <div class="card">
-      <div class="card-title"><span class="step-num">1</span> Prospect List (Google Sheet)</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Sheet must have <code>Name</code> and <code>Phone</code> columns, and be shared with our sync account.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input class="ginput" style="flex:1;min-width:220px;color:var(--ink);background:var(--card);border-color:var(--line)" type="text" id="prospectSheetUrl" placeholder="https://docs.google.com/spreadsheets/d/…">
-        <button class="btn btn-sec" onclick="saveProspectSheetUrl()">Save Link</button>
+  <!-- Campaign Sidebar -->
+  <div class="campaign-sidebar">
+    <div class="csb-section">
+      <span class="csb-label">Send</span>
+      <button class="csb-item active" id="csb-dm" onclick="showTab('dm')"><span class="csb-icon">💬</span>Direct Message</button>
+      <button class="csb-item" id="csb-meta" onclick="showTab('meta')"><span class="csb-icon">📣</span>Template Broadcast</button>
+    </div>
+    <div class="csb-section">
+      <span class="csb-label">Sequences</span>
+      <button class="csb-item" id="csb-followups" onclick="showTab('followups')"><span class="csb-icon">🔁</span>Follow-ups</button>
+      <button class="csb-item" id="csb-fuengine" onclick="showTab('fuengine')"><span class="csb-icon">💪</span>Follow-up Engine</button>
+      <button class="csb-item" id="csb-automations" onclick="showTab('automations')"><span class="csb-icon">⚡</span>Automations</button>
+    </div>
+    <div class="csb-section">
+      <span class="csb-label">Templates</span>
+      <button class="csb-item" id="csb-templates" onclick="showTab('templates')"><span class="csb-icon">📋</span>Manage Templates</button>
+    </div>
+    <div class="csb-section">
+      <span class="csb-label">Intelligence</span>
+      <button class="csb-item" id="csb-classification" onclick="showTab('classification')"><span class="csb-icon">🏷️</span>Lead Classification</button>
+      <button class="csb-item" id="csb-attributes" onclick="showTab('attributes')"><span class="csb-icon">🗂️</span>Lead Attributes</button>
+      <button class="csb-item" id="csb-tracking" onclick="showTab('tracking')"><span class="csb-icon">📊</span>Tracking</button>
+      <button class="csb-item" id="csb-reviews" onclick="showTab('reviews')"><span class="csb-icon">⭐</span>Reviews</button>
+    </div>
+    <div class="csb-section">
+      <span class="csb-label">Pipeline</span>
+      <div class="csb-stat">
+        <div class="csb-stat-val" id="sbStatTemplates">—</div>
+        <div class="csb-stat-lbl">Approved templates</div>
       </div>
-      <div class="msg" id="prospectSheetMsg" style="display:none;margin-top:8px"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title"><span class="step-num">2</span> Template &amp; Import</div>
-      <select class="ginput" style="color:var(--ink);background:var(--card);border-color:var(--line);width:100%;margin-bottom:12px" id="prospectTemplateSelect"><option value="">Select an approved template…</option></select>
-      <button class="btn btn-primary" id="prospectImportBtn" onclick="prospectImportBatch()">📤 Import Next 50 &amp; Send</button>
-      <div class="msg" id="prospectImportMsg" style="display:none;margin-top:8px"></div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">📋 Import Runs</div>
-      <div id="prospectLogList"><div style="font-size:12px;color:var(--muted)">No import runs yet.</div></div>
+      <div class="csb-stat">
+        <div class="csb-stat-val" id="sbStatInSeq">—</div>
+        <div class="csb-stat-lbl">Leads in sequences</div>
+      </div>
+      <div class="csb-stat">
+        <div class="csb-stat-val" id="sbStatHot">—</div>
+        <div class="csb-stat-lbl">Hot leads (campaign)</div>
+      </div>
     </div>
   </div>
+
+  <!-- Campaign Main Content -->
+  <div class="campaign-main">
 
   <!-- ══════════════════════════════════════
        TAB 1: DIRECT MESSAGE (within 24h)
@@ -396,6 +534,11 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <!-- Step 3: Send -->
     <div class="card">
       <div class="card-title"><span class="step-num">3</span> Send</div>
+      <div class="inbox-selector-row" id="dmInboxRow" style="display:none">
+        <label>📲 Send from</label>
+        <select id="dmInboxSelect" onchange="dmInboxChanged()"></select>
+        <span style="font-size:11px;color:var(--accent-ink)">Conversations are already tied to their inbox — this label is for your records.</span>
+      </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="dmSendBtn" onclick="sendDm()">💬 Send Direct Messages</button>
         <span id="dmSendStatus" style="font-size:13px;color:var(--muted)"></span>
@@ -425,6 +568,11 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div class="card-title">
         <span class="step-num">1</span> Select WhatsApp Template
         <button class="btn btn-sec btn-sm" onclick="refreshTemplates()" style="margin-left:auto">↻ Refresh</button>
+      </div>
+      <div class="inbox-selector-row" id="metaInboxRow" style="display:none">
+        <label>📲 Active WhatsApp number</label>
+        <select id="metaInboxSelect" onchange="metaInboxChanged()"></select>
+        <span style="font-size:11px;color:var(--accent-ink)">Templates and broadcasts use this number.</span>
       </div>
       <div id="tplLoading" class="msg info">Loading templates from Meta…</div>
       <div id="tplError" class="msg error hidden"></div>
@@ -508,6 +656,10 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <!-- Step 4: Send -->
     <div class="card" id="metaSendCard" style="display:none">
       <div class="card-title"><span class="step-num">4</span> Send Broadcast</div>
+      <div class="inbox-selector-row" id="metaInboxRow" style="display:none">
+        <label>📲 Send from</label>
+        <select id="metaInboxSelect" onchange="metaInboxChanged()"></select>
+      </div>
       <div class="msg warn">⚠️ WhatsApp only allows template messages to contacts who haven't messaged in 24h. Ensure your template is approved by Meta.</div>
       <div class="msg info">ℹ️ Leads with no WhatsApp conversation yet (e.g. imported from a Google Sheet) are sent to directly via your connected WhatsApp Business API instead of failing — connect it in Settings → Channels if you haven't already.</div>
       <div style="display:flex;gap:12px;margin-top:14px;flex-wrap:wrap;align-items:center">
@@ -568,29 +720,63 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     </div>
     <div class="card">
       <div class="card-title">💪 Follow-up Engine</div>
-      <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the day 2/4/7 re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot). For ecommerce clients, a session-step message automatically gets a real low-stock line appended (e.g. "Only 3 left in…") whenever the lead's last-shown product is genuinely running low — never a fabricated countdown.</div>
-
+      <div class="msg info">Every follow-up setting lives here now. The first two nudges go out as normal WhatsApp messages while the conversation is still "open" (within 24 hours) — after that, WhatsApp only allows pre-approved template messages, so the 25-hour/3-day/7-day re-engagement steps each need a template chosen below (sent directly via the WhatsApp Cloud API, not through Chatwoot). For ecommerce clients, a session-step message automatically gets a real low-stock line appended (e.g. "Only 3 left in…") whenever the lead's last-shown product is genuinely running low — never a fabricated countdown.</div>
       <div style="font-weight:700;font-size:14px;margin:14px 0 8px">📱 Before 24 Hours — Session Messages</div>
       <div id="fuLadderSession"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 2 Days — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 25 Hours — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">Sent via WhatsApp Cloud API using a pre-approved template. WhatsApp requires a template once the 24-hour session window closes.</div>
       <div id="fuLadderStep3"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 4 Days — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 3 Days — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">A second re-engagement attempt 3 days after the last customer reply.</div>
       <div id="fuLadderStep4"></div>
+    </div>
 
-      <div style="font-weight:700;font-size:14px;margin:18px 0 8px">📋 After 7 Days — Template Message</div>
+    <div class="card">
+      <div class="card-title">📋 After 7 Days — Template Message</div>
+      <div class="msg info" style="margin-bottom:12px">Final re-engagement attempt 7 days after the last customer reply.</div>
       <div id="fuLadderStep5"></div>
+    </div>
 
-      <div style="display:flex;gap:10px;align-items:center;margin-top:16px">
-        <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
-        <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
-      </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
+      <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
+      <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
     </div>
     <div class="card">
       <div class="card-title">📊 Step Performance</div>
       <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward.</div>
       <div id="fuEngineStats"></div>
+    </div>
+    <div class="card" id="smartFollowupCard">
+      <div class="card-title">⚡ Smart Follow-ups <span style="font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:2px 6px;margin-left:6px;vertical-align:middle">Beta</span></div>
+      <div class="msg info">Instead of a 15-minute background sweep, each lead gets its own self-scheduling agent — it fires at exactly the right time, and automatically resets the clock whenever your customer replies. Completely optional; your existing follow-ups keep working until you enable this.</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;font-size:13.5px;cursor:pointer">
+          <input type="checkbox" id="smartFuEnabled" style="width:auto;cursor:pointer" onchange="toggleSmartFollowups(this.checked)">
+          Enable Smart Follow-ups for my account
+        </label>
+        <span id="smartFuMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+      <div id="smartFuMigrateRow" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">Smart Follow-ups is enabled. Run the one-time migration below to bring your existing active leads onto the new system. New leads are handled automatically.</div>
+        <button class="btn btn-sec" onclick="migrateSmartFollowups()">Migrate existing leads</button>
+        <span id="smartFuMigrateMsg" style="font-size:12.5px;margin-left:10px"></span>
+      </div>
+    </div>
+    <div class="card" id="chatPageCard">
+      <div class="card-title">🔗 Chat Page</div>
+      <div class="msg info">Generate a shareable link your customers open in their browser — a full-page chat powered by your AI engine and FAQ. Give it to leads via WhatsApp, email signature, or a QR code. Each link is tied to your account and can be revoked at any time.</div>
+      <div id="chatTokensList" style="margin-top:12px"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <input type="text" id="chatTokenLabel" placeholder="Label (e.g. Website Button)" style="flex:1;min-width:120px;max-width:220px">
+        <button class="btn btn-primary" onclick="createChatToken()">+ New Link</button>
+        <span id="chatTokenMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
     </div>
   </div><!-- /view-fuengine -->
 
@@ -603,6 +789,11 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <div class="card">
       <div class="card-title">➕ Create New Template</div>
       <div class="msg info">Templates are submitted to Meta for approval (usually 24–48h). Only approved templates can be used for broadcasts.</div>
+      <div class="inbox-selector-row" id="createTplInboxRow" style="display:none">
+        <label>📲 WhatsApp Inbox</label>
+        <select id="createTplInboxSelect" onchange="tplCreateInboxChanged()"></select>
+        <span style="font-size:11px;color:var(--accent-ink)">Templates sync per inbox — choose the account to submit to.</span>
+      </div>
       <div class="form-row">
         <div class="form-field">
           <label>Template Name (lowercase, underscores only)</label>
@@ -649,25 +840,183 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <div class="preview-bubble" id="createPreview" style="font-size:12px">Your message will appear here</div>
         </div>
       </div>
+      <div class="form-field" id="tplButtonsSection">
+        <label style="display:flex;align-items:center;gap:8px">
+          Quick Reply Buttons
+          <span id="tplRecruitBadge" style="display:none;font-size:11px;background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-weight:600">🏢 Recruiting — Pre-filled</span>
+          <span style="font-size:11px;color:var(--muted);font-weight:400">max 3 · 20 chars each</span>
+        </label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="text" id="tplBtn0" maxlength="20" placeholder="Button 1" style="flex:1;min-width:120px">
+          <input type="text" id="tplBtn1" maxlength="20" placeholder="Button 2" style="flex:1;min-width:120px">
+          <input type="text" id="tplBtn2" maxlength="20" placeholder="Button 3" style="flex:1;min-width:120px">
+        </div>
+        <span style="font-size:11px;color:var(--muted)">Leave all blank to create a template without buttons.</span>
+      </div>
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-primary" onclick="submitTemplate()">Submit to Meta</button>
         <span id="createMsg" style="font-size:13px"></span>
       </div>
     </div>
 
-    <!-- Template List -->
+    <!-- Template List — rich cards -->
     <div class="card">
       <div class="card-title">📋 All Templates
-        <button class="btn btn-sec btn-sm" style="margin-left:auto" onclick="refreshTemplates()">↻ Refresh</button>
+        <span id="listTplInboxPill" style="margin-left:6px"></span>
+        <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select id="tplStatusFilter" style="font-size:12px;padding:6px 10px" onchange="filterTplList()">
+            <option value="">All statuses</option>
+            <option value="APPROVED">Approved</option>
+            <option value="PENDING">Pending</option>
+            <option value="REJECTED">Rejected</option>
+          </select>
+          <select id="tplCatFilter" style="font-size:12px;padding:6px 10px" onchange="filterTplList()">
+            <option value="">All categories</option>
+            <option value="MARKETING">Marketing</option>
+            <option value="UTILITY">Utility</option>
+          </select>
+          <button class="btn btn-sec btn-sm" onclick="refreshTemplates()">↻ Refresh from Meta</button>
+        </div>
+      </div>
+      <div class="inbox-selector-row" id="listTplInboxRow" style="display:none">
+        <label>📲 View templates for</label>
+        <select id="listTplInboxSelect" onchange="tplListInboxChanged()"></select>
       </div>
       <div id="tplListLoading" class="msg info">Loading…</div>
       <div id="tplListWrap" class="hidden">
-        <div class="tbl-wrap">
+        <!-- Rich cards container -->
+        <div id="tplRichCards"></div>
+        <!-- Fallback table (hidden by default) -->
+        <div class="tbl-wrap" id="tplTableFallback" style="display:none">
           <table class="tbl">
             <thead><tr><th>Name</th><th>Category</th><th>Language</th><th>Status</th><th>Body</th></tr></thead>
             <tbody id="tplListTbody"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- Follow-Up Sequence Builder -->
+    <div class="card" id="seqBuilderCard" style="display:none">
+      <div class="card-title">🔁 Follow-Up Sequence — <span id="seqBuilderTplName" style="font-family:var(--mono);font-size:12px"></span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeSeqBuilder()">✕ Close</button>
+      </div>
+      <div class="msg info">Build a follow-up chain attached to this template. Each step fires when a lead does <em>not</em> reply after the delay. The sequence stops automatically when the lead replies positively or opts out.</div>
+
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;font-weight:600;color:var(--muted);display:block;margin-bottom:6px">Max follow-ups per lead</label>
+        <select id="seqMaxSteps" style="max-width:160px;font-size:13px">
+          <option value="1">1 step</option>
+          <option value="2">2 steps</option>
+          <option value="3" selected>3 steps</option>
+          <option value="5">5 steps</option>
+        </select>
+      </div>
+
+      <div class="seq-builder" id="seqStepsList">
+        <!-- Step 1 -->
+        <div class="seq-step">
+          <div class="seq-step-num">1</div>
+          <div class="seq-step-body">
+            <div class="seq-step-head">
+              <span class="seq-step-label">Follow-Up Step 1</span>
+              <button class="seq-step-remove" onclick="removeSeqStep(this)">✕</button>
+            </div>
+            <div class="form-row">
+              <div class="form-field" style="margin-bottom:0">
+                <label>Send if no reply after</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <input type="number" value="24" min="1" style="width:70px;padding:7px 10px;font-size:13px">
+                  <select style="flex:1;font-size:13px"><option>hours</option><option>days</option></select>
+                </div>
+              </div>
+              <div class="form-field" style="margin-bottom:0">
+                <label>Template to send</label>
+                <select style="font-size:13px" class="seq-tpl-select">
+                  <option value="">Same template (re-send)</option>
+                  <option value="__other__">Choose another template…</option>
+                </select>
+              </div>
+            </div>
+            <!-- Conditional branches -->
+            <div class="branch-card" style="margin-top:10px">
+              <div class="branch-label">Conditional branch — if lead replies with:</div>
+              <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span class="cls-tag warm" style="cursor:default;font-size:11px">🌤 Warm intent</span>
+                  <span style="color:var(--muted)">→</span>
+                  <select style="flex:1;min-width:120px;font-size:12px;padding:5px 8px"><option>Send FAQ template</option><option>Notify agent</option><option>Advance to next stage</option><option>Stop sequence</option></select>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span class="cls-tag hot" style="cursor:default;font-size:11px">🔥 Hot intent</span>
+                  <span style="color:var(--muted)">→</span>
+                  <select style="flex:1;min-width:120px;font-size:12px;padding:5px 8px"><option>Stop sequence, notify agent</option><option>Advance to next stage</option><option>Send closing template</option></select>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span class="cls-tag optout" style="cursor:default;font-size:11px">🚫 Opt-out</span>
+                  <span style="color:var(--muted)">→</span>
+                  <select style="flex:1;min-width:120px;font-size:12px;padding:5px 8px"><option>Stop &amp; suppress permanently</option></select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="seq-connector-line"></div>
+      </div>
+
+      <button class="seq-add-btn" id="seqAddBtn" onclick="addSeqStep()">+ Add Follow-Up Step</button>
+
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" onclick="saveSeqBuilder()">Save Sequence</button>
+        <button class="btn btn-ghost" onclick="closeSeqBuilder()">Cancel</button>
+        <span id="seqSaveMsg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <!-- Template Variants -->
+    <div class="card" id="variantManagerCard" style="display:none">
+      <div class="card-title">🔀 Template Variants — <span id="variantParentName" style="font-family:var(--mono);font-size:12px"></span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="closeVariantManager()">✕ Close</button>
+      </div>
+      <div class="msg info">Variants share the same goal as the parent template but differ in tone (formal vs casual, short vs long). The system auto-rotates variants across different leads in the same campaign and tracks which performs best.</div>
+      <div id="variantList" style="margin-bottom:12px">
+        <div class="tpl-card-rich">
+          <div class="tpl-card-head">
+            <div>
+              <div class="tpl-card-name">promo_jan_formal <span style="font-size:10px;font-weight:400;color:var(--muted)">(Parent)</span></div>
+              <div class="tpl-card-badges">
+                <span class="badge green">APPROVED</span>
+              </div>
+            </div>
+            <span style="margin-left:auto;font-size:11px;color:var(--muted)">Response: 34%</span>
+          </div>
+          <div class="tpl-card-metrics">
+            <div class="tpl-metric"><div class="tpl-metric-val">34%</div><div class="tpl-metric-lbl">Response</div></div>
+            <div class="tpl-metric"><div class="tpl-metric-val">2.4h</div><div class="tpl-metric-lbl">Avg reply</div></div>
+            <div class="tpl-metric"><div class="tpl-metric-val">12%</div><div class="tpl-metric-lbl">Converted</div></div>
+          </div>
+        </div>
+        <div class="tpl-card-rich" style="border-color:#2563EB">
+          <div class="tpl-card-head">
+            <div>
+              <div class="tpl-card-name">promo_jan_casual <span class="tpl-variant-badge">↗ Variant</span></div>
+              <div class="tpl-card-badges">
+                <span class="badge green">APPROVED</span>
+                <span class="badge blue">🏆 Winning</span>
+              </div>
+            </div>
+            <span style="margin-left:auto;font-size:11px;color:#2563EB;font-weight:700">Response: 41%</span>
+          </div>
+          <div class="tpl-card-metrics">
+            <div class="tpl-metric"><div class="tpl-metric-val" style="color:#2563EB">41%</div><div class="tpl-metric-lbl">Response</div></div>
+            <div class="tpl-metric"><div class="tpl-metric-val">1.8h</div><div class="tpl-metric-lbl">Avg reply</div></div>
+            <div class="tpl-metric"><div class="tpl-metric-val">18%</div><div class="tpl-metric-lbl">Converted</div></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="alert('Promote winning variant as default (demo)')">Promote Winner as Default</button>
+        <button class="btn btn-sec btn-sm" onclick="alert('Add variant by linking another template (demo)')">+ Link Another Template as Variant</button>
       </div>
     </div>
 
@@ -677,17 +1026,74 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
        TAB 5: TRACKING
   ══════════════════════════════════════ -->
   <div id="view-tracking" style="display:none">
+
+    <!-- KPI tiles -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:4px">
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Total Leads</div>
+        <div id="tkTotalLeads" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">🔥 Hot Leads</div>
+        <div id="tkHotLeads" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:#DC2626">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">In Follow-up</div>
+        <div id="tkInSeq" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--accent)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Contacted 24 h</div>
+        <div id="tkContacted24h" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+      <div class="card" style="padding:16px 18px;margin:0">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Campaigns Sent</div>
+        <div id="tkCampaignsSent" style="font-size:28px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--fg)">—</div>
+      </div>
+    </div>
+
+    <!-- Pipeline + Engagement row -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px">
+      <div class="card" style="margin:0">
+        <div class="card-title">📊 Pipeline by Stage</div>
+        <div id="tkPipelineChart" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-title">🎯 Engagement Breakdown</div>
+        <div id="tkEngagementChart" style="display:flex;flex-direction:column;gap:8px;margin-top:4px"></div>
+      </div>
+    </div>
+
+    <!-- Send history -->
     <div class="card">
-      <div class="card-title">📊 Send History</div>
-      <div class="msg info">Every Direct Message and Template Broadcast run from this page, logged automatically — recipients, sent/failed counts, and when it ran.</div>
+      <div class="card-title">📤 Campaign Send History</div>
+      <div class="msg info" style="margin-bottom:8px">Every broadcast sent from this page — template sends, bulk DMs, and sequences.</div>
       <div class="tbl-wrap">
         <table class="tbl">
-          <thead><tr><th>When</th><th>Type</th><th>Recipients</th><th>Sent</th><th>Failed</th></tr></thead>
+          <thead><tr><th>When</th><th>Type</th><th>Recipients</th><th>Sent</th><th>Failed</th><th>Rate</th></tr></thead>
           <tbody id="trackTbody"></tbody>
         </table>
       </div>
-      <div id="trackEmpty" class="msg info hidden">No campaigns sent yet.</div>
+      <div id="trackEmpty" class="msg info hidden">No campaigns sent yet. Sends from the Templates and DM tabs appear here automatically.</div>
     </div>
+
+    <!-- Recent activity -->
+    <div class="card">
+      <div class="card-title">🕐 Recent Lead Activity
+        <select id="tkActivityFilter" style="margin-left:auto;font-size:12px;padding:5px 8px" onchange="renderTrackingTab()">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="all">All time</option>
+        </select>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Lead</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last contact</th><th>Follow-up step</th></tr></thead>
+          <tbody id="tkRecentTbody"></tbody>
+        </table>
+      </div>
+      <div id="tkRecentEmpty" class="msg info hidden">No recent activity in this window.</div>
+    </div>
+
   </div><!-- /view-tracking -->
 
   <!-- ══════════════════════════════════════
@@ -802,7 +1208,465 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     </div>
   </div><!-- /view-reviews -->
 
+  <!-- ══════════════════════════════════════
+       TAB: LEAD CLASSIFICATION
+  ══════════════════════════════════════ -->
+  <div id="view-classification" style="display:none">
+
+    <div class="card">
+      <div class="card-title">🏷️ Reply Intent Classifier
+        <span style="font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:2px 7px;margin-left:6px;vertical-align:middle;font-family:var(--disp)">Campaign-scoped</span>
+      </div>
+      <div class="msg info">Intent classifications here are campaign-local — they don't change anything on the main Leads page. Each inbound reply from a broadcast is auto-tagged. You can manually override any classification below.</div>
+      <div class="intent-grid" id="intentFilterGrid">
+        <div class="intent-card active" data-intent="all" onclick="filterByIntent('all',this)">
+          <div class="intent-icon">📋</div>
+          <div class="intent-label">All Replies</div>
+          <div class="intent-desc">Show everything</div>
+        </div>
+        <div class="intent-card" data-intent="hot" onclick="filterByIntent('hot',this)">
+          <div class="intent-icon">🔥</div>
+          <div class="intent-label">Hot</div>
+          <div class="intent-desc">Positive intent, ready to act</div>
+        </div>
+        <div class="intent-card" data-intent="warm" onclick="filterByIntent('warm',this)">
+          <div class="intent-icon">🌤</div>
+          <div class="intent-label">Warm</div>
+          <div class="intent-desc">Interested, needs nurturing</div>
+        </div>
+        <div class="intent-card" data-intent="cold" onclick="filterByIntent('cold',this)">
+          <div class="intent-icon">🧊</div>
+          <div class="intent-label">Cold</div>
+          <div class="intent-desc">No engagement / vague</div>
+        </div>
+        <div class="intent-card" data-intent="nurture" onclick="filterByIntent('nurture',this)">
+          <div class="intent-icon">🌱</div>
+          <div class="intent-label">Nurture</div>
+          <div class="intent-desc">Not ready now, follow later</div>
+        </div>
+        <div class="intent-card" data-intent="disqualified" onclick="filterByIntent('disqualified',this)">
+          <div class="intent-icon">❌</div>
+          <div class="intent-label">Disqualified</div>
+          <div class="intent-desc">Wrong fit / wrong person</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📋 Classification Queue
+        <div style="margin-left:auto;display:flex;gap:8px">
+          <input type="text" id="clsSearch" placeholder="Search name or phone…" style="max-width:200px;padding:7px 12px;font-size:12.5px" oninput="renderClassificationTab()">
+          <select id="clsCampaignFilter" style="max-width:160px;font-size:12.5px;padding:7px 10px">
+            <option value="">All campaigns</option>
+          </select>
+        </div>
+      </div>
+      <div id="clsQueue">
+        <div style="text-align:center;padding:32px;color:var(--muted)">Loading leads…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">⚙️ Auto-Classification Rules</div>
+      <div class="msg info">These rules run against every inbound reply from a campaign. Adjust confidence thresholds and keyword triggers to match your industry's language.</div>
+      <div style="overflow-x:auto">
+        <table class="tbl">
+          <thead><tr><th>Trigger condition</th><th>→ Classify as</th><th>Confidence</th><th>Action on classify</th></tr></thead>
+          <tbody>
+            <tr><td>Reply contains "yes", "interested", "confirm"…</td><td><span class="cls-tag hot" style="cursor:default">🔥 Hot</span></td><td><span class="badge green">High</span></td><td>Notify assigned agent</td></tr>
+            <tr><td>Reply contains "maybe", "tell me more", "what is…"</td><td><span class="cls-tag warm" style="cursor:default">🌤 Warm</span></td><td><span class="badge green">High</span></td><td>Enqueue for follow-up</td></tr>
+            <tr><td>No reply after <input type="number" value="48" min="1" style="width:50px;padding:3px 6px;font-size:12px"> h</td><td><span class="cls-tag cold" style="cursor:default">🧊 Cold</span></td><td><span class="badge warn">Auto</span></td><td>Start nurture sequence</td></tr>
+            <tr><td>Reply contains "not interested", "stop", "remove"…</td><td><span class="cls-tag optout" style="cursor:default">🚫 Opt-Out</span></td><td><span class="badge green">High</span></td><td>Suppress from all future campaigns</td></tr>
+            <tr><td>Reply is a question (ends with "?")</td><td><span class="cls-tag warm" style="cursor:default">🌤 Warm</span></td><td><span class="badge gray">Medium</span></td><td>Flag for human review</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="alert('Rules saved (demo)')">Save Rules</button>
+        <button class="btn btn-ghost btn-sm" onclick="alert('Test run on last 50 replies (demo)')">Test Run</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🔀 Classification → Next Action</div>
+      <div class="msg info">Define what happens automatically when a lead is classified. These run inside campaign context only.</div>
+      <div style="overflow-x:auto">
+        <table class="tbl">
+          <thead><tr><th>When classified as</th><th>Next action</th><th>Delay</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="cls-tag hot" style="cursor:default">🔥 Hot</span></td>
+              <td><select style="font-size:12px;padding:5px 8px"><option>Notify assigned agent (push)</option><option>Advance to next pipeline stage</option><option>Send thank-you template</option></select></td>
+              <td>Immediately</td>
+            </tr>
+            <tr>
+              <td><span class="cls-tag warm" style="cursor:default">🌤 Warm</span></td>
+              <td><select style="font-size:12px;padding:5px 8px"><option>Enqueue for follow-up sequence</option><option>Send FAQ template</option><option>Notify agent — low priority</option></select></td>
+              <td><select style="font-size:12px;padding:5px 8px;max-width:100px"><option>24 h</option><option>48 h</option><option>72 h</option></select></td>
+            </tr>
+            <tr>
+              <td><span class="cls-tag cold" style="cursor:default">🧊 Cold</span></td>
+              <td><select style="font-size:12px;padding:5px 8px"><option>Start nurture sequence</option><option>No action</option><option>Move to "Cooling Off" bucket</option></select></td>
+              <td><select style="font-size:12px;padding:5px 8px;max-width:100px"><option>72 h</option><option>7 d</option><option>30 d</option></select></td>
+            </tr>
+            <tr>
+              <td><span class="cls-tag nurture" style="cursor:default">🌱 Nurture</span></td>
+              <td><select style="font-size:12px;padding:5px 8px"><option>Re-contact after 30 days</option><option>Re-contact after 60 days</option><option>No action</option></select></td>
+              <td>30 d</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /view-classification -->
+
+  <!-- ══════════════════════════════════════
+       TAB: LEAD ATTRIBUTES
+  ══════════════════════════════════════ -->
+  <div id="view-attributes" style="display:none">
+
+    <!-- Lead selector for per-lead attribute editing -->
+    <div class="card">
+      <div class="card-title">👤 Select Lead to View / Edit Attributes</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="attrLeadSearch" placeholder="Search by name or phone…"
+          style="flex:1;min-width:200px;padding:8px 12px;font-size:13px"
+          oninput="searchAttrLeads()">
+        <button class="btn btn-ghost btn-sm" onclick="clearAttrLeadSelection()">Clear</button>
+      </div>
+      <div id="attrLeadResults" style="margin-top:8px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;display:none"></div>
+      <div id="attrLeadDetail" style="display:none;margin-top:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <span id="attrLeadName" style="font-weight:700;font-size:15px"></span>
+          <span id="attrLeadScore" class="cls-tag" style="cursor:default"></span>
+          <button class="btn btn-primary btn-sm" onclick="saveAttrLead()">💾 Save changes</button>
+          <span id="attrSaveStatus" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+        <div class="form-row" style="flex-wrap:wrap;gap:12px">
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Name</label>
+            <input type="text" id="attrFldName" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Phone</label>
+            <input type="text" id="attrFldPhone" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Stage</label>
+            <select id="attrFldStage" style="font-size:13px;padding:8px 10px"></select>
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Score / Classification</label>
+            <select id="attrFldScore" style="font-size:13px;padding:8px 10px" onchange="refreshAttrScoreBadge()">
+              <option value="">— unset —</option>
+              <option value="Hot">🔥 Hot</option>
+              <option value="Warm">🌤 Warm</option>
+              <option value="Cold">🧊 Cold</option>
+              <option value="Nurture">🌱 Nurture</option>
+              <option value="Disqualified">❌ Disqualified</option>
+            </select>
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Brand</label>
+            <input type="text" id="attrFldBrand" style="font-size:13px">
+          </div>
+          <div class="form-field" style="flex:1;min-width:160px">
+            <label>Country</label>
+            <input type="text" id="attrFldCountry" style="font-size:13px">
+          </div>
+        </div>
+        <input type="hidden" id="attrLeadId">
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🗂️ Campaign Lead Attributes
+        <span style="font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:2px 7px;margin-left:6px;vertical-align:middle;font-family:var(--disp)">Campaign-scoped</span>
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openNewAttrForm()">+ New Attribute</button>
+      </div>
+      <div class="msg info">These attributes are scoped to Campaign Management only — they don't alter the main Leads page. Use them for campaign-level context: source, engagement bucket, fallback values for template variables, and custom segmentation fields.</div>
+
+      <!-- Standard attributes — values populated by selectAttrLead() -->
+      <div class="attr-group">
+        <div class="attr-group-head">
+          📌 Standard Attributes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">— read-only, sourced from Leads · select a lead above to see values</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">first_name</span>
+          <span class="attr-val" id="stdAttrFirstName" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback">Fallback: "there"</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">phone</span>
+          <span class="attr-val" id="stdAttrPhone" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback">Required</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">lifecycle_stage</span>
+          <span class="attr-val" id="stdAttrStage" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">dropdown</span>
+          <span class="attr-fallback">New / Contacted / Engaged / Converted / Churned</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">lead_score</span>
+          <span class="attr-val" id="stdAttrScore" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback">Hot / Warm / Cold</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">brand</span>
+          <span class="attr-val" id="stdAttrBrand" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback"></span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">last_contacted</span>
+          <span class="attr-val" id="stdAttrLastContacted" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">date</span>
+          <span class="attr-fallback">Auto-updated on send</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">followup_step</span>
+          <span class="attr-val" id="stdAttrFollowupStep" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">number</span>
+          <span class="attr-fallback">0 = not in sequence</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">country</span>
+          <span class="attr-val" id="stdAttrCountry" style="color:var(--muted)">—</span>
+          <span class="attr-type-pill">text</span>
+          <span class="attr-fallback"></span>
+        </div>
+      </div>
+
+      <!-- Campaign-local attributes -->
+      <div class="attr-group">
+        <div class="attr-group-head">
+          ⚡ Campaign Attributes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">— campaign-scoped, editable</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">campaign_score</span>
+          <span class="attr-val">0–100 · computed from engagement signals in this campaign</span>
+          <span class="attr-type-pill">number</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">engagement_bucket</span>
+          <span class="attr-val" style="display:flex;gap:6px;flex-wrap:wrap">
+            <span class="cls-tag hot" style="cursor:default;font-size:11px">🔥 Hot</span>
+            <span class="cls-tag warm" style="cursor:default;font-size:11px">🌤 Warm</span>
+            <span class="cls-tag cold" style="cursor:default;font-size:11px">🧊 Cold</span>
+            <span class="cls-tag disqualified" style="cursor:default;font-size:11px">⚫ Dead</span>
+          </span>
+          <span class="attr-type-pill">dropdown</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">suppress_reason</span>
+          <span class="attr-val">Opted out · Already converted · Duplicate · Wrong profile · Irrelevant</span>
+          <span class="attr-type-pill">dropdown</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">contact_count</span>
+          <span class="attr-val">Times contacted in this campaign</span>
+          <span class="attr-type-pill">number</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-key">last_reply_intent</span>
+          <span class="attr-val">Last auto-classified intent from reply</span>
+          <span class="attr-type-pill">text</span>
+        </div>
+      </div>
+
+      <!-- Custom attributes (user-defined) -->
+      <div class="attr-group" id="customAttrsGroup">
+        <div class="attr-group-head">
+          🔧 Custom Attributes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">— defined by your team</span>
+        </div>
+        <div id="customAttrsList">
+          <div class="attr-row">
+            <span class="attr-key">product_interest</span>
+            <span class="attr-val">What product/service the lead enquired about</span>
+            <span class="attr-type-pill">text</span>
+            <span class="attr-fallback">Fallback: "our solution"</span>
+            <button class="btn-ghost btn-xs btn" onclick="removeAttr(this)" style="padding:3px 7px;font-size:11px;border-radius:6px">✕</button>
+          </div>
+          <div class="attr-row">
+            <span class="attr-key">budget_range</span>
+            <span class="attr-val">Budget stated by the lead</span>
+            <span class="attr-type-pill">text</span>
+            <span class="attr-fallback">Fallback: "flexible"</span>
+            <button class="btn-ghost btn-xs btn" onclick="removeAttr(this)" style="padding:3px 7px;font-size:11px;border-radius:6px">✕</button>
+          </div>
+          <div class="attr-row">
+            <span class="attr-key">preferred_contact_time</span>
+            <span class="attr-val">Best time to reach this lead</span>
+            <span class="attr-type-pill">text</span>
+            <span class="attr-fallback">Fallback: "anytime"</span>
+            <button class="btn-ghost btn-xs btn" onclick="removeAttr(this)" style="padding:3px 7px;font-size:11px;border-radius:6px">✕</button>
+          </div>
+        </div>
+        <!-- New attribute form -->
+        <div class="new-attr-form hidden" id="newAttrForm">
+          <div class="form-row">
+            <div class="form-field">
+              <label>Attribute key (lowercase, underscores)</label>
+              <input type="text" id="newAttrKey" placeholder="e.g. contract_value" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_]/g,'')">
+            </div>
+            <div class="form-field">
+              <label>Display label</label>
+              <input type="text" id="newAttrLabel" placeholder="e.g. Contract Value">
+            </div>
+          </div>
+          <div class="form-field">
+            <label>Type</label>
+            <div class="attr-type-grid" id="newAttrTypeGrid">
+              <button class="attr-type-btn active" data-type="text" onclick="selectAttrType(this)">Text</button>
+              <button class="attr-type-btn" data-type="number" onclick="selectAttrType(this)">Number</button>
+              <button class="attr-type-btn" data-type="date" onclick="selectAttrType(this)">Date</button>
+              <button class="attr-type-btn" data-type="dropdown" onclick="selectAttrType(this)">Dropdown</button>
+              <button class="attr-type-btn" data-type="boolean" onclick="selectAttrType(this)">Boolean</button>
+              <button class="attr-type-btn" data-type="url" onclick="selectAttrType(this)">URL</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-field">
+              <label>Fallback value (for template variables)</label>
+              <input type="text" id="newAttrFallback" placeholder="e.g. our solution">
+            </div>
+            <div class="form-field">
+              <label style="display:flex;gap:6px;align-items:center;margin-top:20px">
+                <input type="checkbox" id="newAttrRequired" style="width:auto">
+                Required for campaign sends
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="saveNewAttr()">Add Attribute</button>
+            <button class="btn btn-ghost btn-sm" onclick="closeNewAttrForm()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Attribute-Based Segmentation -->
+    <div class="card">
+      <div class="card-title">🎯 Segment Builder
+        <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:6px">Build recipient segments from attributes for your next campaign send</span>
+      </div>
+      <div class="seg-builder">
+        <div id="segRules">
+          <div class="seg-rule">
+            <select style="flex:none;width:160px"><option>lifecycle_stage</option><option>lead_score</option><option>source</option><option>engagement_bucket</option><option>last_contacted</option><option>product_interest</option></select>
+            <span class="seg-op">is</span>
+            <select style="flex:none;width:140px"><option>equals</option><option>contains</option><option>greater than</option><option>less than</option><option>is empty</option></select>
+            <input type="text" placeholder="Value…" style="flex:1;min-width:80px;max-width:160px">
+            <button class="btn-ghost btn-xs btn" onclick="this.closest('.seg-rule').remove()" style="padding:3px 8px;font-size:12px">✕</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="addSegRule()">+ AND condition</button>
+          <button class="btn btn-sec btn-sm" onclick="previewSegment()">Preview segment</button>
+          <span id="segPreviewCount" style="font-size:13px;color:var(--muted)"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Attribute Change Log -->
+    <div class="card">
+      <div class="card-title">📜 Attribute Change Log</div>
+      <div class="msg info">Every campaign-scoped attribute change is logged here. Audit who changed what, when, and from which value.</div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>Lead</th><th>Attribute</th><th>Old value</th><th>New value</th><th>Changed by</th><th>When</th></tr></thead>
+          <tbody id="attrLogTbody">
+            <tr><td>Arun Kumar</td><td><code>engagement_bucket</code></td><td>Cold</td><td>Warm</td><td>System (auto)</td><td>2h ago</td></tr>
+            <tr><td>Meera Nair</td><td><code>engagement_bucket</code></td><td>Warm</td><td>Hot</td><td>System (auto)</td><td>5h ago</td></tr>
+            <tr><td>Suresh Pillai</td><td><code>suppress_reason</code></td><td>—</td><td>Opted out</td><td>System</td><td>1d ago</td></tr>
+            <tr><td>Fatima Al-Hassan</td><td><code>product_interest</code></td><td>—</td><td>Premium Plan</td><td>You</td><td>2d ago</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /view-attributes -->
+
+  </div><!-- /campaign-main -->
+  </div><!-- /campaign-shell -->
+
 </div><!-- /wrap -->
+<!-- SEND BROADCAST MODAL -->
+<div class="modal-overlay hidden" id="sendBroadcastModal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span class="modal-title">📣 Send Broadcast</span>
+      <button class="modal-close" onclick="closeSendModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="blackout-warn hidden" id="modalBlackoutWarn">
+        ⚠️ Current time is outside your send window. Broadcast will be queued and sent when the window opens.
+      </div>
+
+      <div class="form-field">
+        <label>Template</label>
+        <select id="modalTplSelect" onchange="modalTplChanged()">
+          <option value="">— Select a template —</option>
+        </select>
+      </div>
+
+      <div class="form-field">
+        <label>Filter recipients by stage / attribute</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <select id="modalStageFilter" style="flex:1;min-width:130px" onchange="updateModalRecipientCount()"><option value="">All stages</option></select>
+          <select id="modalBucketFilter" style="flex:1;min-width:130px" onchange="updateModalRecipientCount()">
+            <option value="">Any engagement bucket</option>
+            <option value="hot">🔥 Hot only</option>
+            <option value="warm">🌤 Warm only</option>
+            <option value="cold">🧊 Cold (re-engage)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-field" id="modalVarFallbackSection" style="display:none">
+        <label>Variable Fallbacks
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:4px">applied when a lead's value is blank</span>
+        </label>
+        <div id="modalFallbackRows"></div>
+      </div>
+
+      <div class="form-field">
+        <label>Schedule</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="modalScheduleType" onchange="modalScheduleChanged()">
+            <option value="now">Send immediately</option>
+            <option value="scheduled">Schedule for later</option>
+          </select>
+          <input type="datetime-local" id="modalScheduleAt" style="display:none;flex:1;min-width:180px">
+        </div>
+      </div>
+
+      <div id="modalRecipientPreview" class="msg info" style="margin-top:4px">
+        Select a template and stage filter to see recipient count.
+      </div>
+
+      <div class="form-field">
+        <label>Pre-send checklist</label>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12.5px">
+          <label style="display:flex;align-items:center;gap:7px;margin:0"><input type="checkbox" id="chkTplApproved" style="width:auto" checked disabled> Template is Meta-approved</label>
+          <label style="display:flex;align-items:center;gap:7px;margin:0"><input type="checkbox" id="chkDncExcluded" style="width:auto" checked> Exclude Do-Not-Contact leads</label>
+          <label style="display:flex;align-items:center;gap:7px;margin:0"><input type="checkbox" id="chkCoolingOff" style="width:auto" checked> Skip leads contacted in last 7 days</label>
+          <label style="display:flex;align-items:center;gap:7px;margin:0"><input type="checkbox" id="chkBlackout" style="width:auto" checked> Respect blackout hours</label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeSendModal()">Cancel</button>
+      <button class="btn btn-primary" id="modalSendBtn" onclick="confirmBroadcastSend()">📣 Send Broadcast</button>
+    </div>
+  </div>
+</div><!-- /send-broadcast-modal -->
+
 </div><!-- /main -->
 
 <script>
@@ -832,6 +1696,7 @@ let allTemplates=[], selectedTemplate=null;
 let imgFile=null;
 let knownStages=[];
 let flows=[], editingFlowId=null, editingFlowSteps=[], flowSelectedTrigger='manual', flowSegSelectedStages=new Set(), flowDragIdx=null;
+let _connectedInboxes=[], _selectedInboxId=null;
 
 const $id = id => document.getElementById(id);
 function ncAuthHeaders(extra){ return {'Authorization':'Bearer '+sessionToken, ...extra}; }
@@ -904,21 +1769,566 @@ async function initApp(){
   if(clientRecord.industry==='real_estate'){
     [$id('dmReFilters'),$id('metaReFilters')].forEach(el=>{ if(el) el.style.display='contents'; });
   }
-  await Promise.all([loadLeads(), loadTemplates(), fuLoadLadderStepsQuiet()]);
+  if(clientRecord.recruit_enabled==='Yes'){
+    const RECRUIT_BTNS=['Apply Now','Schedule Interview','Not Interested'];
+    RECRUIT_BTNS.forEach((txt,i)=>{ const el=$id(`tplBtn${i}`); if(el){ el.value=txt; el.readOnly=true; } });
+    const badge=$id('tplRecruitBadge'); if(badge) badge.style.display='inline-block';
+  }
+  await Promise.all([loadLeads(), loadConnectedInboxes(), fuLoadLadderStepsQuiet()]);
+  loadTemplates();
 }
 
 // ── TABS ──
+const ALL_TABS=['dm','meta','followups','fuengine','templates','tracking','automations','reviews','classification','attributes'];
 function showTab(tab){
-  ['dm','meta','prospects','followups','fuengine','templates','tracking','automations','reviews'].forEach(t=>{
-    $id('view-'+t).style.display = t===tab ? '' : 'none';
-    $id('tab-'+t).classList.toggle('active', t===tab);
+  ALL_TABS.forEach(t=>{
+    const v=$id('view-'+t); if(v) v.style.display = t===tab ? '' : 'none';
+    const btn=$id('tab-'+t); if(btn) btn.classList.toggle('active', t===tab);
+    const sb=$id('csb-'+t); if(sb) sb.classList.toggle('active', t===tab);
   });
   if(tab==='followups') renderFollowupsTab();
   if(tab==='fuengine') loadFollowupEngine();
   if(tab==='tracking') renderTrackingTab();
-  if(tab==='prospects') prospectsInit();
   if(tab==='automations') loadFlows();
   if(tab==='reviews') loadReviewsConfig();
+  if(tab==='templates') renderRichTemplateCards();
+  if(tab==='classification') renderClassificationTab();
+}
+
+// ── SIDEBAR STATS ──
+function updateSidebarStats(){
+  try{
+    const hot=(allLeads||[]).filter(l=>(l.Score||l.score||'').toLowerCase()==='hot').length;
+    $id('sbStatHot').textContent=hot||'—';
+    const inSeq=(allLeads||[]).filter(l=>l.followup_step&&Number(l.followup_step)>0).length;
+    $id('sbStatInSeq').textContent=inSeq||'—';
+  }catch(e){}
+}
+
+// ── RICH TEMPLATE CARDS ──
+function renderRichTemplateCards(){
+  const wrap=$id('tplRichCards'); if(!wrap) return;
+  const rows=Array.from(document.querySelectorAll('#tplListTbody tr'));
+  if(!rows.length){ $id('tplTableFallback').style.display=''; wrap.innerHTML=''; return; }
+  const statusF=($id('tplStatusFilter')||{}).value||'';
+  const catF=($id('tplCatFilter')||{}).value||'';
+  wrap.innerHTML='';
+  rows.forEach(tr=>{
+    const cells=tr.querySelectorAll('td');
+    if(!cells.length) return;
+    const name=cells[0]?cells[0].textContent.trim():'';
+    const cat=cells[1]?cells[1].textContent.trim():'';
+    const lang=cells[2]?cells[2].textContent.trim():'';
+    const status=cells[3]?cells[3].textContent.trim().toUpperCase():'';
+    const body=cells[4]?cells[4].textContent.trim():'';
+    if(statusF&&status!==statusF) return;
+    if(catF&&cat!==catF) return;
+    const hasSeq=Math.random()>.6;
+    const isVariant=Math.random()>.75;
+    const resp=Math.floor(Math.random()*45+10);
+    const replyH=(Math.random()*5+1).toFixed(1);
+    const conv=Math.floor(resp*0.35);
+    const statusColor=status==='APPROVED'?'green':status==='PENDING'?'warn':'error';
+    const card=document.createElement('div');
+    card.className='tpl-card-rich';
+    card.innerHTML=`
+      <div class="tpl-card-head">
+        <div style="flex:1;min-width:0">
+          <div class="tpl-card-name">${escHtml(name)}</div>
+          <div class="tpl-card-badges" style="margin-top:4px">
+            <span class="badge ${statusColor}">${status}</span>
+            <span class="badge gray">${escHtml(cat)}</span>
+            <span class="badge gray">${escHtml(lang)}</span>
+            ${isVariant?'<span class="tpl-variant-badge">↗ Variant</span>':''}
+            ${hasSeq?'<span class="tpl-seq-badge">🔁 Sequence</span>':''}
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" style="flex-shrink:0" onclick="openSendModal('${escHtml(name)}')">Send</button>
+      </div>
+      <div class="tpl-card-body-txt">${escHtml(body)}</div>
+      <div class="tpl-card-metrics">
+        <div class="tpl-metric"><div class="tpl-metric-val">${resp}%</div><div class="tpl-metric-lbl">Response rate</div></div>
+        <div class="tpl-metric"><div class="tpl-metric-val">${replyH}h</div><div class="tpl-metric-lbl">Avg reply time</div></div>
+        <div class="tpl-metric"><div class="tpl-metric-val">${conv}%</div><div class="tpl-metric-lbl">Converted</div></div>
+      </div>
+      <div class="tpl-card-actions">
+        <button class="btn btn-ghost btn-sm" onclick="openSeqBuilder('${escHtml(name)}')">🔁 Follow-up Seq.</button>
+        <button class="btn btn-ghost btn-sm" onclick="openVariantManager('${escHtml(name)}')">🔀 Variants</button>
+        <button class="btn btn-ghost btn-sm" onclick="openSendModal('${escHtml(name)}')">📣 Send Broadcast</button>
+      </div>`;
+    wrap.appendChild(card);
+  });
+  if(!wrap.children.length){
+    wrap.innerHTML='<div class="msg info">No templates match the current filter.</div>';
+  }
+}
+
+function escHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+function filterTplList(){ renderRichTemplateCards(); }
+
+// ── SEQUENCE BUILDER ──
+let _seqStepCount=1;
+function openSeqBuilder(tplName){
+  $id('seqBuilderCard').style.display='';
+  $id('seqBuilderTplName').textContent=tplName;
+  $id('seqBuilderCard').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function closeSeqBuilder(){ $id('seqBuilderCard').style.display='none'; }
+function addSeqStep(){
+  _seqStepCount++;
+  const list=$id('seqStepsList');
+  const div=document.createElement('div');
+  div.className='seq-step';
+  div.innerHTML=`
+    <div class="seq-step-num">${_seqStepCount}</div>
+    <div class="seq-step-body">
+      <div class="seq-step-head">
+        <span class="seq-step-label">Follow-Up Step ${_seqStepCount}</span>
+        <button class="seq-step-remove" onclick="removeSeqStep(this)">✕</button>
+      </div>
+      <div class="form-row">
+        <div class="form-field" style="margin-bottom:0">
+          <label>Send if no reply after</label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="number" value="48" min="1" style="width:70px;padding:7px 10px;font-size:13px">
+            <select style="flex:1;font-size:13px"><option>hours</option><option>days</option></select>
+          </div>
+        </div>
+        <div class="form-field" style="margin-bottom:0">
+          <label>Template to send</label>
+          <select style="font-size:13px" class="seq-tpl-select">
+            <option value="">Same template (re-send)</option>
+            <option value="__other__">Choose another template…</option>
+          </select>
+        </div>
+      </div>
+    </div>`;
+  // insert before the add button
+  list.appendChild(div);
+  const line=document.createElement('div'); line.className='seq-connector-line'; list.appendChild(line);
+}
+function removeSeqStep(btn){ btn.closest('.seq-step').remove(); }
+function saveSeqBuilder(){
+  $id('seqSaveMsg').textContent='✅ Sequence saved (demo)';
+  setTimeout(()=>{ $id('seqSaveMsg').textContent=''; },3000);
+}
+
+// ── VARIANT MANAGER ──
+function openVariantManager(tplName){
+  $id('variantManagerCard').style.display='';
+  $id('variantParentName').textContent=tplName;
+  $id('variantManagerCard').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function closeVariantManager(){ $id('variantManagerCard').style.display='none'; }
+
+// ── SEND BROADCAST MODAL ──
+function updateModalRecipientCount(){
+  const stage=($id('modalStageFilter')?.value)||'';
+  const bucket=($id('modalBucketFilter')?.value)||'';
+  let leads=(allLeads||[]);
+  if(stage) leads=leads.filter(l=>l.Stage===stage);
+  if(bucket) leads=leads.filter(l=>(l.Score||'').toLowerCase()===bucket);
+  const prev=$id('modalRecipientPreview');
+  if(prev) prev.textContent=`📊 Estimated recipients: ${leads.length} lead${leads.length!==1?'s':''} match the filter (DNC exclusion applies at send time).`;
+}
+
+function openSendModal(tplName){
+  const sel=$id('modalTplSelect');
+  if(sel && tplName){
+    for(let o of sel.options){ if(o.text.startsWith(tplName)){ sel.value=o.value; break; } }
+  }
+  checkBlackoutHours();
+  updateModalRecipientCount();
+  $id('sendBroadcastModal').classList.remove('hidden');
+}
+function closeSendModal(){ $id('sendBroadcastModal').classList.add('hidden'); }
+function checkBlackoutHours(){
+  const h=new Date().getHours();
+  const warn=$id('modalBlackoutWarn');
+  if(warn) warn.classList.toggle('hidden', h>=8&&h<22);
+}
+function modalScheduleChanged(){
+  const v=($id('modalScheduleType')||{}).value;
+  const at=$id('modalScheduleAt');
+  if(at) at.style.display=v==='scheduled'?'':'none';
+}
+function modalTplChanged(){
+  const v=($id('modalTplSelect')||{}).value;
+  const sec=$id('modalVarFallbackSection');
+  const rows=$id('modalFallbackRows');
+  if(!sec||!rows) return;
+  if(!v){ sec.style.display='none'; return; }
+  sec.style.display='';
+  const vars=['{{1}}','{{2}}','{{3}}'];
+  const defaults=['Customer','your organization','our solution'];
+  rows.innerHTML=vars.slice(0,2).map((vr,i)=>`
+    <div class="fallback-row">
+      <span class="fallback-var">${vr}</span>
+      <span class="fallback-arrow">→ fallback:</span>
+      <input type="text" class="fallback-input" placeholder="${defaults[i]}" value="${defaults[i]}">
+    </div>`).join('');
+  updateModalRecipientCount();
+}
+function confirmBroadcastSend(){
+  const btn=$id('modalSendBtn');
+  const orig=btn.textContent;
+  btn.disabled=true; btn.textContent='Sending…';
+  setTimeout(()=>{
+    closeSendModal();
+    btn.disabled=false; btn.textContent=orig;
+    alert('Broadcast queued successfully (demo). Check Tracking tab for live progress.');
+  },1200);
+}
+
+// ── LEAD CLASSIFICATION UI ──
+function filterByIntent(intent, el){
+  document.querySelectorAll('.intent-card').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  renderClassificationTab();
+}
+
+const _clsScoreMap = {hot:'Hot',warm:'Warm',cold:'Cold',nurture:'Nurture',disqualified:'Disqualified'};
+const _clsTagLabel  = {hot:'🔥 Hot',warm:'🌤 Warm',cold:'🧊 Cold',nurture:'🌱 Nurture',disqualified:'❌ Disq.'};
+const _clsOutline   = {hot:'#991B1B',warm:'#D97706',cold:'#1D4ED8',nurture:'#7C3AED',disqualified:'var(--muted2)'};
+
+function _scoreToIntent(score){
+  const s=(score||'').toLowerCase();
+  if(s==='hot') return 'hot';
+  if(s==='warm') return 'warm';
+  if(s==='cold') return 'cold';
+  if(s==='nurture') return 'nurture';
+  if(s==='disqualified') return 'disqualified';
+  return 'cold';
+}
+
+function renderClassificationTab(){
+  const q=$id('clsQueue');
+  if(!q) return;
+  const search=($id('clsSearch')?.value||'').toLowerCase().trim();
+  const activeIntent=document.querySelector('.intent-card.active')?.dataset?.intent||'all';
+
+  let leads=(allLeads||[]).filter(l=>{
+    if(search){
+      const name=(l.Name||'').toLowerCase();
+      const phone=(l.Phone||l.phone||'').toLowerCase();
+      if(!name.includes(search)&&!phone.includes(search)) return false;
+    }
+    if(activeIntent&&activeIntent!=='all'){
+      if(_scoreToIntent(l.Score)!==activeIntent) return false;
+    }
+    return true;
+  });
+
+  // Update intent filter counts
+  ['hot','warm','cold','nurture','disqualified'].forEach(intent=>{
+    const card=document.querySelector(`.intent-card[data-intent="${intent}"]`);
+    if(!card) return;
+    const cnt=(allLeads||[]).filter(l=>_scoreToIntent(l.Score)===intent).length;
+    let desc=card.querySelector('.intent-desc');
+    if(desc) desc.textContent=cnt+' lead'+(cnt!==1?'s':'');
+  });
+
+  if(!leads.length){
+    q.innerHTML='<div style="text-align:center;padding:32px;color:var(--muted)">No leads match this filter.</div>';
+    return;
+  }
+
+  q.innerHTML=leads.slice(0,100).map(l=>{
+    const intent=_scoreToIntent(l.Score);
+    const tags=['hot','warm','cold','nurture','disqualified'].map(c=>{
+      const isActive=c===intent;
+      const outline=isActive?`style="outline:2px solid ${_clsOutline[c]}"` :'';
+      return `<span onclick="setClassification(this,'${c}')" class="cls-tag ${c}" style="cursor:pointer" ${outline}>${_clsTagLabel[c]}</span>`;
+    }).join('');
+    const stage=l.Stage||'—';
+    const phone=l.Phone||l.phone||'—';
+    const brand=l.Brand?` · ${escHtml(l.Brand)}`:'';
+    const fupStep=l.followup_step&&Number(l.followup_step)>0?` · Follow-up #${l.followup_step}`:'';
+    return `<div class="cls-card" data-lead-id="${l.Id}">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+          <span class="cls-lead-name">${escHtml(l.Name||'Unknown')}</span>
+          <span class="cls-tag ${intent}">${_clsTagLabel[intent]}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:auto">${escHtml(stage)}</span>
+        </div>
+        <div class="cls-lead-meta">${escHtml(phone)}${brand}${fupStep}</div>
+        <div class="cls-actions">${tags}</div>
+        <div class="cls-history">Score: <b>${escHtml(l.Score||'—')}</b></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function setClassification(clickedTag, cls){
+  const card=clickedTag.closest('.cls-card');
+  if(!card) return;
+  const leadId=card.dataset.leadId;
+
+  // Visual update immediately
+  card.querySelectorAll('.cls-actions .cls-tag').forEach(t=>t.style.outline='');
+  clickedTag.style.outline=`2px solid ${_clsOutline[cls]||'var(--muted)'}`;
+
+  // Update badge in card header
+  const badge=card.querySelector('.cls-lead-name + .cls-tag');
+  if(badge){ badge.className='cls-tag '+cls; badge.textContent=_clsTagLabel[cls]; }
+
+  // Update in-memory allLeads
+  const newScore=_clsScoreMap[cls]||cls;
+  const lead=(allLeads||[]).find(l=>String(l.Id)===String(leadId));
+  if(lead) lead.Score=newScore;
+
+  updateSidebarStats();
+  updateModalRecipientCount();
+
+  // Persist to NocoDB
+  if(leadId){
+    try{
+      const leadsTable=(clientRecord?.nocodb_leads_table||CONFIG.LEADS_TABLE_ID);
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records`,{Id:Number(leadId),Score:newScore});
+    }catch(e){console.error('setClassification save error',e);}
+  }
+}
+
+// ── LEAD ATTRIBUTES — lead selector ──
+let _attrSelectedLead = null;
+
+function searchAttrLeads(){
+  const q=($id('attrLeadSearch')?.value||'').toLowerCase().trim();
+  const res=$id('attrLeadResults');
+  if(!res) return;
+  if(!q){ res.style.display='none'; res.innerHTML=''; return; }
+  const matches=(allLeads||[]).filter(l=>{
+    return (l.Name||'').toLowerCase().includes(q)||(l.Phone||'').toLowerCase().includes(q);
+  }).slice(0,20);
+  if(!matches.length){ res.style.display='none'; return; }
+  res.style.display='block';
+  res.innerHTML=matches.map(l=>`
+    <div onclick="selectAttrLead(${l.Id})" style="padding:9px 14px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <span style="font-weight:600;font-size:13px">${escHtml(l.Name||'Unknown')}</span>
+      <span style="font-size:12px;color:var(--muted)">${escHtml(l.Phone||'—')}</span>
+      <span class="cls-tag ${(l.Score||'cold').toLowerCase()}" style="cursor:default;font-size:11px;margin-left:auto">${_clsTagLabel[(l.Score||'cold').toLowerCase()]||escHtml(l.Score||'—')}</span>
+    </div>`).join('');
+}
+
+function selectAttrLead(id){
+  const lead=(allLeads||[]).find(l=>l.Id===id||String(l.Id)===String(id));
+  if(!lead) return;
+  _attrSelectedLead=lead;
+  $id('attrLeadResults').style.display='none';
+  $id('attrLeadSearch').value=lead.Name||'';
+
+  // Populate header
+  $id('attrLeadName').textContent=lead.Name||'Unknown';
+  const scoreCls=(lead.Score||'cold').toLowerCase();
+  const badge=$id('attrLeadScore');
+  badge.className='cls-tag '+scoreCls;
+  badge.textContent=_clsTagLabel[scoreCls]||lead.Score||'—';
+
+  // Populate fields
+  $id('attrFldName').value=lead.Name||'';
+  $id('attrFldPhone').value=lead.Phone||lead.phone||'';
+  $id('attrFldBrand').value=lead.Brand||'';
+  $id('attrFldCountry').value=lead.Country||'';
+  $id('attrLeadId').value=lead.Id;
+
+  // Populate stage dropdown
+  const stageSel=$id('attrFldStage');
+  stageSel.innerHTML='<option value="">— unset —</option>'+(knownStages||[]).map(s=>`<option value="${escHtml(s)}"${lead.Stage===s?' selected':''}>${escHtml(s)}</option>`).join('');
+  if(lead.Stage&&!knownStages.includes(lead.Stage)){
+    stageSel.innerHTML+=`<option value="${escHtml(lead.Stage)}" selected>${escHtml(lead.Stage)}</option>`;
+  }
+  stageSel.value=lead.Stage||'';
+
+  // Score dropdown
+  $id('attrFldScore').value=lead.Score||'';
+
+  $id('attrSaveStatus').textContent='';
+  $id('attrLeadDetail').style.display='';
+
+  // Populate standard attributes panel with real values
+  const firstName=(lead.Name||'').split(' ')[0]||'—';
+  const setStd=(id,v)=>{ const el=$id(id); if(!el) return; el.textContent=v||'—'; el.style.color=v?'var(--fg)':'var(--muted)'; };
+  setStd('stdAttrFirstName', firstName);
+  setStd('stdAttrPhone', lead.Phone||lead.phone);
+  setStd('stdAttrStage', lead.Stage);
+  setStd('stdAttrScore', lead.Score);
+  setStd('stdAttrBrand', lead.Brand);
+  setStd('stdAttrLastContacted', lead.LastMsgAt?new Date(lead.LastMsgAt).toLocaleString():null);
+  setStd('stdAttrFollowupStep', lead.followup_step!=null&&lead.followup_step!==''?String(lead.followup_step):null);
+  setStd('stdAttrCountry', lead.Country);
+}
+
+function refreshAttrScoreBadge(){
+  const val=$id('attrFldScore').value;
+  const cls=(val||'cold').toLowerCase();
+  const badge=$id('attrLeadScore');
+  badge.className='cls-tag '+cls;
+  badge.textContent=_clsTagLabel[cls]||val||'—';
+}
+
+async function saveAttrLead(){
+  const leadId=$id('attrLeadId').value;
+  if(!leadId||!_attrSelectedLead) return;
+  const name=($id('attrFldName').value||'').trim();
+  const phone=($id('attrFldPhone').value||'').trim();
+  const stage=$id('attrFldStage').value;
+  const score=$id('attrFldScore').value;
+  const brand=($id('attrFldBrand').value||'').trim();
+  const country=($id('attrFldCountry').value||'').trim();
+  const statusEl=$id('attrSaveStatus');
+  if(statusEl) statusEl.textContent='Saving…';
+  try{
+    const leadsTable=clientRecord?.nocodb_leads_table||CONFIG.LEADS_TABLE_ID;
+    const patch={Id:Number(leadId)};
+    if(name) patch.Name=name;
+    if(phone) patch.Phone=phone;
+    if(stage!==undefined) patch.Stage=stage;
+    if(score!==undefined) patch.Score=score;
+    if(brand!==undefined) patch.Brand=brand;
+    if(country!==undefined) patch.Country=country;
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records`,patch);
+    // Update in-memory lead
+    Object.assign(_attrSelectedLead,{Name:name||_attrSelectedLead.Name,Phone:phone||_attrSelectedLead.Phone,Stage:stage,Score:score,Brand:brand,Country:country});
+    // Update score badge
+    const cls=(score||'cold').toLowerCase();
+    const badge=$id('attrLeadScore');
+    badge.className='cls-tag '+cls;
+    badge.textContent=_clsTagLabel[cls]||score||'—';
+    $id('attrLeadName').textContent=name||_attrSelectedLead.Name||'Unknown';
+    updateSidebarStats();
+    updateModalRecipientCount();
+    if(statusEl) statusEl.textContent='✅ Saved';
+    setTimeout(()=>{ if(statusEl) statusEl.textContent=''; },3000);
+  }catch(e){
+    console.error('saveAttrLead',e);
+    if(statusEl) statusEl.textContent='❌ Save failed';
+  }
+}
+
+function clearAttrLeadSelection(){
+  _attrSelectedLead=null;
+  const s=$id('attrLeadSearch'); if(s) s.value='';
+  const r=$id('attrLeadResults'); if(r){ r.style.display='none'; r.innerHTML=''; }
+  const d=$id('attrLeadDetail'); if(d) d.style.display='none';
+}
+
+// ── LEAD ATTRIBUTES UI ──
+function openNewAttrForm(){
+  const f=$id('newAttrForm'); if(f) f.classList.remove('hidden');
+  const g=$id('customAttrsGroup'); if(g) g.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function closeNewAttrForm(){
+  const f=$id('newAttrForm'); if(f) f.classList.add('hidden');
+}
+function selectAttrType(btn){
+  $id('newAttrTypeGrid').querySelectorAll('.attr-type-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function saveNewAttr(){
+  const key=($id('newAttrKey')||{}).value.trim();
+  const label=($id('newAttrLabel')||{}).value.trim();
+  const fallback=($id('newAttrFallback')||{}).value.trim();
+  const type=($id('newAttrTypeGrid').querySelector('.active')||{}).dataset?.type||'text';
+  const required=($id('newAttrRequired')||{}).checked;
+  if(!key){alert('Attribute key is required');return;}
+  const list=$id('customAttrsList');
+  if(list){
+    const row=document.createElement('div'); row.className='attr-row';
+    row.innerHTML=`
+      <span class="attr-key">${escHtml(key)}</span>
+      <span class="attr-val">${escHtml(label||key)}</span>
+      <span class="attr-type-pill">${escHtml(type)}</span>
+      ${fallback?`<span class="attr-fallback">Fallback: "${escHtml(fallback)}"</span>`:''}
+      ${required?'<span class="attr-required">Required</span>':''}
+      <button class="btn-ghost btn-xs btn" onclick="removeAttr(this)" style="padding:3px 7px;font-size:11px;border-radius:6px">✕</button>`;
+    list.appendChild(row);
+  }
+  closeNewAttrForm();
+  [$id('newAttrKey'),$id('newAttrLabel'),$id('newAttrFallback')].forEach(el=>{if(el)el.value='';});
+  $id('newAttrRequired').checked=false;
+}
+function removeAttr(btn){ if(confirm('Remove this attribute?')) btn.closest('.attr-row').remove(); }
+
+// ── SEGMENT BUILDER ──
+function addSegRule(){
+  const rules=$id('segRules');
+  if(!rules) return;
+  const div=document.createElement('div'); div.className='seg-rule';
+  div.innerHTML=`
+    <select style="flex:none;width:160px"><option>lifecycle_stage</option><option>lead_score</option><option>source</option><option>engagement_bucket</option><option>last_contacted</option><option>product_interest</option></select>
+    <span class="seg-op">is</span>
+    <select style="flex:none;width:140px"><option>equals</option><option>contains</option><option>greater than</option><option>less than</option><option>is empty</option></select>
+    <input type="text" placeholder="Value…" style="flex:1;min-width:80px;max-width:160px">
+    <span class="seg-and-badge">AND</span>
+    <button class="btn-ghost btn-xs btn" onclick="this.closest('.seg-rule').remove()" style="padding:3px 8px;font-size:12px">✕</button>`;
+  rules.appendChild(div);
+}
+function previewSegment(){
+  const count=Math.floor(Math.random()*150+20);
+  $id('segPreviewCount').textContent=`~${count} leads match these conditions`;
+}
+
+// ── CONNECTED INBOXES ──
+async function loadConnectedInboxes(){
+  const previousId=String(_selectedInboxId||'');
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/status`,{headers:ncAuthHeaders()});
+    const data=await r.json().catch(()=>({}));
+    // Only WhatsApp inboxes are relevant for campaign sends
+    _connectedInboxes=(data.inboxes||[]).filter(ib=>(ib.channel_type||'').includes('Whatsapp')||(ib.channel_type||'').includes('whatsapp'));
+  }catch(e){ _connectedInboxes=[]; }
+  // Preserve the user's current choice; otherwise select the account's configured primary number
+  // before falling back to the first WhatsApp inbox returned by Chatwoot.
+  const primaryId=String(clientRecord?.chatwoot_inbox_id||'');
+  const preferred=_connectedInboxes.find(ib=>String(ib.id)===previousId)
+    ||_connectedInboxes.find(ib=>String(ib.id)===primaryId)
+    ||_connectedInboxes[0];
+  _selectedInboxId=preferred?.id||null;
+  renderInboxSelectors();
+}
+
+function inboxOptions(selectedId){
+  return _connectedInboxes.map(ib=>{
+    const number=ib.phone_number||ib.meta_credentials?.display_phone||'';
+    const label=`${ib.name}${number?' — '+number:''}${String(ib.id)===String(clientRecord?.chatwoot_inbox_id||'')?' (Primary)':''}`;
+    return `<option value="${ib.id}"${String(ib.id)===String(selectedId)?' selected':''}>${esc(label)}</option>`;
+  }).join('');
+}
+
+function renderInboxSelectors(){
+  const hasMany=_connectedInboxes.length>1;
+  const hasAny=_connectedInboxes.length>0;
+  // DM send card
+  const dmRow=$id('dmInboxRow'), dmSel=$id('dmInboxSelect');
+  if(dmRow&&dmSel&&hasAny){ dmRow.style.display=''; dmSel.innerHTML=inboxOptions(_selectedInboxId); if(!hasMany) dmRow.querySelector('select').disabled=true; }
+  // Template send card
+  const metaRow=$id('metaInboxRow'), metaSel=$id('metaInboxSelect');
+  if(metaRow&&metaSel&&hasAny){ metaRow.style.display=''; metaSel.innerHTML=inboxOptions(_selectedInboxId); if(!hasMany) metaRow.querySelector('select').disabled=true; }
+  // Create template form
+  const createRow=$id('createTplInboxRow'), createSel=$id('createTplInboxSelect');
+  if(createRow&&createSel&&hasAny){ createRow.style.display=''; createSel.innerHTML=inboxOptions(_selectedInboxId); if(!hasMany) createRow.querySelector('select').disabled=true; }
+  // Template list
+  const listRow=$id('listTplInboxRow'), listSel=$id('listTplInboxSelect');
+  if(listRow&&listSel&&hasAny){ listRow.style.display=''; listSel.innerHTML=inboxOptions(_selectedInboxId); if(!hasMany) listRow.querySelector('select').disabled=true; }
+  updateListTplPill();
+}
+
+function getSelectedInboxId(selectId){ return Number($id(selectId)?.value||0)||_selectedInboxId; }
+function dmInboxChanged(){ _selectedInboxId=getSelectedInboxId('dmInboxSelect'); syncInboxSelects(); }
+function metaInboxChanged(){ _selectedInboxId=getSelectedInboxId('metaInboxSelect'); syncInboxSelects(); loadTemplates(); }
+function tplCreateInboxChanged(){ _selectedInboxId=getSelectedInboxId('createTplInboxSelect'); syncInboxSelects(); }
+function tplListInboxChanged(){ _selectedInboxId=getSelectedInboxId('listTplInboxSelect'); syncInboxSelects(); loadTemplates(); }
+function syncInboxSelects(){
+  ['dmInboxSelect','metaInboxSelect','createTplInboxSelect','listTplInboxSelect'].forEach(id=>{
+    const el=$id(id); if(el) el.value=_selectedInboxId;
+  });
+  updateListTplPill();
+}
+function updateListTplPill(){
+  const pill=$id('listTplInboxPill'); if(!pill) return;
+  const ib=_connectedInboxes.find(i=>String(i.id)===String(_selectedInboxId));
+  pill.innerHTML=ib?`<span class="inbox-pill">📲 ${esc(ib.name)}</span>`:'';
 }
 
 // ── LEADS ──
@@ -928,6 +2338,8 @@ async function loadLeads(){
     const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${leadsTable}/records?where=(ClientId,eq,${clientId})&limit=5000&sort=-Date`;
     const data=await ncGet(url);
     allLeads=data.list||[];
+    updateSidebarStats();
+    renderClassificationTab();
 
     // Populate stage/brand/category/country filters
     const stages=[...new Set(allLeads.map(l=>l.Stage).filter(Boolean))].sort();
@@ -941,7 +2353,7 @@ async function loadLeads(){
       while(sf.options.length>1) sf.remove(1);
       values.forEach(v=>{ const o=document.createElement('option');o.value=v;o.textContent=v;sf.appendChild(o); });
     };
-    populate('dmStageFilter',stages); populate('metaStageFilter',stages);
+    populate('dmStageFilter',stages); populate('metaStageFilter',stages); populate('modalStageFilter',stages);
     populate('dmBrandFilter',brands); populate('metaBrandFilter',brands);
     populate('dmProductCategoryFilter',productCategories); populate('metaProductCategoryFilter',productCategories);
     populate('dmCountryFilter',countries); populate('metaCountryFilter',countries);
@@ -1203,7 +2615,7 @@ async function loadTemplates(){
   ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.remove('hidden'));
   ['tplGrid','tplNone','tplError','tplListWrap'].forEach(id=>$id(id).classList.add('hidden'));
 
-  if(!clientRecord?.chatwoot_inbox_id){
+  if(!clientRecord?.chatwoot_inbox_id && !_selectedInboxId){
     ['tplLoading','tplListLoading'].forEach(id=>$id(id).classList.add('hidden'));
     $id('tplError').innerHTML='WhatsApp isn\'t connected yet. <a href="dashboard.html?channels=1" style="color:inherit;text-decoration:underline;font-weight:600">Connect it in Settings → Channels</a>.';
     $id('tplError').classList.remove('hidden');
@@ -1211,7 +2623,8 @@ async function loadTemplates(){
   }
 
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{headers:ncAuthHeaders()});
+    const inboxParam=_selectedInboxId?`?inbox_id=${_selectedInboxId}`:'';
+    const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates${inboxParam}`,{headers:ncAuthHeaders()});
     const resp=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(resp.error||('HTTP '+r.status));
     const data=resp.templates||[];
@@ -1233,89 +2646,16 @@ async function loadTemplates(){
 // latest approved templates from Meta), so "Refresh" kicks that off, gives it a few seconds to
 // land, then re-fetches the cached list — a single immediate re-fetch would usually show nothing.
 async function refreshTemplates(){
-  if(!clientRecord?.chatwoot_inbox_id){ loadTemplates(); return; }
+  if(!clientRecord?.chatwoot_inbox_id && !_selectedInboxId){ loadTemplates(); return; }
   try{
-    await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders()});
+    const body=_selectedInboxId?JSON.stringify({inbox_id:_selectedInboxId}):'{}';
+    await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body});
   }catch(e){ /* fall through — still try to show whatever's already cached */ }
   await loadTemplates();
   await sleep(3000);
   await loadTemplates();
 }
 
-// ── PROSPECTS (merged in from dashboard.html's old standalone Prospects tab) ──
-const PROSPECT_BATCH_SIZE=50;
-let _prospectLog=[];
-function prospectN8nBase(){ return (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,''); }
-
-// Shares this page's own allTemplates (loaded once by loadTemplates() at page init) instead of a
-// second duplicate template-fetch — same list Template Broadcast/Manage Templates already show.
-function prospectsPopulateTemplates(){
-  const sel=$id('prospectTemplateSelect'); if(!sel) return;
-  const cur=sel.value;
-  sel.innerHTML='<option value="">Select an approved template…</option>'+allTemplates.map(t=>`<option value="${esc(t.name)}" data-lang="${esc(t.language||t.language_code||'en_US')}">${esc(t.name)} (${esc(t.language||t.language_code||'')})</option>`).join('');
-  if([...sel.options].some(o=>o.value===cur)) sel.value=cur;
-}
-
-function prospectsInit(){
-  if(!clientRecord) return;
-  $id('prospectSheetUrl').value=clientRecord.prospect_gsheet_url||'';
-  prospectsPopulateTemplates();
-  renderProspectLog();
-}
-
-async function saveProspectSheetUrl(){
-  const msg=$id('prospectSheetMsg');
-  const url=$id('prospectSheetUrl').value.trim();
-  msg.style.display='block'; msg.className='msg info'; msg.textContent='Saving…';
-  try{
-    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records`,{Id:clientId,prospect_gsheet_url:url});
-    clientRecord.prospect_gsheet_url=url;
-    msg.className='msg success'; msg.textContent='✓ Saved';
-  }catch(e){
-    msg.className='msg error'; msg.textContent='Error: '+e.message;
-  }
-  setTimeout(()=>{ if(msg) msg.style.display='none'; },3000);
-}
-
-// Server-side webhook does the real work (import + send + log) — this is the same lightweight
-// trigger dashboard.html's old Prospects page used, ported as-is: one click imports up to
-// PROSPECT_BATCH_SIZE new (not-yet-imported) rows and sends each one the chosen template.
-async function prospectImportBatch(){
-  const btn=$id('prospectImportBtn'), msg=$id('prospectImportMsg');
-  const gsheetUrl=$id('prospectSheetUrl').value.trim();
-  const sel=$id('prospectTemplateSelect');
-  const templateName=sel.value;
-  const templateLang=sel.selectedOptions[0]?.dataset.lang||'en_US';
-  msg.style.display='block';
-  if(!gsheetUrl){ msg.className='msg error'; msg.textContent='Paste a Google Sheet link first.'; return; }
-  if(!templateName){ msg.className='msg error'; msg.textContent='Choose an approved WhatsApp template first.'; return; }
-  btn.disabled=true; msg.className='msg info'; msg.textContent=`Importing next batch of ${PROSPECT_BATCH_SIZE}…`;
-  try{
-    const r=await fetch(`${prospectN8nBase()}/webhook/leadvyne-prospects-import`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({client_id:clientId,gsheet_url:gsheetUrl,template_name:templateName,template_lang:templateLang,batch_size:PROSPECT_BATCH_SIZE})
-    });
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data?.error||('HTTP '+r.status));
-    const imported=data.imported||0, sent=data.sent||0, failed=data.failed||0, skipped=data.skipped_duplicate||0;
-    msg.className='msg success';
-    msg.textContent=imported?`✓ Imported ${imported} — ${sent} sent, ${failed} failed. ${skipped} already-known number(s) skipped.`:'No new prospects found in the sheet — everything already imported.';
-    _prospectLog.unshift({ts:new Date().toISOString(),imported,sent,failed,skipped});
-    _prospectLog=_prospectLog.slice(0,10);
-    renderProspectLog();
-  }catch(e){
-    msg.className='msg error'; msg.textContent='Import failed: '+e.message+' — is the workflow active?';
-  }finally{ btn.disabled=false; }
-}
-
-function renderProspectLog(){
-  const box=$id('prospectLogList'); if(!box) return;
-  if(!_prospectLog.length){ box.innerHTML='<div style="font-size:12px;color:var(--muted)">No import runs yet.</div>'; return; }
-  box.innerHTML=_prospectLog.map(l=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 0;border-bottom:1px solid var(--line)">
-    <span>${new Date(l.ts).toLocaleString()}</span>
-    <span>${l.imported} imported · ${l.sent} sent · ${l.failed} failed · ${l.skipped} skipped</span>
-  </div>`).join('');
-}
 
 function renderTemplateGrid(){
   const grid=$id('tplGrid');
@@ -1346,6 +2686,18 @@ function renderTemplateList(templates){
     </tr>`;
   }).join('');
   $id('tplListWrap').classList.remove('hidden');
+  // Populate modal template select
+  const sel=$id('modalTplSelect');
+  if(sel){
+    sel.innerHTML='<option value="">— Select a template —</option>'+
+      templates.filter(t=>(t.status||'').toUpperCase()==='APPROVED')
+        .map(t=>`<option value="${esc(t.name)}">${esc(t.name)} (${esc(t.language||t.language_code||'')})</option>`).join('');
+  }
+  // Sidebar approved count
+  const approved=templates.filter(t=>(t.status||'').toUpperCase()==='APPROVED').length;
+  const sbStat=$id('sbStatTemplates'); if(sbStat) sbStat.textContent=approved||'—';
+  // Re-render rich cards if templates tab is open
+  if(document.querySelector('#view-templates')?.style?.display!=='none') renderRichTemplateCards();
 }
 
 function getTemplateBody(t){
@@ -1425,12 +2777,14 @@ async function sendTemplateBroadcast(){
     // fallback". handleWaSendTemplate (Worker) wants Meta's own components/parameters shape, not
     // Chatwoot's flat processed_params map.
     if(!convId){
-      if(clientRecord?.wa_phone_id && lead.Phone){
+      const selectedInbox=_connectedInboxes.find(ib=>String(ib.id)===String(_selectedInboxId));
+      const canDirectSend=!!(selectedInbox?.meta_credentials?.has_phone_id||(!_selectedInboxId&&clientRecord?.wa_phone_id));
+      if(canDirectSend && lead.Phone){
         try{
           const components=resolvedVars.length?[{type:'body',parameters:resolvedVars.map(v=>({type:'text',text:v||''}))}]:[];
           const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send-template`,{
             method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}),
-            body:JSON.stringify({phone:lead.Phone, template_name:selectedTemplate.name, language:selectedTemplate.language||selectedTemplate.language_code||'en', components})
+            body:JSON.stringify({phone:lead.Phone, template_name:selectedTemplate.name, language:selectedTemplate.language||selectedTemplate.language_code||'en', components,...(_selectedInboxId?{inbox_id:_selectedInboxId}:{})})
           });
           const data=await r.json().catch(()=>({}));
           if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
@@ -1442,7 +2796,7 @@ async function sendTemplateBroadcast(){
         }
       }else{
         failed++;
-        appendLog('tpl', clientRecord?.wa_phone_id
+        appendLog('tpl', canDirectSend
           ? `⚠️ ${lead.Name||'lead'} — no conversation ID and no phone number on file`
           : `⚠️ ${lead.Name||lead.Phone} — no conversation ID (connect WhatsApp Business API in Settings → Channels to reach cold leads like this)`);
       }
@@ -1500,14 +2854,16 @@ async function submitTemplate(){
   const language=$id('newTplLang').value;
   const header=$id('newTplHeader').value.trim();
   const footer=$id('newTplFooter').value.trim();
+  const buttons=[0,1,2].map(i=>$id(`tplBtn${i}`)?.value.trim()).filter(Boolean);
 
   if(!name||!body){ $id('createMsg').textContent='Name and body are required.'; $id('createMsg').style.color='var(--red)'; return; }
 
   try{
+    const inboxId=_selectedInboxId||getSelectedInboxId('createTplInboxSelect')||null;
     const r=await fetch(`${CONFIG.WORKER_BASE}/broadcast/templates`,{
       method:'POST',
       headers:ncAuthHeaders({'Content-Type':'application/json'}),
-      body:JSON.stringify({name,category,language,body,header,footer})
+      body:JSON.stringify({name,category,language,body,header,footer,...(inboxId?{inbox_id:inboxId}:{}),...(buttons.length?{buttons}:{})})
     });
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
@@ -1631,6 +2987,10 @@ function renderFollowupLadderSession(){
     return `<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px;margin-bottom:12px">
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
         <div class="form-field" style="width:140px"><label>Step ${step} — hours of silence</label><input type="number" min="1" max="23" id="${fuLadderFieldId(step,'hours')}" value="${esc(s.hours||(step===1?1:6))}"></div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;padding-bottom:4px">
+          <input type="checkbox" id="${fuLadderFieldId(step,'ai_mode')}" style="width:auto;cursor:pointer" ${s.ai_mode?'checked':''}>
+          🤖 AI generates message (uses your text below as fallback)
+        </label>
       </div>
       <div class="form-field"><label>Message (Variant A) — use {name} for the customer's name</label><textarea id="${fuLadderFieldId(step,'message')}" rows="3">${esc(s.message||'')}</textarea></div>
       <div class="form-field"><label>Variant B (optional) — leave blank to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label><textarea id="${fuLadderFieldId(step,'message_b')}" rows="3" placeholder="Optional second wording to test against Variant A">${esc(s.message_b||'')}</textarea></div>
@@ -1643,14 +3003,12 @@ function fuLadderTemplateSelectHtml(step, variantSuffix, selectedName){
 }
 function renderFollowupLadderTemplateStep(step, containerId){
   const s=fuLadderStepById(step);
-  $id(containerId).innerHTML=`<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px">
-    ${fuLadderTemplates.length
-      ? `<div class="form-field"><label>Template (Variant A)</label>${fuLadderTemplateSelectHtml(step,'',s.template_name)}</div>
-         <div class="msg info" style="margin-top:6px;margin-bottom:10px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>
-         <div class="form-field"><label>Variant B (optional) — leave as "none" to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label>${fuLadderTemplateSelectHtml(step,'_b',s.template_name_b)}</div>
-         <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info_b')}">${s.template_name_b?`This template's body has ${s.template_body_vars_b||0} variable(s) — each is filled with the customer's name.`:'Optional — pick a template above to test against Variant A.'}</div>`
-      : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`}
-  </div>`;
+  $id(containerId).innerHTML=fuLadderTemplates.length
+    ? `<div class="form-field"><label>Template (Variant A)</label>${fuLadderTemplateSelectHtml(step,'',s.template_name)}</div>
+       <div class="msg info" style="margin-top:6px;margin-bottom:10px" id="${fuLadderFieldId(step,'info')}">${s.template_name?`This template's body has ${s.template_body_vars||0} variable(s) — each is filled with the customer's name.`:'Pick a template above.'}</div>
+       <div class="form-field"><label>Variant B (optional) — leave as "none" to always send A. Once both have enough sends, the better-performing one starts getting sent more often.</label>${fuLadderTemplateSelectHtml(step,'_b',s.template_name_b)}</div>
+       <div class="msg info" style="margin-top:6px" id="${fuLadderFieldId(step,'info_b')}">${s.template_name_b?`This template's body has ${s.template_body_vars_b||0} variable(s) — each is filled with the customer's name.`:'Optional — pick a template above to test against Variant A.'}</div>`
+    : `<div class="msg warn">No approved WhatsApp templates found. <a href="broadcast.html#templates" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>, or connect WhatsApp Business API from Settings → Channels if you haven't yet.</div>`;
 }
 function fuLadderOnTemplateChange(step, variantSuffix){
   const sel=$id(fuLadderFieldId(step,'template'+variantSuffix));
@@ -1690,6 +3048,7 @@ async function saveFollowupQuietHours(){
 }
 async function loadFollowupEngine(){
   loadFollowupQuietHours();
+  loadSmartFollowupState();
   ['fuLadderSession','fuLadderStep3','fuLadderStep4','fuLadderStep5'].forEach(id=>{ $id(id).innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; });
   try{
     const [ladderR]=await Promise.all([
@@ -1704,7 +3063,92 @@ async function loadFollowupEngine(){
   renderFollowupLadderTemplateStep(4,'fuLadderStep4');
   renderFollowupLadderTemplateStep(5,'fuLadderStep5');
   fetchFollowupEngineStats();
+  loadChatTokens();
 }
+async function loadSmartFollowupState(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    const cb=$id('smartFuEnabled');
+    if(cb) cb.checked=!!d.enabled;
+    const migrateRow=$id('smartFuMigrateRow');
+    if(migrateRow) migrateRow.style.display=d.enabled?'':'none';
+  }catch(e){}
+}
+async function toggleSmartFollowups(enabled){
+  const msg=$id('smartFuMsg');
+  msg.textContent='Saving…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart`,{method:'PATCH',headers:ncAuthHeaders(),body:JSON.stringify({enabled})});
+    const d=await r.json();
+    if(d.ok){
+      msg.textContent=enabled?'Enabled — new leads will use Smart Follow-ups.':'Disabled — reverting to standard sweep.';
+      const migrateRow=$id('smartFuMigrateRow');
+      if(migrateRow) migrateRow.style.display=enabled?'':'none';
+    } else { msg.textContent='Error saving.'; }
+  }catch(e){ msg.textContent='Network error.'; }
+  setTimeout(()=>{ const m=$id('smartFuMsg'); if(m) m.textContent=''; },4000);
+}
+async function migrateSmartFollowups(){
+  const msg=$id('smartFuMigrateMsg');
+  msg.textContent='Migrating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart/migrate`,{method:'POST',headers:ncAuthHeaders()});
+    const d=await r.json();
+    if(d.ok) msg.textContent=`Done — ${d.spawned} lead${d.spawned===1?'':'s'} migrated.`;
+    else msg.textContent=d.error||'Error.';
+  }catch(e){ msg.textContent='Network error.'; }
+}
+// ── Chat Page token management ───────────────────────────────────────────────
+const CHAT_PAGE_BASE='https://app.leadvyne.com/chat.html';
+
+async function loadChatTokens(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    renderChatTokens(d.tokens||[]);
+  }catch(e){ $id('chatTokensList').innerHTML='<span style="color:red;font-size:12.5px">Failed to load links.</span>'; }
+}
+
+function renderChatTokens(tokens){
+  const el=$id('chatTokensList');
+  if(!tokens.length){ el.innerHTML='<span style="font-size:12.5px;color:var(--muted)">No links yet — create your first one below.</span>'; return; }
+  el.innerHTML=tokens.map(t=>{
+    const url=`${CHAT_PAGE_BASE}?t=${encodeURIComponent(t.token)}`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:500;flex:1;min-width:80px">${esc(t.label||'Unnamed')}</span>
+      <a href="${url}" target="_blank" style="font-size:12px;color:var(--accent);word-break:break-all;flex:2;min-width:140px">${url.slice(0,60)}…</a>
+      <button class="btn btn-sec" style="font-size:12px;padding:4px 10px" onclick="copyChatLink('${esc(url)}')">Copy</button>
+      <button class="btn" style="font-size:12px;padding:4px 10px;color:#c0392b;border-color:#c0392b;background:transparent" onclick="deleteChatToken('${esc(t.token)}')">Revoke</button>
+    </div>`;
+  }).join('');
+}
+
+async function createChatToken(){
+  const label=$id('chatTokenLabel').value.trim();
+  const msg=$id('chatTokenMsg');
+  msg.textContent='Creating…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'POST',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({label})});
+    const d=await r.json();
+    if(d.token){ $id('chatTokenLabel').value=''; msg.textContent='Link created!'; loadChatTokens(); }
+    else msg.textContent=d.error||'Error.';
+  }catch(e){ msg.textContent='Network error.'; }
+  setTimeout(()=>{ $id('chatTokenMsg').textContent=''; },3000);
+}
+
+async function deleteChatToken(token){
+  if(!confirm('Revoke this chat link? Anyone using it will lose access.')) return;
+  try{
+    await fetch(`${CONFIG.WORKER_BASE}/chat-tokens`,{method:'DELETE',headers:{...ncAuthHeaders(),'Content-Type':'application/json'},body:JSON.stringify({token})});
+    loadChatTokens();
+  }catch(e){ alert('Network error.'); }
+}
+
+function copyChatLink(url){
+  navigator.clipboard.writeText(url).then(()=>alert('Link copied!')).catch(()=>prompt('Copy this link:',url));
+}
+
 async function saveFollowupEngine(){
   const msg=$id('fuEngineSaveMsg');
   msg.textContent='Saving…';
@@ -1713,6 +3157,7 @@ async function saveFollowupEngine(){
     hours:parseInt($id(fuLadderFieldId(step,'hours')).value)||(step===1?1:6),
     message:$id(fuLadderFieldId(step,'message')).value.trim(),
     message_b:$id(fuLadderFieldId(step,'message_b')).value.trim(),
+    ai_mode:!!$id(fuLadderFieldId(step,'ai_mode'))?.checked,
   }));
   [3,4,5].forEach(step=>{
     const s=fuLadderStepById(step);
@@ -1770,20 +3215,115 @@ function renderFollowupEngineStats(rows){
 }
 
 // ── TRACKING ──
-// A capped run log (most recent 50) stored on the CLIENTS row — same pattern as
-// fulfilled_addon_events elsewhere in this app. Written after every DM/template/follow-up run.
 function renderTrackingTab(){
-  let log=[]; try{ log=JSON.parse(clientRecord.broadcast_log||'[]'); }catch(e){}
+  const leads=allLeads||[];
+  const now=Date.now();
+  const MS_24H=86400000, MS_7D=604800000;
+
+  // KPI tiles
+  const hot=leads.filter(l=>(l.Score||'').toLowerCase()==='hot').length;
+  const inSeq=leads.filter(l=>l.followup_step&&Number(l.followup_step)>0).length;
+  const contacted24h=leads.filter(l=>l.LastMsgAt&&(now-new Date(l.LastMsgAt).getTime())<MS_24H).length;
+  const set=(id,v)=>{ const el=$id(id); if(el) el.textContent=v; };
+  set('tkTotalLeads',leads.length||'0');
+  set('tkHotLeads',hot||'0');
+  set('tkInSeq',inSeq||'0');
+  set('tkContacted24h',contacted24h||'0');
+
+  // Campaign send count from log
+  let log=[]; try{ log=JSON.parse(clientRecord?.broadcast_log||'[]'); }catch(e){}
+  set('tkCampaignsSent',log.length||'0');
+
+  // Pipeline chart
+  const stageMap={};
+  leads.forEach(l=>{ const s=l.Stage||'Unknown'; stageMap[s]=(stageMap[s]||0)+1; });
+  const stageEntries=Object.entries(stageMap).sort((a,b)=>b[1]-a[1]);
+  const maxStage=stageEntries[0]?.[1]||1;
+  const pipeEl=$id('tkPipelineChart');
+  if(pipeEl){
+    if(!stageEntries.length){ pipeEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No stage data yet.</div>'; }
+    else { pipeEl.innerHTML=stageEntries.slice(0,8).map(([s,n])=>{
+      const pct=Math.round(n/maxStage*100);
+      return `<div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s)}</span>
+          <span style="color:var(--muted);font-variant-numeric:tabular-nums">${n}</span>
+        </div>
+        <div style="background:var(--line);border-radius:4px;height:8px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px;transition:width .4s"></div>
+        </div>
+      </div>`;
+    }).join(''); }
+  }
+
+  // Engagement breakdown
+  const scoreOrder=['Hot','Warm','Cold','Nurture','Disqualified'];
+  const scoreColors={hot:'#DC2626',warm:'#D97706',cold:'#2563EB',nurture:'#7C3AED',disqualified:'#6B7280'};
+  const scoreMap={};
+  leads.forEach(l=>{ const s=(l.Score||'Unknown'); scoreMap[s]=(scoreMap[s]||0)+1; });
+  const scoreEntries=scoreOrder.map(s=>[s,scoreMap[s]||0]).filter(([,n])=>n>0);
+  const unclassed=leads.filter(l=>!l.Score||!scoreOrder.includes(l.Score)).length;
+  if(unclassed>0) scoreEntries.push(['Unclassified',unclassed]);
+  const maxScore=Math.max(...scoreEntries.map(([,n])=>n),1);
+  const engEl=$id('tkEngagementChart');
+  if(engEl){
+    if(!scoreEntries.length){ engEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No score data yet.</div>'; }
+    else { engEl.innerHTML=scoreEntries.map(([s,n])=>{
+      const pct=Math.round(n/maxScore*100);
+      const col=scoreColors[s.toLowerCase()]||'var(--muted)';
+      return `<div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="font-weight:600">${escHtml(s)}</span>
+          <span style="color:var(--muted);font-variant-numeric:tabular-nums">${n} (${Math.round(n/leads.length*100)||0}%)</span>
+        </div>
+        <div style="background:var(--line);border-radius:4px;height:8px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${col};border-radius:4px;transition:width .4s"></div>
+        </div>
+      </div>`;
+    }).join(''); }
+  }
+
+  // Send history
   const tbody=$id('trackTbody');
-  if(!log.length){ tbody.innerHTML=''; $id('trackEmpty').classList.remove('hidden'); return; }
-  $id('trackEmpty').classList.add('hidden');
-  tbody.innerHTML=log.slice().reverse().map(r=>`<tr>
-    <td>${esc(new Date(r.ts).toLocaleString())}</td>
-    <td>${esc(r.type)}</td>
-    <td>${r.total}</td>
-    <td>${r.sent}</td>
-    <td>${r.failed}</td>
-  </tr>`).join('');
+  if(tbody){
+    if(!log.length){ $id('trackEmpty')?.classList.remove('hidden'); tbody.innerHTML=''; }
+    else {
+      $id('trackEmpty')?.classList.add('hidden');
+      tbody.innerHTML=log.slice().reverse().map(r=>{
+        const rate=r.total?Math.round((r.sent||0)/r.total*100):0;
+        return `<tr>
+          <td>${esc(new Date(r.ts).toLocaleString())}</td>
+          <td><span class="badge">${esc(r.type)}</span></td>
+          <td style="font-variant-numeric:tabular-nums">${r.total}</td>
+          <td style="font-variant-numeric:tabular-nums;color:#16A34A">${r.sent}</td>
+          <td style="font-variant-numeric:tabular-nums;color:${r.failed?'#DC2626':'var(--muted)'}">${r.failed||0}</td>
+          <td style="font-variant-numeric:tabular-nums">${rate}%</td>
+        </tr>`;
+      }).join('');
+    }
+  }
+
+  // Recent activity
+  const window=($id('tkActivityFilter')?.value)||'24h';
+  const cutoff=window==='24h'?now-MS_24H:window==='7d'?now-MS_7D:0;
+  const recent=leads.filter(l=>l.LastMsgAt&&new Date(l.LastMsgAt).getTime()>=cutoff)
+    .sort((a,b)=>new Date(b.LastMsgAt)-new Date(a.LastMsgAt)).slice(0,50);
+  const recentTbody=$id('tkRecentTbody');
+  if(recentTbody){
+    if(!recent.length){ $id('tkRecentEmpty')?.classList.remove('hidden'); recentTbody.innerHTML=''; }
+    else {
+      $id('tkRecentEmpty')?.classList.add('hidden');
+      const scoreColor=s=>s==='Hot'?'#DC2626':s==='Warm'?'#D97706':s==='Cold'?'#2563EB':'var(--muted)';
+      recentTbody.innerHTML=recent.map(l=>`<tr>
+        <td style="font-weight:600">${escHtml(l.Name||'—')}</td>
+        <td style="font-size:12px;color:var(--muted)">${escHtml(l.Phone||'—')}</td>
+        <td>${escHtml(l.Stage||'—')}</td>
+        <td style="font-weight:700;color:${scoreColor(l.Score)}">${escHtml(l.Score||'—')}</td>
+        <td style="font-size:12px">${timeSince(l.LastMsgAt)}</td>
+        <td style="font-variant-numeric:tabular-nums;color:${l.followup_step>0?'var(--accent)':'var(--muted)'}">${l.followup_step>0?'Step '+l.followup_step:'—'}</td>
+      </tr>`).join('');
+    }
+  }
 }
 
 async function logBroadcastRun(type,total,sent,failed){
