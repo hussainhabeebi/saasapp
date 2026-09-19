@@ -7129,6 +7129,7 @@ async function ncPatchVerified(env, clientId, fields){
     const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(clientId), ...fields}});
     const data=await r.json().catch(()=>({}));
     if(!r.ok) return {ok:false, status:r.status, data};
+    await kvDelClient(env, clientId);
     const fresh=await getClientById(env, clientId);
     const stuck=fresh?Object.keys(fields).filter(k=>String(fresh[k]??'')!==String(fields[k]??'')):Object.keys(fields);
     if(!stuck.length) return {ok:true, status:r.status, data};
