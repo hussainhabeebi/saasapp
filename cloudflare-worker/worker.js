@@ -13083,7 +13083,29 @@ REPLY RULES:
 • Keep replies compact — one clear answer and one obvious next action.
 • Never use a product name, price, specification, or availability that is not confirmed in VERIFIED ECOM PRODUCT DATA.`,
       furniture_appliances:'FURNITURE & HOME APPLIANCES COMMUNICATION STYLE: Sound helpful, practical and specification-focused. Guide discovery in this order when applicable: category, room or intended use, dimensions or verified specifications, then verified products. Never invent dimensions, materials, capacity, warranty, compatibility or availability; ask staff when a required fact is absent.\n\nPRICING RULE (strict — no exceptions): Never calculate, estimate, derive, or infer a price from a product\'s size, dimensions, or inches. Only quote the exact price that appears in the VERIFIED ECOM PRODUCT DATA for that specific product entry — never attribute a catalog price to a customer-requested dimension (e.g. do not say "these prices are for 5×6.25 ft"). If a customer asks about pricing for a size or configuration that is not explicitly priced in the Product Catalog, say you do not have a confirmed price for that specific option and offer to connect them with a team member who can help.\n\nIMAGE RULE: Never write placeholder text like "(Image of X)", "(Photo of Cot)", "[Image]", or any bracket/parenthesis notation to indicate an image. Real product photos are sent separately by the system — if no real image URL is present in the product data, do not reference images in your reply at all.',
-      baby_care:'BABY CARE & APPAREL COMMUNICATION STYLE: Sound warm, reassuring and detail-oriented — parents want to feel confident every choice is safe and made with care. The deterministic Baby Care flow controls shopping: button-led welcome, fabric/quality tier selection, customisation questions (base set is always white; customer chooses accent colours, print theme and optional add-ons), delivery details, then order confirmation followed by a warm human handoff. Answer additional questions from the configured business prompt and VERIFIED ECOM PRODUCT DATA only. Never invent fabric properties, age suitability, safety claims, pricing, or add-on availability. PRICING RULE: Only quote the exact starting price stored in the product entry — never compute a per-accessory or per-item breakdown unless it is explicitly listed. IMAGE RULE: Never write placeholder text for images — real product photos are sent separately by the system.'
+      baby_care:'BABY CARE & APPAREL COMMUNICATION STYLE: Sound warm, reassuring and detail-oriented — parents want to feel confident every choice is safe and made with care. The deterministic Baby Care flow controls shopping: button-led welcome, fabric/quality tier selection, customisation questions (base set is always white; customer chooses accent colours, print theme and optional add-ons), delivery details, then order confirmation followed by a warm human handoff. Answer additional questions from the configured business prompt and VERIFIED ECOM PRODUCT DATA only. Never invent fabric properties, age suitability, safety claims, pricing, or add-on availability. PRICING RULE: Only quote the exact starting price stored in the product entry — never compute a per-accessory or per-item breakdown unless it is explicitly listed. IMAGE RULE: Never write placeholder text for images — real product photos are sent separately by the system.',
+      medical_centre:`MEDICAL CENTRE / AYURVEDIC STORE COMMUNICATION STYLE — apply to every reply:
+
+PRODUCT ENQUIRY (customer names or asks about a specific product):
+• Do NOT list categories — jump straight to matching products from VERIFIED ECOM PRODUCT DATA.
+• Show matching products as a tappable list (OPTIONS); if only one match, go directly to its details.
+• Product detail: name, description, available variants (size/volume/pack type), and exact price.
+• End the product detail reply with: OPTIONS: Order Now | Ask a Question
+
+BROWSING / DISCOVERY (no specific product mentioned):
+• Guide in this order: categories (OPTIONS) → customer selection → verified matching products (OPTIONS).
+• Only show categories and products confirmed in VERIFIED ECOM PRODUCT DATA — never invent.
+
+ORDER FLOW (customer taps "Order Now"):
+• In a single message ask: "Please share your name and delivery address (building/house, street, city, PIN code) so we can process your order."
+• Once received, show a clean order summary (Product, Variant, Price, Address) and offer: OPTIONS: Confirm Order | Cancel
+
+REPLY RULES:
+• Sound knowledgeable, calm and caring — like a trusted Ayurvedic pharmacist.
+• Keep replies compact: one clear answer and one obvious next action.
+• Never invent product names, ingredients, uses, variants, prices, or availability.
+• Never say an online link is unavailable or that you will connect the customer to a team for a product order — handle orders here conversationally.
+• IMAGE RULE: Never write placeholder text like "(Image of X)" or "[Photo]" — real product photos are sent separately by the system.`
     };
     // Deliberately opt-in. Missing/blank keeps the exact legacy prompt for every existing client.
     if(ecomStyleInstructions[ecomCommunicationStyle]) sys+='\n\n'+ecomStyleInstructions[ecomCommunicationStyle];
@@ -16572,6 +16594,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
     const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
     const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care';
+    const isMedicalCentreEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='medical_centre';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
     let sentText=null;
@@ -17210,6 +17233,78 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }
     }
     // ── End electronics order handler ────────────────────────────────────────────
+    // ── Medical Centre: two-step in-WhatsApp order collection ────────────────────
+    // Stages: med_order_address → med_order_confirm
+    if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isMedicalCentreEcom && state.stage && state.stage.startsWith('med_order_')){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(/^MED_CANCEL$/i.test(userText)||/^cancel(?: order)?$/i.test(userText.trim())){
+        sentText=await engineLocalizeReply(env,c,'Order cancelled.',replyLang);
+        routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+        await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(state.stage==='med_order_address'){
+        const _addrTrimmed=userText.trim();
+        const _addrWords=_addrTrimmed.split(/\s+/);
+        const _addrEscape=/\b(show|other|more|cancel|catalogue|catalog|product|item|price|cost|rate|how much|what|help|hi|hello|stop|exit|menu|list)\b/i.test(_addrTrimmed);
+        const _addrTooShort=_addrWords.length<=2&&_addrTrimmed.length<10;
+        if(_addrEscape||_addrTooShort){
+          const _retry=await engineLocalizeReply(env,c,'Please share your name and full delivery address (building/house, street, city, PIN code):',replyLang);
+          sentText=_retry; routing.reply=sentText; routing.next='med_order_address'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}); orderHandledInline=true;
+        } else {
+          seed.address=_addrTrimmed;
+          const _cur=seed.currency||'';
+          const _medSummary=[
+            `*Order Summary*`,
+            ``,
+            `Product : ${seed.productName||''}`,
+            seed.variant?`Variant : ${seed.variant}`:'',
+            `Price   : *${_cur}${seed.price||0}*`,
+            ``,
+            `Address : ${seed.address}`,
+          ].filter(Boolean).join('\n');
+          sentText=await engineLocalizeReply(env,c,_medSummary,replyLang);
+          routing.reply=sentText; routing.next='med_order_confirm'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Confirm Order',value:'MED_CONFIRM'},
+            {title:'Cancel',value:'MED_CANCEL'},
+          ]); orderHandledInline=true;
+        }
+      } else if(state.stage==='med_order_confirm'){
+        if(/^MED_CONFIRM$/i.test(userText)||/^(?:confirm|confirm order|yes)$/i.test(userText.trim())){
+          seed.items=`${seed.productName||''}${seed.variant?` (${seed.variant})`:''}`;
+          seed.price=seed.price||0;
+          const _medOrder=await finalizeChatOrder(env,c,clientId,phone,name,seed,seed.address);
+          if(_medOrder.ok){
+            sentText=await engineLocalizeReply(env,c,'✅ Order confirmed! Your receipt will be sent shortly.',replyLang);
+            routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+            ecomSendElectronicsOrderPdf(c,convId,{
+              order_id:_medOrder.order_id,
+              productName:seed.productName+(seed.variant?` (${seed.variant})`:''),
+              qty:1, unitPrice:seed.price, totalPrice:seed.price,
+              currency:seed.currency||'', address:seed.address, paymentMethod:'',
+              customerName:name||'', phone, orderDate:new Date().toISOString().slice(0,10),
+            }).catch(()=>{});
+          } else {
+            sentText=await engineLocalizeReply(env,c,'I could not save the order. Connecting you with our team.',replyLang);
+            routing.reply=sentText; routing.next='human_handover'; routing.clearOrderCollect=true;
+            routing.route='human'; routing.humanReason='med_order_save_failed';
+            await engineSendHandoverLabel(c,convId);
+            await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+          }
+          orderHandledInline=true;
+        } else {
+          sentText=await engineLocalizeReply(env,c,'Please confirm or cancel this order:',replyLang);
+          routing.reply=sentText;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Confirm Order',value:'MED_CONFIRM'},
+            {title:'Cancel',value:'MED_CANCEL'},
+          ]); orderHandledInline=true;
+        }
+      }
+    }
+    // ── End medical centre order handler ─────────────────────────────────────────
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(state.stage==='order_collect_items'){
@@ -17668,6 +17763,24 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const elecSeedOrd={electronicsFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_eNameOrd,unitPrice:Number(_ePriceOrd)||0,currency:product.currency||exactSelectedProduct?.currency||''};
           routing.next='elec_order_qty'; routing.orderCollectSeed=elecSeedOrd;
           await engineDeliverReply(env,c,clientId,convId,qtyAsk,{mediaType,langCode:replyLang,ctx});
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product && isMedicalCentreEcom){
+          // Medical Centre style: show product card, collect name+address in one message.
+          await ensureOrderCollectField(env);
+          sentText=ecomElectronicsProductCard(product);
+          routing.reply=sentText;
+          const _attachMed=sendProductImage||sendOnlyPrimaryImage;
+          if(_attachMed&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,imageUrl:_attachMed?product.image_url:null,ctx});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          const _medAddrAsk=await engineLocalizeReply(env,c,'Please share your name and full delivery address (building/house, street, city, PIN code) to place your order:',replyLang);
+          routing.reply=_medAddrAsk;
+          const _medNameOrd=product.name||exactSelectedProduct?.name||detection.productName||'';
+          const _medPriceOrd=product.price!=null?product.price:(exactSelectedProduct?.price??0);
+          const _medVariant=product.variant||product.size||product.volume_ml||'';
+          routing.next='med_order_address';
+          routing.orderCollectSeed={medicalCentreFlow:true,sku:product.sku||exactSelectedProduct?.sku||'',productName:_medNameOrd,variant:_medVariant,price:Number(_medPriceOrd)||0,currency:product.currency||exactSelectedProduct?.currency||''};
+          await engineDeliverReply(env,c,clientId,convId,_medAddrAsk,{mediaType,langCode:replyLang,ctx});
           orderHandledInline=true;
         } else if(detection.mode==='order' && product && c.ecom_order_link_enabled==='No'){
           // Link-sending toggled off (ecom.html → Settings) — collect the order conversationally
