@@ -86,14 +86,32 @@ function getPlanLimits(planTier){
 }
 // True for pure ecommerce clients AND any other industry that has opted in via the ecom_enabled flag.
 function isEcomEnabled(c){ return c.industry==='ecommerce' || c.ecom_enabled==='Yes'; }
-// When multi-industry is enabled, messages arriving on the dedicated secondary-industry channel
-// should be handled as if the client's industry is the secondary one. All other inboxes use the
-// primary industry — secondary industry product/service details are never sent to the main number.
-function getEffectiveIndustry(c, inboxId){
-  if(c.multi_industry_enabled!=='Yes') return c.industry||'general';
-  if(!c.secondary_industry||!c.secondary_industry_channel_id||!inboxId) return c.industry||'general';
-  if(String(inboxId)===String(c.secondary_industry_channel_id)) return c.secondary_industry;
-  return c.industry||'general';
+// All toggleable module flags — applyChannelIndustryMap zeroes these before re-enabling only the
+// matched channel's own, so no secondary-industry content can bleed into a different channel.
+const ALL_MODULE_FLAGS=['ecom_enabled','ta_enabled','healthcare_enabled','real_estate_enabled',
+  'hospitality_enabled','matrimonial_enabled','recruit_enabled','appt_enabled','b2b_enabled','ev_charging_enabled'];
+// Module flags that each industry activates when it is the matched channel's industry.
+const INDUSTRY_MODULE_FLAGS={
+  ecommerce:['ecom_enabled'], travel:['ta_enabled'], healthcare:['healthcare_enabled'],
+  real_estate:['real_estate_enabled'], hospitality:['hospitality_enabled'],
+  matrimonial:['matrimonial_enabled'], consultancy:['recruit_enabled'],
+};
+// Hard-lock the client config to the channel-industry map entry that matches inboxId.
+// Mutates c's properties in place (c is const in handleEngineWebhook, but property mutation is
+// fine — only variable reassignment c={} would fail). No-ops when multi-industry is off.
+function applyChannelIndustryMap(c, inboxId){
+  if(c.multi_industry_enabled!=='Yes') return;
+  let map=[]; try{map=JSON.parse(c.channel_industry_map||'[]');}catch(e){}
+  if(!map.length||!inboxId) return;
+  const entry=map.find(ch=>String(ch.inbox_id)===String(inboxId));
+  if(!entry) return;
+  // Zero-reset ALL module flags — hard isolation: nothing from other channels bleeds in
+  ALL_MODULE_FLAGS.forEach(f=>{ c[f]='No'; });
+  // Apply this channel's industry and its own module flags
+  c.industry=entry.industry||c.industry;
+  (INDUSTRY_MODULE_FLAGS[c.industry]||[]).forEach(f=>{ c[f]='Yes'; });
+  // Use the channel-specific prompt when one is configured
+  if(entry.prompt) c.main_prompt=entry.prompt;
 }
 function countClientTeamUsers(c){
   let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
@@ -16215,34 +16233,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){}
     }
 
-    // Multi-industry channel isolation: each industry's module content (products, services, FAQ
-    // context) is scoped strictly to its designated channel.
-    // • Secondary channel → override c.industry AND activate the secondary industry's module flag.
-    // • Primary/other channels → suppress the secondary industry's module flag so its product and
-    //   service details never appear on the main number, even if the stored flag is 'Yes'.
-    if(c.multi_industry_enabled==='Yes' && c.secondary_industry && c.secondary_industry_channel_id){
-      const _isSecCh=state.inboxId && String(state.inboxId)===String(c.secondary_industry_channel_id);
-      const _secInd=c.secondary_industry;
-      if(_isSecCh){
-        c={...c, industry:_secInd};
-        if(_secInd==='ecommerce') c={...c, ecom_enabled:'Yes'};
-        else if(_secInd==='travel') c={...c, ta_enabled:'Yes'};
-        else if(_secInd==='healthcare') c={...c, healthcare_enabled:'Yes'};
-        else if(_secInd==='real_estate') c={...c, real_estate_enabled:'Yes'};
-        else if(_secInd==='hospitality') c={...c, hospitality_enabled:'Yes'};
-        else if(_secInd==='matrimonial') c={...c, matrimonial_enabled:'Yes'};
-        else if(_secInd==='consultancy') c={...c, recruit_enabled:'Yes'};
-      } else {
-        // Primary/other channel: suppress secondary industry module flags
-        if(_secInd==='ecommerce' && c.industry!=='ecommerce') c={...c, ecom_enabled:'No'};
-        else if(_secInd==='travel' && c.industry!=='travel') c={...c, ta_enabled:'No'};
-        else if(_secInd==='healthcare' && c.industry!=='healthcare') c={...c, healthcare_enabled:'No'};
-        else if(_secInd==='real_estate' && c.industry!=='real_estate') c={...c, real_estate_enabled:'No'};
-        else if(_secInd==='hospitality' && c.industry!=='hospitality') c={...c, hospitality_enabled:'No'};
-        else if(_secInd==='matrimonial' && c.industry!=='matrimonial') c={...c, matrimonial_enabled:'No'};
-        else if(_secInd==='consultancy' && c.industry!=='consultancy') c={...c, recruit_enabled:'No'};
-      }
-    }
+    // Multi-industry: hard-lock this inbox to its configured industry, module flags, and prompt.
+    // Each channel gets exactly its own context — nothing crosses to another channel.
+    applyChannelIndustryMap(c, state.inboxId);
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and

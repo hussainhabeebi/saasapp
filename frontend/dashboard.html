@@ -2175,26 +2175,41 @@ const ROLES = {
               </div>
             </div>
             <div id="multiIndustryOptions" style="display:none;margin-top:14px">
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-                <div>
-                  <label class="form-label">Secondary Industry</label>
-                  <select class="form-input" id="cfgSecondaryIndustry"></select>
+              <div class="s-note" style="margin-bottom:14px">Each channel is hard-locked to its own industry — product and service details never cross to any other channel. Each channel can have a dedicated bot prompt.</div>
+
+              <div style="border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px">
+                <div style="font-weight:600;font-size:13px;margin-bottom:10px">📱 Primary Channel</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+                  <div>
+                    <label class="form-label">Channel (Inbox)</label>
+                    <select class="form-input" id="cfgMiPrimaryInbox"><option value="">— select —</option></select>
+                  </div>
+                  <div>
+                    <label class="form-label">Industry</label>
+                    <select class="form-input" id="cfgMiPrimaryIndustry"></select>
+                  </div>
                 </div>
                 <div>
-                  <label class="form-label">Dedicated Channel <span style="font-size:11px;color:var(--muted)">(secondary only)</span></label>
-                  <select class="form-input" id="cfgSecondaryIndustryChannel">
-                    <option value="">— select a channel —</option>
-                  </select>
-                  <div style="font-size:11px;color:var(--muted);margin-top:4px">Messages on this channel use the secondary industry context. All other channels use your primary industry.</div>
+                  <label class="form-label">Bot Prompt <span style="font-size:11px;color:var(--muted)">(optional — overrides general prompt on this channel only)</span></label>
+                  <textarea class="form-input" id="cfgMiPrimaryPrompt" rows="3" style="resize:vertical" placeholder="Leave blank to use the general bot prompt"></textarea>
                 </div>
               </div>
-              <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+
+              <div style="border:1px solid var(--line);border-radius:8px;padding:14px">
+                <div style="font-weight:600;font-size:13px;margin-bottom:10px">📲 Secondary Channel</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+                  <div>
+                    <label class="form-label">Channel (Inbox)</label>
+                    <select class="form-input" id="cfgMiSecondaryInbox"><option value="">— select —</option></select>
+                  </div>
+                  <div>
+                    <label class="form-label">Industry</label>
+                    <select class="form-input" id="cfgMiSecondaryIndustry"></select>
+                  </div>
+                </div>
                 <div>
-                  <label class="form-label">Enable Secondary Industry Module</label>
-                  <select class="form-input" id="cfgSecondaryIndustryModuleEnabled" style="max-width:160px">
-                    <option value="No">Disabled</option>
-                    <option value="Yes">Enabled</option>
-                  </select>
+                  <label class="form-label">Bot Prompt <span style="font-size:11px;color:var(--muted)">(optional)</span></label>
+                  <textarea class="form-input" id="cfgMiSecondaryPrompt" rows="3" style="resize:vertical" placeholder="Leave blank to use the general bot prompt"></textarea>
                 </div>
               </div>
             </div>
@@ -10421,38 +10436,50 @@ async function saveIndustry(){
 function toggleMultiIndustrySection(){
   const enabled=$id('cfgMultiIndustryEnabled').value==='Yes';
   $id('multiIndustryOptions').style.display=enabled?'block':'none';
-  if(enabled) populateSecondaryIndustryChannelSelect();
+  if(enabled) _miPopulateInboxSelects();
 }
 
 function populateMultiIndustrySection(){
   if(!clientRecord) return;
   const enabled=clientRecord.multi_industry_enabled==='Yes';
   $id('cfgMultiIndustryEnabled').value=enabled?'Yes':'No';
-  // Secondary industry list — all industries except the current primary
-  const primaryInd=clientRecord.industry||'general';
-  const secEl=$id('cfgSecondaryIndustry');
-  secEl.innerHTML=Object.entries(INDUSTRIES)
-    .filter(([k])=>k!==primaryInd)
-    .map(([k,v])=>`<option value="${k}"${clientRecord.secondary_industry===k?' selected':''}>${esc(v.label)}</option>`)
-    .join('');
-  $id('cfgSecondaryIndustryModuleEnabled').value=clientRecord.secondary_industry_module_enabled==='Yes'?'Yes':'No';
   $id('multiIndustryOptions').style.display=enabled?'block':'none';
-  if(enabled) populateSecondaryIndustryChannelSelect();
+  const indOpts=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}">${esc(v.label)}</option>`).join('');
+  $id('cfgMiPrimaryIndustry').innerHTML=indOpts;
+  $id('cfgMiSecondaryIndustry').innerHTML=indOpts;
+  let map=[]; try{map=JSON.parse(clientRecord.channel_industry_map||'[]');}catch(e){}
+  const p0=map[0]||{}, p1=map[1]||{};
+  $id('cfgMiPrimaryIndustry').value=p0.industry||(clientRecord.industry||'general');
+  $id('cfgMiPrimaryPrompt').value=p0.prompt||'';
+  $id('cfgMiSecondaryIndustry').value=p1.industry||'';
+  $id('cfgMiSecondaryPrompt').value=p1.prompt||'';
+  if(enabled) _miPopulateInboxSelects(p0.inbox_id||'', p1.inbox_id||'');
 }
 
-function populateSecondaryIndustryChannelSelect(){
-  const sel=$id('cfgSecondaryIndustryChannel');
-  if(!sel) return;
+function _miPopulateInboxSelects(savedPrimary, savedSecondary){
   if(!_channelsStatus){
-    sel.innerHTML=`<option value="">Loading channels…</option>`;
-    loadChannelsStatus().then(()=>populateSecondaryIndustryChannelSelect()).catch(()=>{});
+    const loading=`<option value="">Loading channels…</option>`;
+    $id('cfgMiPrimaryInbox').innerHTML=loading;
+    $id('cfgMiSecondaryInbox').innerHTML=loading;
+    loadChannelsStatus().then(()=>_miPopulateInboxSelects(savedPrimary,savedSecondary)).catch(()=>{});
     return;
   }
+  // Preserve current DOM selections when called without explicit args (e.g. after channels load)
+  if(savedPrimary===undefined) savedPrimary=$id('cfgMiPrimaryInbox').value;
+  if(savedSecondary===undefined) savedSecondary=$id('cfgMiSecondaryInbox').value;
   const inboxes=(_channelsStatus.inboxes)||[];
-  const savedChannel=clientRecord.secondary_industry_channel_id||'';
-  sel.innerHTML=`<option value="">— select a channel —</option>`+
-    inboxes.map(ib=>`<option value="${esc(String(ib.id))}"${String(ib.id)===String(savedChannel)?' selected':''}>${esc(ib.name||'Inbox '+ib.id)}${ib.phone_number?' — '+esc(ib.phone_number):''}</option>`).join('');
-  if(!inboxes.length) sel.innerHTML=`<option value="">No channels configured yet — set up on Channels page</option>`;
+  if(!inboxes.length){
+    const none=`<option value="">No channels yet — set up on Channels page</option>`;
+    $id('cfgMiPrimaryInbox').innerHTML=none;
+    $id('cfgMiSecondaryInbox').innerHTML=none;
+    return;
+  }
+  const opts=`<option value="">— select —</option>`+
+    inboxes.map(ib=>`<option value="${esc(String(ib.id))}">${esc(ib.name||'Inbox '+ib.id)}${ib.phone_number?' — '+esc(ib.phone_number):''}</option>`).join('');
+  $id('cfgMiPrimaryInbox').innerHTML=opts;
+  $id('cfgMiSecondaryInbox').innerHTML=opts;
+  if(savedPrimary) $id('cfgMiPrimaryInbox').value=savedPrimary;
+  if(savedSecondary) $id('cfgMiSecondaryInbox').value=savedSecondary;
 }
 
 async function saveMultiIndustry(){
@@ -10462,14 +10489,15 @@ async function saveMultiIndustry(){
     const enabled=$id('cfgMultiIndustryEnabled').value;
     const patch={multi_industry_enabled:enabled};
     if(enabled==='Yes'){
-      const secInd=$id('cfgSecondaryIndustry').value;
-      const secChannel=$id('cfgSecondaryIndustryChannel').value;
-      const secMod=$id('cfgSecondaryIndustryModuleEnabled').value;
-      if(!secInd) throw new Error('Select a secondary industry');
-      if(!secChannel) throw new Error('Select a dedicated channel for the secondary industry');
-      patch.secondary_industry=secInd;
-      patch.secondary_industry_channel_id=secChannel;
-      patch.secondary_industry_module_enabled=secMod;
+      const p0Inbox=$id('cfgMiPrimaryInbox').value;
+      const p1Inbox=$id('cfgMiSecondaryInbox').value;
+      if(!p0Inbox) throw new Error('Select a channel for the primary industry');
+      if(!p1Inbox) throw new Error('Select a channel for the secondary industry');
+      if(p0Inbox===p1Inbox) throw new Error('Primary and secondary channels must be different inboxes');
+      patch.channel_industry_map=JSON.stringify([
+        {inbox_id:p0Inbox, industry:$id('cfgMiPrimaryIndustry').value, prompt:$id('cfgMiPrimaryPrompt').value.trim()},
+        {inbox_id:p1Inbox, industry:$id('cfgMiSecondaryIndustry').value, prompt:$id('cfgMiSecondaryPrompt').value.trim()},
+      ]);
     }
     await patchClient(patch);
     msg.textContent='✓ Saved';
