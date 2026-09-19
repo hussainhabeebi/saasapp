@@ -86,6 +86,15 @@ function getPlanLimits(planTier){
 }
 // True for pure ecommerce clients AND any other industry that has opted in via the ecom_enabled flag.
 function isEcomEnabled(c){ return c.industry==='ecommerce' || c.ecom_enabled==='Yes'; }
+// When multi-industry is enabled, messages arriving on the dedicated secondary-industry channel
+// should be handled as if the client's industry is the secondary one. All other inboxes use the
+// primary industry — secondary industry product/service details are never sent to the main number.
+function getEffectiveIndustry(c, inboxId){
+  if(c.multi_industry_enabled!=='Yes') return c.industry||'general';
+  if(!c.secondary_industry||!c.secondary_industry_channel_id||!inboxId) return c.industry||'general';
+  if(String(inboxId)===String(c.secondary_industry_channel_id)) return c.secondary_industry;
+  return c.industry||'general';
+}
 function countClientTeamUsers(c){
   let teamUsers={}; try{ teamUsers=JSON.parse(c?.team_chatwoot_users||'{}'); }catch(e){}
   return Object.keys(teamUsers).length + 1; // +1 for the account owner, who has no entry of their own
@@ -16205,6 +16214,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }
       }catch(e){}
     }
+
+    // Multi-industry: if this message arrived on the secondary industry's dedicated channel,
+    // shadow c.industry with the secondary industry for the rest of this turn. This ensures
+    // secondary industry routing, FAQ context, and product details only apply to that channel
+    // and never leak to the main number or any other inbox.
+    const _effectiveIndustry=getEffectiveIndustry(c, state.inboxId);
+    if(_effectiveIndustry!==c.industry) c={...c, industry:_effectiveIndustry};
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and
