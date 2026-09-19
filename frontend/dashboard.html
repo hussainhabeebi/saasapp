@@ -3486,6 +3486,37 @@ const ROLES = {
 
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🌐 Default Language</div>
+            <div class="s-note">The language the bot uses to start every new conversation. If a customer writes in a different language mid-conversation, the bot switches to match them automatically.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Default Language</label>
+                <select class="form-input" id="cfgDefaultLanguage">
+                  <option value="en">English</option>
+                  <option value="ml">Malayalam</option>
+                  <option value="hi">Hindi</option>
+                  <option value="ta">Tamil</option>
+                  <option value="te">Telugu</option>
+                  <option value="kn">Kannada</option>
+                  <option value="ar">Arabic</option>
+                  <option value="bn">Bengali</option>
+                  <option value="mr">Marathi</option>
+                  <option value="ur">Urdu</option>
+                  <option value="fr">French</option>
+                  <option value="es">Spanish</option>
+                  <option value="de">German</option>
+                  <option value="pt">Portuguese</option>
+                  <option value="id">Indonesian</option>
+                </select>
+              </div>
+              <button class="save-btn" id="saveDefaultLanguage">Save</button>
+              <span class="save-msg" id="saveDefaultLanguageMsg"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px">
+          <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">💬 Chat Style</div>
             <div class="s-note">Controls how the bot answers customer questions.<br><b>Prompt-First</b> — always gives a direct answer from your prompt or KB before asking anything; no pressure to call.<br><b>InstaFone</b> — D2C ad-to-order flow: immediately presents the product with photo, features &amp; offer price, then shows Buy Now / Product Details / Talk to Agent buttons. Collects delivery address step-by-step, shows order summary, handles COD &amp; UPI payment, sends order confirmation. Designed for products sold via Facebook/Instagram Ads.<br><b>Humanized</b> — warm, natural WhatsApp tone adapted to the customer's language (Malayalam, Hindi, Tamil, Telugu, Kannada, or English). Answers questions directly, avoids robotic phrasing, and closes with a soft, natural nudge based on your industry. Best for businesses where the personal touch matters.</div>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">
@@ -11296,6 +11327,9 @@ function populateBotBehaviorPage(){
   $id('cfgManglishWords').addEventListener('input',function(){
     renderManglishSuggestions(this.value.split(',').map(s=>s.trim()).filter(Boolean));
   },{once:true});
+  const langSel=$id('cfgDefaultLanguage');
+  const curLang=clientRecord?.language||'en';
+  langSel.value=langSel.querySelector(`option[value="${curLang}"]`)?curLang:'en';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -11323,6 +11357,11 @@ $id('saveManglishWords').addEventListener('click',async()=>{
   if(words.length) botConfig.manglish_words=words;
   else delete botConfig.manglish_words;
   await saveField('saveManglishWords','saveManglishWordsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveDefaultLanguage').addEventListener('click',async()=>{
+  const lang=$id('cfgDefaultLanguage').value||'en';
+  await saveField('saveDefaultLanguage','saveDefaultLanguageMsg',{language:lang});
+  if(clientRecord) clientRecord.language=lang;
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
