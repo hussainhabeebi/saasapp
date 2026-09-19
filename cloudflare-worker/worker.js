@@ -7035,8 +7035,8 @@ async function handleBillingWebhook(request, env){
 // silently never load its saved value (always reading back undefined) and never actually persist
 // a save (dropped, with no error — handleEcomClientUpdate only errors on an empty body, not a
 // filtered-out field). Both now included so their Settings toggles actually work.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled'];
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
