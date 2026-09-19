@@ -16215,12 +16215,34 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){}
     }
 
-    // Multi-industry: if this message arrived on the secondary industry's dedicated channel,
-    // shadow c.industry with the secondary industry for the rest of this turn. This ensures
-    // secondary industry routing, FAQ context, and product details only apply to that channel
-    // and never leak to the main number or any other inbox.
-    const _effectiveIndustry=getEffectiveIndustry(c, state.inboxId);
-    if(_effectiveIndustry!==c.industry) c={...c, industry:_effectiveIndustry};
+    // Multi-industry channel isolation: each industry's module content (products, services, FAQ
+    // context) is scoped strictly to its designated channel.
+    // • Secondary channel → override c.industry AND activate the secondary industry's module flag.
+    // • Primary/other channels → suppress the secondary industry's module flag so its product and
+    //   service details never appear on the main number, even if the stored flag is 'Yes'.
+    if(c.multi_industry_enabled==='Yes' && c.secondary_industry && c.secondary_industry_channel_id){
+      const _isSecCh=state.inboxId && String(state.inboxId)===String(c.secondary_industry_channel_id);
+      const _secInd=c.secondary_industry;
+      if(_isSecCh){
+        c={...c, industry:_secInd};
+        if(_secInd==='ecommerce') c={...c, ecom_enabled:'Yes'};
+        else if(_secInd==='travel') c={...c, ta_enabled:'Yes'};
+        else if(_secInd==='healthcare') c={...c, healthcare_enabled:'Yes'};
+        else if(_secInd==='real_estate') c={...c, real_estate_enabled:'Yes'};
+        else if(_secInd==='hospitality') c={...c, hospitality_enabled:'Yes'};
+        else if(_secInd==='matrimonial') c={...c, matrimonial_enabled:'Yes'};
+        else if(_secInd==='consultancy') c={...c, recruit_enabled:'Yes'};
+      } else {
+        // Primary/other channel: suppress secondary industry module flags
+        if(_secInd==='ecommerce' && c.industry!=='ecommerce') c={...c, ecom_enabled:'No'};
+        else if(_secInd==='travel' && c.industry!=='travel') c={...c, ta_enabled:'No'};
+        else if(_secInd==='healthcare' && c.industry!=='healthcare') c={...c, healthcare_enabled:'No'};
+        else if(_secInd==='real_estate' && c.industry!=='real_estate') c={...c, real_estate_enabled:'No'};
+        else if(_secInd==='hospitality' && c.industry!=='hospitality') c={...c, hospitality_enabled:'No'};
+        else if(_secInd==='matrimonial' && c.industry!=='matrimonial') c={...c, matrimonial_enabled:'No'};
+        else if(_secInd==='consultancy' && c.industry!=='consultancy') c={...c, recruit_enabled:'No'};
+      }
+    }
 
     // Idempotency — Chatwoot may redeliver the same message_created event (timeout, network
     // retry); without this, a redelivery after this turn already completed would generate and
