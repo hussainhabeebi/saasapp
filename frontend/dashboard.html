@@ -454,7 +454,15 @@ tr:hover td{background:#FAFCFB}
 .kb-meta{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
 
 /* ── LEADS LIST ── */
-.leads-toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.leads-toolbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.leads-toolbar-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%}
+@media(max-width:767px){
+  .leads-toolbar{flex-direction:column;gap:6px}
+  .leads-toolbar-row{gap:6px}
+  .leads-toolbar .search-input{flex:1 1 100%;min-width:0}
+  .leads-toolbar select.form-input{flex:1 1 calc(50% - 3px);min-width:0;padding:9px 6px;font-size:12px}
+  .leads-toolbar .btn-sm{font-size:12px;padding:8px 10px}
+}
 /* leads table view */
 .leads-tbl{width:100%;border-collapse:collapse;font-size:13px}
 .leads-tbl th{background:var(--bg);padding:10px 12px;text-align:left;font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;border-bottom:2px solid var(--line);white-space:nowrap}
@@ -1591,40 +1599,49 @@ const ROLES = {
           <div id="leadsViewTabs" class="leads-view-tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
 
           <div class="leads-toolbar">
-            <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="onLeadsFilterChange()" />
-            <select class="form-input" id="leadOwnerFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px">
-              <option value="">All owners</option>
-            </select>
-            <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);white-space:nowrap">
-              <input type="checkbox" id="leadMineOnly" onchange="onLeadsFilterChange()"> Mine
-            </label>
-            <select class="form-input" id="leadScoreFilter" onchange="onLeadsFilterChange()" style="flex:0 0 110px;padding:9px 10px">
-              <option value="">All scores</option>
-              <option value="Hot">🔥 Hot</option>
-              <option value="Warm">Warm</option>
-              <option value="Cold">Cold</option>
-            </select>
-            <!-- Travel leads separation — Ticket/Package/Hotel/Other Services. Only shown for the
-                 travel industry (toggled in applyTheme()); see LEAD_CATEGORIES. -->
-            <select class="form-input" id="leadSourceFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px" title="Filter by source / channel">
-              <option value="">All sources</option>
-            </select>
-            <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:0 0 140px;padding:9px 10px">
-              <option value="">All categories</option>
-            </select>
-            <!-- Brand/Product Detected — chat-derived InterestedProduct (see engineClassifyIntent()
-                 in worker.js), surfaced as a first-class filter alongside Score/Owner rather than
-                 buried in the detail-panel signal chips only. -->
-            <select class="form-input" id="leadProductFilter" onchange="onLeadsFilterChange()" style="flex:0 0 160px;padding:9px 10px" title="Filter by brand/product detected in chat">
-              <option value="">All products/brands</option>
-            </select>
-            <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations">💬</button>
-            <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag">🔎 Stage/Tag</button>
-            <button class="btn btn-secondary btn-sm" id="leadsScopeBtn" onclick="toggleLeadsOwnerScope()" title="Switch between your leads and all leads"></button>
-            <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
-            <button class="btn btn-primary btn-sm" onclick="openAddLead()">+ Add Lead</button>
-            <button class="btn btn-secondary btn-sm" onclick="exportCsv()">📥 CSV</button>
-            <button class="btn btn-secondary btn-sm" onclick="openImport()">📤 Import</button>
+            <!-- Row 1: Search + owner + mine -->
+            <div class="leads-toolbar-row">
+              <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="onLeadsFilterChange()" style="flex:1;min-width:160px" />
+              <select class="form-input" id="leadOwnerFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px">
+                <option value="">All owners</option>
+              </select>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);white-space:nowrap;flex-shrink:0">
+                <input type="checkbox" id="leadMineOnly" onchange="onLeadsFilterChange()"> Mine
+              </label>
+            </div>
+            <!-- Row 2: Secondary filters -->
+            <div class="leads-toolbar-row">
+              <select class="form-input" id="leadScoreFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:100px;padding:9px 10px">
+                <option value="">All scores</option>
+                <option value="Hot">🔥 Hot</option>
+                <option value="Warm">Warm</option>
+                <option value="Cold">Cold</option>
+              </select>
+              <!-- Travel leads separation — Ticket/Package/Hotel/Other Services. Only shown for the
+                   travel industry (toggled in applyTheme()); see LEAD_CATEGORIES. -->
+              <select class="form-input" id="leadSourceFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:110px;padding:9px 10px" title="Filter by source / channel">
+                <option value="">All sources</option>
+              </select>
+              <select class="form-input" id="leadCategoryFilter" onchange="onLeadsFilterChange()" style="display:none;flex:1;min-width:110px;padding:9px 10px">
+                <option value="">All categories</option>
+              </select>
+              <!-- Brand/Product Detected — chat-derived InterestedProduct (see engineClassifyIntent()
+                   in worker.js), surfaced as a first-class filter alongside Score/Owner rather than
+                   buried in the detail-panel signal chips only. -->
+              <select class="form-input" id="leadProductFilter" onchange="onLeadsFilterChange()" style="flex:1;min-width:130px;padding:9px 10px" title="Filter by brand/product detected in chat">
+                <option value="">All products/brands</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" id="convSearchBtn" onclick="toggleConvSearch()" title="Search inside conversations" style="flex-shrink:0">💬</button>
+              <button class="btn btn-secondary btn-sm" onclick="toggleLeadsAdvFilters()" title="Filter by stage or tag" style="flex-shrink:0">🔎 Stage/Tag</button>
+            </div>
+            <!-- Row 3: Actions -->
+            <div class="leads-toolbar-row">
+              <button class="btn btn-secondary btn-sm" id="leadsScopeBtn" onclick="toggleLeadsOwnerScope()" title="Switch between your leads and all leads"></button>
+              <button class="btn btn-secondary btn-sm" id="leadsViewBtn" onclick="toggleLeadsView()" title="Toggle table view">⊞</button>
+              <button class="btn btn-primary btn-sm" onclick="openAddLead()" style="flex-shrink:0">+ Add Lead</button>
+              <button class="btn btn-secondary btn-sm" onclick="exportCsv()" style="flex-shrink:0">📥 CSV</button>
+              <button class="btn btn-secondary btn-sm" onclick="openImport()" style="flex-shrink:0">📤 Import</button>
+            </div>
           </div>
 
           <div id="leadsAdvFilters" class="card" style="display:none;margin-bottom:12px;padding:12px 14px">
@@ -6543,6 +6560,7 @@ function renderBulkBar(){
     <button class="btn btn-primary btn-sm" onclick="openSendTemplateModal([..._bulkSelectedLeadIds])">📣 Send Template</button>
     <button class="btn btn-sm" style="background:#0F2C4C;color:#fff" onclick="buildPowerDialerQueue([..._bulkSelectedLeadIds])">📞 Power Dial</button>
     <span style="flex:1"></span>
+    <button class="btn btn-sm" style="background:#FEE2E2;color:#991B1B;border:1.5px solid #FECACA" onclick="bulkDeleteLeads()">🗑️ Delete</button>
     <button class="btn btn-secondary btn-sm" onclick="clearBulkSelection()">Clear</button>`;
 }
 async function bulkMoveStage(stage){
@@ -6632,6 +6650,20 @@ async function bulkSetBrand(){
     try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,InterestedProduct:val}); lead.InterestedProduct=val; }catch(e){}
   }
   showToast(`✓ Set brand for ${_bulkSelectedLeadIds.size} lead(s)`,'ok');
+  clearBulkSelection();
+}
+async function bulkDeleteLeads(){
+  const n=_bulkSelectedLeadIds.size;
+  if(!confirm(`Permanently delete ${n} lead(s)? This cannot be undone.`)) return;
+  const ids=[..._bulkSelectedLeadIds];
+  for(const id of ids){
+    try{
+      await ncDelete(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id});
+      const idx=allLeads.findIndex(l=>l.Id===id);
+      if(idx>=0) allLeads.splice(idx,1);
+    }catch(e){}
+  }
+  showToast(`✓ Deleted ${n} lead(s)`,'ok');
   clearBulkSelection();
 }
 
