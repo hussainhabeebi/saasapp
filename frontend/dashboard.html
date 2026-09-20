@@ -8280,6 +8280,7 @@ function openDetail(id){
     <button class="action-btn" onclick="pushLeadToProjects(currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
+    ${(lead.Stage==='won'||lead.Stage==='converted')?`<button class="action-btn" onclick="reverseLead()"><span class="ab-icon">↩️</span>Reverse Lead</button>`:''}
     ${lead.IsDuplicate==='Yes'?`<button class="action-btn" onclick="openMerge()"><span class="ab-icon">🔀</span>Merge</button>`:''}
     ${lead.OptOut==='Yes'?`<span style="background:#FEE2E2;color:#991B1B;padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600">🚫 Opted out</span>`:''}
   `;
@@ -15270,6 +15271,24 @@ async function reopenLead(){
   if(idx>=0)Object.assign(allLeads[idx],patch);
   closeModal('modalDetail');
   showToast('Lead re-opened');
+  loadAll();
+}
+
+/* ── REVERSE WON LEAD (repeat customer) ── */
+async function reverseLead(){
+  if(!currentLead)return;
+  if(!confirm('Reverse this Won lead? It will be re-activated as a new lead (repeat customer).'))return;
+  const patch={Id:currentLead.Id,Stage:'new',Handover:'No',HandoverOutcome:'',ClosedAt:'','Follow up 1':'No','Follow up 2':'No','Follow up 3':'No','Follow up 4':'No','Follow up 5':'No'};
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,patch);
+  // append a note so history shows this was a repeat-customer reversal
+  const notes=currentLead.Notes?currentLead.Notes+'\n':'';
+  const noteText=notes+`[${new Date().toLocaleDateString()}] Lead reversed from Won — repeat customer`;
+  await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:currentLead.Id,Notes:noteText});
+  Object.assign(currentLead,patch,{Notes:noteText});
+  const idx=allLeads.findIndex(l=>l.Id===currentLead.Id);
+  if(idx>=0)Object.assign(allLeads[idx],patch,{Notes:noteText});
+  closeModal('modalDetail');
+  showToast('Lead reversed — re-activated as repeat customer');
   loadAll();
 }
 
