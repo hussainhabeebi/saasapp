@@ -16838,32 +16838,35 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         ]);
         orderHandledInline=true;
       } else if(/^BABY_VIEW_CATALOG$/i.test(userText)){
-        // Show actual products from the catalog. Fall back to a store link when configured,
-        // or a plain text listing of active products. Never a "team will share shortly" dead end.
+        // Show categories and products from the Ecom module as interactive buttons.
+        // Tapping a category/product routes through ecom_faq which sends product images.
         const catalogLink=(c.external_store_link||'').trim();
         if(catalogLink){
           sentText=await engineLocalizeReply(env,c,
             `Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
+          routing.reply=sentText; routing.next='new';
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ]);
         } else {
-          const _catalogProducts=await ecomListActiveProducts(env, clientId);
-          if(_catalogProducts.length){
-            const _productLines=_catalogProducts.slice(0,10).map(p=>{
-              const price=p.price!=null?` (${p.currency||''}${p.price})`:'';
-              const desc=p.description?(` — ${String(p.description).slice(0,80)}`):'';
-              return `• *${p.name}*${price}${desc}`;
-            });
+          const [_cats,_prods]=await Promise.all([ecomListCategories(env,clientId),ecomListActiveProducts(env,clientId)]);
+          const _catalogItems=ecomAvailableCatalogueItems(_cats,_prods);
+          if(_catalogItems.length){
             sentText=await engineLocalizeReply(env,c,
-              `🛍️ *Our Baby Collection*\n\n${_productLines.join('\n')}\n\nInterested in a *Custom Order*? Tap below to personalise your set! 🌸`,replyLang);
+              '🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
+            routing.reply=sentText; routing.next='new';
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,_catalogItems);
           } else {
             sentText=await engineLocalizeReply(env,c,
               'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+            routing.reply=sentText; routing.next='new';
+            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+              {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+              {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+            ]);
           }
         }
-        routing.reply=sentText; routing.next='new';
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
-          {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
-        ]);
         orderHandledInline=true;
       } else if(/^BABY_TALK_TO_TEAM$/i.test(userText)){
         sentText=await engineLocalizeReply(env,c,_bcMsg('talk_msg',"Sure! I'll connect you with our team now. 🌸"),replyLang);
