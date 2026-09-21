@@ -400,13 +400,25 @@ function showPage(pg){
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
+function showBootError(msg){
+  const el=document.getElementById('overviewRecentOrders');
+  if(el) el.innerHTML=`<p style="color:var(--bad);font-size:13px">⚠️ ${msg}</p>`;
+  const el2=document.getElementById('overviewLowStock');
+  if(el2) el2.innerHTML='';
+}
 async function boot(){
+  if(!clientId){ showBootError('No client ID — reload the dashboard.'); loadOverview(); return; }
+  if(!sessionToken){ showBootError('No session token — reload the dashboard.'); loadOverview(); return; }
   try{
+    const fetchOne=async(action,fallback)=>{
+      try{ return await api(`/ev?client=${clientId}&action=${action}`); }
+      catch(e){ showBootError(`API error (${action}): ${e.message}`); return fallback; }
+    };
     const [sd,cd,od,sets]=await Promise.all([
-      api(`/ev?client=${clientId}&action=list_stations`).catch(()=>({data:[]})),
-      api(`/ev?client=${clientId}&action=list_consumables`).catch(()=>({data:[]})),
-      api(`/ev?client=${clientId}&action=list_orders`).catch(()=>({data:[]})),
-      api(`/ev?client=${clientId}&action=get_settings`).catch(()=>({data:{}})),
+      fetchOne('list_stations',{data:[]}),
+      fetchOne('list_consumables',{data:[]}),
+      fetchOne('list_orders',{data:[]}),
+      fetchOne('get_settings',{data:{}}),
     ]);
     allStations=sd.data||[];
     allConsumables=cd.data||[];
@@ -415,7 +427,7 @@ async function boot(){
     document.getElementById('hdrBizName').textContent=evSettings.business_name||'EV Charging Module';
     loadOverview();
   }catch(e){
-    console.warn('EV boot:',e.message);
+    showBootError('Unexpected error: '+e.message);
     loadOverview();
   }
 }
