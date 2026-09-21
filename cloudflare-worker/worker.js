@@ -16758,12 +16758,69 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const _isBabyGreeting=mediaType==='text'&&/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon)|hlo|hii|hai|hy|howdy|sup|greetings)[!.,? ]*$/i.test(userText.trim());
       // Free-text mid-flow that looks like a question should fall through to the ecom_faq LLM
       // (answered from prompt + action buttons appended) instead of being caught by stage fallbacks.
-      const _babyIsQuestion=/[?]/.test(userText)||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim());
+      // Word-count check (>5 words) catches questions in any language (e.g. Malayalam) that would
+      // otherwise be misread as a stage answer (colour, theme, etc.).
+      const _babyIsQuestion=/[?]/.test(userText)
+        ||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim())
+        ||(!/^BABY_/i.test(userText.trim())&&userText.trim().split(/\s+/).length>5);
       // CANCEL: any stage
       if(_isBabyStage&&/^BABY_CANCEL$/i.test(userText)){
         sentText=await engineLocalizeReply(env,c,_bcMsg('cancel_msg','No problem! Feel free to message us any time. 🌸'),replyLang);
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        orderHandledInline=true;
+      } else if(/^BABY_RESUME_STAGE$/i.test(userText)){
+        // Customer tapped "Continue Order" after an AI-answered side question — re-show the prompt
+        // for whatever stage they were at so they can pick up where they left off.
+        let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+        const _resumeStage=state.stage||'';
+        if(_resumeStage==='baby_quality_select'){
+          const qualityText=await engineLocalizeReply(env,c,_bcMsg('quality_intro','🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)'),replyLang);
+          sentText=qualityText; routing.reply=sentText; routing.next='baby_quality_select';
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:_bcMsg('affordable_label','Affordable (₹650+)'),value:'BABY_QUALITY_AFFORDABLE'},
+            {title:_bcMsg('premium_label','Premium (₹850+)'),value:'BABY_QUALITY_PREMIUM'},
+            {title:'Cancel ❌',value:'BABY_CANCEL'},
+          ]);
+        } else if(_resumeStage==='baby_customize'){
+          const txt=await engineLocalizeReply(env,c,'Continuing your order! 🎨 What accent colour would you like for the prints and details?\n(e.g. Pink, Blue, Mint Green, Lavender, Peach)',replyLang);
+          sentText=txt; routing.reply=txt; routing.next='baby_customize'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,_bcColors.map(col=>({title:col.label,value:col.value})));
+        } else if(_resumeStage==='baby_print_theme'){
+          const txt=await engineLocalizeReply(env,c,'Continuing! 🎀 What print theme would you like?\n(e.g. Floral, Stars, Animals, Geometric — or describe your own idea)',replyLang);
+          sentText=txt; routing.reply=txt; routing.next='baby_print_theme'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,_bcThemes.map(t=>({title:t.label,value:t.value})));
+        } else if(_resumeStage==='baby_addons'){
+          const txt=await engineLocalizeReply(env,c,'Continuing! Would you like any optional add-ons for your set?',replyLang);
+          sentText=txt; routing.reply=txt; routing.next='baby_addons'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,_bcAddons.map(a=>({title:a.label,value:a.value})));
+        } else if(_resumeStage==='baby_order_details'){
+          const txt=await engineLocalizeReply(env,c,_bcMsg('delivery_prompt','Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)'),replyLang);
+          sentText=txt; routing.reply=txt; routing.next='baby_order_details'; routing.orderCollectSeed=seed;
+          await engineDeliverReply(env,c,clientId,convId,txt,{mediaType,langCode:replyLang,ctx});
+        } else if(_resumeStage==='baby_order_confirm'){
+          const summaryLines=[`*Order Summary* 📋`,``,
+            `Product   : ${seed.productName||'Custom Baby Set'}`,
+            `Quality   : ${seed.qualityTier||'—'}`,`Base      : White`,
+            `Accent    : ${seed.accentColor||'—'}`,`Theme     : ${seed.printTheme||'—'}`,
+            `Add-ons   : ${seed.addOns||'None'}`,``,
+            `Name      : ${seed.customerName||'—'}`,`Address   : ${seed.address||'—'}`,
+          ];
+          const txt=await engineLocalizeReply(env,c,summaryLines.join('\n'),replyLang);
+          sentText=txt; routing.reply=txt; routing.next='baby_order_confirm'; routing.orderCollectSeed=seed;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,[
+            {title:'Confirm Order ✅',value:'BABY_CONFIRM'},
+            {title:'Cancel ❌',value:'BABY_CANCEL'},
+          ]);
+        } else {
+          const txt=await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
+          sentText=txt; routing.reply=txt; routing.next='new';
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,txt,[
+            {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ]);
+        }
         orderHandledInline=true;
       } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&isNewLead)){
         // Show welcome+menu on a fresh greeting OR a new lead's very first message.
@@ -16855,7 +16912,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           {title:'Cancel ❌',value:'BABY_CANCEL'},
         ]);
         orderHandledInline=true;
-      } else if(state.stage==='baby_customize'){
+      } else if(state.stage==='baby_customize' && !_babyIsQuestion){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         // Accept a button value or typed colour — map built from merchant-configured colours
         const colorMap=Object.fromEntries(_bcColors.map(x=>[x.value.toUpperCase(),x.name||null]));
@@ -16877,7 +16934,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             _bcThemes.map(t=>({title:t.label,value:t.value})));
           orderHandledInline=true;
         }
-      } else if(state.stage==='baby_print_theme'){
+      } else if(state.stage==='baby_print_theme' && !_babyIsQuestion){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         const themeMap=Object.fromEntries(_bcThemes.map(x=>[x.value.toUpperCase(),x.name||null]));
         const mappedTheme=themeMap[userText.trim().toUpperCase()];
@@ -16891,7 +16948,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,
           _bcAddons.map(a=>({title:a.label,value:a.value})));
         orderHandledInline=true;
-      } else if(state.stage==='baby_addons'){
+      } else if(state.stage==='baby_addons' && !_babyIsQuestion){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         const addonMap=Object.fromEntries(_bcAddons.map(x=>[x.value.toUpperCase(),x.name||null]));
         const _noneVal=(_bcAddons.find(a=>a.name==='None'||a.name==null&&a.label.toLowerCase().includes('no'))||_bcAddons[_bcAddons.length-1]).value.toUpperCase();
@@ -16910,7 +16967,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.reply=sentText; routing.next='baby_order_details'; routing.orderCollectSeed=seed;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
-      } else if(state.stage==='baby_order_details'){
+      } else if(state.stage==='baby_order_details' && !_babyIsQuestion){
         let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
         const lines=String(userText||'').split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
         const extract=(keys)=>{
@@ -18352,6 +18409,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const plainOptions=await engineExtractPlainOptionsFromReply(env, c, reply);
           if(plainOptions) faqQuickReplies=plainOptions.map(o=>({title:o, value:o}));
         }
+        // Baby care mid-flow: always replace whatever buttons were set with "Continue Order" +
+        // "Talk to Us" so the customer can resume the in-flight order. WhatsApp caps at 3 buttons;
+        // this keeps it clean and avoids mixing catalog/product buttons with flow-resume.
+        if(isBabyCareEcom && state.stage && state.stage.startsWith('baby_')){
+          faqQuickReplies=[
+            {title:'Continue Order 🔄',value:'BABY_RESUME_STAGE'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ];
+        }
         // Every Ecom enquiry keeps the prompt-generated answer above, then adds one verified menu
         // in the SAME message when the answer did not already provide a choice. No label or value
         // here comes from the LLM: categories and recommended products are copied from active
@@ -18363,14 +18429,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             ? ecomProductChoiceItems(products)
             : ecomAvailableCatalogueItems(categories,products);
           // Baby care: if the merchant hasn't configured a product catalog, the catalogue call
-          // above returns nothing. Fall back to the main action buttons so the customer always
-          // has a clear next step alongside the prompt-answered FAQ reply.
+          // above returns nothing. Fall back to action buttons. Mid-flow questions get a
+          // "Continue Order" button so the customer can pick up exactly where they left off.
           if((!faqQuickReplies||!faqQuickReplies.length) && isBabyCareEcom){
-            faqQuickReplies=[
-              {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
-              {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
-              {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
-            ];
+            const _isBabyStageForFaq=state.stage&&state.stage.startsWith('baby_');
+            faqQuickReplies=_isBabyStageForFaq
+              ? [{title:'Continue Order 🔄',value:'BABY_RESUME_STAGE'},{title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'}]
+              : [{title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},{title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},{title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'}];
           }
         }
         // Healthcare: when the LLM answered a question but offered no tappable choice, always
