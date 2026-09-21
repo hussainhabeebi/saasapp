@@ -113,6 +113,19 @@ tbody tr:hover{background:var(--bg)}
 .flow-option-row input:focus{outline:none;border-color:var(--accent);background:#fff}
 .flow-col-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
 @media(max-width:600px){.flow-option-row{grid-template-columns:1fr auto}}
+/* TOGGLE SWITCH */
+.flow-toggle-row{display:flex;align-items:center;gap:16px;margin-bottom:20px;padding:14px 16px;background:var(--accent-soft);border-radius:10px;border:1px solid var(--ls)}
+.toggle-text{flex:1}
+.toggle-text strong{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--accent-ink);display:block}
+.toggle-text small{font-size:12px;color:var(--muted)}
+.toggle-wrap{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+.toggle-wrap input{opacity:0;width:0;height:0;position:absolute}
+.toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--ls);border-radius:24px;transition:.2s}
+.toggle-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle-wrap input:checked+.toggle-slider{background:var(--accent)}
+.toggle-wrap input:checked+.toggle-slider:before{transform:translateX(20px)}
+.flow-editor-body{transition:opacity .2s}
+.flow-editor-body.dimmed{opacity:.4;pointer-events:none;user-select:none}
 
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
@@ -487,8 +500,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <span class="save-msg" id="flowSaveMsg"></span>
       </div>
     </div>
+    <label class="flow-toggle-row" style="cursor:pointer">
+      <div class="toggle-text">
+        <strong>Enable Ecom Flow</strong>
+        <small>When off, the bot skips this custom order flow and responds normally for all customers</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="flowEnabledChk" onchange="onFlowEnabledChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
     <div class="s-hint" style="margin-bottom:22px">Edit every message and button label your bot sends during the custom baby-set ordering conversation. Changes take effect immediately on the next customer message.</div>
 
+    <div id="flowEditorBody" class="flow-editor-body">
     <div class="flow-section">
       <div class="flow-section-title">👋 Welcome</div>
       <div class="s-sec">
@@ -571,6 +595,110 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <button class="save-btn" onclick="saveFlow()">Save Flow</button>
       <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Reset Defaults</button>
       <span class="save-msg" id="flowSaveMsg2"></span>
+    </div>
+    </div><!-- end flowEditorBody -->
+  </div>
+
+  <!-- CUSTOMER-SPECIFIC FLOWS CARD -->
+  <div class="card" style="margin-top:18px">
+    <div class="card-title-row">
+      <div class="card-title">👤 Customer-Specific Flows</div>
+      <div class="card-actions">
+        <button class="save-btn sec" onclick="openCustomerFlowModal()">+ Add Customer Flow</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:16px">Override the flow for individual customers — enable or disable it for them regardless of the global toggle, and optionally give them custom messages and options.</div>
+    <div id="customerFlowsList"></div>
+  </div>
+</div>
+
+<!-- CUSTOMER FLOW MODAL -->
+<div class="modal-overlay" id="cfModalOverlay" onclick="if(event.target===this) closeCfModal()">
+  <div class="modal-card" style="max-width:640px">
+    <div class="modal-title" id="cfModalTitle">Add Customer Flow</div>
+    <div class="modal-grid" style="grid-template-columns:1fr 1fr">
+      <div class="s-sec">
+        <span class="s-lbl">Phone Number *</span>
+        <input class="s-input" id="cfPhone" type="tel" placeholder="e.g. 919876543210">
+        <div class="s-hint">Digits only, no spaces or dashes (e.g. 919876543210)</div>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Customer Name / Label</span>
+        <input class="s-input" id="cfLabel" type="text" placeholder="e.g. John Doe">
+      </div>
+    </div>
+    <div style="margin-bottom:20px">
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:0">
+        <div class="toggle-text">
+          <strong>Enable Flow for this Customer</strong>
+          <small>Overrides the global toggle for this customer only</small>
+        </div>
+        <div class="toggle-wrap">
+          <input type="checkbox" id="cfEnabledChk">
+          <span class="toggle-slider"></span>
+        </div>
+      </label>
+    </div>
+    <div style="margin-bottom:14px">
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:0">
+        <div class="toggle-text">
+          <strong>Custom Flow Messages</strong>
+          <small>Use different messages and options for this customer instead of the global flow</small>
+        </div>
+        <div class="toggle-wrap">
+          <input type="checkbox" id="cfCustomFlowChk" onchange="toggleCfCustomFields()">
+          <span class="toggle-slider"></span>
+        </div>
+      </label>
+    </div>
+    <div id="cfCustomFields" style="display:none">
+      <div class="flow-section" style="margin-top:14px">
+        <div class="flow-section-title">👋 Welcome</div>
+        <div class="s-sec"><span class="s-lbl">New visitor message</span><textarea class="s-input" id="cfWelcomeNew" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Returning visitor message</span><textarea class="s-input" id="cfWelcomeReturn" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🍼 Step 1 — Fabric / Quality</div>
+        <div class="s-sec"><span class="s-lbl">Intro message</span><textarea class="s-input" id="cfQualityIntro" rows="5" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+            <div><span class="s-lbl">Affordable — button label</span><input class="s-input" id="cfAffordableLabel" type="text"></div>
+            <div><span class="s-lbl">Affordable — name in order</span><input class="s-input" id="cfAffordableName" type="text"></div>
+            <div><span class="s-lbl">Premium — button label</span><input class="s-input" id="cfPremiumLabel" type="text"></div>
+            <div><span class="s-lbl">Premium — name in order</span><input class="s-input" id="cfPremiumName" type="text"></div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🎨 Step 2 — Colours <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfColorRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfColorRows','BABY_COLOR_')">+ Add Colour</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🌸 Step 3 — Themes <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfThemeRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfThemeRows','BABY_THEME_')">+ Add Theme</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🎀 Step 4 — Add-ons <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfAddonRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfAddonRows','BABY_ADDON_')">+ Add Add-on</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">📦 Delivery &amp; Confirmation</div>
+        <div class="s-sec"><span class="s-lbl">Delivery details prompt</span><textarea class="s-input" id="cfDeliveryPrompt" rows="4" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Order confirmed message</span><textarea class="s-input" id="cfOrderConfirmed" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Cancel message</span><input class="s-input" id="cfCancelMsg" type="text"></div>
+        <div class="s-sec"><span class="s-lbl">Talk-to-team message</span><input class="s-input" id="cfTalkMsg" type="text"></div>
+      </div>
+    </div>
+    <div class="s-row" style="margin-top:6px">
+      <button class="save-btn" onclick="saveCustomerFlow()">Save</button>
+      <button class="save-btn sec" onclick="closeCfModal()">Cancel</button>
+      <span class="save-msg" id="cfSaveMsg"></span>
     </div>
   </div>
 </div>
@@ -2519,7 +2647,21 @@ function loadFlow() {
   _renderOptionRows('flColorRows', f.colors);
   _renderOptionRows('flThemeRows', f.themes);
   _renderOptionRows('flAddonRows', f.addons);
+  // global flow enabled toggle (default true when not explicitly set to false)
+  const enabled = botConfig.baby_care_flow_enabled !== false;
+  document.getElementById('flowEnabledChk').checked = enabled;
+  document.getElementById('flowEditorBody').classList.toggle('dimmed', !enabled);
+  renderCustomerFlows();
   _flowLoaded = true;
+}
+
+function onFlowEnabledChange() {
+  const on = document.getElementById('flowEnabledChk').checked;
+  document.getElementById('flowEditorBody').classList.toggle('dimmed', !on);
+  botConfig.baby_care_flow_enabled = on;
+  patchClient({ bot_config: JSON.stringify(botConfig) })
+    .then(() => showMsg('flowSaveMsg', on ? 'Flow enabled ✓' : 'Flow disabled ✓'))
+    .catch(e => showMsg('flowSaveMsg', 'Error: ' + e.message));
 }
 
 async function saveFlow() {
@@ -2557,6 +2699,159 @@ function resetFlowDefaults() {
   loadFlow();
   showMsg('flowSaveMsg', 'Reset to defaults — click Save to apply');
   showMsg('flowSaveMsg2', 'Reset to defaults — click Save to apply');
+}
+
+// ── CUSTOMER-SPECIFIC FLOWS ─────────────────────────────
+let _cfEditingPhone = null;
+
+function renderCustomerFlows() {
+  const flows = botConfig.baby_care_customer_flows || {};
+  const phones = Object.keys(flows);
+  const el = document.getElementById('customerFlowsList');
+  if (!el) return;
+  if (!phones.length) {
+    el.innerHTML = '<div class="s-hint" style="text-align:center;padding:18px 0;color:var(--muted)">No customer-specific flows yet. Click "+ Add Customer Flow" to create one.</div>';
+    return;
+  }
+  el.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>Customer</th><th>Phone</th><th>Custom Flow</th><th style="width:80px;text-align:center">Flow On</th><th style="width:1%"></th>
+    </tr></thead>
+    <tbody>
+      ${phones.map(ph => {
+        const cf = flows[ph];
+        const enabled = cf.enabled !== false;
+        const hasCustom = cf.flow && Object.keys(cf.flow).length > 0;
+        return `<tr>
+          <td>${esc(cf.label || '—')}</td>
+          <td><code style="font-size:12px">${esc(ph)}</code></td>
+          <td><span class="badge ${hasCustom?'shipped':''}">${hasCustom?'Custom':'Global'}</span></td>
+          <td style="text-align:center">
+            <label class="toggle-wrap" style="display:inline-block">
+              <input type="checkbox" ${enabled?'checked':''} onchange="setCustomerFlowEnabled('${esc(ph)}',this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </td>
+          <td>
+            <div class="row-actions">
+              <button class="icon-btn" onclick="openCustomerFlowModal('${esc(ph)}')" title="Edit">✏️</button>
+              <button class="icon-btn danger" onclick="deleteCustomerFlow('${esc(ph)}')" title="Remove">✕</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
+}
+
+function openCustomerFlowModal(phone) {
+  _cfEditingPhone = phone || null;
+  const flows = botConfig.baby_care_customer_flows || {};
+  const cf = phone ? (flows[phone] || {}) : {};
+  const globalFlow = botConfig.baby_care_flow || {};
+
+  document.getElementById('cfModalTitle').textContent = phone ? 'Edit Customer Flow' : 'Add Customer Flow';
+  document.getElementById('cfPhone').value = phone || '';
+  document.getElementById('cfPhone').disabled = !!phone;
+  document.getElementById('cfLabel').value = cf.label || '';
+  document.getElementById('cfEnabledChk').checked = cf.enabled !== false;
+
+  const hasCustom = cf.flow && Object.keys(cf.flow).length > 0;
+  document.getElementById('cfCustomFlowChk').checked = hasCustom;
+
+  // pre-fill custom flow fields with per-customer values falling back to global then defaults
+  const base = Object.assign({}, BABY_FLOW_DEF, globalFlow, cf.flow || {});
+  document.getElementById('cfWelcomeNew').value = base.welcome_new || '';
+  document.getElementById('cfWelcomeReturn').value = base.welcome_return || '';
+  document.getElementById('cfQualityIntro').value = base.quality_intro || '';
+  document.getElementById('cfAffordableLabel').value = base.affordable_label || '';
+  document.getElementById('cfAffordableName').value = base.affordable_name || '';
+  document.getElementById('cfPremiumLabel').value = base.premium_label || '';
+  document.getElementById('cfPremiumName').value = base.premium_name || '';
+  document.getElementById('cfDeliveryPrompt').value = base.delivery_prompt || '';
+  document.getElementById('cfOrderConfirmed').value = base.order_confirmed || '';
+  document.getElementById('cfCancelMsg').value = base.cancel_msg || '';
+  document.getElementById('cfTalkMsg').value = base.talk_msg || '';
+  _renderOptionRows('cfColorRows', base.colors);
+  _renderOptionRows('cfThemeRows', base.themes);
+  _renderOptionRows('cfAddonRows', base.addons);
+
+  document.getElementById('cfCustomFields').style.display = hasCustom ? 'block' : 'none';
+  document.getElementById('cfSaveMsg').textContent = '';
+  document.getElementById('cfModalOverlay').classList.add('active');
+}
+
+function closeCfModal() {
+  document.getElementById('cfModalOverlay').classList.remove('active');
+  _cfEditingPhone = null;
+}
+
+function toggleCfCustomFields() {
+  const on = document.getElementById('cfCustomFlowChk').checked;
+  document.getElementById('cfCustomFields').style.display = on ? 'block' : 'none';
+}
+
+async function saveCustomerFlow() {
+  const phone = document.getElementById('cfPhone').value.replace(/[^0-9+]/g, '').replace(/^\+/, '');
+  if (!phone) { showMsg('cfSaveMsg', 'Phone number is required'); return; }
+  const label = document.getElementById('cfLabel').value.trim();
+  const enabled = document.getElementById('cfEnabledChk').checked;
+  const useCustom = document.getElementById('cfCustomFlowChk').checked;
+
+  const entry = { label, enabled };
+  if (useCustom) {
+    entry.flow = {
+      welcome_new: document.getElementById('cfWelcomeNew').value.trim(),
+      welcome_return: document.getElementById('cfWelcomeReturn').value.trim(),
+      quality_intro: document.getElementById('cfQualityIntro').value.trim(),
+      affordable_label: document.getElementById('cfAffordableLabel').value.trim(),
+      affordable_name: document.getElementById('cfAffordableName').value.trim(),
+      premium_label: document.getElementById('cfPremiumLabel').value.trim(),
+      premium_name: document.getElementById('cfPremiumName').value.trim(),
+      delivery_prompt: document.getElementById('cfDeliveryPrompt').value.trim(),
+      order_confirmed: document.getElementById('cfOrderConfirmed').value.trim(),
+      cancel_msg: document.getElementById('cfCancelMsg').value.trim(),
+      talk_msg: document.getElementById('cfTalkMsg').value.trim(),
+      colors: _collectOptionRows('cfColorRows'),
+      themes: _collectOptionRows('cfThemeRows'),
+      addons: _collectOptionRows('cfAddonRows'),
+    };
+  }
+
+  if (!botConfig.baby_care_customer_flows) botConfig.baby_care_customer_flows = {};
+  botConfig.baby_care_customer_flows[phone] = entry;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    closeCfModal();
+    renderCustomerFlows();
+  } catch(e) {
+    showMsg('cfSaveMsg', 'Error: ' + e.message);
+  }
+}
+
+async function setCustomerFlowEnabled(phone, enabled) {
+  if (!botConfig.baby_care_customer_flows) botConfig.baby_care_customer_flows = {};
+  if (!botConfig.baby_care_customer_flows[phone]) botConfig.baby_care_customer_flows[phone] = {};
+  botConfig.baby_care_customer_flows[phone].enabled = enabled;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+  } catch(e) {
+    alert('Error saving: ' + e.message);
+    renderCustomerFlows(); // revert visual
+  }
+}
+
+async function deleteCustomerFlow(phone) {
+  if (!confirm(`Remove the custom flow for ${phone}?`)) return;
+  if (botConfig.baby_care_customer_flows) {
+    delete botConfig.baby_care_customer_flows[phone];
+    try {
+      await patchClient({ bot_config: JSON.stringify(botConfig) });
+      renderCustomerFlows();
+    } catch(e) {
+      alert('Error: ' + e.message);
+    }
+  }
 }
 
 // ── HELPERS ───────────────────────────────────────
