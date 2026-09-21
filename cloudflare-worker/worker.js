@@ -16594,7 +16594,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const replyLang=routing.customerLanguage||c.language||'en';
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
     const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
-    const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care';
+    // Per-customer flow override: check if this phone has a specific enabled flag in baby_care_customer_flows.
+    // A customer entry with enabled:false disables the flow for them even when the global toggle is on.
+    // A customer entry with enabled:true enables it for them even when the global toggle is off.
+    const _bcCustomerFlows=botConfig.baby_care_customer_flows||{};
+    const _bcCustomer=_bcCustomerFlows[phone]||_bcCustomerFlows[phone.replace(/^\+/,'')]||null;
+    const _bcGlobalEnabled=botConfig.baby_care_flow_enabled!==false; // default true
+    const _bcCustomerEnabled=_bcCustomer!=null?(_bcCustomer.enabled!==false):_bcGlobalEnabled;
+    const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care'&&_bcCustomerEnabled;
     const isMedicalCentreEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='medical_centre';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
@@ -16722,8 +16729,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // ── Baby Care Ecom: button-led custom-order flow ─────────────────────────────
     // Stages: baby_quality_select → baby_customize → baby_addons → baby_order_details → baby_order_confirm
     // A fully deterministic, button-only flow for custom baby apparel orders.
-    // Flow config is editable by the merchant via the Ecom → Flow tab and stored in botConfig.baby_care_flow.
-    const _bcf=(isBabyCareEcom&&botConfig&&botConfig.baby_care_flow)||{};
+    // Flow config is editable via Ecom → Flow tab (global) or per-customer overrides.
+    // Per-customer flow (baby_care_customer_flows[phone].flow) takes precedence over the global baby_care_flow.
+    const _bcGlobalFlow=(isBabyCareEcom&&botConfig&&botConfig.baby_care_flow)||{};
+    const _bcCustomerFlow=(_bcCustomer&&_bcCustomer.flow&&Object.keys(_bcCustomer.flow).length)?_bcCustomer.flow:{};
+    const _bcf=Object.assign({},_bcGlobalFlow,_bcCustomerFlow);
     const _bcMsg=(k,d)=>(_bcf[k]||d);
     const _bcColors=Array.isArray(_bcf.colors)&&_bcf.colors.length?_bcf.colors:[
       {label:'Pink 🩷',value:'BABY_COLOR_PINK',name:'Pink'},
