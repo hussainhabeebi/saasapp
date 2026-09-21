@@ -12272,7 +12272,7 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   // (e.g. in reply to "are you free tomorrow?") may or may not be saying something positive.
   // Skip the isFinalStage+POSITIVE heuristic for voice inputs; only an explicit WANTS_HUMAN
   // signal (resolved from a successful transcription) triggers handoff for voice.
-  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No' && mediaType!=='voice' && industry!=='ev_charging'){
+  else if(isFinalStage && POSITIVE.has(effIntent) && c.handover_enabled!=='No' && mediaType!=='voice'){
     // Reached the end of the funnel with a positive reply — this used to hand straight over to a
     // human with no order/trial link ever sent. Real product requirement: when a self-serve link
     // is configured (Order Link in Integrations, or a Cal.com link), try to let the customer
@@ -12318,15 +12318,14 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   // Frustrated sentiment — guards against the LLM mislabelling terse product queries
   // ("stock details pls", "more info?") as Frustrated and sending an unwanted handover.
   const FRUSTRATED_SIGNAL=/\b(frustrated|annoyed|angry|upset|ridiculous|useless|pathetic|terrible|awful|horrible|not working|doesn't work|waste|cheated|scam|disappointed|fed up|sick of|unacceptable|worst|rubbish|nonsense|stupid)\b|!{2,}|\?{3,}|[A-Z]{4,}/;
-  if(sentiment==='Frustrated' && FRUSTRATED_SIGNAL.test(userText) && route!=='human' && c.handover_enabled!=='No' && industry!=='ev_charging'){
+  if(sentiment==='Frustrated' && FRUSTRATED_SIGNAL.test(userText) && route!=='human' && c.handover_enabled!=='No'){
     route='human'; humanReason='explicit';
     reply=botConfig.callback_msg_frustrated||botConfig.callback_msg||"I'm sorry about that — connecting you with our team right now so we can help properly.";
   }
   // Proactive escalation for Negative sentiment + low classifier confidence. Changed to genuine
   // opt-in (===true) — the comment always described it as opt-in but the original code used
   // !==false which is opt-OUT, causing false positives on all ambiguous/terse queries.
-  // EV charging always answers directly — no auto-escalation on sentiment or confidence alone.
-  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled===true && industry!=='ev_charging'){
+  else if(sentiment==='Negative' && typeof confidence==='number' && confidence<0.35 && route!=='human' && c.handover_enabled!=='No' && botConfig.proactive_handover_enabled===true){
     route='human'; humanReason='low_confidence';
     reply=botConfig.callback_msg_lowconf||botConfig.callback_msg_frustrated||botConfig.callback_msg||"I want to make sure you get the right answer — connecting you with a member of our team now.";
   } else if(objectionCategory!=='none' && ['faq','ecom_faq','travel_faq'].includes(route) && botConfig.objection_handling_enabled!==false){
@@ -13361,7 +13360,7 @@ BUTTONS — mandatory after EVERY reply:
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
   } else if(industry==='ev_charging'){
     sys+='\n\nEV CHARGING SAFETY LOCK: Never invent charger specifications, cable compatibility, power ratings, installation requirements, or government incentive amounts. Only quote specs, prices, and scheme details that are explicitly present in the verified product data or business prompt above. If a detail is not there, say you will check and confirm — never guess.';
-    sys+=`\n\nEV CHARGING CONVERSATION RULES (follow all, every turn):\n\n1. ALWAYS ANSWER — You must give a useful, direct answer to every question, no matter what. Never say "I'll connect you to our team" or "let me hand you over" in response to a product or technical question. If something is outside the verified data, say "Let me confirm that for you" and then still give your best general guidance.\n\n2. NO REPEATING QUESTIONS — Before asking anything, scan the conversation history above. If you (or the customer) already covered that topic — vehicle type, home vs commercial, charger model, location — do NOT ask again. Use what you already know. Asking the same question twice makes the customer feel unheard.\n\n3. USE MEMORY — Reference details the customer has already shared: their car model, use case, address, preferred brand. Open with what you already know ("Since you mentioned the Tata Nexon EV…") rather than starting from scratch every turn.\n\n4. HUMAN-LIKE TONE — Sound like a knowledgeable, friendly showroom consultant:\n   - Lead with what matters to them (their car, home, or fleet) before specs.\n   - Plain language first: "charges your car in about 4 hours" not "32A AC Type 2 EVSE".\n   - Acknowledge concerns naturally — meet them where they are.\n   - Never oversell. If a product doesn't fit, say so and suggest the right one.\n\n5. ONE QUESTION MAX — If you need to ask something, ask at most ONE question per reply. Make it specific and easy to answer.\n\nCurrent stage: ${state.stage||'new'}. Respond ONLY in ${lang}. Never switch languages.`;
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages.';
   } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
     sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
