@@ -16765,8 +16765,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         routing.reply=sentText; routing.next='new'; routing.clearOrderCollect=true;
         await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
         orderHandledInline=true;
-      } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&(isNewLead||isRevisit))){
-        // Welcome message with main action buttons
+      } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&isNewLead)){
+        // Show welcome+menu on a fresh greeting OR a new lead's very first message.
+        // Returning visitors who send a question or free text fall through to AI (ecom_faq) so
+        // they get an actual answer instead of looping back to this welcome screen.
         const welcomeIntro=isNewLead
           ? await engineBuildFirstTouchIntro(env,c,_bcMsg('welcome_new','Welcome! 👶🏻 How can we help you today?'),replyLang,state.name||state.lead?.Name)
           : await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
@@ -16779,10 +16781,27 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         ]);
         orderHandledInline=true;
       } else if(/^BABY_VIEW_CATALOG$/i.test(userText)){
+        // Show actual products from the catalog. Fall back to a store link when configured,
+        // or a plain text listing of active products. Never a "team will share shortly" dead end.
         const catalogLink=(c.external_store_link||'').trim();
-        sentText=await engineLocalizeReply(env,c,catalogLink
-          ?`Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`
-          :'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+        if(catalogLink){
+          sentText=await engineLocalizeReply(env,c,
+            `Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
+        } else {
+          const _catalogProducts=await ecomListActiveProducts(env, clientId);
+          if(_catalogProducts.length){
+            const _productLines=_catalogProducts.slice(0,10).map(p=>{
+              const price=p.price!=null?` (${p.currency||''}${p.price})`:'';
+              const desc=p.description?(` — ${String(p.description).slice(0,80)}`):'';
+              return `• *${p.name}*${price}${desc}`;
+            });
+            sentText=await engineLocalizeReply(env,c,
+              `🛍️ *Our Baby Collection*\n\n${_productLines.join('\n')}\n\nInterested in a *Custom Order*? Tap below to personalise your set! 🌸`,replyLang);
+          } else {
+            sentText=await engineLocalizeReply(env,c,
+              'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+          }
+        }
         routing.reply=sentText; routing.next='new';
         routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
           {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
@@ -17572,16 +17591,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // apply to a customisable set). Questions and order-intent messages fall through to
     // detectOrderSignal + ecom_faq below, which answers from the business prompt and appends
     // baby care action buttons as the last-resort ecom_faq button fallback.
-    const _babyCareUnhandledIsQuestion=/[?]/.test(userText)||/^(?:what|how|when|where|why|is|are|can|do|does|will|tell|show|explain|describe|price|cost|about|info)/i.test(userText.trim());
-    if(isBabyCareEcom && !orderHandledInline && !_babyCareUnhandledIsQuestion){
-      sentText=await engineLocalizeReply(env,c,'How can we help you today? Tap below to get started! 👶🏻',replyLang);
-      routing.reply=sentText;
-      routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-        {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
-        {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
-        {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
-      ]);
-      orderHandledInline=true;
+    // Baby care: all unhandled messages (questions in any language, order intent, or unclear text)
+    // route to ecom_faq so the AI answers properly. The ecom_faq handler already appends the
+    // baby care action buttons (Custom Order / View Catalog / Talk to Us) as a last-resort menu.
+    // Previously this block only routed English question patterns to AI and showed a hardcoded
+    // action menu for everything else — non-English questions (e.g. Malayalam) got the menu
+    // instead of an answer. Now all unhandled turns get an AI reply.
+    if(isBabyCareEcom && !orderHandledInline){
+      routing.route='ecom_faq';
     }
     if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
