@@ -14770,6 +14770,25 @@ const GOOGLE_TTS_VOICE_MAP={
   mr:{languageCode:'mr-IN',name:'mr-IN-Wavenet-A'},
   en:{languageCode:'en-IN',name:'en-IN-Wavenet-A'},
 };
+// Translate text to English using Google Cloud Translation API v2. Uses the same GOOGLE_TTS_API_KEY.
+// Returns the English string, or null on any failure (caller falls back gracefully).
+// Source language is the ISO 639-1 code (e.g. 'ml'); target is always 'en'.
+async function engineGoogleTranslateToEnglish(env, text, sourceLang){
+  if(!env.GOOGLE_TTS_API_KEY) return null;
+  if(!text) return null;
+  if((sourceLang||'').toLowerCase()==='en') return text;
+  try{
+    const r=await fetch(
+      `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.GOOGLE_TTS_API_KEY)}`,
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({q:text.slice(0,2000), source:sourceLang, target:'en', format:'text'})}
+    );
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>null);
+    return data?.data?.translations?.[0]?.translatedText||null;
+  }catch(e){ return null; }
+}
+
 async function engineGoogleTts(env, text, isoLangCode, timeoutMs=12000){
   if(!env.GOOGLE_TTS_API_KEY) return null;
   const voice=GOOGLE_TTS_VOICE_MAP[isoLangCode];
@@ -14820,7 +14839,9 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     // Pre-flight: if no provider is reachable at all, skip synthesis immediately and alert ops
     // with specific fix instructions. The text reply was already sent; this is config-only.
     const hasBhashini=!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY&&BHASHINI_TTS_LANG_CODES[iso]);
-    const hasGoogle=!!(env.GOOGLE_TTS_API_KEY&&GOOGLE_TTS_VOICE_MAP[iso]);
+    // Google TTS always covers English directly; for other languages it translates to English first,
+    // so GOOGLE_TTS_API_KEY alone is enough — no per-language voice check needed here.
+    const hasGoogle=!!env.GOOGLE_TTS_API_KEY;
     const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
     if(!hasBhashini&&!hasGoogle&&!hasRenderPipeline){
       await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
@@ -14835,8 +14856,15 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline)
     audio=await safe(engineBhashiniTts(env,spokenText,iso,10000));
     if(audio) provider='bhashini';
-    // 2. Google TTS (secondary — Ogg/Opus natively, no render pipeline needed)
-    if(!audio){ audio=await safe(engineGoogleTts(env,spokenText,iso,12000)); if(audio) provider='google'; }
+    // 2. Google TTS (secondary — English only; non-English text is translated to English first so
+    //    the customer gets a clear English reply rather than a poor-quality Indic voice from Google).
+    if(!audio){
+      const googleText=iso==='en'?spokenText:await engineGoogleTranslateToEnglish(env,spokenText,iso).catch(()=>null);
+      if(googleText){
+        audio=await safe(engineGoogleTts(env,googleText,'en',12000));
+        if(audio) provider='google';
+      }
+    }
     // 3. AI4Bharat self-hosted (legacy, unlimited background timeout)
     if(!audio){ audio=await safe(engineAi4BharatTts(env,spokenText,iso,0)); if(audio) provider='ai4bharat'; }
 
