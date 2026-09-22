@@ -14699,6 +14699,52 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   return result.audio;
 }
 
+// Strip markdown, emojis, and URLs from TTS input so engines receive clean prose
+function enginePreprocessTtsText(text){
+  if(!text) return text;
+  let t=text;
+  t=t.replace(/https?:\/\/\S+/g,'');         // URLs
+  t=t.replace(/\*\*(.+?)\*\*/gs,'$1');       // bold
+  t=t.replace(/\*(.+?)\*/gs,'$1');           // italic
+  t=t.replace(/`{1,3}[^`]*`{1,3}/g,'');     // code
+  t=t.replace(/^#{1,6}\s*/gm,'');           // headings
+  t=t.replace(/^\s*[-*•]\s+/gm,'');         // bullet markers
+  t=t.replace(/[\u{1F000}-\u{1FFFF}]/gu,''); // emoji block 1
+  t=t.replace(/[\u{2600}-\u{27BF}]/gu,'');   // emoji block 2
+  t=t.replace(/\n+/g,' ').replace(/\s{2,}/g,' ').trim();
+  return t;
+}
+
+// Split text into sentence chunks of ≤maxLen chars for better TTS quality on long inputs
+function engineSplitSentences(text, maxLen=150){
+  if(!text||text.length<=maxLen) return [text].filter(Boolean);
+  const raw=text.split(/(?<=[.?!।])\s+/);
+  const chunks=[];
+  let cur='';
+  for(const p of raw){
+    const s=p.trim(); if(!s) continue;
+    if(!cur){cur=s;continue;}
+    if(cur.length+1+s.length<=maxLen){cur+=' '+s;}
+    else{chunks.push(cur);cur=s;}
+  }
+  if(cur) chunks.push(cur);
+  return chunks.flatMap(c=>c.length<=maxLen?[c]:c.split(/(?<=[,;])\s+/).filter(x=>x.trim()));
+}
+
+// Synthesize text in sentence-length chunks and concatenate the Ogg buffers (valid chained bitstream)
+async function engineSynthChunked(synthFn, text, maxLen=150){
+  const chunks=engineSplitSentences(text, maxLen);
+  if(chunks.length<=1) return synthFn(text);
+  const results=await Promise.all(chunks.map(c=>Promise.resolve(synthFn(c)).catch(()=>null)));
+  const valid=results.filter(Boolean);
+  if(!valid.length) return null;
+  if(valid.length===1) return valid[0];
+  const total=valid.reduce((s,b)=>s+b.byteLength,0);
+  const out=new Uint8Array(total);
+  let off=0; for(const b of valid){out.set(new Uint8Array(b),off);off+=b.byteLength;}
+  return out.buffer;
+}
+
 // PRIMARY TTS — Bhashini Dhruva inference API (https://bhashini.gov.in/). Government-backed,
 // supports all 10 scheduled Indic languages + English. Requires BHASHINI_USER_ID and
 // BHASHINI_INFERENCE_KEY in Cloudflare Worker secrets. Returns WAV from Bhashini → converted to
@@ -14872,25 +14918,28 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     }
     const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
     if(!spokenText) return;
+    // Strip markdown/emojis/URLs before hitting any TTS engine
+    const processedText=enginePreprocessTtsText(spokenText);
+    if(!processedText) return;
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline)
-    audio=await safe(engineBhashiniTts(env,spokenText,iso,10000));
+    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline; chunked for long texts)
+    audio=await safe(engineSynthChunked(t=>engineBhashiniTts(env,t,iso,10000),processedText));
     if(audio){ provider='bhashini'; }
     else{ console.log(`[TTS:bg] bhashini failed/skipped lang=${iso} client=${clientId}`); }
     // 2. Google TTS (secondary — English only; non-English text is translated to English first so
     //    the customer gets a clear English reply rather than a poor-quality Indic voice from Google).
     if(!audio){
-      const googleText=iso==='en'?spokenText:await engineGoogleTranslateToEnglish(env,spokenText,iso).catch(()=>null);
+      const googleText=iso==='en'?processedText:await engineGoogleTranslateToEnglish(env,processedText,iso).catch(()=>null);
       if(googleText){
         audio=await safe(engineGoogleTts(env,googleText,'en',12000));
         if(audio){ provider='google'; }
         else{ console.log(`[TTS:bg] google failed/skipped lang=${iso} client=${clientId}`); }
       }
     }
-    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout)
+    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout; chunked for long texts)
     if(!audio){
-      audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+      audio=await safe(engineSynthChunked(t=>engineAi4BharatTts(env,t,iso,0),processedText));
       if(audio){ provider='ai4bharat'; }
       else{ console.log(`[TTS:bg] ai4bharat failed/skipped lang=${iso} client=${clientId}`); }
     }
