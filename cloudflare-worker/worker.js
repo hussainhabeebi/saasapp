@@ -14709,20 +14709,20 @@ const BHASHINI_TTS_LANG_CODES={
   ml:'ml',hi:'hi',ta:'ta',te:'te',kn:'kn',
   bn:'bn',gu:'gu',mr:'mr',pa:'pa',or:'or',en:'en',
 };
-// Bhashini service IDs — Dravidian vs Indo-Aryan model groups. Override specific languages via
-// BHASHINI_SERVICE_MAP_JSON if your console shows different IDs for your approved key.
+// Bhashini service IDs — all languages use Indic Parler-TTS (natural, non-robotic).
+// Override specific languages via BHASHINI_SERVICE_MAP_JSON if your console shows different IDs.
 let BHASHINI_SERVICE_MAP={
-  ml:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  ta:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  te:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  kn:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  hi:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  bn:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  mr:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  gu:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  pa:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  or:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  en:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  ml:'ai4bharat/indic-parler-tts',
+  ta:'ai4bharat/indic-parler-tts',
+  te:'ai4bharat/indic-parler-tts',
+  kn:'ai4bharat/indic-parler-tts',
+  hi:'ai4bharat/indic-parler-tts',
+  bn:'ai4bharat/indic-parler-tts',
+  mr:'ai4bharat/indic-parler-tts',
+  gu:'ai4bharat/indic-parler-tts',
+  pa:'ai4bharat/indic-parler-tts',
+  or:'ai4bharat/indic-parler-tts',
+  en:'ai4bharat/indic-parler-tts',
 };
 if(typeof process!=='undefined'&&process.env?.BHASHINI_SERVICE_MAP_JSON){
   try{BHASHINI_SERVICE_MAP={...BHASHINI_SERVICE_MAP,...JSON.parse(process.env.BHASHINI_SERVICE_MAP_JSON)};}
