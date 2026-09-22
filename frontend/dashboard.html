@@ -10041,6 +10041,22 @@ function applyRoleLeadsDefault(){
   if(chk && role?.leadsDefaultMine) chk.checked=true;
 }
 function closeUserProfile(){ closeModal('modalUserProfile'); }
+// Returns the MODULE_PERMISSIONS keys that are currently visible for this tenant:
+// general modules always, industry-specific ones only when their nav/more-menu tab
+// is not display:none (i.e. the tenant has that module enabled).
+function getEnabledModuleKeys(){
+  const general=new Set(['home','humandeals','chats','leads','tasks','team','reports','knowledgebase','accounting','billing','broadcast','settings']);
+  const enabled=[];
+  for(const m of MODULE_PERMISSIONS){
+    if(general.has(m.key)){
+      enabled.push(m.key);
+    }else{
+      const tabs=document.querySelectorAll(`[data-page="${m.key}"]`);
+      if([...tabs].some(t=>t.style.display!=='none')) enabled.push(m.key);
+    }
+  }
+  return enabled;
+}
 function openUserProfile(email){
   renderUserProfileModal((email||'').trim().toLowerCase());
   openModal('modalUserProfile');
@@ -10079,7 +10095,8 @@ function renderUserProfileModal(email){
       : '<div class="s-note">No Chatwoot agent on file for this teammate (Chatwoot may not have been connected when they were created).</div>';
   }
 
-  const moduleRows=MODULE_PERMISSIONS.map(m=>{
+  const enabledModuleKeys=getEnabledModuleKeys();
+  const moduleRows=MODULE_PERMISSIONS.filter(m=>enabledModuleKeys.includes(m.key)).map(m=>{
     const checked=owner || modules===null || modules.includes(m.key);
     return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit?'':'opacity:.75'}">
       <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit?'':'disabled'}> ${m.label}
@@ -10186,7 +10203,8 @@ async function saveUserProfilePermissions(email){
     const modules=[...document.querySelectorAll('#upModuleList .upModuleChk:checked')].map(el=>el.value);
     const roleSel=$id('upRoleSelect')?.value||'';
     const perms=getTeamPermissions();
-    const next={ modules: modules.length===MODULE_PERMISSIONS.length ? null : modules }; // all checked = no restriction
+    const visibleModuleCount=getEnabledModuleKeys().length;
+    const next={ modules: modules.length===visibleModuleCount ? null : modules }; // all visible checked = no restriction
     if(roleSel && roleSel!=='custom') next.role=roleSel; // drives Home/Leads page views — see applyRoleHomeView()
     // The category checkboxes only exist in the DOM for travel clients (renderUserProfileModal
     // skips that section otherwise) — querySelectorAll would silently return [] on a non-travel
