@@ -261,6 +261,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .sk-row{height:42px;margin-bottom:9px}.sk-row:last-child{margin-bottom:0}
 .sk-row-sm{height:30px;margin-bottom:8px}.sk-row-sm:last-child{margin-bottom:0}
 .sk-bar{height:120px;border-radius:10px}
+/* Role badge in home hero */
+.home-role-badge{display:inline-flex;align-items:center;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);border-radius:20px;padding:3px 10px;font-size:11.5px;color:rgba(255,255,255,.8);font-weight:600;margin-top:8px;backdrop-filter:blur(4px)}
 /* ── HOME MOBILE FIXES ── */
 @media(max-width:700px){
   .home-hero{padding:20px 18px}
@@ -273,6 +275,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
   .home-body{padding:16px 14px}
   .biz-briefing-items{gap:14px}
   .biz-bi{min-width:130px}
+}
+@media(max-width:480px){
+  .home-hero{padding:16px 14px}
+  .home-greeting{font-size:20px}
+  .home-body{padding:12px 12px}
+  .section-card{padding:16px 16px;border-radius:12px}
+  .home-grid{gap:12px}
+  .home-col-side{gap:12px}
+  .home-role-badge{font-size:11px;padding:2px 8px}
 }
 
 /* ── APP SHELL ── */
@@ -1168,14 +1179,26 @@ const MODULE_PERMISSIONS = [
 // page sections show (see applyRoleHomeView()) and whether the Leads page defaults to "Mine".
 // modules:null means unrestricted, same convention as a fully-checked custom selection.
 const ROLES = {
-  admin:              { label:'👑 Admin',              modules:null, homeHide:[], leadsDefaultMine:false },
-  general_manager:    { label:'📈 General Manager',    modules:null, homeHide:[], leadsDefaultMine:false },
-  sales_manager:      { label:'💼 Sales Manager',      modules:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','healthcare','broadcast'],
-                         homeHide:[], leadsDefaultMine:false },
-  marketing_manager:  { label:'📢 Marketing Manager',  modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
-                         homeHide:['homeAgentCard'], leadsDefaultMine:false },
-  telecaller:         { label:'📞 Tele Caller',        modules:['home','chats','leads','tasks'],
-                         homeHide:['homeAgentCard','homeChartCard','homeFunnelCard'], leadsDefaultMine:true },
+  admin:              { label:'👑 Admin',             modules:null,
+                        homeHide:[], leadsDefaultMine:false,
+                        heroSubline:'Full platform access — command center view',
+                        homeActionsHide:[], quickActionsHide:[] },
+  general_manager:    { label:'📈 General Manager',   modules:null,
+                        homeHide:[], leadsDefaultMine:false,
+                        heroSubline:'Operations overview — team & pipeline at a glance',
+                        homeActionsHide:[], quickActionsHide:['settings'] },
+  sales_manager:      { label:'💼 Sales Manager',     modules:['home','humandeals','chats','leads','tasks','team','reports','agency','b2b','recruit','appointments','realestate','hospitality','healthcare','broadcast'],
+                        homeHide:[], leadsDefaultMine:false,
+                        heroSubline:'Your pipeline & team performance today',
+                        homeActionsHide:['email','projects'], quickActionsHide:['email','settings'] },
+  marketing_manager:  { label:'📢 Marketing Manager', modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
+                        homeHide:['homeAgentCard'], leadsDefaultMine:false,
+                        heroSubline:'Campaigns, funnels & lead sources today',
+                        homeActionsHide:['pipeline','projects'], quickActionsHide:['pipeline','settings'] },
+  telecaller:         { label:'📞 Tele Caller',       modules:['home','chats','leads','tasks'],
+                        homeHide:['homeAgentCard','homeChartCard','homeFunnelCard'], leadsDefaultMine:true,
+                        heroSubline:'Your leads & tasks for today',
+                        homeActionsHide:['pipeline','campaigns','email','projects'], quickActionsHide:['pipeline','campaigns','email','settings'] },
 };
 </script>
 
@@ -1288,12 +1311,12 @@ const ROLES = {
             <div class="home-trust-row" id="homeTrustRow"></div>
           </div>
           <div class="home-actions">
-            <button class="hact-btn primary-act" onclick="openAddLead()">＋ Add Lead</button>
-            <button class="hact-btn" onclick="goToPipeline()">📋 Pipeline</button>
-            <button class="hact-btn" onclick="navigate('chats')">💬 Chats</button>
-            <button class="hact-btn" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
-            <button class="hact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
-            <button class="hact-btn" onclick="openProjectsTool()">🗂️ Projects</button>
+            <button class="hact-btn primary-act" data-act="add_lead" onclick="openAddLead()">＋ Add Lead</button>
+            <button class="hact-btn" data-act="pipeline" onclick="goToPipeline()">📋 Pipeline</button>
+            <button class="hact-btn" data-act="chats" onclick="navigate('chats')">💬 Chats</button>
+            <button class="hact-btn" data-act="campaigns" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
+            <button class="hact-btn" data-act="email" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
+            <button class="hact-btn" data-act="projects" onclick="openProjectsTool()">🗂️ Projects</button>
           </div>
         </div>
       </div>
@@ -1415,12 +1438,12 @@ const ROLES = {
             <div class="section-card" id="homeQuickActionsCard">
               <div class="section-title">⚡ Quick Actions</div>
               <div style="display:flex;flex-direction:column;gap:8px">
-                <button class="qact-btn" onclick="goToPipeline()">📋 View Pipeline</button>
-                <button class="qact-btn" onclick="navigate('leads')">💬 Manage Leads</button>
-                <button class="qact-btn" onclick="navigate('chats')">💬 Open Chats</button>
-                <button class="qact-btn" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
-                <button class="qact-btn" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
-                <button class="qact-btn" onclick="navigate('settings')">⚙️ Settings</button>
+                <button class="qact-btn" data-qact="pipeline" onclick="goToPipeline()">📋 View Pipeline</button>
+                <button class="qact-btn" data-qact="leads" onclick="navigate('leads')">📋 Manage Leads</button>
+                <button class="qact-btn" data-qact="chats" onclick="navigate('chats')">💬 Open Chats</button>
+                <button class="qact-btn" data-qact="campaigns" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
+                <button class="qact-btn" data-qact="email" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
+                <button class="qact-btn" data-qact="settings" onclick="navigate('settings')">⚙️ Settings</button>
               </div>
             </div>
           </div>
@@ -9386,7 +9409,8 @@ function populateCommandCenter(leads){
   const h=new Date().getHours();
   const greet=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
   $id('homeGreeting').textContent=greet+', '+((clientRecord?.client_name||'').split(' ')[0]||'there')+'';
-  $id('homeSubLine').textContent='Here\'s what\'s happening today';
+  const _roleForSub=ROLES[myRole()];
+  $id('homeSubLine').textContent=_roleForSub?.heroSubline||'Here\'s what\'s happening today';
 
   // Today stats
   const today=new Date().toISOString().slice(0,10);
@@ -9989,7 +10013,27 @@ function myRole(){
 function applyRoleHomeView(){
   const role=ROLES[myRole()];
   if(!role) return; // no role set, or owner — full default Home view
+  // Section cards
   role.homeHide.forEach(id=>{ const el=$id(id); if(el) el.style.display='none'; });
+  // Hero action buttons
+  (role.homeActionsHide||[]).forEach(key=>{
+    const btn=document.querySelector(`.home-actions [data-act="${key}"]`);
+    if(btn) btn.style.display='none';
+  });
+  // Quick action buttons
+  (role.quickActionsHide||[]).forEach(key=>{
+    const btn=document.querySelector(`#homeQuickActionsCard [data-qact="${key}"]`);
+    if(btn) btn.style.display='none';
+  });
+  // Role badge in hero (injected once)
+  const heroLeft=document.querySelector('.home-hero-inner>div:first-child');
+  if(heroLeft && !$id('homeRoleBadge')){
+    const badge=document.createElement('div');
+    badge.id='homeRoleBadge';
+    badge.className='home-role-badge';
+    badge.textContent=role.label;
+    heroLeft.appendChild(badge);
+  }
 }
 function applyRoleLeadsDefault(){
   const role=ROLES[myRole()];
