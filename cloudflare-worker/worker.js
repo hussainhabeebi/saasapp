@@ -14927,16 +14927,7 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     audio=await safe(engineSynthChunked(t=>engineBhashiniTts(env,t,iso,10000),processedText));
     if(audio){ provider='bhashini'; }
     else{ console.log(`[TTS:bg] bhashini failed/skipped lang=${iso} client=${clientId}`); }
-    // 2. Google TTS (secondary — English only; non-English text is translated to English first so
-    //    the customer gets a clear English reply rather than a poor-quality Indic voice from Google).
-    if(!audio){
-      const googleText=iso==='en'?processedText:await engineGoogleTranslateToEnglish(env,processedText,iso).catch(()=>null);
-      if(googleText){
-        audio=await safe(engineGoogleTts(env,googleText,'en',12000));
-        if(audio){ provider='google'; }
-        else{ console.log(`[TTS:bg] google failed/skipped lang=${iso} client=${clientId}`); }
-      }
-    }
+    // 2. Google TTS — disabled
     // 3. AI4Bharat self-hosted (legacy, unlimited background timeout; chunked for long texts)
     if(!audio){
       audio=await safe(engineSynthChunked(t=>engineAi4BharatTts(env,t,iso,0),processedText));
