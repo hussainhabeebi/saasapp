@@ -14876,20 +14876,27 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     const safe=p=>Promise.resolve(p).catch(()=>null);
     // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline)
     audio=await safe(engineBhashiniTts(env,spokenText,iso,10000));
-    if(audio) provider='bhashini';
+    if(audio){ provider='bhashini'; }
+    else{ console.log(`[TTS:bg] bhashini failed/skipped lang=${iso} client=${clientId}`); }
     // 2. Google TTS (secondary — English only; non-English text is translated to English first so
     //    the customer gets a clear English reply rather than a poor-quality Indic voice from Google).
     if(!audio){
       const googleText=iso==='en'?spokenText:await engineGoogleTranslateToEnglish(env,spokenText,iso).catch(()=>null);
       if(googleText){
         audio=await safe(engineGoogleTts(env,googleText,'en',12000));
-        if(audio) provider='google';
+        if(audio){ provider='google'; }
+        else{ console.log(`[TTS:bg] google failed/skipped lang=${iso} client=${clientId}`); }
       }
     }
     // 3. AI4Bharat self-hosted (legacy, unlimited background timeout)
-    if(!audio){ audio=await safe(engineAi4BharatTts(env,spokenText,iso,0)); if(audio) provider='ai4bharat'; }
+    if(!audio){
+      audio=await safe(engineAi4BharatTts(env,spokenText,iso,0));
+      if(audio){ provider='ai4bharat'; }
+      else{ console.log(`[TTS:bg] ai4bharat failed/skipped lang=${iso} client=${clientId}`); }
+    }
 
     if(audio){
+      console.log(`[TTS:bg] sent provider=${provider} lang=${iso} bytes=${audio.byteLength} client=${clientId} conv=${convId}`);
       const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
       if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
       await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
@@ -15554,7 +15561,10 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   if(mediaType==='voice' && !imageUrl && bcp47){
     const cacheKey=await engineVoiceCacheKey(clientId, _ttsLang, trimmed).catch(()=>null);
     const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
-    if(cached) return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    if(cached){
+      console.log(`[TTS:voice] provider=cache lang=${_ttsLang} client=${clientId} conv=${convId}`);
+      return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    }
     await engineSendChatwootReply(env, c, clientId, convId, trimmed);
     if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, _ttsLang));
     return;
