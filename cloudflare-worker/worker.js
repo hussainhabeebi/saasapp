@@ -7062,8 +7062,8 @@ async function handleBillingWebhook(request, env){
 // silently never load its saved value (always reading back undefined) and never actually persist
 // a save (dropped, with no error — handleEcomClientUpdate only errors on an empty body, not a
 // filtered-out field). Both now included so their Settings toggles actually work.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -9007,15 +9007,16 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
 
 // Auto-sends a category's photos into the chat the first time a lead's message names it —
 // simple case-insensitive substring match on the category name, same "cheap and predictable,
-// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
-// from and never overriding the existing per-product image send (detectOrderSignal/
-// ecomResolveProduct/product.image_url, handleEngineWebhook's ecommerce block above) — only runs
+// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. By default runs only
 // when this turn did NOT already handle a specific product (orderHandledInline false), so a
 // customer asking about one exact item never gets a redundant category photo dump in the same
-// reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
+// reply. When ecom_search_share_scope === 'product_and_category' the guard is lifted: category
+// photos are also sent alongside a matched product, still deduped once per (lead, category).
+// "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
 // re-sent on every later message that happens to mention the same category again.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  if(!isEcomEnabled(c) || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  const shareWithProduct = c.ecom_search_share_scope === 'product_and_category';
+  if(!isEcomEnabled(c) || (!shareWithProduct && orderHandledInline) || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
