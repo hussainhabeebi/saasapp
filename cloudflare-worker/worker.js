@@ -14857,18 +14857,30 @@ async function handleVoiceSettingsGet(request, env){
   if(!session) return json({error:'Invalid or expired session'},401);
   const c=await getClientById(env,session.cid);
   if(!c) return json({error:'Client not found'},404);
-  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY});
+  return json({client_key_configured:!!c.sarvam_api_key, worker_fallback_available:!!env.SARVAM_API_KEY, voice_reply_language:c.voice_reply_language||''});
 }
 
+const VOICE_REPLY_LANGUAGE_VALUES=new Set(['','en','client']);
 async function handleVoiceSettingsUpdate(request, env){
   const session=await requireSession(request,env);
   if(!session) return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({}));
-  const apiKey=String(body.api_key||'').trim();
-  if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
-  await ensureClientColumns(env,['sarvam_api_key']);
-  await patchClientFields(env,session.cid,{sarvam_api_key:apiKey});
-  return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
+  const fields={};
+  if('api_key' in body){
+    const apiKey=String(body.api_key||'').trim();
+    if(apiKey && apiKey.length<12) return json({error:'Sarvam API key looks incomplete'},400);
+    fields.sarvam_api_key=apiKey;
+  }
+  if('voice_reply_language' in body){
+    const lang=String(body.voice_reply_language||'').trim();
+    if(!VOICE_REPLY_LANGUAGE_VALUES.has(lang)) return json({error:'Invalid voice_reply_language value'},400);
+    fields.voice_reply_language=lang;
+  }
+  if(!Object.keys(fields).length) return json({error:'No recognized fields to update'},400);
+  await ensureClientColumns(env,Object.keys(fields));
+  await patchClientFields(env,session.cid,fields);
+  const updated=await getClientById(env,session.cid);
+  return json({ok:true,client_key_configured:!!(updated?.sarvam_api_key),worker_fallback_available:!!env.SARVAM_API_KEY,voice_reply_language:updated?.voice_reply_language||''});
 }
 
 // Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
@@ -15493,11 +15505,20 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
-  // Resolve TTS language: prefer the classifier-returned langCode; fall back to the client's
-  // configured language if langCode is absent or not in the TTS map. This ensures voice-to-voice
-  // never silently degrades to text-only just because the classifier returned an unmapped code.
-  const _ttsLang=(ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()]?(langCode||'').toLowerCase():null)||
-                 (ENGINE_TTS_LANG_MAP[(c.language||'').toLowerCase()]?(c.language||'').toLowerCase():null);
+  // Resolve TTS language. Three modes controlled by CLIENTS.voice_reply_language:
+  //   ''        (default) — match the incoming voice's detected language, fall back to c.language
+  //   'en'      — always reply in English regardless of incoming language
+  //   'client'  — always use the client's configured default language (c.language)
+  const _voiceReplyLang=c.voice_reply_language||'';
+  let _ttsLang;
+  if(_voiceReplyLang==='en'){
+    _ttsLang=ENGINE_TTS_LANG_MAP['en']?'en':null;
+  } else if(_voiceReplyLang==='client'){
+    _ttsLang=(ENGINE_TTS_LANG_MAP[(c.language||'').toLowerCase()]?(c.language||'').toLowerCase():null);
+  } else {
+    _ttsLang=(ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()]?(langCode||'').toLowerCase():null)||
+             (ENGINE_TTS_LANG_MAP[(c.language||'').toLowerCase()]?(c.language||'').toLowerCase():null);
+  }
   const bcp47=_ttsLang?ENGINE_TTS_LANG_MAP[_ttsLang]:null;
   // Voice messages: cache hit → instant voice reply; otherwise → text immediately + voice follow-up
   // via ctx.waitUntil. AI4Bharat has no request timeout in the background path — it runs until the

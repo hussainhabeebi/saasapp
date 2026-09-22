@@ -3206,6 +3206,17 @@ const ROLES = {
               <span class="save-msg" id="saveSarvamApiKeyMsg"></span>
             </div>
             <div class="s-note" id="sarvamApiKeyStatus" style="margin-top:10px">Checking configuration…</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:14px">
+              <div style="flex:1;min-width:240px;max-width:420px">
+                <label class="form-label">Reply language</label>
+                <select class="form-input" id="cfgVoiceReplyLanguage" onchange="saveVoiceReplyLanguage()">
+                  <option value="">Default — match incoming voice language</option>
+                  <option value="en">English</option>
+                  <option value="client">Bot default language</option>
+                </select>
+              </div>
+              <span class="save-msg" id="saveVoiceReplyLanguageMsg"></span>
+            </div>
           </div>
         </div>
 
@@ -12418,7 +12429,22 @@ async function loadVoiceSettings(){
     const data=await r.json();
     if(!r.ok) throw new Error(data.error||'Could not load voice settings');
     status.textContent=data.client_key_configured?'Client Sarvam key configured.':(data.worker_fallback_available?'Using Leadvyne platform Sarvam key.':'No Sarvam key configured — voice will fall back to text.');
+    const langSel=$id('cfgVoiceReplyLanguage');
+    if(langSel) langSel.value=data.voice_reply_language||'';
   }catch(e){ status.textContent='Could not check Sarvam configuration: '+e.message; }
+}
+
+async function saveVoiceReplyLanguage(){
+  const sel=$id('cfgVoiceReplyLanguage'),msg=$id('saveVoiceReplyLanguageMsg');
+  const value=sel.value;
+  msg.textContent='Saving…';msg.className='save-msg';
+  sel.disabled=true;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/voice/settings`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({voice_reply_language:value})});
+    const data=await r.json(); if(!r.ok) throw new Error(data.error||'Save failed');
+    msg.textContent='✓ Saved';
+  }catch(e){ msg.textContent='Error: '+e.message;msg.className='save-msg err'; }
+  finally{ sel.disabled=false;setTimeout(()=>msg.textContent='',3000); }
 }
 
 async function saveSarvamApiKey(){
