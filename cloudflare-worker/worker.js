@@ -9006,8 +9006,9 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
 }
 
 // Behaviour is driven by ecom_search_share_scope (set in Ecom → Settings):
-//   'current' (default / empty) — unchanged: category photos sent when no product matched;
+//   '' / not set (default) — unchanged: category photos sent when no product matched;
 //     skipped entirely when a product was already handled this turn (orderHandledInline).
+//     Existing clients with no saved value get this path automatically — no change for them.
 //   'product' — only the matched product is shared; when no product is matched but a category
 //     name is detected, sends a short text suggestion to browse that category instead of photos.
 //     Skipped entirely when a product was matched (orderHandledInline).
@@ -9015,9 +9016,9 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
 //     when no product is matched, sends a text suggestion (same as 'product' mode).
 // In all modes the once-per-(lead,category) dedup (ecom_category_media_sent) applies.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  const scope = c.ecom_search_share_scope || 'current';
-  // 'current' and 'product' modes: skip entirely when a product was already handled this turn
-  if((scope === 'current' || scope === 'product') && orderHandledInline) return;
+  const scope = c.ecom_search_share_scope || '';
+  // Default (no scope) and 'product': skip entirely when a product was already handled this turn
+  if(scope !== 'product_and_category' && orderHandledInline) return;
   if(!isEcomEnabled(c) || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -9029,7 +9030,7 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     if(already) return;
     // For 'product' and 'product_and_category' modes when no specific product was matched:
     // send a text nudge to browse the related category instead of dumping photos.
-    if(scope !== 'current' && !orderHandledInline){
+    if(scope && !orderHandledInline){
       const fd=new FormData();
       fd.append('content', `We don't have an exact match for that — try browsing our *${category.name}* range to find something similar! 📂`);
       fd.append('message_type','outgoing'); fd.append('private','false');
