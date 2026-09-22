@@ -14742,7 +14742,7 @@ async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
       body:JSON.stringify({
         pipelineTasks:[{
           taskType:'tts',
-          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:8000}
+          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:22050}
         }],
         inputData:{input:[{source:text.slice(0,500)}]}
       })
@@ -14768,7 +14768,7 @@ async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
       return null;
     }
     const buf=await conv.arrayBuffer();
-    if(buf.byteLength<200) return null;
+    if(buf.byteLength<200 || buf.byteLength<text.length*30) return null;
     return buf;
   }catch(e){
     await reportOpsError(env,'engineBhashiniTts — threw',e,{isoLangCode});
