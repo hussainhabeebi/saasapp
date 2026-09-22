@@ -13372,6 +13372,9 @@ BUTTONS — mandatory after EVERY reply:
   // own comments for the two prior designs this replaced and the real bugs each one caused.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
+  if(lang && lang!=='en'){
+    sys+='\n\nPROPER NOUNS RULE: Always write person names (customer names, client names, contact names), place names (cities, countries, landmarks), and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
+  }
   if(lang==='ml'){
     const botCfg=engineParseJsonField(c.bot_config,{});
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
@@ -14122,7 +14125,7 @@ async function engineLocalizeReply(env, c, text, targetLang){
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) manglishNote=` MANGLISH RULE: Do NOT translate these words — keep them exactly as they appear in the source text: ${mw.join(', ')}.`;
   }
-  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
     const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
     if(geminiRaw) return geminiRaw;
