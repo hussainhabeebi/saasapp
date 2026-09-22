@@ -610,6 +610,72 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="s-hint" style="margin-bottom:16px">Override the flow for individual customers — enable or disable it for them regardless of the global toggle, and optionally give them custom messages and options.</div>
     <div id="customerFlowsList"></div>
   </div>
+
+  <!-- IMAGE SEND SETTINGS CARD -->
+  <div class="card" style="margin-top:18px">
+    <div class="card-title-row">
+      <div class="card-title">🖼️ Image Send Settings</div>
+      <div class="card-actions">
+        <button class="save-btn" onclick="saveImageSettings()">Save</button>
+        <span class="save-msg" id="imgSettingsSaveMsg"></span>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:18px">Control how often product images and catalog links are re-sent. All settings are off by default — existing behaviour is unchanged when disabled.</div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Fresh Session Reset</strong>
+        <small>Always send the full image bundle again when a customer returns after a long gap of inactivity, regardless of the 5-hour window</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="freshSessionChk" onchange="onFreshSessionChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="freshSessionOptions" style="display:none;margin-bottom:20px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Inactivity gap (hours)</span>
+        <input class="s-input" id="freshSessionHours" type="number" min="1" max="168" placeholder="24" style="max-width:120px">
+        <div class="s-hint">Reset the image tier if the customer was silent for at least this many hours. Default: 24.</div>
+      </div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Per-Customer Image Window Override</strong>
+        <small>Set a custom image re-send window per customer (in Customer-Specific Flows below) or set a global override here</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="perWindowChk" onchange="onPerWindowChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="perWindowOptions" style="display:none;margin-bottom:20px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Global image window (hours)</span>
+        <input class="s-input" id="globalImageWindowHours" type="number" min="0.5" max="168" step="0.5" placeholder="5 (default)" style="max-width:140px">
+        <div class="s-hint">Overrides the default 5-hour window for all customers. Leave blank to keep 5 hours. Per-customer values (set in Customer-Specific Flows) take priority.</div>
+      </div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Catalog Link Throttle (Baby Care)</strong>
+        <small>Prevent the catalog link from sending repeatedly if a customer taps the Catalog button multiple times in quick succession</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="catalogThrottleChk" onchange="onCatalogThrottleChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="catalogThrottleOptions" style="display:none;margin-bottom:4px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Cooldown (minutes)</span>
+        <input class="s-input" id="catalogThrottleMins" type="number" min="1" max="60" placeholder="10" style="max-width:120px">
+        <div class="s-hint">How long before the same customer can receive the catalog link again. Default: 10 minutes.</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- CUSTOMER FLOW MODAL -->
@@ -638,6 +704,13 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <span class="toggle-slider"></span>
         </div>
       </label>
+    </div>
+    <div id="cfImageWindowWrap" style="display:none;margin-bottom:14px">
+      <div class="s-sec" style="margin-bottom:0">
+        <span class="s-lbl">Custom Image Window (hours)</span>
+        <input class="s-input" id="cfImageWindowHours" type="number" min="0.5" max="168" step="0.5" placeholder="Uses global setting">
+        <div class="s-hint">Override the image re-send window for this customer only. Leave blank to use the global setting. Only active when "Per-Customer Image Window Override" is enabled above.</div>
+      </div>
     </div>
     <div style="margin-bottom:14px">
       <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:0">
@@ -2652,6 +2725,7 @@ function loadFlow() {
   document.getElementById('flowEnabledChk').checked = enabled;
   document.getElementById('flowEditorBody').classList.toggle('dimmed', !enabled);
   renderCustomerFlows();
+  loadImageSettings();
   _flowLoaded = true;
 }
 
@@ -2699,6 +2773,64 @@ function resetFlowDefaults() {
   loadFlow();
   showMsg('flowSaveMsg', 'Reset to defaults — click Save to apply');
   showMsg('flowSaveMsg2', 'Reset to defaults — click Save to apply');
+}
+
+// ── IMAGE SEND SETTINGS ────────────────────────────────
+function loadImageSettings() {
+  const freshOn = botConfig.ecom_fresh_session_reset_enabled === true;
+  document.getElementById('freshSessionChk').checked = freshOn;
+  document.getElementById('freshSessionOptions').style.display = freshOn ? 'block' : 'none';
+  document.getElementById('freshSessionHours').value = botConfig.ecom_fresh_session_hours || '';
+
+  const perWinOn = botConfig.ecom_per_customer_window_enabled === true;
+  document.getElementById('perWindowChk').checked = perWinOn;
+  document.getElementById('perWindowOptions').style.display = perWinOn ? 'block' : 'none';
+  document.getElementById('globalImageWindowHours').value = botConfig.ecom_image_window_hours || '';
+
+  const catOn = botConfig.baby_care_catalog_throttle_enabled === true;
+  document.getElementById('catalogThrottleChk').checked = catOn;
+  document.getElementById('catalogThrottleOptions').style.display = catOn ? 'block' : 'none';
+  document.getElementById('catalogThrottleMins').value = botConfig.baby_care_catalog_throttle_mins || '';
+}
+
+function onFreshSessionChange() {
+  document.getElementById('freshSessionOptions').style.display =
+    document.getElementById('freshSessionChk').checked ? 'block' : 'none';
+}
+
+function onPerWindowChange() {
+  const on = document.getElementById('perWindowChk').checked;
+  document.getElementById('perWindowOptions').style.display = on ? 'block' : 'none';
+  document.getElementById('cfImageWindowWrap').style.display = on ? 'block' : 'none';
+}
+
+function onCatalogThrottleChange() {
+  document.getElementById('catalogThrottleOptions').style.display =
+    document.getElementById('catalogThrottleChk').checked ? 'block' : 'none';
+}
+
+async function saveImageSettings() {
+  botConfig.ecom_fresh_session_reset_enabled = document.getElementById('freshSessionChk').checked;
+  const freshHrs = parseFloat(document.getElementById('freshSessionHours').value);
+  if (freshHrs > 0) botConfig.ecom_fresh_session_hours = freshHrs;
+  else delete botConfig.ecom_fresh_session_hours;
+
+  botConfig.ecom_per_customer_window_enabled = document.getElementById('perWindowChk').checked;
+  const globalHrs = parseFloat(document.getElementById('globalImageWindowHours').value);
+  if (globalHrs > 0) botConfig.ecom_image_window_hours = globalHrs;
+  else delete botConfig.ecom_image_window_hours;
+
+  botConfig.baby_care_catalog_throttle_enabled = document.getElementById('catalogThrottleChk').checked;
+  const throttleMins = parseInt(document.getElementById('catalogThrottleMins').value);
+  if (throttleMins > 0) botConfig.baby_care_catalog_throttle_mins = throttleMins;
+  else delete botConfig.baby_care_catalog_throttle_mins;
+
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('imgSettingsSaveMsg', 'Saved ✓');
+  } catch(e) {
+    showMsg('imgSettingsSaveMsg', 'Error: ' + e.message);
+  }
 }
 
 // ── CUSTOMER-SPECIFIC FLOWS ─────────────────────────────
@@ -2755,6 +2887,8 @@ function openCustomerFlowModal(phone) {
   document.getElementById('cfPhone').disabled = !!phone;
   document.getElementById('cfLabel').value = cf.label || '';
   document.getElementById('cfEnabledChk').checked = cf.enabled !== false;
+  document.getElementById('cfImageWindowHours').value = cf.image_window_hours || '';
+  document.getElementById('cfImageWindowWrap').style.display = botConfig.ecom_per_customer_window_enabled === true ? 'block' : 'none';
 
   const hasCustom = cf.flow && Object.keys(cf.flow).length > 0;
   document.getElementById('cfCustomFlowChk').checked = hasCustom;
@@ -2799,6 +2933,8 @@ async function saveCustomerFlow() {
   const useCustom = document.getElementById('cfCustomFlowChk').checked;
 
   const entry = { label, enabled };
+  const cfImgWinHrs = parseFloat(document.getElementById('cfImageWindowHours').value);
+  if (cfImgWinHrs > 0) entry.image_window_hours = cfImgWinHrs;
   if (useCustom) {
     entry.flow = {
       welcome_new: document.getElementById('cfWelcomeNew').value.trim(),

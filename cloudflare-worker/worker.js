@@ -10042,12 +10042,12 @@ async function ecomDetectMentionedCategories(env, clientId, replyText){
 // Window resets after 5 hours so the same product can cycle through tiers again the next
 // conversation window without being permanently gated.
 // Returns the new send_count (1, 2, 3…); fail-open returns 1 so media always sends on error.
-async function engineClaimProductSend(env, clientId, leadId, productId){
+async function engineClaimProductSend(env, clientId, leadId, productId, windowMs=5*60*60*1000, forceReset=false){
   if(!leadId || !productId) return 1;
   try{
     const now=new Date().toISOString();
     const today=now.slice(0,10);
-    const fiveHoursAgo=new Date(Date.now()-5*60*60*1000).toISOString();
+    const windowStart=new Date(Date.now()-windowMs).toISOString();
     const existing=await env.DB.prepare(
       `SELECT id, sent_at, send_count FROM ecom_product_image_sent WHERE lead_id=? AND product_id=? ORDER BY sent_at DESC LIMIT 1`
     ).bind(leadId, productId).first();
@@ -10057,7 +10057,7 @@ async function engineClaimProductSend(env, clientId, leadId, productId){
         .bind(Number(clientId), leadId, productId, today, now).run();
       return 1;
     }
-    if(existing.sent_at < fiveHoursAgo){
+    if(forceReset||existing.sent_at < windowStart){
       // Window expired — reset counter on the existing row (avoids a new row duplicating the index)
       await env.DB.prepare(`UPDATE ecom_product_image_sent SET sent_at=?, sent_date=?, send_count=1 WHERE id=?`)
         .bind(now, today, existing.id).run();
@@ -16839,33 +16839,49 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         ]);
         orderHandledInline=true;
       } else if(/^BABY_VIEW_CATALOG$/i.test(userText)){
-        // Show categories and products from the Ecom module as interactive buttons.
-        // Tapping a category/product routes through ecom_faq which sends product images.
-        const catalogLink=(c.external_store_link||'').trim();
-        if(catalogLink){
-          sentText=await engineLocalizeReply(env,c,
-            `Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
-          routing.reply=sentText; routing.next='new';
-          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
-            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
-          ]);
-        } else {
-          const [_cats,_prods]=await Promise.all([ecomListCategories(env,clientId),ecomListActiveProducts(env,clientId)]);
-          const _catalogItems=ecomAvailableCatalogueItems(_cats,_prods);
-          if(_catalogItems.length){
-            sentText=await engineLocalizeReply(env,c,
-              '🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
-            routing.reply=sentText; routing.next='new';
-            routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,_catalogItems);
+        let _catalogThrottled=false;
+        if(botConfig.baby_care_catalog_throttle_enabled===true){
+          const _throttleMs=(Number(botConfig.baby_care_catalog_throttle_mins)||10)*60*1000;
+          const _tKey=`cat_throttle:${clientId}:${phone}`;
+          const _lastSentStr=await env.KV.get(_tKey).catch(()=>null);
+          if(_lastSentStr&&(Date.now()-parseInt(_lastSentStr))<_throttleMs){
+            _catalogThrottled=true;
           } else {
+            await env.KV.put(_tKey,String(Date.now()),{expirationTtl:Math.ceil(_throttleMs/1000)}).catch(()=>{});
+          }
+        }
+        if(_catalogThrottled){
+          sentText=await engineLocalizeReply(env,c,'You can view the catalog again shortly! 😊',replyLang);
+          routing.reply=sentText; routing.next='new';
+        } else {
+          // Show categories and products from the Ecom module as interactive buttons.
+          // Tapping a category/product routes through ecom_faq which sends product images.
+          const catalogLink=(c.external_store_link||'').trim();
+          if(catalogLink){
             sentText=await engineLocalizeReply(env,c,
-              'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+              `Here's our catalog — browse our latest baby collections:\n${catalogLink}\n\nFeel free to tap *Custom Order* whenever you're ready! 🌸`,replyLang);
             routing.reply=sentText; routing.next='new';
             routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
               {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
               {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
             ]);
+          } else {
+            const [_cats,_prods]=await Promise.all([ecomListCategories(env,clientId),ecomListActiveProducts(env,clientId)]);
+            const _catalogItems=ecomAvailableCatalogueItems(_cats,_prods);
+            if(_catalogItems.length){
+              sentText=await engineLocalizeReply(env,c,
+                '🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
+              routing.reply=sentText; routing.next='new';
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,_catalogItems);
+            } else {
+              sentText=await engineLocalizeReply(env,c,
+                'Our team will share the latest catalog with you shortly! Tap below to place a custom order now.',replyLang);
+              routing.reply=sentText; routing.next='new';
+              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+                {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+                {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+              ]);
+            }
           }
         }
         orderHandledInline=true;
@@ -17829,7 +17845,20 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           } else if(wantsLink && isShopify){
             forceResendLink=true;
           } else {
-            const tier=await engineClaimProductSend(env, clientId, state.leadId, product.Id);
+            const _perWinEnabled=botConfig.ecom_per_customer_window_enabled===true;
+            let _imgWindowMs=5*60*60*1000;
+            if(_perWinEnabled){
+              const _bcFlows=botConfig.baby_care_customer_flows||{};
+              const _cust=_bcFlows[phone]||_bcFlows[(phone||'').replace(/^\+/,'')]||null;
+              const _custHrs=Number(_cust?.image_window_hours||0);
+              const _globalHrs=Number(botConfig.ecom_image_window_hours||0);
+              if(_custHrs>0) _imgWindowMs=_custHrs*60*60*1000;
+              else if(_globalHrs>0) _imgWindowMs=_globalHrs*60*60*1000;
+            }
+            const _freshEnabled=botConfig.ecom_fresh_session_reset_enabled===true;
+            const _freshMs=(Number(botConfig.ecom_fresh_session_hours)||24)*60*60*1000;
+            const _forceReset=_freshEnabled&&!!(state.lastCustomerMsgAt)&&(Date.now()-new Date(state.lastCustomerMsgAt).getTime()>=_freshMs);
+            const tier=await engineClaimProductSend(env, clientId, state.leadId, product.Id, _imgWindowMs, _forceReset);
             if(tier===1){ sendProductImage=true; }
             else if(isShopify && tier===2){ shopifyTier=2; }
             else if(isShopify && tier>=3){ shopifyTier=3; }
