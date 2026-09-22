@@ -7062,8 +7062,8 @@ async function handleBillingWebhook(request, env){
 // silently never load its saved value (always reading back undefined) and never actually persist
 // a save (dropped, with no error — handleEcomClientUpdate only errors on an empty body, not a
 // filtered-out field). Both now included so their Settings toggles actually work.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -9005,17 +9005,21 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
   }catch(e){ await reportOpsError(env, 'engineMaybeSendEduScholarshipOffer', e, {clientId, convId}); }
 }
 
-// Auto-sends a category's photos into the chat the first time a lead's message names it —
-// simple case-insensitive substring match on the category name, same "cheap and predictable,
-// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
-// from and never overriding the existing per-product image send (detectOrderSignal/
-// ecomResolveProduct/product.image_url, handleEngineWebhook's ecommerce block above) — only runs
-// when this turn did NOT already handle a specific product (orderHandledInline false), so a
-// customer asking about one exact item never gets a redundant category photo dump in the same
-// reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
-// re-sent on every later message that happens to mention the same category again.
+// Behaviour is driven by ecom_search_share_scope (set in Ecom → Settings):
+//   '' / not set (default) — unchanged: category photos sent when no product matched;
+//     skipped entirely when a product was already handled this turn (orderHandledInline).
+//     Existing clients with no saved value get this path automatically — no change for them.
+//   'product' — only the matched product is shared; when no product is matched but a category
+//     name is detected, sends a short text suggestion to browse that category instead of photos.
+//     Skipped entirely when a product was matched (orderHandledInline).
+//   'product_and_category' — category photos are also sent when a product IS matched;
+//     when no product is matched, sends a text suggestion (same as 'product' mode).
+// In all modes the once-per-(lead,category) dedup (ecom_category_media_sent) applies.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  if(!isEcomEnabled(c) || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  const scope = c.ecom_search_share_scope || '';
+  // Default (no scope) and 'product': skip entirely when a product was already handled this turn
+  if(scope !== 'product_and_category' && orderHandledInline) return;
+  if(!isEcomEnabled(c) || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
@@ -9024,6 +9028,20 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     if(!category) return;
     const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
     if(already) return;
+    // For 'product' and 'product_and_category' modes when no specific product was matched:
+    // send a text nudge to browse the related category instead of dumping photos.
+    if(scope && !orderHandledInline){
+      const fd=new FormData();
+      fd.append('content', `We don't have an exact match for that — try browsing our *${category.name}* range to find something similar! 📂`);
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok){
+        await env.DB.prepare(`INSERT OR IGNORE INTO ecom_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+          .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+      }
+      return;
+    }
+    // 'current' mode (no product matched) OR 'product_and_category' (product matched): send photos
     const items=[
       {url:category.image_url_1, name:'photo1.jpg'},
       {url:category.image_url_2, name:'photo2.jpg'},
