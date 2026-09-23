@@ -7062,8 +7062,8 @@ async function handleBillingWebhook(request, env){
 // silently never load its saved value (always reading back undefined) and never actually persist
 // a save (dropped, with no error — handleEcomClientUpdate only errors on an empty body, not a
 // filtered-out field). Both now included so their Settings toggles actually work.
-const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
-const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','bot_config'];
+const ECOM_CLIENT_READ_FIELDS=['Id','client_name','ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_shop_domain','shopify_connected_at','shopify_notify_config','shopify_notify_log','support_phone','wa_display_phone','cross_sell_rules','client_slug','external_store_link','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
+const ECOM_CLIENT_WRITE_FIELDS=['ecom_table_ids','ecom_products_sheet','ecom_orders_sheet','ecom_products_column_map','ecom_orders_column_map','review_link','ecom_wa_templates','shopify_notify_config','support_phone','ecom_link_on_enquiry','ecom_order_link_enabled','ecom_search_share_scope','bot_config'];
 
 // Shared default tables used until a client explicitly saves their own table
 // ID in Settings — mirrors ecom.html's client-side DEFAULT_ECOM_IDS fallback.
@@ -7106,7 +7106,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors'];
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -7403,7 +7403,7 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
 // repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
 // stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
 // here is logged and swallowed rather than ever failing the product save itself.
-const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options','age_group','fabric_type','set_includes','accent_colors'];
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
   if(!env.DB || !clientId || !nocodbId) return;
   try{
@@ -7411,10 +7411,17 @@ async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
     const cols=['client_id','nocodb_id', ...ECOM_MIRROR_COLUMNS, 'created_at','updated_at'];
     const vals=[Number(clientId), Number(nocodbId), ...ECOM_MIRROR_COLUMNS.map(k=>saved[k]??null), now, now];
     const updateSet=ECOM_MIRROR_COLUMNS.map(k=>`${k}=excluded.${k}`).concat('updated_at=excluded.updated_at').join(', ');
-    await env.DB.prepare(
+    const upsert=()=>env.DB.prepare(
       `INSERT INTO ecom_products_mirror (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})
        ON CONFLICT(client_id, nocodb_id) DO UPDATE SET ${updateSet}`
     ).bind(...vals).run();
+    try{ await upsert(); }
+    catch(e){
+      // migrations/0099 not applied yet — add the photoshoot column once and retry.
+      if(!/photoshoot_folder_url/.test(e.message||'')) throw e;
+      await env.DB.prepare(`ALTER TABLE ecom_products_mirror ADD COLUMN photoshoot_folder_url TEXT`).run().catch(()=>{});
+      await upsert();
+    }
   }catch(e){ console.error('[ecomMirrorProductToD1] failed for client', clientId, 'nocodb id', nocodbId, ':', e.message); }
 }
 
@@ -9005,17 +9012,21 @@ async function engineMaybeSendEduScholarshipOffer(env, c, clientId, convId, user
   }catch(e){ await reportOpsError(env, 'engineMaybeSendEduScholarshipOffer', e, {clientId, convId}); }
 }
 
-// Auto-sends a category's photos into the chat the first time a lead's message names it —
-// simple case-insensitive substring match on the category name, same "cheap and predictable,
-// documented over/under-match tradeoff" as engineMaybeSendHospitalityMedia. Deliberately separate
-// from and never overriding the existing per-product image send (detectOrderSignal/
-// ecomResolveProduct/product.image_url, handleEngineWebhook's ecommerce block above) — only runs
-// when this turn did NOT already handle a specific product (orderHandledInline false), so a
-// customer asking about one exact item never gets a redundant category photo dump in the same
-// reply. "Once per session" means once per (lead, category) ever (ecom_category_media_sent), not
-// re-sent on every later message that happens to mention the same category again.
+// Behaviour is driven by ecom_search_share_scope (set in Ecom → Settings):
+//   '' / not set (default) — unchanged: category photos sent when no product matched;
+//     skipped entirely when a product was already handled this turn (orderHandledInline).
+//     Existing clients with no saved value get this path automatically — no change for them.
+//   'product' — only the matched product is shared; when no product is matched but a category
+//     name is detected, sends a short text suggestion to browse that category instead of photos.
+//     Skipped entirely when a product was matched (orderHandledInline).
+//   'product_and_category' — category photos are also sent when a product IS matched;
+//     when no product is matched, sends a text suggestion (same as 'product' mode).
+// In all modes the once-per-(lead,category) dedup (ecom_category_media_sent) applies.
 async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolvedLeadId, userText, orderHandledInline){
-  if(!isEcomEnabled(c) || orderHandledInline || !userText || !resolvedLeadId || !convId) return;
+  const scope = c.ecom_search_share_scope || '';
+  // Default (no scope) and 'product': skip entirely when a product was already handled this turn
+  if(scope !== 'product_and_category' && orderHandledInline) return;
+  if(!isEcomEnabled(c) || !userText || !resolvedLeadId || !convId) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
     const {results:categories}=await env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all();
@@ -9024,6 +9035,20 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     if(!category) return;
     const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
     if(already) return;
+    // For 'product' and 'product_and_category' modes when no specific product was matched:
+    // send a text nudge to browse the related category instead of dumping photos.
+    if(scope && !orderHandledInline){
+      const fd=new FormData();
+      fd.append('content', `We don't have an exact match for that — try browsing our *${category.name}* range to find something similar! 📂`);
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok){
+        await env.DB.prepare(`INSERT OR IGNORE INTO ecom_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+          .bind(Number(clientId), resolvedLeadId, category.id, new Date().toISOString()).run();
+      }
+      return;
+    }
+    // 'current' mode (no product matched) OR 'product_and_category' (product matched): send photos
     const items=[
       {url:category.image_url_1, name:'photo1.jpg'},
       {url:category.image_url_2, name:'photo2.jpg'},
@@ -9168,6 +9193,191 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
     await env.DB.prepare(`INSERT OR IGNORE INTO ecom_testimonial_sent (client_id, lead_id, product_id, testimonial_id, sent_at) VALUES (?,?,?,?,?)`)
       .bind(Number(clientId), resolvedLeadId, product.Id, bestMatch.id, new Date().toISOString()).run();
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
+}
+
+/* ── PRODUCT PHOTOSHOOT FOLDER — an optional Google Drive folder link per product (ecom.html's
+   "Photoshoot Folder Link", stored as photoshoot_folder_url). Whenever a customer's message names
+   a product exactly (or contains every word of its name / short label), 5 random images from that
+   folder are sent as extra attachments. Purely additive: it runs after the turn's reply and never
+   touches the existing per-product image/media bundle or its tier/window logic. The folder must be
+   shared "Anyone with the link can view" — listed via the Drive API when GOOGLE_DRIVE_API_KEY is
+   set, otherwise via Drive's public embedded folder view. */
+const ECOM_PHOTOSHOOT_SEND_COUNT=5;
+const ECOM_PHOTOSHOOT_IMAGE_RE=/\.(?:jpe?g|png|webp|gif|heic|heif|bmp|tiff?)$/i;
+
+// Extracts a Drive folder id from drive.google.com/drive/folders/<id> (incl. /drive/u/0/folders/…)
+// or an "open?id=<id>" link. Returns null for anything that isn't a Drive link.
+export function driveFolderId(url){
+  if(!url) return null;
+  try{
+    const parsed=new URL(String(url).trim());
+    if(parsed.hostname.toLowerCase()!=='drive.google.com') return null;
+    const m=parsed.pathname.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    return m?.[1]||parsed.searchParams.get('id')?.match(/^[a-zA-Z0-9_-]+$/)?.[0]||null;
+  }catch(e){ return null; }
+}
+
+// Parses a public Drive folder page into the file ids of its image entries. Three shapes, tried in
+// order: (1) embeddedfolderview's `flip-entry` blocks (id="entry-<fileId>", flip-entry-title
+// filename) — sub-folders and non-image files skipped, extension-less titles kept; (2) the
+// drive/folders/<id> page's escaped JS data (`["<fileId>",["<folderId>"],"name","image/jpeg",…`),
+// kept only when its mime type is image/*; (3) any /file/d/<id> link left on the page.
+export function driveParseFolderImageIds(html, folderId=''){
+  const src=String(html||'');
+  const ids=[];
+  const seen=new Set();
+  const add=id=>{ if(id && id!==folderId && !seen.has(id)){ seen.add(id); ids.push(id); } };
+  for(const part of src.split(/<div class="flip-entry"/).slice(1)){
+    const id=part.match(/id="entry-([a-zA-Z0-9_-]+)"/)?.[1];
+    if(!id) continue;
+    if(/\/drive\/(?:u\/\d+\/)?folders\//.test(part.slice(0,600))) continue;
+    const title=(part.match(/class="flip-entry-title">([^<]*)</)?.[1]||'').trim();
+    if(title && /\.[a-z0-9]{2,5}$/i.test(title) && !ECOM_PHOTOSHOOT_IMAGE_RE.test(title)) continue;
+    add(id);
+  }
+  if(ids.length) return ids;
+  const decoded=src
+    .replace(/\\x([0-9a-fA-F]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\+(["/])/g,'$1');
+  const dataRe=/\["([a-zA-Z0-9_-]{20,})",\[("[a-zA-Z0-9_-]+"(?:,"[a-zA-Z0-9_-]+")*)\],"[^"]*","([a-z]+\/[a-zA-Z0-9.+-]+)"/g;
+  for(const m of decoded.matchAll(dataRe)){
+    if(folderId && !m[2].includes(`"${folderId}"`)) continue;
+    if(m[3].startsWith('image/')) add(m[1]);
+  }
+  if(ids.length) return ids;
+  for(const m of decoded.matchAll(/\/file\/d\/([a-zA-Z0-9_-]{20,})/g)) add(m[1]);
+  return ids;
+}
+
+const DRIVE_BROWSER_HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36','Accept-Language':'en-US,en;q=0.9'};
+
+// Lists the image file ids in a public Drive folder, cached in KV for 10 minutes so every product
+// mention doesn't re-list the folder. Drive API (when GOOGLE_DRIVE_API_KEY is set) first, then the
+// public embedded folder view, then the normal folder page. Returns [] (never throws).
+async function driveListFolderImageIds(env, folderId){
+  if(!folderId) return [];
+  const kv=_kv(env);
+  const cacheKey=`drive_folder_images:${folderId}`;
+  if(kv){ try{ const v=await kv.get(cacheKey); if(v){ const cached=JSON.parse(v); if(cached?.length) return cached; } }catch(e){} }
+  let ids=[];
+  if(env.GOOGLE_DRIVE_API_KEY){
+    try{
+      let pageToken='';
+      do{
+        const q=encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed=false`);
+        const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=${env.GOOGLE_DRIVE_API_KEY}${pageToken?`&pageToken=${pageToken}`:''}`);
+        if(!r.ok){ console.error('[driveListFolderImageIds] Drive API', r.status, folderId); break; }
+        const d=await r.json().catch(()=>({}));
+        ids.push(...(d.files||[]).map(f=>f.id).filter(Boolean));
+        pageToken=d.nextPageToken||'';
+      }while(pageToken && ids.length<5000);
+    }catch(e){ console.error('[driveListFolderImageIds] Drive API failed', folderId, e.message); }
+  }
+  for(const url of [`https://drive.google.com/embeddedfolderview?id=${folderId}`, `https://drive.google.com/drive/folders/${folderId}`]){
+    if(ids.length) break;
+    try{
+      const r=await fetch(url, {headers:DRIVE_BROWSER_HEADERS});
+      if(r.ok) ids=driveParseFolderImageIds(await r.text(), folderId);
+      else console.error('[driveListFolderImageIds]', r.status, url);
+    }catch(e){ console.error('[driveListFolderImageIds] fetch failed', url, e.message); }
+  }
+  if(kv && ids.length){ try{ await kv.put(cacheKey, JSON.stringify(ids), {expirationTtl:600}); }catch(e){} }
+  return ids;
+}
+
+// Sniffs JPEG/PNG from the first bytes — Drive/lh3 sometimes omit or generalise Content-Type, and
+// an HTML sign-in/virus-scan page must never be attached as "the photo".
+export function driveSniffImageType(bytes){
+  const b=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes||[]);
+  if(b.length>=3 && b[0]===0xFF && b[1]===0xD8 && b[2]===0xFF) return 'image/jpeg';
+  if(b.length>=8 && b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47) return 'image/png';
+  return null;
+}
+
+// Fetches one public Drive image as a WhatsApp-ready JPEG/PNG blob (≤5 MB) so Chatwoot stores it
+// as an image attachment and WhatsApp shows it inline — not as a document/file. Tries Drive's
+// resized thumbnail, then the lh3 CDN rendition, then the original file; returns null if none of
+// them yields a real JPEG/PNG under the cap.
+async function driveFetchChatImage(fileId){
+  const urls=[
+    `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`,
+    `https://lh3.googleusercontent.com/d/${fileId}=w1600`,
+    `https://drive.google.com/uc?export=view&id=${fileId}`,
+  ];
+  for(const url of urls){
+    try{
+      const r=await fetch(url, {headers:{...DRIVE_BROWSER_HEADERS, Accept:'image/jpeg,image/png;q=0.9,*/*;q=0.5'}, redirect:'follow'});
+      if(!r.ok) continue;
+      const buf=await r.arrayBuffer();
+      if(!buf.byteLength || buf.byteLength>5242880) continue;
+      const type=driveSniffImageType(new Uint8Array(buf,0,Math.min(16,buf.byteLength)));
+      if(!type) continue;
+      return new Blob([buf], {type});
+    }catch(e){}
+  }
+  return null;
+}
+
+// Picks the one product whose name (or short label) the customer mentioned: an exact/contained
+// phrase match wins, otherwise every word of the name must appear in the message (any order), or a
+// WhatsApp button tap truncated with "..."/"…" must be a prefix of the name. Longest matching name
+// wins so "Royal Sofa Set" beats "Sofa Set". Only products with a photoshoot folder are considered.
+export function ecomPhotoshootMatchProduct(products, message){
+  const raw=String(message||'').trim();
+  const text=ecomNormalizeCatalogueText(raw);
+  if(!text) return null;
+  const padded=` ${text} `;
+  const words=new Set(text.split(' ').map(ecomCatalogueTokenRoot));
+  const truncated=/(?:\.\.\.|…)$/.test(raw)?text:'';
+  let best=null, bestScore=0;
+  for(const p of products||[]){
+    if(!String(p?.photoshoot_folder_url||'').trim()) continue;
+    for(const label of [p.name, p.short_label]){
+      const norm=ecomNormalizeCatalogueText(label);
+      if(norm.length<3) continue;
+      let score=0;
+      if(padded.includes(` ${norm} `)) score=1000+norm.length;
+      else if(truncated.length>=4 && norm.startsWith(truncated)) score=500+truncated.length;
+      else{
+        const tokens=norm.split(' ').filter(Boolean);
+        if(tokens.length>=2 && tokens.every(t=>words.has(ecomCatalogueTokenRoot(t)))) score=norm.length;
+      }
+      if(score>bestScore){ best=p; bestScore=score; }
+    }
+  }
+  return best;
+}
+
+export async function engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText){
+  if(c.industry!=='ecommerce' || !convId || !userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const products=await ecomListActiveProducts(env, clientId);
+    const product=ecomPhotoshootMatchProduct(products, userText);
+    if(!product) return;
+    const folderId=driveFolderId(product.photoshoot_folder_url);
+    if(!folderId){ console.error('[engineMaybeSendProductPhotoshoot] not a Drive folder link for product', product.Id); return; }
+    const pool=[...await driveListFolderImageIds(env, folderId)];
+    if(!pool.length){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('photoshoot folder empty or not public'), {clientId, productId:product.Id, folderId}); return; }
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    // Walk the shuffled pool until 5 images actually deliver, so one unreadable file doesn't
+    // shrink the set; capped so a broken folder can't burn the whole request.
+    let sent=0;
+    for(const fileId of pool.slice(0,ECOM_PHOTOSHOOT_SEND_COUNT*3)){
+      if(sent>=ECOM_PHOTOSHOOT_SEND_COUNT) break;
+      const blob=await driveFetchChatImage(fileId);
+      if(!blob) continue;
+      const fd=new FormData();
+      fd.append('content','');
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', blob, `photoshoot-${sent+1}.${blob.type==='image/png'?'png':'jpg'}`);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sent++;
+      else console.error('[engineMaybeSendProductPhotoshoot] Chatwoot attach failed', r.status);
+    }
+    if(!sent) await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('no photoshoot image could be fetched/sent'), {clientId, productId:product.Id, folderId});
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', e, {clientId, convId}); }
 }
 
 /* ── PRODUCT DESCRIPTION whenever a product is asked about — no new field, reuses the existing
@@ -9639,6 +9849,39 @@ export function ecomBabyCareOrderItems(seed={}){
     seed.printTheme?`Print theme: ${seed.printTheme}`:'',
     seed.addOns?`Add-ons: ${seed.addOns}`:'',
   ].filter(Boolean).join(' | ');
+}
+
+// Formats a stored product price for WhatsApp. INR (or a bare number) renders as ₹ with Indian
+// digit grouping; any other currency code/symbol is kept exactly as stored. Returns '' when the
+// product has no usable price so callers can omit the line rather than show "₹0".
+export function ecomFormatProductPrice(price, currency){
+  if(price==null||String(price).trim()==='') return '';
+  const num=Number(String(price).replace(/[,\s]/g,''));
+  if(!Number.isFinite(num)||num<=0) return '';
+  const cur=String(currency||'').trim();
+  const amount=num.toLocaleString('en-IN',{maximumFractionDigits:2});
+  if(!cur||/^(?:inr|rs\.?|₹)$/i.test(cur)) return `₹${amount}`;
+  return cur.length===1?`${cur}${amount}`:`${cur} ${amount}`;
+}
+
+// Baby care product card: verbatim name + description from the saved Ecom row, with the stored
+// price on its own labelled line. Multi-line descriptions become bullets; nothing is generated.
+export function ecomBabyCareProductCard(product={}){
+  const lines=[`🍼 *${String(product.name||'').trim()}*`];
+  const desc=String(product.description||'').trim();
+  if(desc){
+    const chunks=desc.split(/\n+/).map(s=>s.trim().replace(/^[-•*]\s*/,'')).filter(Boolean);
+    lines.push(chunks.length>1?chunks.map(s=>`• ${s}`).join('\n'):chunks[0]);
+  }
+  const details=[];
+  const price=ecomFormatProductPrice(product.price, product.currency);
+  if(price) details.push(`💰 *Price:* ${price}`);
+  if(product.size) details.push(`📏 *Size:* ${String(product.size).trim()}`);
+  if(product.color) details.push(`🎨 *Colour:* ${String(product.color).trim()}`);
+  if(details.length) lines.push(details.join('\n'));
+  const link=String(product.shopify_product_url||product.product_link||'').trim();
+  if(link) lines.push(`🛒 *Order online:* ${link}`);
+  return lines.join('\n\n');
 }
 
 // ── Electronics Ecom helpers ─────────────────────────────────────────────────
@@ -11710,6 +11953,14 @@ function engineParseSalesReps(raw){
 function engineGetLeadRouting(c){
   try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
 }
+// Staff emails that auto-routing may assign leads to: current team_emails, lowercased, minus the
+// account owner. Lead visibility for staff is an exact email match against Owner, so anything
+// outside this set (the owner, a removed teammate, a legacy free-text name) would be a lead no
+// staff member can see.
+function engineRoutableStaffEmails(c){
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  return new Set(String(c?.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(e=>e&&e!==owner));
+}
 
 // Location keys the bot may store city/area answers under in QualAnswers — same list as the
 // frontend Splits view so routing and display always agree.
@@ -11726,14 +11977,17 @@ function engineExtractCityFromQual(qualAnswers){
 // 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
 // Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
 // When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
-async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
   const routing=engineGetLeadRouting(c);
+  const staff=engineRoutableStaffEmails(c);
+  const isStaff=e=>staff.has(String(e||'').trim().toLowerCase());
 
   if(!routing.enabled){
-    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
-    const reps=engineParseSalesReps(c.agents);
+    // Legacy fallback: phone-hash across c.agents. That field used to be free-text names, which
+    // never match a staff login — only entries that are real (non-owner) teammate emails count.
+    const reps=engineParseSalesReps(c.agents).map(r=>String(r).trim().toLowerCase()).filter(isStaff);
     if(reps.length){
       let h=0; const ps=String(state.phone||'');
       for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
@@ -11743,7 +11997,13 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
   }
 
   const modes=Array.isArray(routing.modes)?routing.modes:[];
-  const rules=routing.rules||{};
+  // Rules are keyed by email; drop the owner and anyone no longer on the team, and normalise
+  // case so the stored Owner matches the lowercased login email staff are filtered by.
+  const rules={};
+  for(const [email,r] of Object.entries(routing.rules||{})){
+    const e=String(email).trim().toLowerCase();
+    if(isStaff(e)) rules[e]=r||{};
+  }
 
   const get=f=>leadBody[f]||state.lead?.[f]||'';
 
@@ -11786,19 +12046,26 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
 
   // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
   if(modes.includes('roundrobin')){
-    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e).sort();
     if(pool.length){
-      const idx=Number(routing.rrIndex||0)%pool.length;
+      // `c` can be a KV-cached copy from before the previous lead advanced rrIndex, which would
+      // hand consecutive leads to the same rep — read the live pointer straight from NocoDB.
+      let live=routing;
+      try{
+        const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
+        if(r.ok){ const fresh=await r.json(); live=JSON.parse(fresh?.lead_routing||'{}')||routing; }
+      }catch(e){}
+      const idx=(Number(live.rrIndex)||0)%pool.length;
       leadBody.Owner=pool[idx];
       // Persist the next index so the following lead goes to the next rep
-      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
-      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      const nextRouting={...live, rrIndex:(idx+1)%pool.length};
+      await patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
       return;
     }
   }
 
   // ── Priority 4: Catch-all ────────────────────────────────────────────────────
-  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  if(isStaff(routing.catchall)){ leadBody.Owner=String(routing.catchall).trim().toLowerCase(); return; }
   // Otherwise: Unmatched — lead stays without an Owner
 }
 
@@ -13372,6 +13639,9 @@ BUTTONS — mandatory after EVERY reply:
   // own comments for the two prior designs this replaced and the real bugs each one caused.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, do not force it if the customer is still asking unrelated questions, and do not repeat something you have already substantially covered (check Recent Conversation above).';
+  if(lang && lang!=='en'){
+    sys+='\n\nPROPER NOUNS RULE: Always write person names (customer names, client names, contact names), place names (cities, countries, landmarks), and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
+  }
   if(lang==='ml'){
     const botCfg=engineParseJsonField(c.bot_config,{});
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
@@ -14122,7 +14392,7 @@ async function engineLocalizeReply(env, c, text, targetLang){
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) manglishNote=` MANGLISH RULE: Do NOT translate these words — keep them exactly as they appear in the source text: ${mw.join(', ')}.`;
   }
-  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
     const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
     if(geminiRaw) return geminiRaw;
@@ -14678,6 +14948,52 @@ async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
   return result.audio;
 }
 
+// Strip markdown, emojis, and URLs from TTS input so engines receive clean prose
+function enginePreprocessTtsText(text){
+  if(!text) return text;
+  let t=text;
+  t=t.replace(/https?:\/\/\S+/g,'');         // URLs
+  t=t.replace(/\*\*(.+?)\*\*/gs,'$1');       // bold
+  t=t.replace(/\*(.+?)\*/gs,'$1');           // italic
+  t=t.replace(/`{1,3}[^`]*`{1,3}/g,'');     // code
+  t=t.replace(/^#{1,6}\s*/gm,'');           // headings
+  t=t.replace(/^\s*[-*•]\s+/gm,'');         // bullet markers
+  t=t.replace(/[\u{1F000}-\u{1FFFF}]/gu,''); // emoji block 1
+  t=t.replace(/[\u{2600}-\u{27BF}]/gu,'');   // emoji block 2
+  t=t.replace(/\n+/g,' ').replace(/\s{2,}/g,' ').trim();
+  return t;
+}
+
+// Split text into sentence chunks of ≤maxLen chars for better TTS quality on long inputs
+function engineSplitSentences(text, maxLen=150){
+  if(!text||text.length<=maxLen) return [text].filter(Boolean);
+  const raw=text.split(/(?<=[.?!।])\s+/);
+  const chunks=[];
+  let cur='';
+  for(const p of raw){
+    const s=p.trim(); if(!s) continue;
+    if(!cur){cur=s;continue;}
+    if(cur.length+1+s.length<=maxLen){cur+=' '+s;}
+    else{chunks.push(cur);cur=s;}
+  }
+  if(cur) chunks.push(cur);
+  return chunks.flatMap(c=>c.length<=maxLen?[c]:c.split(/(?<=[,;])\s+/).filter(x=>x.trim()));
+}
+
+// Synthesize text in sentence-length chunks and concatenate the Ogg buffers (valid chained bitstream)
+async function engineSynthChunked(synthFn, text, maxLen=150){
+  const chunks=engineSplitSentences(text, maxLen);
+  if(chunks.length<=1) return synthFn(text);
+  const results=await Promise.all(chunks.map(c=>Promise.resolve(synthFn(c)).catch(()=>null)));
+  const valid=results.filter(Boolean);
+  if(!valid.length) return null;
+  if(valid.length===1) return valid[0];
+  const total=valid.reduce((s,b)=>s+b.byteLength,0);
+  const out=new Uint8Array(total);
+  let off=0; for(const b of valid){out.set(new Uint8Array(b),off);off+=b.byteLength;}
+  return out.buffer;
+}
+
 // PRIMARY TTS — Bhashini Dhruva inference API (https://bhashini.gov.in/). Government-backed,
 // supports all 10 scheduled Indic languages + English. Requires BHASHINI_USER_ID and
 // BHASHINI_INFERENCE_KEY in Cloudflare Worker secrets. Returns WAV from Bhashini → converted to
@@ -14688,20 +15004,20 @@ const BHASHINI_TTS_LANG_CODES={
   ml:'ml',hi:'hi',ta:'ta',te:'te',kn:'kn',
   bn:'bn',gu:'gu',mr:'mr',pa:'pa',or:'or',en:'en',
 };
-// Bhashini service IDs — Dravidian vs Indo-Aryan model groups. Override specific languages via
-// BHASHINI_SERVICE_MAP_JSON if your console shows different IDs for your approved key.
+// Bhashini service IDs — all languages use Indic Parler-TTS (natural, non-robotic).
+// Override specific languages via BHASHINI_SERVICE_MAP_JSON if your console shows different IDs.
 let BHASHINI_SERVICE_MAP={
-  ml:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  ta:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  te:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  kn:'ai4bharat/indic-tts-coqui-dravidian-gpu--t4',
-  hi:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  bn:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  mr:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  gu:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  pa:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  or:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
-  en:'ai4bharat/indic-tts-coqui-indo_aryan-gpu--t4',
+  ml:'ai4bharat/indic-parler-tts',
+  ta:'ai4bharat/indic-parler-tts',
+  te:'ai4bharat/indic-parler-tts',
+  kn:'ai4bharat/indic-parler-tts',
+  hi:'ai4bharat/indic-parler-tts',
+  bn:'ai4bharat/indic-parler-tts',
+  mr:'ai4bharat/indic-parler-tts',
+  gu:'ai4bharat/indic-parler-tts',
+  pa:'ai4bharat/indic-parler-tts',
+  or:'ai4bharat/indic-parler-tts',
+  en:'ai4bharat/indic-parler-tts',
 };
 if(typeof process!=='undefined'&&process.env?.BHASHINI_SERVICE_MAP_JSON){
   try{BHASHINI_SERVICE_MAP={...BHASHINI_SERVICE_MAP,...JSON.parse(process.env.BHASHINI_SERVICE_MAP_JSON)};}
@@ -14721,7 +15037,7 @@ async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
       body:JSON.stringify({
         pipelineTasks:[{
           taskType:'tts',
-          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:8000}
+          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:22050}
         }],
         inputData:{input:[{source:text.slice(0,500)}]}
       })
@@ -14747,7 +15063,7 @@ async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
       return null;
     }
     const buf=await conv.arrayBuffer();
-    if(buf.byteLength<200) return null;
+    if(buf.byteLength<200 || buf.byteLength<text.length*30) return null;
     return buf;
   }catch(e){
     await reportOpsError(env,'engineBhashiniTts — threw',e,{isoLangCode});
@@ -14770,6 +15086,25 @@ const GOOGLE_TTS_VOICE_MAP={
   mr:{languageCode:'mr-IN',name:'mr-IN-Wavenet-A'},
   en:{languageCode:'en-IN',name:'en-IN-Wavenet-A'},
 };
+// Translate text to English using Google Cloud Translation API v2. Uses the same GOOGLE_TTS_API_KEY.
+// Returns the English string, or null on any failure (caller falls back gracefully).
+// Source language is the ISO 639-1 code (e.g. 'ml'); target is always 'en'.
+async function engineGoogleTranslateToEnglish(env, text, sourceLang){
+  if(!env.GOOGLE_TTS_API_KEY) return null;
+  if(!text) return null;
+  if((sourceLang||'').toLowerCase()==='en') return text;
+  try{
+    const r=await fetch(
+      `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.GOOGLE_TTS_API_KEY)}`,
+      {method:'POST', headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({q:text.slice(0,2000), source:sourceLang, target:'en', format:'text'})}
+    );
+    if(!r.ok) return null;
+    const data=await r.json().catch(()=>null);
+    return data?.data?.translations?.[0]?.translatedText||null;
+  }catch(e){ return null; }
+}
+
 async function engineGoogleTts(env, text, isoLangCode, timeoutMs=12000){
   if(!env.GOOGLE_TTS_API_KEY) return null;
   const voice=GOOGLE_TTS_VOICE_MAP[isoLangCode];
@@ -14820,7 +15155,9 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     // Pre-flight: if no provider is reachable at all, skip synthesis immediately and alert ops
     // with specific fix instructions. The text reply was already sent; this is config-only.
     const hasBhashini=!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY&&BHASHINI_TTS_LANG_CODES[iso]);
-    const hasGoogle=!!(env.GOOGLE_TTS_API_KEY&&GOOGLE_TTS_VOICE_MAP[iso]);
+    // Google TTS always covers English directly; for other languages it translates to English first,
+    // so GOOGLE_TTS_API_KEY alone is enough — no per-language voice check needed here.
+    const hasGoogle=!!env.GOOGLE_TTS_API_KEY;
     const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
     if(!hasBhashini&&!hasGoogle&&!hasRenderPipeline){
       await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
@@ -14830,17 +15167,25 @@ async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, la
     }
     const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
     if(!spokenText) return;
+    // Strip markdown/emojis/URLs before hitting any TTS engine
+    const processedText=enginePreprocessTtsText(spokenText);
+    if(!processedText) return;
     let audio=null, provider='';
     const safe=p=>Promise.resolve(p).catch(()=>null);
-    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline)
-    audio=await safe(engineBhashiniTts(env,spokenText,iso,10000));
-    if(audio) provider='bhashini';
-    // 2. Google TTS (secondary — Ogg/Opus natively, no render pipeline needed)
-    if(!audio){ audio=await safe(engineGoogleTts(env,spokenText,iso,12000)); if(audio) provider='google'; }
-    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout)
-    if(!audio){ audio=await safe(engineAi4BharatTts(env,spokenText,iso,0)); if(audio) provider='ai4bharat'; }
+    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline; chunked for long texts)
+    audio=await safe(engineSynthChunked(t=>engineBhashiniTts(env,t,iso,10000),processedText));
+    if(audio){ provider='bhashini'; }
+    else{ console.log(`[TTS:bg] bhashini failed/skipped lang=${iso} client=${clientId}`); }
+    // 2. Google TTS — disabled
+    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout; chunked for long texts)
+    if(!audio){
+      audio=await safe(engineSynthChunked(t=>engineAi4BharatTts(env,t,iso,0),processedText));
+      if(audio){ provider='ai4bharat'; }
+      else{ console.log(`[TTS:bg] ai4bharat failed/skipped lang=${iso} client=${clientId}`); }
+    }
 
     if(audio){
+      console.log(`[TTS:bg] sent provider=${provider} lang=${iso} bytes=${audio.byteLength} client=${clientId} conv=${convId}`);
       const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
       if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
       await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
@@ -15505,7 +15850,10 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   if(mediaType==='voice' && !imageUrl && bcp47){
     const cacheKey=await engineVoiceCacheKey(clientId, _ttsLang, trimmed).catch(()=>null);
     const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
-    if(cached) return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    if(cached){
+      console.log(`[TTS:voice] provider=cache lang=${_ttsLang} client=${clientId} conv=${convId}`);
+      return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
+    }
     await engineSendChatwootReply(env, c, clientId, convId, trimmed);
     if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, _ttsLang));
     return;
@@ -17865,7 +18213,36 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
           }
         }
-        if(detection.mode==='order' && product && isElectronicsEcom){
+        const _babyProductQuestion=/[?]/.test(userText)
+          ||/^(?:what|how|when|where|why|which|is|are|can|could|do|does|will|would|tell|explain|describe|price|cost|rate|available|delivery|cod)\b/i.test(userText.trim());
+        if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')
+          && (resolvedFromHistory||_babyProductQuestion||(state.stage&&state.stage.startsWith('baby_')))){
+          // Baby care: a question about a product (or a follow-up on an earlier one, or anything
+          // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
+          // description, price) in context — never a canned card or a human handoff.
+          routing.route='ecom_faq';
+        } else if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')){
+          // Baby care product selection: formatted card with the stored price, then the baby care
+          // actions. A missing product link is normal for custom sets (ordered via the in-chat
+          // Custom Order flow), so it no longer triggers "link not available" + human handoff.
+          const card=ecomBabyCareProductCard(product);
+          const _attachBaby=sendProductImage||sendOnlyPrimaryImage;
+          if(_attachBaby&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,card,{mediaType,langCode:replyLang,imageUrl:_attachBaby?product.image_url:null,ctx});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:false});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:false});
+          const followUp=await engineLocalizeReply(env,c,'Would you like to order this set? Tap *Custom Order* to personalise it, or ask me anything about it 😊',replyLang);
+          sentText=followUp;
+          routing.reply=`${card}\n\n${followUp}`;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,followUp,[
+            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ]);
+          if((product.shopify_product_url||product.product_link||'').trim()) await logPendingOrder(env,c,clientId,phone,name,product);
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product && isElectronicsEcom){
           // Electronics style: order signal with a resolved product → start multi-step WhatsApp flow.
           await ensureOrderCollectField(env);
           sentText=ecomElectronicsProductCard(product);
@@ -18679,6 +19056,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
+    // Product photoshoot folder — 5 random shoot images when a product is named in the message.
+    // Additive only; the per-product image/media bundle above is unchanged.
+    await engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
     // A specifically named course also sends its configured Drive media bundle. Brochure,

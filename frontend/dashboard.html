@@ -3609,7 +3609,7 @@ const ROLES = {
         <div class="card" style="margin-bottom:14px" id="manglishWordsCard">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🔤 Malayalam Manglish Words</div>
-            <div class="s-note">Some English words — like <b>Affordable</b> or <b>Luxury</b> — have no natural Malayalam equivalent and sound awkward when force-translated. List them here and the bot will keep them in their English/Manglish form instead of translating them into Malayalam script. Tap a suggestion to add it, or type your own.</div>
+            <div class="s-note">Person names, customer names, place names, and business/brand names are <b>always kept in English</b> automatically — they are never transliterated into Malayalam script. For other English words — like <b>Affordable</b> or <b>Luxury</b> — that have no natural Malayalam equivalent and sound awkward when force-translated, list them here and the bot will keep them in their English/Manglish form too. Tap a suggestion to add it, or type your own.</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 8px" id="manglishSuggestions"></div>
             <div style="flex:1;min-width:240px;max-width:520px">
               <label class="form-label">Words to keep in Manglish (comma-separated)</label>
@@ -6281,7 +6281,7 @@ function renderHumanDeals(){
   const ownerF=$id('hdOwnerFilter')?.value||'';
   const sentF=$id('hdSentimentFilter')?.value||'';
   const sort=$id('hdSort')?.value||'wait';
-  if(ownerF) queue=queue.filter(l=>l.Owner===ownerF);
+  if(ownerF) queue=queue.filter(l=>sameEmail(l.Owner,ownerF));
   if(sentF) queue=queue.filter(l=>(l.Sentiment||'Neutral')===sentF);
 
   queue=queue.slice().sort((a,b)=>{
@@ -6402,7 +6402,7 @@ function isReactivationCandidate(l){
 
 function applyLeadsViewFilter(leads){
   let out=leads;
-  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||l.Owner===myEmail);
+  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||sameEmail(l.Owner,myEmail));
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
   else if(_leadsActiveView==='unmatched') out=out.filter(l=>!l.Owner);
@@ -6419,8 +6419,8 @@ function applyLeadsViewFilter(leads){
   }
   const of=$id('leadOwnerFilter')?.value||'';
   const mineOnly=$id('leadMineOnly')?.checked;
-  if(mineOnly) out=out.filter(l=>myEmail&&l.Owner===myEmail);
-  else if(of) out=out.filter(l=>(l.Owner||'')===of);
+  if(mineOnly) out=out.filter(l=>myEmail&&sameEmail(l.Owner,myEmail));
+  else if(of) out=out.filter(l=>sameEmail(l.Owner,of));
   const sf=$id('leadScoreFilter')?.value||'';
   if(sf) out=out.filter(l=>l.Score===sf);
   const cf=$id('leadCategoryFilter')?.value||'';
@@ -9853,6 +9853,12 @@ function renderTeamMembers(){
    restricts them. The owner themselves is always unrestricted (enforced both here and, for the
    part that actually matters security-wise — which leads a travel teammate's queries can return —
    server-side in the Worker's /nocodb passthrough). */
+// Lead Owner values can differ in case from the lowercased login email (older rows, teammates
+// typed in mixed case) — an exact === hid staff's own assigned leads from them.
+function sameEmail(a,b){
+  const x=String(a||'').trim().toLowerCase();
+  return !!x && x===String(b||'').trim().toLowerCase();
+}
 function isAccountOwner(email){
   const e=String((email===undefined?myEmail:email)||'').trim().toLowerCase();
   return !!e && e===String(clientRecord?.authentik_email||'').trim().toLowerCase();
@@ -14009,8 +14015,8 @@ function getTeamMembers(){
 // a teammate who's since been removed) — better to show a stale value than silently blank it out.
 function teamMemberOptions(currentValue){
   const members=getTeamMembers();
-  const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===currentValue?' selected':''}>${esc(m.name)}${m.email===myEmail?' (you)':''}</option>`);
-  if(currentValue && !members.some(m=>m.email===currentValue)) opts.push(`<option value="${esc(currentValue)}" selected>${esc(currentValue)}</option>`);
+  const opts=members.map(m=>`<option value="${esc(m.email)}"${sameEmail(m.email,currentValue)?' selected':''}>${esc(m.name)}${m.email===myEmail?' (you)':''}</option>`);
+  if(currentValue && !members.some(m=>sameEmail(m.email,currentValue))) opts.push(`<option value="${esc(currentValue)}" selected>${esc(currentValue)}</option>`);
   return '<option value="">Unassigned</option>'+opts.join('');
 }
 
@@ -15742,7 +15748,7 @@ function renderTeamPerformance(){
   const cutoff30d=Date.now()-30*86400000;
 
   const rows=members.map(m=>{
-    const ownedLeads=allLeads.filter(l=>l.Owner===m.email);
+    const ownedLeads=allLeads.filter(l=>sameEmail(l.Owner,m.email));
     const won=ownedLeads.filter(isWonLead);
     const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
     const hot=ownedLeads.filter(l=>l.Score==='Hot').length;
@@ -15960,7 +15966,7 @@ function rptLeads(src){
     if(fromD||toD) leads=leads.filter(l=>{ const d=l.Date?new Date(l.Date):null; if(!d) return false; if(fromD&&d<fromD) return false; if(toD&&d>toD) return false; return true; });
   }
   const member=$id('rptMember')?.value||'';
-  if(member) leads=leads.filter(l=>l.Owner===member);
+  if(member) leads=leads.filter(l=>sameEmail(l.Owner,member));
   return leads;
 }
 
@@ -16181,7 +16187,7 @@ function renderReportsTeamReport(){
   const cutoff30d=Date.now()-30*86400000;
 
   const rows=members.map(m=>{
-    const ownedLeads=baseLeads.filter(l=>l.Owner===m.email);
+    const ownedLeads=baseLeads.filter(l=>sameEmail(l.Owner,m.email));
     const won=ownedLeads.filter(isWonLead);
     const active=ownedLeads.filter(l=>!TERMINAL.has(l.Stage));
     const hot=ownedLeads.filter(l=>l.Score==='Hot').length;

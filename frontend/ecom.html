@@ -360,6 +360,23 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <!-- SETTINGS TAB -->
 <div id="tabSettings" class="page">
   <div class="card">
+    <div class="card-title">Product Search — What to Share</div>
+    <div class="s-sec">
+      <span class="s-lbl">When the bot identifies a matched product, what should it share?</span>
+      <select class="s-input" id="cfgSearchShareScope">
+        <option value="">Current (Default) — keeps your existing behaviour unchanged</option>
+        <option value="product">Product only — share matched product details only; suggest browsing a related category if no match found</option>
+        <option value="product_and_category">Product + Category — share product + category photos when matched; suggest category if no match found</option>
+      </select>
+      <div class="s-hint">Default keeps the existing behaviour: the bot shares the matched product's details and photos when a product is identified, and sends the category's photos when no specific product is found but the customer names a category. "Product only" strips back to just the product — no category photos in either case; if no product is found but a relevant category is detected, the bot suggests browsing that category by name instead. "Product + Category" goes the other way: when a product is matched, the bot also sends the category's photos alongside it, and still suggests the category by name when no match is found. In all modes, the once-per-customer-per-category dedup applies so category content never repeats.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveSearchShareScope()">Save</button>
+      <span class="save-msg" id="searchShareScopeMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Order Link on Product Questions</div>
     <div class="s-sec">
       <span class="s-lbl">Share the checkout link when a customer asks about size/color/stock/price</span>
@@ -840,6 +857,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <div class="s-hint" id="pmVideoSizeWarning" style="display:none"></div>
       </div>
       <div class="s-sec"><span class="s-lbl">PDF Link</span><input class="s-input" id="pmPdfUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Photoshoot Folder Link (optional)</span>
+        <input class="s-input" id="pmPhotoshootFolder" type="url" placeholder="https://drive.google.com/drive/folders/...">
+        <div class="s-hint">Google Drive folder with this product's photoshoot images, shared as "Anyone with the link can view". When a customer mentions this product's name, 5 random images from the folder are sent in addition to the product images above.</div>
+      </div>
       <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
       <div class="s-sec">
         <span class="s-lbl">Product Link (optional)</span>
@@ -1061,6 +1083,7 @@ const PRODUCT_FIELDS = [
   { key:'audio_url',      label:'Audio Note Link' },
   { key:'video_url',      label:'Video Link' },
   { key:'pdf_url',        label:'PDF Link' },
+  { key:'photoshoot_folder_url', label:'Photoshoot Folder Link' },
   { key:'choice_options', label:'Choice Options' }
 ];
 const ORDER_FIELDS = [
@@ -1133,6 +1156,7 @@ async function init() {
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
   if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
+  document.getElementById('cfgSearchShareScope').value = ['product','product_and_category'].includes(clientRecord.ecom_search_share_scope) ? clientRecord.ecom_search_share_scope : '';
   document.getElementById('cfgLinkOnEnquiry').value = clientRecord.ecom_link_on_enquiry === 'Yes' ? 'Yes' : 'No';
   document.getElementById('cfgOrderLinkEnabled').value = ['No','Human'].includes(clientRecord.ecom_order_link_enabled) ? clientRecord.ecom_order_link_enabled : 'Yes';
   if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
@@ -1341,7 +1365,7 @@ const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'G
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
 const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod','pmAgeGroup','pmFabricType','pmSetIncludes','pmAccentColors'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmPhotoshootFolder','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -1402,6 +1426,7 @@ function openEditProductModal(id) {
   document.getElementById('pmAudioUrl').value = p.audio_url || '';
   document.getElementById('pmVideoUrl').value = p.video_url || '';
   document.getElementById('pmPdfUrl').value = p.pdf_url || '';
+  document.getElementById('pmPhotoshootFolder').value = p.photoshoot_folder_url || '';
   document.getElementById('pmDescription').value = p.description || '';
   document.getElementById('productModalTitle').textContent = 'Edit Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Changes';
@@ -1513,6 +1538,7 @@ async function submitProductForm() {
     audio_url: document.getElementById('pmAudioUrl').value.trim(),
     video_url: document.getElementById('pmVideoUrl').value.trim(),
     pdf_url: document.getElementById('pmPdfUrl').value.trim(),
+    photoshoot_folder_url: document.getElementById('pmPhotoshootFolder').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
   body.client_id = clientId;
@@ -2554,6 +2580,15 @@ async function saveTableIds() {
     loadProducts();
     loadOrders();
   } catch (e) { showMsg('tableIdsMsg', 'Error: ' + e.message, 6000); }
+}
+
+async function saveSearchShareScope() {
+  const value = document.getElementById('cfgSearchShareScope').value;
+  try {
+    await patchClient({ ecom_search_share_scope: value });
+    clientRecord.ecom_search_share_scope = value;
+    showMsg('searchShareScopeMsg', 'Saved ✓');
+  } catch (e) { showMsg('searchShareScopeMsg', 'Error: ' + e.message, 6000); }
 }
 
 async function saveLinkOnEnquiry() {

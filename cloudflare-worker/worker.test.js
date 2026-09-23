@@ -9,6 +9,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  driveFolderId,
+  driveParseFolderImageIds,
+  ecomPhotoshootMatchProduct,
+  driveSniffImageType,
+  engineMaybeSendProductPhotoshoot,
+  engineResolveLeadOwner,
   engineTruncateButtonTitle,
   engineTextSimilarity,
   engineCombineBufferedChatwootBodies,
@@ -58,6 +64,8 @@ import {
   ecomIsGenericProductCatalogueQuery,
   ecomFashionFieldChoices,
   ecomFashionOrderItems,
+  ecomFormatProductPrice,
+  ecomBabyCareProductCard,
   eduAdmissionWantsStart,
   eduAdmissionWantsAdvisor,
   eduResolveAdmissionCourse,
@@ -1290,5 +1298,177 @@ describe('Global consecutive-message aggregation', () => {
     ]);
     assert.equal(latest.content,'Tomorrow');
     assert.equal(body.content,'Book dental cleaning\nTomorrow');
+  });
+});
+
+describe('baby care product card', () => {
+  test('formats price with rupee symbol and Indian grouping', () => {
+    assert.equal(ecomFormatProductPrice(1250,'INR'),'₹1,250');
+    assert.equal(ecomFormatProductPrice('125000',''),'₹1,25,000');
+    assert.equal(ecomFormatProductPrice(49.5,'AED'),'AED 49.5');
+    assert.equal(ecomFormatProductPrice(0,'INR'),'');
+    assert.equal(ecomFormatProductPrice(null,'INR'),'');
+  });
+  test('shows name, description and price; no link line or handoff text when link missing', () => {
+    const card=ecomBabyCareProductCard({name:'Luxury Newborn Baby Set',description:'Luxury Handwork Newborn Baby Set',price:1850,currency:'INR'});
+    assert.equal(card,'🍼 *Luxury Newborn Baby Set*\n\nLuxury Handwork Newborn Baby Set\n\n💰 *Price:* ₹1,850');
+    assert.ok(!/not available/i.test(card));
+  });
+  test('bullets multi-line descriptions and includes link when present', () => {
+    const card=ecomBabyCareProductCard({name:'Set',description:'Romper\n- Cap\nMittens',price:900,product_link:'https://x.test/p'});
+    assert.match(card,/• Romper\n• Cap\n• Mittens/);
+    assert.match(card,/🛒 \*Order online:\* https:\/\/x.test\/p/);
+  });
+});
+
+describe('engineResolveLeadOwner round-robin', () => {
+  const client = (routing, extra={}) => ({
+    authentik_email: 'Owner@Biz.com',
+    team_emails: 'owner@biz.com,Alice@Biz.com,bob@biz.com',
+    lead_routing: JSON.stringify(routing),
+    ...extra,
+  });
+  // Serves the client row from NocoDB and records the rrIndex patches, so consecutive calls see
+  // the pointer advance exactly as they would against the live table.
+  function mockNocodb(c){
+    const realFetch=globalThis.fetch;
+    globalThis.fetch=async (url, opts={}) => {
+      if((opts.method||'GET')==='PATCH'){ Object.assign(c, JSON.parse(opts.body)); return new Response('{}'); }
+      return new Response(JSON.stringify(c));
+    };
+    return () => { globalThis.fetch=realFetch; };
+  }
+  const env = { NOCODB_BASE: 'http://nc.test', NOCODB_TOKEN: 't' };
+
+  test('rotates through staff only, never the owner or removed teammates', async () => {
+    const c = client({ enabled: true, modes: ['roundrobin'], rules: {
+      'owner@biz.com': { inPool: true }, 'alice@biz.com': { inPool: true },
+      'bob@biz.com': { inPool: true }, 'gone@biz.com': { inPool: true },
+    } });
+    const restore = mockNocodb(c);
+    try {
+      const owners = [];
+      for (let i = 0; i < 4; i++) {
+        const body = {};
+        await engineResolveLeadOwner(env, c, 1, body, { phone: '9' + i }, true);
+        owners.push(body.Owner);
+      }
+      assert.deepEqual(owners, ['alice@biz.com', 'bob@biz.com', 'alice@biz.com', 'bob@biz.com']);
+    } finally { restore(); }
+  });
+
+  test('ignores an owner catch-all and legacy non-email agent names', async () => {
+    const restore = mockNocodb({});
+    try {
+      const a = {};
+      await engineResolveLeadOwner(env, client({ enabled: true, modes: [], catchall: 'owner@biz.com' }), 1, a, {}, true);
+      assert.equal(a.Owner, undefined);
+      const b = {};
+      await engineResolveLeadOwner(env, client({}, { agents: 'Rahul\nPriya' }), 1, b, { phone: '1' }, true);
+      assert.equal(b.Owner, undefined);
+    } finally { restore(); }
+  });
+});
+
+describe('Ecom product photoshoot folder', () => {
+  test('driveFolderId handles folder share-link shapes', () => {
+    assert.equal(driveFolderId('https://drive.google.com/drive/folders/1AbC_d-9?usp=sharing'), '1AbC_d-9');
+    assert.equal(driveFolderId('https://drive.google.com/drive/u/0/folders/XYZ123'), 'XYZ123');
+    assert.equal(driveFolderId('https://drive.google.com/open?id=QQQ'), 'QQQ');
+    assert.equal(driveFolderId('https://example.com/folders/abc'), null);
+    assert.equal(driveFolderId(''), null);
+  });
+
+  test('driveParseFolderImageIds keeps images and skips sub-folders and non-images', () => {
+    const entry = (id, href, title) => `<div class="flip-entry" id="entry-${id}" tabindex="0"><div class="flip-entry-info"><a href="${href}"><div class="flip-entry-title">${title}</div></a></div></div>`;
+    const html = '<html>' +
+      entry('img1', 'https://drive.google.com/file/d/img1/view?usp=drive_web', 'shot-01.JPG') +
+      entry('sub1', 'https://drive.google.com/drive/folders/sub1', 'Raw') +
+      entry('doc1', 'https://drive.google.com/file/d/doc1/view', 'notes.pdf') +
+      entry('img2', 'https://drive.google.com/file/d/img2/view', 'shot-02.png') +
+      entry('img3', 'https://drive.google.com/file/d/img3/view', 'untitled') +
+      '</html>';
+    assert.deepEqual(driveParseFolderImageIds(html), ['img1', 'img2', 'img3']);
+    assert.deepEqual(driveParseFolderImageIds(''), []);
+  });
+
+  test('ecomPhotoshootMatchProduct matches exact or all-words product names', () => {
+    const folder = 'https://drive.google.com/drive/folders/F1';
+    const products = [
+      { Id: 1, name: 'Sofa Set', photoshoot_folder_url: folder },
+      { Id: 2, name: 'Royal Sofa Set', photoshoot_folder_url: folder },
+      { Id: 3, name: 'Teak Dining Table', short_label: 'Teak Table', photoshoot_folder_url: folder },
+      { Id: 4, name: 'Office Chair' },
+    ];
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Royal Sofa Set')?.Id, 2);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'price of the sofa set?')?.Id, 1);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'do you have the dining table in teak')?.Id, 3);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'teak table photos')?.Id, 3);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'office chair please'), null);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'show me sofas'), null);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'hi'), null);
+  });
+
+  test('driveParseFolderImageIds reads the drive/folders page JS data (image mime only, this folder only)', () => {
+    const q = '\\x22';
+    const row = (id, parent, name, mime) => `[${q}${id}${q},[${q}${parent}${q}],${q}${name}${q},${q}${mime}${q},0]`;
+    const html = `<script>window['_DRIVE_ivd'] = '[[${row('A'.repeat(28), 'FOLDER1', 'a.jpg', 'image/jpeg')},${row('B'.repeat(28), 'FOLDER1', 'b.pdf', 'application/pdf')},${row('C'.repeat(28), 'OTHER', 'c.jpg', 'image/jpeg')},${row('D'.repeat(28), 'FOLDER1', 'd.png', 'image/png')}]]';</script>`;
+    assert.deepEqual(driveParseFolderImageIds(html, 'FOLDER1'), ['A'.repeat(28), 'D'.repeat(28)]);
+  });
+
+  test('ecomPhotoshootMatchProduct matches a truncated WhatsApp button tap', () => {
+    const products = [{ Id: 9, name: 'Premium Leather Recliner Sofa', photoshoot_folder_url: 'https://drive.google.com/drive/folders/F' }];
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec...')?.Id, 9);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec…')?.Id, 9);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec'), null);
+  });
+
+  test('driveSniffImageType accepts JPEG/PNG bytes and rejects HTML', () => {
+    assert.equal(driveSniffImageType(new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0])), 'image/jpeg');
+    assert.equal(driveSniffImageType(new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), 'image/png');
+    assert.equal(driveSniffImageType(new TextEncoder().encode('<!DOCTYPE html>')), null);
+  });
+
+  test('named product sends 5 random folder images to Chatwoot as inline JPEG attachments', async () => {
+    const folderId = 'FOLDERxyz';
+    const fileIds = Array.from({ length: 8 }, (_, i) => `file${i}`);
+    const html = fileIds.map(id => `<div class="flip-entry" id="entry-${id}"><a href="https://drive.google.com/file/d/${id}/view"><div class="flip-entry-title">${id}.jpg</div></a></div>`).join('')
+      + '<div class="flip-entry" id="entry-sub"><a href="https://drive.google.com/drive/folders/sub"><div class="flip-entry-title">RAW</div></a></div>';
+    const jpeg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4]);
+    const products = [{ Id: 1, name: 'Royal Sofa Set', photoshoot_folder_url: `https://drive.google.com/drive/folders/${folderId}?usp=sharing` }];
+    const kvStore = new Map([['ecom_products:7', JSON.stringify(products)]]);
+    const env = { MATRI_CACHE: { get: async k => kvStore.get(k) ?? null, put: async (k, v) => kvStore.set(k, v), delete: async k => kvStore.delete(k) } };
+    const c = { industry: 'ecommerce', chatwoot_base: 'https://cw.test', chatwoot_account_id: 3, chatwoot_token: 't' };
+    const posts = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      url = String(url);
+      if (url.startsWith('https://drive.google.com/embeddedfolderview')) return new Response(html, { status: 200 });
+      if (url.startsWith('https://drive.google.com/thumbnail')) return new Response(jpeg, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+      if (url.startsWith('https://cw.test/')) { posts.push({ url, body: init.body }); return new Response('{}', { status: 200 }); }
+      return new Response('nope', { status: 404 });
+    };
+    try {
+      await engineMaybeSendProductPhotoshoot(env, c, 7, 55, 'Is the royal sofa set available?');
+      assert.equal(posts.length, 5);
+      const seen = new Set();
+      for (const p of posts) {
+        assert.equal(p.url, 'https://cw.test/api/v1/accounts/3/conversations/55/messages');
+        const file = p.body.get('attachments[]');
+        assert.equal(file.type, 'image/jpeg');
+        assert.match(file.name, /\.jpg$/);
+        assert.equal(p.body.get('message_type'), 'outgoing');
+        seen.add(file.name);
+      }
+      assert.equal(seen.size, 5);
+      assert.ok(kvStore.has(`drive_folder_images:${folderId}`));
+      assert.deepEqual(JSON.parse(kvStore.get(`drive_folder_images:${folderId}`)), fileIds);
+
+      posts.length = 0;
+      await engineMaybeSendProductPhotoshoot(env, c, 7, 55, 'what are your shop timings?');
+      assert.equal(posts.length, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });

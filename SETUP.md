@@ -8422,3 +8422,22 @@ saved value; **Clear credentials** removes them. Keep Riya and TripJack in sandb
 UAT/certification passes. SerpApi Google Flights is always non-bookable comparison data; only a
 revalidated Riya or TripJack offer can become a booking. Never point staging at production
 credentials or the production D1 database.
+
+## Product photoshoot folder (`frontend/ecom.html` — Ecommerce products)
+
+Each product has an optional **Photoshoot Folder Link** (`photoshoot_folder_url`) — a Google Drive
+folder shared as "Anyone with the link can view". When a customer's message names the product
+(exact name / short label, or every word of it in any order), `engineMaybeSendProductPhotoshoot`
+(worker.js) sends **5 random images** from that folder after the turn's reply. This is additive:
+the existing product image/media bundle and its tier/window rules are unchanged.
+
+- Folder listing: Drive API when the optional `GOOGLE_DRIVE_API_KEY` secret is set, then Drive's
+  public embedded folder view, then the normal `drive/folders/<id>` page. Cached in KV for 10 min.
+- Each image is fetched as a real JPEG/PNG ≤5 MB (Drive thumbnail → lh3 CDN → original, verified
+  by magic bytes) and posted to Chatwoot as an image attachment, so WhatsApp shows it inline.
+  The shuffled folder is walked until 5 images deliver. An empty/private folder or zero delivered
+  images is reported via the ops alert (`engineMaybeSendProductPhotoshoot`).
+- A truncated WhatsApp button tap ("Royal Sofa Se...") also counts as naming the product.
+- Run `wrangler d1 migrations apply leadvyne-d1 --remote` for
+  `migrations/0099_ecom_product_photoshoot_folder.sql` (the D1 product mirror also self-adds the
+  column on first save if the migration hasn't run yet).
