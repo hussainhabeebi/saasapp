@@ -7106,7 +7106,7 @@ const _ecomStyleFieldsEnsured=new Set();
 // that judgment call themselves; the enquiry route's category/product picker (below) prefers it
 // over the full name, falling back to auto-truncating the full name when it's blank (the common
 // case — most product names are already short enough).
-const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors'];
+const ECOM_STYLE_FIELD_TITLES=['style','category','shade','skin_type','volume_ml','expiry_date','hair_type','concern','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','image_url','image_url_2','image_url_3','image_url_4','image_url_5','audio_url','video_url','pdf_url','short_label','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ensureEcomProductStyleFields(env, tableId){
   if(!tableId || _ecomStyleFieldsEnsured.has(tableId)) return;
   try{
@@ -7403,7 +7403,7 @@ async function ecomRepairFieldType(env, tableId, fieldTitle){
 // repeat edits update the same row instead of piling up duplicates. NocoDB (via ecomResolveTable)
 // stays the source of truth ecom.html actually reads from — this is a backup only, so a D1 hiccup
 // here is logged and swallowed rather than ever failing the product save itself.
-const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options','age_group','fabric_type','set_includes','accent_colors'];
+const ECOM_MIRROR_COLUMNS=['name','sku','category','style','color','size','shade','skin_type','expiry_date','hair_type','concern','volume_ml','ingredient','brand','variant','warranty_period','shopify_product_url','product_link','price','currency','stock','status','image_url','audio_url','video_url','pdf_url','description','choice_options','age_group','fabric_type','set_includes','accent_colors','photoshoot_folder_url'];
 async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
   if(!env.DB || !clientId || !nocodbId) return;
   try{
@@ -7411,10 +7411,17 @@ async function ecomMirrorProductToD1(env, clientId, nocodbId, saved){
     const cols=['client_id','nocodb_id', ...ECOM_MIRROR_COLUMNS, 'created_at','updated_at'];
     const vals=[Number(clientId), Number(nocodbId), ...ECOM_MIRROR_COLUMNS.map(k=>saved[k]??null), now, now];
     const updateSet=ECOM_MIRROR_COLUMNS.map(k=>`${k}=excluded.${k}`).concat('updated_at=excluded.updated_at').join(', ');
-    await env.DB.prepare(
+    const upsert=()=>env.DB.prepare(
       `INSERT INTO ecom_products_mirror (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})
        ON CONFLICT(client_id, nocodb_id) DO UPDATE SET ${updateSet}`
     ).bind(...vals).run();
+    try{ await upsert(); }
+    catch(e){
+      // migrations/0099 not applied yet — add the photoshoot column once and retry.
+      if(!/photoshoot_folder_url/.test(e.message||'')) throw e;
+      await env.DB.prepare(`ALTER TABLE ecom_products_mirror ADD COLUMN photoshoot_folder_url TEXT`).run().catch(()=>{});
+      await upsert();
+    }
   }catch(e){ console.error('[ecomMirrorProductToD1] failed for client', clientId, 'nocodb id', nocodbId, ':', e.message); }
 }
 
@@ -9186,6 +9193,191 @@ async function engineMaybeSendProductTestimonial(env, c, clientId, convId, resol
     await env.DB.prepare(`INSERT OR IGNORE INTO ecom_testimonial_sent (client_id, lead_id, product_id, testimonial_id, sent_at) VALUES (?,?,?,?,?)`)
       .bind(Number(clientId), resolvedLeadId, product.Id, bestMatch.id, new Date().toISOString()).run();
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductTestimonial', e, {clientId, convId}); }
+}
+
+/* ── PRODUCT PHOTOSHOOT FOLDER — an optional Google Drive folder link per product (ecom.html's
+   "Photoshoot Folder Link", stored as photoshoot_folder_url). Whenever a customer's message names
+   a product exactly (or contains every word of its name / short label), 5 random images from that
+   folder are sent as extra attachments. Purely additive: it runs after the turn's reply and never
+   touches the existing per-product image/media bundle or its tier/window logic. The folder must be
+   shared "Anyone with the link can view" — listed via the Drive API when GOOGLE_DRIVE_API_KEY is
+   set, otherwise via Drive's public embedded folder view. */
+const ECOM_PHOTOSHOOT_SEND_COUNT=5;
+const ECOM_PHOTOSHOOT_IMAGE_RE=/\.(?:jpe?g|png|webp|gif|heic|heif|bmp|tiff?)$/i;
+
+// Extracts a Drive folder id from drive.google.com/drive/folders/<id> (incl. /drive/u/0/folders/…)
+// or an "open?id=<id>" link. Returns null for anything that isn't a Drive link.
+export function driveFolderId(url){
+  if(!url) return null;
+  try{
+    const parsed=new URL(String(url).trim());
+    if(parsed.hostname.toLowerCase()!=='drive.google.com') return null;
+    const m=parsed.pathname.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    return m?.[1]||parsed.searchParams.get('id')?.match(/^[a-zA-Z0-9_-]+$/)?.[0]||null;
+  }catch(e){ return null; }
+}
+
+// Parses a public Drive folder page into the file ids of its image entries. Three shapes, tried in
+// order: (1) embeddedfolderview's `flip-entry` blocks (id="entry-<fileId>", flip-entry-title
+// filename) — sub-folders and non-image files skipped, extension-less titles kept; (2) the
+// drive/folders/<id> page's escaped JS data (`["<fileId>",["<folderId>"],"name","image/jpeg",…`),
+// kept only when its mime type is image/*; (3) any /file/d/<id> link left on the page.
+export function driveParseFolderImageIds(html, folderId=''){
+  const src=String(html||'');
+  const ids=[];
+  const seen=new Set();
+  const add=id=>{ if(id && id!==folderId && !seen.has(id)){ seen.add(id); ids.push(id); } };
+  for(const part of src.split(/<div class="flip-entry"/).slice(1)){
+    const id=part.match(/id="entry-([a-zA-Z0-9_-]+)"/)?.[1];
+    if(!id) continue;
+    if(/\/drive\/(?:u\/\d+\/)?folders\//.test(part.slice(0,600))) continue;
+    const title=(part.match(/class="flip-entry-title">([^<]*)</)?.[1]||'').trim();
+    if(title && /\.[a-z0-9]{2,5}$/i.test(title) && !ECOM_PHOTOSHOOT_IMAGE_RE.test(title)) continue;
+    add(id);
+  }
+  if(ids.length) return ids;
+  const decoded=src
+    .replace(/\\x([0-9a-fA-F]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\+(["/])/g,'$1');
+  const dataRe=/\["([a-zA-Z0-9_-]{20,})",\[("[a-zA-Z0-9_-]+"(?:,"[a-zA-Z0-9_-]+")*)\],"[^"]*","([a-z]+\/[a-zA-Z0-9.+-]+)"/g;
+  for(const m of decoded.matchAll(dataRe)){
+    if(folderId && !m[2].includes(`"${folderId}"`)) continue;
+    if(m[3].startsWith('image/')) add(m[1]);
+  }
+  if(ids.length) return ids;
+  for(const m of decoded.matchAll(/\/file\/d\/([a-zA-Z0-9_-]{20,})/g)) add(m[1]);
+  return ids;
+}
+
+const DRIVE_BROWSER_HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36','Accept-Language':'en-US,en;q=0.9'};
+
+// Lists the image file ids in a public Drive folder, cached in KV for 10 minutes so every product
+// mention doesn't re-list the folder. Drive API (when GOOGLE_DRIVE_API_KEY is set) first, then the
+// public embedded folder view, then the normal folder page. Returns [] (never throws).
+async function driveListFolderImageIds(env, folderId){
+  if(!folderId) return [];
+  const kv=_kv(env);
+  const cacheKey=`drive_folder_images:${folderId}`;
+  if(kv){ try{ const v=await kv.get(cacheKey); if(v){ const cached=JSON.parse(v); if(cached?.length) return cached; } }catch(e){} }
+  let ids=[];
+  if(env.GOOGLE_DRIVE_API_KEY){
+    try{
+      let pageToken='';
+      do{
+        const q=encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed=false`);
+        const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=${env.GOOGLE_DRIVE_API_KEY}${pageToken?`&pageToken=${pageToken}`:''}`);
+        if(!r.ok){ console.error('[driveListFolderImageIds] Drive API', r.status, folderId); break; }
+        const d=await r.json().catch(()=>({}));
+        ids.push(...(d.files||[]).map(f=>f.id).filter(Boolean));
+        pageToken=d.nextPageToken||'';
+      }while(pageToken && ids.length<5000);
+    }catch(e){ console.error('[driveListFolderImageIds] Drive API failed', folderId, e.message); }
+  }
+  for(const url of [`https://drive.google.com/embeddedfolderview?id=${folderId}`, `https://drive.google.com/drive/folders/${folderId}`]){
+    if(ids.length) break;
+    try{
+      const r=await fetch(url, {headers:DRIVE_BROWSER_HEADERS});
+      if(r.ok) ids=driveParseFolderImageIds(await r.text(), folderId);
+      else console.error('[driveListFolderImageIds]', r.status, url);
+    }catch(e){ console.error('[driveListFolderImageIds] fetch failed', url, e.message); }
+  }
+  if(kv && ids.length){ try{ await kv.put(cacheKey, JSON.stringify(ids), {expirationTtl:600}); }catch(e){} }
+  return ids;
+}
+
+// Sniffs JPEG/PNG from the first bytes — Drive/lh3 sometimes omit or generalise Content-Type, and
+// an HTML sign-in/virus-scan page must never be attached as "the photo".
+export function driveSniffImageType(bytes){
+  const b=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes||[]);
+  if(b.length>=3 && b[0]===0xFF && b[1]===0xD8 && b[2]===0xFF) return 'image/jpeg';
+  if(b.length>=8 && b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47) return 'image/png';
+  return null;
+}
+
+// Fetches one public Drive image as a WhatsApp-ready JPEG/PNG blob (≤5 MB) so Chatwoot stores it
+// as an image attachment and WhatsApp shows it inline — not as a document/file. Tries Drive's
+// resized thumbnail, then the lh3 CDN rendition, then the original file; returns null if none of
+// them yields a real JPEG/PNG under the cap.
+async function driveFetchChatImage(fileId){
+  const urls=[
+    `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`,
+    `https://lh3.googleusercontent.com/d/${fileId}=w1600`,
+    `https://drive.google.com/uc?export=view&id=${fileId}`,
+  ];
+  for(const url of urls){
+    try{
+      const r=await fetch(url, {headers:{...DRIVE_BROWSER_HEADERS, Accept:'image/jpeg,image/png;q=0.9,*/*;q=0.5'}, redirect:'follow'});
+      if(!r.ok) continue;
+      const buf=await r.arrayBuffer();
+      if(!buf.byteLength || buf.byteLength>5242880) continue;
+      const type=driveSniffImageType(new Uint8Array(buf,0,Math.min(16,buf.byteLength)));
+      if(!type) continue;
+      return new Blob([buf], {type});
+    }catch(e){}
+  }
+  return null;
+}
+
+// Picks the one product whose name (or short label) the customer mentioned: an exact/contained
+// phrase match wins, otherwise every word of the name must appear in the message (any order), or a
+// WhatsApp button tap truncated with "..."/"…" must be a prefix of the name. Longest matching name
+// wins so "Royal Sofa Set" beats "Sofa Set". Only products with a photoshoot folder are considered.
+export function ecomPhotoshootMatchProduct(products, message){
+  const raw=String(message||'').trim();
+  const text=ecomNormalizeCatalogueText(raw);
+  if(!text) return null;
+  const padded=` ${text} `;
+  const words=new Set(text.split(' ').map(ecomCatalogueTokenRoot));
+  const truncated=/(?:\.\.\.|…)$/.test(raw)?text:'';
+  let best=null, bestScore=0;
+  for(const p of products||[]){
+    if(!String(p?.photoshoot_folder_url||'').trim()) continue;
+    for(const label of [p.name, p.short_label]){
+      const norm=ecomNormalizeCatalogueText(label);
+      if(norm.length<3) continue;
+      let score=0;
+      if(padded.includes(` ${norm} `)) score=1000+norm.length;
+      else if(truncated.length>=4 && norm.startsWith(truncated)) score=500+truncated.length;
+      else{
+        const tokens=norm.split(' ').filter(Boolean);
+        if(tokens.length>=2 && tokens.every(t=>words.has(ecomCatalogueTokenRoot(t)))) score=norm.length;
+      }
+      if(score>bestScore){ best=p; bestScore=score; }
+    }
+  }
+  return best;
+}
+
+export async function engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText){
+  if(c.industry!=='ecommerce' || !convId || !userText) return;
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
+  try{
+    const products=await ecomListActiveProducts(env, clientId);
+    const product=ecomPhotoshootMatchProduct(products, userText);
+    if(!product) return;
+    const folderId=driveFolderId(product.photoshoot_folder_url);
+    if(!folderId){ console.error('[engineMaybeSendProductPhotoshoot] not a Drive folder link for product', product.Id); return; }
+    const pool=[...await driveListFolderImageIds(env, folderId)];
+    if(!pool.length){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('photoshoot folder empty or not public'), {clientId, productId:product.Id, folderId}); return; }
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    // Walk the shuffled pool until 5 images actually deliver, so one unreadable file doesn't
+    // shrink the set; capped so a broken folder can't burn the whole request.
+    let sent=0;
+    for(const fileId of pool.slice(0,ECOM_PHOTOSHOOT_SEND_COUNT*3)){
+      if(sent>=ECOM_PHOTOSHOOT_SEND_COUNT) break;
+      const blob=await driveFetchChatImage(fileId);
+      if(!blob) continue;
+      const fd=new FormData();
+      fd.append('content','');
+      fd.append('message_type','outgoing'); fd.append('private','false');
+      fd.append('attachments[]', blob, `photoshoot-${sent+1}.${blob.type==='image/png'?'png':'jpg'}`);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sent++;
+      else console.error('[engineMaybeSendProductPhotoshoot] Chatwoot attach failed', r.status);
+    }
+    if(!sent) await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('no photoshoot image could be fetched/sent'), {clientId, productId:product.Id, folderId});
+  }catch(e){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', e, {clientId, convId}); }
 }
 
 /* ── PRODUCT DESCRIPTION whenever a product is asked about — no new field, reuses the existing
@@ -18864,6 +19056,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Testimonials (migrations/0046_ecom_testimonials.sql) — matchedProduct is whatever
     // product the order-detection block above resolved this turn, if any.
     await engineMaybeSendProductTestimonial(env, c, clientId, convId, resolvedLeadId, matchedProduct);
+    // Product photoshoot folder — 5 random shoot images when a product is named in the message.
+    // Additive only; the per-product image/media bundle above is unchanged.
+    await engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText);
     // Education hooks (migrations/0060-0064) — category photos and scholarship offers, same
     // layering as ecom category media / promo offer above.
     // A specifically named course also sends its configured Drive media bundle. Brochure,

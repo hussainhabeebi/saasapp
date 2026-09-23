@@ -857,6 +857,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <div class="s-hint" id="pmVideoSizeWarning" style="display:none"></div>
       </div>
       <div class="s-sec"><span class="s-lbl">PDF Link</span><input class="s-input" id="pmPdfUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Photoshoot Folder Link (optional)</span>
+        <input class="s-input" id="pmPhotoshootFolder" type="url" placeholder="https://drive.google.com/drive/folders/...">
+        <div class="s-hint">Google Drive folder with this product's photoshoot images, shared as "Anyone with the link can view". When a customer mentions this product's name, 5 random images from the folder are sent in addition to the product images above.</div>
+      </div>
       <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
       <div class="s-sec">
         <span class="s-lbl">Product Link (optional)</span>
@@ -1078,6 +1083,7 @@ const PRODUCT_FIELDS = [
   { key:'audio_url',      label:'Audio Note Link' },
   { key:'video_url',      label:'Video Link' },
   { key:'pdf_url',        label:'PDF Link' },
+  { key:'photoshoot_folder_url', label:'Photoshoot Folder Link' },
   { key:'choice_options', label:'Choice Options' }
 ];
 const ORDER_FIELDS = [
@@ -1359,7 +1365,7 @@ const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'G
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
 const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod','pmAgeGroup','pmFabricType','pmSetIncludes','pmAccentColors'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmPhotoshootFolder','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -1420,6 +1426,7 @@ function openEditProductModal(id) {
   document.getElementById('pmAudioUrl').value = p.audio_url || '';
   document.getElementById('pmVideoUrl').value = p.video_url || '';
   document.getElementById('pmPdfUrl').value = p.pdf_url || '';
+  document.getElementById('pmPhotoshootFolder').value = p.photoshoot_folder_url || '';
   document.getElementById('pmDescription').value = p.description || '';
   document.getElementById('productModalTitle').textContent = 'Edit Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Changes';
@@ -1531,6 +1538,7 @@ async function submitProductForm() {
     audio_url: document.getElementById('pmAudioUrl').value.trim(),
     video_url: document.getElementById('pmVideoUrl').value.trim(),
     pdf_url: document.getElementById('pmPdfUrl').value.trim(),
+    photoshoot_folder_url: document.getElementById('pmPhotoshootFolder').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
   body.client_id = clientId;
