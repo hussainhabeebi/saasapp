@@ -10004,6 +10004,7 @@ function applyUserModulePermissions(){
   if(!mine||!Array.isArray(mine.modules)) return; // no restriction saved = full access
   const allowed=new Set(mine.modules);
   MODULE_PERMISSIONS.forEach(m=>{
+    if(m.key==='leads') return; // Leads is always visible regardless of role or industry
     if(allowed.has(m.key)) return;
     document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
   });
@@ -10103,9 +10104,10 @@ function renderUserProfileModal(email){
 
   const enabledModuleKeys=getEnabledModuleKeys();
   const moduleRows=MODULE_PERMISSIONS.filter(m=>enabledModuleKeys.includes(m.key)).map(m=>{
-    const checked=owner || modules===null || modules.includes(m.key);
-    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit?'':'opacity:.75'}">
-      <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit?'':'disabled'}> ${m.label}
+    const alwaysOn=m.key==='leads'; // Leads is always accessible — cannot be revoked
+    const checked=alwaysOn || owner || modules===null || modules.includes(m.key);
+    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit&&!alwaysOn?'':'opacity:.75'}" ${alwaysOn?'title="Leads access cannot be removed"':''}>
+      <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit&&!alwaysOn?'':'disabled'}> ${m.label}
     </label>`;
   }).join('');
   const roleOptions=Object.entries(ROLES).map(([k,r])=>`<option value="${k}"${perms.role===k?' selected':''}>${r.label}</option>`).join('')
