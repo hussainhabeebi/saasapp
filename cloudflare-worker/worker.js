@@ -11761,6 +11761,14 @@ function engineParseSalesReps(raw){
 function engineGetLeadRouting(c){
   try{ return JSON.parse(c.lead_routing||'{}'); }catch(e){ return {}; }
 }
+// Staff emails that auto-routing may assign leads to: current team_emails, lowercased, minus the
+// account owner. Lead visibility for staff is an exact email match against Owner, so anything
+// outside this set (the owner, a removed teammate, a legacy free-text name) would be a lead no
+// staff member can see.
+function engineRoutableStaffEmails(c){
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  return new Set(String(c?.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(e=>e&&e!==owner));
+}
 
 // Location keys the bot may store city/area answers under in QualAnswers — same list as the
 // frontend Splits view so routing and display always agree.
@@ -11777,14 +11785,17 @@ function engineExtractCityFromQual(qualAnswers){
 // 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
 // Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
 // When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
-async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
   const routing=engineGetLeadRouting(c);
+  const staff=engineRoutableStaffEmails(c);
+  const isStaff=e=>staff.has(String(e||'').trim().toLowerCase());
 
   if(!routing.enabled){
-    // Legacy fallback: phone-hash across c.agents (behaviour preserved from before this feature)
-    const reps=engineParseSalesReps(c.agents);
+    // Legacy fallback: phone-hash across c.agents. That field used to be free-text names, which
+    // never match a staff login — only entries that are real (non-owner) teammate emails count.
+    const reps=engineParseSalesReps(c.agents).map(r=>String(r).trim().toLowerCase()).filter(isStaff);
     if(reps.length){
       let h=0; const ps=String(state.phone||'');
       for(let i=0;i<ps.length;i++) h=(h*31+ps.charCodeAt(i))|0;
@@ -11794,7 +11805,13 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
   }
 
   const modes=Array.isArray(routing.modes)?routing.modes:[];
-  const rules=routing.rules||{};
+  // Rules are keyed by email; drop the owner and anyone no longer on the team, and normalise
+  // case so the stored Owner matches the lowercased login email staff are filtered by.
+  const rules={};
+  for(const [email,r] of Object.entries(routing.rules||{})){
+    const e=String(email).trim().toLowerCase();
+    if(isStaff(e)) rules[e]=r||{};
+  }
 
   const get=f=>leadBody[f]||state.lead?.[f]||'';
 
@@ -11837,19 +11854,26 @@ async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLe
 
   // ── Priority 3: Round-Robin pool ─────────────────────────────────────────────
   if(modes.includes('roundrobin')){
-    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e);
+    const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e).sort();
     if(pool.length){
-      const idx=Number(routing.rrIndex||0)%pool.length;
+      // `c` can be a KV-cached copy from before the previous lead advanced rrIndex, which would
+      // hand consecutive leads to the same rep — read the live pointer straight from NocoDB.
+      let live=routing;
+      try{
+        const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${clientId}`);
+        if(r.ok){ const fresh=await r.json(); live=JSON.parse(fresh?.lead_routing||'{}')||routing; }
+      }catch(e){}
+      const idx=(Number(live.rrIndex)||0)%pool.length;
       leadBody.Owner=pool[idx];
       // Persist the next index so the following lead goes to the next rep
-      const nextRouting={...routing, rrIndex:(idx+1)%pool.length};
-      patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
+      const nextRouting={...live, rrIndex:(idx+1)%pool.length};
+      await patchClientFields(env, clientId, {lead_routing:JSON.stringify(nextRouting)}).catch(()=>{});
       return;
     }
   }
 
   // ── Priority 4: Catch-all ────────────────────────────────────────────────────
-  if(routing.catchall){ leadBody.Owner=routing.catchall; return; }
+  if(isStaff(routing.catchall)){ leadBody.Owner=String(routing.catchall).trim().toLowerCase(); return; }
   // Otherwise: Unmatched — lead stays without an Owner
 }
 
