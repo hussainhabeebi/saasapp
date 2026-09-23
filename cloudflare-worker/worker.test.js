@@ -9,6 +9,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  engineResolveLeadOwner,
   engineTruncateButtonTitle,
   engineTextSimilarity,
   engineCombineBufferedChatwootBodies,
@@ -1312,5 +1313,54 @@ describe('baby care product card', () => {
     const card=ecomBabyCareProductCard({name:'Set',description:'Romper\n- Cap\nMittens',price:900,product_link:'https://x.test/p'});
     assert.match(card,/• Romper\n• Cap\n• Mittens/);
     assert.match(card,/🛒 \*Order online:\* https:\/\/x.test\/p/);
+  });
+});
+
+describe('engineResolveLeadOwner round-robin', () => {
+  const client = (routing, extra={}) => ({
+    authentik_email: 'Owner@Biz.com',
+    team_emails: 'owner@biz.com,Alice@Biz.com,bob@biz.com',
+    lead_routing: JSON.stringify(routing),
+    ...extra,
+  });
+  // Serves the client row from NocoDB and records the rrIndex patches, so consecutive calls see
+  // the pointer advance exactly as they would against the live table.
+  function mockNocodb(c){
+    const realFetch=globalThis.fetch;
+    globalThis.fetch=async (url, opts={}) => {
+      if((opts.method||'GET')==='PATCH'){ Object.assign(c, JSON.parse(opts.body)); return new Response('{}'); }
+      return new Response(JSON.stringify(c));
+    };
+    return () => { globalThis.fetch=realFetch; };
+  }
+  const env = { NOCODB_BASE: 'http://nc.test', NOCODB_TOKEN: 't' };
+
+  test('rotates through staff only, never the owner or removed teammates', async () => {
+    const c = client({ enabled: true, modes: ['roundrobin'], rules: {
+      'owner@biz.com': { inPool: true }, 'alice@biz.com': { inPool: true },
+      'bob@biz.com': { inPool: true }, 'gone@biz.com': { inPool: true },
+    } });
+    const restore = mockNocodb(c);
+    try {
+      const owners = [];
+      for (let i = 0; i < 4; i++) {
+        const body = {};
+        await engineResolveLeadOwner(env, c, 1, body, { phone: '9' + i }, true);
+        owners.push(body.Owner);
+      }
+      assert.deepEqual(owners, ['alice@biz.com', 'bob@biz.com', 'alice@biz.com', 'bob@biz.com']);
+    } finally { restore(); }
+  });
+
+  test('ignores an owner catch-all and legacy non-email agent names', async () => {
+    const restore = mockNocodb({});
+    try {
+      const a = {};
+      await engineResolveLeadOwner(env, client({ enabled: true, modes: [], catchall: 'owner@biz.com' }), 1, a, {}, true);
+      assert.equal(a.Owner, undefined);
+      const b = {};
+      await engineResolveLeadOwner(env, client({}, { agents: 'Rahul\nPriya' }), 1, b, { phone: '1' }, true);
+      assert.equal(b.Owner, undefined);
+    } finally { restore(); }
   });
 });
