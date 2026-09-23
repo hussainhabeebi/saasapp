@@ -9,6 +9,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  driveFolderId,
+  driveParseFolderImageIds,
+  ecomPhotoshootMatchProduct,
   engineResolveLeadOwner,
   engineTruncateButtonTitle,
   engineTextSimilarity,
@@ -1362,5 +1365,45 @@ describe('engineResolveLeadOwner round-robin', () => {
       await engineResolveLeadOwner(env, client({}, { agents: 'Rahul\nPriya' }), 1, b, { phone: '1' }, true);
       assert.equal(b.Owner, undefined);
     } finally { restore(); }
+  });
+});
+
+describe('Ecom product photoshoot folder', () => {
+  test('driveFolderId handles folder share-link shapes', () => {
+    assert.equal(driveFolderId('https://drive.google.com/drive/folders/1AbC_d-9?usp=sharing'), '1AbC_d-9');
+    assert.equal(driveFolderId('https://drive.google.com/drive/u/0/folders/XYZ123'), 'XYZ123');
+    assert.equal(driveFolderId('https://drive.google.com/open?id=QQQ'), 'QQQ');
+    assert.equal(driveFolderId('https://example.com/folders/abc'), null);
+    assert.equal(driveFolderId(''), null);
+  });
+
+  test('driveParseFolderImageIds keeps images and skips sub-folders and non-images', () => {
+    const entry = (id, href, title) => `<div class="flip-entry" id="entry-${id}" tabindex="0"><div class="flip-entry-info"><a href="${href}"><div class="flip-entry-title">${title}</div></a></div></div>`;
+    const html = '<html>' +
+      entry('img1', 'https://drive.google.com/file/d/img1/view?usp=drive_web', 'shot-01.JPG') +
+      entry('sub1', 'https://drive.google.com/drive/folders/sub1', 'Raw') +
+      entry('doc1', 'https://drive.google.com/file/d/doc1/view', 'notes.pdf') +
+      entry('img2', 'https://drive.google.com/file/d/img2/view', 'shot-02.png') +
+      entry('img3', 'https://drive.google.com/file/d/img3/view', 'untitled') +
+      '</html>';
+    assert.deepEqual(driveParseFolderImageIds(html), ['img1', 'img2', 'img3']);
+    assert.deepEqual(driveParseFolderImageIds(''), []);
+  });
+
+  test('ecomPhotoshootMatchProduct matches exact or all-words product names', () => {
+    const folder = 'https://drive.google.com/drive/folders/F1';
+    const products = [
+      { Id: 1, name: 'Sofa Set', photoshoot_folder_url: folder },
+      { Id: 2, name: 'Royal Sofa Set', photoshoot_folder_url: folder },
+      { Id: 3, name: 'Teak Dining Table', short_label: 'Teak Table', photoshoot_folder_url: folder },
+      { Id: 4, name: 'Office Chair' },
+    ];
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Royal Sofa Set')?.Id, 2);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'price of the sofa set?')?.Id, 1);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'do you have the dining table in teak')?.Id, 3);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'teak table photos')?.Id, 3);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'office chair please'), null);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'show me sofas'), null);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'hi'), null);
   });
 });
