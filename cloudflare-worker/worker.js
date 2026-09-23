@@ -9217,64 +9217,119 @@ export function driveFolderId(url){
   }catch(e){ return null; }
 }
 
-// Parses Drive's public embeddedfolderview HTML into the file ids of its image entries. Each entry
-// is a `flip-entry` block (id="entry-<fileId>") with a flip-entry-title filename; sub-folders and
-// non-image files are skipped. An entry with no extension in its title is kept (Drive thumbnails
-// render any image regardless of name).
-export function driveParseFolderImageIds(html){
+// Parses a public Drive folder page into the file ids of its image entries. Three shapes, tried in
+// order: (1) embeddedfolderview's `flip-entry` blocks (id="entry-<fileId>", flip-entry-title
+// filename) — sub-folders and non-image files skipped, extension-less titles kept; (2) the
+// drive/folders/<id> page's escaped JS data (`["<fileId>",["<folderId>"],"name","image/jpeg",…`),
+// kept only when its mime type is image/*; (3) any /file/d/<id> link left on the page.
+export function driveParseFolderImageIds(html, folderId=''){
+  const src=String(html||'');
   const ids=[];
   const seen=new Set();
-  const parts=String(html||'').split(/<div class="flip-entry"/).slice(1);
-  for(const part of parts){
+  const add=id=>{ if(id && id!==folderId && !seen.has(id)){ seen.add(id); ids.push(id); } };
+  for(const part of src.split(/<div class="flip-entry"/).slice(1)){
     const id=part.match(/id="entry-([a-zA-Z0-9_-]+)"/)?.[1];
-    if(!id || seen.has(id)) continue;
+    if(!id) continue;
     if(/\/drive\/(?:u\/\d+\/)?folders\//.test(part.slice(0,600))) continue;
     const title=(part.match(/class="flip-entry-title">([^<]*)</)?.[1]||'').trim();
     if(title && /\.[a-z0-9]{2,5}$/i.test(title) && !ECOM_PHOTOSHOOT_IMAGE_RE.test(title)) continue;
-    seen.add(id);
-    ids.push(id);
+    add(id);
   }
+  if(ids.length) return ids;
+  const decoded=src
+    .replace(/\\x([0-9a-fA-F]{2})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g,(_,h)=>String.fromCharCode(parseInt(h,16)))
+    .replace(/\\+(["/])/g,'$1');
+  const dataRe=/\["([a-zA-Z0-9_-]{20,})",\[("[a-zA-Z0-9_-]+"(?:,"[a-zA-Z0-9_-]+")*)\],"[^"]*","([a-z]+\/[a-zA-Z0-9.+-]+)"/g;
+  for(const m of decoded.matchAll(dataRe)){
+    if(folderId && !m[2].includes(`"${folderId}"`)) continue;
+    if(m[3].startsWith('image/')) add(m[1]);
+  }
+  if(ids.length) return ids;
+  for(const m of decoded.matchAll(/\/file\/d\/([a-zA-Z0-9_-]{20,})/g)) add(m[1]);
   return ids;
 }
 
+const DRIVE_BROWSER_HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36','Accept-Language':'en-US,en;q=0.9'};
+
 // Lists the image file ids in a public Drive folder, cached in KV for 10 minutes so every product
-// mention doesn't re-list the folder. Returns [] (never throws) when the folder can't be read.
+// mention doesn't re-list the folder. Drive API (when GOOGLE_DRIVE_API_KEY is set) first, then the
+// public embedded folder view, then the normal folder page. Returns [] (never throws).
 async function driveListFolderImageIds(env, folderId){
   if(!folderId) return [];
   const kv=_kv(env);
   const cacheKey=`drive_folder_images:${folderId}`;
-  if(kv){ try{ const v=await kv.get(cacheKey); if(v) return JSON.parse(v); }catch(e){} }
+  if(kv){ try{ const v=await kv.get(cacheKey); if(v){ const cached=JSON.parse(v); if(cached?.length) return cached; } }catch(e){} }
   let ids=[];
-  try{
-    if(env.GOOGLE_DRIVE_API_KEY){
+  if(env.GOOGLE_DRIVE_API_KEY){
+    try{
       let pageToken='';
       do{
         const q=encodeURIComponent(`'${folderId}' in parents and mimeType contains 'image/' and trashed=false`);
-        const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id)&pageSize=1000&key=${env.GOOGLE_DRIVE_API_KEY}${pageToken?`&pageToken=${pageToken}`:''}`);
-        if(!r.ok) break;
+        const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&key=${env.GOOGLE_DRIVE_API_KEY}${pageToken?`&pageToken=${pageToken}`:''}`);
+        if(!r.ok){ console.error('[driveListFolderImageIds] Drive API', r.status, folderId); break; }
         const d=await r.json().catch(()=>({}));
         ids.push(...(d.files||[]).map(f=>f.id).filter(Boolean));
         pageToken=d.nextPageToken||'';
       }while(pageToken && ids.length<5000);
-    }
-    if(!ids.length){
-      const r=await fetch(`https://drive.google.com/embeddedfolderview?id=${folderId}`);
-      if(r.ok) ids=driveParseFolderImageIds(await r.text());
-    }
-  }catch(e){}
+    }catch(e){ console.error('[driveListFolderImageIds] Drive API failed', folderId, e.message); }
+  }
+  for(const url of [`https://drive.google.com/embeddedfolderview?id=${folderId}`, `https://drive.google.com/drive/folders/${folderId}`]){
+    if(ids.length) break;
+    try{
+      const r=await fetch(url, {headers:DRIVE_BROWSER_HEADERS});
+      if(r.ok) ids=driveParseFolderImageIds(await r.text(), folderId);
+      else console.error('[driveListFolderImageIds]', r.status, url);
+    }catch(e){ console.error('[driveListFolderImageIds] fetch failed', url, e.message); }
+  }
   if(kv && ids.length){ try{ await kv.put(cacheKey, JSON.stringify(ids), {expirationTtl:600}); }catch(e){} }
   return ids;
 }
 
+// Sniffs JPEG/PNG from the first bytes — Drive/lh3 sometimes omit or generalise Content-Type, and
+// an HTML sign-in/virus-scan page must never be attached as "the photo".
+export function driveSniffImageType(bytes){
+  const b=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes||[]);
+  if(b.length>=3 && b[0]===0xFF && b[1]===0xD8 && b[2]===0xFF) return 'image/jpeg';
+  if(b.length>=8 && b[0]===0x89 && b[1]===0x50 && b[2]===0x4E && b[3]===0x47) return 'image/png';
+  return null;
+}
+
+// Fetches one public Drive image as a WhatsApp-ready JPEG/PNG blob (≤5 MB) so Chatwoot stores it
+// as an image attachment and WhatsApp shows it inline — not as a document/file. Tries Drive's
+// resized thumbnail, then the lh3 CDN rendition, then the original file; returns null if none of
+// them yields a real JPEG/PNG under the cap.
+async function driveFetchChatImage(fileId){
+  const urls=[
+    `https://drive.google.com/thumbnail?id=${fileId}&sz=w1600`,
+    `https://lh3.googleusercontent.com/d/${fileId}=w1600`,
+    `https://drive.google.com/uc?export=view&id=${fileId}`,
+  ];
+  for(const url of urls){
+    try{
+      const r=await fetch(url, {headers:{...DRIVE_BROWSER_HEADERS, Accept:'image/jpeg,image/png;q=0.9,*/*;q=0.5'}, redirect:'follow'});
+      if(!r.ok) continue;
+      const buf=await r.arrayBuffer();
+      if(!buf.byteLength || buf.byteLength>5242880) continue;
+      const type=driveSniffImageType(new Uint8Array(buf,0,Math.min(16,buf.byteLength)));
+      if(!type) continue;
+      return new Blob([buf], {type});
+    }catch(e){}
+  }
+  return null;
+}
+
 // Picks the one product whose name (or short label) the customer mentioned: an exact/contained
-// phrase match wins, otherwise every word of the name must appear in the message (any order).
-// Longest matching name wins so "Royal Sofa Set" beats "Sofa Set". Only products that have a
-// photoshoot folder are considered.
+// phrase match wins, otherwise every word of the name must appear in the message (any order), or a
+// WhatsApp button tap truncated with "..."/"…" must be a prefix of the name. Longest matching name
+// wins so "Royal Sofa Set" beats "Sofa Set". Only products with a photoshoot folder are considered.
 export function ecomPhotoshootMatchProduct(products, message){
-  const text=ecomNormalizeCatalogueText(message);
+  const raw=String(message||'').trim();
+  const text=ecomNormalizeCatalogueText(raw);
   if(!text) return null;
   const padded=` ${text} `;
   const words=new Set(text.split(' ').map(ecomCatalogueTokenRoot));
+  const truncated=/(?:\.\.\.|…)$/.test(raw)?text:'';
   let best=null, bestScore=0;
   for(const p of products||[]){
     if(!String(p?.photoshoot_folder_url||'').trim()) continue;
@@ -9283,6 +9338,7 @@ export function ecomPhotoshootMatchProduct(products, message){
       if(norm.length<3) continue;
       let score=0;
       if(padded.includes(` ${norm} `)) score=1000+norm.length;
+      else if(truncated.length>=4 && norm.startsWith(truncated)) score=500+truncated.length;
       else{
         const tokens=norm.split(' ').filter(Boolean);
         if(tokens.length>=2 && tokens.every(t=>words.has(ecomCatalogueTokenRoot(t)))) score=norm.length;
@@ -9293,7 +9349,7 @@ export function ecomPhotoshootMatchProduct(products, message){
   return best;
 }
 
-async function engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText){
+export async function engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userText){
   if(c.industry!=='ecommerce' || !convId || !userText) return;
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
   try{
@@ -9301,22 +9357,26 @@ async function engineMaybeSendProductPhotoshoot(env, c, clientId, convId, userTe
     const product=ecomPhotoshootMatchProduct(products, userText);
     if(!product) return;
     const folderId=driveFolderId(product.photoshoot_folder_url);
-    if(!folderId) return;
+    if(!folderId){ console.error('[engineMaybeSendProductPhotoshoot] not a Drive folder link for product', product.Id); return; }
     const pool=[...await driveListFolderImageIds(env, folderId)];
-    if(!pool.length) return;
+    if(!pool.length){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('photoshoot folder empty or not public'), {clientId, productId:product.Id, folderId}); return; }
     for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
-    for(const fileId of pool.slice(0,ECOM_PHOTOSHOOT_SEND_COUNT)){
-      // Thumbnail endpoint (via hospitalityFetchMediaBlob) keeps full-resolution shoot files under
-      // WhatsApp's 5 MB image cap.
-      const blob=await hospitalityFetchMediaBlob(env, `https://drive.google.com/file/d/${fileId}/view`, false);
+    // Walk the shuffled pool until 5 images actually deliver, so one unreadable file doesn't
+    // shrink the set; capped so a broken folder can't burn the whole request.
+    let sent=0;
+    for(const fileId of pool.slice(0,ECOM_PHOTOSHOOT_SEND_COUNT*3)){
+      if(sent>=ECOM_PHOTOSHOOT_SEND_COUNT) break;
+      const blob=await driveFetchChatImage(fileId);
       if(!blob) continue;
-      const ext=(blob.type||'image/jpeg').split('/')[1]?.split(';')[0]||'jpg';
       const fd=new FormData();
       fd.append('content','');
       fd.append('message_type','outgoing'); fd.append('private','false');
-      fd.append('attachments[]', blob, `photoshoot-${fileId}.${ext==='jpeg'?'jpg':ext}`);
-      await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      fd.append('attachments[]', blob, `photoshoot-${sent+1}.${blob.type==='image/png'?'png':'jpg'}`);
+      const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+      if(r.ok) sent++;
+      else console.error('[engineMaybeSendProductPhotoshoot] Chatwoot attach failed', r.status);
     }
+    if(!sent) await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', new Error('no photoshoot image could be fetched/sent'), {clientId, productId:product.Id, folderId});
   }catch(e){ await reportOpsError(env, 'engineMaybeSendProductPhotoshoot', e, {clientId, convId}); }
 }
 

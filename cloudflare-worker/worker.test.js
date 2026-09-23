@@ -12,6 +12,8 @@ import {
   driveFolderId,
   driveParseFolderImageIds,
   ecomPhotoshootMatchProduct,
+  driveSniffImageType,
+  engineMaybeSendProductPhotoshoot,
   engineResolveLeadOwner,
   engineTruncateButtonTitle,
   engineTextSimilarity,
@@ -1405,5 +1407,68 @@ describe('Ecom product photoshoot folder', () => {
     assert.equal(ecomPhotoshootMatchProduct(products, 'office chair please'), null);
     assert.equal(ecomPhotoshootMatchProduct(products, 'show me sofas'), null);
     assert.equal(ecomPhotoshootMatchProduct(products, 'hi'), null);
+  });
+
+  test('driveParseFolderImageIds reads the drive/folders page JS data (image mime only, this folder only)', () => {
+    const q = '\\x22';
+    const row = (id, parent, name, mime) => `[${q}${id}${q},[${q}${parent}${q}],${q}${name}${q},${q}${mime}${q},0]`;
+    const html = `<script>window['_DRIVE_ivd'] = '[[${row('A'.repeat(28), 'FOLDER1', 'a.jpg', 'image/jpeg')},${row('B'.repeat(28), 'FOLDER1', 'b.pdf', 'application/pdf')},${row('C'.repeat(28), 'OTHER', 'c.jpg', 'image/jpeg')},${row('D'.repeat(28), 'FOLDER1', 'd.png', 'image/png')}]]';</script>`;
+    assert.deepEqual(driveParseFolderImageIds(html, 'FOLDER1'), ['A'.repeat(28), 'D'.repeat(28)]);
+  });
+
+  test('ecomPhotoshootMatchProduct matches a truncated WhatsApp button tap', () => {
+    const products = [{ Id: 9, name: 'Premium Leather Recliner Sofa', photoshoot_folder_url: 'https://drive.google.com/drive/folders/F' }];
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec...')?.Id, 9);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec…')?.Id, 9);
+    assert.equal(ecomPhotoshootMatchProduct(products, 'Premium Leather Rec'), null);
+  });
+
+  test('driveSniffImageType accepts JPEG/PNG bytes and rejects HTML', () => {
+    assert.equal(driveSniffImageType(new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0])), 'image/jpeg');
+    assert.equal(driveSniffImageType(new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), 'image/png');
+    assert.equal(driveSniffImageType(new TextEncoder().encode('<!DOCTYPE html>')), null);
+  });
+
+  test('named product sends 5 random folder images to Chatwoot as inline JPEG attachments', async () => {
+    const folderId = 'FOLDERxyz';
+    const fileIds = Array.from({ length: 8 }, (_, i) => `file${i}`);
+    const html = fileIds.map(id => `<div class="flip-entry" id="entry-${id}"><a href="https://drive.google.com/file/d/${id}/view"><div class="flip-entry-title">${id}.jpg</div></a></div>`).join('')
+      + '<div class="flip-entry" id="entry-sub"><a href="https://drive.google.com/drive/folders/sub"><div class="flip-entry-title">RAW</div></a></div>';
+    const jpeg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4]);
+    const products = [{ Id: 1, name: 'Royal Sofa Set', photoshoot_folder_url: `https://drive.google.com/drive/folders/${folderId}?usp=sharing` }];
+    const kvStore = new Map([['ecom_products:7', JSON.stringify(products)]]);
+    const env = { MATRI_CACHE: { get: async k => kvStore.get(k) ?? null, put: async (k, v) => kvStore.set(k, v), delete: async k => kvStore.delete(k) } };
+    const c = { industry: 'ecommerce', chatwoot_base: 'https://cw.test', chatwoot_account_id: 3, chatwoot_token: 't' };
+    const posts = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      url = String(url);
+      if (url.startsWith('https://drive.google.com/embeddedfolderview')) return new Response(html, { status: 200 });
+      if (url.startsWith('https://drive.google.com/thumbnail')) return new Response(jpeg, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+      if (url.startsWith('https://cw.test/')) { posts.push({ url, body: init.body }); return new Response('{}', { status: 200 }); }
+      return new Response('nope', { status: 404 });
+    };
+    try {
+      await engineMaybeSendProductPhotoshoot(env, c, 7, 55, 'Is the royal sofa set available?');
+      assert.equal(posts.length, 5);
+      const seen = new Set();
+      for (const p of posts) {
+        assert.equal(p.url, 'https://cw.test/api/v1/accounts/3/conversations/55/messages');
+        const file = p.body.get('attachments[]');
+        assert.equal(file.type, 'image/jpeg');
+        assert.match(file.name, /\.jpg$/);
+        assert.equal(p.body.get('message_type'), 'outgoing');
+        seen.add(file.name);
+      }
+      assert.equal(seen.size, 5);
+      assert.ok(kvStore.has(`drive_folder_images:${folderId}`));
+      assert.deepEqual(JSON.parse(kvStore.get(`drive_folder_images:${folderId}`)), fileIds);
+
+      posts.length = 0;
+      await engineMaybeSendProductPhotoshoot(env, c, 7, 55, 'what are your shop timings?');
+      assert.equal(posts.length, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
