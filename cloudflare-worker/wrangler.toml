@@ -21,6 +21,9 @@ invocation_logs = true
 #                    module's own sweep (sweepReviewRequests in worker.js), piggybacked on the
 #                    same tick since a multi-hour/day review-request delay doesn't need its own
 #                    finer-grained schedule.
+#                    Also the Monthly Marketing module's capped send batch
+#                    (runMonthlyMarketingForAllClients), so sends land inside each client's
+#                    Follow-up Engine send window.
 #  - "*/20 * * * *"  Shopify module — abandoned-cart nudge sweep
 #                    (sweepAbandonedShopifyCheckouts in worker.js). Also the `scheduled()`
 #                    dispatcher's trailing `else` — any cron string not explicitly matched lands

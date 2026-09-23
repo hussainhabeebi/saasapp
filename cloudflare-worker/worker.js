@@ -4165,6 +4165,375 @@ async function runCalendarEventsForAllClients(env){
     page++;
   }
 }
+/* ── Monthly Marketing module (Campaigns → 📅 Monthly Marketing, broadcast.html) ───────────────
+   Tables: migrations/0100_monthly_marketing.sql. A rule maps one lead category (ServiceCategory/
+   ProductCategory) or one lead tag (Tags, from the Leads panel) to an ordered list of approved
+   WhatsApp templates. Once a month, each lead matching an enabled rule gets the first template in
+   that list it hasn't received yet — but only when the lead is:
+     • Hot or Warm (Score) — "medium" in the UI is Warm;
+     • not won (reportIsWonLead, plus capitalised Won/Converted) — lost leads ARE included;
+     • not opted out, with a usable phone number;
+     • and, if we've sent them a monthly message before, has replied since (LastCustomerMsgAt).
+   Category rules take priority over tag rules, so a lead matching both still gets one message.
+   Sends go straight through Meta's Graph API — same request shape as sendFollowupLadderStep's
+   template branch, every {{n}} filled with the lead's name — and only inside the client's existing
+   Follow-up Engine send window (followupWithinQuietHours).
+   The "once a month" and "never the same template twice" guarantees are enforced by partial unique
+   indexes on monthly_marketing_sends, and a row is reserved there BEFORE the Graph API call — so a
+   repeated tick, a retry or two lead records sharing one phone can't produce a second send.
+   Runs on the 15-minute cron tick with a shared per-tick send budget: a big client is worked through over a
+   few ticks rather than exceeding the Worker's per-invocation subrequest limit, and new leads that
+   qualify later in the month are picked up by a rescan every MONTHLY_MKT_RESCAN_MS.
+   A client with no enabled rule is never touched — nothing changes until they set one up. ── */
+const MONTHLY_MKT_FREQUENCIES=new Set(['monthly']);
+const MONTHLY_MKT_RULE_TYPES=new Set(['category','tag']);
+const MONTHLY_MKT_SCORES=new Set(['hot','warm']);
+const MONTHLY_MKT_WON_STAGES=new Set(['won','converted']);
+const MONTHLY_MKT_MAX_TEMPLATES=10;
+const MONTHLY_MKT_MAX_SENDS_PER_TICK=60;
+const MONTHLY_MKT_MAX_FAILURES_PER_MONTH=3;
+const MONTHLY_MKT_RESCAN_MS=6*60*60*1000;
+const MONTHLY_MKT_LEAD_PAGE=200;
+const MONTHLY_MKT_MAX_LEAD_PAGES=50;
+
+export function monthlyMktNormalizePhone(p){ return String(p||'').replace(/\D/g,''); }
+export function monthlyMktIsWon(lead){ return reportIsWonLead(lead||{}) || MONTHLY_MKT_WON_STAGES.has(String(lead?.Stage||'').trim().toLowerCase()); }
+export function monthlyMktLeadCategories(lead){
+  return [lead?.ServiceCategory, lead?.ProductCategory].map(v=>String(v||'').trim().toLowerCase()).filter(Boolean);
+}
+export function monthlyMktLeadTags(lead){ return String(lead?.Tags||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean); }
+export function monthlyMktRuleMatches(rule, lead){
+  const key=String(rule?.match_value||'').trim().toLowerCase();
+  if(!key) return false;
+  return (rule.rule_type==='tag'?monthlyMktLeadTags(lead):monthlyMktLeadCategories(lead)).includes(key);
+}
+export function monthlyMktParseTemplates(raw){
+  let arr=raw;
+  if(typeof raw==='string'){ try{ arr=JSON.parse(raw||'[]'); }catch(e){ arr=[]; } }
+  if(!Array.isArray(arr)) return [];
+  const seen=new Set(), out=[];
+  for(const t of arr){
+    const name=String(t?.name||'').trim();
+    if(!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({name, language:String(t.language||'en_US').trim()||'en_US', body_vars:Math.max(0, Math.min(10, parseInt(t.body_vars)||0))});
+  }
+  return out;
+}
+export function monthlyMktRuleEnabled(rule){
+  return !!rule && Number(rule.active)===1 && MONTHLY_MKT_FREQUENCIES.has(rule.frequency) && monthlyMktParseTemplates(rule.templates_json).length>0;
+}
+// Calendar parts in the client's own timezone (bot_config.timezone, same default as
+// followupWithinQuietHours) — the month boundary and day_of_month are the client's, not UTC's.
+export function monthlyMktLocalParts(now, tz){
+  const opts={year:'numeric', month:'numeric', day:'numeric', hour:'numeric', hourCycle:'h23'};
+  let parts;
+  try{ parts=new Intl.DateTimeFormat('en-US', {...opts, timeZone:tz||'Asia/Kolkata'}).formatToParts(now); }
+  catch(e){ parts=new Intl.DateTimeFormat('en-US', {...opts, timeZone:'Asia/Kolkata'}).formatToParts(now); }
+  const get=type=>Number(parts.find(p=>p.type===type)?.value);
+  const year=get('year'), month=get('month');
+  return {year, month, day:get('day'), hour:get('hour')%24, monthKey:`${year}-${String(month).padStart(2,'0')}`};
+}
+// Due on or after day_of_month (clamped to the month's last day), so a missed tick or a lead that
+// only qualifies later in the month still gets that month's message.
+export function monthlyMktRuleDue(rule, local){
+  const daysInMonth=new Date(Date.UTC(local.year, local.month, 0)).getUTCDate();
+  const target=Math.min(Math.max(1, parseInt(rule?.day_of_month)||1), daysInMonth);
+  return local.day>=target;
+}
+function monthlyMktClientTimezone(c){ return engineParseJsonField(c?.bot_config, {}).timezone||'Asia/Kolkata'; }
+
+// In-memory view of monthly_marketing_sends, indexed by lead id AND by phone so the planner applies
+// the same guards the unique indexes do (and so one tick never plans two sends to one phone).
+function monthlyMktBucket(map, key){
+  let b=map.get(key);
+  if(!b){ b={months:new Set(), templates:new Set(), failedByMonth:new Map(), lastSentAt:null}; map.set(key, b); }
+  return b;
+}
+export function monthlyMktRecordSend(idx, row){
+  const buckets=[monthlyMktBucket(idx.byLead, String(row.lead_id))];
+  if(row.phone) buckets.push(monthlyMktBucket(idx.byPhone, String(row.phone)));
+  for(const b of buckets){
+    if(row.status==='failed'){ b.failedByMonth.set(row.month_key, (b.failedByMonth.get(row.month_key)||0)+1); continue; }
+    b.months.add(row.month_key);
+    b.templates.add(row.template_name);
+    const at=row.sent_at||row.created_at;
+    if(at && (!b.lastSentAt || Date.parse(at)>Date.parse(b.lastSentAt))) b.lastSentAt=at;
+  }
+}
+export function monthlyMktIndexHistory(rows){
+  const idx={byLead:new Map(), byPhone:new Map()};
+  for(const row of rows||[]) monthlyMktRecordSend(idx, row);
+  return idx;
+}
+// Why a lead matching a rule won't get this month's message, or null if it should.
+export function monthlyMktSkipReason(lead, idx, monthKey){
+  if(String(lead?.OptOut||'').trim().toLowerCase()==='yes') return 'opted_out';
+  if(!MONTHLY_MKT_SCORES.has(String(lead?.Score||'').trim().toLowerCase())) return 'not_hot_or_warm';
+  if(monthlyMktIsWon(lead)) return 'won';
+  const phone=monthlyMktNormalizePhone(lead?.Phone);
+  if(phone.length<8) return 'no_phone';
+  const bl=idx.byLead.get(String(lead.Id)), bp=idx.byPhone.get(phone);
+  if(bl?.months.has(monthKey) || bp?.months.has(monthKey)) return 'already_sent_this_month';
+  const failures=Math.max(bl?.failedByMonth.get(monthKey)||0, bp?.failedByMonth.get(monthKey)||0);
+  if(failures>=MONTHLY_MKT_MAX_FAILURES_PER_MONTH) return 'send_failed';
+  const last=[bl?.lastSentAt, bp?.lastSentAt].filter(Boolean).sort((a,b)=>Date.parse(a)-Date.parse(b)).pop();
+  if(last && !(Date.parse(lead.LastCustomerMsgAt||'')>Date.parse(last))) return 'awaiting_reply';
+  return null;
+}
+function monthlyMktOrderRules(rules){
+  return (rules||[]).map(r=>({...r, templates:monthlyMktParseTemplates(r.templates_json)}))
+    .sort((a,b)=>(a.rule_type===b.rule_type?0:(a.rule_type==='category'?-1:1)) || (Number(a.id)-Number(b.id)));
+}
+// Pure planning step — which lead gets which template from which rule this month. `history` is
+// mutated as sends are planned, so the same phone/lead can't be planned twice in one pass.
+// stats[rule.id].eligible counts every lead that would get a message (including ones past `limit`,
+// which the next tick picks up) — the Campaigns preview shows exactly this.
+export function monthlyMktPlan({rules, leads, history, monthKey, limit=Infinity}){
+  const ordered=monthlyMktOrderRules(rules);
+  const stats={};
+  for(const r of ordered) stats[r.id]={eligible:0, skipped:{}};
+  const bump=(ruleId, reason)=>{ const s=stats[ruleId].skipped; s[reason]=(s[reason]||0)+1; };
+  const sends=[];
+  let truncated=false;
+  for(const lead of leads||[]){
+    const matching=ordered.filter(r=>monthlyMktRuleMatches(r, lead));
+    if(!matching.length) continue;
+    const reason=monthlyMktSkipReason(lead, history, monthKey);
+    if(reason){ bump(matching[0].id, reason); continue; }
+    const phone=monthlyMktNormalizePhone(lead.Phone);
+    const received=new Set([...(history.byLead.get(String(lead.Id))?.templates||[]), ...(history.byPhone.get(phone)?.templates||[])]);
+    let chosen=null;
+    for(const r of matching){
+      const template=r.templates.find(t=>!received.has(t.name));
+      if(template){ chosen={rule:r, template}; break; }
+    }
+    if(!chosen){ bump(matching[0].id, 'all_templates_used'); continue; }
+    stats[chosen.rule.id].eligible++;
+    if(sends.length>=limit){ truncated=true; continue; }
+    sends.push({rule:chosen.rule, lead, phone, template:chosen.template});
+    monthlyMktRecordSend(history, {lead_id:lead.Id, phone, template_name:chosen.template.name, month_key:monthKey, status:'pending', created_at:new Date().toISOString()});
+  }
+  return {sends, stats, truncated};
+}
+
+async function monthlyMktFetchLeads(env, clientId, {hotWarmOnly=true}={}){
+  const where=`(ClientId,eq,${Number(clientId)})`+(hotWarmOnly?'~and(OptOut,neq,Yes)~and((Score,eq,Hot)~or(Score,eq,Warm))':'');
+  const out=[];
+  for(let page=0; page<MONTHLY_MKT_MAX_LEAD_PAGES; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=${MONTHLY_MKT_LEAD_PAGE}&offset=${page*MONTHLY_MKT_LEAD_PAGE}&sort=Id`);
+    if(!r.ok){ if(page===0) return null; break; }
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    out.push(...rows);
+    if(rows.length<MONTHLY_MKT_LEAD_PAGE) break;
+  }
+  return out;
+}
+async function monthlyMktLoadHistory(env, clientId){
+  const {results}=await env.DB.prepare(`SELECT lead_id, phone, template_name, month_key, status, created_at, sent_at FROM monthly_marketing_sends WHERE client_id=?`)
+    .bind(Number(clientId)).all();
+  return monthlyMktIndexHistory(results);
+}
+// Reserve → send → record. INSERT OR IGNORE against the partial unique indexes is the real
+// duplicate guard: if any of them already holds this lead/phone for this month or this template,
+// nothing is inserted and nothing is sent.
+export async function monthlyMktSendOne(env, clientId, creds, item, monthKey){
+  const now=new Date().toISOString();
+  const ins=await env.DB.prepare(`INSERT OR IGNORE INTO monthly_marketing_sends (client_id, rule_id, lead_id, phone, template_name, template_language, month_key, status, created_at) VALUES (?,?,?,?,?,?,?,'pending',?)`)
+    .bind(Number(clientId), Number(item.rule.id), Number(item.lead.Id), item.phone, item.template.name, item.template.language, monthKey, now).run();
+  if(!ins?.meta?.changes) return 'duplicate';
+  const rowId=ins.meta.last_row_id;
+  const varCount=item.template.body_vars||0;
+  const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, ()=>({type:'text', text:item.lead.Name||'there'}))}]:[];
+  let r, data;
+  try{
+    r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to:item.phone, type:'template', template:{name:item.template.name, language:{code:item.template.language||'en_US'}, components}})
+    });
+    data=await r.json().catch(()=>({}));
+  }catch(e){
+    // No response — Meta may already have accepted it, so the row stays 'pending' (still counted
+    // as sent by every guard) rather than risk a duplicate on the next tick.
+    await env.DB.prepare(`UPDATE monthly_marketing_sends SET error=? WHERE id=?`).bind(String(e?.message||e).slice(0,300), rowId).run().catch(()=>{});
+    return 'unknown';
+  }
+  if(!r.ok){
+    await env.DB.prepare(`UPDATE monthly_marketing_sends SET status='failed', error=? WHERE id=?`).bind(String(data?.error?.message||('HTTP '+r.status)).slice(0,300), rowId).run();
+    return 'failed';
+  }
+  await env.DB.prepare(`UPDATE monthly_marketing_sends SET status='sent', wa_message_id=?, sent_at=? WHERE id=?`)
+    .bind(data?.messages?.[0]?.id||null, new Date().toISOString(), rowId).run();
+  return 'sent';
+}
+// One client's pass. Returns how many sends it attempted, charged against the tick's budget.
+async function monthlyMktRunClient(env, clientId, rules, now, budget){
+  const enabled=rules.filter(monthlyMktRuleEnabled);
+  if(!enabled.length) return 0;
+  const c=await getClientById(env, clientId);
+  if(!c || !followupWithinQuietHours(c)) return 0;
+  const tz=monthlyMktClientTimezone(c);
+  const local=monthlyMktLocalParts(now, tz);
+  const due=enabled.filter(r=>monthlyMktRuleDue(r, local));
+  if(!due.length) return 0;
+  // Every due rule already fully scanned this month within the rescan interval — nothing new to do
+  // until then (saves re-reading every lead from NocoDB on every 15-minute tick).
+  const recentlyScanned=r=>{
+    const at=Date.parse(r.last_full_scan_at||'');
+    return Number.isFinite(at) && now.getTime()-at<MONTHLY_MKT_RESCAN_MS && monthlyMktLocalParts(new Date(at), tz).monthKey===local.monthKey;
+  };
+  if(due.every(recentlyScanned)) return 0;
+  const creds=await resolveOrDetectMetaCredentials(env, c, clientId);
+  if(!creds?.wa_phone_id || !creds?.wa_token) return 0;
+  const leads=await monthlyMktFetchLeads(env, clientId);
+  if(!leads) return 0;
+  const history=await monthlyMktLoadHistory(env, clientId);
+  const plan=monthlyMktPlan({rules:due, leads, history, monthKey:local.monthKey, limit:budget});
+  for(const item of plan.sends){
+    try{ await monthlyMktSendOne(env, clientId, creds, item, local.monthKey); }
+    catch(e){ console.error('[monthly-marketing] send failed for lead', item.lead.Id, 'client', clientId, e.message); }
+  }
+  if(!plan.truncated){
+    await env.DB.prepare(`UPDATE monthly_marketing_rules SET last_full_scan_at=? WHERE client_id=? AND id IN (${due.map(()=>'?').join(',')})`)
+      .bind(now.toISOString(), Number(clientId), ...due.map(r=>Number(r.id))).run();
+  }
+  return plan.sends.length;
+}
+// 15-minute cron entry point. Only clients with an enabled rule are ever loaded; client order is shuffled
+// each tick so one large client can't starve the rest of the shared send budget.
+export async function runMonthlyMarketingForAllClients(env, now=new Date()){
+  let rules=[];
+  try{
+    rules=(await env.DB.prepare(`SELECT * FROM monthly_marketing_rules WHERE active=1 AND frequency IS NOT NULL`).all())?.results||[];
+  }catch(e){ return; } // migration 0100 not applied yet
+  const byClient=new Map();
+  for(const r of rules){ const k=String(r.client_id); if(!byClient.has(k)) byClient.set(k, []); byClient.get(k).push(r); }
+  const clientIds=[...byClient.keys()].sort(()=>Math.random()-0.5);
+  let budget=MONTHLY_MKT_MAX_SENDS_PER_TICK;
+  for(const clientId of clientIds){
+    if(budget<=0) break;
+    try{ budget-=await monthlyMktRunClient(env, clientId, byClient.get(clientId), now, budget); }
+    catch(e){ console.error('[monthly-marketing] failed for client', clientId, e.message); }
+  }
+}
+
+export function monthlyMktValidateRule(body){
+  const rule_type=String(body?.rule_type||'').trim();
+  if(!MONTHLY_MKT_RULE_TYPES.has(rule_type)) return {error:'rule_type must be "category" or "tag".'};
+  const match_value=String(body?.match_value||'').trim().slice(0, 120);
+  if(!match_value) return {error:rule_type==='tag'?'Choose a tag.':'Choose a category.'};
+  const frequency=MONTHLY_MKT_FREQUENCIES.has(body?.frequency)?body.frequency:null;
+  const templates=monthlyMktParseTemplates(Array.isArray(body?.templates)?body.templates:[]);
+  if(templates.length>MONTHLY_MKT_MAX_TEMPLATES) return {error:`At most ${MONTHLY_MKT_MAX_TEMPLATES} templates per rule.`};
+  const wantsActive=!!body?.active && body.active!=='0';
+  if(wantsActive && (!frequency || !templates.length)) return {error:'Choose a frequency and at least one template before turning this rule on.'};
+  return {rule:{
+    rule_type, match_value, match_key:match_value.toLowerCase(), frequency,
+    day_of_month:Math.min(31, Math.max(1, parseInt(body?.day_of_month)||1)),
+    templates_json:JSON.stringify(templates), active:wantsActive?1:0
+  }};
+}
+function monthlyMktRuleOut(r){
+  const {templates_json, match_key, last_full_scan_at, client_id, ...rest}=r;
+  return {...rest, templates:monthlyMktParseTemplates(templates_json)};
+}
+async function monthlyMktClientRules(env, clientId){
+  const {results}=await env.DB.prepare(`SELECT * FROM monthly_marketing_rules WHERE client_id=? ORDER BY rule_type, match_key`).bind(Number(clientId)).all();
+  return results||[];
+}
+// GET /monthly-marketing/rules
+async function handleMonthlyMktRulesGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json({list:(await monthlyMktClientRules(env, payload.cid)).map(monthlyMktRuleOut)});
+}
+// POST /monthly-marketing/rules — create, or update when `id` is given. Any save clears
+// last_full_scan_at so the next tick re-reads leads against the new settings.
+async function handleMonthlyMktRuleSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const {rule, error}=monthlyMktValidateRule(body);
+  if(error) return json({error}, 400);
+  const clientId=Number(payload.cid), now=new Date().toISOString();
+  try{
+    if(body.id){
+      const res=await env.DB.prepare(`UPDATE monthly_marketing_rules SET rule_type=?, match_value=?, match_key=?, frequency=?, day_of_month=?, templates_json=?, active=?, last_full_scan_at=NULL, updated_at=? WHERE id=? AND client_id=?`)
+        .bind(rule.rule_type, rule.match_value, rule.match_key, rule.frequency, rule.day_of_month, rule.templates_json, rule.active, now, Number(body.id), clientId).run();
+      if(!res?.meta?.changes) return json({error:'Rule not found'}, 404);
+    }else{
+      await env.DB.prepare(`INSERT INTO monthly_marketing_rules (client_id, rule_type, match_value, match_key, frequency, day_of_month, templates_json, active, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .bind(clientId, rule.rule_type, rule.match_value, rule.match_key, rule.frequency, rule.day_of_month, rule.templates_json, rule.active, now, now).run();
+    }
+  }catch(e){
+    if(/UNIQUE/i.test(String(e?.message||''))) return json({error:`A rule for this ${rule.rule_type} already exists.`}, 409);
+    throw e;
+  }
+  return json({ok:true, list:(await monthlyMktClientRules(env, clientId)).map(monthlyMktRuleOut)});
+}
+// DELETE /monthly-marketing/rules?id= — send history is kept, so a re-created rule still never
+// repeats a template a lead already received.
+async function handleMonthlyMktRuleDelete(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const id=Number(new URL(request.url).searchParams.get('id'));
+  if(!id) return json({error:'id required'}, 400);
+  await env.DB.prepare(`DELETE FROM monthly_marketing_rules WHERE id=? AND client_id=?`).bind(id, Number(payload.cid)).run();
+  return json({ok:true});
+}
+// GET /monthly-marketing/options — the categories and tags present on this client's leads, with
+// how many leads (and how many Hot/Warm) carry each, for the rule pickers.
+async function handleMonthlyMktOptions(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const leads=await monthlyMktFetchLeads(env, payload.cid, {hotWarmOnly:false});
+  if(!leads) return json({error:'Could not load leads.'}, 502);
+  const tally=(map, raw, hotWarm)=>{
+    const value=String(raw||'').trim(); if(!value) return;
+    const key=value.toLowerCase();
+    const e=map.get(key)||{value, leads:0, hot_warm:0};
+    e.leads++; if(hotWarm) e.hot_warm++;
+    map.set(key, e);
+  };
+  const categories=new Map(), tags=new Map();
+  for(const l of leads){
+    const hotWarm=MONTHLY_MKT_SCORES.has(String(l.Score||'').trim().toLowerCase());
+    new Set([l.ServiceCategory, l.ProductCategory].map(v=>String(v||'').trim()).filter(Boolean)).forEach(v=>tally(categories, v, hotWarm));
+    new Set(String(l.Tags||'').split(',').map(s=>s.trim()).filter(Boolean)).forEach(v=>tally(tags, v, hotWarm));
+  }
+  const sorted=m=>[...m.values()].sort((a,b)=>b.leads-a.leads || a.value.localeCompare(b.value));
+  return json({categories:sorted(categories), tags:sorted(tags)});
+}
+// GET /monthly-marketing/summary?month=YYYY-MM — this month's preview (who would get a message if
+// every rule with templates were on, and why the rest are skipped) plus the send log.
+async function handleMonthlyMktSummary(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const clientId=Number(payload.cid);
+  const c=await getClientById(env, clientId);
+  if(!c) return json({error:'Client not found'}, 404);
+  const local=monthlyMktLocalParts(new Date(), monthlyMktClientTimezone(c));
+  const reqMonth=new URL(request.url).searchParams.get('month');
+  const month=/^\d{4}-\d{2}$/.test(reqMonth||'')?reqMonth:local.monthKey;
+  const rules=(await monthlyMktClientRules(env, clientId)).filter(r=>monthlyMktParseTemplates(r.templates_json).length);
+  let preview=null;
+  if(rules.length){
+    const leads=await monthlyMktFetchLeads(env, clientId);
+    if(leads){
+      const plan=monthlyMktPlan({rules, leads, history:await monthlyMktLoadHistory(env, clientId), monthKey:local.monthKey});
+      preview={month:local.monthKey, rules:plan.stats};
+    }
+  }
+  const {results:counts}=await env.DB.prepare(`SELECT rule_id, status, COUNT(*) AS n FROM monthly_marketing_sends WHERE client_id=? AND month_key=? GROUP BY rule_id, status`).bind(clientId, month).all();
+  const {results:recent}=await env.DB.prepare(`SELECT id, rule_id, lead_id, phone, template_name, status, error, created_at, sent_at FROM monthly_marketing_sends WHERE client_id=? AND month_key=? ORDER BY id DESC LIMIT 200`).bind(clientId, month).all();
+  return json({
+    month, current_month:local.monthKey, preview,
+    within_send_window:followupWithinQuietHours(c),
+    whatsapp_connected:!!(c.wa_phone_id && c.wa_token) || !!resolveMetaCredentials(c)?.wa_phone_id,
+    counts:counts||[], recent:recent||[]
+  });
+}
+
 // Manual "send now" — lets a rep test an event's template immediately, or fire an Exhibition
 // invite on demand instead of waiting for its calendar date. Ignores the dedupe table entirely
 // (an explicit manual click should always go out), but still records the send so the *next*
@@ -29785,6 +30154,11 @@ export default {
       else if(url.pathname==='/calendar/events' && request.method==='PATCH'){ res=await handleCalendarEventUpdate(request, env); }
       else if(url.pathname==='/calendar/events' && request.method==='DELETE'){ res=await handleCalendarEventDelete(request, env); }
       else if(url.pathname==='/calendar/events/send-now' && request.method==='POST'){ res=await handleCalendarEventSendNow(request, env); }
+      else if(url.pathname==='/monthly-marketing/rules' && request.method==='GET'){ res=await handleMonthlyMktRulesGet(request, env); }
+      else if(url.pathname==='/monthly-marketing/rules' && request.method==='POST'){ res=await handleMonthlyMktRuleSave(request, env); }
+      else if(url.pathname==='/monthly-marketing/rules' && request.method==='DELETE'){ res=await handleMonthlyMktRuleDelete(request, env); }
+      else if(url.pathname==='/monthly-marketing/options' && request.method==='GET'){ res=await handleMonthlyMktOptions(request, env); }
+      else if(url.pathname==='/monthly-marketing/summary' && request.method==='GET'){ res=await handleMonthlyMktSummary(request, env); }
       else if(url.pathname==='/reviews/config' && request.method==='GET'){ res=await handleReviewsConfigGet(request, env); }
       else if(url.pathname==='/reviews/config' && request.method==='POST'){ res=await handleReviewsConfigSet(request, env); }
       else if(url.pathname==='/reviews/click' && request.method==='GET'){ res=await handleReviewClick(request, env); }
@@ -30184,7 +30558,13 @@ export default {
       // weekly_day); see runScheduledReportsForAllClients's own comment.
       ctx.waitUntil(runScheduledReportsForAllClients(env));
     }
-    else if(event.cron==='*/15 * * * *'){ ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env)); }
+    else if(event.cron==='*/15 * * * *'){
+      ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
+      // Monthly Marketing (Campaigns → 📅 Monthly Marketing) — on this tick rather than the daily
+      // one so sends land inside each client's Follow-up Engine send window and a large client is
+      // worked through a capped batch at a time; see runMonthlyMarketingForAllClients.
+      ctx.waitUntil(runMonthlyMarketingForAllClients(env));
+    }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
   }

@@ -365,6 +365,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
     <button class="tab" id="tab-meta" onclick="showTab('meta')">📣 Template Broadcast</button>
     <button class="tab" id="tab-followups" onclick="showTab('followups')">🔁 Follow-ups</button>
     <button class="tab" id="tab-fuengine" onclick="showTab('fuengine')">💪 Follow-up Engine</button>
+    <button class="tab" id="tab-monthly" onclick="showTab('monthly')">📅 Monthly Marketing</button>
     <button class="tab" id="tab-templates" onclick="showTab('templates')">📋 Manage Templates</button>
     <button class="tab" id="tab-tracking" onclick="showTab('tracking')">📊 Tracking</button>
     <button class="tab" id="tab-automations" onclick="showTab('automations')">⚡ Automations</button>
@@ -387,6 +388,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <span class="csb-label">Sequences</span>
       <button class="csb-item" id="csb-followups" onclick="showTab('followups')"><span class="csb-icon">🔁</span>Follow-ups</button>
       <button class="csb-item" id="csb-fuengine" onclick="showTab('fuengine')"><span class="csb-icon">💪</span>Follow-up Engine</button>
+      <button class="csb-item" id="csb-monthly" onclick="showTab('monthly')"><span class="csb-icon">📅</span>Monthly Marketing</button>
       <button class="csb-item" id="csb-automations" onclick="showTab('automations')"><span class="csb-icon">⚡</span>Automations</button>
     </div>
     <div class="csb-section">
@@ -779,6 +781,48 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       </div>
     </div>
   </div><!-- /view-fuengine -->
+
+  <!-- ══════════════════════════════════════
+       TAB: MONTHLY MARKETING — one approved template a month per lead, chosen by lead category or
+       lead tag. Rules live in D1 (monthly_marketing_rules, migrations/0100_monthly_marketing.sql),
+       sent by worker.js runMonthlyMarketingForAllClients straight through Graph API. Nothing is
+       sent until a rule has a frequency, a template and is switched on.
+  ══════════════════════════════════════ -->
+  <div id="view-monthly" style="display:none">
+    <div class="card">
+      <div class="card-title">📅 Monthly Marketing</div>
+      <div class="msg info">Send one approved WhatsApp template a month to leads in a category or with a tag. Only <b>Hot</b> and <b>Warm</b> leads get it — won customers and opted-out leads never do. Each lead gets at most one of these messages a month and never the same template twice, and after one is sent they won't get the next until they reply. Messages go out on or after the day you pick, inside your <a href="#" onclick="showTab('fuengine');return false" style="color:inherit;text-decoration:underline">Follow-up Engine send window</a>. A rule does nothing until you choose a frequency and at least one template and switch it on.</div>
+      <div id="mmStatus"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">🗂️ By Lead Category</div>
+      <div class="msg info">Category rules come first: a lead that matches a category rule and a tag rule gets the category message.</div>
+      <div id="mmRules-category"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="form-field" style="flex:1;min-width:180px;max-width:320px;margin-bottom:0"><label>Category</label><input type="text" id="mmNew-category" list="mmOptions-category" placeholder="Start typing a lead category"></div>
+        <button class="btn btn-sec" onclick="mmAddRule('category')">+ Add category rule</button>
+      </div>
+      <datalist id="mmOptions-category"></datalist>
+    </div>
+    <div class="card">
+      <div class="card-title">🏷️ By Lead Tag</div>
+      <div class="msg info">Tags come from the Leads panel. Used for leads that aren't covered by a category rule.</div>
+      <div id="mmRules-tag"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div class="form-field" style="flex:1;min-width:180px;max-width:320px;margin-bottom:0"><label>Tag</label><input type="text" id="mmNew-tag" list="mmOptions-tag" placeholder="Start typing a lead tag"></div>
+        <button class="btn btn-sec" onclick="mmAddRule('tag')">+ Add tag rule</button>
+      </div>
+      <datalist id="mmOptions-tag"></datalist>
+    </div>
+    <div class="card">
+      <div class="card-title">📊 Send Log</div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+        <label style="font-size:13px">Month</label>
+        <input type="month" id="mmMonth" onchange="mmLoadSummary()" style="background:var(--bg);border:1.5px solid var(--line);border-radius:var(--r-sm);padding:8px 12px;font-size:13px">
+      </div>
+      <div id="mmLog"><div style="font-size:12px;color:var(--muted)">Loading…</div></div>
+    </div>
+  </div><!-- /view-monthly -->
 
   <!-- ══════════════════════════════════════
        TAB 4: MANAGE TEMPLATES
@@ -1779,7 +1823,7 @@ async function initApp(){
 }
 
 // ── TABS ──
-const ALL_TABS=['dm','meta','followups','fuengine','templates','tracking','automations','reviews','classification','attributes'];
+const ALL_TABS=['dm','meta','followups','fuengine','monthly','templates','tracking','automations','reviews','classification','attributes'];
 function showTab(tab){
   ALL_TABS.forEach(t=>{
     const v=$id('view-'+t); if(v) v.style.display = t===tab ? '' : 'none';
@@ -1788,6 +1832,7 @@ function showTab(tab){
   });
   if(tab==='followups') renderFollowupsTab();
   if(tab==='fuengine') loadFollowupEngine();
+  if(tab==='monthly') loadMonthlyMarketing();
   if(tab==='tracking') renderTrackingTab();
   if(tab==='automations') loadFlows();
   if(tab==='reviews') loadReviewsConfig();
@@ -2944,6 +2989,171 @@ async function sendFollowupNow(leadId,btn){
     alert('Failed to send follow-up: '+e.message);
     if(btn){ btn.disabled=false; btn.textContent='Send Next Now'; }
   }
+}
+
+// ── MONTHLY MARKETING TAB ── rules in D1 (monthly_marketing_rules), read/written through
+// /monthly-marketing/* (session-gated). Template pickers reuse the Follow-up Engine's approved
+// Graph API template list (fuLoadTemplatesForLadder / fuLadderCountBodyVars below), since these
+// sends also go straight through Graph API with every {{n}} filled with the lead's name.
+const MM_SKIP_LABELS={not_hot_or_warm:'not Hot/Warm', won:'won', opted_out:'opted out', no_phone:'no phone number', already_sent_this_month:'already sent this month', awaiting_reply:'waiting for a reply', all_templates_used:'every template already sent', send_failed:'sending failed'};
+const MM_STATUS_LABELS={sent:'Sent', pending:'Unconfirmed', failed:'Failed'};
+let mmRules=[];
+let mmOptions={categories:[], tags:[]};
+let mmPreview=null;
+// "Saved ✓" per rule, kept outside the DOM so the summary reload's re-render doesn't wipe it.
+let mmFlash={};
+const mmRuleKey=r=>`${r.rule_type}:${String(r.match_value||'').toLowerCase()}`;
+async function loadMonthlyMarketing(){
+  ['category','tag'].forEach(t=>{ $id('mmRules-'+t).innerHTML='<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Loading…</div>'; });
+  try{
+    const [rulesR, optsR]=await Promise.all([
+      fetch(`${CONFIG.WORKER_BASE}/monthly-marketing/rules`,{headers:ncAuthHeaders()}),
+      fetch(`${CONFIG.WORKER_BASE}/monthly-marketing/options`,{headers:ncAuthHeaders()}),
+      fuLoadTemplatesForLadder(),
+    ]);
+    mmRules=(await rulesR.json().catch(()=>({}))).list||[];
+    const opts=await optsR.json().catch(()=>({}));
+    mmOptions={categories:opts.categories||[], tags:opts.tags||[]};
+  }catch(e){ mmRules=[]; }
+  mmRenderOptions();
+  mmRenderRules();
+  mmLoadSummary();
+}
+function mmRenderOptions(){
+  [['category','categories'],['tag','tags']].forEach(([type,key])=>{
+    $id('mmOptions-'+type).innerHTML=(mmOptions[key]||[]).map(o=>`<option value="${escAttr(o.value)}">${o.leads} lead(s), ${o.hot_warm} Hot/Warm</option>`).join('');
+  });
+}
+function mmRuleStatsLine(r){
+  if(r._dirty) return '<span style="color:var(--warn)">Unsaved changes</span>';
+  const st=r.id&&mmPreview?.rules?.[r.id];
+  if(!st) return '';
+  const skipped=Object.entries(st.skipped||{}).map(([k,n])=>`${n} ${esc(MM_SKIP_LABELS[k]||k)}`).join(' · ');
+  const on=Number(r.active)===1 && !!r.frequency && (r.templates||[]).length>0;
+  return `<b>${st.eligible}</b> lead(s) ${on?'due this month':'would get it this month if switched on'}${skipped?` · skipped: ${skipped}`:''}`;
+}
+function mmRuleHtml(r, i){
+  const templates=r.templates||[];
+  const canEnable=!!r.frequency && templates.length>0;
+  const on=!r._dirty && r.id && Number(r.active)===1 && canEnable;
+  const chips=templates.map((t,k)=>`<span class="badge" style="background:var(--bg);border:1px solid var(--line);color:var(--ink);margin:0 6px 6px 0">${k+1}. ${esc(t.name)} (${esc(t.language)}) <a href="#" onclick="mmRemoveTemplate(${i},${k});return false" style="color:var(--muted);margin-left:4px;text-decoration:none">✕</a></span>`).join('');
+  const options=fuLadderTemplates.filter(t=>!templates.some(x=>x.name===t.name)).map(t=>`<option value="${escAttr(t.name)}">${esc(t.name)} (${esc(t.language)})</option>`).join('');
+  return `<div style="border:1.5px solid var(--line);border-radius:var(--r-sm);padding:12px;margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+      <div style="font-weight:700;font-size:14px">${esc(r.match_value)} <span class="badge" style="background:${on?'var(--accent-soft)':'var(--bg)'};color:${on?'var(--accent-ink)':'var(--muted)'}">${on?'On':'Off'}</span></div>
+      <div style="font-size:12px;color:var(--muted)">${mmRuleStatsLine(r)}</div>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <div class="form-field" style="width:160px"><label>Frequency</label><select onchange="mmSetField(${i},'frequency',this.value||null)"><option value="">Off</option><option value="monthly"${r.frequency==='monthly'?' selected':''}>Once a month</option></select></div>
+      <div class="form-field" style="width:130px"><label>Send from day</label><input type="number" min="1" max="31" value="${esc(String(r.day_of_month||1))}" onchange="mmSetField(${i},'day_of_month',Math.min(31,Math.max(1,parseInt(this.value)||1)))"></div>
+      <div class="form-field" style="flex:1;min-width:220px"><label>Add template (each lead gets the next one it hasn't had)</label>${fuLadderTemplates.length
+        ?`<select onchange="mmAddTemplate(${i},this.value)"><option value="">— choose an approved template —</option>${options}</select>`
+        :'<div class="msg warn" style="margin:0">No approved WhatsApp templates found. <a href="#" onclick="showTab(\'templates\');return false" style="color:inherit;text-decoration:underline">Create one in Manage Templates</a>.</div>'}</div>
+    </div>
+    <div style="margin-bottom:10px">${chips||'<span style="font-size:12px;color:var(--muted)">No templates chosen yet.</span>'}</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:${canEnable?'pointer':'not-allowed'};opacity:${canEnable?1:.55}" title="${canEnable?'':'Choose a frequency and at least one template first'}">
+        <input type="checkbox" style="width:auto" ${Number(r.active)===1&&canEnable?'checked':''} ${canEnable?'':'disabled'} onchange="mmSetField(${i},'active',this.checked?1:0)"> Send automatically
+      </label>
+      <button class="btn btn-primary btn-sm" onclick="mmSaveRule(${i})">Save</button>
+      <button class="btn btn-ghost btn-sm" onclick="mmDeleteRule(${i})">Delete</button>
+      <span id="mmMsg-${i}" style="font-size:12.5px">${esc(mmFlash[mmRuleKey(r)]||'')}</span>
+    </div>
+  </div>`;
+}
+function mmRenderRules(){
+  ['category','tag'].forEach(type=>{
+    const html=mmRules.map((r,i)=>r.rule_type===type?mmRuleHtml(r,i):'').join('');
+    $id('mmRules-'+type).innerHTML=html||`<div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">No ${type} rules yet.</div>`;
+  });
+}
+function mmSetField(i, field, value){
+  const r=mmRules[i]; if(!r) return;
+  r[field]=value;
+  if(!r.frequency || !(r.templates||[]).length) r.active=0;
+  r._dirty=true;
+  mmRenderRules();
+}
+function mmAddTemplate(i, name){
+  const r=mmRules[i]; const tpl=fuLadderTemplates.find(t=>t.name===name);
+  if(!r || !tpl) return;
+  r.templates=r.templates||[];
+  if(r.templates.length>=10){ alert('At most 10 templates per rule.'); mmRenderRules(); return; }
+  r.templates.push({name:tpl.name, language:tpl.language||'en_US', body_vars:fuLadderCountBodyVars(tpl)});
+  mmSetField(i, 'templates', r.templates);
+}
+function mmRemoveTemplate(i, k){
+  const r=mmRules[i]; if(!r) return;
+  r.templates.splice(k,1);
+  mmSetField(i, 'templates', r.templates);
+}
+function mmAddRule(type){
+  const input=$id('mmNew-'+type);
+  const value=(input.value||'').trim();
+  if(!value){ input.focus(); return; }
+  if(mmRules.some(r=>r.rule_type===type && r.match_value.toLowerCase()===value.toLowerCase())){ alert(`There is already a rule for this ${type}.`); return; }
+  mmRules.push({id:null, rule_type:type, match_value:value, frequency:null, day_of_month:1, templates:[], active:0, _dirty:true});
+  input.value='';
+  mmRenderRules();
+}
+async function mmSaveRule(i){
+  const r=mmRules[i]; if(!r) return;
+  const msg=$id('mmMsg-'+i); msg.style.color=''; msg.textContent='Saving…';
+  try{
+    const res=await fetch(`${CONFIG.WORKER_BASE}/monthly-marketing/rules`,{method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify({
+      id:r.id||undefined, rule_type:r.rule_type, match_value:r.match_value, frequency:r.frequency||null,
+      day_of_month:r.day_of_month||1, templates:r.templates||[], active:Number(r.active)===1
+    })});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){ msg.style.color='var(--warn)'; msg.textContent=data.error||'Failed to save.'; return; }
+    // Keep other rules' unsaved edits and not-yet-saved new rules instead of overwriting them.
+    const unsaved=mmRules.filter((x,k)=>k!==i && !x.id);
+    const dirty=new Map(mmRules.filter((x,k)=>k!==i && x.id && x._dirty).map(x=>[String(x.id),x]));
+    mmRules=(data.list||[]).map(x=>dirty.get(String(x.id))||x).concat(unsaved);
+    const key=mmRuleKey(r);
+    mmFlash[key]='Saved ✓';
+    setTimeout(()=>{ delete mmFlash[key]; mmRenderRules(); }, 2500);
+    mmRenderRules();
+    mmLoadSummary();
+  }catch(e){ msg.style.color='var(--warn)'; msg.textContent='Failed to save.'; }
+}
+async function mmDeleteRule(i){
+  const r=mmRules[i]; if(!r) return;
+  if(r.id){
+    if(!confirm(`Delete the rule for "${r.match_value}"? Leads keep their send history, so templates they already received won't be repeated if you add it again.`)) return;
+    const res=await fetch(`${CONFIG.WORKER_BASE}/monthly-marketing/rules?id=${encodeURIComponent(r.id)}`,{method:'DELETE', headers:ncAuthHeaders()}).catch(()=>null);
+    if(!res||!res.ok){ $id('mmMsg-'+i).textContent='Failed to delete.'; return; }
+  }
+  mmRules.splice(i,1);
+  mmRenderRules();
+}
+async function mmLoadSummary(){
+  const monthInput=$id('mmMonth');
+  try{
+    const qs=monthInput.value?`?month=${encodeURIComponent(monthInput.value)}`:'';
+    const res=await fetch(`${CONFIG.WORKER_BASE}/monthly-marketing/summary${qs}`,{headers:ncAuthHeaders()});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){ $id('mmLog').innerHTML=`<div class="msg warn">${esc(data.error||'Could not load the send log.')}</div>`; return; }
+    if(!monthInput.value) monthInput.value=data.current_month;
+    mmPreview=data.preview;
+    mmRenderRules();
+    const notes=[];
+    if(!data.whatsapp_connected) notes.push('<div class="msg warn">WhatsApp Business API is not connected — connect it from Settings → Channels before these messages can go out.</div>');
+    if(!data.within_send_window) notes.push('<div class="msg info">It\'s outside your send window right now, so due messages will wait until it opens.</div>');
+    $id('mmStatus').innerHTML=notes.join('');
+    const ruleName=id=>{ const r=mmRules.find(x=>String(x.id)===String(id)); return r?`${r.rule_type==='tag'?'🏷️':'🗂️'} ${esc(r.match_value)}`:'<span style="color:var(--muted)">Deleted rule</span>'; };
+    const byRule={};
+    (data.counts||[]).forEach(c=>{ (byRule[c.rule_id]=byRule[c.rule_id]||{sent:0,pending:0,failed:0})[c.status]=c.n; });
+    const totals=Object.entries(byRule);
+    if(!totals.length && !(data.recent||[]).length){ $id('mmLog').innerHTML='<div style="font-size:12.5px;color:var(--muted)">Nothing sent this month yet.</div>'; return; }
+    $id('mmLog').innerHTML=`
+      <div class="tbl-wrap" style="margin-bottom:14px"><table class="tbl"><thead><tr><th>Rule</th><th>Sent</th><th>Unconfirmed</th><th>Failed</th></tr></thead><tbody>
+        ${totals.map(([id,c])=>`<tr><td>${ruleName(id)}</td><td>${c.sent}</td><td>${c.pending}</td><td>${c.failed}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Rule</th><th>Lead</th><th>Phone</th><th>Template</th><th>Status</th></tr></thead><tbody>
+        ${(data.recent||[]).map(s=>`<tr><td>${esc(new Date(s.sent_at||s.created_at).toLocaleString())}</td><td>${ruleName(s.rule_id)}</td><td>#${esc(String(s.lead_id))}</td><td>${esc(s.phone)}</td><td>${esc(s.template_name)}</td><td title="${escAttr(s.error||'')}">${esc(MM_STATUS_LABELS[s.status]||s.status)}${s.error?' ⚠️':''}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }catch(e){ $id('mmLog').innerHTML='<div class="msg warn">Could not load the send log.</div>'; }
 }
 
 // ── FOLLOW-UP ENGINE TAB ── the fixed 5-step ladder, config lives in D1 (followup_ladder_steps,

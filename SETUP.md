@@ -2541,6 +2541,42 @@ failed}`, capped to the most recent 50 — same capped-list pattern as `fulfille
 Read/written via the existing generic `/nocodb/*` passthrough, no dedicated Worker route needed for
 it. Add this column to the CLIENTS table before using the Tracking tab.
 
+## Monthly Marketing (Campaigns → 📅 Monthly Marketing)
+Sends one approved WhatsApp template a month to leads, chosen by **lead category**
+(`ServiceCategory`/`ProductCategory`) or **lead tag** (`Tags`, from the Leads panel). Each rule has
+an ordered list of templates, and each lead gets the first one it hasn't received yet.
+
+**Setup:** apply the migration once with `wrangler d1 migrations apply leadvyne-d1 --remote`
+(`migrations/0100_monthly_marketing.sql`), then `wrangler deploy`. No new cron, queue or secret is
+needed. Nothing is sent for any client until they save a rule with a frequency and at least one
+template and switch it on, so existing clients see no change.
+
+**Who gets a message** (`monthlyMktSkipReason` in `worker.js`):
+- `Score` is `Hot` or `Warm` ("medium" = Warm);
+- not won (`reportIsWonLead`, plus `Won`/`Converted`). Lost leads **are** included;
+- not opted out, and has a phone number;
+- if the lead already got a monthly message, they must have replied since (`LastCustomerMsgAt`);
+- category rules take priority over tag rules. A lead matching both still gets one message; if
+  every template in its category rule has been sent, the matching tag rule is used instead.
+
+**Duplicate guards:** partial unique indexes on `monthly_marketing_sends` allow at most one message
+per lead and per phone number per month, and never the same template twice to a lead or phone
+number. A row is reserved as `pending` *before* the Graph API call, so repeated ticks, retries and
+duplicate lead records can't cause a second send. Only an explicit Meta error marks a row `failed`,
+which frees it for a retry (up to 3 a month). A network error leaves it `pending`, because Meta may
+already have delivered it.
+
+**Sending:** runs on the existing `*/15` cron (`runMonthlyMarketingForAllClients`), on or after the
+rule's day of month (in the client's `bot_config.timezone`), inside the Follow-up Engine's send
+window. Each tick is capped at 60 sends shared across all clients, so large lists go out over
+several ticks. A fully scanned client is rescanned every 6 hours to pick up leads that qualify later
+in the month. Sends go straight through the Graph API (same request as the Follow-up Engine's
+template steps), with every `{{n}}` filled with the lead's name.
+
+**Routes (session-gated):** `GET/POST/DELETE /monthly-marketing/rules`,
+`GET /monthly-marketing/options` (categories and tags on the client's leads),
+`GET /monthly-marketing/summary?month=YYYY-MM` (this month's preview plus the send log).
+
 ## Task manager (frontend/dashboard.html — Tasks page)
 Reworked from three static, un-actionable read-only cards (Reminders Due Today / Hot Moments /
 Overdue Follow-ups — no way to mark anything done, no manual tasks, no assignment) into one merged,
