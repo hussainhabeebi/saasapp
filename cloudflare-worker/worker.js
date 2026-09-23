@@ -9659,6 +9659,39 @@ export function ecomBabyCareOrderItems(seed={}){
   ].filter(Boolean).join(' | ');
 }
 
+// Formats a stored product price for WhatsApp. INR (or a bare number) renders as ₹ with Indian
+// digit grouping; any other currency code/symbol is kept exactly as stored. Returns '' when the
+// product has no usable price so callers can omit the line rather than show "₹0".
+export function ecomFormatProductPrice(price, currency){
+  if(price==null||String(price).trim()==='') return '';
+  const num=Number(String(price).replace(/[,\s]/g,''));
+  if(!Number.isFinite(num)||num<=0) return '';
+  const cur=String(currency||'').trim();
+  const amount=num.toLocaleString('en-IN',{maximumFractionDigits:2});
+  if(!cur||/^(?:inr|rs\.?|₹)$/i.test(cur)) return `₹${amount}`;
+  return cur.length===1?`${cur}${amount}`:`${cur} ${amount}`;
+}
+
+// Baby care product card: verbatim name + description from the saved Ecom row, with the stored
+// price on its own labelled line. Multi-line descriptions become bullets; nothing is generated.
+export function ecomBabyCareProductCard(product={}){
+  const lines=[`🍼 *${String(product.name||'').trim()}*`];
+  const desc=String(product.description||'').trim();
+  if(desc){
+    const chunks=desc.split(/\n+/).map(s=>s.trim().replace(/^[-•*]\s*/,'')).filter(Boolean);
+    lines.push(chunks.length>1?chunks.map(s=>`• ${s}`).join('\n'):chunks[0]);
+  }
+  const details=[];
+  const price=ecomFormatProductPrice(product.price, product.currency);
+  if(price) details.push(`💰 *Price:* ${price}`);
+  if(product.size) details.push(`📏 *Size:* ${String(product.size).trim()}`);
+  if(product.color) details.push(`🎨 *Colour:* ${String(product.color).trim()}`);
+  if(details.length) lines.push(details.join('\n'));
+  const link=String(product.shopify_product_url||product.product_link||'').trim();
+  if(link) lines.push(`🛒 *Order online:* ${link}`);
+  return lines.join('\n\n');
+}
+
 // ── Electronics Ecom helpers ─────────────────────────────────────────────────
 
 export function ecomElectronicsOrderItems(seed={}){
@@ -17964,7 +17997,36 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
           }
         }
-        if(detection.mode==='order' && product && isElectronicsEcom){
+        const _babyProductQuestion=/[?]/.test(userText)
+          ||/^(?:what|how|when|where|why|which|is|are|can|could|do|does|will|would|tell|explain|describe|price|cost|rate|available|delivery|cod)\b/i.test(userText.trim());
+        if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')
+          && (resolvedFromHistory||_babyProductQuestion||(state.stage&&state.stage.startsWith('baby_')))){
+          // Baby care: a question about a product (or a follow-up on an earlier one, or anything
+          // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
+          // description, price) in context — never a canned card or a human handoff.
+          routing.route='ecom_faq';
+        } else if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')){
+          // Baby care product selection: formatted card with the stored price, then the baby care
+          // actions. A missing product link is normal for custom sets (ordered via the in-chat
+          // Custom Order flow), so it no longer triggers "link not available" + human handoff.
+          const card=ecomBabyCareProductCard(product);
+          const _attachBaby=sendProductImage||sendOnlyPrimaryImage;
+          if(_attachBaby&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
+          await engineDeliverReply(env,c,clientId,convId,card,{mediaType,langCode:replyLang,imageUrl:_attachBaby?product.image_url:null,ctx});
+          if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
+          else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:false});
+          else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:false});
+          const followUp=await engineLocalizeReply(env,c,'Would you like to order this set? Tap *Custom Order* to personalise it, or ask me anything about it 😊',replyLang);
+          sentText=followUp;
+          routing.reply=`${card}\n\n${followUp}`;
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,followUp,[
+            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ]);
+          if((product.shopify_product_url||product.product_link||'').trim()) await logPendingOrder(env,c,clientId,phone,name,product);
+          orderHandledInline=true;
+        } else if(detection.mode==='order' && product && isElectronicsEcom){
           // Electronics style: order signal with a resolved product → start multi-step WhatsApp flow.
           await ensureOrderCollectField(env);
           sentText=ecomElectronicsProductCard(product);

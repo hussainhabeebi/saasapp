@@ -58,6 +58,8 @@ import {
   ecomIsGenericProductCatalogueQuery,
   ecomFashionFieldChoices,
   ecomFashionOrderItems,
+  ecomFormatProductPrice,
+  ecomBabyCareProductCard,
   eduAdmissionWantsStart,
   eduAdmissionWantsAdvisor,
   eduResolveAdmissionCourse,
@@ -1290,5 +1292,25 @@ describe('Global consecutive-message aggregation', () => {
     ]);
     assert.equal(latest.content,'Tomorrow');
     assert.equal(body.content,'Book dental cleaning\nTomorrow');
+  });
+});
+
+describe('baby care product card', () => {
+  test('formats price with rupee symbol and Indian grouping', () => {
+    assert.equal(ecomFormatProductPrice(1250,'INR'),'₹1,250');
+    assert.equal(ecomFormatProductPrice('125000',''),'₹1,25,000');
+    assert.equal(ecomFormatProductPrice(49.5,'AED'),'AED 49.5');
+    assert.equal(ecomFormatProductPrice(0,'INR'),'');
+    assert.equal(ecomFormatProductPrice(null,'INR'),'');
+  });
+  test('shows name, description and price; no link line or handoff text when link missing', () => {
+    const card=ecomBabyCareProductCard({name:'Luxury Newborn Baby Set',description:'Luxury Handwork Newborn Baby Set',price:1850,currency:'INR'});
+    assert.equal(card,'🍼 *Luxury Newborn Baby Set*\n\nLuxury Handwork Newborn Baby Set\n\n💰 *Price:* ₹1,850');
+    assert.ok(!/not available/i.test(card));
+  });
+  test('bullets multi-line descriptions and includes link when present', () => {
+    const card=ecomBabyCareProductCard({name:'Set',description:'Romper\n- Cap\nMittens',price:900,product_link:'https://x.test/p'});
+    assert.match(card,/• Romper\n• Cap\n• Mittens/);
+    assert.match(card,/🛒 \*Order online:\* https:\/\/x.test\/p/);
   });
 });
