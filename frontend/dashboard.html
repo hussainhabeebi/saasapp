@@ -3123,6 +3123,8 @@ const ROLES = {
               <button class="save-btn" onclick="triggerGsheetSync()" style="background:var(--accent-soft);color:var(--accent-ink);border:1px solid var(--accent)">▶ Sync Now</button>
               <span class="save-msg" id="gsheetMsg"></span>
             </div>
+            <div id="gsheetShareNote" class="s-note" style="margin-top:10px"></div>
+            <div id="gsheetLastSync" style="margin-top:4px;font-size:12px;color:var(--muted)"></div>
           </div>
         </div>
 
@@ -9358,34 +9360,56 @@ function openExtraChatwootAccount(id){
   if(a) window.open(`${a.chatwoot_base}/app/accounts/${a.chatwoot_account_id}/dashboard`, '_blank', 'noopener');
 }
 
+function gsheetSelectedCols(){ return [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value); }
+function renderGsheetStatus(d){
+  const note=$id('gsheetShareNote'); const last=$id('gsheetLastSync');
+  if(note){
+    note.innerHTML=d?.service_account_email
+      ? `Share your sheet with <b style="user-select:all">${esc(d.service_account_email)}</b> as <b>Editor</b>. Leads then sync automatically every 15 minutes.`
+      : 'Automatic sync is not configured on the server yet (GOOGLE_SHEETS_SA_JSON). Contact support.';
+  }
+  if(last){
+    const st=d?.last_sync_status||'';
+    last.textContent=d?.last_sync_at ? `Last sync: ${new Date(d.last_sync_at).toLocaleString()} — ${st}` : '';
+    last.style.color=st.startsWith('error')?'var(--red,#d33)':'var(--muted)';
+  }
+}
+async function loadGsheetStatus(){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/gsheet/status`,{headers:ncAuthHeaders()});
+    const d=await r.json(); if(r.ok) renderGsheetStatus(d);
+  }catch(e){}
+}
 async function saveGsheetConfig(){
   const url = $id('cfgGsheetUrl').value.trim();
-  const cols = [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
+  const cols = gsheetSelectedCols();
   const msg = $id('gsheetMsg');
   if(!url){ msg.textContent='Paste a Google Sheet URL first.'; msg.className='save-msg err'; return; }
   if(!cols.length){ msg.textContent='Select at least one column.'; msg.className='save-msg err'; return; }
   msg.textContent='Saving…'; msg.className='save-msg';
   try{
-    await patchClient({gsheet_url:url,gsheet_cols:JSON.stringify(cols)});
-    msg.textContent='✓ Saved'; msg.className='save-msg';
-  }catch(e){ msg.textContent='Save failed.'; msg.className='save-msg err'; }
+    const r=await fetch(`${CONFIG.WORKER_BASE}/gsheet/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({gsheet_url:url,gsheet_cols:cols})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    Object.assign(clientRecord,{gsheet_url:d.gsheet_url,gsheet_cols:JSON.stringify(d.gsheet_cols),gsheet_last_sync_at:d.last_sync_at,gsheet_last_sync_status:d.last_sync_status});
+    renderGsheetStatus(d);
+    if(d.sync && !d.sync.ok){ msg.textContent='✓ Saved, but sync failed: '+d.sync.error; msg.className='save-msg err'; }
+    else if(d.sync){ msg.textContent=`✓ Saved & synced ${d.sync.rows} leads`; msg.className='save-msg ok'; }
+    else { msg.textContent='✓ Saved'; msg.className='save-msg ok'; }
+  }catch(e){ msg.textContent='Save failed: '+e.message; msg.className='save-msg err'; }
 }
 
 async function triggerGsheetSync(){
   const msg = $id('gsheetMsg');
-  const url = clientRecord?.gsheet_url||$id('cfgGsheetUrl').value.trim();
-  const cols = clientRecord?.gsheet_cols ? JSON.parse(clientRecord.gsheet_cols) : [...document.querySelectorAll('#gsheetColPicker input:checked')].map(i=>i.value);
-  if(!url){ msg.textContent='Save a Sheet URL first.'; msg.className='save-msg err'; return; }
+  if(!clientRecord?.gsheet_url){ msg.textContent='Save a Sheet URL first.'; msg.className='save-msg err'; return; }
   msg.textContent='Syncing…'; msg.className='save-msg';
   try {
-    const n8nBase = (clientRecord?.n8n_base||'https://apps.leadvyne.com').replace(/\/$/,'');
-    const res = await fetch(`${n8nBase}/webhook/leadvyne-gsheet-sync`,{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ client_id:clientId, gsheet_url:url, columns:cols })
-    });
-    if(!res.ok) throw new Error();
-    msg.textContent='✓ Sync triggered — check your sheet in a moment.'; msg.className='save-msg';
-  } catch(e){ msg.textContent='Sync failed. Is the workflow active?'; msg.className='save-msg err'; }
+    const r=await fetch(`${CONFIG.WORKER_BASE}/gsheet/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    msg.textContent=`✓ Synced ${d.rows} leads to "${d.tab}"`; msg.className='save-msg ok';
+    loadGsheetStatus();
+  } catch(e){ msg.textContent='Sync failed: '+e.message; msg.className='save-msg err'; loadGsheetStatus(); }
 }
 
 function showWebhookUrl(){
@@ -12190,6 +12214,7 @@ function integrationsInit(){
       document.querySelectorAll('#gsheetColPicker input').forEach(i=>{ i.checked=saved.includes(i.value); });
     }catch(e){}
   }
+  loadGsheetStatus();
   flowvyneInit();
 }
 

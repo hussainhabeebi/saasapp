@@ -2446,7 +2446,15 @@ const HEALTH_CHECKS=[
     if(!r.ok) return {status:'fail', detail:'HTTP '+r.status};
     return {status:'ok', detail:'Connected'};
   }},
-  { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'sheets', fn: async (env,c)=>checkSheet(c.gsheet_url) },
+  { key:'sheet_leads', label:'Google Sheet — Leads Export', category:'sheets', fn: async (env,c)=>{
+    // Written by the Worker's own service-account sync, so the sheet doesn't need to be public —
+    // report that sync's last result instead of checkSheet's public-CSV probe.
+    if(!c.gsheet_url) return checkSheet(c.gsheet_url);
+    const st=String(c.gsheet_last_sync_status||'');
+    if(st.startsWith('ok')) return {status:'ok', detail:`Last sync ${c.gsheet_last_sync_at||''} — ${st}`};
+    if(st.startsWith('error')) return {status:'fail', detail:st.slice(7)};
+    return {status:'warn', detail:'Not synced yet — press Sync Now'};
+  } },
   { key:'sheet_prospect', label:'Google Sheet — Prospect Import', category:'sheets', fn: async (env,c)=>checkSheet(c.prospect_gsheet_url) },
   { key:'sheet_ecom_products', label:'Google Sheet — Ecom Products', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_products_sheet) },
   { key:'sheet_ecom_orders', label:'Google Sheet — Ecom Orders', category:'sheets', fn: async (env,c)=>checkSheet(c.ecom_orders_sheet) },
@@ -2523,6 +2531,215 @@ async function runDailyHealthCheckForAllClients(env){
     }
     if(rows.length<200) break;
     page++;
+  }
+}
+
+/* ── GOOGLE SHEETS LEADS SYNC (Integrations → 📊 Google Sheets Sync) ──────────────────────────
+   Used to depend on an external n8n workflow (webhook `leadvyne-gsheet-sync`) that nothing in
+   this repo ever triggered on a schedule, so "sync automatically" only happened when someone
+   pressed Sync Now — and Save Config wrote straight through the /nocodb/ passthrough, failing
+   with a bare "Save failed." whenever the gsheet_url/gsheet_cols columns didn't exist yet.
+   Now it all lives here: /gsheet/config provisions the columns and saves, /gsheet/sync writes
+   now, and the 15-minute cron (runGsheetSyncForAllClients) keeps every configured sheet up to date.
+   Auth is a Google service account (Worker secret GOOGLE_SHEETS_SA_JSON = the downloaded key
+   JSON); each client shares their sheet with that account's email as Editor. The sync owns
+   columns A..(one per chosen column) of the tab the URL points at (its #gid=, else the first
+   tab): header row + one row per lead, oldest lead first, so rows keep their position as new
+   leads arrive and anything the client types in columns further right stays aligned. A hash
+   of the last written rows (gsheet_sync_hash) skips the write entirely when nothing changed. ── */
+const GSHEET_CLIENT_COLUMNS=['gsheet_url','gsheet_cols','gsheet_last_sync_at','gsheet_last_sync_status','gsheet_sync_hash'];
+const GSHEET_DEFAULT_COLS=['Phone','Name','Stage','Score','Date'];
+const GSHEET_ALLOWED_COLS=['Phone','Name','Stage','Score','Language','Date','LastMsgAt','Handover','HotMoment','QualScore','BookingTime','QualAnswers'];
+const GSHEET_COL_LABELS={LastMsgAt:'Last Message',HotMoment:'Hot Moment',QualScore:'Qual Score',BookingTime:'Booking Time',QualAnswers:'Qual Answers'};
+const GSHEET_MAX_LEADS=20000;
+
+export function gsheetParseUrl(sheetUrl){
+  const s=String(sheetUrl||'');
+  const m=s.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if(!m) return null;
+  const g=s.match(/[#&?]gid=(\d+)/);
+  return {spreadsheetId:m[1], gid:g?Number(g[1]):null};
+}
+export function gsheetParseCols(raw){
+  let cols=raw;
+  if(typeof raw==='string'){ try{ cols=JSON.parse(raw||'[]'); }catch(e){ cols=[]; } }
+  cols=(Array.isArray(cols)?cols:[]).map(String).filter(c=>GSHEET_ALLOWED_COLS.includes(c));
+  return cols.length?[...new Set(cols)]:GSHEET_DEFAULT_COLS;
+}
+function gsheetColLetter(n){ let s=''; while(n>0){ const r=(n-1)%26; s=String.fromCharCode(65+r)+s; n=Math.floor((n-1)/26); } return s; }
+function gsheetCell(v){
+  if(v===null||v===undefined) return '';
+  if(typeof v==='object') return JSON.stringify(v);
+  return String(v);
+}
+export function gsheetBuildRows(leads, cols){
+  return [cols.map(c=>GSHEET_COL_LABELS[c]||c), ...leads.map(l=>cols.map(c=>gsheetCell(l[c])))];
+}
+
+function gsheetServiceAccount(env){
+  if(!env.GOOGLE_SHEETS_SA_JSON) return null;
+  try{
+    const sa=JSON.parse(env.GOOGLE_SHEETS_SA_JSON);
+    return sa.client_email&&sa.private_key?sa:null;
+  }catch(e){ return null; }
+}
+function b64url(bytes){
+  let bin=''; const arr=bytes instanceof Uint8Array?bytes:new TextEncoder().encode(bytes);
+  for(let i=0;i<arr.length;i++) bin+=String.fromCharCode(arr[i]);
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+let _gsheetToken=null; // {token, exp, email} — reused across requests in the same isolate
+async function gsheetAccessToken(env){
+  const sa=gsheetServiceAccount(env);
+  if(!sa) throw new Error('Google Sheets sync is not configured on the server (GOOGLE_SHEETS_SA_JSON secret missing or invalid).');
+  const now=Math.floor(Date.now()/1000);
+  if(_gsheetToken && _gsheetToken.email===sa.client_email && _gsheetToken.exp-60>now) return _gsheetToken.token;
+  const pem=String(sa.private_key).replace(/-----[^-]+-----/g,'').replace(/\s+/g,'');
+  const der=Uint8Array.from(atob(pem), ch=>ch.charCodeAt(0));
+  const key=await crypto.subtle.importKey('pkcs8', der, {name:'RSASSA-PKCS1-v1_5', hash:'SHA-256'}, false, ['sign']);
+  const unsigned=b64url(JSON.stringify({alg:'RS256',typ:'JWT'}))+'.'+b64url(JSON.stringify({
+    iss:sa.client_email, scope:'https://www.googleapis.com/auth/spreadsheets',
+    aud:'https://oauth2.googleapis.com/token', iat:now, exp:now+3600
+  }));
+  const sig=new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
+  const r=await fetch('https://oauth2.googleapis.com/token', {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion:unsigned+'.'+b64url(sig)})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok||!data.access_token) throw new Error('Google rejected the service account: '+(data.error_description||data.error||'HTTP '+r.status));
+  _gsheetToken={token:data.access_token, exp:now+(Number(data.expires_in)||3600), email:sa.client_email};
+  return data.access_token;
+}
+async function gsheetApi(env, path, {method='GET', body}={}){
+  const token=await gsheetAccessToken(env);
+  const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${path}`, {
+    method, headers:{Authorization:`Bearer ${token}`, 'Content-Type':'application/json'},
+    body:body?JSON.stringify(body):undefined
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const sa=gsheetServiceAccount(env);
+    if(r.status===403||r.status===404) throw new Error(`Can't edit this sheet — share it with ${sa?.client_email||'the sync service account'} as Editor.`);
+    throw new Error('Google Sheets error: '+(data?.error?.message||'HTTP '+r.status));
+  }
+  return data;
+}
+
+async function gsheetFetchLeads(env, clientId){
+  const out=[];
+  const where=`(ClientId,eq,${clientId})`;
+  for(let offset=0; offset<GSHEET_MAX_LEADS; offset+=1000){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1000&offset=${offset}&sort=Id`);
+    if(!r.ok) throw new Error('Could not read leads: HTTP '+r.status);
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    out.push(...rows);
+    if(rows.length<1000 || data?.pageInfo?.isLastPage) break;
+  }
+  return out;
+}
+async function gsheetHash(rows){
+  const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(rows)));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// Writes one client's leads into their sheet. force=true (Sync Now) writes even if unchanged.
+async function syncClientGsheet(env, c, {force=false}={}){
+  const parsed=gsheetParseUrl(c.gsheet_url);
+  if(!parsed) throw new Error('Not a valid Google Sheets link.');
+  const cols=gsheetParseCols(c.gsheet_cols);
+  const leads=await gsheetFetchLeads(env, c.Id);
+  const rows=gsheetBuildRows(leads, cols);
+  const hash=await gsheetHash({url:c.gsheet_url, rows});
+  if(!force && hash===c.gsheet_sync_hash) return {ok:true, skipped:true, rows:leads.length};
+
+  const meta=await gsheetApi(env, `${parsed.spreadsheetId}?fields=sheets.properties(sheetId,title)`);
+  const sheets=meta.sheets||[];
+  const tab=(parsed.gid!==null && sheets.find(s=>s.properties?.sheetId===parsed.gid)) || sheets[0];
+  if(!tab) throw new Error('That spreadsheet has no tabs.');
+  const title="'"+String(tab.properties.title).replace(/'/g,"''")+"'";
+  const lastCol=gsheetColLetter(cols.length);
+  // Clear only the columns this sync owns, then write — so leads that were deleted don't leave
+  // stale rows behind, while the client's own columns to the right are left untouched.
+  await gsheetApi(env, `${parsed.spreadsheetId}/values/${encodeURIComponent(`${title}!A:${lastCol}`)}:clear`, {method:'POST', body:{}});
+  await gsheetApi(env, `${parsed.spreadsheetId}/values/${encodeURIComponent(`${title}!A1`)}?valueInputOption=RAW`, {method:'PUT', body:{values:rows}});
+  const at=new Date().toISOString();
+  await patchClientFields(env, c.Id, {gsheet_last_sync_at:at, gsheet_last_sync_status:`ok: ${leads.length} leads`, gsheet_sync_hash:hash}).catch(()=>{});
+  return {ok:true, rows:leads.length, tab:tab.properties.title, synced_at:at};
+}
+
+function gsheetStatusOut(env, c){
+  return {
+    service_account_email:gsheetServiceAccount(env)?.client_email||null,
+    gsheet_url:c?.gsheet_url||'', gsheet_cols:gsheetParseCols(c?.gsheet_cols),
+    last_sync_at:c?.gsheet_last_sync_at||null, last_sync_status:c?.gsheet_last_sync_status||null
+  };
+}
+async function handleGsheetStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  return json(gsheetStatusOut(env, c));
+}
+async function handleGsheetConfig(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const url=String(body.gsheet_url||'').trim();
+  if(url && !gsheetParseUrl(url)) return json({error:'That is not a Google Sheets link (expected docs.google.com/spreadsheets/d/…).'}, 400);
+  const cols=gsheetParseCols(body.gsheet_cols);
+  await ensureClientColumns(env, GSHEET_CLIENT_COLUMNS);
+  const fields={gsheet_url:url, gsheet_cols:JSON.stringify(cols), gsheet_sync_hash:''};
+  try{ await patchClientFields(env, payload.cid, fields); }
+  catch(e){ return json({error:e.message}, 502); }
+  const c=await getClientById(env, payload.cid);
+  const stuck=['gsheet_url','gsheet_cols'].filter(k=>String(c?.[k]??'')!==String(fields[k]));
+  if(stuck.length) return json({error:`Couldn't save ${stuck.join(', ')} — the NocoDB token needs permission to add columns to the CLIENTS table (or add them manually, see SETUP.md).`}, 500);
+  // Try a first sync right away so the client sees whether sharing is set up correctly.
+  let sync=null;
+  if(url){
+    try{ sync=await syncClientGsheet(env, c, {force:true}); }
+    catch(e){
+      sync={ok:false, error:e.message};
+      await patchClientFields(env, payload.cid, {gsheet_last_sync_at:new Date().toISOString(), gsheet_last_sync_status:'error: '+e.message}).catch(()=>{});
+    }
+  }
+  return json({ok:true, ...gsheetStatusOut(env, await getClientById(env, payload.cid)), sync});
+}
+async function handleGsheetSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!c.gsheet_url) return json({error:'Save a Google Sheet URL first.'}, 400);
+  try{ return json(await syncClientGsheet(env, c, {force:true})); }
+  catch(e){
+    await patchClientFields(env, c.Id, {gsheet_last_sync_at:new Date().toISOString(), gsheet_last_sync_status:'error: '+e.message}).catch(()=>{});
+    return json({error:e.message}, 502);
+  }
+}
+// 15-minute cron — every client with a sheet configured. Unchanged data is skipped via the hash, so
+// a quiet account costs one NocoDB read per tick and no Google API calls at all.
+export async function runGsheetSyncForAllClients(env){
+  if(!gsheetServiceAccount(env)) return;
+  const where='(gsheet_url,notblank)';
+  for(let offset=0;;offset+=200){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${offset}`);
+    if(!r.ok) break;
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    for(const c of rows){
+      if(!c.gsheet_url) continue;
+      try{ await syncClientGsheet(env, c); }
+      catch(e){
+        console.error('[gsheet] sync failed for client', c.Id, e.message);
+        const status='error: '+e.message;
+        if(c.gsheet_last_sync_status!==status) await patchClientFields(env, c.Id, {gsheet_last_sync_at:new Date().toISOString(), gsheet_last_sync_status:status}).catch(()=>{});
+      }
+    }
+    if(rows.length<200) break;
   }
 }
 
@@ -30019,6 +30236,9 @@ export default {
       else if(url.pathname==='/gcal/sync-task' && request.method==='POST'){ res=await handleGcalSyncTask(request, env); }
       else if(url.pathname==='/engine/logs' && request.method==='GET'){ res=await handleEngineLogsList(request, env); }
       else if(url.pathname==='/health/run' && request.method==='POST'){ res=await handleHealthRun(request, env); }
+      else if(url.pathname==='/gsheet/status' && request.method==='GET'){ res=await handleGsheetStatus(request, env); }
+      else if(url.pathname==='/gsheet/config' && request.method==='POST'){ res=await handleGsheetConfig(request, env); }
+      else if(url.pathname==='/gsheet/sync' && request.method==='POST'){ res=await handleGsheetSync(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='GET'){ res=await handleEcomClientGet(request, env); }
       else if(url.pathname==='/ecom/client' && request.method==='PATCH'){ res=await handleEcomClientUpdate(request, env); }
       else if(url.pathname==='/ecom/drive-file-size' && request.method==='GET'){ res=await handleEcomDriveFileSize(request, env); }
@@ -30564,6 +30784,8 @@ export default {
       // one so sends land inside each client's Follow-up Engine send window and a large client is
       // worked through a capped batch at a time; see runMonthlyMarketingForAllClients.
       ctx.waitUntil(runMonthlyMarketingForAllClients(env));
+      // Google Sheets leads sync (Integrations → 📊 Google Sheets Sync) — see runGsheetSyncForAllClients.
+      ctx.waitUntil(runGsheetSyncForAllClients(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
