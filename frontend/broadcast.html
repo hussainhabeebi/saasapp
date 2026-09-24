@@ -488,7 +488,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div class="msg warn" id="dmNo24h" style="display:none">⚠️ No leads have messaged in the last 24 hours. Direct messages can only be sent within the 24h window.</div>
 
       <div class="leads-toolbar">
-        <input type="text" id="dmSearch" placeholder="Search name / phone…" oninput="filterDmLeads()">
+        <input type="text" id="dmSearch" placeholder="Search name / phone / ref…" oninput="filterDmLeads()">
+        <input type="text" id="dmLeadRefFilter" placeholder="Lead Ref: LD-00042, LD-00100 to LD-00250" title="Comma-separated Lead Refs and/or ranges (LD-00100 to LD-00250)" oninput="filterDmLeads()" style="max-width:260px">
         <select id="dmStageFilter" onchange="filterDmLeads()">
           <option value="">All stages</option>
         </select>
@@ -526,7 +527,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <table class="tbl">
           <thead><tr>
             <th><input type="checkbox" class="chk" id="dmChkAll" onchange="toggleAllDm(this)"></th>
-            <th>Name</th><th>Phone</th><th>Stage</th><th>Last Message</th><th>Window</th>
+            <th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Last Message</th><th>Window</th>
           </tr></thead>
           <tbody id="dmLeadsTbody"></tbody>
         </table>
@@ -610,7 +611,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <span id="metaLeadCountChip" class="badge gray" style="margin-left:auto"></span>
       </div>
       <div class="leads-toolbar">
-        <input type="text" id="metaLeadSearch" placeholder="Search name / phone…" oninput="filterMetaLeads()">
+        <input type="text" id="metaLeadSearch" placeholder="Search name / phone / ref…" oninput="filterMetaLeads()">
+        <input type="text" id="metaLeadRefFilter" placeholder="Lead Ref: LD-00042, LD-00100 to LD-00250" title="Comma-separated Lead Refs and/or ranges (LD-00100 to LD-00250)" oninput="filterMetaLeads()" style="max-width:260px">
         <select id="metaStageFilter" onchange="filterMetaLeads()">
           <option value="">All stages</option>
         </select>
@@ -648,7 +650,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <table class="tbl">
           <thead><tr>
             <th><input type="checkbox" class="chk" id="metaChkAll" onchange="toggleAllMeta(this)"></th>
-            <th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last seen</th>
+            <th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last seen</th>
           </tr></thead>
           <tbody id="metaLeadsTbody"></tbody>
         </table>
@@ -1184,6 +1186,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <div class="chip-row" id="flowSegStageChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
         <label>Audience — Tag contains (optional)</label>
         <input type="text" id="flowSegTag" placeholder="e.g. vip (leave blank for any tag)">
+        <label>Audience — Lead Ref (optional)</label>
+        <input type="text" id="flowSegLeadRefs" placeholder="e.g. LD-00042, LD-00100 to LD-00250" oninput="refreshFlowAudiencePreview()">
         <div class="msg info" id="flowAudiencePreview" style="margin-top:10px">Checking audience…</div>
       </div>
 
@@ -1750,6 +1754,31 @@ function leadConvId(lead){ return lead&&(lead.ConversationID||lead.conv_id||lead
 
 // ── UTILS ──
 function esc(s){ const d=document.createElement('div');d.textContent=s||'';return d.innerHTML; }
+// Customer-facing lead reference: the Leads row Id, prefixed and zero-padded (42 → LD-00042).
+// Same helper as dashboard.html; the worker's parseLeadRefFilter mirrors parseLeadRefFilter below.
+const LEAD_REF_PREFIX='LD-';
+function leadRef(l){ const id=Number(l&&typeof l==='object'?l.Id:l); return id>0?LEAD_REF_PREFIX+String(id).padStart(5,'0'):''; }
+// Lead Ref filter text → {ids:Set, ranges:[[a,b]]}, or null when the box is empty. Accepts a list
+// ("LD-00042, LD-00107") and/or ranges ("LD-00100 to LD-00250", "100-250"); prefix is optional.
+function parseLeadRefFilter(text){
+  const str=String(text||'').replace(/\s+to\s+/gi,'-').replace(/[a-z]+-?/gi,'').replace(/\s*-\s*/g,'-');
+  const ids=new Set(), ranges=[];
+  str.split(/[\s,;]+/).forEach(tok=>{
+    const m=tok.match(/^(\d+)-(\d+)$/);
+    if(m){ const a=parseInt(m[1],10), b=parseInt(m[2],10); ranges.push([Math.min(a,b),Math.max(a,b)]); }
+    else if(/^\d+$/.test(tok)) ids.add(parseInt(tok,10));
+  });
+  // Text that isn't a ref matches nobody rather than dropping the filter.
+  return (ids.size||ranges.length||String(text||'').trim())?{ids,ranges}:null;
+}
+function leadRefMatches(f,l){ const id=Number(l.Id); return f.ids.has(id)||f.ranges.some(([a,b])=>id>=a&&id<=b); }
+// Search box: name, phone, Lead Ref ("LD-00042"/"42") or the customer's own External Ref.
+function leadSearchMatches(q,l){
+  if((l.Name||'').toLowerCase().includes(q)||(l.Phone||'').includes(q)) return true;
+  if(l.ExternalRef&&String(l.ExternalRef).toLowerCase().includes(q)) return true;
+  const m=q.trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);
+  return !!m&&Number(l.Id)===parseInt(m[1],10);
+}
 function escAttr(s){ return esc(s).replace(/"/g,'&quot;'); }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function timeSince(dt){
@@ -2431,6 +2460,8 @@ function applyFilterPresetsFromUrl(){
   const productCategory=qp.get('product_category')||'';
   const reProject=qp.get('re_project')||'', reZone=qp.get('re_zone')||'', reUrgency=qp.get('re_urgency')||'';
   const reSource=qp.get('re_source')||'', reInvestor=qp.get('re_investor')||'';
+  const leadRefs=qp.get('lead_refs')||'';
+  if(leadRefs){ ['dmLeadRefFilter','metaLeadRefFilter'].forEach(id=>{ const el=$id(id); if(el) el.value=leadRefs; }); }
   [
     ['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],
     ['dmProductCategoryFilter',productCategory],['metaProductCategoryFilter',productCategory],
@@ -2457,8 +2488,10 @@ function filterDmLeads(){
   const reUrgency=$id('dmReUrgencyFilter')?.value||'';
   const reSource=$id('dmReSourceFilter')?.value||'';
   const reInvestor=$id('dmReInvestorFilter')?.value||'';
+  const refFilter=parseLeadRefFilter($id('dmLeadRefFilter')?.value);
 
   let leads=allLeads.filter(l=>{
+    if(refFilter&&!leadRefMatches(refFilter,l)) return false;
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
     if(productCategory&&l.ProductCategory!==productCategory) return false;
@@ -2469,7 +2502,7 @@ function filterDmLeads(){
     if(reSource&&l.re_source!==reSource) return false;
     if(reInvestor&&l.re_investor!==reInvestor) return false;
     if(window==='24h'&&!within24h(l.LastMsgAt)) return false;
-    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
+    if(q&&!leadSearchMatches(q,l)) return false;
     return true;
   });
   dmFilteredLeads=leads;
@@ -2490,6 +2523,7 @@ function renderDmLeads(){
     const ago=timeSince(l.LastMsgAt);
     return `<tr>
       <td><input type="checkbox" class="chk" data-id="${l.Id}" ${chk?'checked':''} onchange="toggleDmLead(this)"></td>
+      <td style="font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--muted)">${leadRef(l)}</td>
       <td style="font-weight:600">${esc(l.Name||'—')}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
       <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
@@ -2519,7 +2553,9 @@ function filterMetaLeads(){
   const reUrgency=$id('metaReUrgencyFilter')?.value||'';
   const reSource=$id('metaReSourceFilter')?.value||'';
   const reInvestor=$id('metaReInvestorFilter')?.value||'';
+  const refFilter=parseLeadRefFilter($id('metaLeadRefFilter')?.value);
   metaFilteredLeads=allLeads.filter(l=>{
+    if(refFilter&&!leadRefMatches(refFilter,l)) return false;
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
     if(productCategory&&l.ProductCategory!==productCategory) return false;
@@ -2530,7 +2566,7 @@ function filterMetaLeads(){
     if(reUrgency&&l.re_urgency!==reUrgency) return false;
     if(reSource&&l.re_source!==reSource) return false;
     if(reInvestor&&l.re_investor!==reInvestor) return false;
-    if(q&&!(l.Name||'').toLowerCase().includes(q)&&!(l.Phone||'').includes(q)) return false;
+    if(q&&!leadSearchMatches(q,l)) return false;
     return true;
   });
   renderMetaLeads();
@@ -2544,6 +2580,7 @@ function renderMetaLeads(){
     const ago=timeSince(l.LastMsgAt||l.Date);
     return `<tr>
       <td><input type="checkbox" class="chk" data-id="${l.Id}" ${chk?'checked':''} onchange="toggleMetaLead(this)"></td>
+      <td style="font-family:var(--mono);font-size:12px;white-space:nowrap;color:var(--muted)">${leadRef(l)}</td>
       <td style="font-weight:600">${esc(l.Name||'—')}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
       <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
@@ -3692,6 +3729,7 @@ function openFlowEditor(id){
   $id('flowNoReplyHours').value=f?.trigger?.no_reply_hours||24;
   flowSegSelectedStages=new Set(f?.segment?.stage||[]);
   $id('flowSegTag').value=(f?.segment?.tags_any||[])[0]||'';
+  $id('flowSegLeadRefs').value=f?.segment?.lead_refs||'';
   editingFlowSteps=f?JSON.parse(JSON.stringify(f.steps||[])):[];
 
   applyFlowTriggerUI();
@@ -3740,6 +3778,8 @@ function currentFlowSegmentFilter(){
   if(flowSegSelectedStages.size) f.stage=[...flowSegSelectedStages];
   const tag=($id('flowSegTag').value||'').trim();
   if(tag) f.tags_any=[tag];
+  const refs=($id('flowSegLeadRefs').value||'').trim();
+  if(refs) f.lead_refs=refs;
   return f;
 }
 let flowAudienceDebounce=null;

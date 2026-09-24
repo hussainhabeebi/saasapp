@@ -502,6 +502,7 @@ tr:hover td{background:#FAFCFB}
 .li-avatar{width:40px;height:40px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .li-body{flex:1;min-width:0}
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
 .li-date{font-size:10px;color:var(--muted);font-family:var(--mono)}
@@ -1624,7 +1625,7 @@ const ROLES = {
           <div class="leads-toolbar">
             <!-- Row 1: Search + owner + mine -->
             <div class="leads-toolbar-row">
-              <input class="search-input" id="leadSearch" type="text" placeholder="Search name or phone…" oninput="onLeadsFilterChange()" style="flex:1;min-width:160px" />
+              <input class="search-input" id="leadSearch" type="text" placeholder="Search name, phone or Lead Ref…" oninput="onLeadsFilterChange()" style="flex:1;min-width:160px" />
               <select class="form-input" id="leadOwnerFilter" onchange="onLeadsFilterChange()" style="flex:0 0 130px;padding:9px 10px">
                 <option value="">All owners</option>
               </select>
@@ -4256,7 +4257,7 @@ const ROLES = {
   <div class="modal-body">
     <div class="kb-drop" id="importDrop" onclick="$id('importFile').click()" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="event.preventDefault();this.classList.remove('drag-over');importHandleFile(event.dataTransfer.files[0])">
       <div class="kb-drop-icon">📋</div>
-      <div class="kb-drop-label"><b>Click to upload CSV</b> or drag &amp; drop<br>Required columns: Phone · Optional: Name, Stage, Owner</div>
+      <div class="kb-drop-label"><b>Click to upload CSV</b> or drag &amp; drop<br>Required columns: Phone · Optional: Name, Stage, Owner, your own ID (External Ref)<br>Each lead gets a Lead Ref (e.g. LD-00042) automatically</div>
     </div>
     <input type="file" id="importFile" accept=".csv" style="display:none" onchange="importHandleFile(this.files[0])">
     <div id="importPreview" style="margin-top:12px"></div>
@@ -4265,6 +4266,7 @@ const ROLES = {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="importMapGrid"></div>
     </div>
     <div id="importStatus" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
+    <div id="importResult" style="margin-top:8px"></div>
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" id="importBtn" style="flex:1;display:none" onclick="doImport()">Import</button>
@@ -6415,9 +6417,12 @@ function applyLeadsViewFilter(leads){
 
   const q=($id('leadSearch')?.value||'').toLowerCase();
   if(q){
+    const refId=leadRefSearchId(q);
     out=out.filter(l=>{
       const nameMatch=(l.Name||'').toLowerCase().includes(q);
       const phoneMatch=(l.Phone||'').includes(q);
+      const refMatch=(refId&&l.Id===refId)||(l.ExternalRef&&String(l.ExternalRef).toLowerCase().includes(q));
+      if(refMatch) return true;
       let convMatch=false;
       if(_convSearchActive){ try{const h=JSON.parse(l.ConvHistory||'[]');convMatch=h.some(m=>(m.content||'').toLowerCase().includes(q));}catch(e){} }
       return nameMatch||phoneMatch||convMatch;
@@ -6759,7 +6764,7 @@ function renderLeadsList(){
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
-        <div class="li-sub">${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
+        <div class="li-sub"><span class="lead-ref">${leadRef(l)}</span> · ${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           <button class="btn btn-sm" title="Mark Won" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅</button>
@@ -7127,7 +7132,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -7140,6 +7145,7 @@ function renderLeadsTable(){
     const callDoneBadge=leadCallDoneBadge(l);
     return `<tr onclick="openDetail(${l.Id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
+      <td class="lead-ref" style="white-space:nowrap">${leadRef(l)}</td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
@@ -8330,7 +8336,7 @@ function openDetail(id){
   if(!lead)return;
   currentLead=lead;
   $id('detailName').textContent=lead.Name||lead.Phone||'Unknown';
-  $id('detailSub').textContent=(lead.Phone||'')+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
+  $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(lead.Phone||'')+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
 
   // actions
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
@@ -9281,8 +9287,8 @@ async function generateSummary(){
 /* ── EXPORT ── */
 function exportCsv(){
   if(!allLeads.length){alert('No leads.');return;}
-  const cols=['Id','Name','Phone','Stage','Score','InterestedProduct','Source','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
-  const csv=[cols.join(','),...allLeads.map(l=>cols.map(c=>'"'+(String(l[c]||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
+  const cols=['LeadRef','ExternalRef','Id','Name','Phone','Stage','Score','InterestedProduct','Source','Owner','Tags','Language','Date','BookingTime','ReminderDate','Handover','IsDuplicate'];
+  const csv=[cols.join(','),...allLeads.map(l=>cols.map(c=>'"'+(String((c==='LeadRef'?leadRef(l):l[c])||'').replace(/"/g,'""'))+'"').join(','))].join('\n');
   dlFile('data:text/csv;charset=utf-8,'+encodeURIComponent(csv),'leads_'+clientId+'_'+TODAY+'.csv');
 }
 
@@ -13412,6 +13418,14 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
+// Customer-facing lead reference: the Leads row Id, prefixed and zero-padded (42 → LD-00042).
+// No separate column or counter — Id is already unique and never reused. Same helper lives in
+// broadcast.html; the worker's parseLeadRefFilter reads it back for campaign audiences.
+const LEAD_REF_PREFIX='LD-';
+function leadRef(l){const id=Number(l&&typeof l==='object'?l.Id:l);return id>0?LEAD_REF_PREFIX+String(id).padStart(5,'0'):'';}
+// "LD-00042" / "ld42" / "42" → 42 (the Id to match), anything else → 0.
+function leadRefSearchId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0;}
+function leadLabel(l){return l.Name||l.Phone||leadRef(l);}
 // The bot writes the linked Chatwoot conversation id as "ConversationID" — read that,
 // with older/alternate field-name fallbacks for leads written by other paths.
 function leadConvId(lead){return lead&&(lead.ConversationID||lead.conv_id||lead.ConversationId||lead.chatwoot_conv_id||'');}
@@ -13744,7 +13758,7 @@ function calendarEventOccurrence(ev, forYear){
   return `${forYear}-${m}-${d}`;
 }
 function calendarEventAudienceLabel(ev){
-  if(ev.audience_mode==='lead') return '👤 '+(ev.lead_name||'Lead #'+ev.lead_id);
+  if(ev.audience_mode==='lead') return '👤 '+(ev.lead_name||leadRef(ev.lead_id));
   if(ev.audience_mode==='segment'){
     const parts=[];
     if(ev.segment?.stage?.length) parts.push('Stage: '+ev.segment.stage.join(', '));
@@ -13772,7 +13786,7 @@ async function openCalendarEventModal(id){
   const leadSel=$id('ceLeadSelect');
   const activeLeads=allLeads.filter(l=>!TERMINAL.has(l.Stage)).slice(0,500);
   const linkedLeadId=ev?.audience_mode==='lead'?ev.lead_id:null;
-  leadSel.innerHTML='<option value="">Select a lead…</option>'+activeLeads.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
+  leadSel.innerHTML='<option value="">Select a lead…</option>'+activeLeads.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(leadLabel(l))}</option>`).join('');
 
   _ceSegSelectedStages=new Set(ev?.audience_mode==='segment'?(ev.segment?.stage||[]):[]);
   $id('ceSegTags').value=ev?.audience_mode==='segment'?(ev.segment?.tags_any||[]).join(', '):'';
@@ -14223,7 +14237,7 @@ function computeAllNotes(){
   const out=[];
   allLeads.forEach(l=>{
     let list=[]; try{ list=JSON.parse(l.NotesList||'[]'); }catch(e){}
-    list.forEach(n=>{ if(n&&n.text&&n.text.trim()) out.push({text:n.text, date:n.date||'', source:'Lead', entityLabel:l.Name||l.Phone||('Lead #'+l.Id), onClick:()=>openDetail(l.Id)}); });
+    list.forEach(n=>{ if(n&&n.text&&n.text.trim()) out.push({text:n.text, date:n.date||'', source:'Lead', entityLabel:leadLabel(l), onClick:()=>openDetail(l.Id)}); });
   });
   (getTasksState().items||[]).forEach(t=>{
     if(t.notes&&t.notes.trim()) out.push({text:t.notes, date:t.created_at||'', source:'Task', entityLabel:t.title||'Task', onClick:()=>openTaskModal(t.id)});
@@ -15043,7 +15057,7 @@ function openTaskModal(id, prefillLead, prefillProjectId){
   const activeLeads=allLeads.filter(l=>!TERMINAL.has(l.Stage)).slice(0,500);
   const linkedLeadId=t?t.lead_id:(prefillLead?prefillLead.Id:null);
   const leadOptions=(prefillLead && !activeLeads.some(l=>l.Id===prefillLead.Id)) ? [prefillLead,...activeLeads] : activeLeads;
-  leadSel.innerHTML='<option value="">Not linked to a lead</option>'+leadOptions.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(l.Name||l.Phone||('Lead #'+l.Id))}</option>`).join('');
+  leadSel.innerHTML='<option value="">Not linked to a lead</option>'+leadOptions.map(l=>`<option value="${l.Id}"${linkedLeadId===l.Id?' selected':''}>${esc(leadLabel(l))}</option>`).join('');
 
   const assigneeSel=$id('taskAssignee');
   const emails=taskAssigneeEmails();
@@ -15592,7 +15606,7 @@ function toggleConvSearch(){
   const btn=$id('convSearchBtn');
   btn.style.background=_convSearchActive?'var(--accent)':'';
   btn.style.color=_convSearchActive?'#fff':'';
-  $id('leadSearch').placeholder=_convSearchActive?'Search name, phone or conversation…':'Search name or phone…';
+  $id('leadSearch').placeholder=_convSearchActive?'Search name, phone, Lead Ref or conversation…':'Search name, phone or Lead Ref…';
   if(_leadsTableView)renderLeadsTable();else renderLeadsList();
 }
 
@@ -15675,7 +15689,7 @@ function computeRecentCallNotes(days){
       if(!c.notes || !String(c.notes).trim()) return;
       const ts=new Date(c.date||'').getTime();
       if(!ts || isNaN(ts) || ts<cutoff) return;
-      out.push({leadId:l.Id, leadName:l.Name||l.Phone||('Lead #'+l.Id), outcome:c.outcome, notes:c.notes, date:c.date, by:c.by, ts});
+      out.push({leadId:l.Id, leadName:leadLabel(l), outcome:c.outcome, notes:c.notes, date:c.date, by:c.by, ts});
     });
   });
   out.sort((a,b)=>b.ts-a.ts);
@@ -17167,8 +17181,11 @@ td{padding:8px 10px;border-bottom:1px solid #EEF2F0;font-size:12px}
 
 /* ── IMPORT CSV ── */
 let _importRows=[], _importHeaders=[];
-const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score','InterestedProduct','Source'];
-const IMPORT_FIELD_LABELS={InterestedProduct:'Brand/Product'};
+// ExternalRef = the customer's own ID from their CRM/sheet, stored as-is and searchable. Their
+// Leadvyne Lead Ref (LD-00042) is always the new row's Id — shown after import, see doImport.
+const IMPORT_FIELDS=['Name','Phone','Stage','Owner','Score','InterestedProduct','Source','ExternalRef'];
+const IMPORT_FIELD_LABELS={InterestedProduct:'Brand/Product',ExternalRef:'External Ref (your own ID)'};
+let _importCreated=[];
 
 function openImport(){
   _importRows=[];_importHeaders=[];
@@ -17176,7 +17193,9 @@ function openImport(){
   $id('importMapping').style.display='none';
   $id('importBtn').style.display='none';
   $id('importStatus').textContent='';
+  $id('importResult').innerHTML='';
   $id('importFile').value='';
+  _importCreated=[];
   openModal('modalImport');
 }
 
@@ -17209,6 +17228,23 @@ function parseCSVLine(line){
   return out;
 }
 
+// Ids come from NocoDB's insert order, so an import's Lead Refs are ascending but can skip
+// numbers when other leads arrive mid-import — hence "first → last" plus the full list in the CSV.
+function renderImportResult(){
+  const el=$id('importResult');
+  if(!_importCreated.length){el.innerHTML='';return;}
+  const ids=_importCreated.map(l=>l.Id).sort((a,b)=>a-b);
+  const range=ids.length===1?leadRef(ids[0]):`${leadRef(ids[0])} → ${leadRef(ids[ids.length-1])}`;
+  el.innerHTML=`<div style="font-size:12.5px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px">Lead Refs: <b class="lead-ref" style="color:inherit">${range}</b>. Use these in Campaigns → Lead Ref filter.
+    <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="downloadImportRefs()">📥 Download with Lead Refs</button></div>`;
+}
+function downloadImportRefs(){
+  const cols=['LeadRef','ExternalRef','Name','Phone','Stage','Score','Owner','Source'];
+  const q=v=>'"'+String(v||'').replace(/"/g,'""')+'"';
+  const csv=[cols.join(','),..._importCreated.map(l=>cols.map(c=>q(c==='LeadRef'?leadRef(l):l[c])).join(','))].join('\n');
+  dlFile('data:text/csv;charset=utf-8,'+encodeURIComponent(csv),'imported_leads_'+TODAY+'.csv');
+}
+
 function renderImportPreview(){
   const preview=[_importHeaders,..._importRows.slice(0,4)];
   $id('importPreview').innerHTML=`<div style="overflow-x:auto"><table style="font-size:11px;width:100%"><thead><tr>${_importHeaders.map(h=>`<th style="padding:4px 8px;background:var(--bg);text-align:left">${esc(h)}</th>`).join('')}</tr></thead><tbody>${_importRows.slice(0,4).map(r=>`<tr>${r.map(c=>`<td style="padding:4px 8px;border-bottom:1px solid var(--line)">${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>${_importRows.length>4?`<div style="font-size:11px;color:var(--muted);padding:4px 0">…and ${_importRows.length-4} more rows</div>`:''}</div>`;
@@ -17220,7 +17256,7 @@ function renderImportMapping(){
     const label=IMPORT_FIELD_LABELS[f]||f;
     const guessIdx=_importHeaders.findIndex(h=>{
       const hl=h.toLowerCase();
-      return f==='InterestedProduct' ? /brand|product/.test(hl) : hl.includes(f.toLowerCase());
+      return f==='InterestedProduct' ? /brand|product/.test(hl) : f==='ExternalRef' ? /^(external|lead|customer|crm)?[ _-]*(ref|id|code)$/.test(hl) : hl.includes(f.toLowerCase());
     });
     return`<div><label class="form-label">${label}</label><select class="form-input" id="map_${f}"><option value="">— skip —</option>${_importHeaders.map((h,i)=>`<option value="${i}"${i===guessIdx?' selected':''}>${esc(h)}</option>`).join('')}</select></div>`;
   }).join('');
@@ -17236,7 +17272,10 @@ async function doImport(){
   const flow=getFlow();
   const validStages=['new',...Object.keys(flow.stages||{}),'human_handover'];
   let ok=0,fail=0;
+  _importCreated=[];
+  $id('importResult').innerHTML='';
   $id('importStatus').textContent='Importing…';
+  if(mapping.ExternalRef!==undefined) await ensureLeadsField('ExternalRef');
 
   for(let i=0;i<_importRows.length;i++){
     const row=_importRows[i];
@@ -17249,13 +17288,15 @@ async function doImport(){
     if(!lead.Score||!['Hot','Warm','Cold'].includes(lead.Score))lead.Score='Cold';
     lead.Date=new Date().toISOString();
     try{
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,lead);
+      const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,lead);
+      if(created?.Id) _importCreated.push({...lead,Id:created.Id});
       ok++;
     }catch(e){fail++;}
     $id('importStatus').textContent=`Importing… ${i+1}/${_importRows.length}`;
     await new Promise(r=>setTimeout(r,80));
   }
   $id('importStatus').textContent=`✓ Imported ${ok} leads${fail?', '+fail+' failed':''}`;
+  renderImportResult();
   btn.disabled=false;
   await loadAll();
 }
@@ -17894,7 +17935,7 @@ function _rcBotRows(){
     const lead=allLeads.find(l=>String(l.Id)===String(r.lead_id))||{};
     const job=_rcJobs.find(j=>String(j.Id)===String(r.job_id));
     const pk=_rcBotPhoneKey(lead.Phone);
-    return{...r,lead,job,name:lead.Name||lead.Phone||('Lead #'+r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
+    return{...r,lead,job,name:lead.Name||lead.Phone||leadRef(r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
   });
 }
 // Older chats (before per-message storage) only exist in each lead's ConvHistory — the worker
@@ -18013,7 +18054,7 @@ async function rcBotRenderSheetPanel(){
   try{st=await ncGet(`${CONFIG.WORKER_BASE}/recruit/gsheet`);}catch(e){}
   p.innerHTML=`
     <div style="font-weight:700;margin-bottom:6px">📊 Live Google Sheet sync</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5">Share your sheet with <b style="font-family:var(--mono)">${esc(st.service_account_email||'the sync service account (not configured on the server)')}</b> as <b>Editor</b>, paste its link below and save. Columns A–G (Date, Name, Phone, Verdict, Job, Bot Reply, Lead ID) of that tab are rewritten newest-first on every sync — auto every 15 minutes.</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5">Share your sheet with <b style="font-family:var(--mono)">${esc(st.service_account_email||'the sync service account (not configured on the server)')}</b> as <b>Editor</b>, paste its link below and save. Columns A–G (Date, Name, Phone, Verdict, Job, Bot Reply, Lead Ref) of that tab are rewritten newest-first on every sync — auto every 15 minutes.</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <input class="form-input" id="rcBotSheetUrl" style="flex:1;min-width:220px" placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=0" value="${esc(st.url||'')}">
       <button class="btn btn-primary btn-sm" onclick="rcBotSaveSheet()">Save & Sync</button>
