@@ -2620,7 +2620,10 @@ async function gsheetApi(env, path, {method='GET', body}={}){
   const data=await r.json().catch(()=>({}));
   if(!r.ok){
     const sa=gsheetServiceAccount(env);
-    if(r.status===403||r.status===404) throw new Error(`Can't edit this sheet — share it with ${sa?.client_email||'the sync service account'} as Editor.`);
+    const gmsg=String(data?.error?.message||'');
+    // "API has not been used / is disabled" is also a 403, but sharing won't fix it — say so.
+    if(/has not been used|is disabled|SERVICE_DISABLED/i.test(gmsg+JSON.stringify(data?.error?.details||''))) throw new Error('The Google Sheets API is not enabled in the service account\'s Google Cloud project — enable it under APIs & Services → Library, then retry in a few minutes.');
+    if(r.status===403||r.status===404) throw new Error(`Can't edit this sheet — share it with ${sa?.client_email||'the sync service account'} as Editor. (Google: ${gmsg||'HTTP '+r.status})`);
     throw new Error('Google Sheets error: '+(data?.error?.message||'HTTP '+r.status));
   }
   return data;
