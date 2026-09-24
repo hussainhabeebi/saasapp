@@ -17711,6 +17711,7 @@ let _rcPage='dashboard';
 let _rcJobs=[],_rcCandidates=[],_rcPlacements=[],_rcBotScreen=[];
 let _rcBotFilter={verdict:'eligible',job:'',q:''};
 let _rcBotHistoryCount=null,_rcBotScanning=false;
+let _rcBotPage=1,_rcBotSortAsc=false,_rcBotSheetOpen=false;const RC_BOT_PAGE_SIZE=50,RC_BOT_RULES_V=2;
 let _rcLoaded=false;
 let _editJobId=null,_editCandId=null,_editPlacementId=null;
 
@@ -17883,6 +17884,7 @@ function rcJobBotCountsHtml(j){
 }
 function rcOpenBotScreened(jobId,verdict){
   _rcBotFilter={verdict:verdict||'',job:jobId?String(jobId):'',q:''};
+  _rcBotPage=1;
   renderRcSubPage('botscreen');
 }
 function _rcBotPhoneKey(p){return String(p||'').replace(/[^0-9]/g,'').slice(-9);}
@@ -17897,11 +17899,11 @@ function _rcBotRows(){
 }
 // Older chats (before per-message storage) only exist in each lead's ConvHistory — the worker
 // classifies them page by page into recruit_bot_screening. Runs automatically the first time the
-// tab opens with nothing scanned yet (once per browser session), or on demand via the button.
+// tab opens (once per browser per rules version), or on demand via the button.
 async function rcBotScanOlder(){
   if(_rcBotScanning)return;
   _rcBotScanning=true;
-  try{sessionStorage.setItem('rc_bot_scan_'+clientId,'1');}catch(e){}
+  try{localStorage.setItem('rc_bot_scan_'+RC_BOT_RULES_V+'_'+clientId,'1');}catch(e){}
   let offset=0,scanned=0,found=0;
   try{
     while(offset!==null){
@@ -17917,7 +17919,9 @@ async function rcBotScanOlder(){
 }
 function renderRcBotScreened(){
   const el=$id('recruitContent');
-  let autoScan=false;try{autoScan=_rcBotHistoryCount===0&&!sessionStorage.getItem('rc_bot_scan_'+clientId);}catch(e){}
+  // Auto-scan older chats once per browser per rules version (bump RC_BOT_RULES_V when the
+  // worker's eligibility phrasing changes, so previously-scanned history gets re-classified).
+  let autoScan=false;try{autoScan=!localStorage.getItem('rc_bot_scan_'+RC_BOT_RULES_V+'_'+clientId);}catch(e){}
   if(autoScan&&!_rcBotScanning)setTimeout(rcBotScanOlder,0);
   const f=_rcBotFilter;
   const all=_rcBotRows();
@@ -17926,22 +17930,27 @@ function renderRcBotScreened(){
   el.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
       <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🤖 Bot Screened <span style="color:var(--muted);font-size:13px;font-weight:500">(${byJob.length})</span></div>
-      <input class="search-input" id="rcBotSearch" type="text" placeholder="Search name, phone…" value="${esc(f.q)}" oninput="_rcBotFilter.q=this.value;renderRcBotList()" style="flex:0 0 170px;min-width:130px;padding:8px 12px">
-      <select class="form-input" style="max-width:200px;padding:8px 10px" onchange="_rcBotFilter.job=this.value;renderRcBotScreened()">
+      <input class="search-input" id="rcBotSearch" type="text" placeholder="Search name, phone…" value="${esc(f.q)}" oninput="_rcBotFilter.q=this.value;_rcBotPage=1;renderRcBotList()" style="flex:0 0 170px;min-width:130px;padding:8px 12px">
+      <select class="form-input" style="max-width:200px;padding:8px 10px" onchange="_rcBotFilter.job=this.value;_rcBotPage=1;renderRcBotScreened()">
         <option value="">All Jobs</option>
         ${_rcJobs.map(j=>`<option value="${j.Id}"${f.job===String(j.Id)?' selected':''}>${esc(j.title||'Untitled')}</option>`).join('')}
         <option value="none"${f.job==='none'?' selected':''}>— Job not detected —</option>
       </select>
       <button class="btn btn-sm btn-ghost" onclick="rcBotScanOlder()" ${_rcBotScanning?'disabled':''} title="Classify chats from before per-message history was stored">🔄 Scan older chats</button>
+      <button class="btn btn-sm btn-ghost" onclick="rcBotToggleSheet()">📊 Google Sheet${clientRecord?.recruit_gsheet_url?' ✓':''}</button>
     </div>
+    <div id="rcBotSheetPanel" class="card" style="display:${_rcBotSheetOpen?'':'none'};padding:14px;margin-bottom:12px"></div>
     <div id="rcBotScanStatus" style="font-size:11px;color:var(--muted);margin:-4px 0 8px">${_rcBotScanning?'Scanning older chats…':''}</div>
     <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
-      ${[['eligible',`✓ Eligible (${nEl})`],['not_eligible',`✗ Not Eligible (${nNe})`],['',`All (${byJob.length})`]].map(([v,l])=>`<button class="btn btn-sm ${f.verdict===v?'btn-primary':'btn-ghost'}" onclick="_rcBotFilter.verdict='${v}';renderRcBotScreened()">${l}</button>`).join('')}
+      ${[['eligible',`✓ Eligible (${nEl})`],['not_eligible',`✗ Not Eligible (${nNe})`],['',`All (${byJob.length})`]].map(([v,l])=>`<button class="btn btn-sm ${f.verdict===v?'btn-primary':'btn-ghost'}" onclick="_rcBotFilter.verdict='${v}';_rcBotPage=1;renderRcBotScreened()">${l}</button>`).join('')}
     </div>
     <div class="card" style="padding:0;overflow:hidden"><div id="rcBotList"></div></div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px">Classified from the bot's latest eligibility reply in each WhatsApp chat. Add your prompt's exact wording under a job's "Bot Eligible / Not Eligible Phrases" if something is missed.</div>`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Classified from the bot's latest eligibility reply in each WhatsApp chat ("you look good to proceed", "you meet all the requirements", "not eligible", "don't meet"…). Add your prompt's exact wording under a job's "Bot Eligible / Not Eligible Phrases" if something is missed.</div>`;
+  if(_rcBotSheetOpen)rcBotRenderSheetPanel();
   renderRcBotList();
 }
+function rcBotSetSort(){_rcBotSortAsc=!_rcBotSortAsc;_rcBotPage=1;renderRcBotList();}
+function rcBotGoPage(p){_rcBotPage=p;renderRcBotList();$id('rcBotList')?.scrollIntoView({block:'nearest'});}
 function renderRcBotList(){
   const el=$id('rcBotList');if(!el)return;
   const f=_rcBotFilter, q=(f.q||'').toLowerCase();
@@ -17951,17 +17960,88 @@ function renderRcBotList(){
     if(q&&!(r.name.toLowerCase().includes(q)||r.phone.includes(q)))return false;
     return true;
   });
+  // Date order (undated older-chat rows always last), then page.
+  rows.sort((a,b)=>{
+    if(!a.ts!==!b.ts)return a.ts?-1:1;
+    const c=String(a.ts||'').localeCompare(String(b.ts||''));
+    return _rcBotSortAsc?c:-c;
+  });
   if(!rows.length){el.innerHTML='<div class="empty-state"><div class="ei">🤖</div>No chats match. The bot hasn\'t sent an eligibility verdict for this filter yet.</div>';return;}
-  el.innerHTML=rows.map(r=>`
-    <div style="padding:12px 14px;border-bottom:1px solid var(--line)">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <div style="font-weight:700;flex:1;min-width:120px;cursor:pointer" onclick="${r.lead.Id?`openDetail(${Number(r.lead.Id)})`:''}">${esc(r.name)} <span style="font-weight:400;color:var(--muted);font-size:12px;font-family:var(--mono)">${esc(r.phone)}</span></div>
-        ${r.verdict==='eligible'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Eligible</span>`:`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Not Eligible</span>`}
-        ${r.isCandidate?`<span class="badge badge-new">In Candidates</span>`:`<button class="btn btn-sm btn-ghost" onclick="rcBotAddCandidate(${Number(r.lead_id)})">+ Add as Candidate</button>`}
-      </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:3px">📋 ${esc(r.job?.title||'Job not detected')} · ${esc(r.ts?new Date(r.ts).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'')}</div>
-      <div style="font-size:12px;margin-top:6px;line-height:1.5;color:var(--ink,inherit);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;white-space:pre-line">${esc(r.message||'')}</div>
-    </div>`).join('');
+  const pages=Math.max(1,Math.ceil(rows.length/RC_BOT_PAGE_SIZE));
+  if(_rcBotPage>pages)_rcBotPage=pages;
+  const start=(_rcBotPage-1)*RC_BOT_PAGE_SIZE, pageRows=rows.slice(start,start+RC_BOT_PAGE_SIZE);
+  const fmt=ts=>ts?new Date(ts).toLocaleString([], {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+  el.innerHTML=`<div class="tbl-wrap"><table class="leads-tbl" style="min-width:900px">
+    <thead><tr>
+      <th style="width:40px">#</th>
+      <th style="cursor:pointer" onclick="rcBotSetSort()" title="Sort by date">Date ${_rcBotSortAsc?'▲':'▼'}</th>
+      <th>Name</th><th>Phone</th><th>Verdict</th><th>Job</th><th>Bot Reply</th><th></th>
+    </tr></thead><tbody>
+    ${pageRows.map((r,i)=>`<tr onclick="${r.lead.Id?`openDetail(${Number(r.lead.Id)})`:''}">
+      <td style="color:var(--muted)">${start+i+1}</td>
+      <td>${esc(fmt(r.ts))}</td>
+      <td style="font-weight:600">${esc(r.name)}</td>
+      <td style="font-family:var(--mono);font-size:12px">${esc(r.phone)}</td>
+      <td>${r.verdict==='eligible'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Eligible</span>`:`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Not Eligible</span>`}</td>
+      <td>${esc(r.job?.title||'—')}</td>
+      <td style="max-width:360px;color:var(--muted)" title="${esc(r.message||'')}">${esc(String(r.message||'').replace(/\s+/g,' '))}</td>
+      <td onclick="event.stopPropagation()">${r.isCandidate?`<span class="badge badge-new">In Candidates</span>`:`<button class="btn btn-sm btn-ghost" onclick="rcBotAddCandidate(${Number(r.lead_id)})">+ Candidate</button>`}</td>
+    </tr>`).join('')}
+    </tbody></table></div>
+    <div style="display:flex;align-items:center;gap:6px;padding:10px 14px;flex-wrap:wrap;border-top:1px solid var(--line)">
+      <div style="flex:1;font-size:12px;color:var(--muted)">Showing ${start+1}–${start+pageRows.length} of ${rows.length}</div>
+      <button class="btn btn-sm btn-ghost" ${_rcBotPage<=1?'disabled':''} onclick="rcBotGoPage(1)">«</button>
+      <button class="btn btn-sm btn-ghost" ${_rcBotPage<=1?'disabled':''} onclick="rcBotGoPage(${_rcBotPage-1})">‹ Prev</button>
+      <span style="font-size:12px;font-weight:600">Page ${_rcBotPage} / ${pages}</span>
+      <button class="btn btn-sm btn-ghost" ${_rcBotPage>=pages?'disabled':''} onclick="rcBotGoPage(${_rcBotPage+1})">Next ›</button>
+      <button class="btn btn-sm btn-ghost" ${_rcBotPage>=pages?'disabled':''} onclick="rcBotGoPage(${pages})">»</button>
+    </div>`;
+}
+/* Live Google Sheet sync for this table — POST /recruit/gsheet/config|sync, GET /recruit/gsheet
+   (worker.js syncRecruitGsheet). Same service account as Integrations → Google Sheets Sync; the
+   worker also re-syncs every 15 minutes. */
+function rcBotToggleSheet(){
+  _rcBotSheetOpen=!_rcBotSheetOpen;
+  const p=$id('rcBotSheetPanel');if(!p)return;
+  p.style.display=_rcBotSheetOpen?'':'none';
+  if(_rcBotSheetOpen)rcBotRenderSheetPanel();
+}
+async function rcBotRenderSheetPanel(){
+  const p=$id('rcBotSheetPanel');if(!p)return;
+  p.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  let st={};
+  try{st=await ncGet(`${CONFIG.WORKER_BASE}/recruit/gsheet`);}catch(e){}
+  p.innerHTML=`
+    <div style="font-weight:700;margin-bottom:6px">📊 Live Google Sheet sync</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5">Share your sheet with <b style="font-family:var(--mono)">${esc(st.service_account_email||'the sync service account (not configured on the server)')}</b> as <b>Editor</b>, paste its link below and save. Columns A–G (Date, Name, Phone, Verdict, Job, Bot Reply, Lead ID) of that tab are rewritten newest-first on every sync — auto every 15 minutes.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input class="form-input" id="rcBotSheetUrl" style="flex:1;min-width:220px" placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=0" value="${esc(st.url||'')}">
+      <button class="btn btn-primary btn-sm" onclick="rcBotSaveSheet()">Save & Sync</button>
+      <button class="btn btn-ghost btn-sm" onclick="rcBotSyncSheet()" ${st.url?'':'disabled'}>🔄 Sync now</button>
+    </div>
+    <div id="rcBotSheetMsg" style="font-size:12px;margin-top:8px;color:var(--muted)">${st.last_sync_at?`Last sync ${esc(new Date(st.last_sync_at).toLocaleString())} — ${esc(st.last_sync_status||'')}`:''}</div>`;
+}
+async function rcBotSaveSheet(){
+  const msg=$id('rcBotSheetMsg');msg.textContent='Saving & syncing…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/recruit/gsheet/config`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({url:$id('rcBotSheetUrl').value.trim()})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'HTTP '+r.status);
+    if(clientRecord)clientRecord.recruit_gsheet_url=d.url;
+    if(d.sync&&d.sync.ok===false)throw new Error(d.sync.error);
+    showToast(d.url?`Synced ${d.sync?.rows??0} rows to Google Sheet ✓`:'Sheet sync turned off');
+    rcBotRenderSheetPanel();
+  }catch(e){msg.textContent='⚠ '+e.message;}
+}
+async function rcBotSyncSheet(){
+  const msg=$id('rcBotSheetMsg');msg.textContent='Syncing…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/recruit/gsheet/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||'HTTP '+r.status);
+    showToast(`Synced ${d.rows} rows to Google Sheet ✓`);
+    rcBotRenderSheetPanel();
+  }catch(e){msg.textContent='⚠ '+e.message;}
 }
 async function rcBotAddCandidate(leadId){
   const r=_rcBotRows().find(x=>String(x.lead_id)===String(leadId));if(!r)return;
