@@ -503,6 +503,8 @@ tr:hover td{background:#FAFCFB}
 .li-body{flex:1;min-width:0}
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
+@media(max-width:767px){.lead-ref-list{display:none}}
+.lead-more-btn{min-width:30px;font-weight:700;letter-spacing:1px}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
 .li-date{font-size:10px;color:var(--muted);font-family:var(--mono)}
@@ -6764,15 +6766,14 @@ function renderLeadsList(){
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
-        <div class="li-sub"><span class="lead-ref">${leadRef(l)}</span> · ${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
+        <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
-          <button class="btn btn-sm" title="Mark Won" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅</button>
-          <button class="btn btn-secondary btn-sm" title="Mark Spam" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫</button>
           ${callBtnHTML(l,leadCallCount(l))}
           <button class="btn btn-secondary btn-sm" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
           <button class="btn btn-secondary btn-sm" title="Follow-up task" onclick="openFollowupForLead(${l.Id})">📅</button>
           <button class="btn btn-secondary btn-sm" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+          ${leadMoreMenuHTML(l)}
         </div>`:''}
         ${reconnect?`<div class="li-actions" onclick="event.stopPropagation()"><button class="btn btn-sm" style="background:#0D9C93;color:#fff" onclick="reactivateLead(${l.Id},event)">♻️ Reactivate</button></div>`:''}
       </div>
@@ -7132,7 +7133,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -7145,7 +7146,7 @@ function renderLeadsTable(){
     const callDoneBadge=leadCallDoneBadge(l);
     return `<tr onclick="openDetail(${l.Id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
-      <td class="lead-ref" style="white-space:nowrap">${leadRef(l)}</td>
+      <td class="lead-ref lead-ref-list" style="white-space:nowrap">${leadRef(l)}</td>
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
@@ -7162,11 +7163,10 @@ function renderLeadsTable(){
       <td>${esc(l.Source||qGet('source'))}</td>
       <td>${esc(fmtDateShort(l.Date))}</td>
       <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
-        <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669;white-space:nowrap" onclick="markLeadWon(${l.Id},event)">✅ Won</button>
-        <button class="btn btn-secondary btn-sm" style="color:#DC2626;white-space:nowrap" onclick="markLeadSpam(${l.Id},event)">🚫 Spam</button>
         ${callBtnHTML(l,'📞')}
-        <button class="btn btn-secondary btn-sm" onclick="snoozeReminderLead(${l.Id})">⏰</button>
-        <button class="btn btn-secondary btn-sm" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+        <button class="btn btn-secondary btn-sm" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id})">⏰</button>
+        <button class="btn btn-secondary btn-sm" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+        ${leadMoreMenuHTML(l)}
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
@@ -8792,6 +8792,36 @@ function callBtnHTML(l, label){
       <button onclick="event.stopPropagation();showInlineOutcomeChips(${l.Id});toggleCallDrop(${l.Id},false)">📝 Log Outcome</button>
     </div>
   </span>`;
+}
+
+// "⋯" menu for the outcome actions (Won / Spam) that used to sit before Call as their own buttons —
+// one tap away still, but no longer the first thing a telecaller's thumb lands on. Reuses the call
+// dropdown's styling/close-all behaviour; positioned fixed because .li-actions scrolls sideways and
+// would clip an absolutely positioned menu.
+function leadMoreMenuHTML(l){
+  return `<button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
+    <div class="call-channel-drop" id="lmd-${l.Id}" style="position:fixed">
+      <button onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadWon(${l.Id},event)">✅ Mark Won</button>
+      <button style="color:#DC2626" onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadSpam(${l.Id},event)">🚫 Mark Spam</button>
+    </div>`;
+}
+function toggleLeadMoreMenu(id, btn, force){
+  const drop=$id(`lmd-${id}`);
+  if(!drop) return;
+  const open=typeof force==='boolean'?force:!drop.classList.contains('open');
+  document.querySelectorAll('.call-channel-drop.open').forEach(d=>d.classList.remove('open'));
+  if(!open) return;
+  if(btn){
+    const r=btn.getBoundingClientRect();
+    drop.style.top=(r.bottom+4)+'px';
+    drop.style.left=Math.max(8,Math.min(r.right-170,window.innerWidth-178))+'px';
+  }
+  drop.classList.add('open');
+  const close=()=>drop.classList.remove('open');
+  setTimeout(()=>{
+    document.addEventListener('click',close,{once:true});
+    window.addEventListener('scroll',close,{once:true,capture:true});
+  },0);
 }
 
 function toggleCallDrop(id, force){
