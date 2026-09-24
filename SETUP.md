@@ -60,6 +60,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
+| gsheet_url / gsheet_cols / gsheet_last_sync_at / gsheet_last_sync_status / gsheet_sync_hash | Single line / Long text — Integrations → Google Sheets Sync (leads export). Auto-created by the Worker on first save; see "Google Sheets leads sync" below. |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
 | chatwoot_user_id | Single line (Chatwoot user id created by the Channels module — used for the Shopify SSO login link) |
 | stripe_customer_id | Single line (created on first checkout) |
@@ -985,6 +986,24 @@ the frontend.
 **Known gap**: `ecom.html` still embeds the master NocoDB token directly and is **not yet
 migrated** to this Worker. `dashboard.html`, `index.html`, `admin.html`, and now `broadcast.html`
 (see "Campaigns module" below) are fully migrated.
+
+## Google Sheets leads sync (Integrations → 📊 Google Sheets Sync)
+
+Runs entirely in the Worker — no n8n workflow needed (the old `leadvyne-gsheet-sync` webhook is
+no longer called). Save Config (`POST /gsheet/config`) creates the `gsheet_*` CLIENTS columns if
+missing, saves, and runs a first sync; Sync Now is `POST /gsheet/sync`; the `*/15 * * * *` cron
+re-syncs every client with a sheet configured (skipped when leads haven't changed).
+
+One-time setup:
+1. Google Cloud Console → enable the **Google Sheets API** → create a **service account** →
+   Keys → Add key → JSON.
+2. `wrangler secret put GOOGLE_SHEETS_SA_JSON` and paste the whole key JSON.
+3. Each client shares their sheet with the service account's `client_email` as **Editor** (the
+   dashboard shows that email under the Sync buttons).
+
+The sync writes a header row plus one row per lead (oldest first) into columns A..N of the tab
+the link points at (`#gid=…`, else the first tab), clearing only those columns first — columns to
+the right are left alone, so they can hold the client's own notes.
 
 ## Admin panel (admin.html)
 `admin.html` used to hold **three** master credentials in plaintext, extractable via view-source
