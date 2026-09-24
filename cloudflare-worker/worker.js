@@ -21978,17 +21978,26 @@ async function handleRecruitDelete(request, env, kind){
    it sent: built-in phrases below + each job's eligible_phrases / ineligible_phrases (one per line,
    migrations/0102). Ineligible is checked first since "not eligible" contains "eligible". The job is
    the one whose custom phrase matched, else the job whose title appears in the reply, else the only
-   open job. Leads are joined to names/phones client-side from the already-loaded leads list. */
+   open job. Leads are joined to names/phones client-side from the already-loaded leads list.
+   Older chats that predate lead_messages (only in the NocoDB lead's ConvHistory, which has no
+   per-message timestamps, so it can't be seeded into lead_messages without faking them) are
+   classified by POST /recruit/chat-screening/backfill into recruit_bot_screening (migrations/0103)
+   and merged in here for leads lead_messages has no verdict for. */
 const RECRUIT_BOT_INELIGIBLE_RE=/\b(?:not|isn'?t|aren'?t|are not|is not)\s+(?:currently\s+|yet\s+)?(?:eligible|qualified)\b|\bineligible\b|\b(?:do|does|did)\s*(?:not|n'?t)\s+meet\b|\b(?:can(?:not|'?t)|unable to|not able to)\s+(?:proceed|move forward|take (?:this|your application) forward)\b/i;
 const RECRUIT_BOT_ELIGIBLE_RE=/\bgood to proceed\b|(?<!\b(?:if|whether)\s)\byou(?:'re| are)\s+(?:fully\s+|also\s+)?(?:eligible|qualified|shortlisted)\b|(?<!\b(?:if|whether)\s)\byou\s+qualify\b|\bhave been shortlisted\b|\byou\s+(?:meet|fulfil+)\s+(?:all\s+)?(?:the\s+)?(?:requirements|criteria|eligibility)\b/i;
 function recruitPhraseList(txt){
   return String(txt||'').split(/\r?\n/).map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3);
 }
-async function handleRecruitChatScreening(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
+let recruitScreeningSchemaReady=false;
+async function ensureRecruitScreeningSchema(env){
+  if(recruitScreeningSchemaReady) return;
   await ensureRecruitJobsSchema(env);
-  const cid=Number(payload.cid);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS recruit_bot_screening (
+    client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, verdict TEXT NOT NULL, job_id INTEGER,
+    message TEXT, ts TEXT, scanned_at TEXT NOT NULL, PRIMARY KEY (client_id, lead_id))`).run().catch(()=>null);
+  recruitScreeningSchemaReady=true;
+}
+async function recruitLoadJobMatchers(env, cid){
   const {results:jobs}=await env.DB.prepare('SELECT id, title, status, eligible_phrases, ineligible_phrases FROM recruit_jobs WHERE client_id=?').bind(cid).all();
   const jobList=(jobs||[]).map(j=>({
     id:j.id, status:j.status,
@@ -21997,10 +22006,36 @@ async function handleRecruitChatScreening(request, env){
     titleCore:String(j.title||'').toLowerCase().replace(/\b(19|20)\d{2}\b/g,'').replace(/\s+/g,' ').trim(),
     elig:recruitPhraseList(j.eligible_phrases), inelig:recruitPhraseList(j.ineligible_phrases),
   }));
-  const openJobs=jobList.filter(j=>j.status==='open'||j.status==='on_hold');
+  return {jobList, openJobs:jobList.filter(j=>j.status==='open'||j.status==='on_hold')};
+}
+// → {verdict, job_id} or null when this bot reply isn't an eligibility verdict.
+function recruitClassifyBotReply(text, {jobList, openJobs}){
+  text=String(text||''); const low=text.toLowerCase();
+  let verdict=null, jobId=null;
+  for(const j of jobList){
+    if(j.inelig.some(p=>low.includes(p))){ verdict='not_eligible'; jobId=j.id; break; }
+    if(j.elig.some(p=>low.includes(p))){ verdict='eligible'; jobId=j.id; break; }
+  }
+  if(!verdict){
+    if(RECRUIT_BOT_INELIGIBLE_RE.test(text)) verdict='not_eligible';
+    else if(RECRUIT_BOT_ELIGIBLE_RE.test(text)) verdict='eligible';
+  }
+  if(!verdict) return null;
+  if(!jobId){
+    const hit=jobList.find(j=>j.title&&low.includes(j.title))||jobList.find(j=>j.titleCore&&low.includes(j.titleCore));
+    jobId=hit?hit.id:(openJobs.length===1?openJobs[0].id:null);
+  }
+  return {verdict, job_id:jobId};
+}
+async function handleRecruitChatScreening(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureRecruitScreeningSchema(env);
+  const cid=Number(payload.cid);
+  const matchers=await recruitLoadJobMatchers(env, cid);
   // Cheap SQL prefilter so we don't pull every bot message the client ever sent.
   const likes=['%eligib%','%qualif%','%proceed%','%shortlist%','%meet%','%requirement%'];
-  for(const j of jobList) for(const p of [...j.elig, ...j.inelig]) likes.push('%'+p.replace(/[%_]/g,'')+'%');
+  for(const j of matchers.jobList) for(const p of [...j.elig, ...j.inelig]) likes.push('%'+p.replace(/[%_]/g,'')+'%');
   const uniq=[...new Set(likes)].slice(0,90);
   const {results:msgs}=await env.DB.prepare(
     `SELECT lead_id, content, ts FROM lead_messages WHERE client_id=? AND role='assistant' AND (${uniq.map(()=>'lower(content) LIKE ?').join(' OR ')}) ORDER BY ts DESC LIMIT 5000`
@@ -22008,25 +22043,55 @@ async function handleRecruitChatScreening(request, env){
   const seen=new Set(), list=[];
   for(const m of (msgs||[])){
     if(seen.has(m.lead_id)) continue; // newest verdict per lead wins
-    const text=String(m.content||''), low=text.toLowerCase();
-    let verdict=null, jobId=null;
-    for(const j of jobList){
-      if(j.inelig.some(p=>low.includes(p))){ verdict='not_eligible'; jobId=j.id; break; }
-      if(j.elig.some(p=>low.includes(p))){ verdict='eligible'; jobId=j.id; break; }
-    }
-    if(!verdict){
-      if(RECRUIT_BOT_INELIGIBLE_RE.test(text)) verdict='not_eligible';
-      else if(RECRUIT_BOT_ELIGIBLE_RE.test(text)) verdict='eligible';
-    }
-    if(!verdict) continue;
-    if(!jobId){
-      const hit=jobList.find(j=>j.title&&low.includes(j.title))||jobList.find(j=>j.titleCore&&low.includes(j.titleCore));
-      jobId=hit?hit.id:(openJobs.length===1?openJobs[0].id:null);
-    }
+    const hit=recruitClassifyBotReply(m.content, matchers);
+    if(!hit) continue;
     seen.add(m.lead_id);
-    list.push({lead_id:m.lead_id, verdict, job_id:jobId, message:text.slice(0,600), ts:m.ts});
+    list.push({lead_id:m.lead_id, ...hit, message:String(m.content||'').slice(0,600), ts:m.ts, source:'chat'});
   }
-  return json({list});
+  const {results:older}=await env.DB.prepare('SELECT lead_id, verdict, job_id, message, ts FROM recruit_bot_screening WHERE client_id=?').bind(cid).all();
+  for(const r of (older||[])){
+    if(seen.has(r.lead_id)) continue;
+    seen.add(r.lead_id);
+    list.push({...r, source:'history'});
+  }
+  return json({list, history_count:(older||[]).length});
+}
+// POST /recruit/chat-screening/backfill {offset} — classifies one page (200) of this client's NocoDB
+// leads from their ConvHistory (latest bot verdict wins) into recruit_bot_screening. The dashboard
+// calls it repeatedly until next_offset is null. ts is the lead's LastMsgAt/Date — ConvHistory
+// entries carry no timestamp of their own.
+async function handleRecruitChatScreeningBackfill(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureRecruitScreeningSchema(env);
+  const cid=Number(payload.cid);
+  const body=await request.json().catch(()=>({}));
+  const offset=Math.max(0, parseInt(body.offset,10)||0), PAGE=200;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${cid})`)}&limit=${PAGE}&offset=${offset}&sort=Id&fields=Id,ConvHistory,LastMsgAt,Date`);
+  if(!r.ok) return json({error:'Could not read leads (HTTP '+r.status+')'}, 502);
+  const data=await r.json().catch(()=>({}));
+  const leads=data?.list||[];
+  const matchers=await recruitLoadJobMatchers(env, cid);
+  const now=new Date().toISOString(), stmts=[];
+  for(const lead of leads){
+    let history=[];
+    try{ history=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+    if(!Array.isArray(history)) continue;
+    let hit=null, msg=null;
+    for(let i=history.length-1; i>=0 && !hit; i--){
+      const h=history[i];
+      if(h?.role!=='assistant'||!h.content) continue;
+      hit=recruitClassifyBotReply(h.content, matchers); msg=h;
+    }
+    if(!hit) continue;
+    stmts.push(env.DB.prepare(
+      `INSERT INTO recruit_bot_screening (client_id, lead_id, verdict, job_id, message, ts, scanned_at) VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(client_id, lead_id) DO UPDATE SET verdict=excluded.verdict, job_id=excluded.job_id, message=excluded.message, ts=excluded.ts, scanned_at=excluded.scanned_at`
+    ).bind(cid, Number(lead.Id), hit.verdict, hit.job_id, String(msg.content).slice(0,600), msg.ts||lead.LastMsgAt||lead.Date||null, now));
+  }
+  if(stmts.length) await env.DB.batch(stmts);
+  const more=leads.length===PAGE && !(data?.pageInfo?.isLastPage);
+  return json({scanned:leads.length, found:stmts.length, next_offset:more?offset+PAGE:null});
 }
 
 /* ── MATRIMONIAL SERVICE MODULE (frontend/matrimonial.html, migrations/0071_matrimonial.sql)
@@ -30790,6 +30855,7 @@ export default {
       else if(url.pathname==='/recruit/candidates' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'candidates'); }
       else if(url.pathname==='/recruit/candidates' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'candidates'); }
       else if(url.pathname==='/recruit/chat-screening' && request.method==='GET'){ res=await handleRecruitChatScreening(request, env); }
+      else if(url.pathname==='/recruit/chat-screening/backfill' && request.method==='POST'){ res=await handleRecruitChatScreeningBackfill(request, env); }
       else if(url.pathname==='/recruit/placements' && request.method==='GET'){ res=await handleRecruitList(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'placements'); }

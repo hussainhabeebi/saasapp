@@ -17710,6 +17710,7 @@ async function sendWaReply(){
 let _rcPage='dashboard';
 let _rcJobs=[],_rcCandidates=[],_rcPlacements=[],_rcBotScreen=[];
 let _rcBotFilter={verdict:'eligible',job:'',q:''};
+let _rcBotHistoryCount=null,_rcBotScanning=false;
 let _rcLoaded=false;
 let _editJobId=null,_editCandId=null,_editPlacementId=null;
 
@@ -17737,6 +17738,7 @@ async function rcLoad(){
     ncGet(`${CONFIG.WORKER_BASE}/recruit/chat-screening`).catch(()=>({list:[]})),
   ]);
   _rcBotScreen=botScreen.list||[];
+  _rcBotHistoryCount=botScreen.history_count;
   _rcJobs=jobs.list||[];
   _rcCandidates=candidates.list||[];
   _rcPlacements=placements.list||[];
@@ -17893,8 +17895,30 @@ function _rcBotRows(){
     return{...r,lead,job,name:lead.Name||lead.Phone||('Lead #'+r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
   });
 }
+// Older chats (before per-message storage) only exist in each lead's ConvHistory — the worker
+// classifies them page by page into recruit_bot_screening. Runs automatically the first time the
+// tab opens with nothing scanned yet (once per browser session), or on demand via the button.
+async function rcBotScanOlder(){
+  if(_rcBotScanning)return;
+  _rcBotScanning=true;
+  try{sessionStorage.setItem('rc_bot_scan_'+clientId,'1');}catch(e){}
+  let offset=0,scanned=0,found=0;
+  try{
+    while(offset!==null){
+      const st=$id('rcBotScanStatus');if(st)st.textContent=`Scanning older chats… ${scanned} leads checked, ${found} verdicts found`;
+      const r=await ncPost(`${CONFIG.WORKER_BASE}/recruit/chat-screening/backfill`,{offset});
+      scanned+=r.scanned||0;found+=r.found||0;offset=r.next_offset??null;
+    }
+    showToast(`Scanned ${scanned} older chats · ${found} eligibility verdicts found`);
+  }catch(e){showToast('Scan failed: '+e.message,'error');}
+  _rcBotScanning=false;
+  await rcLoad();
+  if(_rcPage==='botscreen')renderRcBotScreened();
+}
 function renderRcBotScreened(){
   const el=$id('recruitContent');
+  let autoScan=false;try{autoScan=_rcBotHistoryCount===0&&!sessionStorage.getItem('rc_bot_scan_'+clientId);}catch(e){}
+  if(autoScan&&!_rcBotScanning)setTimeout(rcBotScanOlder,0);
   const f=_rcBotFilter;
   const all=_rcBotRows();
   const byJob=f.job==='none'?all.filter(r=>!r.job_id):f.job?all.filter(r=>String(r.job_id)===f.job):all;
@@ -17908,7 +17932,9 @@ function renderRcBotScreened(){
         ${_rcJobs.map(j=>`<option value="${j.Id}"${f.job===String(j.Id)?' selected':''}>${esc(j.title||'Untitled')}</option>`).join('')}
         <option value="none"${f.job==='none'?' selected':''}>— Job not detected —</option>
       </select>
+      <button class="btn btn-sm btn-ghost" onclick="rcBotScanOlder()" ${_rcBotScanning?'disabled':''} title="Classify chats from before per-message history was stored">🔄 Scan older chats</button>
     </div>
+    <div id="rcBotScanStatus" style="font-size:11px;color:var(--muted);margin:-4px 0 8px">${_rcBotScanning?'Scanning older chats…':''}</div>
     <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
       ${[['eligible',`✓ Eligible (${nEl})`],['not_eligible',`✗ Not Eligible (${nNe})`],['',`All (${byJob.length})`]].map(([v,l])=>`<button class="btn btn-sm ${f.verdict===v?'btn-primary':'btn-ghost'}" onclick="_rcBotFilter.verdict='${v}';renderRcBotScreened()">${l}</button>`).join('')}
     </div>
