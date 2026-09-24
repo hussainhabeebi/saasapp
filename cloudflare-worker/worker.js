@@ -2669,6 +2669,23 @@ async function syncClientGsheet(env, c, {force=false}={}){
   return {ok:true, rows:leads.length, tab:tab.properties.title, synced_at:at};
 }
 
+// Like ensureClientColumns, but reports why a column couldn't be created instead of only logging
+// it, so the Save Config error can say what NocoDB actually refused. gsheet_cols holds JSON, so
+// it gets LongText rather than a 255-char single line.
+async function gsheetEnsureColumns(env){
+  const errors=[];
+  const {names}=await ncTableMeta(env, CLIENTS_TABLE);
+  for(const n of GSHEET_CLIENT_COLUMNS){
+    if(names.includes(n)) continue;
+    const r=await ncFetch(env, `api/v2/meta/tables/${CLIENTS_TABLE}/fields`, {method:'POST', body:{column_name:n, title:n, uidt:n==='gsheet_cols'?'LongText':'SingleLineText'}}).catch(e=>({ok:false, status:0, json:async()=>({msg:e.message})}));
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      errors.push(`${n}: ${d.msg||d.message||d.error||'HTTP '+r.status}`);
+      console.error('[gsheet] could not create column', n, r.status, JSON.stringify(d));
+    }
+  }
+  return errors;
+}
 function gsheetStatusOut(env, c){
   return {
     service_account_email:gsheetServiceAccount(env)?.client_email||null,
@@ -2690,13 +2707,26 @@ async function handleGsheetConfig(request, env){
   const url=String(body.gsheet_url||'').trim();
   if(url && !gsheetParseUrl(url)) return json({error:'That is not a Google Sheets link (expected docs.google.com/spreadsheets/d/…).'}, 400);
   const cols=gsheetParseCols(body.gsheet_cols);
-  await ensureClientColumns(env, GSHEET_CLIENT_COLUMNS);
+  const columnErrors=await gsheetEnsureColumns(env);
   const fields={gsheet_url:url, gsheet_cols:JSON.stringify(cols), gsheet_sync_hash:''};
-  try{ await patchClientFields(env, payload.cid, fields); }
-  catch(e){ return json({error:e.message}, 502); }
-  const c=await getClientById(env, payload.cid);
-  const stuck=['gsheet_url','gsheet_cols'].filter(k=>String(c?.[k]??'')!==String(fields[k]));
-  if(stuck.length) return json({error:`Couldn't save ${stuck.join(', ')} — the NocoDB token needs permission to add columns to the CLIENTS table (or add them manually, see SETUP.md).`}, 500);
+  // A column NocoDB created a moment ago can be silently ignored by the next PATCH until its
+  // schema cache catches up (same thing dashboard.html's patchClient retries for), so re-read
+  // the row straight from NocoDB — not the KV cache — and retry a few times before giving up.
+  let c=null, stuck=[];
+  for(let attempt=1; attempt<=4; attempt++){
+    try{ await patchClientFields(env, payload.cid, fields); }
+    catch(e){ return json({error:e.message}, 502); }
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${Number(payload.cid)}`);
+    c=r.ok?await r.json().catch(()=>null):null;
+    stuck=['gsheet_url','gsheet_cols'].filter(k=>String(c?.[k]??'')!==String(fields[k]));
+    if(!stuck.length) break;
+    if(attempt<4) await new Promise(res=>setTimeout(res, 1000*attempt));
+  }
+  await kvDelClient(env, payload.cid);
+  if(stuck.length){
+    const why=columnErrors.length?` NocoDB said: ${columnErrors.join('; ')}.`:'';
+    return json({error:`Couldn't save ${stuck.join(', ')} to NocoDB.${why} Add these columns to the CLIENTS table (SingleLineText / LongText): ${GSHEET_CLIENT_COLUMNS.join(', ')} — or give the Worker's NocoDB token Creator rights so it can add them.`}, 500);
+  }
   // Try a first sync right away so the client sees whether sharing is set up correctly.
   let sync=null;
   if(url){
