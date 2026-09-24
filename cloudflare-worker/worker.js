@@ -16825,10 +16825,59 @@ async function engineClaimMessage(env, clientId, phone, leadId, messageId){
       await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, LastProcessedMessageId:messageId}});
       return leadId;
     }
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId}});
-    const d=await r.json().catch(()=>null);
-    return d?.Id||leadId||null;
+    return await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId})||null;
   }catch(e){ return leadId||null; }
+}
+
+// Duplicate-lead guard (migrations/0101_lead_create_claims.sql). engineGetLeadState's lookup and
+// the POST that creates a brand-new lead are separate NocoDB round trips, so when a new contact
+// sends two messages back to back ("Hi" + a question, an image + caption, a click-to-WhatsApp ad's
+// referral + text) the two webhooks each see "no lead yet" and each create a row — two identical
+// cards on the Leads page. The engine_processed_messages gate doesn't help here: those are two
+// *different* message ids. A UNIQUE (client_id, phone) claim in D1 makes exactly one webhook the
+// creator; the other waits for the winner's row to show up and reuses it. Fail-open: any D1 error,
+// or a winner that never produces a row (crashed mid-turn), falls back to a plain POST so a real
+// customer message is never dropped over this.
+const LEAD_CLAIM_STALE_MS=30000;
+async function engineCreateLeadOnce(env, clientId, phone, createBody){
+  const post=async()=>{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:createBody});
+    const d=await r.json().catch(()=>null);
+    return d?.Id||null;
+  };
+  if(!env.DB||!phone) return post();
+  const cid=Number(clientId)||0, key=String(phone);
+  let won=false;
+  try{
+    const now=Date.now();
+    const ins=await env.DB.prepare(`INSERT OR IGNORE INTO lead_create_claims (client_id, phone, lead_id, at) VALUES (?,?,NULL,?)`).bind(cid, key, now).run();
+    won=!!ins.meta?.changes;
+    if(!won){
+      // Take over a stale claim whose creator never recorded a lead (crashed/timed out).
+      const take=await env.DB.prepare(`UPDATE lead_create_claims SET at=? WHERE client_id=? AND phone=? AND lead_id IS NULL AND at<?`).bind(now, cid, key, now-LEAD_CLAIM_STALE_MS).run();
+      won=!!take.meta?.changes;
+    }
+  }catch(e){ return post(); }
+  if(won){
+    const id=await post();
+    if(id){ try{ await env.DB.prepare(`UPDATE lead_create_claims SET lead_id=? WHERE client_id=? AND phone=?`).bind(id, cid, key).run(); }catch(e){} }
+    return id;
+  }
+  // Lost the claim — another webhook is creating (or already created) this lead.
+  for(let i=0;i<10;i++){
+    try{
+      const row=await env.DB.prepare(`SELECT lead_id FROM lead_create_claims WHERE client_id=? AND phone=?`).bind(cid, key).first();
+      if(row?.lead_id) return Number(row.lead_id);
+    }catch(e){}
+    try{
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(Phone,eq,${key})~and(ClientId,eq,${clientId})`)}&limit=1`);
+      const d=await r.json().catch(()=>({}));
+      const existing=d?.list?.[0];
+      if(existing?.Id) return existing.Id;
+    }catch(e){}
+    await new Promise(r=>setTimeout(r,300));
+  }
+  return post();
 }
 
 async function engineLogAnalytics(env, entry){
@@ -17156,7 +17205,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(c.bot_reply_disabled==='Yes'){
       const earlyMsgId=String(body.id||body.message?.id||'');
       const isFirstMsg=!state.leadId;
-      if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+      if(earlyMsgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId)||state.leadId||null;
       const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
         Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',
         ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
@@ -17179,7 +17228,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // Collect lead then exit — no AI processing, no reply
           const earlyMsgId=String(body.id||body.message?.id||'');
           const isFirstMsg=!state.leadId;
-          if(earlyMsgId) await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId);
+          if(earlyMsgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId)||state.leadId||null;
           const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
             Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',InboxId:String(state.inboxId)};
           if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
