@@ -21983,8 +21983,28 @@ async function handleRecruitDelete(request, env, kind){
    per-message timestamps, so it can't be seeded into lead_messages without faking them) are
    classified by POST /recruit/chat-screening/backfill into recruit_bot_screening (migrations/0103)
    and merged in here for leads lead_messages has no verdict for. */
-const RECRUIT_BOT_INELIGIBLE_RE=/\b(?:not|isn'?t|aren'?t|are not|is not)\s+(?:currently\s+|yet\s+)?(?:eligible|qualified)\b|\bineligible\b|\b(?:do|does|did)\s*(?:not|n'?t)\s+meet\b|\b(?:can(?:not|'?t)|unable to|not able to)\s+(?:proceed|move forward|take (?:this|your application) forward)\b/i;
-const RECRUIT_BOT_ELIGIBLE_RE=/\bgood to proceed\b|(?<!\b(?:if|whether)\s)\byou(?:'re| are)\s+(?:fully\s+|also\s+)?(?:eligible|qualified|shortlisted)\b|(?<!\b(?:if|whether)\s)\byou\s+qualify\b|\bhave been shortlisted\b|\byou\s+(?:meet|fulfil+)\s+(?:all\s+)?(?:the\s+)?(?:requirements|criteria|eligibility)\b/i;
+const RECRUIT_BOT_INELIGIBLE_RE=new RegExp([
+  String.raw`\b(?:not|isn'?t|aren'?t|are not|is not)\s+(?:currently\s+|yet\s+)?(?:eligible|qualified)\b`,
+  String.raw`\bineligible\b`,
+  String.raw`\b(?:do|does|did)\s*(?:not|n'?t)\s+(?:meet|qualify|fulfil+|match)\b`,
+  String.raw`\b(?:can(?:not|'?t)|unable to|not able to|won'?t be able to)\s+(?:proceed|move forward|consider|take (?:this|your application|you) forward)\b`,
+  String.raw`\bnot\s+(?:suitable|a\s+(?:good\s+)?(?:fit|match))\b`,
+  String.raw`\b(?:exceed(?:s|ed)?|above|over|beyond|below|under)\s+the\s+(?:maximum\s+|minimum\s+|required\s+)?age\s+(?:limit|criteria|requirement)`,
+  String.raw`\b(?:unfortunately|sorry)\b[^.!?\n]{0,160}\b(?:age limit|requirements?|criteria|eligib\w*|qualif\w*|not (?:able|possible)|can(?:not|'?t)|won'?t be able)(?![^.!\n]*\?)`, // …but not a question ("Sorry, could you share your qualification?")
+].join('|'),'i');
+// Phrasings the bot uses when a profile passes, e.g. "Great news! … you look good to proceed with
+// the Malta Care Worker Programme 2026" / "You meet all the requirements for …". "if/whether you
+// are eligible" (the bot asking, not deciding) is excluded by the lookbehinds.
+const RECRUIT_BOT_ELIGIBLE_RE=new RegExp([
+  String.raw`\b(?:look|looks|are|is|seem|seems)\s+good\s+to\s+(?:proceed|go)\b`,
+  String.raw`\bgood to proceed\b`,
+  String.raw`(?<!\b(?:if|whether)\s)\byou(?:'re| are)\s+(?:fully\s+|also\s+)?(?:eligible|qualified|shortlisted)\b`,
+  String.raw`(?<!\b(?:if|whether)\s)\byou\s+qualify\b`,
+  String.raw`\bhave been shortlisted\b`,
+  String.raw`(?<!\b(?:if|whether)\s)\byou\s+(?:meet|fulfil+|satisfy|match)\s+(?:all\s+)?(?:of\s+)?(?:the\s+|our\s+)?(?:basic\s+|key\s+)?(?:requirements|criteria|eligibility)\b`,
+  String.raw`\byour\s+profile\s+(?:matches|meets|fits|is\s+(?:a\s+)?(?:good|great|perfect)\s+(?:fit|match))\b`,
+  String.raw`\byou(?:'re| are)\s+(?:a\s+)?(?:good|great|perfect|strong)\s+(?:fit|match|candidate)\b`,
+].join('|'),'i');
 function recruitPhraseList(txt){
   return String(txt||'').split(/\r?\n/).map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3);
 }
@@ -22030,8 +22050,10 @@ function recruitClassifyBotReply(text, {jobList, openJobs}){
 async function handleRecruitChatScreening(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(await recruitComputeScreening(env, Number(payload.cid)));
+}
+async function recruitComputeScreening(env, cid){
   await ensureRecruitScreeningSchema(env);
-  const cid=Number(payload.cid);
   const matchers=await recruitLoadJobMatchers(env, cid);
   // Cheap SQL prefilter so we don't pull every bot message the client ever sent.
   const likes=['%eligib%','%qualif%','%proceed%','%shortlist%','%meet%','%requirement%'];
@@ -22054,7 +22076,117 @@ async function handleRecruitChatScreening(request, env){
     seen.add(r.lead_id);
     list.push({...r, source:'history'});
   }
-  return json({list, history_count:(older||[]).length});
+  // Newest first; rows with no known date (some older chats) go last.
+  list.sort((a,b)=>String(b.ts||'').localeCompare(String(a.ts||'')));
+  return {list, history_count:(older||[]).length};
+}
+
+/* ── Recruitment → Bot Screened → Google Sheet (live sync). Same service account and helpers as the
+   leads sheet sync above (gsheetApi/gsheetParseUrl/gsheetHash); separate CLIENTS columns so a
+   client can keep both. The sync owns columns A..G of the linked tab: header + one row per
+   screened lead, newest first (matches the dashboard table). Runs on Save, on "Sync now", and on
+   the same 15-minute cron; unchanged data is skipped via recruit_gsheet_sync_hash. ── */
+const RECRUIT_GSHEET_CLIENT_COLUMNS=['recruit_gsheet_url','recruit_gsheet_last_sync_at','recruit_gsheet_last_sync_status','recruit_gsheet_sync_hash'];
+const RECRUIT_GSHEET_HEADER=['Date','Name','Phone','Verdict','Job','Bot Reply','Lead ID'];
+async function recruitBuildSheetRows(env, cid){
+  const {list}=await recruitComputeScreening(env, cid);
+  const {results:jobs}=await env.DB.prepare('SELECT id, title FROM recruit_jobs WHERE client_id=?').bind(cid).all();
+  const jobTitle=new Map((jobs||[]).map(j=>[String(j.id), j.title||'']));
+  const leads=new Map();
+  const where=`(ClientId,eq,${cid})`;
+  for(let offset=0; offset<GSHEET_MAX_LEADS; offset+=1000){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1000&offset=${offset}&sort=Id&fields=Id,Name,Phone`);
+    if(!r.ok) throw new Error('Could not read leads: HTTP '+r.status);
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    for(const l of rows) leads.set(String(l.Id), l);
+    if(rows.length<1000 || data?.pageInfo?.isLastPage) break;
+  }
+  return [RECRUIT_GSHEET_HEADER, ...list.map(r=>{
+    const l=leads.get(String(r.lead_id))||{};
+    return [r.ts?String(r.ts).slice(0,16).replace('T',' '):'', l.Name||'', l.Phone||'',
+      r.verdict==='eligible'?'Eligible':'Not Eligible', jobTitle.get(String(r.job_id))||'',
+      String(r.message||'').slice(0,1000), String(r.lead_id)];
+  })];
+}
+async function syncRecruitGsheet(env, c, {force=false}={}){
+  const parsed=gsheetParseUrl(c.recruit_gsheet_url);
+  if(!parsed) throw new Error('Not a valid Google Sheets link.');
+  const rows=await recruitBuildSheetRows(env, Number(c.Id));
+  const hash=await gsheetHash({url:c.recruit_gsheet_url, rows});
+  if(!force && hash===c.recruit_gsheet_sync_hash) return {ok:true, skipped:true, rows:rows.length-1};
+  const meta=await gsheetApi(env, `${parsed.spreadsheetId}?fields=sheets.properties(sheetId,title)`);
+  const sheets=meta.sheets||[];
+  const tab=(parsed.gid!==null && sheets.find(s=>s.properties?.sheetId===parsed.gid)) || sheets[0];
+  if(!tab) throw new Error('That spreadsheet has no tabs.');
+  const title="'"+String(tab.properties.title).replace(/'/g,"''")+"'";
+  const lastCol=gsheetColLetter(RECRUIT_GSHEET_HEADER.length);
+  await gsheetApi(env, `${parsed.spreadsheetId}/values/${encodeURIComponent(`${title}!A:${lastCol}`)}:clear`, {method:'POST', body:{}});
+  await gsheetApi(env, `${parsed.spreadsheetId}/values/${encodeURIComponent(`${title}!A1`)}?valueInputOption=RAW`, {method:'PUT', body:{values:rows}});
+  const at=new Date().toISOString();
+  await patchClientFields(env, c.Id, {recruit_gsheet_last_sync_at:at, recruit_gsheet_last_sync_status:`ok: ${rows.length-1} rows`, recruit_gsheet_sync_hash:hash}).catch(()=>{});
+  return {ok:true, rows:rows.length-1, tab:tab.properties.title, synced_at:at};
+}
+function recruitGsheetStatusOut(env, c){
+  return {service_account_email:gsheetServiceAccount(env)?.client_email||null, url:c?.recruit_gsheet_url||'',
+    last_sync_at:c?.recruit_gsheet_last_sync_at||null, last_sync_status:c?.recruit_gsheet_last_sync_status||null};
+}
+async function handleRecruitGsheetStatus(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  return json(recruitGsheetStatusOut(env, await getClientById(env, payload.cid)));
+}
+async function handleRecruitGsheetConfig(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const url=String(body.url||'').trim();
+  if(url && !gsheetParseUrl(url)) return json({error:'That is not a Google Sheets link (expected docs.google.com/spreadsheets/d/…).'}, 400);
+  await ensureClientColumns(env, RECRUIT_GSHEET_CLIENT_COLUMNS);
+  try{ await patchClientFields(env, payload.cid, {recruit_gsheet_url:url, recruit_gsheet_sync_hash:''}); }
+  catch(e){ return json({error:e.message}, 502); }
+  const c=await getClientById(env, payload.cid);
+  if(String(c?.recruit_gsheet_url??'')!==url) return json({error:"Couldn't save the sheet link — the NocoDB token needs permission to add columns to the CLIENTS table."}, 500);
+  let sync=null;
+  if(url){
+    try{ sync=await syncRecruitGsheet(env, c, {force:true}); }
+    catch(e){
+      sync={ok:false, error:e.message};
+      await patchClientFields(env, payload.cid, {recruit_gsheet_last_sync_at:new Date().toISOString(), recruit_gsheet_last_sync_status:'error: '+e.message}).catch(()=>{});
+    }
+  }
+  return json({ok:true, ...recruitGsheetStatusOut(env, await getClientById(env, payload.cid)), sync});
+}
+async function handleRecruitGsheetSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c?.recruit_gsheet_url) return json({error:'Save a Google Sheet link first.'}, 400);
+  try{ return json(await syncRecruitGsheet(env, c, {force:true})); }
+  catch(e){
+    await patchClientFields(env, c.Id, {recruit_gsheet_last_sync_at:new Date().toISOString(), recruit_gsheet_last_sync_status:'error: '+e.message}).catch(()=>{});
+    return json({error:e.message}, 502);
+  }
+}
+export async function runRecruitGsheetSyncForAllClients(env){
+  if(!gsheetServiceAccount(env)) return;
+  const where='(recruit_gsheet_url,notblank)';
+  for(let offset=0;;offset+=200){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${offset}`);
+    if(!r.ok) break; // column not provisioned yet → no client has configured it
+    const data=await r.json().catch(()=>({}));
+    const rows=data?.list||[];
+    for(const c of rows){
+      if(!c.recruit_gsheet_url || c.recruit_enabled!=='Yes') continue;
+      try{ await syncRecruitGsheet(env, c); }
+      catch(e){
+        console.error('[recruit-gsheet] sync failed for client', c.Id, e.message);
+        const status='error: '+e.message;
+        if(c.recruit_gsheet_last_sync_status!==status) await patchClientFields(env, c.Id, {recruit_gsheet_last_sync_at:new Date().toISOString(), recruit_gsheet_last_sync_status:status}).catch(()=>{});
+      }
+    }
+    if(rows.length<200) break;
+  }
 }
 // POST /recruit/chat-screening/backfill {offset} — classifies one page (200) of this client's NocoDB
 // leads from their ConvHistory (latest bot verdict wins) into recruit_bot_screening. The dashboard
@@ -30856,6 +30988,9 @@ export default {
       else if(url.pathname==='/recruit/candidates' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'candidates'); }
       else if(url.pathname==='/recruit/chat-screening' && request.method==='GET'){ res=await handleRecruitChatScreening(request, env); }
       else if(url.pathname==='/recruit/chat-screening/backfill' && request.method==='POST'){ res=await handleRecruitChatScreeningBackfill(request, env); }
+      else if(url.pathname==='/recruit/gsheet' && request.method==='GET'){ res=await handleRecruitGsheetStatus(request, env); }
+      else if(url.pathname==='/recruit/gsheet/config' && request.method==='POST'){ res=await handleRecruitGsheetConfig(request, env); }
+      else if(url.pathname==='/recruit/gsheet/sync' && request.method==='POST'){ res=await handleRecruitGsheetSync(request, env); }
       else if(url.pathname==='/recruit/placements' && request.method==='GET'){ res=await handleRecruitList(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'placements'); }
@@ -30973,6 +31108,7 @@ export default {
       ctx.waitUntil(runMonthlyMarketingForAllClients(env));
       // Google Sheets leads sync (Integrations → 📊 Google Sheets Sync) — see runGsheetSyncForAllClients.
       ctx.waitUntil(runGsheetSyncForAllClients(env));
+      ctx.waitUntil(runRecruitGsheetSyncForAllClients(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
