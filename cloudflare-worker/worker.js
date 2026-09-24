@@ -2194,7 +2194,7 @@ async function emailResolveTable(env, clientId, kind){
 // own where() clause.
 function emailSanitizeFilterValue(v){ return String(v).replace(/[(),~]/g,'').trim(); }
 
-// Builds the NocoDB where clause a {stage:[...], tags_any:[...]} segment_filter resolves to,
+// Builds the NocoDB where clause a {stage:[...], tags_any:[...], lead_refs:'...'} segment_filter resolves to,
 // scoped to one client's leads — shared by the Email Marketing module's campaigns and the
 // Automations module's flow audiences below, since both use the exact same filter shape.
 function leadsAudienceWhereClause(clientId, segmentFilter){
@@ -2207,7 +2207,32 @@ function leadsAudienceWhereClause(clientId, segmentFilter){
     clauses.push('('+f.tags_any.map(t=>`(Tags,like,${emailSanitizeFilterValue(t)})`).join('~or')+')');
   }
   if(f.product_category) clauses.push(`(ProductCategory,eq,${emailSanitizeFilterValue(f.product_category)})`);
+  const refs=parseLeadRefFilter(f.lead_refs);
+  // Typed-but-unparseable Lead Ref text must narrow to nobody, never silently widen to everyone.
+  if(!refs&&String(f.lead_refs||'').trim()) clauses.push('(Id,eq,0)');
+  if(refs){
+    const parts=[...refs.ids.map(id=>`(Id,eq,${id})`), ...refs.ranges.map(([a,b])=>`((Id,gte,${a})~and(Id,lte,${b}))`)];
+    clauses.push('('+parts.join('~or')+')');
+  }
   return clauses.join('~and');
+}
+
+// Customer-facing lead reference is just the Leads row Id, prefixed and zero-padded
+// (42 → LD-00042) — see leadRef() in dashboard.html/broadcast.html. A segment_filter's lead_refs
+// is the free text a user typed: a list ("LD-00042, LD-00107") and/or ranges ("LD-00100 to
+// LD-00250", "100-250"). Any letter prefix is ignored, so only the number matters.
+function leadRef(id){ const n=Number(id); return n>0?'LD-'+String(n).padStart(5,'0'):''; }
+const LEAD_REF_FILTER_MAX_IDS=200;
+function parseLeadRefFilter(text){
+  const s=String(text||'').replace(/\s+to\s+/gi,'-').replace(/[a-z]+-?/gi,'').replace(/\s*-\s*/g,'-');
+  const ids=[], ranges=[];
+  s.split(/[\s,;]+/).forEach(tok=>{
+    let m=tok.match(/^(\d+)-(\d+)$/);
+    if(m){ const a=parseInt(m[1],10), b=parseInt(m[2],10); ranges.push([Math.min(a,b), Math.max(a,b)]); return; }
+    if(/^\d+$/.test(tok)){ const n=parseInt(tok,10); if(n>0&&!ids.includes(n)) ids.push(n); }
+  });
+  if(!ids.length&&!ranges.length) return null;
+  return {ids:ids.slice(0,LEAD_REF_FILTER_MAX_IDS), ranges:ranges.slice(0,20)};
 }
 
 // Email sends narrow further: every campaign send is implicitly scoped to leads that (a) have an
@@ -3854,7 +3879,7 @@ async function handleAutomationFlowCreate(request, env){
     name:String(body.name).trim(),
     active:false,
     trigger:{type:body.trigger.type, no_reply_hours:parseFloat(body.trigger.no_reply_hours)||null},
-    segment:{stage:Array.isArray(body.segment?.stage)?body.segment.stage:[], tags_any:Array.isArray(body.segment?.tags_any)?body.segment.tags_any:[]},
+    segment:{stage:Array.isArray(body.segment?.stage)?body.segment.stage:[], tags_any:Array.isArray(body.segment?.tags_any)?body.segment.tags_any:[], lead_refs:String(body.segment?.lead_refs||'').slice(0,2000)},
     steps:body.steps,
     stats:{enrolled:0, completed:0},
     created_at:new Date().toISOString(),
@@ -22087,7 +22112,7 @@ async function recruitComputeScreening(env, cid){
    screened lead, newest first (matches the dashboard table). Runs on Save, on "Sync now", and on
    the same 15-minute cron; unchanged data is skipped via recruit_gsheet_sync_hash. ── */
 const RECRUIT_GSHEET_CLIENT_COLUMNS=['recruit_gsheet_url','recruit_gsheet_last_sync_at','recruit_gsheet_last_sync_status','recruit_gsheet_sync_hash'];
-const RECRUIT_GSHEET_HEADER=['Date','Name','Phone','Verdict','Job','Bot Reply','Lead ID'];
+const RECRUIT_GSHEET_HEADER=['Date','Name','Phone','Verdict','Job','Bot Reply','Lead Ref'];
 async function recruitBuildSheetRows(env, cid){
   const {list}=await recruitComputeScreening(env, cid);
   const {results:jobs}=await env.DB.prepare('SELECT id, title FROM recruit_jobs WHERE client_id=?').bind(cid).all();
@@ -22106,7 +22131,7 @@ async function recruitBuildSheetRows(env, cid){
     const l=leads.get(String(r.lead_id))||{};
     return [r.ts?String(r.ts).slice(0,16).replace('T',' '):'', l.Name||'', l.Phone||'',
       r.verdict==='eligible'?'Eligible':'Not Eligible', jobTitle.get(String(r.job_id))||'',
-      String(r.message||'').slice(0,1000), String(r.lead_id)];
+      String(r.message||'').slice(0,1000), leadRef(r.lead_id)];
   })];
 }
 async function syncRecruitGsheet(env, c, {force=false}={}){
