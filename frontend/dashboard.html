@@ -1906,6 +1906,7 @@ const ROLES = {
         <button class="rc-tab active" data-rc="dashboard">📊 Dashboard</button>
         <button class="rc-tab" data-rc="jobs">📋 Jobs</button>
         <button class="rc-tab" data-rc="candidates">👥 Candidates</button>
+        <button class="rc-tab" data-rc="botscreen">🤖 Bot Screened</button>
         <button class="rc-tab" data-rc="placements">🏆 Placements</button>
         <button class="rc-tab" data-rc="pipeline">🔄 Pipeline</button>
       </div>
@@ -4325,6 +4326,9 @@ const ROLES = {
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Other Requirements</label><textarea class="form-input" id="rcJobRequirements" rows="2" placeholder="Additional skills, tools, preferences…"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Job Description</label><textarea class="form-input" id="rcJobDescription" rows="3" placeholder="Role responsibilities and details…"></textarea></div>
       <div class="form-group" style="grid-column:1/-1"><label class="form-label">Internal Notes</label><textarea class="form-input" id="rcJobNotes" rows="2"></textarea></div>
+      <div class="form-group"><label class="form-label">Bot "Eligible" Phrases <span style="color:var(--muted);font-weight:400;font-size:11px">— optional</span></label><textarea class="form-input" id="rcJobEligPhrases" rows="3" placeholder="One per line, as your bot prompt says it, e.g.:&#10;good to proceed&#10;you are eligible"></textarea></div>
+      <div class="form-group"><label class="form-label">Bot "Not Eligible" Phrases <span style="color:var(--muted);font-weight:400;font-size:11px">— optional</span></label><textarea class="form-input" id="rcJobInelPhrases" rows="3" placeholder="One per line, e.g.:&#10;not eligible&#10;age limit exceeded"></textarea></div>
+      <div style="grid-column:1/-1;font-size:11px;color:var(--muted);margin-top:-6px">🤖 Bot Screened tab lists chats where the bot's reply told the applicant they are eligible / not eligible. Common phrasing ("good to proceed", "not eligible", "don't meet"…) is detected automatically — add your prompt's exact wording here to tie it to this job.</div>
     </div>
   </div>
   <div class="modal-footer">
@@ -17704,7 +17708,8 @@ async function sendWaReply(){
      local-cache fallback that existed only to paper over a table-just-created write race that
      can't happen with a table that already exists for every client from the start. */
 let _rcPage='dashboard';
-let _rcJobs=[],_rcCandidates=[],_rcPlacements=[];
+let _rcJobs=[],_rcCandidates=[],_rcPlacements=[],_rcBotScreen=[];
+let _rcBotFilter={verdict:'eligible',job:'',q:''};
 let _rcLoaded=false;
 let _editJobId=null,_editCandId=null,_editPlacementId=null;
 
@@ -17725,11 +17730,13 @@ async function renderRecruit(){
 }
 
 async function rcLoad(){
-  const [jobs,candidates,placements]=await Promise.all([
+  const [jobs,candidates,placements,botScreen]=await Promise.all([
     ncGet(`${CONFIG.WORKER_BASE}/recruit/jobs`).catch(()=>({list:[]})),
     ncGet(`${CONFIG.WORKER_BASE}/recruit/candidates`).catch(()=>({list:[]})),
     ncGet(`${CONFIG.WORKER_BASE}/recruit/placements`).catch(()=>({list:[]})),
+    ncGet(`${CONFIG.WORKER_BASE}/recruit/chat-screening`).catch(()=>({list:[]})),
   ]);
+  _rcBotScreen=botScreen.list||[];
   _rcJobs=jobs.list||[];
   _rcCandidates=candidates.list||[];
   _rcPlacements=placements.list||[];
@@ -17749,6 +17756,7 @@ function renderRcSubPage(page){
     case'dashboard':renderRcDashboard();break;
     case'jobs':renderRcJobs();break;
     case'candidates':renderRcCandidates();break;
+    case'botscreen':renderRcBotScreened();break;
     case'placements':renderRcPlacements();break;
     case'pipeline':renderRcPipeline();break;
   }
@@ -17859,6 +17867,91 @@ function renderRcDashboard(){
     <div class="card"><div class="card-title">👥 Recent Candidates <button class="btn btn-primary btn-sm" onclick="renderRcSubPage('candidates')" style="margin-left:auto">View All</button></div>${recentRows}</div>`;
 }
 
+/* ── RC: BOT SCREENED ── GET /recruit/chat-screening: leads the WhatsApp bot has already told
+   "eligible" / "not eligible" in its reply (classified from the bot's own prompt-driven message,
+   not re-screened here), so they can be filtered per job post and moved into Candidates. */
+function rcJobBotCountsHtml(j){
+  const rows=_rcBotScreen.filter(r=>String(r.job_id)===String(j.Id));
+  if(!rows.length)return'';
+  const el=rows.filter(r=>r.verdict==='eligible').length, ne=rows.length-el;
+  return`<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+    <span onclick="event.stopPropagation();rcOpenBotScreened('${j.Id}','eligible')" style="cursor:pointer;background:#DCFCE7;color:#166534;font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px">🤖 ✓ ${el} Eligible</span>
+    <span onclick="event.stopPropagation();rcOpenBotScreened('${j.Id}','not_eligible')" style="cursor:pointer;background:#FEE2E2;color:#991B1B;font-size:11px;font-weight:700;padding:3px 9px;border-radius:10px">🤖 ✗ ${ne} Not Eligible</span>
+  </div>`;
+}
+function rcOpenBotScreened(jobId,verdict){
+  _rcBotFilter={verdict:verdict||'',job:jobId?String(jobId):'',q:''};
+  renderRcSubPage('botscreen');
+}
+function _rcBotPhoneKey(p){return String(p||'').replace(/[^0-9]/g,'').slice(-9);}
+function _rcBotRows(){
+  const candPhones=new Set(_rcCandidates.map(c=>_rcBotPhoneKey(c.phone)).filter(Boolean));
+  return _rcBotScreen.map(r=>{
+    const lead=allLeads.find(l=>String(l.Id)===String(r.lead_id))||{};
+    const job=_rcJobs.find(j=>String(j.Id)===String(r.job_id));
+    const pk=_rcBotPhoneKey(lead.Phone);
+    return{...r,lead,job,name:lead.Name||lead.Phone||('Lead #'+r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
+  });
+}
+function renderRcBotScreened(){
+  const el=$id('recruitContent');
+  const f=_rcBotFilter;
+  const all=_rcBotRows();
+  const byJob=f.job==='none'?all.filter(r=>!r.job_id):f.job?all.filter(r=>String(r.job_id)===f.job):all;
+  const nEl=byJob.filter(r=>r.verdict==='eligible').length, nNe=byJob.length-nEl;
+  el.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+      <div style="font-family:var(--disp);font-size:16px;font-weight:700;flex:1">🤖 Bot Screened <span style="color:var(--muted);font-size:13px;font-weight:500">(${byJob.length})</span></div>
+      <input class="search-input" id="rcBotSearch" type="text" placeholder="Search name, phone…" value="${esc(f.q)}" oninput="_rcBotFilter.q=this.value;renderRcBotList()" style="flex:0 0 170px;min-width:130px;padding:8px 12px">
+      <select class="form-input" style="max-width:200px;padding:8px 10px" onchange="_rcBotFilter.job=this.value;renderRcBotScreened()">
+        <option value="">All Jobs</option>
+        ${_rcJobs.map(j=>`<option value="${j.Id}"${f.job===String(j.Id)?' selected':''}>${esc(j.title||'Untitled')}</option>`).join('')}
+        <option value="none"${f.job==='none'?' selected':''}>— Job not detected —</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      ${[['eligible',`✓ Eligible (${nEl})`],['not_eligible',`✗ Not Eligible (${nNe})`],['',`All (${byJob.length})`]].map(([v,l])=>`<button class="btn btn-sm ${f.verdict===v?'btn-primary':'btn-ghost'}" onclick="_rcBotFilter.verdict='${v}';renderRcBotScreened()">${l}</button>`).join('')}
+    </div>
+    <div class="card" style="padding:0;overflow:hidden"><div id="rcBotList"></div></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Classified from the bot's latest eligibility reply in each WhatsApp chat. Add your prompt's exact wording under a job's "Bot Eligible / Not Eligible Phrases" if something is missed.</div>`;
+  renderRcBotList();
+}
+function renderRcBotList(){
+  const el=$id('rcBotList');if(!el)return;
+  const f=_rcBotFilter, q=(f.q||'').toLowerCase();
+  const rows=_rcBotRows().filter(r=>{
+    if(f.verdict&&r.verdict!==f.verdict)return false;
+    if(f.job==='none'?r.job_id:f.job&&String(r.job_id)!==f.job)return false;
+    if(q&&!(r.name.toLowerCase().includes(q)||r.phone.includes(q)))return false;
+    return true;
+  });
+  if(!rows.length){el.innerHTML='<div class="empty-state"><div class="ei">🤖</div>No chats match. The bot hasn\'t sent an eligibility verdict for this filter yet.</div>';return;}
+  el.innerHTML=rows.map(r=>`
+    <div style="padding:12px 14px;border-bottom:1px solid var(--line)">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="font-weight:700;flex:1;min-width:120px;cursor:pointer" onclick="${r.lead.Id?`openDetail(${Number(r.lead.Id)})`:''}">${esc(r.name)} <span style="font-weight:400;color:var(--muted);font-size:12px;font-family:var(--mono)">${esc(r.phone)}</span></div>
+        ${r.verdict==='eligible'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Eligible</span>`:`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Not Eligible</span>`}
+        ${r.isCandidate?`<span class="badge badge-new">In Candidates</span>`:`<button class="btn btn-sm btn-ghost" onclick="rcBotAddCandidate(${Number(r.lead_id)})">+ Add as Candidate</button>`}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">📋 ${esc(r.job?.title||'Job not detected')} · ${esc(r.ts?new Date(r.ts).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'')}</div>
+      <div style="font-size:12px;margin-top:6px;line-height:1.5;color:var(--ink,inherit);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;white-space:pre-line">${esc(r.message||'')}</div>
+    </div>`).join('');
+}
+async function rcBotAddCandidate(leadId){
+  const r=_rcBotRows().find(x=>String(x.lead_id)===String(leadId));if(!r)return;
+  try{
+    await rcCreate('candidates',{
+      name:r.name,phone:String(r.phone||'').replace(/[^0-9+]/g,''),email:r.lead.Email||'',
+      role_applied:r.job?.title||'',job_id:r.job_id||'',source:'whatsapp',
+      status:r.verdict==='eligible'?'screening':'rejected',owner:r.lead.Owner||'',
+      qualification_status:r.verdict==='eligible'?'pass':'fail',
+      screening_notes:'🤖 Bot reply ('+String(r.ts||'').slice(0,10)+'): '+(r.message||''),
+    });
+    showToast('Added to Candidates ✓');
+    await rcLoad();renderRcBotScreened();
+  }catch(e){showToast('Error: '+e.message,'error');}
+}
+
 /* ── RC: JOBS ── */
 function rcJobStatusClass(s){
   const m={open:'job-status-open',filled:'job-status-filled',closed:'job-status-closed',on_hold:'job-status-on_hold'};
@@ -17896,13 +17989,14 @@ function renderRcJobs(filter=''){
           <button class="btn-ghost" onclick="event.stopPropagation();deleteJob('${j.Id}')">🗑</button>
         </div>
         ${j.requirements?`<div style="margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${esc(j.requirements)}</div>`:''}
+        ${rcJobBotCountsHtml(j)}
       </div>`).join('')
     :'<div class="empty-state"><div class="ei">📋</div>No job postings yet. Add your first job opening.</div>'}`;
 }
 
 function openAddJob(){
   _editJobId=null;
-  ['rcJobTitle','rcJobCompany','rcJobLocation','rcJobRequirements','rcJobDescription','rcJobNotes','rcJobQualifications','rcJobMinAge','rcJobMaxAge','rcJobMinExp'].forEach(id=>{const el=$id(id);if(el)el.value='';});
+  ['rcJobTitle','rcJobCompany','rcJobLocation','rcJobRequirements','rcJobDescription','rcJobNotes','rcJobQualifications','rcJobMinAge','rcJobMaxAge','rcJobMinExp','rcJobEligPhrases','rcJobInelPhrases'].forEach(id=>{const el=$id(id);if(el)el.value='';});
   $id('rcJobType').value='fulltime';$id('rcJobCategory').value='Other';
   $id('rcJobCurrency').value='AED';$id('rcJobMinSalary').value='';$id('rcJobMaxSalary').value='';$id('rcJobStatus').value='open';
   $id('rcJobModalTitle').textContent='New Job Posting';$id('saveRcJobMsg').textContent='';
@@ -17919,6 +18013,7 @@ function openEditJob(id){
   $id('rcJobMinAge').value=j.min_age||'';$id('rcJobMaxAge').value=j.max_age||'';
   $id('rcJobMinExp').value=j.min_experience||'';$id('rcJobQualifications').value=j.required_qualifications||'';
   $id('rcJobRequirements').value=j.requirements||'';$id('rcJobDescription').value=j.description||'';$id('rcJobNotes').value=j.notes||'';
+  $id('rcJobEligPhrases').value=j.eligible_phrases||'';$id('rcJobInelPhrases').value=j.ineligible_phrases||'';
   $id('rcJobModalTitle').textContent='Edit Job Posting';$id('saveRcJobMsg').textContent='';
   openModal('modalRcJob');
 }
@@ -17933,7 +18028,8 @@ async function saveRcJob(){
     min_age:parseInt($id('rcJobMinAge').value)||0,max_age:parseInt($id('rcJobMaxAge').value)||0,
     min_experience:parseInt($id('rcJobMinExp').value)||0,required_qualifications:$id('rcJobQualifications').value.trim(),
     requirements:$id('rcJobRequirements').value.trim(),description:$id('rcJobDescription').value.trim(),
-    notes:$id('rcJobNotes').value.trim(),created_at:new Date().toISOString().slice(0,10)};
+    notes:$id('rcJobNotes').value.trim(),
+    eligible_phrases:$id('rcJobEligPhrases').value.trim(),ineligible_phrases:$id('rcJobInelPhrases').value.trim(),created_at:new Date().toISOString().slice(0,10)};
   if(!body.title){msg.textContent='Title required';msg.className='save-msg err';btn.disabled=false;return;}
   try{
     if(_editJobId)await rcUpdate('jobs',_editJobId,body);else await rcCreate('jobs',body);

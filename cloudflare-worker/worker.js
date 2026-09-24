@@ -21869,6 +21869,7 @@ const RECRUIT_TABLES={
       status:{type:'str', max:20, def:'open'}, min_age:{type:'int'}, max_age:{type:'int'},
       min_experience:{type:'int'}, required_qualifications:{type:'text'}, requirements:{type:'text'},
       description:{type:'text'}, notes:{type:'text'},
+      eligible_phrases:{type:'text'}, ineligible_phrases:{type:'text'},
     }
   },
   candidates:{
@@ -21894,6 +21895,15 @@ const RECRUIT_TABLES={
     }
   },
 };
+// eligible_phrases/ineligible_phrases (migrations/0102) — self-heal like the other runtime ALTERs
+// here, so job create/update doesn't start failing on a D1 the migration hasn't been applied to yet.
+let recruitJobsSchemaReady=false;
+async function ensureRecruitJobsSchema(env){
+  if(recruitJobsSchemaReady) return;
+  for(const col of ['eligible_phrases','ineligible_phrases'])
+    await env.DB.prepare(`ALTER TABLE recruit_jobs ADD COLUMN ${col} TEXT`).run().catch(()=>null);
+  recruitJobsSchemaReady=true;
+}
 function recruitCoerce(spec, raw){
   if(raw===undefined||raw===null||raw===''){
     if(spec.type==='num'||spec.type==='int') return null;
@@ -21907,6 +21917,7 @@ function recruitCoerce(spec, raw){
 async function handleRecruitList(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(kind==='jobs') await ensureRecruitJobsSchema(env);
   const cfg=RECRUIT_TABLES[kind];
   const {results}=await env.DB.prepare(`SELECT *, id AS Id FROM ${cfg.table} WHERE client_id=? ORDER BY ${cfg.orderBy}`).bind(Number(payload.cid)).all();
   return json({list:results||[]});
@@ -21914,6 +21925,7 @@ async function handleRecruitList(request, env, kind){
 async function handleRecruitCreate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(kind==='jobs') await ensureRecruitJobsSchema(env);
   const cfg=RECRUIT_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   if(!String(body[cfg.requiredField]||'').trim()) return json({error:`${cfg.requiredField} required`}, 400);
@@ -21929,6 +21941,7 @@ async function handleRecruitCreate(request, env, kind){
 async function handleRecruitUpdate(request, env, kind){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(kind==='jobs') await ensureRecruitJobsSchema(env);
   const cfg=RECRUIT_TABLES[kind];
   const body=await request.json().catch(()=>({}));
   const id=parseInt(body.Id,10);
@@ -21956,6 +21969,64 @@ async function handleRecruitDelete(request, env, kind){
   if(!existing || String(existing.client_id)!==String(payload.cid)) return json({error:'Not found'}, 404);
   await env.DB.prepare(`DELETE FROM ${cfg.table} WHERE id=?`).bind(id).run();
   return json({ok:true});
+}
+
+/* GET /recruit/chat-screening — the WhatsApp bot already screens applicants against the job post
+   through its prompt and tells them the outcome ("You look good to proceed…", "Sorry, you're not
+   eligible…"), but that verdict only lived inside the chat text, so the CRM couldn't filter on it.
+   This reads the bot's own replies from lead_messages and classifies each lead by the latest verdict
+   it sent: built-in phrases below + each job's eligible_phrases / ineligible_phrases (one per line,
+   migrations/0102). Ineligible is checked first since "not eligible" contains "eligible". The job is
+   the one whose custom phrase matched, else the job whose title appears in the reply, else the only
+   open job. Leads are joined to names/phones client-side from the already-loaded leads list. */
+const RECRUIT_BOT_INELIGIBLE_RE=/\b(?:not|isn'?t|aren'?t|are not|is not)\s+(?:currently\s+|yet\s+)?(?:eligible|qualified)\b|\bineligible\b|\b(?:do|does|did)\s*(?:not|n'?t)\s+meet\b|\b(?:can(?:not|'?t)|unable to|not able to)\s+(?:proceed|move forward|take (?:this|your application) forward)\b/i;
+const RECRUIT_BOT_ELIGIBLE_RE=/\bgood to proceed\b|(?<!\b(?:if|whether)\s)\byou(?:'re| are)\s+(?:fully\s+|also\s+)?(?:eligible|qualified|shortlisted)\b|(?<!\b(?:if|whether)\s)\byou\s+qualify\b|\bhave been shortlisted\b|\byou\s+(?:meet|fulfil+)\s+(?:all\s+)?(?:the\s+)?(?:requirements|criteria|eligibility)\b/i;
+function recruitPhraseList(txt){
+  return String(txt||'').split(/\r?\n/).map(x=>x.trim().toLowerCase()).filter(x=>x.length>=3);
+}
+async function handleRecruitChatScreening(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  await ensureRecruitJobsSchema(env);
+  const cid=Number(payload.cid);
+  const {results:jobs}=await env.DB.prepare('SELECT id, title, status, eligible_phrases, ineligible_phrases FROM recruit_jobs WHERE client_id=?').bind(cid).all();
+  const jobList=(jobs||[]).map(j=>({
+    id:j.id, status:j.status,
+    title:String(j.title||'').toLowerCase().trim(),
+    // "Malta Care Worker Programme" should still match a reply saying "…Programme 2026"
+    titleCore:String(j.title||'').toLowerCase().replace(/\b(19|20)\d{2}\b/g,'').replace(/\s+/g,' ').trim(),
+    elig:recruitPhraseList(j.eligible_phrases), inelig:recruitPhraseList(j.ineligible_phrases),
+  }));
+  const openJobs=jobList.filter(j=>j.status==='open'||j.status==='on_hold');
+  // Cheap SQL prefilter so we don't pull every bot message the client ever sent.
+  const likes=['%eligib%','%qualif%','%proceed%','%shortlist%','%meet%','%requirement%'];
+  for(const j of jobList) for(const p of [...j.elig, ...j.inelig]) likes.push('%'+p.replace(/[%_]/g,'')+'%');
+  const uniq=[...new Set(likes)].slice(0,90);
+  const {results:msgs}=await env.DB.prepare(
+    `SELECT lead_id, content, ts FROM lead_messages WHERE client_id=? AND role='assistant' AND (${uniq.map(()=>'lower(content) LIKE ?').join(' OR ')}) ORDER BY ts DESC LIMIT 5000`
+  ).bind(cid, ...uniq).all();
+  const seen=new Set(), list=[];
+  for(const m of (msgs||[])){
+    if(seen.has(m.lead_id)) continue; // newest verdict per lead wins
+    const text=String(m.content||''), low=text.toLowerCase();
+    let verdict=null, jobId=null;
+    for(const j of jobList){
+      if(j.inelig.some(p=>low.includes(p))){ verdict='not_eligible'; jobId=j.id; break; }
+      if(j.elig.some(p=>low.includes(p))){ verdict='eligible'; jobId=j.id; break; }
+    }
+    if(!verdict){
+      if(RECRUIT_BOT_INELIGIBLE_RE.test(text)) verdict='not_eligible';
+      else if(RECRUIT_BOT_ELIGIBLE_RE.test(text)) verdict='eligible';
+    }
+    if(!verdict) continue;
+    if(!jobId){
+      const hit=jobList.find(j=>j.title&&low.includes(j.title))||jobList.find(j=>j.titleCore&&low.includes(j.titleCore));
+      jobId=hit?hit.id:(openJobs.length===1?openJobs[0].id:null);
+    }
+    seen.add(m.lead_id);
+    list.push({lead_id:m.lead_id, verdict, job_id:jobId, message:text.slice(0,600), ts:m.ts});
+  }
+  return json({list});
 }
 
 /* ── MATRIMONIAL SERVICE MODULE (frontend/matrimonial.html, migrations/0071_matrimonial.sql)
@@ -30718,6 +30789,7 @@ export default {
       else if(url.pathname==='/recruit/candidates' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'candidates'); }
       else if(url.pathname==='/recruit/candidates' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'candidates'); }
       else if(url.pathname==='/recruit/candidates' && request.method==='DELETE'){ res=await handleRecruitDelete(request, env, 'candidates'); }
+      else if(url.pathname==='/recruit/chat-screening' && request.method==='GET'){ res=await handleRecruitChatScreening(request, env); }
       else if(url.pathname==='/recruit/placements' && request.method==='GET'){ res=await handleRecruitList(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='POST'){ res=await handleRecruitCreate(request, env, 'placements'); }
       else if(url.pathname==='/recruit/placements' && request.method==='PATCH'){ res=await handleRecruitUpdate(request, env, 'placements'); }
