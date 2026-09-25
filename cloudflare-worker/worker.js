@@ -12056,6 +12056,476 @@ async function handleCalcomWebhook(request, env, clientId){
   return json({ok:true});
 }
 
+/* ── Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings) ──
+   A separate module from the Appointment Booking module's own Cal.com Sync above
+   (handleCalcomWebhook → appt_table_ids.bookings) — it never reads or writes those tables. This one
+   is for calls/meetings with leads (intro calls, demos, consultations): reps send a tracked,
+   prefilled Cal.com link, the client's own Cal.com webhook reports bookings back, and the cron
+   sends WhatsApp confirmations/reminders/nudges. Everything lives in D1 (migrations/0104). The
+   module is on for a client once meetings_config holds at least one link — see SETUP.md
+   "Cal.com Meetings". */
+const MTG_OUTCOMES=new Set(['interested','not_interested','follow_up','no_show']);
+const MTG_MAX_LINKS=6;
+const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false, template_name:'', template_lang:'en'};
+const MTG_MAX_SENDS_PER_TICK=150;
+const MTG_NUDGE_AFTER_MS=24*3600e3, MTG_NUDGE_UNTIL_MS=72*3600e3;
+
+export function mtgNormalizeLinks(list){
+  const out=[];
+  for(const l of Array.isArray(list)?list:[]){
+    const url=String(l?.url||'').trim();
+    if(!/^https:\/\/[^\s]+$/i.test(url)) continue;
+    try{ new URL(url); }catch(e){ continue; }
+    out.push({name:String(l?.name||'').trim().slice(0,60)||'Meeting', url:url.slice(0,500)});
+    if(out.length>=MTG_MAX_LINKS) break;
+  }
+  return out;
+}
+export function mtgNormalizeSettings(s){
+  const src=s&&typeof s==='object'?s:{};
+  const out={...MTG_DEFAULT_SETTINGS};
+  for(const k of ['confirm','remind24','remind1','nudge','cancel_followup','bot_share']) if(k in src) out[k]=!!src[k];
+  out.template_name=String(src.template_name||'').trim().replace(/[^a-z0-9_]/gi,'').slice(0,100);
+  out.template_lang=String(src.template_lang||'en').trim().replace(/[^a-z_]/gi,'').slice(0,10)||'en';
+  return out;
+}
+function mtgDigits(v){ return String(v||'').replace(/\D/g,''); }
+function mtgFirstName(n){ return String(n||'').trim().split(/\s+/)[0]||'there'; }
+
+// Prefills Cal.com's booking form (name/email/attendeePhoneNumber) and tags the booking with
+// metadata[...] — Cal.com passes metadata straight back in the webhook payload, which is how a
+// booking is tied to the exact lead and tracked link that produced it.
+export function mtgBuildBookingUrl(linkUrl, {name, email, phone, leadId, mtgId}={}){
+  let u; try{ u=new URL(linkUrl); }catch(e){ return linkUrl; }
+  if(name) u.searchParams.set('name', String(name));
+  if(email) u.searchParams.set('email', String(email));
+  const digits=mtgDigits(phone);
+  if(digits.length>=8) u.searchParams.set('attendeePhoneNumber', '+'+digits);
+  if(leadId) u.searchParams.set('metadata[lead_id]', String(leadId));
+  if(mtgId) u.searchParams.set('metadata[mtg_id]', String(mtgId));
+  return u.toString();
+}
+
+export function mtgStatusForTrigger(trigger){
+  return ({BOOKING_CREATED:'scheduled', BOOKING_RESCHEDULED:'scheduled', BOOKING_REQUESTED:'pending',
+    BOOKING_CANCELLED:'cancelled', BOOKING_REJECTED:'cancelled', MEETING_ENDED:'completed'})[trigger]||null;
+}
+
+// Flattens the parts of Cal.com's webhook payload this module uses. Phone can sit in several
+// places depending on the event type's booking questions, so every known spot is checked.
+export function mtgParseCalcomPayload(data){
+  const b=data?.payload||{};
+  const attendee=(Array.isArray(b.attendees)?b.attendees:[])[0]||{};
+  const r=b.responses||{};
+  const respVal=k=>{ const v=r[k]; return typeof v==='object'&&v?(v.value??''):(v??''); };
+  const location=String(b.location||'');
+  const meta=b.metadata||{};
+  return {
+    trigger:String(data?.triggerEvent||''),
+    uid:String(b.uid||b.bookingUid||''),
+    oldUid:String(b.rescheduleUid||b.fromReschedule||b.rescheduledFromUid||b.originalRescheduledBooking?.uid||''),
+    title:String(b.eventTitle||b.type||b.title||'').slice(0,200),
+    start:String(b.startTime||''), end:String(b.endTime||''),
+    name:String(attendee.name||respVal('name')||'').slice(0,120),
+    email:String(attendee.email||respVal('email')||'').trim().toLowerCase().slice(0,200),
+    phone:mtgDigits(attendee.phoneNumber||attendee.phone||respVal('attendeePhoneNumber')||respVal('phone')||b.smsReminderNumber||''),
+    leadId:Number(meta.lead_id)||null,
+    mtgId:Number(meta.mtg_id)||null,
+    joinUrl:String(meta.videoCallUrl||b.videoCallData?.url||(/^https?:\/\//i.test(location)?location:'')).slice(0,500),
+    noShow:Array.isArray(b.attendees)?b.attendees.some(a=>a?.noShow===true):false,
+  };
+}
+
+export function mtgFormatWhen(iso, tz){
+  const d=new Date(iso);
+  if(!Number.isFinite(d.getTime())) return '';
+  try{
+    return d.toLocaleString('en-US', {timeZone:tz||'Asia/Kolkata', weekday:'short', day:'numeric', month:'short', hour:'numeric', minute:'2-digit'});
+  }catch(e){ return d.toISOString().replace('T',' ').slice(0,16)+' UTC'; }
+}
+
+// Which reminder (if any) a scheduled meeting is due for. The 24h one is skipped for meetings
+// booked less than a day ahead (the confirmation just went out) or starting within 3h (the 1h
+// reminder covers those).
+export function mtgReminderDue(row, settings, now=new Date()){
+  if(row?.status!=='scheduled') return null;
+  const start=Date.parse(row.start_at||'');
+  if(!Number.isFinite(start)) return null;
+  const until=start-now.getTime();
+  if(settings.remind1 && !row.remind1_at && until>5*60e3 && until<=75*60e3) return 'remind1';
+  const booked=Date.parse(row.booked_at||row.created_at||'');
+  if(settings.remind24 && !row.remind24_at && until>3*3600e3 && until<=24*3600e3 && (!Number.isFinite(booked) || start-booked>=24*3600e3)) return 'remind24';
+  return null;
+}
+
+export function mtgNudgeDue(row, settings, now=new Date()){
+  if(!settings.nudge || row?.nudge_at || !['link_sent','clicked'].includes(row?.status) || !row.phone) return false;
+  const sent=Date.parse(row.sent_at||'');
+  if(!Number.isFinite(sent)) return false;
+  const age=now.getTime()-sent;
+  return age>=MTG_NUDGE_AFTER_MS && age<MTG_NUDGE_UNTIL_MS;
+}
+
+export function mtgSummarize(rows, now=new Date()){
+  const s={sent:0, clicked:0, booked:0, attended:0, no_show:0, converted:0, cancelled:0, this_week:0, reps:{}};
+  const weekEnd=now.getTime()+7*86400e3;
+  for(const r of rows||[]){
+    if(r.sent_at) s.sent++;
+    if(r.clicked_at) s.clicked++;
+    if(r.booked_at) s.booked++;
+    if(r.status==='cancelled') s.cancelled++;
+    if(r.outcome==='no_show') s.no_show++;
+    else if(r.status==='completed' && r.outcome) s.attended++;
+    if(r.outcome==='interested') s.converted++;
+    const start=Date.parse(r.start_at||'');
+    if(['scheduled','pending'].includes(r.status) && start>=now.getTime() && start<=weekEnd) s.this_week++;
+    if(r.sent_by){
+      const rep=s.reps[r.sent_by]||(s.reps[r.sent_by]={sent:0, booked:0, attended:0, no_show:0});
+      if(r.sent_at) rep.sent++;
+      if(r.booked_at) rep.booked++;
+      if(r.outcome==='no_show') rep.no_show++; else if(r.status==='completed' && r.outcome) rep.attended++;
+    }
+  }
+  return s;
+}
+
+async function mtgGetConfig(env, clientId){
+  let row=null;
+  try{ row=await env.DB.prepare(`SELECT * FROM meetings_config WHERE client_id=?`).bind(Number(clientId)).first(); }
+  catch(e){ return null; } // migration 0104 not applied yet
+  if(!row) return {client_id:Number(clientId), links:[], webhook_secret:'', settings:{...MTG_DEFAULT_SETTINGS}, last_event_at:null, last_event_type:null, exists:false};
+  return {
+    client_id:row.client_id, links:mtgNormalizeLinks(engineParseJsonField(row.links_json, [])),
+    webhook_secret:row.webhook_secret||'', settings:mtgNormalizeSettings(engineParseJsonField(row.settings_json, {})),
+    last_event_at:row.last_event_at, last_event_type:row.last_event_type, exists:true,
+  };
+}
+function mtgRandomToken(len=24){
+  const bytes=crypto.getRandomValues(new Uint8Array(len));
+  return Array.from(bytes, b=>'abcdefghijklmnopqrstuvwxyz0123456789'[b%36]).join('');
+}
+function mtgTrackedUrl(env, row){
+  if(env.WORKER_BASE_URL && row.token) return `${env.WORKER_BASE_URL}/m/${row.token}`;
+  return mtgBuildBookingUrl(row.link_url, {name:row.lead_name, email:row.email, phone:row.phone, leadId:row.lead_id, mtgId:row.id});
+}
+function mtgRescheduleUrl(row, cfg){
+  const base=row.link_url||cfg?.links?.[0]?.url||'';
+  if(!row.calcom_uid || !base) return '';
+  try{ return `${new URL(base).origin}/reschedule/${encodeURIComponent(row.calcom_uid)}`; }catch(e){ return ''; }
+}
+
+// Free-form text first — fine inside WhatsApp's 24h customer-service window, which is the usual
+// case right after a lead books from a link sent in chat. Outside it Meta rejects plain text, so
+// if the client configured an approved template (3 body variables: name, date & time, link) that
+// is tried as the fallback.
+async function mtgSendWhatsApp(env, c, clientId, cfg, phone, text, vars){
+  const to=mtgDigits(phone);
+  if(!to) return {ok:false, error:'No phone number'};
+  const detected=await resolveOrDetectMetaCredentials(env, c, clientId).catch(()=>null);
+  const creds=detected?.wa_phone_id&&detected?.wa_token?detected:{wa_phone_id:c?.wa_phone_id, wa_token:c?.wa_token};
+  if(!creds.wa_phone_id||!creds.wa_token) return {ok:false, error:'WhatsApp is not connected'};
+  const post=async body=>{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', to, ...body})
+    });
+    const data=await r.json().catch(()=>({}));
+    return r.ok?{ok:true}:{ok:false, error:data?.error?.message||('HTTP '+r.status)};
+  };
+  try{
+    const res=await post({type:'text', text:{body:text}});
+    const tpl=cfg?.settings?.template_name;
+    if(res.ok || !tpl || !vars) return res;
+    const tRes=await post({type:'template', template:{name:tpl, language:{code:cfg.settings.template_lang||'en'},
+      components:[{type:'body', parameters:vars.map(v=>({type:'text', text:String(v||'-').slice(0,500)}))}]}});
+    return tRes.ok?{ok:true, via:'template'}:{ok:false, error:`${res.error} / template: ${tRes.error}`};
+  }catch(e){ return {ok:false, error:String(e?.message||e)}; }
+}
+
+function mtgMessage(kind, row, cfg, tz, env){
+  const name=mtgFirstName(row.lead_name);
+  const title=row.title||row.link_name||'meeting';
+  const when=mtgFormatWhen(row.start_at, tz);
+  const join=row.join_url?`\nJoin: ${row.join_url}`:'';
+  const resched=mtgRescheduleUrl(row, cfg);
+  const link=mtgTrackedUrl(env, row);
+  switch(kind){
+    case 'confirm': return {text:`Hi ${name}! ✅ Your ${title} is confirmed for ${when}.${join}${resched?`\nNeed to change it? ${resched}`:''}`, vars:[name, when, row.join_url||resched||'-']};
+    case 'rescheduled': return {text:`Hi ${name}! 🔁 Your ${title} has been moved to ${when}.${join}`, vars:[name, when, row.join_url||resched||'-']};
+    case 'cancelled': return {text:`Hi ${name}, your ${title}${when?` on ${when}`:''} was cancelled. Would you like to pick another time? ${link}`, vars:[name, when||'-', link]};
+    case 'remind24': return {text:`Hi ${name}! ⏰ Reminder: your ${title} is on ${when}.${join}${resched?`\nNeed to change it? ${resched}`:''}`, vars:[name, when, row.join_url||resched||'-']};
+    case 'remind1': return {text:`Hi ${name}! Your ${title} starts in about an hour (${when}).${join}`, vars:[name, when, row.join_url||'-']};
+    case 'nudge': return {text:`Hi ${name}! Did you get a chance to pick a time for our ${row.link_name||'call'}? Here's the link again: ${link}`, vars:[name, '-', link]};
+  }
+  return null;
+}
+async function mtgSendKind(env, c, clientId, cfg, row, kind){
+  const tz=monthlyMktClientTimezone(c);
+  const m=mtgMessage(kind, row, cfg, tz, env);
+  if(!m || !row.phone) return {ok:false, error:'No phone number'};
+  return mtgSendWhatsApp(env, c, clientId, cfg, row.phone, m.text, m.vars);
+}
+
+async function mtgFindLead(env, clientId, {leadId, phone, email}){
+  if(leadId){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(leadId)}`);
+    const lead=r.ok?await r.json().catch(()=>null):null;
+    if(lead && String(lead.ClientId)===String(clientId)) return lead;
+  }
+  const digits=mtgDigits(phone);
+  if(digits.length>=8){
+    const where=`(ClientId,eq,${Number(clientId)})~and(Phone,like,%${digits.slice(-9)})`;
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1`);
+    const lead=r.ok?(await r.json().catch(()=>({})))?.list?.[0]:null;
+    if(lead) return lead;
+  }
+  if(email && /@/.test(email)){
+    const where=`(ClientId,eq,${Number(clientId)})~and(Email,eq,${email})`;
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=1`);
+    const lead=r.ok?(await r.json().catch(()=>({})))?.list?.[0]:null;
+    if(lead) return lead;
+  }
+  return null;
+}
+
+// Finds the meeting row a webhook event belongs to: the tracked link's own id (metadata), then the
+// pre-reschedule uid, then the booking's uid, then the lead's latest still-open tracked link.
+async function mtgFindRow(env, clientId, p, leadId){
+  const q=(sql, ...args)=>env.DB.prepare(sql).bind(Number(clientId), ...args).first();
+  if(p.mtgId){ const r=await q(`SELECT * FROM meetings WHERE client_id=? AND id=?`, p.mtgId); if(r) return r; }
+  if(p.oldUid){ const r=await q(`SELECT * FROM meetings WHERE client_id=? AND calcom_uid=? ORDER BY id DESC LIMIT 1`, p.oldUid); if(r) return r; }
+  if(p.uid){ const r=await q(`SELECT * FROM meetings WHERE client_id=? AND calcom_uid=? ORDER BY id DESC LIMIT 1`, p.uid); if(r) return r; }
+  if(leadId && ['BOOKING_CREATED','BOOKING_REQUESTED'].includes(p.trigger)){
+    const since=new Date(Date.now()-14*86400e3).toISOString();
+    const r=await q(`SELECT * FROM meetings WHERE client_id=? AND lead_id=? AND status IN ('link_sent','clicked') AND sent_at>=? ORDER BY id DESC LIMIT 1`, Number(leadId), since);
+    if(r) return r;
+  }
+  return null;
+}
+async function mtgUpdate(env, id, fields){
+  const keys=Object.keys(fields);
+  if(!keys.length) return;
+  await env.DB.prepare(`UPDATE meetings SET ${keys.map(k=>`${k}=?`).join(', ')}, updated_at=? WHERE id=?`)
+    .bind(...keys.map(k=>fields[k]), new Date().toISOString(), Number(id)).run();
+}
+
+// POST /calcom/meetings/<clientId> — the client's own Cal.com webhook (Settings → Developer →
+// Webhooks in their Cal.com account), signed with the secret shown in the Meetings card.
+export async function handleCalcomMeetingsWebhook(request, env, clientId){
+  const rawBody=await request.text();
+  const cfg=await mtgGetConfig(env, clientId);
+  // Unknown client / module not set up — ack with 200 so Cal.com doesn't keep retrying.
+  if(!cfg?.exists) return json({ok:true});
+  const sig=request.headers.get('X-Cal-Signature-256');
+  if(!(await verifyCalcomWebhookHmac(cfg.webhook_secret, rawBody, sig))) return json({error:'Invalid signature'}, 401);
+  let data; try{ data=JSON.parse(rawBody); }catch(e){ return json({ok:true}); }
+  const p=mtgParseCalcomPayload(data);
+  const nowIso=new Date().toISOString();
+  await env.DB.prepare(`UPDATE meetings_config SET last_event_at=?, last_event_type=? WHERE client_id=?`).bind(nowIso, p.trigger.slice(0,60)||'UNKNOWN', Number(clientId)).run();
+
+  const noShowEvent=p.trigger==='BOOKING_NO_SHOW_UPDATED';
+  const status=mtgStatusForTrigger(p.trigger);
+  if((!status && !noShowEvent) || !p.uid) return json({ok:true, skipped:p.trigger||'no-trigger'});
+
+  const c=await getClientById(env, clientId);
+  if(!c) return json({ok:true});
+  let row=await mtgFindRow(env, clientId, p, p.leadId);
+  let lead=null;
+  if(!row?.lead_id && !noShowEvent) lead=await mtgFindLead(env, clientId, {leadId:p.leadId, phone:p.phone, email:p.email});
+  if(!row && lead) row=await mtgFindRow(env, clientId, {...p, mtgId:null, oldUid:'', uid:''}, lead.Id);
+  if(noShowEvent){
+    if(row && p.noShow) await mtgUpdate(env, row.id, {status:'completed', outcome:'no_show', outcome_at:nowIso});
+    return json({ok:true});
+  }
+  if(!row && !['scheduled','pending'].includes(status)) return json({ok:true, skipped:'unknown-booking'});
+  if(status==='completed' && row?.status==='cancelled') return json({ok:true, skipped:'cancelled'});
+
+  const prevStatus=row?.status||null;
+  const fields={status, calcom_uid:p.uid};
+  if(p.title) fields.title=p.title;
+  if(p.start) fields.start_at=p.start;
+  if(p.end) fields.end_at=p.end;
+  if(p.joinUrl) fields.join_url=p.joinUrl;
+  if(p.email && !row?.email) fields.email=p.email;
+  if(p.phone && !row?.phone) fields.phone=p.phone;
+  if(p.name && !row?.lead_name) fields.lead_name=p.name;
+  if(lead){ fields.lead_id=Number(lead.Id); if(!row?.lead_name && lead.Name) fields.lead_name=String(lead.Name); if(!fields.phone && !row?.phone && lead.Phone) fields.phone=mtgDigits(lead.Phone); }
+  if(['scheduled','pending'].includes(status) && !row?.booked_at) fields.booked_at=nowIso;
+  if(p.trigger==='BOOKING_RESCHEDULED'){ fields.remind24_at=null; fields.remind1_at=null; }
+
+  if(row) await mtgUpdate(env, row.id, fields);
+  else{
+    const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, status, created_at, updated_at) VALUES (?,?,?,?)`).bind(Number(clientId), status, nowIso, nowIso).run();
+    await mtgUpdate(env, ins.meta.last_row_id, fields);
+    row={id:ins.meta.last_row_id};
+  }
+  row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(row.id)).first();
+
+  const s=cfg.settings;
+  let kind=null;
+  if(p.trigger==='BOOKING_RESCHEDULED' && s.confirm) kind='rescheduled';
+  else if(p.trigger==='BOOKING_CREATED' && s.confirm && !row.confirm_at) kind='confirm';
+  else if(status==='cancelled' && s.cancel_followup && ['scheduled','pending'].includes(prevStatus)) kind='cancelled';
+  let sent=null;
+  if(kind){
+    sent=await mtgSendKind(env, c, clientId, cfg, row, kind);
+    if(sent.ok && kind==='confirm') await mtgUpdate(env, row.id, {confirm_at:nowIso});
+  }
+  return json({ok:true, id:row.id, status, notified:kind?!!sent?.ok:undefined});
+}
+
+// GET /m/<token> — public click-tracking redirect to the prefilled Cal.com link.
+export async function handleMeetingLinkRedirect(request, env, token){
+  if(!/^[a-z0-9]{8,40}$/.test(token||'')) return new Response('Invalid link.', {status:400});
+  let row=null;
+  try{ row=await env.DB.prepare(`SELECT * FROM meetings WHERE token=?`).bind(token).first(); }catch(e){}
+  if(!row?.link_url) return new Response('This link has expired.', {status:404});
+  if(!row.clicked_at){
+    const nowIso=new Date().toISOString();
+    await env.DB.prepare(`UPDATE meetings SET clicked_at=?, status=CASE WHEN status='link_sent' THEN 'clicked' ELSE status END, updated_at=? WHERE id=?`).bind(nowIso, nowIso, row.id).run();
+  }
+  return Response.redirect(mtgBuildBookingUrl(row.link_url, {name:row.lead_name, email:row.email, phone:row.phone, leadId:row.lead_id, mtgId:row.id}), 302);
+}
+
+function mtgConfigOut(cfg){
+  const {client_id, exists, ...rest}=cfg;
+  return {...rest, enabled:cfg.links.length>0};
+}
+// GET /meetings/config
+async function handleMeetingsConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const cfg=await mtgGetConfig(env, payload.cid);
+  if(!cfg) return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503);
+  return json({config:mtgConfigOut(cfg)});
+}
+// POST /meetings/config {links, webhook_secret, settings} — a blank secret keeps the stored one,
+// or generates one on first save so the client only ever has to copy it into Cal.com.
+async function handleMeetingsConfigSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const cfg=await mtgGetConfig(env, payload.cid);
+  if(!cfg) return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503);
+  const links=mtgNormalizeLinks(body.links);
+  if(Array.isArray(body.links) && body.links.some(l=>String(l?.url||'').trim()) && links.length<body.links.filter(l=>String(l?.url||'').trim()).length)
+    return json({error:'Each meeting link must be a full https:// URL (e.g. https://cal.com/you/intro-call).'}, 400);
+  const settings=mtgNormalizeSettings({...cfg.settings, ...(body.settings||{})});
+  const secret=String(body.webhook_secret??'').trim().slice(0,200)||cfg.webhook_secret||mtgRandomToken(32);
+  const now=new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO meetings_config (client_id, links_json, webhook_secret, settings_json, created_at, updated_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(client_id) DO UPDATE SET links_json=excluded.links_json, webhook_secret=excluded.webhook_secret, settings_json=excluded.settings_json, updated_at=excluded.updated_at`)
+    .bind(Number(payload.cid), JSON.stringify(links), secret, JSON.stringify(settings), now, now).run();
+  return json({ok:true, config:mtgConfigOut(await mtgGetConfig(env, payload.cid))});
+}
+// GET /meetings/list — upcoming, awaiting-outcome and recent meetings (last 90 days) plus funnel stats.
+async function handleMeetingsList(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const since=new Date(Date.now()-90*86400e3).toISOString();
+  let rows=[];
+  try{
+    rows=(await env.DB.prepare(`SELECT id, lead_id, lead_name, phone, email, link_name, sent_by, sent_at, clicked_at, title, status, start_at, end_at, join_url, booked_at, outcome, outcome_note, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 500`)
+      .bind(Number(payload.cid), since, since).all())?.results||[];
+  }catch(e){ return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503); }
+  const now=Date.now();
+  const startMs=r=>Date.parse(r.start_at||'')||0;
+  const upcoming=rows.filter(r=>['scheduled','pending'].includes(r.status) && startMs(r)>=now-3600e3).sort((a,b)=>startMs(a)-startMs(b));
+  const needs_outcome=rows.filter(r=>r.status==='completed' && !r.outcome).sort((a,b)=>startMs(b)-startMs(a));
+  const shown=new Set([...upcoming, ...needs_outcome].map(r=>r.id));
+  const recent=rows.filter(r=>!shown.has(r.id)).slice(0, 40);
+  return json({upcoming, needs_outcome, recent, stats:mtgSummarize(rows)});
+}
+// POST /meetings/send {lead_id, link_index, send, sent_by} — creates a tracked link for a lead and,
+// when `send` is set, sends it on WhatsApp. The link is returned either way so the rep can copy it.
+async function handleMeetingsSend(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const clientId=Number(payload.cid);
+  const cfg=await mtgGetConfig(env, clientId);
+  if(!cfg?.links?.length) return json({error:'Add a Cal.com meeting link first.'}, 400);
+  const link=cfg.links[Number(body.link_index)||0]||cfg.links[0];
+  const lead=await mtgFindLead(env, clientId, {leadId:body.lead_id});
+  if(!lead) return json({error:'Lead not found.'}, 404);
+  const nowIso=new Date().toISOString(), token=mtgRandomToken(16);
+  const ins=await env.DB.prepare(`INSERT INTO meetings (client_id, token, lead_id, lead_name, phone, email, link_name, link_url, sent_by, sent_at, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,'link_sent',?,?)`)
+    .bind(clientId, token, Number(lead.Id), String(lead.Name||'').slice(0,120), mtgDigits(lead.Phone), String(lead.Email||'').trim().toLowerCase().slice(0,200), link.name, link.url, String(body.sent_by||'').trim().toLowerCase().slice(0,200)||null, nowIso, nowIso, nowIso).run();
+  const row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(ins.meta.last_row_id)).first();
+  const url=mtgTrackedUrl(env, row);
+  let whatsapp_sent=false, whatsapp_error;
+  if(body.send){
+    const c=await getClientById(env, clientId);
+    const res=await mtgSendWhatsApp(env, c, clientId, cfg, row.phone, `Hi ${mtgFirstName(row.lead_name)}! Here's the link to pick a time for our ${link.name}: ${url}`, [mtgFirstName(row.lead_name), '-', url]);
+    whatsapp_sent=res.ok; whatsapp_error=res.ok?undefined:res.error;
+  }
+  return json({ok:true, id:row.id, url, whatsapp_sent, whatsapp_error});
+}
+// POST /meetings/outcome {id, outcome, note}
+async function handleMeetingsOutcome(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const outcome=String(body.outcome||'');
+  if(!MTG_OUTCOMES.has(outcome)) return json({error:'Unknown outcome.'}, 400);
+  const nowIso=new Date().toISOString();
+  const res=await env.DB.prepare(`UPDATE meetings SET status='completed', outcome=?, outcome_note=?, outcome_at=?, updated_at=? WHERE id=? AND client_id=?`)
+    .bind(outcome, String(body.note||'').slice(0,500)||null, nowIso, nowIso, Number(body.id), Number(payload.cid)).run();
+  if(!res?.meta?.changes) return json({error:'Meeting not found.'}, 404);
+  return json({ok:true});
+}
+
+// 15-minute cron: reminders for scheduled meetings, marks meetings past their end time as
+// completed (awaiting an outcome) in case the client's webhook doesn't include MEETING_ENDED, and
+// sends one nudge to leads who got a link 24-72h ago but haven't booked.
+export async function runMeetingsForAllClients(env, now=new Date()){
+  let configs=[];
+  try{ configs=(await env.DB.prepare(`SELECT client_id FROM meetings_config WHERE links_json<>'[]'`).all())?.results||[]; }
+  catch(e){ return; } // migration 0104 not applied yet
+  let budget=MTG_MAX_SENDS_PER_TICK;
+  const nowIso=now.toISOString();
+  for(const {client_id:clientId} of configs){
+    if(budget<=0) break;
+    try{
+      const cfg=await mtgGetConfig(env, clientId);
+      if(!cfg?.links?.length) continue;
+      await env.DB.prepare(`UPDATE meetings SET status='completed', updated_at=? WHERE client_id=? AND status='scheduled' AND COALESCE(end_at, start_at)<?`)
+        .bind(nowIso, Number(clientId), new Date(now.getTime()-30*60e3).toISOString()).run();
+      const s=cfg.settings;
+      const due=[];
+      if(s.remind24||s.remind1){
+        const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status='scheduled' AND start_at>? AND start_at<=?`)
+          .bind(Number(clientId), nowIso, new Date(now.getTime()+24*3600e3).toISOString()).all())?.results||[];
+        for(const r of rows){ const kind=mtgReminderDue(r, s, now); if(kind) due.push({r, kind, col:kind==='remind1'?'remind1_at':'remind24_at'}); }
+      }
+      if(s.nudge){
+        const rows=(await env.DB.prepare(`SELECT * FROM meetings WHERE client_id=? AND status IN ('link_sent','clicked') AND nudge_at IS NULL AND sent_at<=? AND sent_at>?`)
+          .bind(Number(clientId), new Date(now.getTime()-MTG_NUDGE_AFTER_MS).toISOString(), new Date(now.getTime()-MTG_NUDGE_UNTIL_MS).toISOString()).all())?.results||[];
+        for(const r of rows) if(mtgNudgeDue(r, s, now)) due.push({r, kind:'nudge', col:'nudge_at'});
+      }
+      if(!due.length) continue;
+      const c=await getClientById(env, clientId);
+      if(!c) continue;
+      const nudgeWindowOpen=followupWithinQuietHours(c);
+      for(const {r, kind, col} of due){
+        if(budget<=0) break;
+        if(kind==='nudge'){
+          if(!nudgeWindowOpen) continue;
+          // Already booked through another link since this one went out — no nudge.
+          const other=r.lead_id?await env.DB.prepare(`SELECT id FROM meetings WHERE client_id=? AND lead_id=? AND id<>? AND booked_at IS NOT NULL AND booked_at>=? LIMIT 1`).bind(Number(clientId), Number(r.lead_id), r.id, r.sent_at).first():null;
+          if(other){ await mtgUpdate(env, r.id, {nudge_at:nowIso}); continue; }
+        }
+        // Claim before sending so an overlapping tick can't send the same message twice.
+        const claim=await env.DB.prepare(`UPDATE meetings SET ${col}=? WHERE id=? AND ${col} IS NULL`).bind(nowIso, r.id).run();
+        if(!claim?.meta?.changes) continue;
+        budget--;
+        const res=await mtgSendKind(env, c, clientId, cfg, r, kind);
+        if(!res.ok) console.error('[meetings]', kind, 'failed for meeting', r.id, 'client', clientId, res.error);
+      }
+    }catch(e){ console.error('[meetings] failed for client', clientId, e.message); }
+  }
+}
+
 // One-time setup (dashboard "Enable Auto Order-Tracking" button): registers a *second*,
 // independent Chatwoot webhook on the client's WhatsApp inbox, alongside whichever one already
 // feeds n8n's bot (see the c.webhook_url registration above, in the WhatsApp-connect flow). This
@@ -30656,6 +31126,13 @@ export default {
       else if(url.pathname==='/leads/booking-link' && request.method==='POST'){ res=await handleLeadBookingLink(request, env); }
       else if(url.pathname==='/engine/track' && request.method==='POST'){ res=await handleEngineTrack(request, env); }
       else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
+      else if(url.pathname.startsWith('/calcom/meetings/') && request.method==='POST'){ res=await handleCalcomMeetingsWebhook(request, env, url.pathname.slice('/calcom/meetings/'.length)); }
+      else if(url.pathname.startsWith('/m/') && request.method==='GET'){ res=await handleMeetingLinkRedirect(request, env, url.pathname.slice('/m/'.length)); }
+      else if(url.pathname==='/meetings/config' && request.method==='GET'){ res=await handleMeetingsConfigGet(request, env); }
+      else if(url.pathname==='/meetings/config' && request.method==='POST'){ res=await handleMeetingsConfigSave(request, env); }
+      else if(url.pathname==='/meetings/list' && request.method==='GET'){ res=await handleMeetingsList(request, env); }
+      else if(url.pathname==='/meetings/send' && request.method==='POST'){ res=await handleMeetingsSend(request, env); }
+      else if(url.pathname==='/meetings/outcome' && request.method==='POST'){ res=await handleMeetingsOutcome(request, env); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
@@ -31134,6 +31611,8 @@ export default {
       // Google Sheets leads sync (Integrations → 📊 Google Sheets Sync) — see runGsheetSyncForAllClients.
       ctx.waitUntil(runGsheetSyncForAllClients(env));
       ctx.waitUntil(runRecruitGsheetSyncForAllClients(env));
+      // Cal.com Meetings (Integrations → 📞 Cal.com Meetings) — reminders, no-book nudges, auto-complete; see runMeetingsForAllClients.
+      ctx.waitUntil(runMeetingsForAllClients(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));

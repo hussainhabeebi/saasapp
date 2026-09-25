@@ -2323,6 +2323,59 @@ request/response shape, so no frontend page needed to change for this migration.
    `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
    only applies what's new).
 
+## Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings)
+
+Calls and meetings with leads (intro calls, demos, consultations), booked on the client's own
+Cal.com. **Separate from the Appointment Booking module** and its "🗓️ Cal.com Sync" card above: it
+never reads or writes `appt_table_ids` tables, and it has its own webhook URL. It has no tab of its
+own. Everything, including the meetings list, is in the one card in Settings → Integrations.
+
+**Setup:** apply `cloudflare-worker/migrations/0104_calcom_meetings.sql`
+(`wrangler d1 migrations apply leadvyne-d1 --remote`). `WORKER_BASE_URL` must be set for tracked
+links; without it, links go straight to Cal.com and clicks aren't counted.
+
+**Enabling:** the module is off until the client saves at least one meeting link (name + https
+Cal.com URL, up to 6). Until then the card shows only the links step. After the first save:
+- **Connect Cal.com:** the card shows the webhook URL (`{WORKER_BASE}/calcom/meetings/{clientId}`)
+  and a secret, generated on the first save. The client adds these in Cal.com → Settings → Developer
+  → Webhooks and presses **Ping test**. The card then shows "✅ Connected — last event …"
+  (`meetings_config.last_event_at`).
+- **Send a meeting link:** search a lead, pick the meeting type, then **Send on WhatsApp** or
+  **Copy link**. `POST /meetings/send` creates a `meetings` row (`link_sent`) with a random token and
+  returns `{WORKER_BASE_URL}/m/<token>`. `GET /m/<token>` records the click (`clicked`) and
+  redirects to the Cal.com link, prefilled with `name`, `email` and `attendeePhoneNumber`, and tagged
+  with `metadata[lead_id]` and `metadata[mtg_id]`.
+- **Webhook** `POST /calcom/meetings/<clientId>` (`handleCalcomMeetingsWebhook`): same hex
+  `X-Cal-Signature-256` check as the Appointment Cal.com sync, but checked against
+  `meetings_config.webhook_secret`. A booking is matched to its row in this order: `metadata.mtg_id`,
+  then the pre-reschedule uid, then the booking uid, then the lead's latest open tracked link. The
+  lead itself comes from `metadata.lead_id`, then phone (last 9 digits), then email; a booking with
+  no matching row gets a new row.
+- **Event handling:**
+  - `BOOKING_CREATED` / `BOOKING_RESCHEDULED` → `scheduled`
+  - `BOOKING_REQUESTED` → `pending`
+  - `BOOKING_CANCELLED` / `BOOKING_REJECTED` → `cancelled`
+  - `MEETING_ENDED` → `completed`
+  - `BOOKING_NO_SHOW_UPDATED` → outcome `no_show`
+  - Any other event is only logged as the last event received.
+- **WhatsApp messages** (each can be switched off): a confirmation with the join link and
+  reschedule link on booking or reschedule, "pick another time?" on cancel, 24h and 1h reminders,
+  and one nudge 24–72h after an unbooked link (inside the Follow-up Engine quiet-hours window).
+  Each message is sent as plain text first. If Meta rejects it (outside the 24h window) and the
+  client set a template name, that template is sent instead, with 3 body variables: {{1}} name,
+  {{2}} date & time, {{3}} link.
+- **Cron** (`runMeetingsForAllClients`, every 15 minutes): sends reminders and nudges. Each row's
+  `*_at` column is claimed before sending, so a message is never sent twice. Meetings more than
+  30 minutes past their end time are marked `completed`.
+- **Outcomes:** "How did it go?" lists completed meetings that have no outcome yet. The choices are
+  Interested / Not interested / Follow-up / No-show (`POST /meetings/outcome`). Follow-up also
+  adds a normal task (via `manual_tasks`) due in 2 days.
+- **Stats** (last 90 days): links sent → clicked → booked → attended / no-show → interested,
+  meetings this week, and a per-rep table (`sent_by` = the signed-in rep's email).
+- **Bot:** "Let the bot share the meeting link" copies the links into `mtg_bot_links` on CLIENTS
+  (the column is created on demand). `buildKbProcessorText()` then adds a `## MEETING LINK` section
+  to the knowledge base. With the option off, the field is empty and nothing is added.
+
 ## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
 Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
 the generic Automations engine above: a client would otherwise have to hand-build a flow

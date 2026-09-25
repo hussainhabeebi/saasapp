@@ -2989,6 +2989,80 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- Cal.com Meetings — calls/meetings with leads (intro calls, demos, consultations). A separate
+             module from the Appointment Booking module and its Cal.com Sync card above: its own D1
+             tables (migrations/0104_calcom_meetings.sql), its own webhook URL
+             (/calcom/meetings/<clientId>, handleCalcomMeetingsWebhook in worker.js). Switched on the
+             moment the client saves at least one Cal.com meeting link — until then only the links
+             step is shown. Lives entirely in this card (no separate tab) — see mtgInit(). -->
+        <div class="card" style="margin-bottom:14px" id="mtgCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📞 Cal.com Meetings <span id="mtgStatusBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Off</span></div>
+            <div class="s-note">For calls and meetings with leads — intro calls, demos, consultations. Separate from Appointments. Add your Cal.com meeting link to switch this on: reps can send tracked links to leads, bookings come back here, and leads get WhatsApp confirmations and reminders.</div>
+            <div id="mtgLoadMsg" class="s-note" style="display:none"></div>
+
+            <div id="mtgConfigBody">
+              <label class="form-label">1. Your Cal.com meeting links</label>
+              <div class="s-note" style="margin-bottom:6px">One per meeting type, e.g. "15-min intro" → https://cal.com/yourname/intro</div>
+              <div id="mtgLinksList"></div>
+              <button class="btn-ghost" type="button" onclick="mtgAddLinkRow()" style="margin:2px 0 14px">+ Add meeting type</button>
+
+              <div id="mtgSetupMore" style="display:none">
+                <label class="form-label">2. Connect Cal.com (bookings sync back here)</label>
+                <div class="s-note" style="margin-bottom:6px">In Cal.com: <b>Settings → Developer → Webhooks → New</b>. Paste the URL and secret below, tick <b>Booking Created, Rescheduled, Cancelled, Rejected, Requested, Meeting Ended</b> and <b>No-show updated</b>, then press <b>Ping test</b>.</div>
+                <label class="form-label" style="font-weight:500">Webhook URL</label>
+                <div style="display:flex;gap:8px;margin-bottom:8px">
+                  <input class="form-input" id="mtgWebhookUrl" type="text" readonly style="font-family:var(--mono);font-size:12px" onclick="this.select()">
+                  <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookUrl')">📋 Copy</button>
+                </div>
+                <label class="form-label" style="font-weight:500">Webhook secret</label>
+                <div style="display:flex;gap:8px;margin-bottom:6px">
+                  <input class="form-input" id="mtgWebhookSecret" type="text" placeholder="Generated on first save — or type your own" style="font-family:var(--mono);font-size:12px">
+                  <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookSecret')">📋 Copy</button>
+                </div>
+                <div id="mtgConnStatus" class="s-note" style="margin-bottom:14px"></div>
+
+                <label class="form-label">3. WhatsApp messages to the lead</label>
+                <div style="display:grid;gap:6px;margin-bottom:8px;font-size:13px">
+                  <label><input type="checkbox" id="mtgOptConfirm"> Confirmation when a meeting is booked or rescheduled (with the join link)</label>
+                  <label><input type="checkbox" id="mtgOptRemind24"> Reminder 24 hours before</label>
+                  <label><input type="checkbox" id="mtgOptRemind1"> Reminder 1 hour before</label>
+                  <label><input type="checkbox" id="mtgOptCancel"> "Want to pick another time?" when a meeting is cancelled</label>
+                  <label><input type="checkbox" id="mtgOptNudge"> One nudge if a lead got a link but didn't book within 24 hours</label>
+                  <label><input type="checkbox" id="mtgOptBotShare"> Let the bot share the meeting link when a lead asks for a call or demo</label>
+                </div>
+                <div class="s-note" style="margin-bottom:6px">Optional: WhatsApp only allows plain messages within 24h of the lead's last message. For reminders outside that window, add an approved template with 3 variables — {{1}} name, {{2}} date &amp; time, {{3}} link.</div>
+                <div style="display:flex;gap:8px;margin-bottom:12px">
+                  <input class="form-input" id="mtgTplName" type="text" placeholder="Template name (optional)" style="flex:2">
+                  <input class="form-input" id="mtgTplLang" type="text" placeholder="en" style="flex:1">
+                </div>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:10px">
+                <button class="save-btn" id="mtgSaveBtn" type="button" onclick="mtgSaveConfig()">Save</button>
+                <span class="save-msg" id="mtgSaveMsg"></span>
+              </div>
+            </div>
+
+            <div id="mtgLive" style="display:none;margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
+              <label class="form-label">📨 Send a meeting link</label>
+              <div style="position:relative;margin-bottom:8px">
+                <input class="form-input" id="mtgLeadSearch" type="text" placeholder="Search lead by name or phone…" autocomplete="off" oninput="mtgRenderLeadResults()">
+                <div id="mtgLeadResults" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:20;background:var(--card,#fff);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.08);max-height:240px;overflow:auto"></div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+                <select class="form-input" id="mtgSendLink" style="flex:1;min-width:160px"></select>
+                <button class="save-btn" type="button" id="mtgSendBtn" onclick="mtgSendLink(true)">Send on WhatsApp</button>
+                <button class="btn-ghost" type="button" onclick="mtgSendLink(false)">📋 Copy link</button>
+              </div>
+              <div id="mtgSendMsg" class="s-note" style="margin-bottom:14px"></div>
+
+              <div id="mtgStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:14px"></div>
+              <div id="mtgLists"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Resend (Email) -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -12256,7 +12330,222 @@ function integrationsInit(){
   }
   loadGsheetStatus();
   flowvyneInit();
+  mtgInit();
 }
+
+/* ── CAL.COM MEETINGS (Integrations → 📞 Cal.com Meetings card) ──
+   Separate from the Appointment module. Config + meetings live in the Worker's D1
+   (/meetings/* routes, worker.js "Cal.com Meetings"); the only CLIENTS field touched is
+   mtg_bot_links, read by buildKbProcessorText() when "Let the bot share the meeting link" is on. */
+let _mtgConfig=null, _mtgLeadPick=null;
+const MTG_OUTCOME_LABELS={interested:'👍 Interested', not_interested:'👎 Not interested', follow_up:'🔁 Follow-up', no_show:'🚫 No-show'};
+const MTG_STATUS_LABELS={link_sent:'Link sent', clicked:'Clicked', pending:'Awaiting confirmation', scheduled:'Scheduled', cancelled:'Cancelled', completed:'Completed'};
+
+async function mtgApi(path, opts={}){
+  const r=await fetch(`${CONFIG.WORKER_BASE}${path}`, {...opts, headers:ncAuthHeaders(opts.body?{'Content-Type':'application/json'}:{})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+  return d;
+}
+async function mtgInit(){
+  const msg=$id('mtgLoadMsg');
+  if(!msg) return;
+  msg.style.display='none';
+  try{
+    _mtgConfig=(await mtgApi('/meetings/config')).config;
+  }catch(e){
+    msg.style.display='block'; msg.textContent='Could not load Cal.com Meetings: '+e.message;
+    return;
+  }
+  mtgRenderConfig();
+  if(_mtgConfig.enabled) mtgLoadMeetings();
+}
+function mtgRenderConfig(){
+  const cfg=_mtgConfig||{links:[], settings:{}};
+  const links=cfg.links.length?cfg.links:[{name:'',url:''}];
+  $id('mtgLinksList').innerHTML='';
+  links.forEach(l=>mtgAddLinkRow(l));
+  const on=!!cfg.enabled;
+  const badge=$id('mtgStatusBadge');
+  badge.textContent=on?'On':'Off';
+  badge.style.background=on?'#d1fae5':'var(--bg)'; badge.style.color=on?'#065f46':'var(--muted)';
+  $id('mtgSetupMore').style.display=on?'block':'none';
+  $id('mtgLive').style.display=on?'block':'none';
+  $id('mtgWebhookUrl').value=`${CONFIG.WORKER_BASE}/calcom/meetings/${clientId}`;
+  $id('mtgWebhookSecret').value=cfg.webhook_secret||'';
+  const s=cfg.settings||{};
+  $id('mtgOptConfirm').checked=s.confirm!==false;
+  $id('mtgOptRemind24').checked=s.remind24!==false;
+  $id('mtgOptRemind1').checked=s.remind1!==false;
+  $id('mtgOptCancel').checked=s.cancel_followup!==false;
+  $id('mtgOptNudge').checked=s.nudge!==false;
+  $id('mtgOptBotShare').checked=!!s.bot_share;
+  $id('mtgTplName').value=s.template_name||'';
+  $id('mtgTplLang').value=s.template_lang||'en';
+  const conn=$id('mtgConnStatus');
+  if(cfg.last_event_at){
+    conn.innerHTML=`✅ Connected — last event from Cal.com <b>${esc(mtgAgo(cfg.last_event_at))}</b> (${esc(cfg.last_event_type||'')})`;
+  }else{
+    conn.innerHTML='⚠️ Nothing received from Cal.com yet. Save, add the webhook in Cal.com, then press its <b>Ping test</b> and reload this page.';
+  }
+  $id('mtgSendLink').innerHTML=cfg.links.map((l,i)=>`<option value="${i}">${esc(l.name)}</option>`).join('');
+}
+function mtgAddLinkRow(l={name:'',url:''}){
+  const list=$id('mtgLinksList');
+  if(list.children.length>=6){ showToast('Up to 6 meeting types','err'); return; }
+  const row=document.createElement('div');
+  row.className='mtg-link-row';
+  row.style.cssText='display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+  row.innerHTML=`<input class="form-input mtg-link-name" type="text" placeholder="Name (e.g. 15-min intro)" style="flex:1;min-width:130px" value="${esc(l.name||'')}">
+    <input class="form-input mtg-link-url" type="url" placeholder="https://cal.com/yourname/intro" style="flex:2;min-width:200px" value="${esc(l.url||'')}">
+    <button class="btn-ghost" type="button" title="Remove" onclick="this.parentElement.remove()">✕</button>`;
+  list.appendChild(row);
+}
+async function mtgSaveConfig(){
+  const btn=$id('mtgSaveBtn'), msg=$id('mtgSaveMsg');
+  const links=[...document.querySelectorAll('#mtgLinksList .mtg-link-row')].map(r=>({
+    name:r.querySelector('.mtg-link-name').value.trim(), url:r.querySelector('.mtg-link-url').value.trim()
+  })).filter(l=>l.url);
+  const bad=links.find(l=>!/^https:\/\/\S+$/i.test(l.url));
+  if(bad){ msg.textContent='Links must start with https://'; msg.className='save-msg err'; return; }
+  const settings={
+    confirm:$id('mtgOptConfirm').checked, remind24:$id('mtgOptRemind24').checked, remind1:$id('mtgOptRemind1').checked,
+    cancel_followup:$id('mtgOptCancel').checked, nudge:$id('mtgOptNudge').checked, bot_share:$id('mtgOptBotShare').checked,
+    template_name:$id('mtgTplName').value.trim(), template_lang:$id('mtgTplLang').value.trim()||'en',
+  };
+  btn.disabled=true; msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const wasEnabled=!!_mtgConfig?.enabled;
+    _mtgConfig=(await mtgApi('/meetings/config', {method:'POST', body:JSON.stringify({links, settings, webhook_secret:$id('mtgWebhookSecret').value.trim()})})).config;
+    await mtgSyncBotLinks();
+    mtgRenderConfig();
+    if(_mtgConfig.enabled) mtgLoadMeetings();
+    msg.textContent=(!wasEnabled&&_mtgConfig.enabled)?'✓ Meetings switched on — now connect Cal.com (step 2)':'✓ Saved';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>{ if(msg.className==='save-msg') msg.textContent=''; }, 5000); }
+}
+// Mirrors the links onto CLIENTS.mtg_bot_links only while "Let the bot share…" is on, and refreshes
+// the bot's knowledge base when that changes.
+async function mtgSyncBotLinks(){
+  const want=(_mtgConfig?.enabled&&_mtgConfig.settings?.bot_share)?JSON.stringify(_mtgConfig.links):'';
+  if(String(clientRecord?.mtg_bot_links||'')===want) return;
+  const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+  if(!(info.columns||[]).some(c=>c.title==='mtg_bot_links'))
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'mtg_bot_links',title:'mtg_bot_links',uidt:'LongText'}).catch(()=>{});
+  await patchClient({mtg_bot_links:want});
+  triggerKbRefresh();
+}
+function mtgCopy(id){
+  const v=$id(id)?.value||'';
+  if(!v) return;
+  navigator.clipboard?.writeText(v).then(()=>showToast('✓ Copied')).catch(()=>{});
+}
+function mtgAgo(iso){
+  const ms=Date.now()-Date.parse(iso||'');
+  if(!Number.isFinite(ms)) return '';
+  const m=Math.round(ms/60000);
+  if(m<1) return 'just now';
+  if(m<60) return m+' min ago';
+  const h=Math.round(m/60);
+  if(h<48) return h+'h ago';
+  return Math.round(h/24)+' days ago';
+}
+function mtgWhen(iso){
+  const d=new Date(iso||'');
+  return Number.isFinite(d.getTime())?d.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}):'';
+}
+
+function mtgRenderLeadResults(){
+  const box=$id('mtgLeadResults');
+  const q=$id('mtgLeadSearch').value.trim().toLowerCase();
+  _mtgLeadPick=null;
+  if(q.length<2){ box.style.display='none'; return; }
+  const qd=q.replace(/\D/g,'');
+  const hits=(allLeads||[]).filter(l=>String(l.Name||'').toLowerCase().includes(q)||(qd.length>=3&&String(l.Phone||'').replace(/\D/g,'').includes(qd))).slice(0,8);
+  box.innerHTML=hits.length?hits.map(l=>`<div class="mtg-lead-hit" data-id="${l.Id}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line);font-size:13px"><b>${esc(l.Name||'Unnamed')}</b> <span style="color:var(--muted)">${esc(l.Phone||'')}</span></div>`).join('')
+    :'<div style="padding:8px 12px;font-size:13px;color:var(--muted)">No matching leads</div>';
+  box.querySelectorAll('.mtg-lead-hit').forEach(el=>el.addEventListener('click',()=>{
+    const lead=allLeads.find(x=>String(x.Id)===el.dataset.id);
+    _mtgLeadPick=lead||null;
+    $id('mtgLeadSearch').value=lead?`${lead.Name||'Unnamed'} · ${lead.Phone||''}`:'';
+    box.style.display='none';
+  }));
+  box.style.display='block';
+}
+async function mtgSendLink(viaWhatsApp){
+  const msg=$id('mtgSendMsg');
+  if(!_mtgLeadPick){ msg.textContent='Pick a lead from the search results first.'; return; }
+  const btn=$id('mtgSendBtn'); btn.disabled=true; msg.textContent=viaWhatsApp?'Sending…':'Creating link…';
+  try{
+    const d=await mtgApi('/meetings/send', {method:'POST', body:JSON.stringify({lead_id:_mtgLeadPick.Id, link_index:Number($id('mtgSendLink').value)||0, send:viaWhatsApp, sent_by:myEmail||''})});
+    if(!viaWhatsApp||!d.whatsapp_sent) navigator.clipboard?.writeText(d.url).catch(()=>{});
+    if(viaWhatsApp&&d.whatsapp_sent) msg.innerHTML=`✅ Sent to ${esc(_mtgLeadPick.Name||'lead')} on WhatsApp.`;
+    else if(viaWhatsApp) msg.innerHTML=`⚠️ WhatsApp didn't send (${esc(d.whatsapp_error||'unknown error')}). The link was copied — paste it in the chat: <span style="font-family:var(--mono)">${esc(d.url)}</span>`;
+    else msg.innerHTML=`✓ Link copied: <span style="font-family:var(--mono)">${esc(d.url)}</span>`;
+    mtgLoadMeetings();
+  }catch(e){ msg.textContent='Error: '+e.message; }
+  finally{ btn.disabled=false; }
+}
+
+async function mtgLoadMeetings(){
+  const lists=$id('mtgLists');
+  try{
+    const d=await mtgApi('/meetings/list');
+    mtgRenderStats(d.stats||{});
+    const row=(m, withOutcome)=>{
+      const who=m.lead_name||m.email||m.phone||'Unknown';
+      const when=m.start_at?mtgWhen(m.start_at):(m.sent_at?'Link sent '+mtgAgo(m.sent_at):'');
+      const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(MTG_STATUS_LABELS[m.status]||m.status);
+      const join=m.join_url?` · <a href="${esc(m.join_url)}" target="_blank" rel="noopener">Join</a>`:'';
+      const outcomeBtns=withOutcome?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${Object.entries(MTG_OUTCOME_LABELS).map(([k,v])=>`<button class="btn-ghost" type="button" style="padding:4px 8px;font-size:11px" onclick="mtgSetOutcome(${m.id},'${k}')">${v}</button>`).join('')}</div>`:'';
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--line);font-size:13px">
+        <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(who)}</b><span style="color:var(--muted);font-size:12px;white-space:nowrap">${esc(status||'')}</span></div>
+        <div style="color:var(--muted);font-size:12px">${esc(m.title||m.link_name||'Meeting')}${when?' · '+esc(when):''}${join}${m.sent_by?' · by '+esc(m.sent_by):''}</div>${outcomeBtns}</div>`;
+    };
+    const section=(title, items, withOutcome, empty)=>`<div style="margin-bottom:16px"><div class="form-label" style="margin-bottom:2px">${title} <span style="color:var(--muted);font-weight:500">(${items.length})</span></div>${items.length?items.map(m=>row(m, withOutcome)).join(''):`<div class="s-note" style="margin:4px 0 0">${empty}</div>`}</div>`;
+    lists.innerHTML=
+      section('🗓️ Upcoming meetings', d.upcoming||[], false, 'No upcoming meetings.')+
+      section('📝 How did it go?', d.needs_outcome||[], true, 'Nothing waiting for an outcome.')+
+      section('🕘 Recent activity', d.recent||[], false, 'No activity yet — send your first meeting link above.')+
+      mtgRepsTable(d.stats?.reps||{});
+  }catch(e){ lists.innerHTML=`<div class="s-note">Could not load meetings: ${esc(e.message)}</div>`; }
+}
+function mtgRenderStats(s){
+  const pct=(a,b)=>b?Math.round(a/b*100)+'%':'—';
+  const tiles=[['Links sent',s.sent||0],['Clicked',s.clicked||0,pct(s.clicked,s.sent)],['Booked',s.booked||0,pct(s.booked,s.sent)],['Attended',s.attended||0],['No-shows',s.no_show||0],['Interested',s.converted||0],['This week',s.this_week||0]];
+  $id('mtgStats').innerHTML=tiles.map(([k,v,sub])=>`<div style="background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px"><div style="font-size:18px;font-weight:700">${v}</div><div style="font-size:11px;color:var(--muted)">${k}${sub?` · ${sub}`:''}</div></div>`).join('')+
+    `<div style="grid-column:1/-1;font-size:11px;color:var(--muted)">Last 90 days</div>`;
+}
+function mtgRepsTable(reps){
+  const rows=Object.entries(reps);
+  if(!rows.length) return '';
+  const name=email=>(getTeamMembers?.()||[]).find(m=>sameEmail(m.email,email))?.name||email;
+  return `<div class="form-label" style="margin-bottom:4px">👥 By rep</div><div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse">
+    <tr style="color:var(--muted);text-align:left"><th style="padding:4px">Rep</th><th>Sent</th><th>Booked</th><th>Attended</th><th>No-show</th></tr>
+    ${rows.map(([e,r])=>`<tr style="border-top:1px solid var(--line)"><td style="padding:4px">${esc(name(e))}</td><td>${r.sent}</td><td>${r.booked}</td><td>${r.attended}</td><td>${r.no_show}</td></tr>`).join('')}</table></div>`;
+}
+async function mtgSetOutcome(id, outcome){
+  try{
+    await mtgApi('/meetings/outcome', {method:'POST', body:JSON.stringify({id, outcome})});
+    if(outcome==='follow_up'){
+      // Same task shape the Tasks page itself writes — lands in the normal task list.
+      const d=await mtgApi('/meetings/list');
+      const m=[...(d.recent||[]),...(d.upcoming||[]),...(d.needs_outcome||[])].find(x=>x.id===id);
+      const due=new Date(Date.now()+2*86400e3).toISOString().slice(0,10);
+      const state=getTasksState();
+      state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title:`Follow up after meeting — ${m?.lead_name||'lead'}`,
+        notes:`${m?.title||m?.link_name||'Meeting'}${m?.start_at?' on '+mtgWhen(m.start_at):''}`, due_date:due, due_time:'',
+        lead_id:m?.lead_id||null, lead_name:m?.lead_name||'', assignee_email:m?.sent_by||myEmail||'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()});
+      await saveTasksState(state);
+      showToast('✓ Follow-up task added');
+    }else showToast('✓ Saved');
+    mtgLoadMeetings();
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
+document.addEventListener('click',e=>{
+  const box=$id('mtgLeadResults');
+  if(box && box.style.display==='block' && !e.target.closest('#mtgLeadResults') && e.target.id!=='mtgLeadSearch') box.style.display='none';
+});
 
 async function flowvyneInit(){
   const badge=$id('flowvyneStatusBadge');
@@ -15619,6 +15908,12 @@ function buildKbProcessorText(rawText){
     // instruction, so it isn't attempted here; those are only ever shared per-product, in the
     // engine's own per-message reply (see buildCheckoutLink/buildOrderLink, worker.js).
     extra+=`\n## ORDER LINK\nWhen a customer shows clear buying intent (asks about size, color, price, stock, or says they want to buy/order), share this store link so they can complete the purchase: ${hasExt}\n`;
+  }
+  // Cal.com Meetings (Integrations → 📞 Cal.com Meetings) — only while the client has "Let the bot
+  // share the meeting link" on; mtgSyncBotLinks() keeps mtg_bot_links empty otherwise.
+  let mtgLinks=[]; try{ mtgLinks=JSON.parse(clientRecord?.mtg_bot_links||'[]'); }catch(e){}
+  if(Array.isArray(mtgLinks)&&mtgLinks.length){
+    extra+=`\n## MEETING LINK\nWhen a customer asks to talk to the team, or wants a call, demo or consultation, share the matching link so they can pick a time:\n${mtgLinks.map(l=>`- ${l.name}: ${l.url}`).join('\n')}\n`;
   }
   return (rawText||'')+extra;
 }
