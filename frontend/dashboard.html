@@ -5476,34 +5476,153 @@ function showApp(){
 const _CACHE_KEY=()=>`lv_leads_${clientId}`;
 const _CACHE_TTL=300000; // 5 min
 
+/* ── PROGRESSIVE LEADS LOAD ──
+   Leads arrive in slices so Home and Leads paint from the newest leads instead of waiting on one
+   request for every lead's every column:
+   1. the newest LEADS_FIRST_PAGE leads with every column (ConvHistory included) — on a cold start
+      this is rendered straight away;
+   2. the rest (up to the old single request's LEADS_FETCH_MAX cap) *without* ConvHistory — each
+      lead's whole chat transcript, by far the heaviest column;
+   3. hydrateConvHistory() then fills ConvHistory in with one Id+ConvHistory request, off the
+      critical path. Until then a slim lead simply has no ConvHistory key at all ('ConvHistory' in
+      lead is false), which is how ensureLeadConvHistory/freshConvHistory tell "not loaded yet"
+      apart from "no conversation" (null/'[]').
+   NocoDB's `fields` param is a whitelist, so slice 2's column list is every key seen on slice 1's
+   full rows, unioned with every key seen before (LEAD_COLS_KEY) so a column that happens to be
+   empty on all of the newest leads isn't dropped for older ones. If a fields request is rejected
+   it falls back to fetching every column, i.e. the old behaviour. */
+const LEADS_FIRST_PAGE=100, LEADS_FETCH_MAX=2000;
+const LEAD_COLS_KEY='lv_lead_cols';
+let _leadsLoadGen=0, _convHydrating=null;
+
+function _leadsListUrl(params){
+  return `${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&sort=-Date&${params}`;
+}
+function _slimLeadFields(fullRows){
+  let known=[]; try{ known=JSON.parse(localStorage.getItem(LEAD_COLS_KEY)||'[]'); }catch(e){}
+  const cols=new Set(Array.isArray(known)?known:[]);
+  for(const l of fullRows) for(const k of Object.keys(l)) cols.add(k);
+  cols.delete('ConvHistory');
+  const list=[...cols];
+  try{ localStorage.setItem(LEAD_COLS_KEY, JSON.stringify(list)); }catch(e){}
+  return list;
+}
+// Carries transcripts already in memory over onto freshly fetched slim rows, so a refresh never
+// blanks conversation-derived UI (chat previews, bot counts) while hydrateConvHistory catches up.
+function _carryConvHistory(list){
+  const prev=new Map();
+  for(const l of allLeads) if(l && 'ConvHistory' in l) prev.set(l.Id, l.ConvHistory);
+  for(const l of list) if(!('ConvHistory' in l) && prev.has(l.Id)) l.ConvHistory=prev.get(l.Id);
+  return list;
+}
+function _leadsSignature(list){
+  return list.map(l=>l.Id+'|'+(l.UpdatedAt||'')+'|'+(l.LastMsgAt||'')+'|'+(l.Stage||'')).join(',');
+}
+// Leads page re-render for data that just arrived — only used while the page may be showing an
+// empty/partial list from before the first full load, so the 60s poll still never re-renders the
+// list under a rep mid-scroll (same as before this change).
+function _rerenderVisibleLeads(){
+  if($id('pageLeads')?.classList.contains('hidden')) return;
+  if(_leadsViewMode==='pipeline') renderKanban();
+  else if(_leadsViewMode==='list'){ if(_leadsTableView) renderLeadsTable(); else renderLeadsList(); }
+}
+function _cacheLeads(list){
+  // Transcripts are left out: they're what used to push this past sessionStorage's ~5MB quota.
+  try{ sessionStorage.setItem(_CACHE_KEY(),JSON.stringify({ts:Date.now(),list:list.map(({ConvHistory,...rest})=>rest)})); }
+  catch(e){ try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e2){} }
+}
+
 async function loadAll(silent=false, force=false){
+  const gen=++_leadsLoadGen;
+  const hadLeads=allLeads.length>0;
   // 1. Render from cache instantly if available
   try{
     const cached=sessionStorage.getItem(_CACHE_KEY());
     if(cached){
       const {ts,list}=JSON.parse(cached);
       if(list&&list.length){
-        allLeads=list;
+        allLeads=_carryConvHistory(list);
         renderHome();
         pdTryRestore(); // restore power dialer if Android killed the tab during a call
+        if(!hadLeads) _rerenderVisibleLeads();
         if(!silent) $id('hUpdated').textContent='Cached · '+new Date(ts).toLocaleTimeString();
         // If cache is fresh enough, skip network fetch — unless force is set (a live-update event
         // just told us something genuinely changed, so a 5-minute-old cache isn't good enough here
         // even though it normally would be for the plain 60s poll).
-        if(!force && Date.now()-ts < _CACHE_TTL){ return; }
+        if(!force && Date.now()-ts < _CACHE_TTL){ hydrateConvHistory(); return; }
       }
     }
   }catch(e){}
-  // 2. Fetch fresh data in background
+  // 2. Fetch fresh data in background — newest page first, then the rest without transcripts
   try{
-    const url=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})&limit=2000&sort=-Date`;
-    const data=await ncGet(url);
-    allLeads=data.list||[];
-    sessionStorage.setItem(_CACHE_KEY(),JSON.stringify({ts:Date.now(),list:allLeads}));
+    const first=await ncGet(_leadsListUrl(`limit=${LEADS_FIRST_PAGE}`));
+    if(gen!==_leadsLoadGen) return;
+    const head=first.list||[];
+    let list=head;
+    if(head.length>=LEADS_FIRST_PAGE && !first.pageInfo?.isLastPage){
+      // Cold start: show the newest leads now rather than a blank Home/Leads page. With data
+      // already on screen (cache or an earlier load) the partial slice is skipped, so totals
+      // never visibly drop to 100 and climb back.
+      if(!allLeads.length){
+        allLeads=head;
+        renderHome();
+        _rerenderVisibleLeads();
+        if(!silent) $id('hUpdated').textContent='Loading leads…';
+      }
+      const restParams=`limit=${LEADS_FETCH_MAX-LEADS_FIRST_PAGE}&offset=${LEADS_FIRST_PAGE}`;
+      let rest;
+      try{ rest=await ncGet(_leadsListUrl(`${restParams}&fields=${encodeURIComponent(_slimLeadFields(head).join(','))}`)); }
+      catch(e){ if(gen!==_leadsLoadGen) return; rest=await ncGet(_leadsListUrl(restParams)); }
+      if(gen!==_leadsLoadGen) return;
+      // A lead created between the two requests shifts the offset by one — drop the duplicate.
+      const seen=new Set(head.map(l=>l.Id));
+      list=head.concat((rest.list||[]).filter(l=>!seen.has(l.Id)));
+    }
+    allLeads=_carryConvHistory(list);
+    _cacheLeads(allLeads);
     renderHome();
     pdTryRestore(); // restore power dialer if Android killed the tab during a call
+    if(!hadLeads) _rerenderVisibleLeads();
     $id('hUpdated').textContent='Updated '+new Date().toLocaleTimeString();
+    // Transcripts carried over from the last hydrate go stale once anything changed (a new message
+    // moves LastMsgAt/UpdatedAt), so refetch them all in that case — same freshness as the old
+    // single request, just no longer blocking the first render.
+    hydrateConvHistory(_convSig!=='' && _convSig!==_leadsSignature(allLeads));
   }catch(e){console.error(e);}
+}
+
+// Fills ConvHistory in on every lead that doesn't have it yet (or on all of them, with refresh).
+// Shared promise, so concurrent callers never trigger a second copy of the same big request; the
+// sequence check stops a slow older response from overwriting a newer one.
+let _convSig='', _convSeq=0, _convApplied=0;
+function hydrateConvHistory(refresh=false){
+  if(!refresh && allLeads.every(l=>'ConvHistory' in l)) return Promise.resolve();
+  if(_convHydrating && !refresh) return _convHydrating;
+  const seq=++_convSeq;
+  const p=(async()=>{
+    try{
+      const data=await ncGet(_leadsListUrl(`limit=${LEADS_FETCH_MAX}&fields=Id,ConvHistory`));
+      if(seq<_convApplied) return;
+      _convApplied=seq;
+      const byId=new Map((data.list||[]).map(l=>[l.Id, l.ConvHistory??null]));
+      for(const l of allLeads) if(byId.has(l.Id)) l.ConvHistory=byId.get(l.Id);
+      _convSig=_leadsSignature(allLeads);
+      renderHome(); // bot/message counts, trust badges and predictions read ConvHistory
+      if(_convSearchActive) _rerenderVisibleLeads();
+    }catch(e){console.error(e);}
+    finally{ if(_convHydrating===p) _convHydrating=null; }
+  })();
+  _convHydrating=p;
+  return p;
+}
+// One lead's transcript, for views that need it right now (lead detail, AI summary/coach) rather
+// than waiting on the background hydrate. No-op when it's already loaded.
+async function ensureLeadConvHistory(lead){
+  if(!lead || 'ConvHistory' in lead) return;
+  try{
+    const r=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=ConvHistory`);
+    if(!('ConvHistory' in lead)) lead.ConvHistory=r?.ConvHistory??null;
+  }catch(e){}
 }
 
 /* ── REAL-TIME UPDATES ──
@@ -8455,15 +8574,12 @@ function openDetail(id){
   // calls
   renderDetailCalls(lead);
 
-  // conversation
-  let history=[]; try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-  const thread=$id('detailThread');
-  thread.innerHTML=history.length?history.map(m=>`
-    <div style="display:flex;flex-direction:column;align-items:${m.role==='user'?'flex-start':'flex-end'}">
-      <div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${m.role==='user'?'#E1F5EA':'var(--accent)'};color:${m.role==='user'?'var(--ink)':'#fff'}">${(m.content||'').replace(/\n/g,'<br>')}</div>
-    </div>`).join('')
-    :'<div style="color:var(--muted);font-size:13px;text-align:center">No conversation yet</div>';
-  setTimeout(()=>thread.scrollTop=thread.scrollHeight,50);
+  // conversation — older leads arrive without their transcript (see hydrateConvHistory), so
+  // fetch just this one if it isn't in memory yet and redraw the parts that read it.
+  renderDetailThread(lead);
+  if(!('ConvHistory' in lead)){
+    ensureLeadConvHistory(lead).then(()=>{ if(currentLead===lead){ renderDetailThread(lead); renderWaReply(lead); } });
+  }
 
   $id('detailSummary').style.display='none';
   $id('dealCoachCard').style.display='none';
@@ -8476,6 +8592,18 @@ function openDetail(id){
   renderLeadProfile(lead);
   renderWaReply(lead);
   openLeadDetailModal();
+}
+
+function renderDetailThread(lead){
+  let history=[]; try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+  const thread=$id('detailThread');
+  thread.innerHTML=history.length?history.map(m=>`
+    <div style="display:flex;flex-direction:column;align-items:${m.role==='user'?'flex-start':'flex-end'}">
+      <div style="max-width:80%;padding:8px 12px;border-radius:12px;font-size:13px;background:${m.role==='user'?'#E1F5EA':'var(--accent)'};color:${m.role==='user'?'var(--ink)':'#fff'}">${(m.content||'').replace(/\n/g,'<br>')}</div>
+    </div>`).join('')
+    :('ConvHistory' in lead)?'<div style="color:var(--muted);font-size:13px;text-align:center">No conversation yet</div>'
+    :'<div style="color:var(--muted);font-size:13px;text-align:center">Loading conversation…</div>';
+  setTimeout(()=>thread.scrollTop=thread.scrollHeight,50);
 }
 
 // On the Leads page, the detail panel docks to the side of the list instead of taking over the
@@ -9254,7 +9382,7 @@ async function claimLeadIfUnowned(leadId, activity){
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead||lead.Owner) return;
   try{
-    let hist=[]; try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
+    const hist=await freshConvHistory(lead);
     hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity||'action'}`,ts:new Date().toISOString()});
     const convJson=JSON.stringify(hist.slice(-40));
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,Owner:myEmail,ConvHistory:convJson});
@@ -9367,6 +9495,7 @@ async function generateSummary(){
   if(btn){btn.disabled=true;btn.textContent='⏳ Generating…';}
   card.style.display='none';
   try{
+    await ensureLeadConvHistory(currentLead);
     let history=[]; try{history=JSON.parse(currentLead.ConvHistory||'[]');}catch(e){}
     let qa={}; try{qa=JSON.parse(currentLead.QualAnswers||'{}');}catch(e){}
     const prompt=`Summarise this WhatsApp sales conversation for the sales team.\nLead: ${currentLead.Name||'Unknown'} | Stage: ${currentLead.Stage} | Score: ${currentLead.Score||'Cold'}\nQual Answers: ${JSON.stringify(qa)}\n\nConversation:\n${history.map(m=>(m.role==='user'?'Customer: ':'Bot: ')+m.content).join('\n')}\n\nReturn ONLY valid JSON: {name,interest_level,key_points,recommended_action,booking_time}`;
@@ -11959,6 +12088,9 @@ async function freshConvHistory(lead){
     const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${lead.Id}?fields=ConvHistory`);
     return JSON.parse(fresh?.ConvHistory||'[]');
   }catch(e){
+    // A lead from the slim list load has no local transcript at all — falling back to [] here
+    // would PATCH the whole conversation away, so fail the (best-effort) logging instead.
+    if(!('ConvHistory' in lead)) throw e;
     try{return JSON.parse(lead.ConvHistory||'[]');}catch(e2){return [];}
   }
 }
@@ -15563,6 +15695,7 @@ async function generateDealCoach(){
   const card=$id('dealCoachCard');
   btn.disabled=true;btn.textContent='Analyzing…';
   try{
+    await ensureLeadConvHistory(lead);
     let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
     let qa={};try{qa=JSON.parse(lead.QualAnswers||'{}');}catch(e){}
     let services=[];try{services=JSON.parse(clientRecord?.services||'[]');}catch(e){}
@@ -15928,6 +16061,7 @@ async function triggerKbRefresh(){
 
 function toggleConvSearch(){
   _convSearchActive=!_convSearchActive;
+  if(_convSearchActive) hydrateConvHistory();
   const btn=$id('convSearchBtn');
   btn.style.background=_convSearchActive?'var(--accent)':'';
   btn.style.color=_convSearchActive?'#fff':'';
