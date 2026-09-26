@@ -11973,10 +11973,10 @@ async function handleEngineTrack(request, env){
 
   let history=[];
   try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
-  if(incomingText) history.push({role:'user', content:incomingText});
-  if(replyText) history.push({role:'assistant', content:replyText});
-
   const now=new Date().toISOString();
+  if(incomingText) history.push({role:'user', content:incomingText, ts:now});
+  if(replyText) history.push({role:'assistant', content:replyText, ts:now});
+
   const upsertBody={ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now, Date:lead?.Date||now};
   if(body.name && !lead?.Name) upsertBody.Name=String(body.name).trim().slice(0,140);
 
@@ -17160,7 +17160,7 @@ async function handleNativeFormEndpoint(request, env){
     const nextStage=firstAction.next||firstStage;
 
     const history=(state.history||[]).slice();
-    history.push({role:'assistant', content:sentText});
+    history.push({role:'assistant', content:sentText, ts:new Date().toISOString()});
     const leadBody={
       ClientId:String(clientId), Phone:flowMeta.phone||state.phone||'', Name:state.name||'',
       ConversationID:flowMeta.convId||state.lead?.ConversationID||null,
@@ -17497,7 +17497,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   const isHuman=routing.route==='human';
 
   const history=(state.history||[]).slice();
-  if(userText) history.push({role:'user', content:routing.historyUserText||userText,
+  // ts on every entry — the Chats page renders each bubble's time from it ("Invalid Date" without).
+  const _histTs=new Date().toISOString();
+  if(userText) history.push({role:'user', content:routing.historyUserText||userText, ts:_histTs,
     ...(routing.userMedia?{media:routing.userMedia}:{}),
     ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
   // options — only present on turns that actually offered the customer tappable choices via
@@ -17510,7 +17512,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // primary inline photo, not every supplementary image/audio/video/pdf a turn might also send
   // (engineMaybeSendProductMedia and friends run after this history entry is already written) —
   // every other reply keeps the exact same {role,content} shape ConvHistory has always had.
-  if(reply) history.push({role:'assistant', content:reply,
+  if(reply) history.push({role:'assistant', content:reply, ts:_histTs,
     ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{}),
     ...(routing.media?{media:routing.media}:{})});
 
