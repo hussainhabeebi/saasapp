@@ -105,6 +105,28 @@ tbody tr:hover{background:var(--bg)}
 .icon-btn:hover{background:var(--bg)}
 .icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
 
+/* FLOW EDITOR */
+.flow-section{margin-bottom:28px}
+.flow-section-title{font-family:var(--disp);font-size:12px;font-weight:700;color:var(--accent-ink);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;padding-bottom:7px;border-bottom:2px solid var(--accent-soft)}
+.flow-option-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.flow-option-row input{border:1.5px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--body);font-size:13px;color:var(--ink);background:var(--bg);width:100%}
+.flow-option-row input:focus{outline:none;border-color:var(--accent);background:#fff}
+.flow-col-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+@media(max-width:600px){.flow-option-row{grid-template-columns:1fr auto}}
+/* TOGGLE SWITCH */
+.flow-toggle-row{display:flex;align-items:center;gap:16px;margin-bottom:20px;padding:14px 16px;background:var(--accent-soft);border-radius:10px;border:1px solid var(--ls)}
+.toggle-text{flex:1}
+.toggle-text strong{font-family:var(--disp);font-size:13px;font-weight:700;color:var(--accent-ink);display:block}
+.toggle-text small{font-size:12px;color:var(--muted)}
+.toggle-wrap{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+.toggle-wrap input{opacity:0;width:0;height:0;position:absolute}
+.toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--ls);border-radius:24px;transition:.2s}
+.toggle-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.toggle-wrap input:checked+.toggle-slider{background:var(--accent)}
+.toggle-wrap input:checked+.toggle-slider:before{transform:translateX(20px)}
+.flow-editor-body{transition:opacity .2s}
+.flow-editor-body.dimmed{opacity:.4;pointer-events:none;user-select:none}
+
 /* MODAL */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(12,10,30,.45);z-index:100;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.active{display:flex}
@@ -128,6 +150,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 .loading-row td{text-align:center;padding:30px;color:var(--muted)}
 .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:10px}
+
+/* LAYOUT WRAPPER */
+#layout{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+
+/* DESKTOP LEFT SIDEBAR */
+@media(min-width:768px){
+  #layout{flex-direction:row}
+  #tabs{flex-direction:column;width:170px;flex-shrink:0;border-bottom:none;border-right:1px solid var(--line);padding:10px 0;overflow-x:hidden;overflow-y:auto}
+  #tabs .tab{border-bottom:none;border-left:3px solid transparent;margin-bottom:0;margin-left:-1px;text-align:left;padding:10px 16px;white-space:normal}
+  #tabs .tab.active{border-bottom-color:transparent;border-left-color:var(--accent);background:var(--accent-soft);color:var(--accent-ink)}
+  main{overflow-y:auto;flex:1}
+  .inner{max-width:none}
+}
 </style>
 </head>
 <body>
@@ -139,6 +174,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="hback" onclick="window.location.href='https://app.leadvyne.com/dashboard.html?client='+clientId">← Back to CRM</button>
 </header>
 
+<div id="layout">
 <div id="tabs">
   <button class="tab active" data-tab="products" onclick="showTab('products')">📦 Products</button>
   <button class="tab" data-tab="categories" onclick="showTab('categories')">🏷️ Categories</button>
@@ -147,6 +183,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   <button class="tab" data-tab="orders" onclick="showTab('orders')">🧾 Orders</button>
   <button class="tab" data-tab="shopify" onclick="showTab('shopify')">🛍️ Shopify</button>
   <button class="tab" data-tab="settings" onclick="showTab('settings')">⚙️ Settings</button>
+  <button class="tab" id="tabFlowBtn" data-tab="flow" onclick="showTab('flow')">🔀 Flow</button>
 </div>
 
 <main>
@@ -323,6 +360,23 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <!-- SETTINGS TAB -->
 <div id="tabSettings" class="page">
   <div class="card">
+    <div class="card-title">Product Search — What to Share</div>
+    <div class="s-sec">
+      <span class="s-lbl">When the bot identifies a matched product, what should it share?</span>
+      <select class="s-input" id="cfgSearchShareScope">
+        <option value="">Current (Default) — keeps your existing behaviour unchanged</option>
+        <option value="product">Product only — share matched product details only; suggest browsing a related category if no match found</option>
+        <option value="product_and_category">Product + Category — share product + category photos when matched; suggest category if no match found</option>
+      </select>
+      <div class="s-hint">Default keeps the existing behaviour: the bot shares the matched product's details and photos when a product is identified, and sends the category's photos when no specific product is found but the customer names a category. "Product only" strips back to just the product — no category photos in either case; if no product is found but a relevant category is detected, the bot suggests browsing that category by name instead. "Product + Category" goes the other way: when a product is matched, the bot also sends the category's photos alongside it, and still suggests the category by name when no match is found. In all modes, the once-per-customer-per-category dedup applies so category content never repeats.</div>
+    </div>
+    <div class="s-row">
+      <button class="save-btn" onclick="saveSearchShareScope()">Save</button>
+      <span class="save-msg" id="searchShareScopeMsg"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Order Link on Product Questions</div>
     <div class="s-sec">
       <span class="s-lbl">Share the checkout link when a customer asks about size/color/stock/price</span>
@@ -452,6 +506,293 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- FLOW TAB -->
+<div id="tabFlow" class="page">
+  <div class="card">
+    <div class="card-title-row">
+      <div class="card-title">👶 Baby Care — Custom Order Flow</div>
+      <div class="card-actions">
+        <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Defaults</button>
+        <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+        <span class="save-msg" id="flowSaveMsg"></span>
+      </div>
+    </div>
+    <label class="flow-toggle-row" style="cursor:pointer">
+      <div class="toggle-text">
+        <strong>Enable Ecom Flow</strong>
+        <small>When off, the bot skips this custom order flow and responds normally for all customers</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="flowEnabledChk" onchange="onFlowEnabledChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div class="s-hint" style="margin-bottom:22px">Edit every message and button label your bot sends during the custom baby-set ordering conversation. Changes take effect immediately on the next customer message.</div>
+
+    <div id="flowEditorBody" class="flow-editor-body">
+    <div class="flow-section">
+      <div class="flow-section-title">👋 Welcome</div>
+      <div class="s-sec">
+        <span class="s-lbl">New visitor message</span>
+        <textarea class="s-input" id="flWelcomeNew" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Returning visitor message</span>
+        <textarea class="s-input" id="flWelcomeReturn" rows="2" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🍼 Step 1 — Fabric / Quality Selection</div>
+      <div class="s-sec">
+        <span class="s-lbl">Intro message <span style="font-weight:400;text-transform:none;font-size:11px">(supports *bold* WhatsApp formatting)</span></span>
+        <textarea class="s-input" id="flQualityIntro" rows="6" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px">
+          <div><span class="s-lbl">Affordable — button label</span><input class="s-input" id="flAffordableLabel" type="text"></div>
+          <div><span class="s-lbl">Affordable — name in order summary</span><input class="s-input" id="flAffordableName" type="text"></div>
+          <div><span class="s-lbl">Premium — button label</span><input class="s-input" id="flPremiumLabel" type="text"></div>
+          <div><span class="s-lbl">Premium — name in order summary</span><input class="s-input" id="flPremiumName" type="text"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎨 Step 2 — Colour Options <span style="font-weight:400;font-size:11px;opacity:.65">(max 4 — WhatsApp button limit)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label is what the customer taps. "Name in order" is saved in the order summary. Leave it blank to ask for free-text input (e.g. an "Other colour" option).</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flColorRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flColorRows','BABY_COLOR_')">+ Add Colour</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🌸 Step 3 — Print Themes <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and the theme name saved in the order. Leave name blank for a "Custom / describe your own" option.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flThemeRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flThemeRows','BABY_THEME_')">+ Add Theme</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">🎀 Step 4 — Add-ons <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+      <div class="s-hint" style="margin-bottom:10px">Button label and add-on name. Include a "No add-ons" option so customers can skip this step.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px;padding:0 2px">
+        <span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span>
+      </div>
+      <div id="flAddonRows"></div>
+      <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('flAddonRows','BABY_ADDON_')">+ Add Add-on</button>
+    </div>
+
+    <div class="flow-section">
+      <div class="flow-section-title">📦 Delivery &amp; Confirmation Messages</div>
+      <div class="s-sec">
+        <span class="s-lbl">Delivery details prompt</span>
+        <textarea class="s-input" id="flDeliveryPrompt" rows="5" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Order confirmed message</span>
+        <textarea class="s-input" id="flOrderConfirmed" rows="3" style="resize:vertical;white-space:normal"></textarea>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Cancel message</span>
+        <input class="s-input" id="flCancelMsg" type="text">
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Talk-to-team message</span>
+        <input class="s-input" id="flTalkMsg" type="text">
+      </div>
+    </div>
+
+    <div class="s-row">
+      <button class="save-btn" onclick="saveFlow()">Save Flow</button>
+      <button class="save-btn sec" onclick="resetFlowDefaults()">↺ Reset Defaults</button>
+      <span class="save-msg" id="flowSaveMsg2"></span>
+    </div>
+    </div><!-- end flowEditorBody -->
+  </div>
+
+  <!-- CUSTOMER-SPECIFIC FLOWS CARD -->
+  <div class="card" style="margin-top:18px">
+    <div class="card-title-row">
+      <div class="card-title">👤 Customer-Specific Flows</div>
+      <div class="card-actions">
+        <button class="save-btn sec" onclick="openCustomerFlowModal()">+ Add Customer Flow</button>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:16px">Override the flow for individual customers — enable or disable it for them regardless of the global toggle, and optionally give them custom messages and options.</div>
+    <div id="customerFlowsList"></div>
+  </div>
+
+  <!-- IMAGE SEND SETTINGS CARD -->
+  <div class="card" style="margin-top:18px">
+    <div class="card-title-row">
+      <div class="card-title">🖼️ Image Send Settings</div>
+      <div class="card-actions">
+        <button class="save-btn" onclick="saveImageSettings()">Save</button>
+        <span class="save-msg" id="imgSettingsSaveMsg"></span>
+      </div>
+    </div>
+    <div class="s-hint" style="margin-bottom:18px">Control how often product images and catalog links are re-sent. All settings are off by default — existing behaviour is unchanged when disabled.</div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Fresh Session Reset</strong>
+        <small>Always send the full image bundle again when a customer returns after a long gap of inactivity, regardless of the 5-hour window</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="freshSessionChk" onchange="onFreshSessionChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="freshSessionOptions" style="display:none;margin-bottom:20px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Inactivity gap (hours)</span>
+        <input class="s-input" id="freshSessionHours" type="number" min="1" max="168" placeholder="24" style="max-width:120px">
+        <div class="s-hint">Reset the image tier if the customer was silent for at least this many hours. Default: 24.</div>
+      </div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Per-Customer Image Window Override</strong>
+        <small>Set a custom image re-send window per customer (in Customer-Specific Flows below) or set a global override here</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="perWindowChk" onchange="onPerWindowChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="perWindowOptions" style="display:none;margin-bottom:20px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Global image window (hours)</span>
+        <input class="s-input" id="globalImageWindowHours" type="number" min="0.5" max="168" step="0.5" placeholder="5 (default)" style="max-width:140px">
+        <div class="s-hint">Overrides the default 5-hour window for all customers. Leave blank to keep 5 hours. Per-customer values (set in Customer-Specific Flows) take priority.</div>
+      </div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
+        <strong>Catalog Link Throttle (Baby Care)</strong>
+        <small>Prevent the catalog link from sending repeatedly if a customer taps the Catalog button multiple times in quick succession</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="catalogThrottleChk" onchange="onCatalogThrottleChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="catalogThrottleOptions" style="display:none;margin-bottom:4px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Cooldown (minutes)</span>
+        <input class="s-input" id="catalogThrottleMins" type="number" min="1" max="60" placeholder="10" style="max-width:120px">
+        <div class="s-hint">How long before the same customer can receive the catalog link again. Default: 10 minutes.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CUSTOMER FLOW MODAL -->
+<div class="modal-overlay" id="cfModalOverlay" onclick="if(event.target===this) closeCfModal()">
+  <div class="modal-card" style="max-width:640px">
+    <div class="modal-title" id="cfModalTitle">Add Customer Flow</div>
+    <div class="modal-grid" style="grid-template-columns:1fr 1fr">
+      <div class="s-sec">
+        <span class="s-lbl">Phone Number *</span>
+        <input class="s-input" id="cfPhone" type="tel" placeholder="e.g. 919876543210">
+        <div class="s-hint">Digits only, no spaces or dashes (e.g. 919876543210)</div>
+      </div>
+      <div class="s-sec">
+        <span class="s-lbl">Customer Name / Label</span>
+        <input class="s-input" id="cfLabel" type="text" placeholder="e.g. John Doe">
+      </div>
+    </div>
+    <div style="margin-bottom:20px">
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:0">
+        <div class="toggle-text">
+          <strong>Enable Flow for this Customer</strong>
+          <small>Overrides the global toggle for this customer only</small>
+        </div>
+        <div class="toggle-wrap">
+          <input type="checkbox" id="cfEnabledChk">
+          <span class="toggle-slider"></span>
+        </div>
+      </label>
+    </div>
+    <div id="cfImageWindowWrap" style="display:none;margin-bottom:14px">
+      <div class="s-sec" style="margin-bottom:0">
+        <span class="s-lbl">Custom Image Window (hours)</span>
+        <input class="s-input" id="cfImageWindowHours" type="number" min="0.5" max="168" step="0.5" placeholder="Uses global setting">
+        <div class="s-hint">Override the image re-send window for this customer only. Leave blank to use the global setting. Only active when "Per-Customer Image Window Override" is enabled above.</div>
+      </div>
+    </div>
+    <div style="margin-bottom:14px">
+      <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:0">
+        <div class="toggle-text">
+          <strong>Custom Flow Messages</strong>
+          <small>Use different messages and options for this customer instead of the global flow</small>
+        </div>
+        <div class="toggle-wrap">
+          <input type="checkbox" id="cfCustomFlowChk" onchange="toggleCfCustomFields()">
+          <span class="toggle-slider"></span>
+        </div>
+      </label>
+    </div>
+    <div id="cfCustomFields" style="display:none">
+      <div class="flow-section" style="margin-top:14px">
+        <div class="flow-section-title">👋 Welcome</div>
+        <div class="s-sec"><span class="s-lbl">New visitor message</span><textarea class="s-input" id="cfWelcomeNew" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Returning visitor message</span><textarea class="s-input" id="cfWelcomeReturn" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🍼 Step 1 — Fabric / Quality</div>
+        <div class="s-sec"><span class="s-lbl">Intro message</span><textarea class="s-input" id="cfQualityIntro" rows="5" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+            <div><span class="s-lbl">Affordable — button label</span><input class="s-input" id="cfAffordableLabel" type="text"></div>
+            <div><span class="s-lbl">Affordable — name in order</span><input class="s-input" id="cfAffordableName" type="text"></div>
+            <div><span class="s-lbl">Premium — button label</span><input class="s-input" id="cfPremiumLabel" type="text"></div>
+            <div><span class="s-lbl">Premium — name in order</span><input class="s-input" id="cfPremiumName" type="text"></div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🎨 Step 2 — Colours <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfColorRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfColorRows','BABY_COLOR_')">+ Add Colour</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🌸 Step 3 — Themes <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfThemeRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfThemeRows','BABY_THEME_')">+ Add Theme</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">🎀 Step 4 — Add-ons <span style="font-weight:400;font-size:11px;opacity:.65">(max 4)</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:4px"><span class="flow-col-lbl">Button label</span><span class="flow-col-lbl">Name in order</span><span></span></div>
+        <div id="cfAddonRows"></div>
+        <button class="save-btn sec" style="margin-top:8px;font-size:12px" onclick="addFlowOptionRow('cfAddonRows','BABY_ADDON_')">+ Add Add-on</button>
+      </div>
+      <div class="flow-section">
+        <div class="flow-section-title">📦 Delivery &amp; Confirmation</div>
+        <div class="s-sec"><span class="s-lbl">Delivery details prompt</span><textarea class="s-input" id="cfDeliveryPrompt" rows="4" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Order confirmed message</span><textarea class="s-input" id="cfOrderConfirmed" rows="2" style="resize:vertical;white-space:normal"></textarea></div>
+        <div class="s-sec"><span class="s-lbl">Cancel message</span><input class="s-input" id="cfCancelMsg" type="text"></div>
+        <div class="s-sec"><span class="s-lbl">Talk-to-team message</span><input class="s-input" id="cfTalkMsg" type="text"></div>
+      </div>
+    </div>
+    <div class="s-row" style="margin-top:6px">
+      <button class="save-btn" onclick="saveCustomerFlow()">Save</button>
+      <button class="save-btn sec" onclick="closeCfModal()">Cancel</button>
+      <span class="save-msg" id="cfSaveMsg"></span>
+    </div>
+  </div>
+</div>
+
 <!-- ADD/EDIT PRODUCT MODAL -->
 <div class="modal-overlay" id="productModalOverlay" onclick="if(event.target===this) closeProductModal()">
   <div class="modal-card">
@@ -478,10 +819,15 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <option value="general">General</option>
           <option value="cosmetics">Cosmetics</option>
           <option value="haircare">Haircare</option>
+          <option value="baby_care">Baby Care &amp; Apparel</option>
         </select>
       </div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Color</span><input class="s-input" id="pmColor" type="text" placeholder="e.g. Black"></div>
       <div class="s-sec" data-style-group="fashion_garments"><span class="s-lbl">Size</span><input class="s-input" id="pmSize" type="text" placeholder="e.g. M, 42, 10ml"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Age Group</span><input class="s-input" id="pmAgeGroup" type="text" placeholder="e.g. 0-6 months, 6-12 months"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Fabric Type</span><input class="s-input" id="pmFabricType" type="text" placeholder="e.g. Single Jersey (Affordable), Interlock (Premium)"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Set Includes</span><input class="s-input" id="pmSetIncludes" type="text" placeholder="e.g. Top, Skirt, Cap, Boots, Hand Socks"></div>
+      <div class="s-sec" data-style-group="baby_care"><span class="s-lbl">Custom Accent Colors</span><input class="s-input" id="pmAccentColors" type="text" placeholder="e.g. Pink, Blue, Mint Green"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Shade</span><input class="s-input" id="pmShade" type="text" placeholder="e.g. Rose Nude"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Skin Type</span><input class="s-input" id="pmSkinType" type="text" placeholder="e.g. Oily, Dry, Combination"></div>
       <div class="s-sec" data-style-group="cosmetics"><span class="s-lbl">Expiry Date</span><input class="s-input" id="pmExpiryDate" type="text" placeholder="e.g. 2027-03"></div>
@@ -511,6 +857,11 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
         <div class="s-hint" id="pmVideoSizeWarning" style="display:none"></div>
       </div>
       <div class="s-sec"><span class="s-lbl">PDF Link</span><input class="s-input" id="pmPdfUrl" type="url" placeholder="Google Drive share link"></div>
+      <div class="s-sec">
+        <span class="s-lbl">Photoshoot Folder Link (optional)</span>
+        <input class="s-input" id="pmPhotoshootFolder" type="url" placeholder="https://drive.google.com/drive/folders/...">
+        <div class="s-hint">Google Drive folder with this product's photoshoot images, shared as "Anyone with the link can view". When a customer mentions this product's name, 5 random images from the folder are sent in addition to the product images above.</div>
+      </div>
       <div class="s-sec" id="pmShopifyUrlWrap" style="display:none"><span class="s-lbl">Shopify Product Link</span><input class="s-input" id="pmShopifyUrl" type="url" placeholder="https://yourstore.myshopify.com/products/..."></div>
       <div class="s-sec">
         <span class="s-lbl">Product Link (optional)</span>
@@ -681,6 +1032,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
 </div><!-- /inner -->
 </main>
+</div><!-- /layout -->
 
 <script>
 // All NocoDB access goes through the Worker's /ecom/* routes — the master
@@ -696,6 +1048,7 @@ let clientId = params.get('client') || '';
 // page's own header (brand, chip, "Back to CRM" button) would just be a redundant duplicate.
 const isEmbedded = params.get('embed') === '1';
 let clientRecord = null;
+let botConfig = {};
 let ecomTableIds = {};
 
 const PRODUCT_FIELDS = [
@@ -715,6 +1068,10 @@ const PRODUCT_FIELDS = [
   { key:'brand',       label:'Brand' },
   { key:'variant',     label:'Variant' },
   { key:'warranty_period', label:'Warranty' },
+  { key:'age_group',     label:'Age Group' },
+  { key:'fabric_type',   label:'Fabric Type' },
+  { key:'set_includes',  label:'Set Includes' },
+  { key:'accent_colors', label:'Accent Colors' },
   { key:'shopify_product_url', label:'Shopify Product Link' },
   { key:'product_link', label:'Product Link' },
   { key:'price',       label:'Price' },
@@ -726,6 +1083,7 @@ const PRODUCT_FIELDS = [
   { key:'audio_url',      label:'Audio Note Link' },
   { key:'video_url',      label:'Video Link' },
   { key:'pdf_url',        label:'PDF Link' },
+  { key:'photoshoot_folder_url', label:'Photoshoot Folder Link' },
   { key:'choice_options', label:'Choice Options' }
 ];
 const ORDER_FIELDS = [
@@ -786,6 +1144,7 @@ async function init() {
   clientRecord = await res.json();
   if (clientRecord.error) { alert(clientRecord.error); return; }
   try { ecomTableIds = JSON.parse(clientRecord.ecom_table_ids || '{}'); } catch(e) { ecomTableIds = {}; }
+  try { botConfig = JSON.parse(clientRecord.bot_config || '{}'); } catch(e) { botConfig = {}; }
 
   // Populate settings
   // Default table IDs if not yet saved in client record
@@ -797,6 +1156,7 @@ async function init() {
   if (clientRecord.ecom_orders_sheet)   document.getElementById('cfgOrdersSheet').value   = clientRecord.ecom_orders_sheet;
   if (clientRecord.review_link)         document.getElementById('cfgReviewLink').value    = clientRecord.review_link;
   if (clientRecord.support_phone)       document.getElementById('cfgSupportPhone').value  = clientRecord.support_phone;
+  document.getElementById('cfgSearchShareScope').value = ['product','product_and_category'].includes(clientRecord.ecom_search_share_scope) ? clientRecord.ecom_search_share_scope : '';
   document.getElementById('cfgLinkOnEnquiry').value = clientRecord.ecom_link_on_enquiry === 'Yes' ? 'Yes' : 'No';
   document.getElementById('cfgOrderLinkEnabled').value = ['No','Human'].includes(clientRecord.ecom_order_link_enabled) ? clientRecord.ecom_order_link_enabled : 'Yes';
   if (!clientRecord.wa_display_phone && !clientRecord.support_phone) {
@@ -860,6 +1220,8 @@ function showTab(name) {
   document.getElementById('tabOrders').classList.toggle('active', name === 'orders');
   document.getElementById('tabShopify').classList.toggle('active', name === 'shopify');
   document.getElementById('tabSettings').classList.toggle('active', name === 'settings');
+  document.getElementById('tabFlow').classList.toggle('active', name === 'flow');
+  if (name === 'flow' && !_flowLoaded) loadFlow();
 }
 
 // ── PRODUCTS ──────────────────────────────────────
@@ -999,11 +1361,11 @@ async function bulkDeleteProducts() {
 }
 
 // ── ADD / EDIT / DELETE PRODUCT ───────────────────
-const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare' };
+const PRODUCT_STYLE_LABELS = { fashion_garments:'Fashion & Garments', general:'General', cosmetics:'Cosmetics', haircare:'Haircare', baby_care:'Baby Care & Apparel' };
 // Fields specific to the non-default styles (Cosmetics/Haircare/General) — see onProductStyleChange
 // and the data-style-group attributes on their <div class="s-sec"> in the modal markup above.
-const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod'];
-const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
+const PRODUCT_STYLE_FIELDS = ['pmShade','pmSkinType','pmExpiryDate','pmHairType','pmConcern','pmVolumeMl','pmIngredient','pmBrand','pmVariant','pmWarrantyPeriod','pmAgeGroup','pmFabricType','pmSetIncludes','pmAccentColors'];
+const PRODUCT_MODAL_FIELDS = ['pmName','pmShortLabel','pmChoiceOptions','pmSku','pmCategory','pmColor','pmSize','pmPrice','pmStock','pmImage','pmImage2','pmImage3','pmImage4','pmImage5','pmAudioUrl','pmVideoUrl','pmPdfUrl','pmPhotoshootFolder','pmDescription','pmShopifyUrl','pmProductLink', ...PRODUCT_STYLE_FIELDS];
 
 function openAddProductModal() {
   if (!ecomTableIds.products) { alert('Set the Products Table ID in Settings first.'); return; }
@@ -1046,6 +1408,10 @@ function openEditProductModal(id) {
   document.getElementById('pmBrand').value = p.brand || '';
   document.getElementById('pmVariant').value = p.variant || '';
   document.getElementById('pmWarrantyPeriod').value = p.warranty_period || '';
+  document.getElementById('pmAgeGroup').value = p.age_group || '';
+  document.getElementById('pmFabricType').value = p.fabric_type || '';
+  document.getElementById('pmSetIncludes').value = p.set_includes || '';
+  document.getElementById('pmAccentColors').value = p.accent_colors || '';
   document.getElementById('pmShopifyUrl').value = p.shopify_product_url || '';
   document.getElementById('pmProductLink').value = p.product_link || '';
   document.getElementById('pmPrice').value = p.price ?? '';
@@ -1060,6 +1426,7 @@ function openEditProductModal(id) {
   document.getElementById('pmAudioUrl').value = p.audio_url || '';
   document.getElementById('pmVideoUrl').value = p.video_url || '';
   document.getElementById('pmPdfUrl').value = p.pdf_url || '';
+  document.getElementById('pmPhotoshootFolder').value = p.photoshoot_folder_url || '';
   document.getElementById('pmDescription').value = p.description || '';
   document.getElementById('productModalTitle').textContent = 'Edit Product';
   document.getElementById('productModalSaveBtn').textContent = 'Save Changes';
@@ -1153,6 +1520,10 @@ async function submitProductForm() {
     brand: document.getElementById('pmBrand').value.trim(),
     variant: document.getElementById('pmVariant').value.trim(),
     warranty_period: document.getElementById('pmWarrantyPeriod').value.trim(),
+    age_group: document.getElementById('pmAgeGroup').value.trim(),
+    fabric_type: document.getElementById('pmFabricType').value.trim(),
+    set_includes: document.getElementById('pmSetIncludes').value.trim(),
+    accent_colors: document.getElementById('pmAccentColors').value.trim(),
     shopify_product_url: document.getElementById('pmShopifyUrl').value.trim(),
     product_link: document.getElementById('pmProductLink').value.trim(),
     price: parseFloat(document.getElementById('pmPrice').value) || 0,
@@ -1167,6 +1538,7 @@ async function submitProductForm() {
     audio_url: document.getElementById('pmAudioUrl').value.trim(),
     video_url: document.getElementById('pmVideoUrl').value.trim(),
     pdf_url: document.getElementById('pmPdfUrl').value.trim(),
+    photoshoot_folder_url: document.getElementById('pmPhotoshootFolder').value.trim(),
     description: document.getElementById('pmDescription').value.trim()
   };
   body.client_id = clientId;
@@ -1247,10 +1619,11 @@ function downloadProductTemplate() {
   // One sample row per style, so importers see how the style-specific columns line up — every
   // row leaves the columns that don't apply to its own style blank.
   const samples = [
-    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
-    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
-    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
-    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Classic T-Shirt','TSHIRT-BLK-M','Apparel','fashion_garments','Black','M','','','','','','','','','','','','','','','19.99','USD','25','active','100% cotton crew neck','https://example.com/images/tshirt-black-m.jpg','','',''],
+    ['Wireless Mouse','MOUSE-BLK','Electronics','general','','','','','','','','','','LogiTech','Black - Wired','1 Year','','','','','14.99','USD','40','active','Ergonomic wired mouse','https://example.com/images/mouse.jpg','','',''],
+    ['Matte Lipstick','LIP-ROSE-01','Makeup','cosmetics','','','Rose Nude','Combination','2027-03','','','5ml','Vitamin E','','','','','','','','9.99','USD','60','active','Long-lasting matte finish','https://example.com/images/lipstick.jpg','','',''],
+    ['Anti-Dandruff Shampoo','HAIR-SH-200','Shampoo','haircare','','','','','','All','Dandruff','200ml','Tea Tree Oil','','','','','','','','8.49','USD','35','active','Gentle daily-use shampoo','https://example.com/images/shampoo.jpg','','',''],
+    ['Princess Baby Set','BABY-PINK-01','Baby Sets','baby_care','','','','','','','','','','','','','0-6 months','Single Jersey (Affordable)','Top, Skirt, Cap','Pink, Mint Green','650','INR','20','active','Custom 0-6 month baby set — white base with floral print accents','https://example.com/images/baby-pink-set.jpg','','',''],
   ];
   const csv = [headers.join(','), ...samples.map(row => row.map(csvCell).join(','))].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -2209,6 +2582,15 @@ async function saveTableIds() {
   } catch (e) { showMsg('tableIdsMsg', 'Error: ' + e.message, 6000); }
 }
 
+async function saveSearchShareScope() {
+  const value = document.getElementById('cfgSearchShareScope').value;
+  try {
+    await patchClient({ ecom_search_share_scope: value });
+    clientRecord.ecom_search_share_scope = value;
+    showMsg('searchShareScopeMsg', 'Saved ✓');
+  } catch (e) { showMsg('searchShareScopeMsg', 'Error: ' + e.message, 6000); }
+}
+
 async function saveLinkOnEnquiry() {
   const value = document.getElementById('cfgLinkOnEnquiry').value;
   try {
@@ -2273,6 +2655,373 @@ async function syncSheet(type) {
   } catch(e) {
     showMsg(msgId, 'Sync sent ✓', 5000);
     setTimeout(loadOrders, 4000);
+  }
+}
+
+// ── BABY CARE FLOW EDITOR ──────────────────────────
+const BABY_FLOW_DEF = {
+  welcome_new: 'Welcome! 👶🏻 How can we help you today?',
+  welcome_return: 'Welcome back! 👶🏻 What would you like to do?',
+  cancel_msg: 'No problem! Feel free to message us any time. 🌸',
+  talk_msg: "Sure! I'll connect you with our team now. 🌸",
+  quality_intro: '🍼 *Custom Baby Set — Fabric Selection*\n\nAll base sets come in *white*. Choose your fabric quality:\n\n• *Affordable Range* — Soft single jersey fabric (Starting from ₹650)\n• *Premium Range* — Luxurious interlock fabric for maximum baby comfort (Starting from ₹850)',
+  affordable_label: 'Affordable (₹650+)',
+  affordable_name: 'Affordable Range — Single Jersey (from ₹650)',
+  premium_label: 'Premium (₹850+)',
+  premium_name: 'Premium Range — Interlock (from ₹850)',
+  delivery_prompt: 'Almost done! 📦 Please share your delivery details:\n\nName: ___\nDelivery Address: ___\nPhone (if different): ___\n\n(Reply with all details on separate lines)',
+  order_confirmed: "Order confirmed! 🎉 Your custom baby set is now with our team. We'll verify the details, share a sample audio/image, and confirm payment shortly. Thank you for ordering with us! 🌸",
+  colors: [
+    {label:'Pink 🩷', value:'BABY_COLOR_PINK', name:'Pink'},
+    {label:'Blue 💙', value:'BABY_COLOR_BLUE', name:'Blue'},
+    {label:'Mint Green 🌿', value:'BABY_COLOR_MINT', name:'Mint Green'},
+    {label:'Other colour ✏️', value:'BABY_COLOR_OTHER', name:''},
+  ],
+  themes: [
+    {label:'Floral 🌸', value:'BABY_THEME_FLORAL', name:'Floral'},
+    {label:'Stars ⭐', value:'BABY_THEME_STARS', name:'Stars'},
+    {label:'Animals 🐻', value:'BABY_THEME_ANIMAL', name:'Animals'},
+    {label:'Custom theme ✏️', value:'BABY_THEME_CUSTOM', name:''},
+  ],
+  addons: [
+    {label:'Bows (Neck/Cap) 🎀', value:'BABY_ADDON_BOWS', name:'Bows'},
+    {label:'Boots 👟', value:'BABY_ADDON_BOOTS', name:'Boots'},
+    {label:'Hand Socks 🧤', value:'BABY_ADDON_HANDSOCKS', name:'Hand Socks'},
+    {label:'No add-ons ✓', value:'BABY_ADDON_NONE', name:'None'},
+  ],
+};
+let _flowLoaded = false;
+const _flowOptionCounters = {};
+
+function _renderOptionRows(containerId, items) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  (items || []).forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'flow-option-row';
+    row.dataset.value = item.value || '';
+    row.innerHTML =
+      `<input type="text" placeholder="Button label" value="${escAttr(item.label || '')}">` +
+      `<input type="text" placeholder="Blank = free-text input" value="${escAttr(item.name || '')}">` +
+      `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+    c.appendChild(row);
+  });
+}
+
+function _collectOptionRows(containerId) {
+  return Array.from(document.getElementById(containerId).querySelectorAll('.flow-option-row'))
+    .map(row => {
+      const [i1, i2] = row.querySelectorAll('input');
+      return { label: i1.value.trim(), value: row.dataset.value || '', name: i2.value.trim() || null };
+    }).filter(r => r.label);
+}
+
+function addFlowOptionRow(containerId, prefix) {
+  const c = document.getElementById(containerId);
+  if (c.querySelectorAll('.flow-option-row').length >= 4) {
+    alert('WhatsApp supports a maximum of 4 buttons per message.');
+    return;
+  }
+  _flowOptionCounters[prefix] = (_flowOptionCounters[prefix] || 5) + 1;
+  const val = prefix + 'CUSTOM' + _flowOptionCounters[prefix];
+  const row = document.createElement('div');
+  row.className = 'flow-option-row';
+  row.dataset.value = val;
+  row.innerHTML =
+    `<input type="text" placeholder="Button label">` +
+    `<input type="text" placeholder="Blank = free-text input">` +
+    `<button class="icon-btn danger" onclick="this.parentNode.remove()" title="Remove">✕</button>`;
+  c.appendChild(row);
+  row.querySelector('input').focus();
+}
+
+function loadFlow() {
+  const saved = (botConfig && botConfig.baby_care_flow) || {};
+  const f = Object.assign({}, BABY_FLOW_DEF, saved);
+  if (!Array.isArray(f.colors) || !f.colors.length) f.colors = BABY_FLOW_DEF.colors;
+  if (!Array.isArray(f.themes) || !f.themes.length) f.themes = BABY_FLOW_DEF.themes;
+  if (!Array.isArray(f.addons) || !f.addons.length) f.addons = BABY_FLOW_DEF.addons;
+  document.getElementById('flWelcomeNew').value = f.welcome_new;
+  document.getElementById('flWelcomeReturn').value = f.welcome_return;
+  document.getElementById('flQualityIntro').value = f.quality_intro;
+  document.getElementById('flAffordableLabel').value = f.affordable_label;
+  document.getElementById('flAffordableName').value = f.affordable_name;
+  document.getElementById('flPremiumLabel').value = f.premium_label;
+  document.getElementById('flPremiumName').value = f.premium_name;
+  document.getElementById('flDeliveryPrompt').value = f.delivery_prompt;
+  document.getElementById('flOrderConfirmed').value = f.order_confirmed;
+  document.getElementById('flCancelMsg').value = f.cancel_msg;
+  document.getElementById('flTalkMsg').value = f.talk_msg;
+  _renderOptionRows('flColorRows', f.colors);
+  _renderOptionRows('flThemeRows', f.themes);
+  _renderOptionRows('flAddonRows', f.addons);
+  // global flow enabled toggle (default true when not explicitly set to false)
+  const enabled = botConfig.baby_care_flow_enabled !== false;
+  document.getElementById('flowEnabledChk').checked = enabled;
+  document.getElementById('flowEditorBody').classList.toggle('dimmed', !enabled);
+  renderCustomerFlows();
+  loadImageSettings();
+  _flowLoaded = true;
+}
+
+function onFlowEnabledChange() {
+  const on = document.getElementById('flowEnabledChk').checked;
+  document.getElementById('flowEditorBody').classList.toggle('dimmed', !on);
+  botConfig.baby_care_flow_enabled = on;
+  patchClient({ bot_config: JSON.stringify(botConfig) })
+    .then(() => showMsg('flowSaveMsg', on ? 'Flow enabled ✓' : 'Flow disabled ✓'))
+    .catch(e => showMsg('flowSaveMsg', 'Error: ' + e.message));
+}
+
+async function saveFlow() {
+  const flow = {
+    welcome_new: document.getElementById('flWelcomeNew').value.trim(),
+    welcome_return: document.getElementById('flWelcomeReturn').value.trim(),
+    cancel_msg: document.getElementById('flCancelMsg').value.trim(),
+    talk_msg: document.getElementById('flTalkMsg').value.trim(),
+    quality_intro: document.getElementById('flQualityIntro').value.trim(),
+    affordable_label: document.getElementById('flAffordableLabel').value.trim(),
+    affordable_name: document.getElementById('flAffordableName').value.trim(),
+    premium_label: document.getElementById('flPremiumLabel').value.trim(),
+    premium_name: document.getElementById('flPremiumName').value.trim(),
+    delivery_prompt: document.getElementById('flDeliveryPrompt').value.trim(),
+    order_confirmed: document.getElementById('flOrderConfirmed').value.trim(),
+    colors: _collectOptionRows('flColorRows'),
+    themes: _collectOptionRows('flThemeRows'),
+    addons: _collectOptionRows('flAddonRows'),
+  };
+  botConfig.baby_care_flow = flow;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('flowSaveMsg', 'Saved ✓');
+    showMsg('flowSaveMsg2', 'Saved ✓');
+  } catch(e) {
+    showMsg('flowSaveMsg', 'Error: ' + e.message);
+    showMsg('flowSaveMsg2', 'Error: ' + e.message);
+  }
+}
+
+function resetFlowDefaults() {
+  if (!confirm('Reset all flow messages and buttons to their default values?')) return;
+  delete botConfig.baby_care_flow;
+  _flowLoaded = false;
+  loadFlow();
+  showMsg('flowSaveMsg', 'Reset to defaults — click Save to apply');
+  showMsg('flowSaveMsg2', 'Reset to defaults — click Save to apply');
+}
+
+// ── IMAGE SEND SETTINGS ────────────────────────────────
+function loadImageSettings() {
+  const freshOn = botConfig.ecom_fresh_session_reset_enabled === true;
+  document.getElementById('freshSessionChk').checked = freshOn;
+  document.getElementById('freshSessionOptions').style.display = freshOn ? 'block' : 'none';
+  document.getElementById('freshSessionHours').value = botConfig.ecom_fresh_session_hours || '';
+
+  const perWinOn = botConfig.ecom_per_customer_window_enabled === true;
+  document.getElementById('perWindowChk').checked = perWinOn;
+  document.getElementById('perWindowOptions').style.display = perWinOn ? 'block' : 'none';
+  document.getElementById('globalImageWindowHours').value = botConfig.ecom_image_window_hours || '';
+
+  const catOn = botConfig.baby_care_catalog_throttle_enabled === true;
+  document.getElementById('catalogThrottleChk').checked = catOn;
+  document.getElementById('catalogThrottleOptions').style.display = catOn ? 'block' : 'none';
+  document.getElementById('catalogThrottleMins').value = botConfig.baby_care_catalog_throttle_mins || '';
+}
+
+function onFreshSessionChange() {
+  document.getElementById('freshSessionOptions').style.display =
+    document.getElementById('freshSessionChk').checked ? 'block' : 'none';
+}
+
+function onPerWindowChange() {
+  const on = document.getElementById('perWindowChk').checked;
+  document.getElementById('perWindowOptions').style.display = on ? 'block' : 'none';
+  document.getElementById('cfImageWindowWrap').style.display = on ? 'block' : 'none';
+}
+
+function onCatalogThrottleChange() {
+  document.getElementById('catalogThrottleOptions').style.display =
+    document.getElementById('catalogThrottleChk').checked ? 'block' : 'none';
+}
+
+async function saveImageSettings() {
+  botConfig.ecom_fresh_session_reset_enabled = document.getElementById('freshSessionChk').checked;
+  const freshHrs = parseFloat(document.getElementById('freshSessionHours').value);
+  if (freshHrs > 0) botConfig.ecom_fresh_session_hours = freshHrs;
+  else delete botConfig.ecom_fresh_session_hours;
+
+  botConfig.ecom_per_customer_window_enabled = document.getElementById('perWindowChk').checked;
+  const globalHrs = parseFloat(document.getElementById('globalImageWindowHours').value);
+  if (globalHrs > 0) botConfig.ecom_image_window_hours = globalHrs;
+  else delete botConfig.ecom_image_window_hours;
+
+  botConfig.baby_care_catalog_throttle_enabled = document.getElementById('catalogThrottleChk').checked;
+  const throttleMins = parseInt(document.getElementById('catalogThrottleMins').value);
+  if (throttleMins > 0) botConfig.baby_care_catalog_throttle_mins = throttleMins;
+  else delete botConfig.baby_care_catalog_throttle_mins;
+
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('imgSettingsSaveMsg', 'Saved ✓');
+  } catch(e) {
+    showMsg('imgSettingsSaveMsg', 'Error: ' + e.message);
+  }
+}
+
+// ── CUSTOMER-SPECIFIC FLOWS ─────────────────────────────
+let _cfEditingPhone = null;
+
+function renderCustomerFlows() {
+  const flows = botConfig.baby_care_customer_flows || {};
+  const phones = Object.keys(flows);
+  const el = document.getElementById('customerFlowsList');
+  if (!el) return;
+  if (!phones.length) {
+    el.innerHTML = '<div class="s-hint" style="text-align:center;padding:18px 0;color:var(--muted)">No customer-specific flows yet. Click "+ Add Customer Flow" to create one.</div>';
+    return;
+  }
+  el.innerHTML = `<div class="tbl-wrap"><table>
+    <thead><tr>
+      <th>Customer</th><th>Phone</th><th>Custom Flow</th><th style="width:80px;text-align:center">Flow On</th><th style="width:1%"></th>
+    </tr></thead>
+    <tbody>
+      ${phones.map(ph => {
+        const cf = flows[ph];
+        const enabled = cf.enabled !== false;
+        const hasCustom = cf.flow && Object.keys(cf.flow).length > 0;
+        return `<tr>
+          <td>${esc(cf.label || '—')}</td>
+          <td><code style="font-size:12px">${esc(ph)}</code></td>
+          <td><span class="badge ${hasCustom?'shipped':''}">${hasCustom?'Custom':'Global'}</span></td>
+          <td style="text-align:center">
+            <label class="toggle-wrap" style="display:inline-block">
+              <input type="checkbox" ${enabled?'checked':''} onchange="setCustomerFlowEnabled('${esc(ph)}',this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </td>
+          <td>
+            <div class="row-actions">
+              <button class="icon-btn" onclick="openCustomerFlowModal('${esc(ph)}')" title="Edit">✏️</button>
+              <button class="icon-btn danger" onclick="deleteCustomerFlow('${esc(ph)}')" title="Remove">✕</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
+}
+
+function openCustomerFlowModal(phone) {
+  _cfEditingPhone = phone || null;
+  const flows = botConfig.baby_care_customer_flows || {};
+  const cf = phone ? (flows[phone] || {}) : {};
+  const globalFlow = botConfig.baby_care_flow || {};
+
+  document.getElementById('cfModalTitle').textContent = phone ? 'Edit Customer Flow' : 'Add Customer Flow';
+  document.getElementById('cfPhone').value = phone || '';
+  document.getElementById('cfPhone').disabled = !!phone;
+  document.getElementById('cfLabel').value = cf.label || '';
+  document.getElementById('cfEnabledChk').checked = cf.enabled !== false;
+  document.getElementById('cfImageWindowHours').value = cf.image_window_hours || '';
+  document.getElementById('cfImageWindowWrap').style.display = botConfig.ecom_per_customer_window_enabled === true ? 'block' : 'none';
+
+  const hasCustom = cf.flow && Object.keys(cf.flow).length > 0;
+  document.getElementById('cfCustomFlowChk').checked = hasCustom;
+
+  // pre-fill custom flow fields with per-customer values falling back to global then defaults
+  const base = Object.assign({}, BABY_FLOW_DEF, globalFlow, cf.flow || {});
+  document.getElementById('cfWelcomeNew').value = base.welcome_new || '';
+  document.getElementById('cfWelcomeReturn').value = base.welcome_return || '';
+  document.getElementById('cfQualityIntro').value = base.quality_intro || '';
+  document.getElementById('cfAffordableLabel').value = base.affordable_label || '';
+  document.getElementById('cfAffordableName').value = base.affordable_name || '';
+  document.getElementById('cfPremiumLabel').value = base.premium_label || '';
+  document.getElementById('cfPremiumName').value = base.premium_name || '';
+  document.getElementById('cfDeliveryPrompt').value = base.delivery_prompt || '';
+  document.getElementById('cfOrderConfirmed').value = base.order_confirmed || '';
+  document.getElementById('cfCancelMsg').value = base.cancel_msg || '';
+  document.getElementById('cfTalkMsg').value = base.talk_msg || '';
+  _renderOptionRows('cfColorRows', base.colors);
+  _renderOptionRows('cfThemeRows', base.themes);
+  _renderOptionRows('cfAddonRows', base.addons);
+
+  document.getElementById('cfCustomFields').style.display = hasCustom ? 'block' : 'none';
+  document.getElementById('cfSaveMsg').textContent = '';
+  document.getElementById('cfModalOverlay').classList.add('active');
+}
+
+function closeCfModal() {
+  document.getElementById('cfModalOverlay').classList.remove('active');
+  _cfEditingPhone = null;
+}
+
+function toggleCfCustomFields() {
+  const on = document.getElementById('cfCustomFlowChk').checked;
+  document.getElementById('cfCustomFields').style.display = on ? 'block' : 'none';
+}
+
+async function saveCustomerFlow() {
+  const phone = document.getElementById('cfPhone').value.replace(/[^0-9+]/g, '').replace(/^\+/, '');
+  if (!phone) { showMsg('cfSaveMsg', 'Phone number is required'); return; }
+  const label = document.getElementById('cfLabel').value.trim();
+  const enabled = document.getElementById('cfEnabledChk').checked;
+  const useCustom = document.getElementById('cfCustomFlowChk').checked;
+
+  const entry = { label, enabled };
+  const cfImgWinHrs = parseFloat(document.getElementById('cfImageWindowHours').value);
+  if (cfImgWinHrs > 0) entry.image_window_hours = cfImgWinHrs;
+  if (useCustom) {
+    entry.flow = {
+      welcome_new: document.getElementById('cfWelcomeNew').value.trim(),
+      welcome_return: document.getElementById('cfWelcomeReturn').value.trim(),
+      quality_intro: document.getElementById('cfQualityIntro').value.trim(),
+      affordable_label: document.getElementById('cfAffordableLabel').value.trim(),
+      affordable_name: document.getElementById('cfAffordableName').value.trim(),
+      premium_label: document.getElementById('cfPremiumLabel').value.trim(),
+      premium_name: document.getElementById('cfPremiumName').value.trim(),
+      delivery_prompt: document.getElementById('cfDeliveryPrompt').value.trim(),
+      order_confirmed: document.getElementById('cfOrderConfirmed').value.trim(),
+      cancel_msg: document.getElementById('cfCancelMsg').value.trim(),
+      talk_msg: document.getElementById('cfTalkMsg').value.trim(),
+      colors: _collectOptionRows('cfColorRows'),
+      themes: _collectOptionRows('cfThemeRows'),
+      addons: _collectOptionRows('cfAddonRows'),
+    };
+  }
+
+  if (!botConfig.baby_care_customer_flows) botConfig.baby_care_customer_flows = {};
+  botConfig.baby_care_customer_flows[phone] = entry;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    closeCfModal();
+    renderCustomerFlows();
+  } catch(e) {
+    showMsg('cfSaveMsg', 'Error: ' + e.message);
+  }
+}
+
+async function setCustomerFlowEnabled(phone, enabled) {
+  if (!botConfig.baby_care_customer_flows) botConfig.baby_care_customer_flows = {};
+  if (!botConfig.baby_care_customer_flows[phone]) botConfig.baby_care_customer_flows[phone] = {};
+  botConfig.baby_care_customer_flows[phone].enabled = enabled;
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+  } catch(e) {
+    alert('Error saving: ' + e.message);
+    renderCustomerFlows(); // revert visual
+  }
+}
+
+async function deleteCustomerFlow(phone) {
+  if (!confirm(`Remove the custom flow for ${phone}?`)) return;
+  if (botConfig.baby_care_customer_flows) {
+    delete botConfig.baby_care_customer_flows[phone];
+    try {
+      await patchClient({ bot_config: JSON.stringify(botConfig) });
+      renderCustomerFlows();
+    } catch(e) {
+      alert('Error: ' + e.message);
+    }
   }
 }
 
