@@ -9715,7 +9715,12 @@ const ECOM_PROMO_KEYWORD_RE=/\b(promo\s*code|promocode|coupon\s*code|discount\s*
 // Explicit re-send requests that bypass the 5-hour tier gate and deliver only
 // what the customer asked for (primary image OR Shopify link), without
 // advancing the progressive-disclosure counter.
-const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photo|image|pic|picture)|send\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|show\s*(me\s+)?(the\s+)?(photo|image|pic|picture)|photo\s+again|image\s+again|pic\s+again)\b/i;
+const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photos?|images?|pics?|pictures?)|send\s*(me\s+)?(the\s+|some\s+|a\s+)?(photos?|images?|pics?|pictures?)|show\s*(me\s+)?(the\s+|some\s+|a\s+)?(photos?|images?|pics?|pictures?)|photos?\s+again|images?\s+again|pics?\s+again)\b/i;
+// A bare photo ask with no verb — "Pictures", "pics pls", "any photos?", "can I see it?" — as a
+// follow-up to the product just discussed. ECOM_RESEND_IMAGE_RE needs a send/show verb, so these
+// used to fall through to the FAQ LLM, which replied "I can't send pictures here".
+const ECOM_BARE_PHOTO_RE=/^\s*(?:(?:any|more|real|actual|the|some)\s+)?(?:photos?|pics?|pictures?|images?|imgs?)(?:\s+(?:please|pls|plz|of\s+(?:it|this|that)))?\s*[?.!]*\s*$|^\s*(?:can|could|may)\s+i\s+see\s+(?:it|this|that|the\s+(?:set|product|photos?|pics?|pictures?))\s*[?.!]*\s*$|^\s*(?:do\s+you\s+have|have\s+you\s+got)\s+(?:any\s+)?(?:photos?|pics?|pictures?|images?)\b/i;
+export function ecomIsPhotoRequest(text){ const t=String(text||''); return ECOM_RESEND_IMAGE_RE.test(t)||ECOM_BARE_PHOTO_RE.test(t); }
 const ECOM_RESEND_LINK_RE=/\b(re[-\s]?send\s*(the\s+)?(link|url)|send\s*(me\s+)?(the\s+)?(link|url|product\s*link|shopify\s*link)|link\s+again|url\s+again)\b/i;
 
 /* ── PROMOTIONS & OFFERS engine hook (migrations/0045_ecom_promotions.sql) ──────────────────
@@ -11968,10 +11973,10 @@ async function handleEngineTrack(request, env){
 
   let history=[];
   try{ history=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
-  if(incomingText) history.push({role:'user', content:incomingText});
-  if(replyText) history.push({role:'assistant', content:replyText});
-
   const now=new Date().toISOString();
+  if(incomingText) history.push({role:'user', content:incomingText, ts:now});
+  if(replyText) history.push({role:'assistant', content:replyText, ts:now});
+
   const upsertBody={ConvHistory:JSON.stringify(history.slice(-40)), LastMsgAt:now, Date:lead?.Date||now};
   if(body.name && !lead?.Name) upsertBody.Name=String(body.name).trim().slice(0,140);
 
@@ -14724,7 +14729,7 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     if(contextBlock?.includes('STRICT_ZERO_HALLUCINATION=ON')) sys+=' Strict zero-hallucination is ON: treat VERIFIED HEALTHCARE DATA above as the only source for services, prices, durations, preparation, doctors, schedules, appointment status, insurance and clinic policy. If the answer is not explicitly present, say it is not verified and offer clinic-team handover. For services marked "price: On consultation", always say exactly that — never estimate, guess, or quote any number. Only quote the exact price figure shown in VERIFIED HEALTHCARE DATA for services that have one.';
   }
   if(industry==='ecommerce'){
-    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover. IMAGE RULE: Never write image placeholder text such as "(Image of X)", "(Photo)", "[Image]", or any bracket/parenthesis notation referencing an image — you cannot send images in this reply path; real product photos are sent separately by the system. If no real image URL is present in the product data, do not mention images at all. PRICE-SIZE RULE: Never claim that a product price applies to a specific size, dimension, or measurement unless the Product Catalog explicitly states that price for that exact size. A catalog price is the price of that product entry as listed — do not attribute it to a customer-requested size or compute a per-size price from it.';
+    sys+='\n\nECOM ZERO-HALLUCINATION LOCK: Use the configured business prompt for general business answers. Use VERIFIED ECOM PRODUCT DATA only for product facts. Never invent or infer a category, product, brand, model, material, size, specification, availability, price, media, PDF or link. Never create product choices or promise to check the catalogue later. If a requested fact is absent, say it is not verified and offer staff handover. IMAGE RULE: Never write image placeholder text such as "(Image of X)", "(Photo)", "[Image]", or any bracket/parenthesis notation referencing an image — you cannot send images in this reply path; real product photos are sent separately by the system. If no real image URL is present in the product data, do not mention images at all. Never tell the customer you cannot send photos or pictures. CHANNEL/LINK RULE: Never write a channel, social or link label (e.g. "WhatsApp Channel:", "Instagram:", "Catalog:") unless the actual URL or handle follows it on the same line — omit the whole line when the value is missing. PRICE-SIZE RULE: Never claim that a product price applies to a specific size, dimension, or measurement unless the Product Catalog explicitly states that price for that exact size. A catalog price is the price of that product entry as listed — do not attribute it to a customer-requested size or compute a per-size price from it.';
     const ecomCommunicationStyle=engineParseJsonField(c.bot_config, {}).ecom_communication_style||'';
     const ecomStyleInstructions={
       fashion:'FASHION ECOM COMMUNICATION STYLE: Sound concise, confident and visual without inventing trends or product facts. The deterministic Fashion flow controls shopping navigation: prompt-led greeting, verified category choices, verified products and recommendations, exact product description/media, then size, colour, delivery address and order confirmation. Answer additional questions from the configured business prompt and verified Ecom data only. Never add a competing discovery question or a choice that is not present in VERIFIED ECOM PRODUCT DATA.',
@@ -17155,7 +17160,7 @@ async function handleNativeFormEndpoint(request, env){
     const nextStage=firstAction.next||firstStage;
 
     const history=(state.history||[]).slice();
-    history.push({role:'assistant', content:sentText});
+    history.push({role:'assistant', content:sentText, ts:new Date().toISOString()});
     const leadBody={
       ClientId:String(clientId), Phone:flowMeta.phone||state.phone||'', Name:state.name||'',
       ConversationID:flowMeta.convId||state.lead?.ConversationID||null,
@@ -17492,7 +17497,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   const isHuman=routing.route==='human';
 
   const history=(state.history||[]).slice();
-  if(userText) history.push({role:'user', content:routing.historyUserText||userText,
+  // ts on every entry — the Chats page renders each bubble's time from it ("Invalid Date" without).
+  const _histTs=new Date().toISOString();
+  if(userText) history.push({role:'user', content:routing.historyUserText||userText, ts:_histTs,
     ...(routing.userMedia?{media:routing.userMedia}:{}),
     ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
   // options — only present on turns that actually offered the customer tappable choices via
@@ -17505,7 +17512,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // primary inline photo, not every supplementary image/audio/video/pdf a turn might also send
   // (engineMaybeSendProductMedia and friends run after this history entry is already written) —
   // every other reply keeps the exact same {role,content} shape ConvHistory has always had.
-  if(reply) history.push({role:'assistant', content:reply,
+  if(reply) history.push({role:'assistant', content:reply, ts:_histTs,
     ...(routing.quickReplies&&routing.quickReplies.length?{options:routing.quickReplies}:{}),
     ...(routing.media?{media:routing.media}:{})});
 
@@ -19481,6 +19488,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
       const contextText=(state.activeHistory||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'Bot'}: ${m.content}`).join('\n');
       const detection=await detectOrderSignal(env, c, clientId, userText, contextText);
+      // A bare "Pictures" carries no product detail, so the classifier can return no signal at all —
+      // treat it as an enquiry about the product last discussed (Last Product Sku fallback below).
+      if(ecomIsPhotoRequest(userText) && !detection.signal && state.lead?.['Last Product Sku']){
+        detection.signal=true; detection.mode='enquiry';
+      }
       const activeProducts=await ecomListActiveProducts(env, clientId);
       const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
       const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
@@ -19639,7 +19651,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const isShopify=!!(product?.shopify_product_url||'').trim();
         let sendProductImage=false, sendOnlyPrimaryImage=false, sendRandomImages=false, shopifyTier=0, forceResendLink=false;
         if(product){
-          const wantsImage=ECOM_RESEND_IMAGE_RE.test(userText||'');
+          const wantsImage=ecomIsPhotoRequest(userText);
           const wantsLink=ECOM_RESEND_LINK_RE.test(userText||'');
           if(wantsImage){
             sendOnlyPrimaryImage=true;
@@ -19668,7 +19680,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         }
         const _babyProductQuestion=/[?]/.test(userText)
           ||/^(?:what|how|when|where|why|which|is|are|can|could|do|does|will|would|tell|explain|describe|price|cost|rate|available|delivery|cod)\b/i.test(userText.trim());
-        if(isBabyCareEcom && product && (detection.mode==='order'||detection.mode==='enquiry')
+        // A photo request for a product with a stored image goes to the card branch below (card +
+        // real photo) — the FAQ LLM can't attach media and would reply "I can't send pictures".
+        const _babyPhotoAsk=isBabyCareEcom && !!product && ecomIsPhotoRequest(userText) && !!(product.image_url||'').trim();
+        if(isBabyCareEcom && product && !_babyPhotoAsk && (detection.mode==='order'||detection.mode==='enquiry')
           && (resolvedFromHistory||_babyProductQuestion||(state.stage&&state.stage.startsWith('baby_')))){
           // Baby care: a question about a product (or a follow-up on an earlier one, or anything
           // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
