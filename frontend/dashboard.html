@@ -3063,6 +3063,49 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- AI Models — bring your own AI key (Claude, ChatGPT, Gemini, OpenRouter, Groq, DeepSeek,
+             Mistral, or any OpenAI-compatible endpoint). Config + encrypted key live in the Worker's
+             D1 (/ai-provider/* routes, migrations/0105). Until a key is saved here the client keeps
+             running on the shared Leadvyne AI exactly as before — see aiInit(). -->
+        <div class="card" style="margin-bottom:14px" id="aiCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🤖 AI Models <span id="aiStatusBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Leadvyne AI</span></div>
+            <div class="s-note">Your bot runs on the built-in Leadvyne AI by default. To use Claude, ChatGPT or another model instead, connect your own API key here. Usage is billed to your own account with that provider. Voice notes and images are still read by Leadvyne AI.</div>
+            <div id="aiLoadMsg" class="s-note" style="display:none"></div>
+
+            <div id="aiBody">
+              <label class="form-label">Provider</label>
+              <select class="form-input" id="aiProvider" style="margin-bottom:8px" onchange="aiOnProviderChange()"></select>
+
+              <div id="aiBaseUrlRow" style="display:none">
+                <label class="form-label">Base URL (OpenAI-compatible)</label>
+                <input class="form-input" id="aiBaseUrl" type="url" placeholder="https://api.together.xyz/v1" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+              </div>
+
+              <label class="form-label">API key</label>
+              <input class="form-input" id="aiApiKey" type="password" autocomplete="off" placeholder="Paste your API key" style="margin-bottom:8px;font-family:var(--mono);font-size:12px">
+
+              <label class="form-label">Model</label>
+              <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+                <input class="form-input" id="aiModel" type="text" list="aiModelList" placeholder="Model name" style="flex:1;min-width:200px;font-family:var(--mono);font-size:12px">
+                <datalist id="aiModelList"></datalist>
+                <button class="btn-ghost" type="button" id="aiLoadModelsBtn" onclick="aiLoadModels()">↻ Load models</button>
+              </div>
+
+              <label style="display:block;font-size:13px;margin-bottom:12px"><input type="checkbox" id="aiFallback" checked> If my key fails (no credit, rate limit, outage), fall back to Leadvyne AI so customers still get a reply</label>
+
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button class="save-btn" type="button" id="aiSaveBtn" onclick="aiSave()">Save &amp; switch</button>
+                <button class="btn-ghost" type="button" id="aiTestBtn" onclick="aiTest()">Test connection</button>
+                <button class="btn-ghost" type="button" id="aiRemoveBtn" onclick="aiRemove()" style="display:none">Use Leadvyne AI instead</button>
+                <span class="save-msg" id="aiSaveMsg"></span>
+              </div>
+              <div id="aiTestOut" class="s-note" style="margin-top:8px"></div>
+              <div id="aiConnStatus" class="s-note" style="margin-top:4px"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Resend (Email) -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -12463,6 +12506,108 @@ function integrationsInit(){
   loadGsheetStatus();
   flowvyneInit();
   mtgInit();
+  aiInit();
+}
+
+/* ── AI MODELS (Integrations → 🤖 AI Models card) ──
+   Bring-your-own AI key. Config + encrypted key live in the Worker's D1 (/ai-provider/* routes,
+   worker.js "Bring-your-own AI provider"). The key is write-only: the Worker only ever returns its
+   last 4 characters, and a blank key field on save/test reuses the stored one. */
+let _aiConfig=null;
+async function aiApi(path, opts={}){
+  const r=await fetch(`${CONFIG.WORKER_BASE}${path}`, {...opts, headers:ncAuthHeaders(opts.body?{'Content-Type':'application/json'}:{})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok && !('ok' in d)) throw new Error(d.error||('HTTP '+r.status));
+  return d;
+}
+async function aiInit(){
+  const msg=$id('aiLoadMsg');
+  if(!msg) return;
+  msg.style.display='none';
+  let d;
+  try{ d=await aiApi('/ai-provider/config'); }
+  catch(e){ msg.style.display='block'; msg.textContent='Could not load AI Models: '+e.message; return; }
+  _aiConfig=d.config;
+  if(!d.server_ready){ msg.style.display='block'; msg.textContent='Connecting your own AI key isn\'t enabled on this server yet — your bot keeps using Leadvyne AI.'; }
+  const sel=$id('aiProvider');
+  sel.innerHTML=Object.entries(_aiConfig.providers).map(([id,p])=>`<option value="${esc(id)}">${esc(p.label)}</option>`).join('');
+  sel.value=_aiConfig.connected?_aiConfig.provider:'anthropic';
+  $id('aiBaseUrl').value=_aiConfig.base_url||'';
+  $id('aiFallback').checked=_aiConfig.connected?_aiConfig.fallback_shared:true;
+  aiOnProviderChange(true);
+  if(_aiConfig.connected) $id('aiModel').value=_aiConfig.model;
+  aiRenderStatus();
+}
+function aiRenderStatus(){
+  const cfg=_aiConfig||{};
+  const on=cfg.connected&&cfg.enabled;
+  const badge=$id('aiStatusBadge');
+  badge.textContent=on?(cfg.providers[cfg.provider]?.label||cfg.provider):'Leadvyne AI';
+  badge.style.background=on?'#d1fae5':'var(--bg)'; badge.style.color=on?'#065f46':'var(--muted)';
+  $id('aiRemoveBtn').style.display=cfg.connected?'inline-block':'none';
+  $id('aiApiKey').placeholder=cfg.connected&&cfg.key_hint&&$id('aiProvider').value===cfg.provider?`Saved key ••••${cfg.key_hint} — leave blank to keep it`:'Paste your API key';
+  const conn=$id('aiConnStatus');
+  if(!cfg.connected){ conn.innerHTML=''; return; }
+  const parts=[`Bot replies now use <b>${esc(cfg.model)}</b>.`];
+  if(cfg.last_error) parts.push(`⚠️ Last error ${esc(mtgAgo(cfg.last_error_at))}: ${esc(cfg.last_error)}${cfg.fallback_shared?' (Leadvyne AI answered instead)':''}`);
+  else if(cfg.last_ok_at) parts.push(`✅ Working — last reply ${esc(mtgAgo(cfg.last_ok_at))}`);
+  conn.innerHTML=parts.join('<br>');
+}
+function aiOnProviderChange(keepModel){
+  const id=$id('aiProvider').value, p=_aiConfig?.providers?.[id]||{};
+  $id('aiBaseUrlRow').style.display=id==='custom'?'block':'none';
+  $id('aiModelList').innerHTML=(p.models||[]).map(m=>`<option value="${esc(m)}">`).join('');
+  if(keepModel!==true) $id('aiModel').value=p.default_model||'';
+  $id('aiModel').placeholder=id==='openai'?'Click "Load models", or type e.g. a GPT model name':'Model name';
+  $id('aiTestOut').textContent='';
+  aiRenderStatus();
+}
+function aiFormBody(){
+  return {provider:$id('aiProvider').value, base_url:$id('aiBaseUrl').value.trim(), model:$id('aiModel').value.trim(),
+    api_key:$id('aiApiKey').value.trim(), fallback_shared:$id('aiFallback').checked};
+}
+async function aiLoadModels(){
+  const btn=$id('aiLoadModelsBtn'), out=$id('aiTestOut');
+  btn.disabled=true; out.textContent='Loading models…';
+  try{
+    const d=await aiApi('/ai-provider/models', {method:'POST', body:JSON.stringify(aiFormBody())});
+    if(!d.ok) throw new Error(d.error);
+    const extra=(_aiConfig?.providers?.[$id('aiProvider').value]?.models)||[];
+    $id('aiModelList').innerHTML=[...new Set([...extra, ...d.models])].map(m=>`<option value="${esc(m)}">`).join('');
+    out.textContent=`✓ ${d.models.length} models available — pick one in the Model box.`;
+  }catch(e){ out.textContent='Could not load models: '+e.message; }
+  finally{ btn.disabled=false; }
+}
+async function aiTest(){
+  const btn=$id('aiTestBtn'), out=$id('aiTestOut');
+  btn.disabled=true; out.textContent='Testing…';
+  try{
+    const d=await aiApi('/ai-provider/test', {method:'POST', body:JSON.stringify(aiFormBody())});
+    out.innerHTML=d.ok?`✅ Connected in ${(d.ms/1000).toFixed(1)}s — sample reply: <i>${esc(d.reply)}</i>`:`❌ ${esc(d.error||'Failed')}`;
+  }catch(e){ out.textContent='❌ '+e.message; }
+  finally{ btn.disabled=false; }
+}
+async function aiSave(){
+  const btn=$id('aiSaveBtn'), msg=$id('aiSaveMsg');
+  btn.disabled=true; msg.textContent='Testing key & saving…'; msg.className='save-msg';
+  try{
+    const d=await aiApi('/ai-provider/config', {method:'POST', body:JSON.stringify(aiFormBody())});
+    if(!d.ok) throw new Error(d.error);
+    _aiConfig=d.config; $id('aiApiKey').value='';
+    aiRenderStatus();
+    msg.textContent='✓ Saved — your bot now uses '+(_aiConfig.providers[_aiConfig.provider]?.label||_aiConfig.provider);
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ btn.disabled=false; setTimeout(()=>{ if(msg.className==='save-msg') msg.textContent=''; }, 6000); }
+}
+async function aiRemove(){
+  if(!confirm('Remove your AI key and switch back to Leadvyne AI?')) return;
+  const msg=$id('aiSaveMsg');
+  try{
+    const d=await aiApi('/ai-provider/remove', {method:'POST', body:'{}'});
+    _aiConfig=d.config; $id('aiApiKey').value=''; $id('aiTestOut').textContent='';
+    aiRenderStatus();
+    msg.textContent='✓ Switched back to Leadvyne AI'; msg.className='save-msg';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
 /* ── CAL.COM MEETINGS (Integrations → 📞 Cal.com Meetings card) ──

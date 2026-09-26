@@ -3550,7 +3550,8 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
         ? (()=>{
             const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
             const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
-            return engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'}).catch(()=>null);
+            return aiClientFirst(env, c, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, caller:'followup-ai'},
+              ()=>engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'})).catch(()=>null);
           })()
         : Promise.resolve(null),
       // Real-scarcity line (ecom only, session steps only — see ecomFollowupScarcityLine's own
@@ -12988,6 +12989,9 @@ async function engineGeminiTranscribeVoice(env, mimeType, base64, langHintCode, 
 // point of this fallback is specifically "still get a Gemini-quality answer", not "fall back to
 // whatever model this client happens to have configured".
 async function engineGeminiGenerateWithFallback(env, c, systemText, userText, opts={}){
+  const own=await aiClientGenerate(env, c, systemText, userText, opts);
+  if(own?.text) return own.text;
+  if(own && !own.fallback) return null;
   const direct=await engineGeminiGenerate(env, systemText, userText, opts);
   if(direct) return direct;
   if(!c?.openrouter_key) return null;
@@ -13003,6 +13007,315 @@ async function engineGeminiGenerateWithFallback(env, c, systemText, userText, op
     const data=await r.json().catch(()=>({}));
     return data?.choices?.[0]?.message?.content?.trim()||null;
   }catch(e){ return null; }
+}
+
+/* ── Bring-your-own AI provider (Settings → Integrations → 🤖 AI Models) ──
+   A client can connect their own Claude / ChatGPT / Gemini / OpenRouter / Groq / DeepSeek /
+   Mistral key, or any OpenAI-compatible endpoint, and the engine's plain-text generation runs on
+   it instead of the shared Gemini key. Config lives in D1 (migrations/0105); the key is AES-GCM
+   encrypted with the AI_KEY_ENC_SECRET Worker secret and never returned to the browser. With no
+   enabled row for a client, aiClientGenerate returns null and every caller takes its original
+   shared-Gemini path unchanged. Voice transcription and image reading stay on Gemini — not every
+   provider accepts audio. See SETUP.md "AI Models (bring your own key)". */
+export const AI_PROVIDERS={
+  anthropic:{label:'Claude (Anthropic)', format:'anthropic', base:'https://api.anthropic.com/v1',
+    models:['claude-opus-5-5','claude-opus-5','claude-sonnet-5','claude-haiku-4-5','claude-fable-5-1'], default_model:'claude-opus-5-5'},
+  openai:{label:'ChatGPT (OpenAI)', format:'openai', base:'https://api.openai.com/v1', models:[], default_model:''},
+  gemini:{label:'Google Gemini (own key)', format:'gemini', base:'https://generativelanguage.googleapis.com/v1beta',
+    models:['gemini-2.5-flash','gemini-2.5-pro'], default_model:'gemini-2.5-flash'},
+  openrouter:{label:'OpenRouter', format:'openai', base:'https://openrouter.ai/api/v1', models:[], default_model:''},
+  groq:{label:'Groq', format:'openai', base:'https://api.groq.com/openai/v1', models:[], default_model:''},
+  deepseek:{label:'DeepSeek', format:'openai', base:'https://api.deepseek.com/v1', models:['deepseek-chat','deepseek-reasoner'], default_model:'deepseek-chat'},
+  mistral:{label:'Mistral', format:'openai', base:'https://api.mistral.ai/v1', models:['mistral-large-latest','mistral-small-latest'], default_model:'mistral-small-latest'},
+  custom:{label:'Custom (OpenAI-compatible)', format:'openai', base:'', models:[], default_model:''},
+};
+const AI_CALL_TIMEOUT_MS=25000;
+
+// Custom endpoints are client-supplied URLs the Worker will POST to, so only public https hosts
+// are accepted — no credentials in the URL, no localhost/.local/.internal, no private IPv4, no
+// IPv6 literals. Returns the normalised base (no trailing slash) or null.
+export function aiValidateBaseUrl(raw){
+  let u; try{ u=new URL(String(raw||'').trim()); }catch(e){ return null; }
+  if(u.protocol!=='https:' || u.username || u.password) return null;
+  const h=u.hostname.toLowerCase();
+  if(!h || h==='localhost' || /\.(localhost|local|internal|lan|home)$/.test(h) || h.startsWith('[') || !h.includes('.')) return null;
+  const ip=h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if(ip){
+    const [a,b]=[Number(ip[1]), Number(ip[2])];
+    if(a===0 || a===10 || a===127 || a>=224 || (a===169&&b===254) || (a===172&&b>=16&&b<=31) || (a===192&&b===168) || (a===100&&b>=64&&b<=127)) return null;
+  }
+  return (u.origin+u.pathname).replace(/\/+$/,'');
+}
+export function aiNormalizeModel(m){ return String(m||'').trim().replace(/[^a-zA-Z0-9._:\/@-]/g,'').slice(0,120); }
+export function aiKeyHint(key){ const k=String(key||''); return k.length>8?k.slice(-4):''; }
+
+async function aiCryptoKey(env){
+  const digest=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(env.AI_KEY_ENC_SECRET)));
+  return crypto.subtle.importKey('raw', digest, {name:'AES-GCM'}, false, ['encrypt','decrypt']);
+}
+const aiB64=bytes=>btoa(String.fromCharCode(...new Uint8Array(bytes)));
+const aiUnB64=s=>Uint8Array.from(atob(s), ch=>ch.charCodeAt(0));
+export async function aiEncryptSecret(env, plain){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM', iv}, await aiCryptoKey(env), new TextEncoder().encode(String(plain)));
+  return `v1:${aiB64(iv)}:${aiB64(ct)}`;
+}
+export async function aiDecryptSecret(env, stored){
+  const [v, iv, ct]=String(stored||'').split(':');
+  if(v!=='v1' || !iv || !ct) return null;
+  try{
+    const pt=await crypto.subtle.decrypt({name:'AES-GCM', iv:aiUnB64(iv)}, await aiCryptoKey(env), aiUnB64(ct));
+    return new TextDecoder().decode(pt);
+  }catch(e){ return null; }
+}
+
+// Current Claude models (Opus 5.x, Sonnet 5, Fable, Opus/Sonnet 4.6+) reject `temperature`, and
+// most think before answering — thinking counts against max_tokens, so the engine's short WhatsApp
+// budgets (120–300 tokens) are raised to leave room; reply length is steered by the prompts.
+// `effort` isn't accepted by Haiku 4.5 or older models, so it is only sent where supported.
+function aiAnthropicBody(model, systemText, userText, opts){
+  const body={model, max_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4), messages:[{role:'user', content:userText}]};
+  if(systemText) body.system=systemText;
+  if(/^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(model)) body.output_config={effort:'low'};
+  return body;
+}
+function aiOpenAiBody(provider, model, systemText, userText, opts){
+  const messages=[...(systemText?[{role:'system', content:systemText}]:[]), {role:'user', content:userText}];
+  // OpenAI's own current models are reasoning models: they take max_completion_tokens (which
+  // includes reasoning) and reject a non-default temperature. Other compatible APIs keep the
+  // classic parameters.
+  if(provider==='openai') return {model, messages, max_completion_tokens:Math.max(2048, (opts.maxOutputTokens||300)*4)};
+  return {model, messages, max_tokens:opts.maxOutputTokens||300, temperature:opts.temperature??0.3};
+}
+async function aiErrorText(r){
+  const t=await r.text().catch(()=>'');
+  let msg=''; try{ const d=JSON.parse(t); msg=d?.error?.message||d?.error?.type||d?.message||(typeof d?.error==='string'?d.error:''); }catch(e){}
+  return `HTTP ${r.status}${msg?': '+msg:(t?': '+t.slice(0,200):'')}`.slice(0,300);
+}
+
+// One request to the configured provider. cfg = {provider, base_url, model, apiKey}.
+// Returns {ok, text} or {ok:false, error}. Never throws.
+export async function aiProviderCall(cfg, systemText, userText, opts={}){
+  const p=AI_PROVIDERS[cfg?.provider];
+  if(!p) return {ok:false, error:'Unknown provider'};
+  const base=cfg.provider==='custom'?aiValidateBaseUrl(cfg.base_url):p.base;
+  if(!base) return {ok:false, error:'Invalid base URL'};
+  const model=aiNormalizeModel(cfg.model);
+  if(!model) return {ok:false, error:'No model selected'};
+  const signal=AbortSignal.timeout(opts.timeoutMs||AI_CALL_TIMEOUT_MS);
+  try{
+    if(p.format==='anthropic'){
+      const headers={'x-api-key':cfg.apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json'};
+      const body=aiAnthropicBody(model, systemText, userText, opts);
+      // Server-side refusal fallback for the models that support it — a declined request is
+      // re-run on a fallback Claude model inside the same call instead of coming back empty.
+      if(model==='claude-opus-5' || model==='claude-fable-5-1'){ headers['anthropic-beta']='server-side-fallback-2026-07-01'; body.fallbacks='default'; }
+      const r=await fetch(`${base}/messages`, {method:'POST', headers, body:JSON.stringify(body), signal});
+      if(!r.ok) return {ok:false, error:await aiErrorText(r)};
+      const d=await r.json().catch(()=>({}));
+      if(d?.stop_reason==='refusal') return {ok:false, error:'Claude declined this request'+(d?.stop_details?.category?` (${d.stop_details.category})`:'')};
+      const text=(Array.isArray(d?.content)?d.content:[]).filter(b=>b?.type==='text').map(b=>b.text||'').join('').trim();
+      return text?{ok:true, text}:{ok:false, error:`Empty reply (stop_reason: ${d?.stop_reason||'unknown'})`};
+    }
+    if(p.format==='gemini'){
+      const reqBody={contents:[{role:'user', parts:[{text:userText}]}], generationConfig:engineGeminiGenerationConfig(model, opts)};
+      if(systemText) reqBody.systemInstruction={parts:[{text:systemText}]};
+      const r=await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
+        method:'POST', headers:{'x-goog-api-key':cfg.apiKey, 'Content-Type':'application/json'}, body:JSON.stringify(reqBody), signal
+      });
+      if(!r.ok) return {ok:false, error:await aiErrorText(r)};
+      const d=await r.json().catch(()=>({}));
+      const text=(d?.candidates?.[0]?.content?.parts||[]).map(x=>x.text||'').join('').trim();
+      return text?{ok:true, text}:{ok:false, error:'Empty reply'+(d?.candidates?.[0]?.finishReason?` (${d.candidates[0].finishReason})`:'')};
+    }
+    const r=await fetch(`${base}/chat/completions`, {
+      method:'POST', headers:{Authorization:`Bearer ${cfg.apiKey}`, 'Content-Type':'application/json'},
+      body:JSON.stringify(aiOpenAiBody(cfg.provider, model, systemText, userText, opts)), signal
+    });
+    if(!r.ok) return {ok:false, error:await aiErrorText(r)};
+    const d=await r.json().catch(()=>({}));
+    const text=String(d?.choices?.[0]?.message?.content||'').trim();
+    return text?{ok:true, text}:{ok:false, error:'Empty reply'+(d?.choices?.[0]?.finish_reason?` (${d.choices[0].finish_reason})`:'')};
+  }catch(e){
+    return {ok:false, error:e?.name==='TimeoutError'?'Timed out waiting for the provider':String(e?.message||e).slice(0,300)};
+  }
+}
+
+// Lists the models a key can use, for the card's "Load models" button.
+export async function aiProviderListModels(cfg){
+  const p=AI_PROVIDERS[cfg?.provider];
+  if(!p) return {ok:false, error:'Unknown provider'};
+  const base=cfg.provider==='custom'?aiValidateBaseUrl(cfg.base_url):p.base;
+  if(!base) return {ok:false, error:'Invalid base URL'};
+  const signal=AbortSignal.timeout(15000);
+  try{
+    let r;
+    if(p.format==='anthropic') r=await fetch(`${base}/models?limit=100`, {headers:{'x-api-key':cfg.apiKey, 'anthropic-version':'2023-06-01'}, signal});
+    else if(p.format==='gemini') r=await fetch(`${base}/models?pageSize=200`, {headers:{'x-goog-api-key':cfg.apiKey}, signal});
+    else r=await fetch(`${base}/models`, {headers:{Authorization:`Bearer ${cfg.apiKey}`}, signal});
+    if(!r.ok) return {ok:false, error:await aiErrorText(r)};
+    const d=await r.json().catch(()=>({}));
+    let ids;
+    if(p.format==='gemini') ids=(d?.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name||'').replace(/^models\//,''));
+    else ids=(Array.isArray(d?.data)?d.data:Array.isArray(d)?d:[]).map(m=>String(m?.id||''));
+    return {ok:true, models:[...new Set(ids.filter(Boolean))].sort().slice(0,500)};
+  }catch(e){ return {ok:false, error:String(e?.message||e).slice(0,300)}; }
+}
+
+async function aiGetConfigRow(env, clientId){
+  if(!env.DB) return null;
+  try{ return await env.DB.prepare(`SELECT * FROM ai_provider_config WHERE client_id=?`).bind(Number(clientId)).first(); }
+  catch(e){ return null; }
+}
+
+// Per-request memo (keyed on the client record object, which is re-read for every request) so a
+// single conversation turn — classifier + reply + localize — reads and decrypts the row once.
+const _aiRuntimeMemo=new WeakMap();
+async function aiLoadClientRuntime(env, c){
+  if(!c || typeof c!=='object' || !c.Id || !env.DB || !env.AI_KEY_ENC_SECRET) return null;
+  if(_aiRuntimeMemo.has(c)) return _aiRuntimeMemo.get(c);
+  let rt=null;
+  const row=await aiGetConfigRow(env, c.Id);
+  if(row && Number(row.enabled)===1 && AI_PROVIDERS[row.provider]){
+    const apiKey=await aiDecryptSecret(env, row.api_key_enc);
+    if(apiKey) rt={row, provider:row.provider, base_url:row.base_url, model:row.model, apiKey, fallback:Number(row.fallback_shared)!==0};
+  }
+  _aiRuntimeMemo.set(c, rt);
+  return rt;
+}
+// Keeps the card's status line fresh without a D1 write on every call: success is recorded when it
+// clears an error or the last record is over 30 minutes old; a repeated identical error at most
+// every 5 minutes.
+async function aiRecordResult(env, rt, res){
+  const row=rt.row, now=new Date(), nowIso=now.toISOString();
+  try{
+    if(res.ok){
+      if(!row.last_error && row.last_ok_at && now-Date.parse(row.last_ok_at)<30*60e3) return;
+      await env.DB.prepare(`UPDATE ai_provider_config SET last_ok_at=?, last_error=NULL WHERE client_id=?`).bind(nowIso, row.client_id).run();
+      row.last_ok_at=nowIso; row.last_error=null;
+    }else{
+      if(row.last_error===res.error && row.last_error_at && now-Date.parse(row.last_error_at)<5*60e3) return;
+      await env.DB.prepare(`UPDATE ai_provider_config SET last_error=?, last_error_at=? WHERE client_id=?`).bind(res.error, nowIso, row.client_id).run();
+      row.last_error=res.error; row.last_error_at=nowIso;
+    }
+  }catch(e){}
+}
+
+// null → this client has no own provider; the caller runs its original shared path unchanged.
+// {text} → the client's provider answered. {text:null, fallback} → it failed; fallback says
+// whether the client allowed falling back to the shared Leadvyne AI.
+export async function aiClientGenerate(env, c, systemText, userText, opts={}){
+  const rt=await aiLoadClientRuntime(env, c);
+  if(!rt) return null;
+  const res=await aiProviderCall(rt, systemText, userText, opts);
+  await aiRecordResult(env, rt, res);
+  if(res.ok){
+    console.log('[ai-byok-call]', JSON.stringify({caller:opts.caller||'unknown', provider:rt.provider, model:rt.model, clientId:c.Id, ts:new Date().toISOString()}));
+    return {text:res.text, fallback:rt.fallback};
+  }
+  return {text:null, fallback:rt.fallback, error:res.error};
+}
+// Client's own provider first; `shared` (the original code path) only when there is no own
+// provider, or it failed and the client allowed the fallback.
+async function aiClientFirst(env, c, systemText, userText, opts, shared){
+  const own=await aiClientGenerate(env, c, systemText, userText, opts);
+  if(own?.text) return own.text;
+  if(own && !own.fallback) return null;
+  return shared();
+}
+
+function aiConfigOut(row){
+  if(!row) return {connected:false, providers:AI_PROVIDERS};
+  return {connected:true, providers:AI_PROVIDERS, provider:row.provider, base_url:row.base_url||'', model:row.model,
+    key_hint:row.key_hint||'', enabled:Number(row.enabled)===1, fallback_shared:Number(row.fallback_shared)!==0,
+    last_ok_at:row.last_ok_at||null, last_error:row.last_error||null, last_error_at:row.last_error_at||null, updated_at:row.updated_at};
+}
+// Resolves {provider, base_url, model, apiKey} from a request body, reusing the stored key when
+// the api_key field is left blank and the provider (and custom base URL) hasn't changed.
+async function aiResolveRequestCfg(env, clientId, body){
+  const provider=String(body.provider||'');
+  if(!AI_PROVIDERS[provider]) return {error:'Choose a provider.'};
+  let base_url=null;
+  if(provider==='custom'){
+    base_url=aiValidateBaseUrl(body.base_url);
+    if(!base_url) return {error:'Base URL must be a public https:// address, e.g. https://api.together.xyz/v1'};
+  }
+  let apiKey=String(body.api_key||'').trim();
+  if(!apiKey){
+    const row=await aiGetConfigRow(env, clientId);
+    if(row && row.provider===provider && (provider!=='custom' || row.base_url===base_url)) apiKey=await aiDecryptSecret(env, row.api_key_enc)||'';
+  }
+  if(!apiKey) return {error:'Paste your API key.'};
+  if(apiKey.length>500 || /\s/.test(apiKey)) return {error:'That API key doesn\'t look right.'};
+  return {cfg:{provider, base_url, model:aiNormalizeModel(body.model), apiKey}};
+}
+function aiStorageMissing(){ return json({error:'AI Models storage is not set up yet (D1 migration 0105).'}, 503); }
+function aiSecretMissing(){ return json({error:'Own AI keys are not enabled on this server yet (AI_KEY_ENC_SECRET is not set).'}, 503); }
+
+// GET /ai-provider/config
+async function handleAiProviderConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.DB) return aiStorageMissing();
+  return json({config:aiConfigOut(await aiGetConfigRow(env, payload.cid)), server_ready:!!env.AI_KEY_ENC_SECRET});
+}
+// POST /ai-provider/config {provider, base_url, model, api_key, enabled, fallback_shared}
+// Tests the key before saving so a typo can't silently switch the bot onto a dead provider.
+async function handleAiProviderConfigSave(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.DB) return aiStorageMissing();
+  if(!env.AI_KEY_ENC_SECRET) return aiSecretMissing();
+  const body=await request.json().catch(()=>({}));
+  const {cfg, error}=await aiResolveRequestCfg(env, payload.cid, body);
+  if(error) return json({error}, 400);
+  if(!cfg.model) return json({error:'Choose a model.'}, 400);
+  const enabled=body.enabled!==false;
+  if(enabled){
+    const t=await aiProviderCall(cfg, 'Reply with the single word OK.', 'Test', {maxOutputTokens:20, temperature:0, timeoutMs:20000});
+    if(!t.ok) return json({error:'Could not reach the provider with this key/model — '+t.error}, 400);
+  }
+  const now=new Date().toISOString();
+  try{
+    await env.DB.prepare(`INSERT INTO ai_provider_config (client_id, provider, base_url, model, api_key_enc, key_hint, enabled, fallback_shared, last_ok_at, last_error, last_error_at, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
+      ON CONFLICT(client_id) DO UPDATE SET provider=excluded.provider, base_url=excluded.base_url, model=excluded.model, api_key_enc=excluded.api_key_enc,
+        key_hint=excluded.key_hint, enabled=excluded.enabled, fallback_shared=excluded.fallback_shared, last_ok_at=COALESCE(excluded.last_ok_at, ai_provider_config.last_ok_at),
+        last_error=NULL, last_error_at=NULL, updated_at=excluded.updated_at`)
+      .bind(Number(payload.cid), cfg.provider, cfg.base_url, cfg.model, await aiEncryptSecret(env, cfg.apiKey), aiKeyHint(cfg.apiKey),
+        enabled?1:0, body.fallback_shared===false?0:1, enabled?now:null, now, now).run();
+  }catch(e){ return aiStorageMissing(); }
+  return json({ok:true, config:aiConfigOut(await aiGetConfigRow(env, payload.cid))});
+}
+// POST /ai-provider/remove — deletes the row; the client is back on the shared Leadvyne AI.
+async function handleAiProviderRemove(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.DB) return aiStorageMissing();
+  try{ await env.DB.prepare(`DELETE FROM ai_provider_config WHERE client_id=?`).bind(Number(payload.cid)).run(); }catch(e){}
+  return json({ok:true, config:aiConfigOut(null)});
+}
+// POST /ai-provider/test {provider, base_url, model, api_key?} — one tiny prompt, with latency.
+async function handleAiProviderTest(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const {cfg, error}=await aiResolveRequestCfg(env, payload.cid, body);
+  if(error) return json({error}, 400);
+  if(!cfg.model) return json({error:'Choose a model.'}, 400);
+  const t0=Date.now();
+  const r=await aiProviderCall(cfg, 'You are a friendly WhatsApp assistant for a small business.', 'Say hello to a new customer in one short sentence.', {maxOutputTokens:60, temperature:0.3, timeoutMs:20000});
+  return json(r.ok?{ok:true, reply:r.text.slice(0,300), ms:Date.now()-t0}:{ok:false, error:r.error, ms:Date.now()-t0});
+}
+// POST /ai-provider/models {provider, base_url, api_key?}
+async function handleAiProviderModels(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const {cfg, error}=await aiResolveRequestCfg(env, payload.cid, body);
+  if(error) return json({error}, 400);
+  const r=await aiProviderListModels(cfg);
+  return json(r, r.ok?200:400);
 }
 
 function engineParseJsonField(raw, fallback){ try{ const v=JSON.parse(raw||''); return v??fallback; }catch(e){ return fallback; } }
@@ -13423,8 +13736,9 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // to voice transcription and Sarvam TTS above).
   let aiResult=null;
   try{
-    const raw=await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
-      || await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'});
+    const raw=await aiClientFirst(env, c, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'},
+      async()=>await engineGeminiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, json:true, caller:'classify'})
+        || await engineCfAiGenerate(env, systemText, userPrompt, {temperature:0.1, maxOutputTokens:200, caller:'classify'}));
     if(raw){
       try{ aiResult=JSON.parse((raw.replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[raw])[0]); }
       catch(e){ await reportOpsError(env, 'engineClassifyIntent — classifier returned unparseable JSON', e, {raw:raw.slice(0,500)}); }
@@ -13982,8 +14296,9 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
   let raw=null;
-  let generated=await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250,caller:'flight-extract'})
-    ||await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'});
+  let generated=await aiClientFirst(env,c,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250,caller:'flight-extract'},
+    async()=>await engineGeminiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{json:true,maxOutputTokens:250,caller:'flight-extract'})
+      ||await engineCfAiGenerate(env,system,`${transcript}\nCustomer: ${userText}`,{maxOutputTokens:250,caller:'flight-extract'}));
   if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
   if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
   raw=raw&&typeof raw==='object'?raw:{};
@@ -15143,6 +15458,13 @@ function engineStripHallucinatedToolCode(text){
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const own=await aiClientGenerate(env, c, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, caller:'reply'});
+  const ownReply=engineStripHallucinatedToolCode(own?.text);
+  if(ownReply) return ownReply;
+  if(own && !own.fallback){
+    await reportOpsError(env, 'engineCallLlm — client\'s own AI provider failed and shared fallback is off', new Error(own.error||'no usable AI reply'), {clientId:c?.Id});
+    return 'One moment 🙏';
+  }
   const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
   if(geminiReply) return geminiReply;
   // OpenRouter is optional legacy fallback only; never request it with an absent key.
@@ -15475,7 +15797,8 @@ async function engineLocalizeReply(env, c, text, targetLang){
   }
   const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
-    const geminiRaw=await engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'});
+    const geminiRaw=await aiClientFirst(env, c, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'},
+      ()=>engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'}));
     if(geminiRaw) return geminiRaw;
   }catch(e){}
   if(c.openrouter_key){
@@ -31128,6 +31451,11 @@ export default {
       else if(url.pathname.startsWith('/calcom/webhook/') && request.method==='POST'){ res=await handleCalcomWebhook(request, env, url.pathname.slice('/calcom/webhook/'.length)); }
       else if(url.pathname.startsWith('/calcom/meetings/') && request.method==='POST'){ res=await handleCalcomMeetingsWebhook(request, env, url.pathname.slice('/calcom/meetings/'.length)); }
       else if(url.pathname.startsWith('/m/') && request.method==='GET'){ res=await handleMeetingLinkRedirect(request, env, url.pathname.slice('/m/'.length)); }
+      else if(url.pathname==='/ai-provider/config' && request.method==='GET'){ res=await handleAiProviderConfigGet(request, env); }
+      else if(url.pathname==='/ai-provider/config' && request.method==='POST'){ res=await handleAiProviderConfigSave(request, env); }
+      else if(url.pathname==='/ai-provider/remove' && request.method==='POST'){ res=await handleAiProviderRemove(request, env); }
+      else if(url.pathname==='/ai-provider/test' && request.method==='POST'){ res=await handleAiProviderTest(request, env); }
+      else if(url.pathname==='/ai-provider/models' && request.method==='POST'){ res=await handleAiProviderModels(request, env); }
       else if(url.pathname==='/meetings/config' && request.method==='GET'){ res=await handleMeetingsConfigGet(request, env); }
       else if(url.pathname==='/meetings/config' && request.method==='POST'){ res=await handleMeetingsConfigSave(request, env); }
       else if(url.pathname==='/meetings/list' && request.method==='GET'){ res=await handleMeetingsList(request, env); }

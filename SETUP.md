@@ -2376,6 +2376,65 @@ Cal.com URL, up to 6). Until then the card shows only the links step. After the 
   (the column is created on demand). `buildKbProcessorText()` then adds a `## MEETING LINK` section
   to the knowledge base. With the option off, the field is empty and nothing is added.
 
+## AI Models — bring your own key (Settings → Integrations → 🤖 AI Models)
+
+By default every client runs on the shared Gemini key (`GEMINI_API_KEY`). With this card a client
+can connect their own AI account, and their bot's text generation runs on it instead. **Nothing
+changes for a client until they save a key.** A client with no `ai_provider_config` row, or a
+disabled one, takes exactly the same code path as before.
+
+**Providers:**
+- **Claude (Anthropic):** `claude-opus-5-5` is the default and newest; also `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5` and `claude-fable-5-1`.
+- **ChatGPT (OpenAI).**
+- **Google Gemini:** the client's own key, not the shared one.
+- **OpenRouter, Groq, DeepSeek, Mistral.**
+- **Custom:** any OpenAI-compatible `/chat/completions` endpoint, such as Together, Fireworks, Azure
+  OpenAI, xAI, or self-hosted vLLM/Ollama behind public https.
+
+**Load models** lists the models the key can use (`/models`).
+
+**Setup (once per deployment):**
+1. Apply `cloudflare-worker/migrations/0105_ai_provider_config.sql`
+   (`wrangler d1 migrations apply leadvyne-d1 --remote`).
+2. Set the encryption secret: `wrangler secret put AI_KEY_ENC_SECRET` (a long random string, e.g.
+   `openssl rand -base64 48`). Client keys are stored AES-GCM encrypted with it, and **changing it
+   later makes saved keys unreadable**. Affected clients silently go back to Leadvyne AI until they
+   re-enter their key. Until the secret is set, the card says the feature isn't enabled and saving
+   is refused.
+
+**What runs on the client's key:**
+- Bot replies (`engineCallLlm`)
+- Intent/sentiment classification
+- Reply translation
+- AI follow-ups
+- Flight-request extraction
+- Every `engineGeminiGenerateWithFallback` helper (dashboard AI assist, option extraction, spoken
+  replies)
+
+Voice-note transcription, image reading and the Financial Planner helpers stay on the shared Gemini
+key.
+
+**Safety:**
+- **Keys are write-only.** `GET /ai-provider/config` returns only the last 4 characters. A blank key
+  field on save/test reuses the stored key, but only if the provider and base URL are unchanged.
+- **Keys are checked before saving.** Save runs a real one-line test call first, so a bad key or
+  model never switches a live bot over.
+- **Custom base URLs are limited to public hosts.** They must be public `https://` hosts: no
+  credentials, localhost, `.local`/`.internal`, private IPv4 or IPv6 literals (`aiValidateBaseUrl`).
+- **Fallback to Leadvyne AI (default on).** If the client's provider errors, times out (25 s), or
+  Claude declines, that turn falls back to the shared Gemini path. With fallback off, the bot sends
+  "One moment 🙏" and the failure goes to ops.
+- **The card shows live status.** The last success and last error (`last_ok_at` / `last_error`) are
+  shown in the card, throttled to avoid a D1 write on every call.
+
+**Routes** (session-authenticated):
+- `GET /ai-provider/config`
+- `POST /ai-provider/config`
+- `POST /ai-provider/test`
+- `POST /ai-provider/models`
+- `POST /ai-provider/remove` (switches back to Leadvyne AI)
+
 ## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
 Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
 the generic Automations engine above: a client would otherwise have to hand-build a flow
