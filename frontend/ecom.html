@@ -688,6 +688,24 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 
     <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
       <div class="toggle-text">
+        <strong>Product Summary Follow-up (Baby Care)</strong>
+        <small>When a customer asks about a product and then goes quiet, send them one short recap of what they were looking at (product, price, anything they told us like the baby's name) with an easy "Order this" button. Sent once per customer per day, never after they've ordered or a staff member has replied.</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="summaryFollowupChk" onchange="onSummaryFollowupChange()">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+    <div id="summaryFollowupOptions" style="display:none;margin-bottom:20px;padding-left:8px">
+      <div class="s-sec">
+        <span class="s-lbl">Send after (minutes of silence)</span>
+        <input class="s-input" id="summaryFollowupMins" type="number" min="10" max="1380" placeholder="30" style="max-width:120px">
+        <div class="s-hint">Checked every 15 minutes, so it goes out up to 15 minutes after this. Default: 30.</div>
+      </div>
+    </div>
+
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
+      <div class="toggle-text">
         <strong>Catalog Link Throttle (Baby Care)</strong>
         <small>Prevent the catalog link from sending repeatedly if a customer taps the Catalog button multiple times in quick succession</small>
       </div>
@@ -2835,6 +2853,11 @@ function loadImageSettings() {
   document.getElementById('perWindowOptions').style.display = perWinOn ? 'block' : 'none';
   document.getElementById('globalImageWindowHours').value = botConfig.ecom_image_window_hours || '';
 
+  const sumOn = botConfig.baby_care_summary_followup_enabled === true;
+  document.getElementById('summaryFollowupChk').checked = sumOn;
+  document.getElementById('summaryFollowupOptions').style.display = sumOn ? 'block' : 'none';
+  document.getElementById('summaryFollowupMins').value = botConfig.baby_care_summary_followup_mins || '';
+
   const catOn = botConfig.baby_care_catalog_throttle_enabled === true;
   document.getElementById('catalogThrottleChk').checked = catOn;
   document.getElementById('catalogThrottleOptions').style.display = catOn ? 'block' : 'none';
@@ -2850,6 +2873,11 @@ function onPerWindowChange() {
   const on = document.getElementById('perWindowChk').checked;
   document.getElementById('perWindowOptions').style.display = on ? 'block' : 'none';
   document.getElementById('cfImageWindowWrap').style.display = on ? 'block' : 'none';
+}
+
+function onSummaryFollowupChange() {
+  document.getElementById('summaryFollowupOptions').style.display =
+    document.getElementById('summaryFollowupChk').checked ? 'block' : 'none';
 }
 
 function onCatalogThrottleChange() {
@@ -2870,6 +2898,12 @@ async function saveImageSettings() {
   const globalHrs = parseFloat(document.getElementById('globalImageWindowHours').value);
   if (globalHrs > 0) botConfig.ecom_image_window_hours = globalHrs;
   else delete botConfig.ecom_image_window_hours;
+
+  if (document.getElementById('summaryFollowupChk').checked) botConfig.baby_care_summary_followup_enabled = true;
+  else delete botConfig.baby_care_summary_followup_enabled;
+  const sumMins = parseInt(document.getElementById('summaryFollowupMins').value);
+  if (sumMins >= 10) botConfig.baby_care_summary_followup_mins = sumMins;
+  else delete botConfig.baby_care_summary_followup_mins;
 
   botConfig.baby_care_catalog_throttle_enabled = document.getElementById('catalogThrottleChk').checked;
   const throttleMins = parseInt(document.getElementById('catalogThrottleMins').value);
