@@ -10619,7 +10619,9 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
       ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
       : seed?.electronicsFlow
         ? `Electronics order — Payment: ${seed?.paymentMethod||'not specified'}. Verify items and pricing before fulfilling.`
-        : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+        : seed?.chatOrder
+          ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
+          : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
   };
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
@@ -10628,6 +10630,127 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     return {ok:false};
   }
   return {ok:true, order_id};
+}
+
+/* ── Conversational in-chat order (stage 'chat_order') ─────────────────────────────────────
+   Couplo (Sep 2026): a product with no online link got "An online product link is not available.
+   I'll connect you with our team." and a human handover, and the only in-chat alternatives were a
+   fixed two-question ladder (order_collect_*) or Baby Care's button-only Custom Order flow. This
+   takes the order the way a shop assistant would: only once the customer wants it, one or two
+   natural questions at a time, asking only what this product actually needs (e.g. the baby's name
+   for a name-printed set), answering side questions from the product's own data, and saving the
+   order only after the customer confirms a summary. An LLM writes each reply; the code keeps the
+   guard rails — no price or option that isn't in the product row, no order saved without a shown
+   summary + explicit yes + name + address. */
+export function ecomChatOrderSeed(product){
+  return {chatOrder:true, sku:product?.sku||'', productName:String(product?.name||'').trim(),
+    price:Number(product?.price)||0, currency:product?.currency||'',
+    description:String(product?.description||'').slice(0,1200), details:{}, status:'collecting'};
+}
+export function ecomChatOrderSystemPrompt(c, seed, lang){
+  const price=ecomFormatProductPrice(seed.price, seed.currency);
+  return `You are a warm, friendly sales assistant for ${c?.client_name||'the shop'} chatting with a customer on WhatsApp. The customer wants to order the product below, and you are taking the order right here in the chat — like a real person in the shop would, not a form.
+
+PRODUCT (the only source of truth for facts, options and prices):
+Name: ${seed.productName}
+${price?`Price: ${price}
+`:''}Description: ${seed.description||'(none)'}
+
+ORDER DETAILS COLLECTED SO FAR (JSON): ${JSON.stringify(seed.details||{})}
+STATUS SO FAR: ${seed.status||'collecting'}
+
+What you need before the order can be placed:
+- anything this product needs from the customer according to its description (for example the baby's name if it is name-printed, age/size, colour, number of add-ons they want) — only ask for options the description actually offers;
+- quantity (assume 1 unless they say otherwise);
+- customer_name and full delivery_address including PIN code.
+
+How to talk:
+- Sound like a friendly human: short (1-3 sentences), natural, a light emoji at most. Ask for one or two things at a time, never a list of blanks to fill.
+- If the customer asks a question, answer it from the product data first, then gently continue with what's still needed. Never invent prices, options, delivery times or policies; if something isn't in the product data, say the team will confirm it.
+- Reply in the customer's language (ISO code: ${lang||'en'}).
+- When everything needed is collected, send a short summary (product, customisation, quantity, price if known, name, address) and ask them to confirm — set status "confirm".
+- Set status "confirmed" ONLY when the customer clearly says yes to that summary. Then thank them and say the team will confirm payment and delivery shortly.
+- Set status "cancelled" if they no longer want to order. Set status "off_topic" if they have moved on to something unrelated to this order (another product, a general question not about ordering) — your reply is then ignored.
+
+Respond with ONLY JSON: {"reply":"...","status":"collecting|confirm|confirmed|cancelled|off_topic","details":{"quantity":"","customisation":"","customer_name":"","delivery_address":"","notes":""}} — details holds only values the customer actually gave (keep earlier ones).`;
+}
+// Merges one LLM turn into the seed and enforces the guard rails. Returns null when the model gave
+// nothing usable (caller falls back to a plain, safe question).
+export function ecomApplyChatOrderTurn(seed, raw){
+  let t=null;
+  try{ t=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]); }catch(e){ return null; }
+  if(!t || typeof t!=='object') return null;
+  const reply=String(t.reply||'').trim();
+  let status=['collecting','confirm','confirmed','cancelled','off_topic'].includes(t.status)?t.status:'collecting';
+  const details={...(seed.details||{})};
+  for(const [k,v] of Object.entries(t.details||{})){ const val=String(v??'').trim(); if(val) details[k]=val.slice(0,500); }
+  const complete=!!(details.customer_name && details.delivery_address);
+  // Never save an order the customer hasn't seen summarised and said yes to.
+  if(status==='confirmed' && (seed.status!=='confirm' || !complete)) status=complete?'confirm':'collecting';
+  if(status==='confirm' && !complete) status='collecting';
+  if(!reply && status!=='off_topic') return null;
+  return {reply, status, seed:{...seed, details, status}};
+}
+export function ecomChatOrderItems(seed){
+  const d=seed.details||{};
+  return [`${seed.productName}${d.quantity&&d.quantity!=='1'?` × ${d.quantity}`:''}`, d.customisation, d.notes].filter(Boolean).join(' | ');
+}
+async function engineChatOrderTurn(env, c, seed, userText, history, lang){
+  const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'You'}: ${m.content}`).join('\n');
+  const raw=await engineGeminiGenerateWithFallback(env, c, ecomChatOrderSystemPrompt(c, seed, lang),
+    `Recent conversation:\n${recent}\n\nCustomer's latest message: ${userText}`, {temperature:0.4, maxOutputTokens:500, json:true}).catch(()=>null);
+  return ecomApplyChatOrderTurn(seed, raw);
+}
+// One chat_order turn: starts (seed fresh from the product) or continues the conversation, saves
+// the order on confirmation. Returns {handled:false} for off-topic so normal routing takes over.
+async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed, userText, history, replyLang, routing, ctx, mediaType){
+  const turn=await engineChatOrderTurn(env, c, seed, userText, history, replyLang);
+  if(turn?.status==='off_topic'){ routing.next='new'; routing.clearOrderCollect=true; return {handled:false}; }
+  let text, next='chat_order', nextSeed=turn?.seed||seed;
+  if(!turn){
+    text=await engineLocalizeReply(env, c, (seed.details||{}).customer_name
+      ? 'Got it 😊 Could you share the full delivery address with PIN code?'
+      : 'Lovely choice 😊 May I have your name and full delivery address (with PIN code) to place the order?', replyLang);
+  } else if(turn.status==='confirmed'){
+    const d=nextSeed.details;
+    const qty=Math.max(1, parseInt(d.quantity,10)||1);
+    const order=await finalizeChatOrder(env, c, clientId, phone, d.customer_name||name,
+      {chatOrder:true, items:ecomChatOrderItems(nextSeed), price:nextSeed.price?nextSeed.price*qty:0, currency:nextSeed.currency}, d.delivery_address);
+    text=order.ok ? turn.reply
+      : await engineLocalizeReply(env, c, "Thank you! I've noted your order — our team will confirm everything with you shortly 😊", replyLang);
+    if(!order.ok) await engineSendHandoverLabel(c, convId);
+    next='new'; nextSeed=null;
+  } else {
+    text=turn.reply;
+    if(turn.status==='cancelled'){ next='new'; nextSeed=null; }
+  }
+  await engineDeliverReply(env, c, clientId, convId, text, {mediaType, langCode:replyLang, ctx});
+  routing.reply=text; routing.next=next;
+  if(nextSeed) routing.orderCollectSeed=nextSeed; else routing.clearOrderCollect=true;
+  if(routing.route==='human') routing.route='ecom_faq';
+  return {handled:true, text};
+}
+
+// Answers what the customer actually said about a category ("New born baby aanu", "23 days old",
+// "rate?") from the business prompt + verified catalogue, before the product picker. Couplo (Sep
+// 2026): the deterministic category branch skipped this and replied only "Please choose a product
+// from Premium Baby Set:" — to every message, whatever was asked. '' on any failure (caller then
+// falls back to the plain picker intro).
+async function engineEcomCategoryAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText){
+  try{
+    const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
+    const sys=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
+      +'\n\nCATEGORY ENQUIRY: Reply to what the customer actually said, like a helpful shop assistant — answer their question or respond to what they told you (e.g. their baby\'s age → which sets suit them). Keep it short. Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified product picker will follow your answer, so do not list every product and do not output OPTIONS.';
+    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+    return String(engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text||'').trim();
+  }catch(e){ await reportOpsError(env, 'engineEcomCategoryAnswer', e, {clientId}); return ''; }
+}
+// The answer goes out as its own message and the verified product choices follow as a short,
+// secondary picker — WhatsApp caps an interactive body at 1024 chars, and the answer is the point.
+export async function engineSendAnswerThenPicker(env, c, clientId, convId, phone, answer, pickerText, items, {mediaType, replyLang, ctx}={}){
+  if(answer) await engineDeliverReply(env, c, clientId, convId, answer, {mediaType, langCode:replyLang, ctx});
+  const quickReplies=await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, pickerText, items);
+  return {reply:answer?`${answer}\n\n${pickerText}`:pickerText, quickReplies};
 }
 
 // Fashion-only order choices. Product size/color fields may be stored as JSON arrays by an
@@ -19447,6 +19570,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }
     }
     // ── End medical centre order handler ─────────────────────────────────────────
+    // Conversational order in progress (see engineHandleChatOrder). An explicit ask for a person
+    // (route 'human') still wins; an off-topic message leaves the order and routes normally.
+    if(!orderHandledInline && !routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage==='chat_order'){
+      let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
+      if(seed.chatOrder){
+        const r=await engineHandleChatOrder(env, c, clientId, convId, phone, name, seed, userText, state.activeHistory, replyLang, routing, ctx, mediaType);
+        if(r.handled){ sentText=r.text; orderHandledInline=true; }
+      }else{ routing.next='new'; }
+    }
     if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && state.stage && state.stage.startsWith('order_collect_')){
       let seed={}; try{ seed=JSON.parse(state.lead?.OrderCollect||'{}'); }catch(e){}
       if(state.stage==='order_collect_items'){
@@ -19729,6 +19861,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(ecomIsPhotoRequest(userText) && !detection.signal && state.lead?.['Last Product Sku']){
         detection.signal=true; detection.mode='enquiry';
       }
+      // "Order this 🛒" under a product card → an order for the product just shown.
+      if(/^CHAT_ORDER_START$/i.test(userText.trim()) && state.lead?.['Last Product Sku']){
+        detection.signal=true; detection.mode='order'; detection.sku=state.lead['Last Product Sku']; detection.productName=undefined;
+      }
       const activeProducts=await ecomListActiveProducts(env, clientId);
       const exactSelectedProduct=ecomExactProductSelection(activeProducts, userText);
       const broadMatches=await ecomFindBroadProductMatches(env, clientId, userText);
@@ -19922,7 +20058,23 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // A photo request for a product with a stored image goes to the card branch below (card +
         // real photo) — the FAQ LLM can't attach media and would reply "I can't send pictures".
         const _babyPhotoAsk=isBabyCareEcom && !!product && ecomIsPhotoRequest(userText) && !!(product.image_url||'').trim();
-        if(isBabyCareEcom && product && !_babyPhotoAsk && (detection.mode==='order'||detection.mode==='enquiry')
+        // Order intent with no product/store link to send (or link sending switched off) → take the
+        // order in the chat, conversationally. Fashion/Electronics/Medical keep their own order
+        // flows, and "Talk to sales team" (ecom_order_link_enabled 'Human') still hands over.
+        const _chatOrderLink=product?buildCheckoutLink(c, clientId, detection.sku, product):'';
+        const _startChatOrder=detection.mode==='order' && !!product && c.ecom_order_link_enabled!=='Human'
+          && !isFashionEcom && !isElectronicsEcom && !isMedicalCentreEcom
+          && (!_chatOrderLink || c.ecom_order_link_enabled==='No');
+        let _chatOrderStarted=false;
+        if(_startChatOrder){
+          await ensureOrderCollectField(env);
+          const _utter=/^CHAT_ORDER_START$/i.test(userText.trim())?"I'd like to order this.":userText;
+          const r=await engineHandleChatOrder(env, c, clientId, convId, phone, name, ecomChatOrderSeed(product), _utter, state.activeHistory, replyLang, routing, ctx, mediaType);
+          if(r.handled){ sentText=r.text; orderHandledInline=true; _chatOrderStarted=true; }
+        }
+        if(_chatOrderStarted){
+          // handled above
+        } else if(isBabyCareEcom && product && !_babyPhotoAsk && (detection.mode==='order'||detection.mode==='enquiry')
           && (resolvedFromHistory||_babyProductQuestion||(state.stage&&state.stage.startsWith('baby_')))){
           // Baby care: a question about a product (or a follow-up on an earlier one, or anything
           // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
@@ -19939,11 +20091,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
           else if(shopifyTier===2) await engineSendShopifyTier2(env,c,clientId,convId,product,{withDescription:false,withLink:false});
           else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:false});
-          const followUp=await engineLocalizeReply(env,c,'Would you like to order this set? Tap *Custom Order* to personalise it, or ask me anything about it 😊',replyLang);
+          const followUp=await engineLocalizeReply(env,c,'Would you like to order this? I can take your order right here — or ask me anything about it 😊',replyLang);
           sentText=followUp;
           routing.reply=`${card}\n\n${followUp}`;
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,followUp,[
-            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'Order this 🛒',value:'CHAT_ORDER_START'},
             {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
             {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
           ]);
@@ -20125,8 +20277,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
           const productLines=[`*${product.name}*`];
           if(product.description) productLines.push(String(product.description));
+          // No link: offer to take the order right here instead of "I'll connect you with our team"
+          // + a handover that stopped the conversation (Couplo, Sep 2026). "Talk to sales team"
+          // (ecom_order_link_enabled 'Human') keeps the handover.
+          const _salesHandover=!enquiryLink && c.ecom_order_link_enabled==='Human';
           if(enquiryLink) productLines.push(`Order / product link: ${enquiryLink}`);
-          else productLines.push('An online product link is not available. I’ll connect you with our team.');
+          else if(_salesHandover) productLines.push('An online product link is not available. I’ll connect you with our team.');
+          else productLines.push(await engineLocalizeReply(env, c, 'Would you like to order this? I can take your order right here 😊', replyLang));
           sentText=productLines.join('\n\n');
           routing.reply=sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
@@ -20147,7 +20304,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           else if(sendRandomImages) await engineSendRandomTwoProductImages(env, c, clientId, convId, product);
           if(forceResendLink){ const _fl=(product.shopify_product_url||'').trim(); if(_fl) await engineSendChatwootReply(env, c, clientId, convId, `🛍️ Here's the product link:\n${_fl}`); }
           if(enquiryLink) await logPendingOrder(env, c, clientId, phone, name, product);
-          else{
+          else if(_salesHandover){
             routing.route='human';
             routing.humanReason='product_link_missing';
             await engineSendHandoverLabel(c, convId);
@@ -20175,28 +20332,22 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
                 if(p.image_url) await sendDriveMediaToChatwoot(c,convId,p.image_url,'');
                 if(p.video_url) await sendDriveMediaToChatwoot(c,convId,p.video_url,'');
               }
-              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
-              routing.reply=sentText;
-              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomFashionProductChoiceItems(fashionProducts));
+              const _answer=await engineEcomCategoryAnswer(env,c,clientId,phone,state,replyLang,isNewLead,routing,userText);
+              const _pick=await engineLocalizeReply(env,c,_answer?`Tap a design to see details 👇`:`Please choose a product from ${detection.category}:`,replyLang);
+              const _sent=await engineSendAnswerThenPicker(env,c,clientId,convId,phone,_answer,_pick,ecomFashionProductChoiceItems(fashionProducts),{mediaType,replyLang,ctx});
+              sentText=_sent.reply; routing.reply=sentText; routing.quickReplies=_sent.quickReplies;
             }else{
-              const recommended=categoryProducts.slice(0,Math.min(3,categoryProducts.length));
-              const remaining=categoryProducts.slice(recommended.length,10);
-              const body=[`Recommended in ${detection.category}:`,...recommended.map(p=>`- ${p.name}`),remaining.length?'More products:':'',...remaining.map(p=>`- ${p.name}`)].filter(Boolean).join('\n');
-              sentText=await engineLocalizeReply(env,c,`Please choose a product from ${detection.category}:`,replyLang);
-              routing.reply=sentText;
-              routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,ecomProductChoiceItems(categoryProducts));
+              const _answer=await engineEcomCategoryAnswer(env,c,clientId,phone,state,replyLang,isNewLead,routing,userText);
+              const _pick=await engineLocalizeReply(env,c,_answer?`Tap a set to see details and photos 👇`:`Please choose a product from ${detection.category}:`,replyLang);
+              const _sent=await engineSendAnswerThenPicker(env,c,clientId,convId,phone,_answer,_pick,ecomProductChoiceItems(categoryProducts),{mediaType,replyLang,ctx});
+              sentText=_sent.reply; routing.reply=sentText; routing.quickReplies=_sent.quickReplies;
             }
             orderHandledInline=true;
           }
           if(!orderHandledInline){
-          let categoryPromptReply=null;
-          if(categoryProducts.length){
-            const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
-            const categorySystemPrompt=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
-              +'\n\nCATEGORY ENQUIRY: Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified database picker will follow your answer, so do not output OPTIONS.';
-            const generated=await engineCallLlmAvoidingRepeat(env, c, categorySystemPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
-            categoryPromptReply=engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text;
-          }
+          const categoryPromptReply=categoryProducts.length
+            ? (await engineEcomCategoryAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText))||null
+            : null;
           // Brand-level narrowing — same "never leave a multi-way choice as free text" reasoning
           // as the variant/product picker below, one level up. Real observed failure: a customer
           // asking about a category with several carried brands got a free-form LLM paragraph
@@ -20222,11 +20373,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             const categoryImage=await ecomFindCategoryImage(env, clientId, detection.category);
             const withImage=categoryProducts.find(p=>p.image_url)||categoryProducts[0];
             const photoUrl=categoryImage||withImage.image_url;
-            const intro=categoryPromptReply||`Which brand of ${detection.category} are you interested in?`;
+            const intro=`Which brand of ${detection.category} are you interested in?`;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
-            // Ecom catalogue choices are always interactive and come verbatim from Product data.
+            // The answer to what they asked goes first as its own message; the verified brand
+            // choices follow as a short picker (see engineSendAnswerThenPicker).
+            if(categoryPromptReply) await engineDeliverReply(env, c, clientId, convId, categoryPromptReply, {mediaType, langCode:replyLang, ctx});
             sentText=await engineLocalizeReply(env, c, intro, replyLang);
-            routing.reply=sentText;
+            routing.reply=categoryPromptReply?`${categoryPromptReply}\n\n${sentText}`:sentText;
             const items=brandsInCategory.slice(0,10).map(b=>({title:b, value:b}));
             if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
             routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
@@ -20245,7 +20398,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
               nameChoices.push({value:p.name, label:(p.short_label||'').trim()||p.name});
             }
             const choices=variants.length?variants.map(v=>({value:v, label:v})):nameChoices;
-            const intro=categoryPromptReply||(variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`);
+            const intro=variants.length?`Which type of ${chosenBrand||detection.category} are you looking for?`:`Here's what we have in ${chosenBrand||detection.category}:`;
             const photoUrl=categoryImage||withImage.image_url;
             if(photoUrl) routing.media={url:engineResolveDirectImageUrl(photoUrl), type:'image'};
             // Tappable picker (buttons for <=3 choices, a Chatwoot list message for up to 10)
@@ -20254,9 +20407,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             // behavior for a button/list reply), which the next turn's product/category resolution
             // already handles the same as if the customer had typed it themselves.
             if(choices.length){
-              // Always buttons/list rows; every title/value is an exact Ecom Product field.
+              // Always buttons/list rows; every title/value is an exact Ecom Product field. The answer
+              // to what they asked goes first as its own message.
+              if(categoryPromptReply) await engineDeliverReply(env, c, clientId, convId, categoryPromptReply, {mediaType, langCode:replyLang, ctx});
               sentText=await engineLocalizeReply(env, c, intro, replyLang);
-              routing.reply=sentText;
+              routing.reply=categoryPromptReply?`${categoryPromptReply}\n\n${sentText}`:sentText;
               const items=choices.slice(0,10).map(ch=>({title:ch.label, value:ch.value}));
               if(photoUrl) await engineSendChatwootImageReply(env, c, clientId, convId, photoUrl, '');
               routing.quickReplies=await engineSendChatwootQuickReply(env, c, clientId, convId, sentText, items);
