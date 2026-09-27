@@ -539,6 +539,20 @@ most once per 24h. It never sends right after an in-chat order (`routing.orderPl
 The message is appended to ConvHistory with its options, so button taps resolve.
 **Tested:** `baby-summary-followup.test.js`.
 
+
+### 32 — [backend] Product question: answer first, then the product card + photo
+**Area:** `ecomIsProductQuestion`, `engineEcomProductAnswer`, Baby Care card branch and generic enquiry
+branch in `handleEngineWebhook` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: "Ith oru jodi alliyo" ("isn't this a pair?") about Kids T-Shirt V2 got only the
+verbatim product card + order offer, with no answer, so staff had to reply "it's only a T-shirt".
+Baby Care instead sent first-time product questions to the FAQ LLM with no photo at all.
+**Fix:** When the message names a product (not a follow-up via Last Product Sku) and asks something
+(English / Manglish / Hindi / Malayalam-script markers), the AI first answers from that product's
+own row + the business prompt only. If a fact isn't stated, it says the team will confirm. Then
+the product card + photo go out. A bare product name/tap, a photo ask, or a sent image still gets
+just the card. Follow-up questions about the same product stay answer-only.
+**Tested:** `product-question.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
