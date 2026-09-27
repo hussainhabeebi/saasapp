@@ -52,3 +52,20 @@ test('AI4Bharat/Sarvam hedge still returns text on schedule when both stall',asy
   assert.equal(audio,null);
   assert.ok(Date.now()-started<100);
 });
+
+test('voice summary transcript labels turns and keeps the most recent ones within budget',async()=>{
+  const {engineBuildVoiceSummaryTranscript}=await import('./worker.js');
+  const transcript=engineBuildVoiceSummaryTranscript([
+    {role:'user',content:'old question'},
+    {role:'system',content:'ignored'},
+    {role:'assistant',content:'  old\n answer '},
+    {role:'user',content:''},
+    {role:'user',content:'latest question'},
+  ]);
+  assert.equal(transcript,'Customer: old question\nBusiness: old answer\nCustomer: latest question');
+  const trimmed=engineBuildVoiceSummaryTranscript([
+    {role:'user',content:'a'.repeat(50)},
+    {role:'assistant',content:'b'.repeat(50)},
+  ],70);
+  assert.equal(trimmed,'Business: '+'b'.repeat(50));
+});

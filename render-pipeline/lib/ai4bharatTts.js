@@ -1,5 +1,6 @@
-// Persistent AI4Bharat TTS bridge. One Python process owns one loaded model for the lifetime of
-// the Coolify container; requests no longer spawn Python and reload several gigabytes of weights.
+// Persistent AI4Bharat Indic Parler-TTS bridge. One Python process owns one loaded model for the
+// lifetime of the Coolify container; requests never spawn Python or reload the multi-GB weights.
+// Only Malayalam and Hindi are served (see tts/synthesize_parler.py).
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -8,8 +9,8 @@ const { spawn } = require('child_process');
 const { randomUUID } = require('crypto');
 const { run } = require('./exec');
 
-const LANGUAGES = new Set(['hi', 'bn', 'kn', 'ml', 'mr', 'or', 'pa', 'ta', 'te', 'gu', 'en']);
-const SCRIPT = path.join(__dirname, '..', 'tts', 'synthesize_ai4bharat.py');
+const LANGUAGES = new Set(['ml', 'hi']);
+const SCRIPT = path.join(__dirname, '..', 'tts', 'synthesize_parler.py');
 
 let child = null;
 let readyPromise = null;
@@ -47,14 +48,14 @@ function ensureWorker() {
     const proc = spawn('python3', [SCRIPT], { stdio: ['pipe', 'pipe', 'pipe'] });
     child = proc;
     let settled = false;
-    // VITS worker emits {ready} immediately — 30 s is generous; Parler-TTS needed 180 s.
+    // Parler-TTS loads ~4 GB of weights before emitting {ready}; CPU hosts can need several minutes.
     const startupTimer = setTimeout(() => {
       if (!settled) {
         settled = true;
         reject(new Error('AI4Bharat model startup timed out'));
         stopWorker(new Error('AI4Bharat model startup timed out'));
       }
-    }, Math.max(10000, Number(process.env.AI4BHARAT_STARTUP_TIMEOUT_MS || 30000)));
+    }, Math.max(10000, Number(process.env.AI4BHARAT_STARTUP_TIMEOUT_MS || 300000)));
 
     readline.createInterface({ input: proc.stdout }).on('line', line => {
       let message;
@@ -99,7 +100,7 @@ async function requestWav(text, language, outputPath) {
   await ensureWorker();
   const id = randomUUID();
   return new Promise((resolve, reject) => {
-    const timer = null; // No synthesis timeout — VITS on CPU runs until complete.
+    const timer = null; // No synthesis timeout — summaries are delayed, so Parler runs until complete.
     pending.set(id, { resolve, reject, timer });
     child.stdin.write(JSON.stringify({ id, text: text.slice(0, 500), language, output_path: outputPath }) + '\n');
   });
