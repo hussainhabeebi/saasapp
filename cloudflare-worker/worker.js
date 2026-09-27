@@ -16813,8 +16813,10 @@ async function engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, 
 // the text-only reply they'd have gotten before this existed is a far better failure mode than
 // getting nothing at all, same reasoning as the image-reply fallback above.
 // Returns true/false — see engineSendChatwootReply's own comment.
+// fallbackText===null means "voice only": a failed send returns false instead of sending text.
 async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, captionText, fallbackText){
-  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  const fallback=()=>fallbackText==null?false:engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!audioBuf) return fallback();
   try{
     const blob=new Blob([audioBuf], {type:'audio/ogg; codecs=opus'});
     const trimmed=(typeof captionText==='string'?captionText:'').trim();
@@ -16825,12 +16827,12 @@ async function engineSendChatwootAudioReply(env, c, clientId, convId, audioBuf, 
     if(!r.ok){
       const errBody=await r.text().catch(()=>'');
       await reportOpsError(env, 'engineSendChatwootAudioReply — Chatwoot rejected the send', new Error(`HTTP ${r.status} — ${errBody.slice(0,500)}`), {clientId, convId});
-      return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+      return fallback();
     }
     return true;
   }catch(e){
     await reportOpsError(env, 'engineSendChatwootAudioReply — send threw', e, {clientId, convId});
-    return engineSendChatwootReply(env, c, clientId, convId, fallbackText);
+    return fallback();
   }
 }
 
@@ -16901,8 +16903,6 @@ async function engineSarvamTts(env, text, targetLangCode, clientApiKey='', reque
   }
 }
 
-const ENGINE_VOICE_REPLY_DEADLINE_MS=65000;  // Piper 2.5s + AI4Bharat up to 30s + Sarvam up to 30s + 2.5s buffer
-const ENGINE_VOICE_CACHE_PREFIX='voice-cache/v2';
 const ENGINE_PIPER_TTS_DEADLINE_MS=2500;
 const ENGINE_AI4BHARAT_HEDGE_MS=30000;  // wait 30s for AI4Bharat VITS before starting Sarvam
 const ENGINE_LIVE_TTS_DEADLINE_MS=60000;  // 30s AI4Bharat + 30s Sarvam total budget
@@ -16960,29 +16960,6 @@ export async function engineWithDeadline(promise, deadlineMs){
   }
 }
 
-async function engineVoiceCacheKey(clientId, langCode, replyText){
-  const normalized=String(replyText||'').trim().replace(/\s+/g,' ').toLowerCase();
-  const digest=await sha256Hex(`${langCode}|${ENGINE_TTS_SPEAKER}|${normalized}`);
-  return `${ENGINE_VOICE_CACHE_PREFIX}/${clientId}/${langCode}/${digest}.ogg`;
-}
-
-async function engineVoiceCacheGet(env, key){
-  if(!env.HOSPITALITY_MEDIA) return null;
-  try{
-    const obj=await env.HOSPITALITY_MEDIA.get(key);
-    if(!obj) return null;
-    const buf=await obj.arrayBuffer();
-    return buf.byteLength>=200?buf:null;
-  }catch(_e){ return null; }
-}
-
-async function engineVoiceCachePut(env, key, audioBuf, provider){
-  if(!env.HOSPITALITY_MEDIA||!audioBuf||audioBuf.byteLength<200) return;
-  try{
-    await env.HOSPITALITY_MEDIA.put(key, audioBuf, {httpMetadata:{contentType:'audio/ogg'}, customMetadata:{provider:String(provider||'unknown')}});
-  }catch(_e){}
-}
-
 // Free Piper gets a short first attempt (2.5s). If it is unavailable/unsupported, AI4Bharat VITS
 // starts and is the primary provider — Sarvam only fires after 30s if AI4Bharat hasn't responded.
 // Sarvam is the strong backup: it requires a client key or a Worker quota slot.
@@ -16998,33 +16975,6 @@ export async function engineRunLiveVoiceTtsRotation(piperCall, ai4bharatCall, sa
     ENGINE_LIVE_TTS_DEADLINE_MS
   );
   return live||{audio:null,provider:'text'};
-}
-
-// Voice-to-voice only: exact final replies are safe to reuse. Text-message delivery and scheduled
-// follow-ups do not call this function and therefore retain their existing behaviour.
-async function engineCachedVoiceRotation(env, c, clientId, replyText, langCode){
-  // Key the cache from the final verified reply, so a hit avoids both the spoken-rewrite Gemini
-  // call and every TTS provider. The cache prefix changes when the provider/voice ladder changes.
-  const cacheKey=await engineVoiceCacheKey(clientId, langCode, replyText);
-  const cached=await engineVoiceCacheGet(env, cacheKey);
-  if(cached) return cached;
-  const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-  if(!spokenText) return null;
-  const iso=(langCode||'').toLowerCase();
-  const bcp47=ENGINE_TTS_LANG_MAP[iso];
-  const result=await engineRunLiveVoiceTtsRotation(
-    ()=>enginePiperTts(env,spokenText,iso,ENGINE_PIPER_TTS_DEADLINE_MS),
-    ()=>engineAi4BharatTts(env,spokenText,iso,ENGINE_LIVE_TTS_DEADLINE_MS),
-    async()=>{
-      if(!bcp47) return null;
-      const credential=await engineClaimSarvamCredential(env,c,clientId);
-      return credential?engineSarvamTts(env,spokenText,bcp47,credential.apiKey,15000):null;  // 15s — fires only after AI4Bharat 30s wait
-    }
-  );
-  // Cache writes must never delay the first live send. R2 is best-effort here; the generated
-  // audio remains immediately usable even if this background write is interrupted or fails.
-  if(result.audio) void engineVoiceCachePut(env,cacheKey,result.audio,result.provider);
-  return result.audio;
 }
 
 // Strip markdown, emojis, and URLs from TTS input so engines receive clean prose
@@ -17043,237 +16993,181 @@ function enginePreprocessTtsText(text){
   return t;
 }
 
-// Split text into sentence chunks of ≤maxLen chars for better TTS quality on long inputs
-function engineSplitSentences(text, maxLen=150){
-  if(!text||text.length<=maxLen) return [text].filter(Boolean);
-  const raw=text.split(/(?<=[.?!।])\s+/);
-  const chunks=[];
-  let cur='';
-  for(const p of raw){
-    const s=p.trim(); if(!s) continue;
-    if(!cur){cur=s;continue;}
-    if(cur.length+1+s.length<=maxLen){cur+=' '+s;}
-    else{chunks.push(cur);cur=s;}
-  }
-  if(cur) chunks.push(cur);
-  return chunks.flatMap(c=>c.length<=maxLen?[c]:c.split(/(?<=[,;])\s+/).filter(x=>x.trim()));
+/* ── END-OF-SESSION VOICE SUMMARY ─────────────────────────────────────────────────────────────
+   Live replies are always text (a customer's voice note is transcribed and answered in text, see
+   engineDeliverReply). When the customer sent at least one voice note in Malayalam or Hindi, the
+   conversation is tracked in D1 voice_summary_sessions; once it has been idle for
+   VOICE_SUMMARY_IDLE_MS the 15-minute cron writes a short spoken summary with Gemini and queues it on the
+   self-hosted voice service (render-pipeline POST /tts-jobs: AI4Bharat Indic Parler-TTS primary,
+   no time limit; Piper backup). The service calls /voice/summary-callback when done and the audio
+   is sent as a WhatsApp voice note. If anything fails nothing is sent — every reply already went
+   out as text. ── */
+const VOICE_SUMMARY_LANGS=new Set(['ml','hi']);
+const VOICE_SUMMARY_IDLE_MS=10*60*1000;
+const VOICE_SUMMARY_STALE_QUEUED_MS=60*60*1000;   // no callback after this → retry (Parler on CPU can queue)
+const VOICE_SUMMARY_MAX_ATTEMPTS=2;
+const VOICE_SUMMARY_WINDOW_MS=23*60*60*1000;      // stay inside WhatsApp's 24h customer-service window
+const VOICE_SUMMARY_BATCH=25;
+const VOICE_SUMMARY_LANG_NAMES={ml:'Malayalam (Malayalam script)', hi:'Hindi (Devanagari script)'};
+
+let voiceSummarySchemaReady=false;
+async function engineEnsureVoiceSummarySchema(env){
+  if(voiceSummarySchemaReady) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS voice_summary_sessions (
+    client_id TEXT NOT NULL, conv_id TEXT NOT NULL, lead_id INTEGER NOT NULL, lang TEXT NOT NULL,
+    started_at TEXT NOT NULL, last_inbound_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    job_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, queued_at TEXT, summary_text TEXT, provider TEXT,
+    error TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (client_id, conv_id))`).run();
+  voiceSummarySchemaReady=true;
 }
 
-// Synthesize text in sentence-length chunks and concatenate the Ogg buffers (valid chained bitstream)
-async function engineSynthChunked(synthFn, text, maxLen=150){
-  const chunks=engineSplitSentences(text, maxLen);
-  if(chunks.length<=1) return synthFn(text);
-  const results=await Promise.all(chunks.map(c=>Promise.resolve(synthFn(c)).catch(()=>null)));
-  const valid=results.filter(Boolean);
-  if(!valid.length) return null;
-  if(valid.length===1) return valid[0];
-  const total=valid.reduce((s,b)=>s+b.byteLength,0);
-  const out=new Uint8Array(total);
-  let off=0; for(const b of valid){out.set(new Uint8Array(b),off);off+=b.byteLength;}
-  return out.buffer;
-}
-
-// PRIMARY TTS — Bhashini Dhruva inference API (https://bhashini.gov.in/). Government-backed,
-// supports all 10 scheduled Indic languages + English. Requires BHASHINI_USER_ID and
-// BHASHINI_INFERENCE_KEY in Cloudflare Worker secrets. Returns WAV from Bhashini → converted to
-// Ogg/Opus via render pipeline /wav-to-ogg; if the render pipeline is absent, falls through to
-// the next provider (Google TTS). Override service IDs via BHASHINI_SERVICE_MAP_JSON env var
-// ({"ml":"<serviceId>",...}) once you've confirmed the IDs from your Bhashini console.
-const BHASHINI_TTS_LANG_CODES={
-  ml:'ml',hi:'hi',ta:'ta',te:'te',kn:'kn',
-  bn:'bn',gu:'gu',mr:'mr',pa:'pa',or:'or',en:'en',
-};
-// Bhashini service IDs — all languages use Indic Parler-TTS (natural, non-robotic).
-// Override specific languages via BHASHINI_SERVICE_MAP_JSON if your console shows different IDs.
-let BHASHINI_SERVICE_MAP={
-  ml:'ai4bharat/indic-parler-tts',
-  ta:'ai4bharat/indic-parler-tts',
-  te:'ai4bharat/indic-parler-tts',
-  kn:'ai4bharat/indic-parler-tts',
-  hi:'ai4bharat/indic-parler-tts',
-  bn:'ai4bharat/indic-parler-tts',
-  mr:'ai4bharat/indic-parler-tts',
-  gu:'ai4bharat/indic-parler-tts',
-  pa:'ai4bharat/indic-parler-tts',
-  or:'ai4bharat/indic-parler-tts',
-  en:'ai4bharat/indic-parler-tts',
-};
-if(typeof process!=='undefined'&&process.env?.BHASHINI_SERVICE_MAP_JSON){
-  try{BHASHINI_SERVICE_MAP={...BHASHINI_SERVICE_MAP,...JSON.parse(process.env.BHASHINI_SERVICE_MAP_JSON)};}
-  catch(e){}
-}
-async function engineBhashiniTts(env, text, isoLangCode, timeoutMs=10000){
-  if(!env.BHASHINI_USER_ID||!env.BHASHINI_INFERENCE_KEY) return null;
-  const srcLang=BHASHINI_TTS_LANG_CODES[isoLangCode];
-  if(!srcLang) return null;
-  const serviceId=BHASHINI_SERVICE_MAP[isoLangCode];
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+// Called once per handled inbound WhatsApp turn. A voice note in a summary language starts (or
+// keeps open) the session; any other customer message only pushes an open session's idle clock
+// forward and cancels a job already in flight, so the summary always covers the whole chat.
+async function engineTrackVoiceSummarySession(env, clientId, convId, leadId, mediaType, langCode){
+  if(!env.DB||!convId||!leadId) return;
+  const now=new Date().toISOString();
+  const lang=String(langCode||'').toLowerCase();
   try{
-    const r=await fetch('https://dhruva-api.bhashini.gov.in/services/inference/pipeline',{
-      method:'POST', signal:controller.signal,
-      headers:{'Content-Type':'application/json','Authorization':env.BHASHINI_INFERENCE_KEY,'userID':env.BHASHINI_USER_ID},
-      body:JSON.stringify({
-        pipelineTasks:[{
-          taskType:'tts',
-          config:{language:{sourceLanguage:srcLang},serviceId,gender:'female',samplingRate:22050}
-        }],
-        inputData:{input:[{source:text.slice(0,500)}]}
-      })
-    });
-    if(!r.ok){
-      const bodyText=await r.text().catch(()=>'');
-      await reportOpsError(env,'engineBhashiniTts — non-OK response',new Error(`HTTP ${r.status}: ${bodyText.slice(0,300)}`),{isoLangCode});
-      return null;
-    }
-    const data=await r.json();
-    const wavB64=data?.pipelineResponse?.[0]?.audio?.[0]?.audioContent;
-    if(!wavB64) return null;
-    // WAV → Ogg/Opus via render pipeline. If pipeline absent, fall through to next provider.
-    if(!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET) return null;
-    const reqBody=JSON.stringify({wav_base64:wavB64});
-    const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET,reqBody);
-    const conv=await fetch(`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/wav-to-ogg`,{
-      method:'POST',headers:{'Content-Type':'application/json','X-Signature':sig},body:reqBody
-    });
-    if(!conv.ok){
-      const convBody=await conv.text().catch(()=>'');
-      await reportOpsError(env,'engineBhashiniTts — wav-to-ogg conversion failed',new Error(`HTTP ${conv.status}: ${convBody.slice(0,200)}`),{isoLangCode});
-      return null;
-    }
-    const buf=await conv.arrayBuffer();
-    if(buf.byteLength<200 || buf.byteLength<text.length*30) return null;
-    return buf;
-  }catch(e){
-    await reportOpsError(env,'engineBhashiniTts — threw',e,{isoLangCode});
-    return null;
-  }finally{ clearTimeout(timer); }
-}
-
-// SECONDARY TTS — Google Cloud Text-to-Speech (WaveNet voices). Requires GOOGLE_TTS_API_KEY in
-// Cloudflare Worker secrets (Cloud TTS API enabled on the project). Returns Ogg/Opus at 16kHz
-// directly — no render pipeline or audio conversion needed. Strong Indic language coverage via
-// WaveNet voices; falls back silently if the key is absent or the language is unsupported.
-const GOOGLE_TTS_VOICE_MAP={
-  ml:{languageCode:'ml-IN',name:'ml-IN-Wavenet-A'},
-  hi:{languageCode:'hi-IN',name:'hi-IN-Wavenet-A'},
-  ta:{languageCode:'ta-IN',name:'ta-IN-Wavenet-A'},
-  te:{languageCode:'te-IN',name:'te-IN-Wavenet-A'},
-  kn:{languageCode:'kn-IN',name:'kn-IN-Wavenet-A'},
-  bn:{languageCode:'bn-IN',name:'bn-IN-Wavenet-A'},
-  gu:{languageCode:'gu-IN',name:'gu-IN-Wavenet-A'},
-  mr:{languageCode:'mr-IN',name:'mr-IN-Wavenet-A'},
-  en:{languageCode:'en-IN',name:'en-IN-Wavenet-A'},
-};
-// Translate text to English using Google Cloud Translation API v2. Uses the same GOOGLE_TTS_API_KEY.
-// Returns the English string, or null on any failure (caller falls back gracefully).
-// Source language is the ISO 639-1 code (e.g. 'ml'); target is always 'en'.
-async function engineGoogleTranslateToEnglish(env, text, sourceLang){
-  if(!env.GOOGLE_TTS_API_KEY) return null;
-  if(!text) return null;
-  if((sourceLang||'').toLowerCase()==='en') return text;
-  try{
-    const r=await fetch(
-      `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.GOOGLE_TTS_API_KEY)}`,
-      {method:'POST', headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({q:text.slice(0,2000), source:sourceLang, target:'en', format:'text'})}
-    );
-    if(!r.ok) return null;
-    const data=await r.json().catch(()=>null);
-    return data?.data?.translations?.[0]?.translatedText||null;
-  }catch(e){ return null; }
-}
-
-async function engineGoogleTts(env, text, isoLangCode, timeoutMs=12000){
-  if(!env.GOOGLE_TTS_API_KEY) return null;
-  const voice=GOOGLE_TTS_VOICE_MAP[isoLangCode];
-  if(!voice) return null;
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),timeoutMs);
-  try{
-    const r=await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(env.GOOGLE_TTS_API_KEY)}`,
-      {
-        method:'POST', signal:controller.signal,
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          input:{text:text.slice(0,500)},
-          voice:{...voice,ssmlGender:'FEMALE'},
-          audioConfig:{audioEncoding:'OGG_OPUS',sampleRateHertz:16000}
-        })
-      }
-    );
-    if(!r.ok){
-      const bodyText=await r.text().catch(()=>'');
-      await reportOpsError(env,'engineGoogleTts — non-OK response',new Error(`HTTP ${r.status}: ${bodyText.slice(0,300)}`),{isoLangCode});
-      return null;
-    }
-    const data=await r.json();
-    const b64=data?.audioContent;
-    if(!b64) return null;
-    const binary=atob(b64);
-    const buf=new Uint8Array(binary.length);
-    for(let i=0;i<binary.length;i++) buf[i]=binary.charCodeAt(i);
-    if(buf.byteLength<200) return null;
-    return buf.buffer;
-  }catch(e){
-    await reportOpsError(env,'engineGoogleTts — threw',e,{isoLangCode});
-    return null;
-  }finally{ clearTimeout(timer); }
-}
-
-// Two-phase voice follow-up — called via ctx.waitUntil after the text reply has already been
-// sent. Provider chain: Bhashini (primary) → Google TTS (secondary) → AI4Bharat (self-hosted
-// legacy, unlimited bg timeout) → text fallback (already sent). On success sends a voice-note
-// follow-up on the same conversation. Errors are silently swallowed since the customer already
-// received the text reply.
-async function engineBackgroundSendVoice(env, c, clientId, convId, replyText, langCode){
-  try{
-    const iso=(langCode||'').toLowerCase();
-    const bcp47=ENGINE_TTS_LANG_MAP[iso];
-    // Pre-flight: if no provider is reachable at all, skip synthesis immediately and alert ops
-    // with specific fix instructions. The text reply was already sent; this is config-only.
-    const hasBhashini=!!(env.BHASHINI_USER_ID&&env.BHASHINI_INFERENCE_KEY&&BHASHINI_TTS_LANG_CODES[iso]);
-    // Google TTS always covers English directly; for other languages it translates to English first,
-    // so GOOGLE_TTS_API_KEY alone is enough — no per-language voice check needed here.
-    const hasGoogle=!!env.GOOGLE_TTS_API_KEY;
-    const hasRenderPipeline=!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET);
-    if(!hasBhashini&&!hasGoogle&&!hasRenderPipeline){
-      await reportOpsError(env,'engineBackgroundSendVoice — no TTS providers configured, voice note skipped',
-        new Error('No voice provider reachable. Fix: add BHASHINI_USER_ID+BHASHINI_INFERENCE_KEY (primary), or GOOGLE_TTS_API_KEY (secondary), or MARKETING_RENDER_WEBHOOK_URL+SECRET for AI4Bharat.'),
-        {clientId,convId,iso,bcp47:bcp47||'none'}).catch(()=>{});
-      return;
-    }
-    const spokenText=await engineBuildSpokenReply(env, c, replyText, langCode);
-    if(!spokenText) return;
-    // Strip markdown/emojis/URLs before hitting any TTS engine
-    const processedText=enginePreprocessTtsText(spokenText);
-    if(!processedText) return;
-    let audio=null, provider='';
-    const safe=p=>Promise.resolve(p).catch(()=>null);
-    // 1. Bhashini (primary — WAV→Ogg/Opus via render pipeline; chunked for long texts)
-    audio=await safe(engineSynthChunked(t=>engineBhashiniTts(env,t,iso,10000),processedText));
-    if(audio){ provider='bhashini'; }
-    else{ console.log(`[TTS:bg] bhashini failed/skipped lang=${iso} client=${clientId}`); }
-    // 2. Google TTS — disabled
-    // 3. AI4Bharat self-hosted (legacy, unlimited background timeout; chunked for long texts)
-    if(!audio){
-      audio=await safe(engineSynthChunked(t=>engineAi4BharatTts(env,t,iso,0),processedText));
-      if(audio){ provider='ai4bharat'; }
-      else{ console.log(`[TTS:bg] ai4bharat failed/skipped lang=${iso} client=${clientId}`); }
-    }
-
-    if(audio){
-      console.log(`[TTS:bg] sent provider=${provider} lang=${iso} bytes=${audio.byteLength} client=${clientId} conv=${convId}`);
-      const cacheKey=await engineVoiceCacheKey(clientId,langCode,replyText).catch(()=>null);
-      if(cacheKey) void engineVoiceCachePut(env,cacheKey,audio,provider);
-      await engineSendChatwootAudioReply(env,c,clientId,convId,audio,engineExtractLinkPriceCaption(replyText),replyText);
+    await engineEnsureVoiceSummarySchema(env);
+    if(mediaType==='voice' && VOICE_SUMMARY_LANGS.has(lang)){
+      await env.DB.prepare(`INSERT INTO voice_summary_sessions
+        (client_id,conv_id,lead_id,lang,started_at,last_inbound_at,status) VALUES (?,?,?,?,?,?,'pending')
+        ON CONFLICT(client_id,conv_id) DO UPDATE SET
+          started_at=CASE WHEN voice_summary_sessions.status IN ('pending','queued') THEN voice_summary_sessions.started_at ELSE excluded.started_at END,
+          attempts=CASE WHEN voice_summary_sessions.status IN ('pending','queued') THEN voice_summary_sessions.attempts ELSE 0 END,
+          lead_id=excluded.lead_id, lang=excluded.lang, last_inbound_at=excluded.last_inbound_at,
+          status='pending', job_id=NULL, queued_at=NULL, error=NULL, updated_at=CURRENT_TIMESTAMP`)
+        .bind(String(clientId),String(convId),Number(leadId),lang,now,now).run();
     }else{
-      await reportOpsError(env,'engineBackgroundSendVoice — all TTS providers failed, no voice note sent',
-        new Error(`iso=${iso}, bcp47=${bcp47||'none'}, bhashini=${hasBhashini}, google=${hasGoogle}, render=${hasRenderPipeline}`),
-        {clientId,convId}).catch(()=>{});
+      await env.DB.prepare(`UPDATE voice_summary_sessions
+        SET last_inbound_at=?, status='pending', job_id=NULL, queued_at=NULL, updated_at=CURRENT_TIMESTAMP
+        WHERE client_id=? AND conv_id=? AND status IN ('pending','queued')`)
+        .bind(now,String(clientId),String(convId)).run();
     }
-  }catch(e){ await reportOpsError(env,'engineBackgroundSendVoice — unexpected error',e,{clientId,convId}).catch(()=>{}); }
+  }catch(e){ await reportOpsError(env,'engineTrackVoiceSummarySession — D1 write failed',e,{clientId,convId}).catch(()=>{}); }
+}
+
+// Turns lead_messages rows into the plain "Customer:/Business:" transcript the summary prompt reads.
+// Keeps the most recent turns within maxChars so a long chat can't blow the prompt budget.
+export function engineBuildVoiceSummaryTranscript(messages, maxChars=4000){
+  const lines=(messages||[])
+    .filter(m=>m && (m.role==='user'||m.role==='assistant') && String(m.content||'').trim())
+    .map(m=>`${m.role==='user'?'Customer':'Business'}: ${String(m.content).replace(/\s+/g,' ').trim()}`);
+  const kept=[];
+  let total=0;
+  for(let i=lines.length-1;i>=0;i--){
+    if(total+lines[i].length+1>maxChars && kept.length) break;
+    kept.unshift(lines[i].slice(0,maxChars));
+    total+=lines[i].length+1;
+  }
+  return kept.join('\n');
+}
+
+async function engineBuildVoiceSummaryText(env, c, transcript, lang){
+  const langName=VOICE_SUMMARY_LANG_NAMES[lang];
+  if(!transcript||!langName) return '';
+  const sys=`You write the short WhatsApp voice note a friendly business assistant sends after a chat has ended. Write it in ${langName}, the way a person would naturally say it out loud. 2 to 3 short sentences, at most 50 words: thank the customer, briefly recap what they asked about and what was offered, and say the clear next step. Never say a URL, link, price, currency amount, phone number or long number — if one matters, say the details are in the chat above. Do not invent anything that is not in the chat. Respond with ONLY the spoken text — no quotes, no labels, no markdown, no emojis.`;
+  const out=await engineGeminiGenerateWithFallback(env, c, sys, transcript, {temperature:0.4, maxOutputTokens:300, caller:'voice-summary'});
+  return enginePreprocessTtsText(String(out||'')).slice(0,500);
+}
+
+async function engineVoiceSummarySetStatus(env, row, status, extra={}){
+  const sets=['status=?','updated_at=CURRENT_TIMESTAMP'];
+  const vals=[status];
+  for(const [k,v] of Object.entries(extra)){ sets.push(`${k}=?`); vals.push(v); }
+  await env.DB.prepare(`UPDATE voice_summary_sessions SET ${sets.join(',')} WHERE client_id=? AND conv_id=?`)
+    .bind(...vals,String(row.client_id),String(row.conv_id)).run();
+}
+
+async function engineQueueVoiceSummary(env, row){
+  const jobId=crypto.randomUUID();
+  // Claim the row only if the customer hasn't written since it was selected.
+  const claim=await env.DB.prepare(`UPDATE voice_summary_sessions
+    SET status='queued', job_id=?, attempts=attempts+1, queued_at=?, updated_at=CURRENT_TIMESTAMP
+    WHERE client_id=? AND conv_id=? AND status='pending' AND last_inbound_at=?`)
+    .bind(jobId,new Date().toISOString(),String(row.client_id),String(row.conv_id),row.last_inbound_at).run();
+  if(!claim?.meta?.changes) return;
+  const c=await getClientById(env,row.client_id);
+  if(!c||c.bot_reply_disabled==='Yes'||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token){
+    return engineVoiceSummarySetStatus(env,row,'skipped',{error:'client missing, bot replies off, or Chatwoot not connected'});
+  }
+  const {results}=await env.DB.prepare(`SELECT role,content FROM lead_messages
+    WHERE lead_id=? AND client_id=? AND ts>=? ORDER BY ts, id LIMIT 200`)
+    .bind(Number(row.lead_id),Number(row.client_id),row.started_at).all();
+  const transcript=engineBuildVoiceSummaryTranscript(results);
+  if(!transcript) return engineVoiceSummarySetStatus(env,row,'skipped',{error:'no messages in session'});
+  const summary=await engineBuildVoiceSummaryText(env,c,transcript,row.lang);
+  if(!summary){
+    const retry=Number(row.attempts||0)+1<VOICE_SUMMARY_MAX_ATTEMPTS;
+    return engineVoiceSummarySetStatus(env,row,retry?'pending':'failed',{job_id:null,error:'summary text generation failed'});
+  }
+  await engineVoiceSummarySetStatus(env,row,'queued',{summary_text:summary});
+  const body=JSON.stringify({job_id:jobId, text:summary, language:row.lang, callback_url:`${env.WORKER_BASE_URL}/voice/summary-callback`});
+  const sig=await hmacSha256Base64(env.MARKETING_RENDER_WEBHOOK_SECRET, body);
+  let r;
+  try{
+    r=await fetch(`${new URL(env.MARKETING_RENDER_WEBHOOK_URL).origin}/tts-jobs`, {method:'POST', headers:{'Content-Type':'application/json','X-Signature':sig}, body});
+  }catch(e){ r={ok:false,status:0,text:async()=>String(e?.message||e)}; }
+  if(r.ok) return;
+  const errText=(await r.text().catch(()=>'')).slice(0,300);
+  if(r.status===400) return engineVoiceSummarySetStatus(env,row,'skipped',{job_id:null,error:`voice service refused: ${errText}`});
+  const retry=Number(row.attempts||0)+1<VOICE_SUMMARY_MAX_ATTEMPTS;
+  await engineVoiceSummarySetStatus(env,row,retry?'pending':'failed',{job_id:null,error:`voice service HTTP ${r.status}: ${errText}`});
+  if(!retry) await reportOpsError(env,'engineQueueVoiceSummary — voice service unavailable',new Error(`HTTP ${r.status}: ${errText}`),{clientId:row.client_id,convId:row.conv_id});
+}
+
+// */15 cron. Expires sessions outside WhatsApp's window, re-queues jobs whose callback never came,
+// then queues summaries for every session idle for VOICE_SUMMARY_IDLE_MS.
+async function runVoiceSummariesForAllClients(env){
+  if(!env.DB||!env.MARKETING_RENDER_WEBHOOK_URL||!env.MARKETING_RENDER_WEBHOOK_SECRET||!env.WORKER_BASE_URL) return;
+  try{
+    await engineEnsureVoiceSummarySchema(env);
+    const now=Date.now();
+    const iso=ms=>new Date(ms).toISOString();
+    await env.DB.prepare(`UPDATE voice_summary_sessions SET status='skipped', job_id=NULL, error='outside 24h WhatsApp window', updated_at=CURRENT_TIMESTAMP
+      WHERE status IN ('pending','queued') AND last_inbound_at<?`).bind(iso(now-VOICE_SUMMARY_WINDOW_MS)).run();
+    await env.DB.prepare(`UPDATE voice_summary_sessions SET status=CASE WHEN attempts<? THEN 'pending' ELSE 'failed' END,
+      job_id=NULL, error='voice service did not call back', updated_at=CURRENT_TIMESTAMP
+      WHERE status='queued' AND queued_at<?`).bind(VOICE_SUMMARY_MAX_ATTEMPTS,iso(now-VOICE_SUMMARY_STALE_QUEUED_MS)).run();
+    const {results}=await env.DB.prepare(`SELECT * FROM voice_summary_sessions
+      WHERE status='pending' AND last_inbound_at<=? ORDER BY last_inbound_at LIMIT ?`)
+      .bind(iso(now-VOICE_SUMMARY_IDLE_MS),VOICE_SUMMARY_BATCH).all();
+    for(const row of results||[]){
+      await engineQueueVoiceSummary(env,row).catch(e=>reportOpsError(env,'engineQueueVoiceSummary — threw',e,{clientId:row.client_id,convId:row.conv_id}).catch(()=>{}));
+    }
+  }catch(e){ await reportOpsError(env,'runVoiceSummariesForAllClients — failed',e).catch(()=>{}); }
+}
+
+// POST /voice/summary-callback — signed by the voice service with MARKETING_RENDER_WEBHOOK_SECRET.
+// Only the job currently queued for a session is sent; a stale job (the customer wrote again
+// after it was queued) is acknowledged and dropped.
+async function handleVoiceSummaryCallback(request, env){
+  const secret=env.MARKETING_RENDER_WEBHOOK_SECRET;
+  const raw=await request.text();
+  const sig=request.headers.get('X-Signature')||'';
+  if(!secret||!sig||!timingSafeEqualStr(await hmacSha256Base64(secret,raw),sig)) return json({error:'Invalid signature'},401);
+  let body;
+  try{ body=JSON.parse(raw); }catch(_e){ return json({error:'Invalid JSON'},400); }
+  const jobId=String(body?.job_id||'');
+  if(!jobId||!env.DB) return json({error:'job_id required'},400);
+  await engineEnsureVoiceSummarySchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM voice_summary_sessions WHERE job_id=? AND status='queued'`).bind(jobId).first();
+  if(!row) return json({ok:true,ignored:true});
+  if(!body.ok||!body.audio_base64){
+    await engineVoiceSummarySetStatus(env,row,'failed',{error:String(body.error||'no audio').slice(0,500)});
+    await reportOpsError(env,'voice summary — voice service could not synthesize',new Error(String(body.error||'no audio').slice(0,500)),{clientId:row.client_id,convId:row.conv_id,lang:row.lang}).catch(()=>{});
+    return json({ok:true});
+  }
+  const bin=atob(body.audio_base64);
+  const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  const c=await getClientById(env,row.client_id);
+  const sent=c?await engineSendChatwootAudioReply(env,c,row.client_id,row.conv_id,bytes.buffer,'',null):false;
+  await engineVoiceSummarySetStatus(env,row,sent?'sent':'failed',{provider:String(body.provider||''),...(sent?{}:{error:'Chatwoot send failed'})});
+  console.log(`[TTS:summary] sent=${!!sent} provider=${body.provider} lang=${row.lang} client=${row.client_id} conv=${row.conv_id}`);
+  if(sent) await d1InsertLeadMessage(env,row.lead_id,row.client_id,{role:'assistant',content:`🔊 Voice summary: ${row.summary_text||''}`.trim(),ts:new Date().toISOString()});
+  return json({ok:true,sent:!!sent});
 }
 
 async function handleVoiceSettingsGet(request, env){
@@ -17295,12 +17189,10 @@ async function handleVoiceSettingsUpdate(request, env){
   return json({ok:true,client_key_configured:!!apiKey,worker_fallback_available:!!env.SARVAM_API_KEY});
 }
 
-// Same scope as this app's other AI4Bharat integration (render-pipeline/lib/ai4bharatTranscribe.js's
-// AI4BHARAT_LANGS / render-pipeline/lib/ai4bharatTts.js's AI4BHARAT_TTS_LANGS) — the languages this
-// app already has an AI4Bharat mapping for elsewhere, not Indic Parler-TTS's full ~21-language
-// coverage. Keyed by plain ISO 639-1 (this app's own convention), unlike ENGINE_TTS_LANG_MAP's
-// BCP-47 values — the two providers need different formats, handled in engineTtsWithFallback below.
-const AI4BHARAT_TTS_LANGS=new Set(['hi','bn','kn','ml','mr','or','pa','ta','te','gu','en']);
+// Must match render-pipeline/lib/ai4bharatTts.js's LANGUAGES — the voice service runs AI4Bharat
+// Indic Parler-TTS for Malayalam and Hindi only. Keyed by plain ISO 639-1 (this app's own
+// convention), unlike ENGINE_TTS_LANG_MAP's BCP-47 values — handled in engineTtsWithFallback below.
+const AI4BHARAT_TTS_LANGS=new Set(['ml','hi']);
 
 // STANDBY text-to-speech provider — self-hosted AI4Bharat Indic Parler-TTS, running on the same
 // dedicated Coolify voice service (see
@@ -17889,15 +17781,10 @@ function engineExtractLinkPriceCaption(replyText){
 
 // Single reply-delivery dispatcher for handleEngineWebhook — every route (human/qualify/FAQ/
 // objection/order-detected) sends its final reply through here instead of calling
-// engineSendChatwootReply/engineSendChatwootImageReply directly, so voice-to-voice is one code
-// path instead of eight near-duplicate branches. Voice-to-voice reply: when the customer sent a
-// voice note and this client has the paid voice add-on (voice_addon_active), reply with a
-// WhatsApp voice note instead of text — mirrors the customer's own input modality, which is the
-// point of the feature. Falls back to the normal text/image reply whenever voice isn't possible
-// (no add-on, no Sarvam key, unsupported/undetected language, a product-image reply already in
-// play, or the TTS call itself fails) so a voice hiccup never costs the customer a reply outright.
-// Follow-up messages (followup-template.json) are NOT routed through here — voice follow-ups are
-// out of scope for now, this only covers live conversational replies.
+// engineSendChatwootReply/engineSendChatwootImageReply directly, so delivery is one code path
+// instead of eight near-duplicate branches. Voice-note turns get a normal text reply here;
+// their spoken reply is a single summary sent after the chat goes idle (see
+// runVoiceSummariesForAllClients), so a slow self-hosted voice model never delays a live reply.
 async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
@@ -17917,26 +17804,8 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
   if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
-  // Resolve TTS language: prefer the classifier-returned langCode; fall back to the client's
-  // configured language if langCode is absent or not in the TTS map. This ensures voice-to-voice
-  // never silently degrades to text-only just because the classifier returned an unmapped code.
-  const _ttsLang=(ENGINE_TTS_LANG_MAP[(langCode||'').toLowerCase()]?(langCode||'').toLowerCase():null)||
-                 (ENGINE_TTS_LANG_MAP[(c.language||'').toLowerCase()]?(c.language||'').toLowerCase():null);
-  const bcp47=_ttsLang?ENGINE_TTS_LANG_MAP[_ttsLang]:null;
-  // Voice messages: cache hit → instant voice reply; otherwise → text immediately + voice follow-up
-  // via ctx.waitUntil. AI4Bharat has no request timeout in the background path — it runs until the
-  // Worker's own I/O limit instead of an arbitrary ceiling that would abort mid-generation.
-  if(mediaType==='voice' && !imageUrl && bcp47){
-    const cacheKey=await engineVoiceCacheKey(clientId, _ttsLang, trimmed).catch(()=>null);
-    const cached=cacheKey ? await engineVoiceCacheGet(env, cacheKey).catch(()=>null) : null;
-    if(cached){
-      console.log(`[TTS:voice] provider=cache lang=${_ttsLang} client=${clientId} conv=${convId}`);
-      return engineSendChatwootAudioReply(env, c, clientId, convId, cached, engineExtractLinkPriceCaption(trimmed), trimmed);
-    }
-    await engineSendChatwootReply(env, c, clientId, convId, trimmed);
-    if(ctx) ctx.waitUntil(engineBackgroundSendVoice(env, c, clientId, convId, trimmed, _ttsLang));
-    return;
-  }
+  // Voice notes are transcribed and answered in text like any other message. The spoken reply is
+  // one end-of-session summary instead (engineTrackVoiceSummarySession / runVoiceSummariesForAllClients).
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
   if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
   return engineSendChatwootReply(env, c, clientId, convId, trimmed);
@@ -21180,6 +21049,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
          ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
     }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
+    if(resolvedLeadId) await engineTrackVoiceSummarySession(env, clientId, convId, resolvedLeadId, mediaType, routing.customerLanguage||c.language);
     if(resolvedLeadId && leadBody.Stage && leadBody.Stage!==state.stage){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
@@ -32030,7 +31900,8 @@ export default {
           ai4bharat_voice_service_configured:!!(env.MARKETING_RENDER_WEBHOOK_URL&&env.MARKETING_RENDER_WEBHOOK_SECRET),
           hedge_ms:ENGINE_AI4BHARAT_HEDGE_MS,
           legacy_ai4bharat_deadline_ms:ENGINE_LIVE_TTS_DEADLINE_MS,
-          reply_deadline_ms:ENGINE_VOICE_REPLY_DEADLINE_MS
+          summary_languages:[...VOICE_SUMMARY_LANGS],
+          summary_idle_minutes:VOICE_SUMMARY_IDLE_MS/60000
         }
       }); }
       else if(url.pathname==='/signup' && request.method==='POST'){ res=await handleSignup(request, env); }
@@ -32039,6 +31910,7 @@ export default {
       else if(url.pathname==='/session/me' && request.method==='GET'){ res=await handleSessionMe(request, env); }
       else if(url.pathname==='/voice/settings' && request.method==='GET'){ res=await handleVoiceSettingsGet(request, env); }
       else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
+      else if(url.pathname==='/voice/summary-callback' && request.method==='POST'){ res=await handleVoiceSummaryCallback(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
@@ -32696,6 +32568,8 @@ export default {
       ctx.waitUntil(runRecruitGsheetSyncForAllClients(env));
       // Cal.com Meetings (Integrations → 📞 Cal.com Meetings) — reminders, no-book nudges, auto-complete; see runMeetingsForAllClients.
       ctx.waitUntil(runMeetingsForAllClients(env));
+      // End-of-session voice summary (Malayalam/Hindi) — see runVoiceSummariesForAllClients.
+      ctx.waitUntil(runVoiceSummariesForAllClients(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));

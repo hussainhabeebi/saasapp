@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim
 
-# Keep the normal Coolify image small and reliable. Piper is the primary local voice engine;
-# AI4Bharat's multi-GB PyTorch stack is opt-in for a separate, sufficiently large host.
+# Keep the normal Coolify image small and reliable. Piper (always installed) is the backup voice;
+# AI4Bharat Indic Parler-TTS, the primary summary voice, is opt-in for a host with enough RAM.
 ARG INSTALL_AI4BHARAT_TTS=false
 ENV AI4BHARAT_TTS_INSTALLED=${INSTALL_AI4BHARAT_TTS}
 
@@ -10,27 +10,29 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
-# CPU-only PyTorch + transformers for lightweight VITS models (~50 MB each, vs ~4 GB Parler-TTS).
+# AI4Bharat Indic Parler-TTS (ai4bharat/indic-parler-tts, Apache-2.0) — primary voice for the
+# end-of-session Malayalam/Hindi summary. ~4 GB of weights; needs 6-8 GB RAM. CPU PyTorch by
+# default; summaries are delayed, so slower CPU synthesis is acceptable.
 RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
       apt-get update \
-      && apt-get install -y --no-install-recommends python3 python3-pip \
+      && apt-get install -y --no-install-recommends python3 python3-pip git \
       && rm -rf /var/lib/apt/lists/* \
       && pip3 install --no-cache-dir --break-system-packages typing_extensions \
       && pip3 install --no-cache-dir --break-system-packages --extra-index-url https://download.pytorch.org/whl/cpu torch \
-      && pip3 install --no-cache-dir --break-system-packages soundfile transformers accelerate; \
+      && pip3 install --no-cache-dir --break-system-packages soundfile git+https://github.com/huggingface/parler-tts.git; \
     else \
       echo "Skipping optional AI4Bharat/PyTorch layer"; \
     fi
 
-# Pre-cache the six most common Indic language VITS models so the first request per language is
-# instant. Other languages load lazily on first use. No HF_TOKEN needed — these are public models.
+# Pre-download the Parler model and tokenizers at build time so the first summary does not wait
+# on a multi-GB download. Pass HF_TOKEN if Hugging Face asks for model access.
 ARG HF_TOKEN
 ENV HF_TOKEN=${HF_TOKEN}
 RUN if [ "${INSTALL_AI4BHARAT_TTS}" = "true" ]; then \
-      python3 -c "from transformers import VitsModel, AutoTokenizer; models=['facebook/mms-tts-hin','facebook/mms-tts-mal','facebook/mms-tts-tam','facebook/mms-tts-tel','facebook/mms-tts-ben','facebook/mms-tts-eng']; [VitsModel.from_pretrained(m) or AutoTokenizer.from_pretrained(m) for m in models]; print('VITS models cached')"; \
+      python3 -c "from parler_tts import ParlerTTSForConditionalGeneration; from transformers import AutoTokenizer; m=ParlerTTSForConditionalGeneration.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained('ai4bharat/indic-parler-tts'); AutoTokenizer.from_pretrained(m.config.text_encoder._name_or_path); print('Indic Parler-TTS cached')"; \
     fi
 
-# Keep the small local Piper tier used before AI4Bharat. English, Malayalam and Hindi are baked
+# Piper backup voices (used when Parler is unavailable or fails). English, Malayalam and Hindi are baked
 # into the image so a fresh Coolify deployment is ready without manually populating its volume.
 ARG PIPER_VERSION=2023.11.14-2
 RUN mkdir -p /opt/piper /app/models/piper-voices \

@@ -14,8 +14,9 @@ const {
 const { synthesizeWithPiper, supportsLanguage: piperSupportsLanguage, PIPER_VOICE_MAP } = require('./lib/piperTts');
 const { pcmToOggOpus } = require('./lib/pcmToOgg');
 const { createLiveSemaphore } = require('./lib/liveSemaphore');
+const { createSummaryJobQueue } = require('./lib/summaryJobs');
 
-const BUILD_TAG = '2026-09-06-voice-only';
+const BUILD_TAG = '2026-09-27-voice-summary';
 const env = process.env;
 const PORT = env.PORT || 8787;
 const ai4bharatLiveSemaphore = createLiveSemaphore(2);
@@ -26,6 +27,29 @@ if (!env.RENDER_WEBHOOK_SECRET) {
   console.error('RENDER_WEBHOOK_SECRET is not set. Refusing to start.');
   process.exit(1);
 }
+
+// End-of-session voice summaries: Indic Parler-TTS (primary, no time limit) → Piper (backup).
+const summaryJobs = createSummaryJobQueue({
+  primary: {
+    name: 'parler',
+    supportsLanguage: language => ai4bharatEnabled && ai4bharatSupportsLanguage(language),
+    synthesize: synthesizeWithAi4Bharat,
+  },
+  backup: {
+    name: 'piper',
+    supportsLanguage: piperSupportsLanguage,
+    synthesize: (text, language) => synthesizeWithPiper(text, language, { timeoutMs: 30000 }),
+  },
+  postCallback: async (url, payload) => {
+    const body = JSON.stringify(payload);
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Signature': hmac.sign(env.RENDER_WEBHOOK_SECRET, body) },
+      body,
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  },
+});
 
 const app = express();
 app.use(express.json({
@@ -51,6 +75,8 @@ app.get('/health', (_req, res) => {
     ai4bharat_tts_enabled: ai4bharatEnabled,
     ai4bharat_model_ready: isAi4BharatReady(),
     ai4bharat_tts_timeout_ms: 'unlimited',
+    ai4bharat_model: 'ai4bharat/indic-parler-tts',
+    summary_jobs_pending: summaryJobs.pending,
     piper_available: fs.existsSync(piperBin),
     piper_voices: Object.keys(PIPER_VOICE_MAP).filter(language => piperSupportsLanguage(language)),
   });
@@ -75,6 +101,23 @@ app.post('/synthesize-voice-reply', async (req, res) => {
   } finally {
     ai4bharatLiveSemaphore.release();
   }
+});
+
+// Queue an end-of-session summary voice note. Returns 202 at once; the Ogg/Opus result (or
+// ok:false) is POSTed, HMAC-signed with the same secret, to callback_url when the job finishes.
+app.post('/tts-jobs', (req, res) => {
+  if (!requireSignature(req, res)) return;
+  const { job_id, text, language, callback_url } = req.body || {};
+  if (!job_id || !text || !language || !callback_url) return res.status(400).json({ error: 'job_id, text, language and callback_url required' });
+  let callback;
+  try { callback = new URL(callback_url); } catch (_) { return res.status(400).json({ error: 'callback_url must be a URL' }); }
+  if (callback.protocol !== 'https:') return res.status(400).json({ error: 'callback_url must be https' });
+  const lang = String(language).toLowerCase();
+  if (!(ai4bharatEnabled && ai4bharatSupportsLanguage(lang)) && !piperSupportsLanguage(lang)) {
+    return res.status(400).json({ error: `Unsupported language: ${language}` });
+  }
+  const accepted = summaryJobs.enqueue({ jobId: String(job_id), text: String(text).slice(0, 500), language: lang, callbackUrl: callback.toString() });
+  res.status(202).json({ accepted, pending: summaryJobs.pending });
 });
 
 app.post('/synthesize-piper-tts', async (req, res) => {

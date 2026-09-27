@@ -35,7 +35,7 @@ function supportsLanguage(language) {
   return !!voice && fs.existsSync(path.join(PIPER_VOICES_DIR, voice + '.onnx'));
 }
 
-function runPiper(text, modelPath, outWavPath) {
+function runPiper(text, modelPath, outWavPath, timeoutOverrideMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(PIPER_BIN, ['--model', modelPath, '--output_file', outWavPath], { stdio: ['pipe', 'ignore', 'pipe'] });
     let stderr = '';
@@ -46,7 +46,7 @@ function runPiper(text, modelPath, outWavPath) {
       clearTimeout(timer);
       fn(value);
     };
-    const timeoutMs = Math.max(500, Number(process.env.PIPER_TTS_TIMEOUT_MS || 2500));
+    const timeoutMs = Math.max(500, Number(timeoutOverrideMs || process.env.PIPER_TTS_TIMEOUT_MS || 2500));
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       finish(reject, new Error(`Piper synthesis exceeded ${timeoutMs}ms`));
@@ -65,7 +65,7 @@ function runPiper(text, modelPath, outWavPath) {
 // Returns a Buffer of 16kHz Ogg/Opus audio bytes (same contract as engineSarvamTts's
 // output_audio_codec:'opus'/speech_sample_rate:16000, and synthesizeWithAi4Bharat above) — the
 // Worker/backend/recovery.js never need to know which provider produced the audio.
-async function synthesizeWithPiper(text, language) {
+async function synthesizeWithPiper(text, language, { timeoutMs } = {}) {
   if (!text || !text.trim()) throw new Error('No text to synthesize.');
   const voice = PIPER_VOICE_MAP[(language || '').toLowerCase()];
   if (!voice) throw new Error(`No Piper voice configured for language: ${language}`);
@@ -77,7 +77,7 @@ async function synthesizeWithPiper(text, language) {
     const wavPath = path.join(workDir, 'out.wav');
     // Same 500-char cap as every other voice-reply provider in this file — a voice reply is one
     // short spoken sentence, never a long paragraph.
-    await runPiper(text.slice(0, 500), modelPath, wavPath);
+    await runPiper(text.slice(0, 500), modelPath, wavPath, timeoutMs);
     const oggPath = path.join(workDir, 'out.ogg');
     await run('ffmpeg', ['-y', '-i', wavPath, '-ac', '1', '-ar', '16000', '-c:a', 'libopus', oggPath]);
     return fs.readFileSync(oggPath);
