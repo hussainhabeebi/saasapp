@@ -72,15 +72,18 @@ async function boot(){
  try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000)}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 async function loadLeads(show=true,silent=false){
- try{const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${ownerClause}&limit=200&sort=-LastMsgAt`;const d=await apiJson(url);leads=d.list||[];renderContacts();if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt!==current.LastMsgAt;if(newMsg){delete histCache[String(current.Id)];current=fresh;try{const data=await apiJson(`${WORKER}/chat/messages?lead_id=${current.Id}`);histCache[String(current.Id)]=data.messages||[];}catch(e){}renderThread(false);}else{current=fresh;}}}if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
+ try{const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=c=>`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${c}&limit=200&sort=-LastMsgAt`;let d;try{d=await apiJson(url(ownerClause))}catch(e){if(!ownerClause)throw e;d=await apiJson(url(''))}leads=d.list||[];renderContacts();if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt!==current.LastMsgAt;if(newMsg){delete histCache[String(current.Id)];current=fresh;try{const data=await apiJson(`${WORKER}/chat/messages?lead_id=${current.Id}`);histCache[String(current.Id)]=data.messages||[];}catch(e){}renderThread(false);}else{current=fresh;}}}if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
 }
 function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderContacts()}
 function setFilter(f){filter=f;renderContacts()}
 const isMine=l=>!!meEmail&&String(l.Owner||'').trim().toLowerCase()===meEmail;
-// Staff see only their own chats (see visibleToMe); the account owner always sees every chat.
-// loadLeads also narrows the query by Owner so the 200-row cap can't hide their chats;
+// Staff see only their own chats (see visibleToMe); the account owner and teammates with a
+// full-access role (Admin / General Manager in dashboard.html's ROLES) always see every chat.
+// loadLeads also narrows the query by Owner so the 200-row cap can't hide their chats (and falls
+// back to the unnarrowed query if that one fails, so the list is never blank over a filter error);
 // `like` is case-insensitive for older mixed-case Owner values, isMine keeps the match exact.
-function isStaff(){return !!meEmail&&meEmail!==String(clientRecord.authentik_email||'').trim().toLowerCase()}
+const FULL_ACCESS_ROLES=['admin','general_manager'];
+function isStaff(){if(!meEmail||meEmail===String(clientRecord.authentik_email||'').trim().toLowerCase())return false;let perms={};try{perms=JSON.parse(clientRecord.team_permissions||'{}')||{}}catch{}return !FULL_ACCESS_ROLES.includes(perms[meEmail]?.role)}
 function staffLocked(){if(!isStaff())return false;try{return !!JSON.parse(clientRecord.lead_routing||'{}')?.enabled}catch{return false}}
 // A teammate never sees a chat assigned to someone else — whether Owner was set by Lead Routing or
 // by hand in the Leads panel. Unassigned chats: hidden when routing is on (every new lead gets an

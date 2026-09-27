@@ -16,14 +16,16 @@ const LEADS = [
 ];
 const client = { authentik_email: 'owner@couplo.test', lead_routing: JSON.stringify({ enabled: true, modes: ['roundrobin'] }) };
 
-async function open(page, email, clientRec = client) {
+async function open(page, email, clientRec = client, { failOwnerQuery = false } = {}) {
   const listQueries = [];
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.protocol === 'file:') return route.continue();
     if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email, client: clientRec } });
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) {
-      listQueries.push(url.searchParams.get('where') || '');
+      const where = url.searchParams.get('where') || '';
+      listQueries.push(where);
+      if (failOwnerQuery && where.includes('Owner')) return route.fulfill({ status: 422, json: { msg: 'bad filter' } });
       return route.fulfill({ json: { list: LEADS } });
     }
     return route.abort();
@@ -49,4 +51,20 @@ test('with routing off (leads assigned by hand), a teammate sees their own + una
   const queries = await open(page, 'vinaya@couplo.test', { ...client, lead_routing: '{}' });
   await expect(page.locator('#list .contact .name')).toHaveText(['Binu', 'Chitra']);
   expect(queries[0]).toContain('((Owner,like,vinaya@couplo.test)~or(Owner,blank))');
+});
+
+test('a teammate with the Admin or General Manager role sees every chat, like the owner', async ({ page }) => {
+  for (const role of ['admin', 'general_manager']) {
+    const perms = JSON.stringify({ 'vinaya@couplo.test': { role } });
+    const queries = await open(page, 'vinaya@couplo.test', { ...client, team_permissions: perms });
+    await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Binu', 'Chitra']);
+    expect(queries[0]).not.toContain('Owner');
+    await page.unrouteAll();
+  }
+});
+
+test('if the Owner-narrowed query fails, chats still load (filtered in the page) instead of going blank', async ({ page }) => {
+  const queries = await open(page, 'vinaya@couplo.test', client, { failOwnerQuery: true });
+  await expect(page.locator('#list .contact .name')).toHaveText(['Binu']);
+  expect(queries[1]).not.toContain('Owner');
 });
