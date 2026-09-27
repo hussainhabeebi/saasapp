@@ -510,6 +510,19 @@ leave the order and route normally, and an explicit ask for a person still hands
 and Medical keep their own order flows.
 **Tested:** `chat-order.test.js`.
 
+
+### 30 — [backend] Category enquiry: answer what was asked first, product picker second
+**Area:** `engineEcomCategoryAnswer`, `engineSendAnswerThenPicker`, category branch in `handleEngineWebhook`
+(`cloudflare-worker/worker.js`)
+**Broke:** Couplo: "New born baby aanu" and then "23 days aayittulloo" each got only "Please choose
+a product from Premium Baby Set:" plus a picker. The deterministic category branch never produced
+an answer at all.
+**Fix:** The AI first replies to what the customer actually said (business prompt + verified
+catalogue only), sent as its own message. The verified product choices then follow as a short,
+separate picker ("Tap a set to see details and photos 👇"). Kept separate because WhatsApp caps an
+interactive body at 1024 chars. If the AI fails, it falls back to the old picker intro.
+**Tested:** `answer-then-picker.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
