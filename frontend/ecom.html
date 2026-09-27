@@ -639,6 +639,17 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     </div>
     <div class="s-hint" style="margin-bottom:18px">Control how often product images and catalog links are re-sent. All settings are off by default — existing behaviour is unchanged when disabled.</div>
 
+    <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:20px">
+      <div class="toggle-text">
+        <strong>Always Send Photos</strong>
+        <small>Removes every image-sending limit: whenever a customer mentions a product or asks for its photo, the product photo is sent — every time, not once per 5 hours. Naming a category sends its photos every time too. The settings below still control the full media bundle.</small>
+      </div>
+      <div class="toggle-wrap">
+        <input type="checkbox" id="photosAlwaysChk">
+        <span class="toggle-slider"></span>
+      </div>
+    </label>
+
     <label class="flow-toggle-row" style="cursor:pointer;margin-bottom:4px">
       <div class="toggle-text">
         <strong>Fresh Session Reset</strong>
@@ -2812,6 +2823,8 @@ function resetFlowDefaults() {
 
 // ── IMAGE SEND SETTINGS ────────────────────────────────
 function loadImageSettings() {
+  document.getElementById('photosAlwaysChk').checked = botConfig.ecom_photos_unrestricted === true;
+
   const freshOn = botConfig.ecom_fresh_session_reset_enabled === true;
   document.getElementById('freshSessionChk').checked = freshOn;
   document.getElementById('freshSessionOptions').style.display = freshOn ? 'block' : 'none';
@@ -2845,6 +2858,9 @@ function onCatalogThrottleChange() {
 }
 
 async function saveImageSettings() {
+  if (document.getElementById('photosAlwaysChk').checked) botConfig.ecom_photos_unrestricted = true;
+  else delete botConfig.ecom_photos_unrestricted;
+
   botConfig.ecom_fresh_session_reset_enabled = document.getElementById('freshSessionChk').checked;
   const freshHrs = parseFloat(document.getElementById('freshSessionHours').value);
   if (freshHrs > 0) botConfig.ecom_fresh_session_hours = freshHrs;

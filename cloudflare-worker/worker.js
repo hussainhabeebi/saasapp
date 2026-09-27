@@ -964,6 +964,23 @@ async function authentikApiFetch(env, path, opts={}){
 // login link via the same Platform API `/users/{id}/login` endpoint handleChannelsChatwootSso
 // uses. Failure here never fails the overall user-creation request — Chatwoot may not be
 // connected for this client yet, or the email may already exist as a Chatwoot Platform user.
+// A Chatwoot agent only sees conversations of inboxes they're a member of — account membership
+// alone leaves their Chatwoot view empty and makes conversation assignment to them fail. Adds the
+// agent to every inbox on the account. Best-effort: never fails agent creation over it.
+async function chatwootAddAgentToInboxes(c, userId){
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token||!userId) return;
+  const base=`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}`;
+  const headers={api_access_token:c.chatwoot_token, 'Content-Type':'application/json'};
+  try{
+    const r=await fetch(`${base}/inboxes`, {headers});
+    const d=await r.json().catch(()=>({}));
+    const ids=(d?.payload||[]).map(i=>i.id).filter(Boolean);
+    if(!ids.length && c.chatwoot_inbox_id) ids.push(c.chatwoot_inbox_id);
+    for(const inbox_id of ids){
+      await fetch(`${base}/inbox_members`, {method:'POST', headers, body:JSON.stringify({inbox_id, user_ids:[Number(userId)]})}).catch(()=>{});
+    }
+  }catch(e){}
+}
 async function createChatwootAgent(env, c, {name, email, password}){
   try{
     const userR=await chatwootPlatformFetch(env, '/platform/api/v1/users', {method:'POST', body:{name, email, password}});
@@ -972,6 +989,7 @@ async function createChatwootAgent(env, c, {name, email, password}){
 
     const linkR=await chatwootPlatformFetch(env, `/platform/api/v1/accounts/${c.chatwoot_account_id}/account_users`, {method:'POST', body:{user_id:user.id, role:'agent'}});
     if(!linkR.ok) return {ok:false, error:'Failed to link Chatwoot agent to account: HTTP '+linkR.status};
+    await chatwootAddAgentToInboxes(c, user.id);
 
     const ssoR=await chatwootPlatformFetch(env, `/platform/api/v1/users/${user.id}/login`);
     const sso=await ssoR.json().catch(()=>({}));
@@ -1157,6 +1175,52 @@ async function handleTeamSetPassword(request, env){
   }
 
   return json({ok:true, email:emailNorm, chatwootUpdated});
+}
+
+// User Management → profile → "Create Chatwoot agent". handleTeamCreateUser only provisions a
+// Chatwoot agent when Chatwoot was already connected at the moment the teammate was added (and
+// never for "Add Existing Authentik User"), which left real teammates with "No Chatwoot agent on
+// file" and no way to fix it from the dashboard. Owner-only. Chatwoot's Platform API returns the
+// existing user when the email is already registered there, so this also re-links an agent that
+// was created by hand in Chatwoot — the password is then set explicitly so the one stored for the
+// profile view is the one that actually works.
+async function handleTeamChatwootAgent(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {email}=await request.json().catch(()=>({}));
+  const emailNorm=String(email||'').trim().toLowerCase();
+  if(!emailNorm) return json({error:'email is required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const ownerEmail=String(c.authentik_email||'').trim().toLowerCase();
+  if(String(payload.email||'').trim().toLowerCase()!==ownerEmail) return json({error:'Only the account owner can create Chatwoot agents.'}, 403);
+  if(emailNorm===ownerEmail) return json({error:'The account owner already uses the main Chatwoot login.'}, 400);
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  if(!teamEmails.includes(emailNorm)) return json({error:'That email is not part of this account.'}, 404);
+  if(!c.chatwoot_account_id || !env.CHATWOOT_PLATFORM_TOKEN) return json({error:'Chatwoot is not connected for this account (Integrations → Data Sync).'}, 400);
+
+  let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+  if(teamUsers[emailNorm]){
+    await chatwootAddAgentToInboxes(c, teamUsers[emailNorm]);
+    return json({ok:true, email:emailNorm, user_id:teamUsers[emailNorm], existing:true});
+  }
+
+  let name=emailNorm.split('@')[0];
+  if(env.AUTHENTIK_API_TOKEN){
+    const au=await authentikFindUserByEmail(env, emailNorm).catch(()=>null);
+    if(au?.name) name=String(au.name).trim()||name;
+  }
+  const password=generateRandomPassword()+'Aa1!'; // Chatwoot requires upper+lower+digit+symbol
+  const chatwoot=await createChatwootAgent(env, c, {name, email:emailNorm, password});
+  if(!chatwoot.ok || !chatwoot.user_id) return json({error:'Chatwoot rejected the agent: '+(chatwoot.error||'unknown error')}, 502);
+  await chatwootPlatformFetch(env, `/platform/api/v1/users/${chatwoot.user_id}`, {method:'PATCH', body:{password}}).catch(()=>{});
+
+  let teamPasswords={}; try{ teamPasswords=JSON.parse(c.team_chatwoot_passwords||'{}'); }catch(e){}
+  teamUsers[emailNorm]=chatwoot.user_id;
+  teamPasswords[emailNorm]=password;
+  await ensureClientColumns(env, ['team_chatwoot_passwords']);
+  await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)});
+  return json({ok:true, email:emailNorm, user_id:chatwoot.user_id, chatwootPassword:password});
 }
 
 async function handleNocodbPassthrough(request, env, upstreamPath){
@@ -7997,14 +8061,31 @@ async function handleEcomUpdate(request, env, kind){
 // column was auto-provisioned, or auto-provisioned once as text and later hand-edited. Scoped to just
 // these titles so unrelated columns (color/category/status/stock, ...) — which may legitimately be
 // constrained types by the client's own design — are never touched.
+//
+// Also covers the column not being reachable under its exact title at all (Couplo, Sep 2026:
+// "Age group"/"Set includes" reported "didn't stick" on every save). NocoDB silently ignores a
+// write keyed by an unknown title, and ensureEcomProductStyleFields' create fails when a column
+// with that column_name already exists under another title (e.g. a hand-made "Age Group") — so
+// match by normalised title/column_name, retitle it to the exact key, and create it when truly
+// missing.
 async function ecomRepairFieldType(env, tableId, fieldTitle){
   try{
     const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
     const data=await r.json().catch(()=>({}));
     if(!r.ok) return false;
-    const field=(data.list||[]).find(f=>f.title===fieldTitle);
-    if(!field || field.uidt==='SingleLineText' || field.uidt==='LongText') return false;
-    const pr=await ncFetch(env, `api/v2/meta/fields/${field.id}`, {method:'PATCH', body:{title:fieldTitle, uidt:'SingleLineText'}});
+    const norm=v=>String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+    const list=data.list||[];
+    const field=list.find(f=>f.title===fieldTitle)
+      ||list.find(f=>norm(f.title)===norm(fieldTitle)||norm(f.column_name)===norm(fieldTitle));
+    if(!field){
+      const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title:fieldTitle, uidt:'SingleLineText'}});
+      return cr.ok;
+    }
+    const isText=field.uidt==='SingleLineText'||field.uidt==='LongText';
+    if(field.title===fieldTitle && isText) return false;
+    const body={title:fieldTitle, column_name:field.column_name||fieldTitle, uidt:isText?field.uidt:'SingleLineText'};
+    let pr=await ncFetch(env, `api/v2/meta/fields/${field.id}`, {method:'PATCH', body});
+    if(!pr.ok) pr=await ncFetch(env, `api/v2/meta/columns/${field.id}`, {method:'PATCH', body});
     return pr.ok;
   }catch(e){ return false; }
 }
@@ -8063,6 +8144,8 @@ async function ecomVerifyProductWrite(env, clientId, tableId, id, fields){
       if(repairable.length){
         const repairs=await Promise.all(repairable.map(([k])=>ecomRepairFieldType(env, tableId, k)));
         if(repairs.some(Boolean)){
+          // NocoDB's schema cache lags a just-changed column (same as ncPatchVerified above).
+          await new Promise(res=>setTimeout(res, 900));
           const retryFields={}; repairable.forEach(([k,v])=>{ retryFields[k]=v; });
           await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...retryFields}});
           const r2=await ncFetch(env, `api/v2/tables/${tableId}/records/${id}`);
@@ -8070,6 +8153,8 @@ async function ecomVerifyProductWrite(env, clientId, tableId, id, fields){
           if(r2.ok && saved2){ saved=saved2; dropped=Object.entries(fields).filter(([k,v])=>String(saved2[k]??'')!==String(v??'')); }
         }
       }
+      // Re-check the columns on the next save instead of trusting this isolate's memo.
+      if(dropped.length) _ecomStyleFieldsEnsured.delete(tableId);
       if(dropped.length) await reportOpsError(env, 'ecom product field(s) not persisted by NocoDB', new Error(dropped.map(([k,v])=>`${k}: sent ${JSON.stringify(v)}, saved as ${JSON.stringify(saved[k])}`).join('; ')), {tableId, id});
     }
   }catch(e){ await reportOpsError(env, 'ecomVerifyProductWrite failed', e, {tableId, id}); }
@@ -9646,10 +9731,11 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
     if(!category) return;
     const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
-    if(already) return;
+    const unrestricted=ecomPhotosUnrestricted(c);
+    if(already && !unrestricted) return;
     // For 'product' and 'product_and_category' modes when no specific product was matched:
     // send a text nudge to browse the related category instead of dumping photos.
-    if(scope && !orderHandledInline){
+    if(scope && !orderHandledInline && !unrestricted){
       const fd=new FormData();
       fd.append('content', `We don't have an exact match for that — try browsing our *${category.name}* range to find something similar! 📂`);
       fd.append('message_type','outgoing'); fd.append('private','false');
@@ -9703,6 +9789,100 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
   }catch(e){ await reportOpsError(env, 'engineMaybeSendEcomCategoryMedia', e, {clientId, convId}); }
 }
 
+// Photo asks with no single product in view ("send all photos", "I want to see photos", "photos of
+// <category>") — sends real images straight away instead of a text list: one photo per category
+// (Ecom → Categories image, else that category's first product photo), or, when a category is
+// named, that category's own photos plus its products' photos with name + price. Ends with a picker
+// so the customer can drill in. Returns null — leaving the turn to the normal product flow — when
+// a specific product is named, or a bare "Pictures" follows a product already discussed.
+async function ecomGalleryImageBlob(env, url){
+  if(!url) return null;
+  try{
+    const marker='/ecom/category-media/';
+    const idx=url.indexOf(marker);
+    if(idx!==-1 && env.ECOM_CATEGORY_MEDIA){
+      const obj=await env.ECOM_CATEGORY_MEDIA.get(url.slice(idx+marker.length));
+      return obj?await obj.blob():null;
+    }
+    const r=await fetch(engineResolveDirectImageUrl(url));
+    if(!r.ok || !/^image\//.test(r.headers.get('content-type')||'')) return null;
+    const blob=await r.blob();
+    return blob.size && blob.size<=5242880 ? blob : null; // WhatsApp's image cap
+  }catch(e){ return null; }
+}
+const ECOM_PHOTO_NOUN_RE=/\b(?:photos?|pics?|pictures?|images?|imgs?)\b/i;
+export function ecomPlanGallery(text, categoryRows, products, lastProductSku){
+  if(!ECOM_PHOTO_NOUN_RE.test(String(text||''))) return null;
+  const low=ecomNormalizeCatalogueText(text);
+  const byName=new Map();
+  for(const row of categoryRows||[]){ const n=String(row?.name||'').trim(); if(n) byName.set(n.toLowerCase(), {name:n, images:[row.image_url_1,row.image_url_2,row.image_url_3].filter(Boolean)}); }
+  for(const p of products||[]){ const n=String(p?.category||'').trim(); if(n && !byName.has(n.toLowerCase())) byName.set(n.toLowerCase(), {name:n, images:[]}); }
+  const cats=[...byName.values()];
+  const named=cats.find(cat=>{ const k=ecomNormalizeCatalogueText(cat.name); return k.length>=3 && ` ${low} `.includes(` ${k} `); })||null;
+  const namedProduct=ecomExactProductSelection(products, text)
+    ||(products||[]).find(p=>{ const k=ecomNormalizeCatalogueText(p?.name); return k.length>=5 && low.includes(k); });
+  // "frock photos" / "photos of frocks" name a category without a send/show verb — still an ask.
+  if(!ecomIsPhotoRequest(text) && !(named && !namedProduct)) return null;
+  if(!named && namedProduct) return null;
+  if(!named && lastProductSku && !ECOM_ALL_PHOTOS_RE.test(text)) return null;
+  const inCat=cat=>(products||[]).filter(p=>String(p?.category||'').trim().toLowerCase()===cat.name.toLowerCase());
+  const priceOf=p=>Number(p?.price)>0?` — ${(!p.currency||p.currency==='INR')?'₹':p.currency+' '}${p.price}`:'';
+  const items=[];
+  if(named){
+    named.images.slice(0,3).forEach((url,i)=>items.push({url, caption:i===0?`*${named.name}* 📸`:''}));
+    for(const p of inCat(named)){ if(items.length>=6) break; if(p.image_url) items.push({url:p.image_url, caption:`*${p.name}*${priceOf(p)}`}); }
+    return items.length?{mode:'category', category:named.name, items, choices:ecomProductChoiceItems(inCat(named)).slice(0,10)}:null;
+  }
+  for(const cat of cats){
+    if(items.length>=6) break;
+    const url=cat.images[0]||(inCat(cat).find(p=>p.image_url)||{}).image_url;
+    if(url) items.push({url, caption:`*${cat.name}*`});
+  }
+  if(!items.length){
+    for(const p of products||[]){ if(items.length>=6) break; if(p.image_url) items.push({url:p.image_url, caption:`*${p.name}*${priceOf(p)}`}); }
+  }
+  return items.length?{mode:'all', items, choices:ecomAvailableCatalogueItems(cats.map(cat=>cat.name), products)}:null;
+}
+async function engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang){
+  if(!convId||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return null;
+  if(!ECOM_PHOTO_NOUN_RE.test(String(userText||''))) return null;
+  const [catR, products]=await Promise.all([
+    env.DB.prepare(`SELECT * FROM ecom_categories WHERE client_id=?`).bind(Number(clientId)).all().catch(()=>({results:[]})),
+    ecomListActiveProducts(env, clientId),
+  ]);
+  const plan=ecomPlanGallery(userText, catR?.results||[], products, state?.lead?.['Last Product Sku']);
+  if(!plan) return null;
+  let sent=0, firstUrl='';
+  for(const item of plan.items){
+    const blob=await ecomGalleryImageBlob(env, item.url);
+    if(!blob) continue;
+    const fd=new FormData();
+    fd.append('content', item.caption||''); fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, 'photo.jpg');
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd}).catch(()=>null);
+    if(r?.ok){ sent++; if(!firstUrl) firstUrl=item.url; }
+  }
+  if(!sent){ await reportOpsError(env, 'engineMaybeSendEcomGallery — no photo could be sent', new Error(plan.items.map(i=>i.url).join(', ').slice(0,500)), {clientId, convId}); return null; }
+  if(plan.mode==='category' && state?.leadId){
+    const cat=(catR?.results||[]).find(r=>String(r.name||'').trim().toLowerCase()===plan.category.toLowerCase());
+    if(cat) await env.DB.prepare(`INSERT OR IGNORE INTO ecom_category_media_sent (client_id, lead_id, category_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), state.leadId, cat.id, new Date().toISOString()).run().catch(()=>{});
+  }
+  const text=await engineLocalizeReply(env, c, plan.mode==='category'
+    ?`Those are our *${plan.category}* designs 🌸 Tap one for details and price 👇`
+    :'Here\'s our collection 🌸 Tap a category to see all its designs 👇', replyLang);
+  const quickReplies=plan.choices.length
+    ?await engineSendEcomVerifiedPicker(env, c, clientId, convId, phone, text, plan.choices)
+    :(await engineSendChatwootReply(env, c, clientId, convId, text), null);
+  return {text, quickReplies, media:firstUrl?{url:engineResolveDirectImageUrl(firstUrl), type:'image'}:null};
+}
+
+// Ecom → Settings → Image Send Settings → "Always send photos" (bot_config.ecom_photos_unrestricted,
+// off by default). When on, a product's photo goes out every time the product is mentioned or its
+// photo is asked for, and category photos every time a category is named — no 5-hour window, no
+// once-per-customer dedup, no text nudge in place of photos. Off leaves every existing gate as is.
+export function ecomPhotosUnrestricted(c){ return engineParseJsonField(c?.bot_config, {}).ecom_photos_unrestricted===true; }
+
 // Escapes a promo code for safe use inside a RegExp — codes are shop-owner-entered free text
 // (SAVE20, WELCOME10, etc.) and could in principle contain regex metacharacters.
 function escapeRegexLiteral(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -9720,7 +9900,13 @@ const ECOM_RESEND_IMAGE_RE=/\b(re[-\s]?send\s*(the\s+)?(photos?|images?|pics?|pi
 // follow-up to the product just discussed. ECOM_RESEND_IMAGE_RE needs a send/show verb, so these
 // used to fall through to the FAQ LLM, which replied "I can't send pictures here".
 const ECOM_BARE_PHOTO_RE=/^\s*(?:(?:any|more|real|actual|the|some)\s+)?(?:photos?|pics?|pictures?|images?|imgs?)(?:\s+(?:please|pls|plz|of\s+(?:it|this|that)))?\s*[?.!]*\s*$|^\s*(?:can|could|may)\s+i\s+see\s+(?:it|this|that|the\s+(?:set|product|photos?|pics?|pictures?))\s*[?.!]*\s*$|^\s*(?:do\s+you\s+have|have\s+you\s+got)\s+(?:any\s+)?(?:photos?|pics?|pictures?|images?)\b/i;
-export function ecomIsPhotoRequest(text){ const t=String(text||''); return ECOM_RESEND_IMAGE_RE.test(t)||ECOM_BARE_PHOTO_RE.test(t); }
+// "send all photos", "I want to see photos", "show me your collection photos" — asks with a
+// quantifier or a want/see verb that neither regex above covers (Couplo, Sep 2026: these got a
+// product-name list back instead of any image).
+const ECOM_WANT_PHOTOS_RE=/\b(?:send|share|show)\s+(?:me\s+|us\s+)?(?:all|every|your|full|entire|whole)\s+(?:(?:the|of|your)\s+)*(?:[\p{L}\p{N}]+\s+){0,2}?(?:photos?|pics?|pictures?|images?)\b|\b(?:want|like|need|wish|love)\s+to\s+see\s+(?:(?:the|some|all|your|more)\s+)?(?:[\p{L}\p{N}]+\s+){0,2}?(?:photos?|pics?|pictures?|images?)\b|\bsee\s+(?:all|your|the|some|more)\s+(?:[\p{L}\p{N}]+\s+){0,2}?(?:photos?|pics?|pictures?|images?)\b/iu;
+export function ecomIsPhotoRequest(text){ const t=String(text||''); return ECOM_RESEND_IMAGE_RE.test(t)||ECOM_BARE_PHOTO_RE.test(t)||ECOM_WANT_PHOTOS_RE.test(t); }
+// A photo ask about the whole range rather than the product just discussed.
+const ECOM_ALL_PHOTOS_RE=/\b(?:all|every|full|entire|whole|collection|catalog(?:ue)?|categories|designs|models|products|items|range)\b/i;
 const ECOM_RESEND_LINK_RE=/\b(re[-\s]?send\s*(the\s+)?(link|url)|send\s*(me\s+)?(the\s+)?(link|url|product\s*link|shopify\s*link)|link\s+again|url\s+again)\b/i;
 
 /* ── PROMOTIONS & OFFERS engine hook (migrations/0045_ecom_promotions.sql) ──────────────────
@@ -13376,7 +13562,26 @@ function engineExtractCityFromQual(qualAnswers){
 // 4-priority lead routing: Product/Property → Location → Round-Robin → Catch-all.
 // Only fires for new leads with no owner yet. Returns the assigned email or null (Unmatched).
 // When round-robin fires, atomically advances rrIndex on clientRecord via patchClientFields.
+// Mirrors a routing assignment onto the Chatwoot conversation, so a teammate logged in to Chatwoot
+// sees the chat under their own "Mine" too — only when they have a Chatwoot agent on file
+// (team_chatwoot_users). Best-effort: routing itself (the lead's Owner) never depends on it.
+async function engineSyncChatwootAssignee(c, convId, ownerEmail){
+  if(!convId||!ownerEmail||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return;
+  let users={}; try{ users=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+  const want=String(ownerEmail).trim().toLowerCase();
+  const key=Object.keys(users).find(k=>k.trim().toLowerCase()===want);
+  if(!key||!users[key]) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/assignments`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({assignee_id:Number(users[key])})
+  }).catch(()=>{});
+}
 export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  const before=leadBody.Owner;
+  await engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead);
+  if(leadBody.Owner && leadBody.Owner!==before) await engineSyncChatwootAssignee(c, state?.convId, leadBody.Owner);
+}
+async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead){
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
   const routing=engineGetLeadRouting(c);
@@ -13547,6 +13752,19 @@ export function engineParseInstagramEvents(entry){
 // health and wellness, our Glutathione Tablets..." vs "For general health, our Glutathione
 // Tablets...") — an exact-match loop detector never once saw two identical strings, so it never
 // fired, and the conversation could repeat indefinitely with no safety net at all.
+// Greetings and language preferences ("Hy", "Only English/Hindi") are small talk, never a request
+// for a person. Real observed failure (Couplo, Sep 2026): the bot's welcome went out twice for
+// "Hi" then "Hy" — the correct reply both times — which tripped the anti-loop detector, so the
+// next message was force-handed to a human ("connecting you to our advisor") and, with handover
+// silence on, the bot then went quiet. The classifier also occasionally read "Only English/Hindi"
+// as WANTS_HUMAN. Used by engineGetLeadState, engineClassifyIntent and engineRouteFlow below.
+const ENGINE_GREETING_RE=/^(?:hi+|hy+|hai+|hey+|hlo+|hel+o+|hola|salam|salaam|as+alam+u?\s*alaikum|namaste|namaskar(?:am)?|good\s+(?:morning|afternoon|evening|night|noon)|sup|yo|greetings)(?:\s+(?:there|all|team|sir|madam|mam|maam))?[\s!.,?]*$/i;
+const ENGINE_LANGS='english|hindi|malayalam|tamil|arabic|urdu|kannada|telugu|manglish|bengali|marathi|gujarati';
+const ENGINE_LANG_PREF_RE=new RegExp(`^(?:(?:only|just|please|pls|plz|in|speak|talk|reply|chat|can\\s+you\\s+(?:speak|talk|reply|chat)(?:\\s+in)?|do\\s+you\\s+(?:speak|know|understand))\\s+)*(?:${ENGINE_LANGS})(?:\\s*(?:\\/|,|or|and|&)\\s*(?:${ENGINE_LANGS}))*(?:\\s+(?:only|please|pls|plz|language|ok|is\\s+fine|preferred))*[\\s!.?]*$`,'i');
+export function engineIsNonHandoverSmallTalk(text){
+  const t=String(text||'').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').trim();
+  return !!t && (ENGINE_GREETING_RE.test(t) || ENGINE_LANG_PREF_RE.test(t));
+}
 export function engineTextSimilarity(a, b){
   const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
   const wa=words(a), wb=words(b);
@@ -13583,7 +13801,15 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // genuinely different replies about the same product/topic still share some vocabulary but don't
   // reach this) catches that case the same way exact equality already caught scripted-text repeats.
   const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
-  const looping=botMsgs.length===2 && engineTextSimilarity(botMsgs[0], botMsgs[1])>=0.7;
+  // The same welcome sent for two greetings in a row ("Hi", then "Hy") is the bot answering
+  // correctly, not stuck — see engineIsNonHandoverSmallTalk.
+  const promptsForLastTwo=[];
+  for(let i=history.length-1, lastUser=null, pending=[]; i>=0 && promptsForLastTwo.length<2; i--){
+    if(history[i].role==='assistant') pending.push(i);
+    else if(history[i].role==='user'){ lastUser=history[i].content; while(pending.length && promptsForLastTwo.length<2){ pending.shift(); promptsForLastTwo.push(lastUser); } }
+  }
+  const greetingEcho=promptsForLastTwo.length===2 && promptsForLastTwo.every(engineIsNonHandoverSmallTalk);
+  const looping=botMsgs.length===2 && !greetingEcho && engineTextSimilarity(botMsgs[0], botMsgs[1])>=0.7;
   // 20, not 6 — keep roughly the last 10 customer/bot exchanges as working memory instead of ~3,
   // so the bot still recalls what was discussed several turns back (ConvHistory itself has no
   // date-based staleness at all, only this count-based trim of what's "active" for the prompts).
@@ -13797,7 +14023,8 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   if(!intent && /\b(more info(?:rmation)?|more detail|tell me more|know more|what is|what are|how does|how do|how much|how to|can (?:i|you) (?:get|see|have|know)|please (?:explain|clarify)|explain (?:this|that|it)|what about|tell me about)\b/.test(low)){
     intent='QUESTION'; intentData={question:userText};
   }
-  if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)){
+  if(!intent && aiResult && VALID_INTENTS.has(aiResult.intent) && (aiResult.confidence===undefined||aiResult.confidence>=0.5)
+    && !(aiResult.intent==='WANTS_HUMAN' && engineIsNonHandoverSmallTalk(userText))){
     intent=aiResult.intent;
     if(intent==='BOOKING') intentData={booking_time:userText};
   }
@@ -13893,7 +14120,7 @@ export function engineRouteFlow(c, state, userText, cls, mediaType='text'){
   // state.looping alone isn't enough — see engineHandoverCannedTexts' comment for why a lead
   // whose last 3 bot messages are all a prior handover confirmation must NOT re-trigger this, or
   // it can never leave that state again regardless of Stage/Handover being reset elsewhere.
-  const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]);
+  const isRealLoop=state.looping && !engineHandoverCannedTexts(botConfig).has((state.botMsgs||[])[0]) && !engineIsNonHandoverSmallTalk(userText);
   // Anti-loop: only escalate to human when handover is actually enabled — otherwise route to FAQ
   // so the bot keeps trying to answer rather than promising a human that never comes.
   if(isRealLoop && botConfig.antiloop_enabled!==false && c.handover_enabled!=='No') effIntent='WANTS_HUMAN';
@@ -19482,6 +19709,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Previously this block only routed English question patterns to AI and showed a hardcoded
     // action menu for everything else — non-English questions (e.g. Malayalam) got the menu
     // instead of an answer. Now all unhandled turns get an AI reply.
+    if(!orderHandledInline && !routing.businessInfoOnly && isEcomEnabled(c) && routing.route!=='drop' && !humanBlocksOrderCheck){
+      const gallery=await engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userText, state, replyLang).catch(e=>{ reportOpsError(env, 'engineMaybeSendEcomGallery', e, {clientId, convId}); return null; });
+      if(gallery){
+        sentText=gallery.text; routing.reply=gallery.text; routing.next=state.stage;
+        routing.quickReplies=gallery.quickReplies; if(gallery.media) routing.media=gallery.media;
+        if(routing.route==='human') routing.route='ecom_faq'; // non-explicit only (humanBlocksOrderCheck above)
+        orderHandledInline=true;
+      }
+    }
     if(isBabyCareEcom && !orderHandledInline){
       routing.route='ecom_faq';
     }
@@ -19676,6 +19912,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             else if(isShopify && tier===2){ shopifyTier=2; }
             else if(isShopify && tier>=3){ shopifyTier=3; }
             else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
+            // Ecom → Settings → "Always send photos": the tier window only decides whether the full
+            // media bundle goes again — the product's main photo goes with every mention.
+            if(ecomPhotosUnrestricted(c) && !sendProductImage) sendOnlyPrimaryImage=true;
           }
         }
         const _babyProductQuestion=/[?]/.test(userText)
@@ -20036,6 +20275,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // the merchant prompt and verified catalogue context; its buttons are added separately
           // from active Products data only.
           routing.route='ecom_faq';
+        }
+        // "Always send photos" on: a turn that named a product (or asked for its photo) but went to
+        // a branch that attaches none — Baby Care product questions, follow-ups answered by the FAQ
+        // LLM — still gets the product's photo, sent ahead of that answer.
+        if(ecomPhotosUnrestricted(c) && product && !routing.media && (product.image_url||'').trim()
+          && (!resolvedFromHistory || ecomIsPhotoRequest(userText))){
+          await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, `*${product.name}*`);
+          routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
         }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only
@@ -31306,6 +31553,7 @@ export default {
       else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
+      else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
       else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
       else if(url.pathname==='/live-travel/suppliers' && request.method==='PATCH'){ res=await handleLtSuppliersUpdate(request, env); }
       else if(url.pathname==='/live-travel/suppliers/health' && request.method==='GET'){ res=await handleLtSupplierHealth(request, env); }
