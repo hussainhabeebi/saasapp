@@ -10409,7 +10409,8 @@ function renderUserProfileModal(email){
     chatwootHtml=teamUsers[email]
       ? `<div class="pc-row"><div class="pc-key">Chatwoot Email</div><div class="pc-val">${esc(email)}</div></div>
          <div class="pc-row"><div class="pc-key">Chatwoot Password</div><div class="pc-val">${pw?maskedReveal(pw):'<span style="color:var(--muted)">Not on file.</span>'}</div></div>`
-      : '<div class="s-note">No Chatwoot agent on file for this teammate (Chatwoot may not have been connected when they were created).</div>';
+      : `<div class="s-note">No Chatwoot agent on file for this teammate (Chatwoot may not have been connected when they were created).</div>
+         ${isAccountOwner()&&clientRecord.chatwoot_account_id?`<div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button class="save-btn" onclick="createTeamChatwootAgent('${esc(email)}')">Create Chatwoot agent</button><span class="save-msg" id="upChatwootAgentMsg"></span></div>`:''}`;
   }
 
   const enabledModuleKeys=getEnabledModuleKeys();
@@ -10493,6 +10494,26 @@ function maskedReveal(value){
 // re-checks authorization itself (owner can reset anyone on their account, anyone else only their
 // own) — this call is only reachable at all when renderUserProfileModal's canViewCredentials
 // already agreed, but the server never trusts that alone.
+// Provisions (or re-links) a Chatwoot agent for a teammate who doesn't have one yet — see
+// handleTeamChatwootAgent in worker.js. Owner-only; the Worker enforces that too.
+async function createTeamChatwootAgent(email){
+  const msg=$id('upChatwootAgentMsg');
+  if(msg){ msg.textContent='Creating…'; msg.className='save-msg'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/chatwoot-agent`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({email})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    let teamUsers={}; try{ teamUsers=JSON.parse(clientRecord.team_chatwoot_users||'{}'); }catch(e){}
+    teamUsers[email]=data.user_id;
+    clientRecord.team_chatwoot_users=JSON.stringify(teamUsers);
+    if(data.chatwootPassword){
+      let teamPw={}; try{ teamPw=JSON.parse(clientRecord.team_chatwoot_passwords||'{}'); }catch(e){}
+      teamPw[email]=data.chatwootPassword;
+      clientRecord.team_chatwoot_passwords=JSON.stringify(teamPw);
+    }
+    renderUserProfileModal(email);
+  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } }
+}
 async function resetUserPassword(email){
   const input=$id('upNewPassword'),msg=$id('upPasswordMsg');
   const password=input.value;

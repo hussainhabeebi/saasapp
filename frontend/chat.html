@@ -195,9 +195,11 @@ function initSession(){
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
-function fmtTime(iso){ return new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:true}); }
+// '' for a missing/unparseable ts — new Date(undefined) doesn't throw, it renders "Invalid Date".
+function fmtTime(iso){ const d=new Date(iso); return iso&&!isNaN(d)?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:true}):''; }
 function fmtDay(iso){
   const d=new Date(iso); const t=new Date();
+  if(!iso||isNaN(d)) return '';
   if(d.toDateString()===t.toDateString()) return 'Today';
   const y=new Date(t); y.setDate(t.getDate()-1);
   if(d.toDateString()===y.toDateString()) return 'Yesterday';
@@ -210,7 +212,7 @@ const wrap=document.getElementById('messages');
 
 function appendBubble(role, text, created_at){
   const day=fmtDay(created_at);
-  if(day!==lastDay){
+  if(day&&day!==lastDay){
     const sep=document.createElement('div');
     sep.className='day-sep';
     sep.innerHTML=`<span>${esc(day)}</span>`;

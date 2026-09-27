@@ -109,7 +109,7 @@ const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
 // ── helpers ──
 const $=id=>document.getElementById(id);
 function uuid(){return([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16))}
-function fmtTime(iso){const d=new Date(iso);return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+function fmtTime(iso){const d=new Date(iso);return iso&&!isNaN(d)?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):''}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,120)+'px'}
 
 // ── state ──

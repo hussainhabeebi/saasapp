@@ -433,6 +433,49 @@ before the customer has even been engaged properly.
 **Tested:** `worker.test.js` → `engineRouteFlow — initial phase (< 5 bot turns) handled by industry module`
 (four cases: 0 turns → FAQ, 4 turns → FAQ, 5 turns → human allowed, explicit WANTS_HUMAN on turn 1 → human).
 
+
+### 24 — [backend] Greetings and language preferences never trigger an anti-loop handover
+**Area:** `engineIsNonHandoverSmallTalk`, `engineGetLeadState` (looping), `engineClassifyIntent`,
+`engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo (baby care ecom): "Hi" then "Hy" each correctly got the same welcome, which the
+anti-loop detector (fix #1) read as a stuck bot. The next message ("Hy", "Only English/Hindi") was
+force-routed to a human ("connecting you to our advisor"). With handover silence on, the bot then
+went quiet. The AI classifier also sometimes labelled "Only English/Hindi" as WANTS_HUMAN.
+**Fix:** Two similar bot replies to two greetings don't count as a loop. A loop never escalates a
+greeting or language-preference message, and the classifier's WANTS_HUMAN is ignored for those.
+Explicit keyword asks ("talk to a person", "agent", …) and the 2-reply threshold are unchanged.
+**Don't revert:** Removing any one guard re-opens the path from a greeting to a silent bot.
+**Tested:** `handover-small-talk.test.js`.
+
+### 25 — [backend] Photo asks for the whole range send real images
+**Area:** `ecomIsPhotoRequest`, `ecomPlanGallery`, `engineMaybeSendEcomGallery`, `handleEngineWebhook`
+(`cloudflare-worker/worker.js`)
+**Broke:** "send all photos" / "I want to see photos" matched no photo regex, so they reached the
+FAQ LLM or the catalogue list: product names, no images.
+**Fix:** Such asks send one photo per category (Ecom → Categories image, else that category's first
+product photo), then a category picker. Naming a category ("photos of frocks") sends that category's
+photos plus its products with name + price. A named product, or a bare "Pictures" right after a
+product, still goes to the product flow (fix for #783).
+**Tested:** `ecom-photo-request.test.js` → `ecomPlanGallery`.
+
+### 26 — [backend] Product style fields: repair a missing or mis-titled NocoDB column
+**Area:** `ecomRepairFieldType`, `ecomVerifyProductWrite` (`cloudflare-worker/worker.js`)
+**Broke:** "Age group" / "Set includes" reported "didn't stick" on every save. The repair only
+converted a column's type. It did nothing when the column was missing, or when it existed under
+another title (e.g. a hand-made "Age Group"). In that case ensureEcomProductStyleFields' create
+also fails on the duplicate column_name, and NocoDB silently ignores writes keyed by an unknown title.
+**Fix:** The column is matched by normalised title/column_name and retitled to the exact key, or
+created if missing. The retry waits out NocoDB's schema-cache lag, and the per-isolate "ensured"
+memo is cleared when a field is dropped.
+
+### 27 — [frontend] Standalone Chats: staff see only their routed chats
+**Area:** `staffLocked`/`baseLeads`/`loadLeads` (`frontend/chats.html`)
+**Broke:** chats.html listed every lead for the client, whoever was signed in. Only the dashboard's
+Leads tab locked staff to their own leads when Lead Routing is on.
+**Fix:** With routing on, a non-owner sees only leads whose Owner is their email. The query also
+narrows with `(Owner,like,…)` so the 200-row cap can't hide them. The account owner sees everything.
+**Tested:** `frontend/tests/chats-staff-scope.spec.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
