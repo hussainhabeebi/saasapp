@@ -53,3 +53,13 @@ describe('ecomPlanGallery', () => {
     assert.equal(ecomPlanGallery('I saw your pictures on Instagram, do you deliver to Kochi?', cats, prods, ''), null);
   });
 });
+
+// Ecom → Settings → "Always send photos" is opt-in: off (or absent/malformed) keeps every gate.
+import { ecomPhotosUnrestricted } from './worker.js';
+
+test('"Always send photos" is only on when explicitly enabled', () => {
+  assert.equal(ecomPhotosUnrestricted({ bot_config: JSON.stringify({ ecom_photos_unrestricted: true }) }), true);
+  for (const bot_config of [undefined, '', '{}', 'not json', JSON.stringify({ ecom_photos_unrestricted: 'yes' }), JSON.stringify({ ecom_photos_unrestricted: false })]) {
+    assert.equal(ecomPhotosUnrestricted({ bot_config }), false, String(bot_config));
+  }
+});

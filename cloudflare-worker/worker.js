@@ -9731,10 +9731,11 @@ async function engineMaybeSendEcomCategoryMedia(env, c, clientId, convId, resolv
     const category=(categories||[]).find(cat=>cat.name && cat.name.trim().length>=3 && lower.includes(cat.name.trim().toLowerCase()));
     if(!category) return;
     const already=await env.DB.prepare(`SELECT id FROM ecom_category_media_sent WHERE lead_id=? AND category_id=?`).bind(resolvedLeadId, category.id).first();
-    if(already) return;
+    const unrestricted=ecomPhotosUnrestricted(c);
+    if(already && !unrestricted) return;
     // For 'product' and 'product_and_category' modes when no specific product was matched:
     // send a text nudge to browse the related category instead of dumping photos.
-    if(scope && !orderHandledInline){
+    if(scope && !orderHandledInline && !unrestricted){
       const fd=new FormData();
       fd.append('content', `We don't have an exact match for that — try browsing our *${category.name}* range to find something similar! 📂`);
       fd.append('message_type','outgoing'); fd.append('private','false');
@@ -9875,6 +9876,12 @@ async function engineMaybeSendEcomGallery(env, c, clientId, convId, phone, userT
     :(await engineSendChatwootReply(env, c, clientId, convId, text), null);
   return {text, quickReplies, media:firstUrl?{url:engineResolveDirectImageUrl(firstUrl), type:'image'}:null};
 }
+
+// Ecom → Settings → Image Send Settings → "Always send photos" (bot_config.ecom_photos_unrestricted,
+// off by default). When on, a product's photo goes out every time the product is mentioned or its
+// photo is asked for, and category photos every time a category is named — no 5-hour window, no
+// once-per-customer dedup, no text nudge in place of photos. Off leaves every existing gate as is.
+export function ecomPhotosUnrestricted(c){ return engineParseJsonField(c?.bot_config, {}).ecom_photos_unrestricted===true; }
 
 // Escapes a promo code for safe use inside a RegExp — codes are shop-owner-entered free text
 // (SAVE20, WELCOME10, etc.) and could in principle contain regex metacharacters.
@@ -19905,6 +19912,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             else if(isShopify && tier===2){ shopifyTier=2; }
             else if(isShopify && tier>=3){ shopifyTier=3; }
             else if(!isShopify && botConfig.ecom_communication_style==='furniture_appliances'){ sendRandomImages=true; }
+            // Ecom → Settings → "Always send photos": the tier window only decides whether the full
+            // media bundle goes again — the product's main photo goes with every mention.
+            if(ecomPhotosUnrestricted(c) && !sendProductImage) sendOnlyPrimaryImage=true;
           }
         }
         const _babyProductQuestion=/[?]/.test(userText)
@@ -20265,6 +20275,14 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // the merchant prompt and verified catalogue context; its buttons are added separately
           // from active Products data only.
           routing.route='ecom_faq';
+        }
+        // "Always send photos" on: a turn that named a product (or asked for its photo) but went to
+        // a branch that attaches none — Baby Care product questions, follow-ups answered by the FAQ
+        // LLM — still gets the product's photo, sent ahead of that answer.
+        if(ecomPhotosUnrestricted(c) && product && !routing.media && (product.image_url||'').trim()
+          && (!resolvedFromHistory || ecomIsPhotoRequest(userText))){
+          await engineSendChatwootImageReply(env, c, clientId, convId, product.image_url, `*${product.name}*`);
+          routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
         }
       }
       // If this turn overrode a false-positive 'human' route (humanBlocksOrderCheck was false only

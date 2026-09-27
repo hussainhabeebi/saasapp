@@ -476,6 +476,18 @@ Leads tab locked staff to their own leads when Lead Routing is on.
 narrows with `(Owner,like,…)` so the 200-row cap can't hide them. The account owner sees everything.
 **Tested:** `frontend/tests/chats-staff-scope.spec.js`.
 
+
+### 28 — [backend] Opt-in "Always send photos" (Ecom → Settings → Image Send Settings)
+**Area:** `ecomPhotosUnrestricted`, `handleEngineWebhook` product branches, `engineMaybeSendEcomCategoryMedia`
+(`cloudflare-worker/worker.js`); `frontend/ecom.html`
+**What:** `bot_config.ecom_photos_unrestricted` (off by default). When on, a product's main photo goes
+out on every mention or photo ask, even inside the 5-hour tier window and on branches that answer
+via the FAQ LLM (Baby Care product questions, follow-ups). Category photos go out every time a
+category is named, with no once-per-customer dedup and no text nudge in their place. The tier
+window still governs the full media bundle.
+**Don't:** make it default-on. Every existing gate must behave exactly as before while it's off.
+**Tested:** `ecom-photo-request.test.js` → `"Always send photos" is only on when explicitly enabled`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
