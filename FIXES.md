@@ -492,6 +492,24 @@ window still governs the full media bundle.
 **Don't:** make it default-on. Every existing gate must behave exactly as before while it's off.
 **Tested:** `ecom-photo-request.test.js` → `"Always send photos" is only on when explicitly enabled`.
 
+
+### 29 — [backend] No link → take the order in the chat, conversationally (no handover)
+**Area:** `ecomChatOrderSeed`/`ecomChatOrderSystemPrompt`/`ecomApplyChatOrderTurn`/`engineHandleChatOrder`,
+stage `chat_order`, enquiry + Baby Care product branches in `handleEngineWebhook` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: a product with no product/store link got "An online product link is not available.
+I'll connect you with our team." plus a human handover, which ended the conversation. The only
+in-chat ordering was a fixed two-question ladder, or Baby Care's button-only Custom Order flow.
+**Fix:** The card now offers "Would you like to order this? I can take your order right here 😊"
+(Baby Care adds an "Order this 🛒" button). Only when the customer wants to order (order intent or
+the button) does stage `chat_order` start. There, an LLM talks like a shop assistant: it asks only
+what the product's description calls for (e.g. baby's name), answers side questions from the
+product row, and summarises before asking for confirmation. Code-enforced guards: no order is saved
+without a summary shown first, then an explicit yes, plus a name and address. Off-topic messages
+leave the order and route normally, and an explicit ask for a person still hands over.
+"Talk to sales team" (`ecom_order_link_enabled='Human'`) keeps its handover. Fashion, Electronics
+and Medical keep their own order flows.
+**Tested:** `chat-order.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
