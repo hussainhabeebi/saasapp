@@ -10190,6 +10190,8 @@ function renderLeadRoutingSettings(){
   const modes=Array.isArray(rt.modes)?rt.modes:[];
   const rules=rt.rules||{};
   const catchall=rt.catchall||'';
+  const coldRaw=rt.coldRealloc||{};
+  const cold={enabled:coldRaw.enabled===true, days:Number(coldRaw.days)||7, maxHops:Number(coldRaw.maxHops)||3};
   const industry=clientRecord?.industry||'general';
   const isHosp=industry==='hospitality';
   const isTravel=industry==='travel';
@@ -10249,6 +10251,17 @@ function renderLeadRoutingSettings(){
         </table>
       </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
 
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
+          <input type="checkbox" id="lrColdEnabled" ${cold.enabled?' checked':''}> 🔁 Auto-reallocate cold leads
+        </label>
+        <div class="s-note" style="margin-bottom:8px">A <strong>Cold</strong> lead whose owner adds no note on it for the set number of days moves to the next teammate (Round-Robin "In pool" members, or everyone if fewer than two are ticked). The owner gets an email 2 days before, and a lead never returns to someone who already had it. Checked once a day.</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+          <label style="display:flex;align-items:center;gap:6px">After <input class="form-input" type="number" id="lrColdDays" min="1" max="90" value="${cold.days}" style="width:70px;padding:4px 8px"> days without a note</label>
+          <label style="display:flex;align-items:center;gap:6px">Max <input class="form-input" type="number" id="lrColdHops" min="1" max="20" value="${cold.maxHops}" style="width:70px;padding:4px 8px"> reassignments per lead</label>
+        </div>
+      </div>
+
       <div style="display:flex;gap:8px;align-items:center">
         <button class="save-btn" onclick="saveLeadRouting()">Save Routing Rules</button>
         <span class="save-msg" id="lrSaveMsg"></span>
@@ -10278,7 +10291,18 @@ async function saveLeadRouting(){
     });
 
     const existing=getLeadRouting();
-    const newRouting={...existing, enabled, modes, catchall, rules};
+    // enabledAt lets the daily sweep start a brand-new lead's clock from its creation time; kept
+    // from the first time the feature was switched on.
+    const prevCold=existing.coldRealloc||{};
+    const coldEnabled=$id('lrColdEnabled')?.checked||false;
+    const clampInt=(v,min,max,def)=>{ const n=Math.round(Number(v)); return n>=min&&n<=max?n:def; };
+    const coldRealloc={
+      enabled:coldEnabled,
+      days:clampInt($id('lrColdDays')?.value,1,90,7),
+      maxHops:clampInt($id('lrColdHops')?.value,1,20,3),
+      enabledAt:coldEnabled?(prevCold.enabled&&prevCold.enabledAt?prevCold.enabledAt:new Date().toISOString()):''
+    };
+    const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc};
     if(msg){msg.textContent='Saving…';msg.className='save-msg';}
     await patchClient({lead_routing:JSON.stringify(newRouting)});
     if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}

@@ -13468,6 +13468,180 @@ export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, 
   // Otherwise: Unmatched — lead stays without an Owner
 }
 
+/* ── COLD-LEAD AUTO-REALLOCATION ─────────────────────────────────────────────────────────────────
+   Settings → 🔀 Lead Routing → "Auto-reallocate cold leads". A lead whose Score is Cold and whose
+   current owner hasn't added a single note to it (NotesList — the Leads detail pane / Chats
+   internal-note composer) for `days` days is moved to the next teammate, once a day from the
+   02:00 cron. Stored as lead_routing.coldRealloc = {enabled, days, maxHops, enabledAt}; it works
+   whether or not auto-assignment itself is on. Pool = round-robin "In pool" teammates when at
+   least two are ticked, otherwise every routable teammate. A lead never goes back to someone who
+   already had it, and stops moving after maxHops. The NocoDB Owner field has no "assigned at"
+   timestamp, so ownership start is tracked in D1 (migrations/0106_lead_cold_realloc.sql). ── */
+const COLD_REALLOC_NOTE_AUTHOR='auto-allocation';
+const DAY_MS=86400000;
+
+export function coldReallocSettings(routing){
+  const r=routing?.coldRealloc||{};
+  const days=Math.round(Number(r.days));
+  const maxHops=Math.round(Number(r.maxHops));
+  return {
+    enabled:r.enabled===true,
+    days:days>=1&&days<=90?days:7,
+    maxHops:maxHops>=1&&maxHops<=20?maxHops:3,
+    enabledAt:r.enabledAt||''
+  };
+}
+
+// Latest time (ms) the owner wrote a note on this lead, or 0. Notes without an author predate
+// author tagging (dashboard.html addNote) and are counted as the owner's; the system's own
+// reallocation notes never are.
+export function coldReallocLastOwnerNoteMs(notesListRaw, owner){
+  let notes=[]; try{ notes=JSON.parse(notesListRaw||'[]'); }catch(e){}
+  if(!Array.isArray(notes)) return 0;
+  const me=String(owner||'').trim().toLowerCase();
+  let last=0;
+  for(const n of notes){
+    const author=String(n?.author||'').trim().toLowerCase();
+    if(author && author!==me) continue;
+    const t=Date.parse(n?.ts||'');
+    if(Number.isFinite(t) && t>last) last=t;
+  }
+  return last;
+}
+
+// Next teammate after `current` in the (sorted) pool, skipping anyone who already had the lead.
+export function coldReallocPickNext(pool, current, excluded){
+  const list=[...new Set((pool||[]).map(e=>String(e).trim().toLowerCase()).filter(Boolean))].sort();
+  const skip=new Set([...(excluded||[]), current].map(e=>String(e||'').trim().toLowerCase()));
+  if(!list.length) return null;
+  const start=list.indexOf(String(current||'').trim().toLowerCase());
+  for(let i=1;i<=list.length;i++){
+    const cand=list[(Math.max(start,-1)+i+list.length)%list.length];
+    if(!skip.has(cand)) return cand;
+  }
+  return null;
+}
+
+// Pure decision for one lead given its tracking row. Returns {action:'none'|'warn'|'move', clockMs}.
+export function coldReallocDecide({lead, track, cfg, nowMs}){
+  if(String(lead.Score||'')!=='Cold') return {action:'none'};
+  if((Number(track.realloc_count)||0)>=cfg.maxHops) return {action:'none'};
+  const since=Date.parse(track.owner_since)||nowMs;
+  const clockMs=Math.max(since, coldReallocLastOwnerNoteMs(lead.NotesList, track.owner));
+  const idle=nowMs-clockMs;
+  if(idle>=cfg.days*DAY_MS) return {action:'move', clockMs};
+  const warnAt=Math.max(1, cfg.days-2)*DAY_MS;
+  const warned=Date.parse(track.warned_at||'')||0;
+  if(cfg.days>2 && idle>=warnAt && warned<clockMs) return {action:'warn', clockMs};
+  return {action:'none', clockMs};
+}
+
+async function coldReallocEmail(env, to, subject, html){
+  if(!env.RESEND_API_KEY || !to) return;
+  try{
+    await fetch('https://api.resend.com/emails', {
+      method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne Tasks <tasks@leadvyne.com>', to:[to], subject, html})
+    });
+  }catch(e){ console.error('[cold-realloc] email failed', e.message); }
+}
+
+async function coldReallocFetchLeads(env, clientId){
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`);
+  let rows=[];
+  for(let page=1; page<=25; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=200&offset=${(page-1)*200}&fields=Id,Name,Phone,Owner,Stage,Score,NotesList,Date,CreatedAt`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    rows=rows.concat(list);
+    if(list.length<200) break;
+  }
+  return rows;
+}
+
+export async function coldReallocProcessClient(env, c, now=new Date()){
+  const routing=engineGetLeadRouting(c);
+  const cfg=coldReallocSettings(routing);
+  if(!cfg.enabled || !env.DB) return {moved:0, warned:0};
+  const clientId=Number(c.Id);
+  const staff=engineRoutableStaffEmails(c);
+  const inPool=Object.entries(routing.rules||{}).filter(([e,r])=>r?.inPool && staff.has(String(e).trim().toLowerCase())).map(([e])=>String(e).trim().toLowerCase());
+  const pool=inPool.length>=2?inPool:[...staff];
+  if(pool.length<2) return {moved:0, warned:0};
+
+  const nowMs=now.getTime(), nowIso=now.toISOString();
+  const enabledAtMs=Date.parse(cfg.enabledAt)||Infinity;
+  const leads=await coldReallocFetchLeads(env, clientId);
+  const {results}=await env.DB.prepare(`SELECT * FROM lead_owner_tracking WHERE client_id=?`).bind(clientId).all();
+  const byLead=new Map((results||[]).map(t=>[Number(t.lead_id), t]));
+  let moved=0, warned=0;
+
+  for(const lead of leads){
+    const owner=String(lead.Owner||'').trim().toLowerCase();
+    if(!owner || !staff.has(owner) || PIPELINE_TERMINAL_STAGES.has(lead.Stage||'')) continue;
+    const leadId=Number(lead.Id);
+    let track=byLead.get(leadId);
+    if(!track || track.owner!==owner){
+      // First sighting, or someone reassigned it by hand: the clock starts now. A lead created
+      // after the feature was switched on starts from its creation time instead, so brand-new
+      // leads aren't given an extra day by the once-a-day sweep. Previous owners carry over so a
+      // manual reassignment can't send it back to someone who already had it.
+      let prev=[]; try{ prev=JSON.parse(track?.previous_owners||'[]'); }catch(e){}
+      if(track && track.owner && !prev.includes(track.owner)) prev.push(track.owner);
+      const created=Date.parse(lead.CreatedAt||lead.Date||'');
+      const since=!track && Number.isFinite(created) && created>=enabledAtMs && created<=nowMs?new Date(created).toISOString():nowIso;
+      track={client_id:clientId, lead_id:leadId, owner, owner_since:since, previous_owners:JSON.stringify(prev), realloc_count:Number(track?.realloc_count)||0, warned_at:null, last_realloc_at:track?.last_realloc_at||null};
+      await env.DB.prepare(`INSERT INTO lead_owner_tracking (client_id, lead_id, owner, owner_since, previous_owners, realloc_count, warned_at, last_realloc_at, updated_at) VALUES (?,?,?,?,?,?,NULL,?,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET owner=excluded.owner, owner_since=excluded.owner_since, previous_owners=excluded.previous_owners, warned_at=NULL, updated_at=excluded.updated_at`)
+        .bind(clientId, leadId, owner, since, track.previous_owners, track.realloc_count, track.last_realloc_at, nowIso).run();
+    }
+
+    const {action}=coldReallocDecide({lead, track, cfg, nowMs});
+    const leadName=lead.Name||lead.Phone||`Lead #${leadId}`;
+    if(action==='warn'){
+      await env.DB.prepare(`UPDATE lead_owner_tracking SET warned_at=?, updated_at=? WHERE client_id=? AND lead_id=?`).bind(nowIso, nowIso, clientId, leadId).run();
+      await coldReallocEmail(env, owner, `Lead "${leadName}" will be reassigned soon`,
+        `<p>The cold lead <strong>${esc(leadName)}</strong> has had no note from you for a while. Add a note on the lead within 2 days, or it will be reassigned to another teammate automatically.</p>`);
+      warned++;
+      continue;
+    }
+    if(action!=='move') continue;
+
+    let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
+    const next=coldReallocPickNext(pool, owner, prev);
+    if(!next) continue;
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`🔁 Auto-reallocated from ${owner} to ${next}: cold lead with no notes for ${cfg.days} day${cfg.days===1?'':'s'}.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
+    if(!pr.ok){ console.error('[cold-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
+    prev.push(owner);
+    await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, warned_at=NULL, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
+      .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
+    await coldReallocEmail(env, next, `New lead assigned: ${leadName}`,
+      `<p>The lead <strong>${esc(leadName)}</strong> has been reassigned to you because it had no follow-up notes from the previous owner for ${cfg.days} days. Open it in Leads to see the chat history and notes.</p>`);
+    moved++;
+  }
+  return {moved, warned};
+}
+
+export async function runColdLeadReallocationForAllClients(env, now=new Date()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!coldReallocSettings(engineGetLeadRouting(c)).enabled) continue;
+      try{ await coldReallocProcessClient(env, c, now); }
+      catch(e){ console.error('[cold-realloc] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
   if(body.private) return null;
@@ -31944,6 +32118,8 @@ export default {
       // are due today (daily reports every tick, weekly reports only on their configured
       // weekly_day); see runScheduledReportsForAllClients's own comment.
       ctx.waitUntil(runScheduledReportsForAllClients(env));
+      // Cold-lead auto-reallocation (Settings → 🔀 Lead Routing) — see runColdLeadReallocationForAllClients.
+      ctx.waitUntil(runColdLeadReallocationForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
