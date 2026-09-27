@@ -502,6 +502,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <select id="dmCountryFilter" onchange="filterDmLeads()">
           <option value="">All countries</option>
         </select>
+        <select id="dmOwnerFilter" onchange="filterDmLeads()">
+          <option value="">All owners</option>
+        </select>
         <span id="dmReFilters" class="re-filters" style="display:none">
           <select id="dmReProjectFilter" onchange="filterDmLeads()"><option value="">All projects</option></select>
           <select id="dmReZoneFilter" onchange="filterDmLeads()"><option value="">All zones</option></select>
@@ -624,6 +627,9 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         </select>
         <select id="metaCountryFilter" onchange="filterMetaLeads()">
           <option value="">All countries</option>
+        </select>
+        <select id="metaOwnerFilter" onchange="filterMetaLeads()">
+          <option value="">All owners</option>
         </select>
         <span id="metaReFilters" class="re-filters" style="display:none">
           <select id="metaReProjectFilter" onchange="filterMetaLeads()"><option value="">All projects</option></select>
@@ -2431,6 +2437,17 @@ async function loadLeads(){
     populate('dmBrandFilter',brands); populate('metaBrandFilter',brands);
     populate('dmProductCategoryFilter',productCategories); populate('metaProductCategoryFilter',productCategories);
     populate('dmCountryFilter',countries); populate('metaCountryFilter',countries);
+    // Lead owner (assigned agent email) — de-duplicated case-insensitively, plus an "Unassigned" option.
+    const ownerMap=new Map();
+    allLeads.forEach(l=>{ const o=String(l.Owner||'').trim(); if(o&&!ownerMap.has(o.toLowerCase())) ownerMap.set(o.toLowerCase(),o); });
+    const owners=[...ownerMap.values()].sort((a,b)=>a.localeCompare(b));
+    ['dmOwnerFilter','metaOwnerFilter'].forEach(id=>{
+      const sf=$id(id); if(!sf) return;
+      const prev=sf.value;
+      populate(id,owners);
+      if(allLeads.some(l=>!String(l.Owner||'').trim())){ const o=document.createElement('option');o.value=OWNER_UNASSIGNED;o.textContent='Unassigned';sf.appendChild(o); }
+      if([...sf.options].some(o=>o.value===prev)) sf.value=prev;
+    });
 
     // Real Estate module fields (only populated/visible for real_estate clients — see initApp).
     const reProjects=[...new Set(allLeads.map(l=>l.re_project).filter(Boolean))].sort();
@@ -2461,11 +2478,12 @@ function applyFilterPresetsFromUrl(){
   const reProject=qp.get('re_project')||'', reZone=qp.get('re_zone')||'', reUrgency=qp.get('re_urgency')||'';
   const reSource=qp.get('re_source')||'', reInvestor=qp.get('re_investor')||'';
   const leadRefs=qp.get('lead_refs')||'';
+  const owner=qp.get('owner')||'';
   if(leadRefs){ ['dmLeadRefFilter','metaLeadRefFilter'].forEach(id=>{ const el=$id(id); if(el) el.value=leadRefs; }); }
   [
     ['dmStageFilter',stage],['metaStageFilter',stage],['dmBrandFilter',brand],['metaBrandFilter',brand],
     ['dmProductCategoryFilter',productCategory],['metaProductCategoryFilter',productCategory],
-    ['dmCountryFilter',country],['metaCountryFilter',country],
+    ['dmCountryFilter',country],['metaCountryFilter',country],['dmOwnerFilter',owner],['metaOwnerFilter',owner],
     ['dmReProjectFilter',reProject],['metaReProjectFilter',reProject],['dmReZoneFilter',reZone],['metaReZoneFilter',reZone],
     ['dmReUrgencyFilter',reUrgency],['metaReUrgencyFilter',reUrgency],['dmReSourceFilter',reSource],['metaReSourceFilter',reSource],
     ['dmReInvestorFilter',reInvestor],['metaReInvestorFilter',reInvestor]
@@ -2475,6 +2493,12 @@ function applyFilterPresetsFromUrl(){
   });
 }
 
+const OWNER_UNASSIGNED='__unassigned__';
+function leadOwnerMatches(owner,l){
+  const o=String(l.Owner||'').trim().toLowerCase();
+  return owner===OWNER_UNASSIGNED ? !o : o===owner.trim().toLowerCase();
+}
+
 // ── DM LEADS ──
 function filterDmLeads(){
   const q=($id('dmSearch').value||'').toLowerCase();
@@ -2482,6 +2506,7 @@ function filterDmLeads(){
   const brand=$id('dmBrandFilter').value;
   const productCategory=$id('dmProductCategoryFilter').value;
   const country=$id('dmCountryFilter').value;
+  const owner=$id('dmOwnerFilter')?.value||'';
   const window=$id('dmWindowFilter').value;
   const reProject=$id('dmReProjectFilter')?.value||'';
   const reZone=$id('dmReZoneFilter')?.value||'';
@@ -2496,6 +2521,7 @@ function filterDmLeads(){
     if(brand&&l.Brand!==brand) return false;
     if(productCategory&&l.ProductCategory!==productCategory) return false;
     if(country&&l.Country!==country) return false;
+    if(owner&&!leadOwnerMatches(owner,l)) return false;
     if(reProject&&l.re_project!==reProject) return false;
     if(reZone&&l.re_zone!==reZone) return false;
     if(reUrgency&&l.re_urgency!==reUrgency) return false;
@@ -2547,6 +2573,7 @@ function filterMetaLeads(){
   const brand=$id('metaBrandFilter').value;
   const productCategory=$id('metaProductCategoryFilter').value;
   const country=$id('metaCountryFilter').value;
+  const owner=$id('metaOwnerFilter')?.value||'';
   const score=$id('metaScoreFilter').value;
   const reProject=$id('metaReProjectFilter')?.value||'';
   const reZone=$id('metaReZoneFilter')?.value||'';
@@ -2560,6 +2587,7 @@ function filterMetaLeads(){
     if(brand&&l.Brand!==brand) return false;
     if(productCategory&&l.ProductCategory!==productCategory) return false;
     if(country&&l.Country!==country) return false;
+    if(owner&&!leadOwnerMatches(owner,l)) return false;
     if(score&&l.Score!==score) return false;
     if(reProject&&l.re_project!==reProject) return false;
     if(reZone&&l.re_zone!==reZone) return false;
