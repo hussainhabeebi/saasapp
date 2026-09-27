@@ -472,8 +472,12 @@ memo is cleared when a field is dropped.
 **Area:** `staffLocked`/`baseLeads`/`loadLeads` (`frontend/chats.html`)
 **Broke:** chats.html listed every lead for the client, whoever was signed in. Only the dashboard's
 Leads tab locked staff to their own leads when Lead Routing is on.
-**Fix:** With routing on, a non-owner sees only leads whose Owner is their email. The query also
-narrows with `(Owner,like,…)` so the 200-row cap can't hide them. The account owner sees everything.
+**Fix:** A non-owner never sees a chat whose Owner is someone else, whether Lead Routing set the owner
+or someone assigned it by hand in the Leads panel. Unassigned chats are hidden while routing is on
+and shown while it's off, matching the Leads tab. The query is also narrowed by Owner so the
+200-row cap can't hide their chats. The account owner sees everything.
+(A first version locked staff only when routing was on, so manually assigned chats still showed to
+every teammate.)
 **Tested:** `frontend/tests/chats-staff-scope.spec.js`.
 
 

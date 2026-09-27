@@ -16,12 +16,12 @@ const LEADS = [
 ];
 const client = { authentik_email: 'owner@couplo.test', lead_routing: JSON.stringify({ enabled: true, modes: ['roundrobin'] }) };
 
-async function open(page, email) {
+async function open(page, email, clientRec = client) {
   const listQueries = [];
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.protocol === 'file:') return route.continue();
-    if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email, client } });
+    if (url.pathname.endsWith('/session/me')) return route.fulfill({ json: { email, client: clientRec } });
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(url.pathname)) {
       listQueries.push(url.searchParams.get('where') || '');
       return route.fulfill({ json: { list: LEADS } });
@@ -43,4 +43,10 @@ test('the account owner sees every chat', async ({ page }) => {
   const queries = await open(page, 'owner@couplo.test');
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Binu', 'Chitra']);
   expect(queries[0]).not.toContain('Owner');
+});
+
+test('with routing off (leads assigned by hand), a teammate sees their own + unassigned, never another teammate\'s', async ({ page }) => {
+  const queries = await open(page, 'vinaya@couplo.test', { ...client, lead_routing: '{}' });
+  await expect(page.locator('#list .contact .name')).toHaveText(['Binu', 'Chitra']);
+  expect(queries[0]).toContain('((Owner,like,vinaya@couplo.test)~or(Owner,blank))');
 });
