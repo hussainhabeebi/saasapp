@@ -523,6 +523,22 @@ separate picker ("Tap a set to see details and photos 👇"). Kept separate beca
 interactive body at 1024 chars. If the AI fails, it falls back to the old picker intro.
 **Tested:** `answer-then-picker.test.js`.
 
+
+### 31 — [backend] Baby Care: product summary follow-up ~30 min after the customer goes quiet (opt-in)
+**Area:** `babyCareSummaryDue`, `babyCareWriteSummary`, `runBabyCareSummaryFollowupsForAllClients`
+(15-min cron) (`cloudflare-worker/worker.js`); Ecom → Settings toggle in `frontend/ecom.html`
+**What:** `bot_config.baby_care_summary_followup_enabled` (off by default) and `_mins` (default 30).
+A Baby Care customer who asked about a product and went quiet gets ONE warm recap: the product,
+its price, and anything they told us. It comes with "Order this 🛒" / "Talk to Us 💬" buttons, or
+no buttons while an in-chat order is in progress. The recap is AI-written from the product row +
+conversation only, with a plain template fallback.
+**Guards (tested):** it sends only when the bot had the last word, no staff replied after the
+customer, the chat isn't handed over / opted out / won, it's inside WhatsApp's 24h window, and at
+most once per 24h. It never sends right after an in-chat order (`routing.orderPlaced` stamps
+`ProductSummarySentAt`). The lead is claimed before sending, so overlapping ticks can't double-send.
+The message is appended to ConvHistory with its options, so button taps resolve.
+**Tested:** `baby-summary-followup.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)

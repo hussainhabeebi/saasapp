@@ -3722,6 +3722,107 @@ async function handleBroadcastFollowupSend(request, env){
 // than the daily one, since steps 1-2 are sub-daily (hours, not days). Per-client cost stays low:
 // a client who's never touched the Follow-up Engine has zero rows in followup_ladder_steps and is
 // skipped in one query, same as the old count>0 gate.
+/* ── Baby Care: product summary follow-up ─────────────────────────────────────────────────
+   Ecom → Settings → "Product Summary Follow-up" (bot_config.baby_care_summary_followup_enabled,
+   off by default; bot_config.baby_care_summary_followup_mins, default 30). A Baby Care customer
+   who asked about a product and then went quiet gets ONE short summary of what they were looking
+   at (product, price, anything they told us — baby's name, age, add-ons) with an easy way to
+   order. Runs on the 15-minute cron, so it lands 30–45 min after their last message. */
+export const BABY_SUMMARY_DEFAULT_MINS=30;
+// Pure due-check (tested): the customer asked about a product, went quiet for `mins`, the bot had
+// the last word, no human stepped in, still inside WhatsApp's 24h window, and no summary went out
+// in the last 24h.
+export function babyCareSummaryDue(lead, nowMs, mins=BABY_SUMMARY_DEFAULT_MINS){
+  if(!lead || !String(lead['Last Product Sku']||'').trim()) return false;
+  if(lead.OptOut==='Yes' || lead.Handover==='Yes' || PIPELINE_TERMINAL_STAGES.has(lead.Stage)) return false;
+  const lastCustomer=Date.parse(lead.LastCustomerMsgAt||'');
+  if(!Number.isFinite(lastCustomer)) return false;
+  const silentMs=nowMs-lastCustomer;
+  if(silentMs<mins*60000 || silentMs>23*3600000) return false;
+  const agentAt=Date.parse(lead.LastAgentMsgAt||'');
+  if(Number.isFinite(agentAt) && agentAt>lastCustomer) return false;
+  const sentAt=Date.parse(lead.ProductSummarySentAt||'');
+  if(Number.isFinite(sentAt) && (sentAt>lastCustomer || nowMs-sentAt<24*3600000)) return false;
+  let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  const last=hist[hist.length-1];
+  return !!last && (last.role==='assistant'||last.role==='bot');
+}
+export function babyCareSummaryFallback(product, seed){
+  const price=ecomFormatProductPrice(product?.price, product?.currency);
+  const d=seed?.details||{};
+  const bits=[d.customisation, d.notes].filter(Boolean).join(', ');
+  return `Hi 😊 Just a quick recap of what you were looking at:\n\n🍼 *${product.name}*${price?` — ${price}`:''}${bits?`\n✨ ${bits}`:''}\n\nWould you like me to place the order for you? Just reply here and I'll take care of it.`;
+}
+async function babyCareWriteSummary(env, c, lead, product, seed){
+  let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  const recent=hist.slice(-12).map(m=>`${m.role==='user'?'Customer':'Shop'}: ${String(m.content||'').slice(0,400)}`).join('\n');
+  const price=ecomFormatProductPrice(product.price, product.currency);
+  const sys=`You write one short WhatsApp follow-up for ${c.client_name||'a baby clothing shop'}. The customer asked about a product about 30 minutes ago and then went quiet. Write a warm, human recap (3-5 short lines): the product, its price, and anything the customer told us (baby's name, age, colour, add-ons, quantity) — then invite them to order by just replying. Use ONLY the product data and the conversation below; never invent prices, offers, discounts, delivery dates or options. Do not greet as if it's a new chat and do not use a heading. Write in the language the customer used in the conversation. Return only the message text.
+
+PRODUCT: ${product.name}${price?` — ${price}`:''}
+Description: ${String(product.description||'').slice(0,800)}
+${seed?.details&&Object.keys(seed.details).length?`Order details given so far: ${JSON.stringify(seed.details)}\n`:''}
+Conversation:
+${recent}`;
+  const out=await engineGeminiGenerateWithFallback(env, c, sys, 'Write the follow-up message.', {temperature:0.5, maxOutputTokens:300}).catch(()=>null);
+  const text=String(out||'').replace(/^["'\s]+|["'\s]+$/g,'').trim();
+  return text && text.length<=900 ? text : babyCareSummaryFallback(product, seed);
+}
+export async function runBabyCareSummaryFollowupsForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      try{ await babyCareSummaryProcessClient(env, c); }
+      catch(e){ await reportOpsError(env, 'babyCareSummaryProcessClient', e, {clientId:c.Id}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+async function babyCareSummaryProcessClient(env, c){
+  const bc=engineParseJsonField(c.bot_config, {});
+  if(bc.baby_care_summary_followup_enabled!==true || bc.ecom_communication_style!=='baby_care') return;
+  if(c.industry!=='ecommerce' || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  if(!followupWithinQuietHours(c)) return; // picked up on a later tick, still inside 24h
+  const mins=Math.max(10, Number(bc.baby_care_summary_followup_mins)||BABY_SUMMARY_DEFAULT_MINS);
+  await ensureLeadsColumns(env, ['ProductSummarySentAt','LastCustomerMsgAt']).catch(()=>{});
+  const where=`(ClientId,eq,${c.Id})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  const fields='Id,Name,Phone,Stage,Handover,OptOut,ConversationID,ConvHistory,LastMsgAt,LastCustomerMsgAt,LastAgentMsgAt,ProductSummarySentAt,Last Product Sku,OrderCollect';
+  // Newest activity first; anything older than a day is outside the window, so one page is plenty.
+  const lr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&sort=-LastMsgAt&limit=200&fields=${encodeURIComponent(fields)}`);
+  if(!lr.ok) return;
+  const now=Date.now();
+  for(const lead of ((await lr.json().catch(()=>({})))?.list||[])){
+    if(!babyCareSummaryDue(lead, now, mins)) continue;
+    const convId=lead.ConversationID; if(!convId) continue;
+    const product=await ecomFindProductBySku(env, c.Id, lead['Last Product Sku']);
+    if(!product?.name) continue;
+    let seed=null; try{ seed=JSON.parse(lead.OrderCollect||'null'); }catch(e){}
+    if(!seed?.chatOrder) seed=null;
+    // Claim first so an overlapping tick or a retry can never send it twice.
+    const claimAt=new Date().toISOString();
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ProductSummarySentAt:claimAt}});
+    if(!pr.ok) continue;
+    const text=await babyCareWriteSummary(env, c, lead, product, seed);
+    // Mid-order the conversation is already going (stage chat_order), so no buttons; otherwise an
+    // easy "Order this" that starts the in-chat order for this product.
+    const options=lead.Stage==='chat_order' ? null
+      : await engineSendEcomVerifiedPicker(env, c, c.Id, convId, lead.Phone, text, [
+          {title:'Order this 🛒', value:'CHAT_ORDER_START'},
+          {title:'Talk to Us 💬', value:'BABY_TALK_TO_TEAM'},
+        ]);
+    if(lead.Stage==='chat_order') await engineSendChatwootReply(env, c, c.Id, convId, text);
+    let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+    hist.push({role:'assistant', content:text, ts:claimAt, ...(options&&options.length?{options}:{})});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40)), LastMsgAt:claimAt}}).catch(()=>{});
+    await d1InsertLeadMessage(env, lead.Id, c.Id, {role:'assistant', content:text, ts:claimAt});
+  }
+}
+
 async function runClassicFollowupsForAllClients(env){
   let page=1;
   while(true){
@@ -10719,6 +10820,9 @@ async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed
     text=order.ok ? turn.reply
       : await engineLocalizeReply(env, c, "Thank you! I've noted your order — our team will confirm everything with you shortly 😊", replyLang);
     if(!order.ok) await engineSendHandoverLabel(c, convId);
+    // They just ordered — the Baby Care product summary follow-up must not ask them to order again.
+    await ensureLeadsColumns(env, ['ProductSummarySentAt']).catch(()=>{});
+    routing.orderPlaced=true;
     next='new'; nextSeed=null;
   } else {
     text=turn.reply;
@@ -17888,6 +17992,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // Cleared back to '' once the order is finalized so a later, unrelated order doesn't inherit a
   // stale seed.
   if(routing.orderCollectSeed) body.OrderCollect=JSON.stringify(routing.orderCollectSeed);
+  if(routing.orderPlaced) body.ProductSummarySentAt=new Date().toISOString(); // see babyCareSummaryDue
   else if(routing.clearOrderCollect) body.OrderCollect='';
   // See ensureLastProductSkuField's comment — the write side of the "resolve a bare 'yes'/'proceed
   // with order' back to the product actually being discussed" fallback above.
@@ -32350,6 +32455,8 @@ export default {
     }
     else if(event.cron==='*/15 * * * *'){
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
+      // Baby Care product summary follow-up (Ecom → Settings) — see babyCareSummaryDue.
+      ctx.waitUntil(runBabyCareSummaryFollowupsForAllClients(env));
       // Monthly Marketing (Campaigns → 📅 Monthly Marketing) — on this tick rather than the daily
       // one so sends land inside each client's Follow-up Engine send window and a large client is
       // worked through a capped batch at a time; see runMonthlyMarketingForAllClients.
