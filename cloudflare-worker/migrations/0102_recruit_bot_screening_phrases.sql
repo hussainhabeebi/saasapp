@@ -1,7 +1,8 @@
--- Per-job phrases the WhatsApp bot uses when it tells an applicant they are (or are not) eligible.
--- GET /recruit/chat-screening scans the bot's replies in lead_messages for these (plus built-in
--- defaults like "not eligible" / "good to proceed") so the Recruitment module can list the chats
--- the bot already classified from its prompt as Eligible / Not Eligible, per job post.
--- One phrase per line, matched case-insensitively. Blank = defaults only.
-ALTER TABLE recruit_jobs ADD COLUMN eligible_phrases TEXT;
-ALTER TABLE recruit_jobs ADD COLUMN ineligible_phrases TEXT;
+-- Per-job phrases the WhatsApp bot uses when it tells an applicant they are (or are not) eligible:
+-- recruit_jobs.eligible_phrases / recruit_jobs.ineligible_phrases (TEXT, one phrase per line).
+-- NOTE: no ALTER TABLE here. The worker adds both columns itself on first use
+-- (ensureRecruitJobsSchema in worker.js), so on production they already existed by the time this
+-- migration ran and `ALTER TABLE … ADD COLUMN` failed with "duplicate column name:
+-- eligible_phrases" — SQLite has no ADD COLUMN IF NOT EXISTS. Same SELECT no-op pattern as
+-- 0070_live_travel_client_credentials.sql; fresh databases get the columns from the worker.
+SELECT 1;
