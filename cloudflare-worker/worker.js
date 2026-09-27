@@ -14166,6 +14166,25 @@ export function engineIsNonHandoverSmallTalk(text){
   const t=String(text||'').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').trim();
   return !!t && (ENGINE_GREETING_RE.test(t) || ENGINE_LANG_PREF_RE.test(t));
 }
+// A first message that carries a real ask (price, photos, size, delivery, location, "do you…")
+// must be answered, not met with a canned intro. Real observed failure (Couplo, Sep 2026): a
+// click-to-WhatsApp ad prefilled "Hi! I'd like the price & photos of the name printed baby set"
+// and the bot replied only "Welcome to Couplo Design Studio… How can I help you today?" — the
+// customer had already said how. Such turns skip the intro short-circuits and go to the AI,
+// whose new-lead prompt answers first and then adds a one-line intro. Plain greetings, language
+// preferences and the generic ad opener ("Can I get more info on this?") still get the intro.
+const ENGINE_SPECIFIC_ASK_RE=/\?|\b(?:price|prices|pricing|cost|costs|rate|rates|how\s+much|charges?|fees?|rs\.?|inr|₹|photos?|pics?|pictures?|images?|videos?|catalog(?:ue)?|samples?|designs?|sizes?|colou?rs?|available|availability|stock|deliver(?:y|ies)?|shipping|courier|cod|cash\s+on\s+delivery|discount|offers?|order|buy|purchase|book(?:ing)?|appointment|address|location|where|when|what|which|how|timings?|hours|open|do\s+you|can\s+you|can\s+i|is\s+there|are\s+there|details?|send|show|want|need|looking\s+for|i'?d\s+like|interested)\b/i;
+export function engineIsSpecificFirstQuestion(text){
+  const t=String(text||'').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').replace(/[’']/g,"'").trim();
+  if(!t||engineIsNonHandoverSmallTalk(t)||ecomIsGeneralBusinessInfoQuery(t)) return false;
+  // Drop a leading greeting ("Hi! …", "Hello team, …") so it doesn't count as content on its own.
+  const rest=t.replace(/^(?:hi+|hy+|hai+|hey+|hlo+|hel+o+|hola|salam|salaam|namaste|good\s+(?:morning|afternoon|evening|night|noon))(?:\s+(?:there|all|team|sir|madam|mam|maam))?[\s!.,?-]*/i,'').trim();
+  if(!rest) return false;
+  if(ENGINE_SPECIFIC_ASK_RE.test(rest)) return true;
+  // Non-Latin scripts (Malayalam, Arabic, Hindi…) — the keyword list can't see them, so any
+  // multi-word non-greeting message counts as a real ask.
+  return /[^\u0000-ɏ]/.test(rest) && rest.split(/\s+/).length>=3;
+}
 export function engineTextSimilarity(a, b){
   const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
   const wa=words(a), wb=words(b);
@@ -15458,7 +15477,7 @@ BUTTONS — mandatory after EVERY reply:
   // straight into an answer with no context on who they're talking to. Short and blended into the
   // reply, not a separate canned welcome message — the "keep it as short as the customer's own
   // message" instruction below still applies on top of this.
-  if(isNewLead) sys+='\n\nThis is this customer\'s very first message to you. Before or alongside your answer, briefly introduce what the business offers in one short sentence (from the Services/Knowledge Base above) — a natural, warm opener, not a full catalog dump.';
+  if(isNewLead) sys+='\n\nThis is this customer\'s very first message to you. If they asked something specific (price, photos, sizes, delivery, location, availability…), answer that FIRST and completely; only then, after the answer, add one short warm sentence introducing what the business offers (from the Services/Knowledge Base above). If it is only a greeting or a general enquiry, open with that one-sentence intro instead. Never a full catalog dump.';
   // Last ~10 exchanges (activeHistory is already capped there) — a short attribute-only reply
   // ("order M size") needs the assistant's own prior product-listing message to still be in view
   // to resolve against (see the instruction below), and a returning customer's earlier stated
@@ -18888,7 +18907,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // question directly; engineBuildFaqSystemPrompt already adds a brief natural intro for
     // new leads in that path.
     const _introCheck=(()=>{if(mediaType!=='text'||!engineIndustryFlowEnabled(c))return false;const _fl=engineParseJsonField(c?.flow_json,{}),_i=_fl.intro&&typeof _fl.intro==='object'?_fl.intro:{};return _i.enabled!==false&&Boolean(String(_i.text||'').trim());})();
-    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)))
+    // A new/returning lead whose opener is a real ask ("price & photos of the name printed set")
+    // gets that answered first — see engineIsSpecificFirstQuestion; the intro rides after it.
+    const _specificFirstAsk=mediaType==='text'&&engineIsSpecificFirstQuestion(userText);
+    const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
       ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
@@ -18933,7 +18955,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _ecomNewWithProduct=isNewLead&&c.industry==='ecommerce'
       &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
-    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct
+    const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk
       ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
@@ -18947,7 +18969,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // from c.main_prompt + services + KB and caches it, so repeated new leads get it instantly.
     // If the LLM call inside it fails, it returns the plain question which is still better than
     // "I'll connect you with our team shortly." on a first contact.
-    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text'){
+    if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk){
       const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
       if(_noFlowIntro && _noFlowIntro.trim()){
         const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
@@ -19260,7 +19282,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           ]);
         }
         orderHandledInline=true;
-      } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&isNewLead)){
+      } else if(_isBabyGreeting||(!orderHandledInline&&!_isBabyStage&&isNewLead&&!engineIsSpecificFirstQuestion(userText))){
         // Show welcome+menu on a fresh greeting OR a new lead's very first message.
         // Returning visitors who send a question or free text fall through to AI (ecom_faq) so
         // they get an actual answer instead of looping back to this welcome screen.
