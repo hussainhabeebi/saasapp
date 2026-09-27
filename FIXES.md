@@ -478,6 +478,10 @@ and shown while it's off, matching the Leads tab. The query is also narrowed by 
 200-row cap can't hide their chats. The account owner sees everything.
 (A first version locked staff only when routing was on, so manually assigned chats still showed to
 every teammate.)
+Teammates with the Admin or General Manager role (`team_permissions[email].role`) see every chat,
+same as the owner. If the Owner-narrowed query fails, loadLeads retries without it and filters in
+the page, so the chat list never goes blank over a filter error (it did after the change above).
+**Tested:** also covers admin roles and the fallback.
 **Tested:** `frontend/tests/chats-staff-scope.spec.js`.
 
 
