@@ -10835,6 +10835,29 @@ async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed
   return {handled:true, text};
 }
 
+// A message about one product that asks something ("Ith oru jodi alliyo" — isn't this a pair?,
+// "size undo?", "cotton aano", "price?") rather than just naming/tapping it. English, Manglish,
+// Hindi-in-Latin and Malayalam-script question markers.
+const ECOM_PRODUCT_Q_RE=/[?？]|^(?:what|how|when|where|why|which|who|is|are|can|could|do|does|did|will|would|tell|explain|describe)\b|\b(?:price|rate|cost|how much|size|sizes|age|fabric|material|cotton|colou?rs?|include[sd]?|come with|available|stock|delivery|cod|washable|quality)\b|\b(?:ethra|entha|enthu|enthanu|ano|aano|aano|alle|allo|alliyo|allayo|undo|undoo|undavo|kittumo|kittuo|pattumo|aakumo|ille|illa|kya|kitna|kitne|hai kya|milega)\b|(?:എത്ര|എന്ത്|ഉണ്ടോ|ആണോ|അല്ലേ|അല്ലിയോ|കിട്ടുമോ|പറ്റുമോ)|[ോ]\s*[.!]*$/iu;
+export function ecomIsProductQuestion(text){
+  const t=String(text||'').trim();
+  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t)) return false;
+  return ECOM_PRODUCT_Q_RE.test(t);
+}
+// Answers a question about one matched product from its own verified row, before the product card
+// + photo go out. Couplo (Sep 2026): "Ith oru jodi alliyo" got only the stock card back and staff
+// had to answer "ithu Tshirt mathram aanu". '' on any failure (card still goes out).
+async function engineEcomProductAnswer(env, c, clientId, phone, state, replyLang, isNewLead, routing, userText, product){
+  try{
+    const ctxBlock=await engineBuildEcomContext(env, c, clientId, phone);
+    const price=ecomFormatProductPrice(product.price, product.currency);
+    const sys=engineBuildFaqSystemPrompt(c, state, ctxBlock, 'ecommerce', replyLang, isNewLead, routing.intent)
+      +`\n\nPRODUCT QUESTION: The customer is asking about this exact product:\nName: ${product.name}${price?`\nPrice: ${price}`:''}\nDescription: ${String(product.description||'').slice(0,1200)}\nAnswer their question directly in 1-3 short, friendly sentences, using ONLY this product's data and the business prompt. If the answer isn't stated there, say our team will confirm it — never guess. The product photo and details are sent right after your answer, so don't repeat the whole description and don't output OPTIONS.`;
+    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 220, state.botMsgs?.[state.botMsgs.length-1]);
+    return String(engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, product.sku||'', product)).text||'').trim();
+  }catch(e){ await reportOpsError(env, 'engineEcomProductAnswer', e, {clientId}); return ''; }
+}
+
 // Answers what the customer actually said about a category ("New born baby aanu", "23 days old",
 // "rate?") from the business prompt + verified catalogue, before the product picker. Couplo (Sep
 // 2026): the deterministic category branch skipped this and replied only "Please choose a product
@@ -20359,6 +20382,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // A photo request for a product with a stored image goes to the card branch below (card +
         // real photo) — the FAQ LLM can't attach media and would reply "I can't send pictures".
         const _babyPhotoAsk=isBabyCareEcom && !!product && ecomIsPhotoRequest(userText) && !!(product.image_url||'').trim();
+        // A question about a product named in this message → answer it first, then the product
+        // card + photo (engineEcomProductAnswer). A bare selection/tap, a photo ask, or a sent image
+        // (vision description) just gets the card.
+        const _answerFirst=!!product && !resolvedFromHistory && !exactSelectedProduct && mediaType!=='image' && !ecomIsPhotoRequest(userText)
+          && (_babyProductQuestion || ecomIsProductQuestion(userText));
         // Order intent with no product/store link to send (or link sending switched off) → take the
         // order in the chat, conversationally. Fashion/Electronics/Medical keep their own order
         // flows, and "Talk to sales team" (ecom_order_link_enabled 'Human') still hands over.
@@ -20376,7 +20404,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         if(_chatOrderStarted){
           // handled above
         } else if(isBabyCareEcom && product && !_babyPhotoAsk && (detection.mode==='order'||detection.mode==='enquiry')
-          && (resolvedFromHistory||_babyProductQuestion||(state.stage&&state.stage.startsWith('baby_')))){
+          && (resolvedFromHistory||(_babyProductQuestion&&!_answerFirst)||(state.stage&&state.stage.startsWith('baby_')))){
           // Baby care: a question about a product (or a follow-up on an earlier one, or anything
           // said mid-flow) is answered by the FAQ LLM with this product's verified row (name,
           // description, price) in context — never a canned card or a human handoff.
@@ -20386,7 +20414,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // actions. A missing product link is normal for custom sets (ordered via the in-chat
           // Custom Order flow), so it no longer triggers "link not available" + human handoff.
           const card=ecomBabyCareProductCard(product);
-          const _attachBaby=sendProductImage||sendOnlyPrimaryImage;
+          const _answer=_answerFirst?await engineEcomProductAnswer(env,c,clientId,phone,state,replyLang,isNewLead,routing,userText,product):'';
+          if(_answer) await engineDeliverReply(env,c,clientId,convId,_answer,{mediaType,langCode:replyLang,ctx});
+          const _attachBaby=sendProductImage||sendOnlyPrimaryImage||!!_answer;
           if(_attachBaby&&product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url),type:'image'};
           await engineDeliverReply(env,c,clientId,convId,card,{mediaType,langCode:replyLang,imageUrl:_attachBaby?product.image_url:null,ctx});
           if(sendProductImage) await engineMaybeSendProductMedia(env,c,clientId,convId,product);
@@ -20394,7 +20424,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           else if(shopifyTier>=3) await engineSendShopifyTier3(env,c,clientId,convId,product,{withLink:false});
           const followUp=await engineLocalizeReply(env,c,'Would you like to order this? I can take your order right here — or ask me anything about it 😊',replyLang);
           sentText=followUp;
-          routing.reply=`${card}\n\n${followUp}`;
+          routing.reply=`${_answer?_answer+'\n\n':''}${card}\n\n${followUp}`;
           routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,followUp,[
             {title:'Order this 🛒',value:'CHAT_ORDER_START'},
             {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
@@ -20576,6 +20606,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // (see engineFindHallucinatedLink/engineCallLlmAvoidingRepeat for the deterministic
           // backstop still used everywhere else an LLM does generate the reply, e.g. ecom_faq).
           const enquiryLink=((product.shopify_product_url||product.product_link||'').trim()||null);
+          const _answer=_answerFirst?await engineEcomProductAnswer(env,c,clientId,phone,state,replyLang,isNewLead,routing,userText,product):'';
+          if(_answer) await engineDeliverReply(env, c, clientId, convId, _answer, {mediaType, langCode:replyLang, ctx});
           const productLines=[`*${product.name}*`];
           if(product.description) productLines.push(String(product.description));
           // No link: offer to take the order right here instead of "I'll connect you with our team"
@@ -20586,7 +20618,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           else if(_salesHandover) productLines.push('An online product link is not available. I’ll connect you with our team.');
           else productLines.push(await engineLocalizeReply(env, c, 'Would you like to order this? I can take your order right here 😊', replyLang));
           sentText=productLines.join('\n\n');
-          routing.reply=sentText;
+          routing.reply=_answer?`${_answer}\n\n${sentText}`:sentText;
           // Photo sent whenever a product is confidently identified, link or no link — a customer
           // asking about size/color/stock should see the actual item, not just read a description
           // (this was briefly restricted to link-only sends; reverted per explicit product
@@ -20594,7 +20626,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // gated by sendProductImage though — that direction was about link-presence never
           // suppressing the photo, not about resending the same photo every time the same product
           // comes up again the same day.
-          const _attach6=sendProductImage||sendOnlyPrimaryImage;
+          const _attach6=sendProductImage||sendOnlyPrimaryImage||!!_answer;
           if(_attach6 && product.image_url) routing.media={url:engineResolveDirectImageUrl(product.image_url), type:'image'};
           await engineDeliverReply(env, c, clientId, convId, sentText, {mediaType, langCode:replyLang, imageUrl:_attach6?product.image_url:null, ctx});
           // Primary image above; additional media follows. Description + link are already in sentText
