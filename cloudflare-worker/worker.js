@@ -1378,8 +1378,14 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
 // Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
 // (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
-async function d1InsertLeadMessage(env, leadId, clientId, msg){
+export async function d1InsertLeadMessage(env, leadId, clientId, msg){
   if(!msg?.role) return;
+  // Photos travel as `media` ({type,url}) through the engine (inbound customer photos, product
+  // photos the bot sends); the D1 row only has an attachment column, so fold media into it.
+  if((!msg.attachment||!Object.keys(msg.attachment).length)&&msg.media?.url){
+    const {type, ...rest}=msg.media;
+    msg={...msg, attachment:{...rest, kind:type==='video'?'video':'image'}};
+  }
   try{
     await env.DB.prepare(
       `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
@@ -1528,6 +1534,24 @@ async function handleChatResolveLead(request, env){
   return json({ok:true, resolved:!!resolved});
 }
 
+// A message a person sent from chats.html (attachment, voice note, template) — saved to the D1
+// thread the page reads from, after checking the lead belongs to this client, and LastMsgAt bumped
+// so the chat list re-sorts. Callers that pass no lead_id (quotations, broadcasts) skip this.
+async function chatsRecordOutgoing(env, cid, leadId, msg){
+  if(!leadId) return;
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+  const lead=leadR.ok?await leadR.json().catch(()=>({})):{};
+  if(String(lead.ClientId)!==String(cid)) return;
+  const ts=new Date().toISOString();
+  await d1InsertLeadMessage(env, leadId, cid, {role:'assistant', ts, ...msg});
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
+    {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
+}
+function chatsTemplateAttachment(template_name, buttons){
+  const b=Array.isArray(buttons)?buttons.map(x=>String(x||'').slice(0,25)).filter(Boolean).slice(0,10):[];
+  return {kind:'template', name:String(template_name||''), ...(b.length?{buttons:b}:{})};
+}
+
 async function handleQuoteSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1547,19 +1571,12 @@ async function handleQuoteSend(request, env){
   // Other callers (quotation PDFs) omit lead_id and keep the old send-only behaviour.
   const leadId=form.get('lead_id');
   if(leadId){
-    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
-    const lead=leadR.ok?await leadR.json().catch(()=>({})):{};
-    if(String(lead.ClientId)===String(payload.cid)){
-      const ts=new Date().toISOString();
-      const sent=data?.attachments?.[0]||{};
-      const type=String(file.type||sent.file_type||'');
-      const kind=form.get('kind')==='voice'?'voice':type.startsWith('audio')?'audio':type.startsWith('image')?'image':type.startsWith('video')?'video':'document';
-      const duration=Number(form.get('duration'))||0;
-      await d1InsertLeadMessage(env, leadId, payload.cid, {role:'assistant', content:caption, ts,
-        attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{})}});
-      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
-        {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
-    }
+    const sent=data?.attachments?.[0]||{};
+    const type=String(file.type||sent.file_type||'');
+    const kind=form.get('kind')==='voice'?'voice':type.startsWith('audio')?'audio':type.startsWith('image')?'image':type.startsWith('video')?'video':'document';
+    const duration=Number(form.get('duration'))||0;
+    await chatsRecordOutgoing(env, payload.cid, leadId, {content:caption,
+      attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{})}});
   }
   return json({ok:true, data});
 }
@@ -1621,7 +1638,7 @@ async function handleWaSend(request, env){
 async function handleWaSendTemplate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {phone, template_name, language, components, inbox_id}=await request.json().catch(()=>({}));
+  const {phone, template_name, language, components, inbox_id, lead_id, content, buttons}=await request.json().catch(()=>({}));
   if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
   const c=await getClientById(env, payload.cid);
   const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
@@ -1632,6 +1649,7 @@ async function handleWaSendTemplate(request, env){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content||''), attachment:chatsTemplateAttachment(template_name, buttons)});
   return json({ok:true, message_id:data?.messages?.[0]?.id});
 }
 
@@ -3333,7 +3351,7 @@ async function handleBroadcastSendDm(request, env){
 async function handleBroadcastSendTemplate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, content, template_name, category, language, processed_params}=await request.json().catch(()=>({}));
+  const {conv_id, content, template_name, category, language, processed_params, lead_id, buttons}=await request.json().catch(()=>({}));
   if(!conv_id||!content||!template_name) return json({error:'conv_id, content, and template_name required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
@@ -3342,6 +3360,7 @@ async function handleBroadcastSendTemplate(request, env){
     body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:template_name, category:category||'MARKETING', language:language||'en', processed_params:processed_params||{}}})
   });
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content), attachment:chatsTemplateAttachment(template_name, buttons)});
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
@@ -14357,6 +14376,20 @@ function engineBuildTranscribeVocabHint(c){
   return terms.join(', ');
 }
 
+// The customer's actual photo / voice note / file for the Chats thread. engineResolveUserText
+// turns media into words for the AI (an image description, a voice transcript) and that stays the
+// turn's history content, so the bot keeps its context — but the thread should show the real
+// photo with the customer's own caption, like WhatsApp. `caption` marks that the content is the
+// AI's reading of the media, so chats.html shows the caption instead of the description.
+export function engineInboundMediaFields(mediaType, mediaUrl, caption){
+  if(!mediaUrl) return {};
+  const cap={caption:String(caption||'').trim(), ai_text:true};
+  if(mediaType==='image') return {userMedia:{type:'image', url:mediaUrl, ...cap}};
+  if(mediaType==='voice') return {userAttachment:{kind:'voice', url:mediaUrl, ...cap}};
+  const name=decodeURIComponent(String(mediaUrl).split('?')[0].split('/').pop()||'')||'Document';
+  return {userAttachment:{kind:/\.(mp4|mov|3gp|webm)$/i.test(name)?'video':'document', url:mediaUrl, name}};
+}
+
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
     const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
@@ -18919,6 +18952,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
+    Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text));
     // A generic ad CTA/business-information request must be answered from the client's prompt,
     // even if the probabilistic intent model guesses that the pronoun "this" means a product.
     // Explicit human/opt-out routes still win; explicit product language never matches the helper.
@@ -21067,6 +21101,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const botTs=new Date().toISOString();
       if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
         {role:'user', content:routing.historyUserText||userText, ts:userTs,
+         ...(routing.userMedia?{media:routing.userMedia}:{}),
          ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
       if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
         {role:'assistant', content:routing.reply, ts:botTs,
@@ -21257,9 +21292,11 @@ async function persistInstagramTurn(env, c, clientId, state, routing, userText, 
   if(resolvedLeadId){
     const now=new Date().toISOString();
     if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'user', content:routing.historyUserText||userText, ts:now});
+      {role:'user', content:routing.historyUserText||userText, ts:now,
+       ...(routing.userMedia?{media:routing.userMedia}:{}),
+       ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
     if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'assistant', content:routing.reply, ts:now});
+      {role:'assistant', content:routing.reply, ts:now, ...(routing.media?{media:routing.media}:{})});
   }
   if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.

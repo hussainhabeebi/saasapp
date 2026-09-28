@@ -31,12 +31,33 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .bubble-row{display:flex;align-items:center;gap:6px;margin:2px 0;transition:transform .15s}.bubble-row.out{justify-content:flex-end}.bubble-row.out .msg-actions{order:-1}
 .bubble{max-width:min(72%,680px);padding:6px 7px 5px 9px;border-radius:7.5px;box-shadow:0 1px .5px rgba(11,20,26,.13);font-size:14.2px;line-height:1.38;position:relative;white-space:pre-wrap;word-break:break-word}.bubble.in{background:var(--incoming)}.bubble.out{background:var(--wa-soft)}.bubble.flash{animation:flash 1.2s}@keyframes flash{0%,40%{box-shadow:0 0 0 3px #53bdeb}100%{box-shadow:0 1px .5px rgba(11,20,26,.13)}}
 .bubble a{color:#027eb5}.bubble code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:rgba(0,0,0,.05);padding:1px 4px;border-radius:4px}
-.bubble .media{display:block;max-width:min(330px,100%);max-height:320px;border-radius:6px;margin:0 0 6px;object-fit:cover;cursor:zoom-in;background:#dfe5e7}.bubble video.media{cursor:default}
+.bubble .media{display:block;width:330px;max-width:100%;height:auto;max-height:320px;border-radius:6px;margin:0 0 6px;object-fit:cover;cursor:zoom-in;background:#dfe5e7}.bubble video.media{cursor:default}
 .doc{display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.04);padding:9px;border-radius:6px;margin-bottom:5px;color:inherit;text-decoration:none;min-width:200px}.doc .ext{width:34px;height:40px;border-radius:4px;background:#ff5b5b;color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;flex:none;text-transform:uppercase}.doc small{display:block;color:#667781}
 .meta{float:right;margin:5px 0 -2px 12px;display:inline-flex;align-items:center;gap:3px;font-size:10.5px;color:#667781;white-space:nowrap}.checks{color:#53bdeb}.tick-pending{color:#8696a0}.tick-failed{color:var(--danger);font-weight:700;cursor:pointer}
 .quote{border-left:3px solid var(--wa);background:rgba(0,0,0,.05);border-radius:5px;padding:5px 8px;margin-bottom:5px;color:#54656f;font-size:12px;line-height:1.25;white-space:normal;overflow:hidden;text-overflow:ellipsis}.quote b{display:block;color:var(--wa-dark);margin-bottom:2px}
 .msg-actions{display:flex;gap:2px;opacity:0;transition:opacity .12s}.bubble-row:hover .msg-actions,.msg-actions:focus-within{opacity:1}.msg-actions button{width:28px;height:28px;border:0;border-radius:50%;background:rgba(255,255,255,.9);color:#54656f;display:grid;place-items:center;padding:0;box-shadow:0 1px 2px rgba(0,0,0,.1)}
 .failed-row .bubble{opacity:.85}
+.bubble-row.group-start{margin-top:9px}
+.bubble.tail.in{border-top-left-radius:0}.bubble.tail.out{border-top-right-radius:0}
+.bubble.tail::before{content:"";position:absolute;top:0;width:8px;height:13px}
+.bubble.tail.in::before{left:-8px;background:var(--incoming);clip-path:polygon(0 0,100% 0,100% 100%)}
+.bubble.tail.out::before{right:-8px;background:var(--wa-soft);clip-path:polygon(0 0,100% 0,0 100%)}
+.bubble.media-only{padding:3px}.bubble.media-only .media{margin:0;max-height:360px;border-radius:6px}
+.bubble.media-only .meta{position:absolute;right:9px;bottom:7px;margin:0;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7)}.bubble.media-only .meta .checks{color:#fff}
+.transcript{font-size:12.5px;color:#54656f;font-style:italic;margin:0 0 4px;white-space:pre-wrap}
+.tpl-tag{font-size:11px;color:#667781;margin-bottom:3px}
+.tpl-btns{clear:both;margin:7px -7px -5px -9px}.tpl-btns div{padding:9px;text-align:center;color:#027eb5;font-size:14px;border-top:1px solid rgba(0,0,0,.08)}
+.window-bar{background:#fff8e1;color:#6b5a1e;font-size:12.5px;line-height:1.35;padding:8px 12px;display:flex;align-items:center;gap:10px;flex:none;border-top:1px solid #f1e6b8}.window-bar span{flex:1}.window-bar button{border:0;background:var(--wa);color:#fff;border-radius:16px;padding:6px 12px;font-size:12.5px;font-weight:600;white-space:nowrap}
+/* template picker */
+.tpl-ov{background:#fff}.tpl-ov .bar{background:var(--header);display:flex;align-items:center;gap:10px;padding:10px 14px;flex:none}
+.tpl-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(240px,340px) 1fr}
+.tpl-list{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.tpl-items{flex:1;overflow:auto}
+.tpl-item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #f0f2f5;background:#fff;padding:12px 16px}.tpl-item:hover,.tpl-item.active{background:#f0f2f5}.tpl-item b{display:block;font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis}.tpl-item small{color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpl-detail{overflow:auto;background:var(--paper);padding:18px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.tpl-form{background:#fff;border-radius:10px;padding:14px;display:grid;gap:10px}.tpl-form label{font-size:12px;color:var(--muted);display:grid;gap:4px}.tpl-form input{width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px}.tpl-form input:focus{border-color:var(--wa)}
+.tpl-preview{display:flex;justify-content:flex-end}.tpl-preview .bubble{max-width:min(100%,420px)}.tpl-hdr{font-weight:650;margin-bottom:4px}.tpl-foot{color:#667781;font-size:12.5px;margin-top:4px}.tpl-media-ph{height:130px;border-radius:6px;background:#dfe5e7;display:grid;place-items:center;color:#667781;margin-bottom:6px;font-size:13px}
+.tpl-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}.tpl-empty{padding:40px 20px;text-align:center;color:var(--muted)}
+@media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
 .note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
 /* voice / audio player */
 .vp{display:flex;align-items:center;gap:10px;min-width:240px;max-width:320px;padding:4px 2px 2px;white-space:normal}.vp-play{width:38px;height:38px;border:0;border-radius:50%;background:transparent;color:#54656f;display:grid;place-items:center;flex:none;padding:0}.vp-body{flex:1;min-width:0}.vp-bar{position:relative;height:18px;cursor:pointer;display:flex;align-items:center}.vp-bar::before{content:"";position:absolute;left:0;right:0;height:3px;border-radius:2px;background:#c7cdd1}.vp-bar i{position:absolute;left:0;height:3px;border-radius:2px;background:#53bdeb;width:0}.vp-bar b{position:absolute;left:0;width:12px;height:12px;border-radius:50%;background:#53bdeb;transform:translateX(-6px)}.vp-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#667781;margin-top:1px}.vp-speed{border:0;background:rgba(0,0,0,.08);border-radius:10px;font-size:11px;font-weight:650;color:#54656f;padding:1px 7px}.vp-mic{width:44px;height:44px;border-radius:50%;background:#dfe5e7;color:#fff;display:grid;place-items:center;flex:none;position:relative}.vp-mic.voice{background:#00a884}.vp-mic svg{width:22px;height:22px}
@@ -123,6 +144,7 @@ const IC={
   close:svg('<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/>'),
   doc:svg('<path fill="currentColor" d="M6 2h8l6 6v14H6zm8 1.5V9h5.5"/>',20),
   image:svg('<path fill="currentColor" d="M4 4h16v16H4zm2 12h12l-4-5-3 3.5-2-2.5z"/>',20),
+  tpl:svg('<path fill="currentColor" d="M5 3h14v18H5zm3 4v1.8h8V7zm0 4v1.8h8V11zm0 4v1.8h5V15z"/>',20),
   audio:svg('<path fill="currentColor" d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/>',20)
 };
 function toast(t){const e=$('toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.add('hidden'),2600)}
@@ -169,17 +191,23 @@ const AUDIO_EXT=/\.(ogg|oga|opus|mp3|m4a|aac|wav|amr|weba)(\?|#|$)/i,IMG_EXT=/\.
 function attachmentsOf(m){
  const out=[];
  const img=m.media_url||m.image_url||(m.media&&typeof m.media==='object'&&m.media.url);
- if(img)out.push({kind:(m.media?.type==='video'?'video':'image'),url:img});
+ if(img)out.push({...(m.media&&typeof m.media==='object'?m.media:{}),kind:(m.media?.type==='video'?'video':'image'),url:img});
  if(m.attachment){
   const a=typeof m.attachment==='object'?{...m.attachment}:{name:String(m.attachment)};
   const t=String(a.type||''),probe=v=>a.name&&v.test(a.name)||a.url&&v.test(a.url);
-  if(!['voice','audio','image','video'].includes(a.kind))a.kind=t.startsWith('audio')||probe(AUDIO_EXT)?'audio':t.startsWith('image')||probe(IMG_EXT)?'image':t.startsWith('video')||probe(VID_EXT)?'video':'document';
+  if(!['voice','audio','image','video','template'].includes(a.kind))a.kind=t.startsWith('audio')||probe(AUDIO_EXT)?'audio':t.startsWith('image')||probe(IMG_EXT)?'image':t.startsWith('video')||probe(VID_EXT)?'video':'document';
   if(!(a.kind==='image'&&a.url===img))out.push(a);
  }
  return out;
 }
-function kindLabel(a){return a.kind==='voice'?'🎤 Voice message':a.kind==='audio'?'🎧 Audio':a.kind==='image'?'📷 Photo':a.kind==='video'?'🎥 Video':'📄 '+(a.name||'Document')}
-function snippetOf(m){const t=String(m?.content||'').replace(/\s+/g,' ').trim();if(t)return t.slice(0,100);const a=attachmentsOf(m||{})[0];return a?kindLabel(a):'Message'}
+function kindLabel(a){return a.kind==='template'?'📋 '+(a.name||'Template'):a.kind==='voice'?'🎤 Voice message':a.kind==='audio'?'🎧 Audio':a.kind==='image'?'📷 Photo':a.kind==='video'?'🎥 Video':'📄 '+(a.name||'Document')}
+// What a bubble shows as its text. For a customer's photo or voice note the stored content is the
+// AI's reading of it (an image description / a transcript — the bot needs that as context), so the
+// bubble shows the customer's own caption instead, like WhatsApp; voice transcripts show small
+// under the player.
+function bodyOf(m,atts=attachmentsOf(m)){const ai=atts.find(a=>a.ai_text);return ai?String(ai.caption||''):String(m.content||'')}
+function transcriptOf(m,atts){const t=String(m.content||'').trim();return atts.some(a=>a.ai_text&&a.kind==='voice')&&t&&!t.startsWith('(SYSTEM NOTE')?t:''}
+function snippetOf(m){const t=bodyOf(m||{}).replace(/\s+/g,' ').trim();if(t)return t.slice(0,100);const a=attachmentsOf(m||{})[0];return a?kindLabel(a):'Message'}
 function fmtBytes(n){n=Number(n);if(!n)return typeof n==='string'?n:'';return n<1024?n+' B':n<1048576?Math.round(n/1024)+' KB':(n/1048576).toFixed(1)+' MB'}
 function fmtDur(s){s=Math.max(0,Math.round(Number(s)||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
 // WhatsApp formatting: *bold* _italic_ ~strike~ ```mono``` plus clickable links. Runs on escaped
@@ -227,6 +255,7 @@ function buildShell(){
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="searchThread(this.value)"></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
+ <div id="windowBar" class="window-bar hidden"><span>⏱ The 24-hour reply window has closed. WhatsApp only delivers an approved template until the customer writes again.</span><button onclick="openTemplates()">Send template</button></div>
  <div id="replyBox" class="reply-preview hidden"></div>
  <div class="composer-mode" id="modeRow"><button class="mode-btn active" id="replyMode" onclick="setComposeMode('reply')">Reply</button><button class="mode-btn" id="noteMode" onclick="setComposeMode('note')">Internal note</button></div>
  <div class="composer" id="composer">
@@ -236,6 +265,7 @@ function buildShell(){
    <button onclick="pickFiles('image/*,video/*')"><span class="dot" style="background:#007bfc">${IC.image}</span>Photos &amp; videos</button>
    <button onclick="pickFiles('image/*',true)"><span class="dot" style="background:#ff2e74">${IC.cam}</span>Camera</button>
    <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
+   <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
@@ -274,16 +304,20 @@ function attHtml(a){
 function drawMessages(stick=false){
  const t=$('thread');if(!t||!current)return;
  const nearBottom=t.scrollHeight-t.scrollTop-t.clientHeight<120,prevTop=t.scrollTop,prevCount=Number(t.dataset.count||0);
- const h=hist(current);let lastDay='',body='';
+ const h=hist(current);let lastDay='',body='',prevDir='';
  h.forEach((m,i)=>{
   const ts=m.ts||m.timestamp||m.created_at,day=ts?fmtDay(ts):lastDay;
-  if(day&&day!==lastDay){body+=`<div class="day"><span>${esc(day)}</span></div>`;lastDay=day}
-  const out=isOut(m),atts=attachmentsOf(m);
+  if(day&&day!==lastDay){body+=`<div class="day"><span>${esc(day)}</span></div>`;lastDay=day;prevDir=''}
+  const out=isOut(m),atts=attachmentsOf(m),dir=out?'out':'in',tail=dir!==prevDir;prevDir=dir;
   const quote=m.reply_to?`<div class="quote"><b>${esc(m.reply_to.who||'Reply')}</b>${esc(m.reply_to.snippet||'')}</div>`:'';
   const tick=!out?'':m._status==='pending'?'<span class="tick-pending" title="Sending">🕓</span>':m._status==='failed'?`<span class="tick-failed" title="Not sent — tap to retry" data-retry="${i}">⚠ Retry</span>`:'<span class="checks">✓✓</span>';
-  const text=String(m.content||'');
-  body+=`<div class="bubble-row ${out?'out':'in'}${m._status==='failed'?' failed-row':''}" data-i="${i}"><div class="bubble ${out?'out':'in'}">${quote}${atts.map(attHtml).join('')}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span></div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
+  const text=bodyOf(m,atts),tr=transcriptOf(m,atts),tpl=atts.find(a=>a.kind==='template'),shown=atts.filter(a=>a.kind!=='template');
+  const mediaOnly=!text&&!tr&&!quote&&!tpl&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
+  const tplHead=tpl?`<div class="tpl-tag">📋 Template · ${esc(tpl.name||'')}</div>`:'';
+  const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:'';
+  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
  });
+ updateWindowBar();
  let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
  t.innerHTML=body||'<div class="empty-list">No messages yet. Say hello 👋</div>';
  t.dataset.count=h.length;
@@ -299,7 +333,7 @@ function wireThread(){
  t.addEventListener('click',e=>{
   const img=e.target.closest('[data-view]');if(img)return viewImage(img.dataset.view);
   const retry=e.target.closest('[data-retry]');if(retry){const m=hist(current)[Number(retry.dataset.retry)];if(m?._retry)m._retry();return}
-  const act=e.target.closest('[data-act]');if(act){const i=Number(act.closest('.bubble-row').dataset.i),m=hist(current)[i];if(!m)return;if(act.dataset.act==='reply')setReply(i);else{navigator.clipboard?.writeText(String(m.content||''));toast('Message copied')}return}
+  const act=e.target.closest('[data-act]');if(act){const i=Number(act.closest('.bubble-row').dataset.i),m=hist(current)[i];if(!m)return;if(act.dataset.act==='reply')setReply(i);else{navigator.clipboard?.writeText(bodyOf(m));toast('Message copied')}return}
   const play=e.target.closest('.vp-play');if(play)return togglePlay(play.closest('.vp'));
   const speed=e.target.closest('.vp-speed');if(speed)return cycleSpeed();
   const bar=e.target.closest('.vp-bar');if(bar)return seekPlayer(bar.closest('.vp'),e);
@@ -395,6 +429,83 @@ async function sendPreview(){
  for(let i=0;i<items.length;i++)await sendFileMessage(lead,items[i].file,{caption:i===0?caption:'',kind:items[i].kind});
 }
 function viewImage(src){let ov=$('lightbox');if(!ov){ov=document.createElement('div');ov.id='lightbox';ov.className='overlay lightbox';document.body.appendChild(ov);ov.addEventListener('click',e=>{if(e.target===ov||e.target.classList.contains('img-wrap'))ov.classList.add('hidden')})}ov.innerHTML=`<div class="bar"><div style="flex:1"></div><a class="icon-btn" href="${esc(src)}" target="_blank" rel="noopener" download title="Open original">⬇</a><button class="icon-btn" title="Close" onclick="$('lightbox').classList.add('hidden')">${IC.close}</button></div><div class="img-wrap"><img src="${esc(src)}" alt=""></div>`;ov.classList.remove('hidden')}
+
+// ── WhatsApp 24-hour window & approved templates ────────────────────────────────────────────
+// Outside 24h since the customer's last message WhatsApp only delivers approved templates, so the
+// composer shows a banner with a shortcut to the picker. Unknown timing counts as open (no banner).
+function lastCustomerAt(lead){let t=lead.LastCustomerMsgAt||'';const h=hist(lead);for(let i=h.length-1;i>=0;i--){if(isOut(h[i]))continue;const ts=h[i].ts||h[i].timestamp||h[i].created_at;if(ts&&(!t||new Date(ts)>new Date(t)))t=ts;break}return t}
+function windowOpen(lead){const t=lastCustomerAt(lead);return !t||isNaN(new Date(t))||Date.now()-new Date(t)<24*3600*1000}
+function updateWindowBar(){const b=$('windowBar');if(!b||!current)return;b.classList.toggle('hidden',isIg(current)||windowOpen(current))}
+const tplCache={};let tplList=[],tplSel=null;
+const tplComp=(t,type)=>(t?.components||[]).find(c=>String(c.type||'').toUpperCase()===type);
+const tplBody=t=>tplComp(t,'BODY')?.text||'';
+const tplVarNames=txt=>[...new Set((String(txt||'').match(/\{\{\s*\w+\s*\}\}/g)||[]).map(x=>x.replace(/[{}\s]/g,'')))];
+const tplButtons=t=>(tplComp(t,'BUTTONS')?.buttons||[]).map(b=>b.text).filter(Boolean);
+const tplFill=(txt,vals)=>String(txt||'').replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=>vals[k]||m);
+async function openTemplates(){
+ closePopovers();if(!current||isIg(current))return;
+ let ov=$('tplOv');if(!ov){ov=document.createElement('div');ov.id='tplOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ ov.classList.remove('hidden');tplSel=null;
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="tplBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send a template to <b>${esc(current.Name||current.Phone||'contact')}</b></div><button class="icon-btn" title="Reload templates" onclick="loadTemplateList(true)">↻</button></div><div class="tpl-main" id="tplMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="tplSearch" placeholder="Search templates" oninput="drawTemplateList()"></div></div><div class="tpl-items" id="tplItems"><div class="tpl-empty"><div class="spinner"></div>Loading approved templates…</div></div></div><div class="tpl-detail" id="tplDetail"><div class="tpl-empty">Choose a template to preview it.</div></div></div>`;
+ await loadTemplateList(false);
+}
+async function loadTemplateList(force){
+ const key=String(current?.InboxId||'');
+ try{if(force||!tplCache[key]){const d=await apiJson(WORKER+'/wa/templates'+(key?`?inbox_id=${encodeURIComponent(key)}`:''));tplCache[key]=(d.data||[]).filter(t=>String(t.status||'').toUpperCase()==='APPROVED').sort((a,b)=>String(a.name).localeCompare(String(b.name)))}tplList=tplCache[key];drawTemplateList()}
+ catch(e){const el=$('tplItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load templates.<br><small>${esc(e.message)}</small></div>`}
+}
+function drawTemplateList(){
+ const el=$('tplItems');if(!el)return;const q=($('tplSearch')?.value||'').trim().toLowerCase();
+ const list=tplList.filter(t=>!q||String(t.name).toLowerCase().includes(q)||tplBody(t).toLowerCase().includes(q));
+ el.innerHTML=list.length?list.map(t=>{const i=tplList.indexOf(t);return `<button class="tpl-item ${tplSel===t?'active':''}" onclick="pickTemplate(${i})"><b>${esc(t.name)}</b><small>${esc([t.language,String(t.category||'').toLowerCase()].filter(Boolean).join(' · '))}</small><small>${esc(tplBody(t).replace(/\s+/g,' ').slice(0,90))}</small></button>`}).join(''):`<div class="tpl-empty">${tplList.length?'No templates match.':'No approved templates yet. Create them in Campaigns → Templates (approval by Meta can take a few minutes).'}</div>`;
+}
+function pickTemplate(i){
+ tplSel=tplList[i];if(!tplSel)return;$('tplMain').classList.add('picked');drawTemplateList();
+ const t=tplSel,hdr=tplComp(t,'HEADER'),fmt=String(hdr?.format||'').toUpperCase(),vars=tplVarNames(tplBody(t)),hvars=fmt==='TEXT'?tplVarNames(hdr.text):[];
+ const field=(id,label,val='',ph='')=>`<label>${esc(label)}<input id="${id}" value="${esc(val)}" placeholder="${esc(ph)}" oninput="drawTemplatePreview()"></label>`;
+ // {{1}} is almost always the customer's name — prefill it, the rep can overwrite.
+ const fields=[...hvars.map(v=>field('tplH_'+v,`Header {{${v}}}`)),...(['IMAGE','VIDEO','DOCUMENT'].includes(fmt)?[field('tplMedia',`Header ${fmt.toLowerCase()} link (https://…)`,'','https://')]:[]),...vars.map((v,k)=>field('tplV_'+v,`{{${v}}}`,k===0?(current.Name||''):''))];
+ $('tplDetail').innerHTML=`<div class="tpl-form"><div><b>${esc(t.name)}</b> <small style="color:var(--muted)">${esc(t.language||'')} · ${esc(String(t.category||'').toLowerCase())}</small></div>${fields.join('')||'<small style="color:var(--muted)">This template has no variables.</small>'}</div><div class="tpl-preview" id="tplPreview"></div><div class="tpl-actions"><span id="tplErr" style="color:var(--danger);font-size:13px"></span><button class="send" title="Send template" onclick="sendTemplate()">${IC.send}</button></div>`;
+ drawTemplatePreview();
+}
+function tplValues(){const t=tplSel,o={body:{},head:{}};tplVarNames(tplBody(t)).forEach(v=>o.body[v]=($('tplV_'+v)?.value||'').trim());const h=tplComp(t,'HEADER');if(String(h?.format).toUpperCase()==='TEXT')tplVarNames(h.text).forEach(v=>o.head[v]=($('tplH_'+v)?.value||'').trim());o.media=($('tplMedia')?.value||'').trim();return o}
+function tplRendered(){const t=tplSel,v=tplValues(),h=tplComp(t,'HEADER'),fmt=String(h?.format||'').toUpperCase();return {head:fmt==='TEXT'?tplFill(h.text,v.head):'',fmt,body:tplFill(tplBody(t),v.body),foot:tplComp(t,'FOOTER')?.text||'',buttons:tplButtons(t),v}}
+function drawTemplatePreview(){
+ const el=$('tplPreview');if(!el||!tplSel)return;const r=tplRendered();
+ const media=['IMAGE','VIDEO','DOCUMENT'].includes(r.fmt)?(r.fmt==='IMAGE'&&/^https:\/\/.+/.test(r.v.media)?`<img class="media" src="${esc(r.v.media)}" alt="">`:`<div class="tpl-media-ph">${esc(r.fmt.toLowerCase())} header</div>`):'';
+ el.innerHTML=`<div class="bubble out tail">${media}${r.head?`<div class="tpl-hdr">${esc(r.head)}</div>`:''}${fmtText(r.body)}${r.foot?`<div class="tpl-foot">${esc(r.foot)}</div>`:''}<span class="meta">${esc(fmtTime(new Date().toISOString()))}</span>${r.buttons.length?`<div class="tpl-btns">${r.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:''}</div>`;
+}
+function tplBack(){const m=$('tplMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){m.classList.remove('picked');tplSel=null;drawTemplateList();return}closeTemplates()}
+function closeTemplates(){const ov=$('tplOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}tplSel=null}
+async function sendTemplate(){
+ const lead=current,t=tplSel;if(!lead||!t)return;
+ const r=tplRendered(),err=$('tplErr');
+ if([...Object.values(r.v.body),...Object.values(r.v.head)].some(x=>!x)){err.textContent='Fill in every variable.';return}
+ const mediaHeader=['IMAGE','VIDEO','DOCUMENT'].includes(r.fmt);
+ if(mediaHeader&&!/^https:\/\/\S+$/.test(r.v.media)){err.textContent='Add an https link for the header '+r.fmt.toLowerCase()+'.';return}
+ const phone=String(lead.Phone||'').replace(/[^0-9]/g,''),conv=convId(lead);
+ if(!conv&&!phone){err.textContent='This contact has no phone number.';return}
+ const content=[r.head?`*${r.head}*`:'',r.body,r.foot?`_${r.foot}_`:''].filter(Boolean).join('\n\n');
+ const lang=t.language||'en',names=Object.keys(r.v.body),named=names.some(n=>!/^\d+$/.test(n));
+ closeTemplates();
+ const msg=pushLocal(lead,{role:'assistant',content,attachment:{kind:'template',name:t.name,...(r.buttons.length?{buttons:r.buttons}:{})}});
+ msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{
+  // Chatwoot's template_params only carries positional body values, so named variables, header
+  // values and media headers go straight to Meta — the same fallback Leads → Send Template uses.
+  if(!conv||named||mediaHeader||Object.keys(r.v.head).length){
+   const components=[];
+   if(Object.keys(r.v.head).length)components.push({type:'header',parameters:Object.values(r.v.head).map(text=>({type:'text',text}))});
+   if(mediaHeader){const k=r.fmt.toLowerCase();components.push({type:'header',parameters:[{type:k,[k]:{link:r.v.media}}]})}
+   if(names.length)components.push({type:'body',parameters:names.map(n=>named?{type:'text',parameter_name:n,text:r.v.body[n]}:{type:'text',text:r.v.body[n]})});
+   await apiJson(WORKER+'/wa/send-template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,template_name:t.name,language:lang,components,inbox_id:lead.InboxId||undefined,lead_id:lead.Id,content,buttons:r.buttons})});
+  }else{
+   const processed_params={};names.forEach(n=>processed_params[n]=r.v.body[n]);
+   await apiJson(WORKER+'/broadcast/send-template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:conv,content,template_name:t.name,category:t.category||'MARKETING',language:lang,processed_params,lead_id:lead.Id,buttons:r.buttons})});
+  }
+  setMsgStatus(lead,msg,null);
+ }catch(e){setMsgStatus(lead,msg,'failed');toast('Template not sent: '+e.message)}};
+ await msg._retry();
+}
 
 // ── Voice & audio playback ───────────────────────────────────────────────────────────────────
 // One shared <audio>: starting a note stops the previous one, and progress survives the thread
@@ -504,7 +615,7 @@ function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySele
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
 document.addEventListener('click',e=>{if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
  const {channel:ch,leadId}=e.data;
