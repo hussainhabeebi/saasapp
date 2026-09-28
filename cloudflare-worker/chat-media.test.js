@@ -2,7 +2,7 @@
 // must reach the D1 lead_messages row chats.html reads — not just the AI's text reading of them.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { engineInboundMediaFields, d1InsertLeadMessage } from './worker.js';
+import { engineInboundMediaFields, d1InsertLeadMessage, chatwootOutgoingMediaRows, chatwootMediaRows } from './worker.js';
 
 function fakeDb(){
   const rows=[];
@@ -37,4 +37,33 @@ describe('d1InsertLeadMessage', ()=>{
     await d1InsertLeadMessage({DB}, 7, 48, {role:'assistant', content:'', ts:'t', attachment:{kind:'voice', url:'v'}, media:{type:'image', url:'p'}});
     assert.deepEqual(JSON.parse(DB.rows[0][4]), {kind:'voice', url:'v'});
   });
+});
+
+describe('chatwootOutgoingMediaRows (bot/agent photos from the message_created webhook)', ()=>{
+  const body={id:901, message_type:'outgoing', private:false, content:'Here are the photos', created_at:1790000000,
+    attachments:[{file_type:'image', data_url:'https://cw.test/rails/a/romper.jpg', file_size:1200},
+                 {file_type:'audio', data_url:'https://cw.test/rails/a/reply.ogg'}]};
+  test('one row per attachment, tagged with the Chatwoot message id, no repeated caption', ()=>{
+    const rows=chatwootOutgoingMediaRows(body);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows[0], {role:'assistant', content:'', ts:new Date(1790000000000).toISOString(),
+      attachment:{kind:'image', url:'https://cw.test/rails/a/romper.jpg', name:'romper.jpg', size:1200, cw_id:901}});
+    assert.equal(rows[1].attachment.kind, 'voice');
+    assert.notEqual(rows[0].ts, rows[1].ts);
+  });
+  test('incoming, private and text-only messages give nothing', ()=>{
+    assert.deepEqual(chatwootOutgoingMediaRows({...body, message_type:'incoming'}), []);
+    assert.deepEqual(chatwootOutgoingMediaRows({...body, private:true}), []);
+    assert.deepEqual(chatwootOutgoingMediaRows({...body, attachments:[]}), []);
+  });
+  test('backfilled customer photos keep their caption as the user', ()=>{
+    const [row]=chatwootMediaRows({id:5, message_type:0, created_at:'2026-09-20T09:00:00Z', attachments:[{file_type:'image', data_url:'https://cw.test/x.jpg'}]}, 'user', 'is this in stock?');
+    assert.equal(row.role, 'user');
+    assert.equal(row.content, 'is this in stock?');
+    assert.equal(row.ts, '2026-09-20T09:00:00.000Z');
+  });
+});
+
+test('inbound media carries its Chatwoot message id so the one-off backfill skips it', ()=>{
+  assert.equal(engineInboundMediaFields('image','https://cw.test/p.jpg','',77).userMedia.cw_id, 77);
 });
