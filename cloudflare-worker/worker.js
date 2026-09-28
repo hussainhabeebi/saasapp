@@ -14416,29 +14416,45 @@ const ENGINE_IMAGE_DESCRIBE_PROMPT='Describe what this image shows in one short 
 // Direct Gemini vision call (shared GEMINI_API_KEY), tried first — same Gemini-first-with-
 // OpenRouter-fallback pattern as every other LLM call in this engine now uses. Null on any
 // failure so engineResolveUserText falls back to the client's own OpenRouter key/model below.
+// Every failure is now reported (was silent) — a photo that couldn't be read used to reach the FAQ
+// LLM as a bare "(image received)", which then told Couplo's customer "I can't see images here".
+// Chatwoot/S3 often serves attachments as application/octet-stream or binary/octet-stream, which
+// Gemini rejects as an image — normalised to image/jpeg. One retry on a transient Gemini error.
+export function engineImageMimeType(contentType){
+  const ct=String(contentType||'').split(';')[0].trim().toLowerCase();
+  if(ct==='image/jpg') return 'image/jpeg';
+  return /^image\/(?:jpeg|png|webp|heic|heif|gif)$/.test(ct) ? ct : 'image/jpeg';
+}
 async function engineGeminiDescribeImage(env, mediaUrl){
   if(!env.GEMINI_API_KEY || !mediaUrl) return null;
   try{
     const imgR=await fetch(mediaUrl);
-    if(!imgR.ok) return null;
-    const mimeType=imgR.headers.get('content-type')||'image/jpeg';
+    if(!imgR.ok){ await reportOpsError(env, 'engineGeminiDescribeImage — image fetch failed', new Error(`HTTP ${imgR.status}`), {mediaUrl:String(mediaUrl).slice(0,200)}); return null; }
+    const mimeType=engineImageMimeType(imgR.headers.get('content-type'));
     const buf=await imgR.arrayBuffer();
-    if(buf.byteLength>15*1024*1024) return null;
+    if(!buf.byteLength || buf.byteLength>15*1024*1024){ await reportOpsError(env, 'engineGeminiDescribeImage — image empty or too large', new Error(`${buf.byteLength} bytes`)); return null; }
     const base64=engineArrayBufferToBase64(buf);
-    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contents:[{role:'user', parts:[
-        {text:ENGINE_IMAGE_DESCRIBE_PROMPT},
-        {inline_data:{mime_type:mimeType, data:base64}}
-      ]}]})
-    });
-    if(!r.ok) return null;
+    const body=JSON.stringify({contents:[{role:'user', parts:[
+      {text:ENGINE_IMAGE_DESCRIBE_PROMPT},
+      {inline_data:{mime_type:mimeType, data:base64}}
+    ]}]});
+    let r=null;
+    for(let attempt=0; attempt<2; attempt++){
+      r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${ENGINE_GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`, {method:'POST', headers:{'Content-Type':'application/json'}, body});
+      if(r.ok || !(r.status===429 || r.status>=500)) break;
+      await new Promise(res=>setTimeout(res, 800));
+    }
+    if(!r.ok){ await reportOpsError(env, 'engineGeminiDescribeImage — Gemini rejected the image', new Error(`HTTP ${r.status}: ${(await r.text().catch(()=>'')).slice(0,300)}`), {mimeType}); return null; }
     const data=await r.json().catch(()=>({}));
     const parts=data?.candidates?.[0]?.content?.parts||[];
     const t=parts.map(p=>p.text||'').join('').trim();
     return t||null;
-  }catch(e){ return null; }
+  }catch(e){ await reportOpsError(env, 'engineGeminiDescribeImage — threw', e); return null; }
 }
+// What the bot sees when a customer's photo couldn't be read at all. Never a bare "(image
+// received)": the reply must not claim it can't see or receive images (it can — this was a
+// one-off failure); it asks which product they mean or to resend.
+export const ENGINE_IMAGE_UNREADABLE_NOTE='(SYSTEM NOTE — NOT THE CUSTOMER\'S WORDS: the customer sent a photo, but it could not be opened due to a technical issue. Thank them, and ask them to tell you which product it is or to resend the photo. Do NOT say you cannot see, view or receive images — photos are supported.)';
 
 // Domain-vocabulary hint for engineGeminiTranscribeVoice — the business's own name plus its
 // product/service names (same c.services field engineBuildFaqSystemPrompt already reads), since a
@@ -14475,6 +14491,7 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
   if(mediaType==='image' && mediaUrl){
     const geminiDesc=await engineGeminiDescribeImage(env, mediaUrl);
     if(geminiDesc) return geminiDesc;
+    if(!c.openrouter_key) return ENGINE_IMAGE_UNREADABLE_NOTE;
     try{
       const r=await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method:'POST', headers:{Authorization:`Bearer ${c.openrouter_key}`, 'Content-Type':'application/json'},
@@ -14484,8 +14501,8 @@ async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
         ]}]})
       });
       const data=await r.json().catch(()=>({}));
-      return data?.choices?.[0]?.message?.content||'(image received)';
-    }catch(e){ return '(image received)'; }
+      return String(data?.choices?.[0]?.message?.content||'').trim()||ENGINE_IMAGE_UNREADABLE_NOTE;
+    }catch(e){ return ENGINE_IMAGE_UNREADABLE_NOTE; }
   }
   if(mediaType==='voice' && mediaUrl){
     const audio=await engineFetchAudioBase64(env, mediaUrl);
@@ -15672,6 +15689,9 @@ BUTTONS — mandatory after EVERY reply:
   // no handover of any kind had actually happened. That's a trust problem independent of whatever
   // data gap caused it: never imply a human is already engaged unless one genuinely is (this route
   // only runs pre-handover in the first place — see engineRouteFlow — so it never legitimately is).
+  // Couplo (Sep 2026): "Pic sent" got "I can't see images here" — never true: customer photos are
+  // read (their description appears in the conversation) and product photos are sent by the system.
+  sys+='\n\nIMAGES: Never say you cannot see, view, open, receive or send images or photos. A photo the customer sent appears in the conversation as a description of what it shows — use it. If they say they sent a picture but no description of it is in the conversation, ask them to resend it or tell you which product it is.';
   sys+='\n\nNever claim a human agent, advisor, or your team is "already" looking into something or has been notified — that has not happened. Never offer to "connect" or "transfer" the customer to a team, agent, or person in this reply — that decision is made by the system, not by you. If you cannot answer a question from the data above, say plainly that you do not have that specific information and ask the customer for more details so you can help them better.';
 
   // Observed real failure #1: a customer's plain "Hi" got a long, salesy paragraph back — a full
