@@ -557,6 +557,21 @@ the product card + photo go out. A bare product name/tap, a photo ask, or a sent
 just the card. Follow-up questions about the same product stay answer-only.
 **Tested:** `product-question.test.js`.
 
+
+### 33 — [backend] A customer photo that can't be read never becomes "I can't see images"
+**Area:** `engineGeminiDescribeImage`, `engineImageMimeType`, `ENGINE_IMAGE_UNREADABLE_NOTE`,
+`engineResolveUserText`, `engineBuildFaqSystemPrompt` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: a customer sent a photo, then "Pic sent", and the bot replied "I can't see images
+here, but I can help you if you describe the item". When image reading failed (silently: nothing
+logged), the photo reached the LLM as a bare "(image received)". The OpenRouter fallback was also
+called even with no key.
+**Fix:** Chatwoot/S3's `application/octet-stream` is sent to Gemini as `image/jpeg`, with one retry
+on 429/5xx. Every failure is reported to the ops log. The OpenRouter fallback is skipped without a
+key. An unreadable photo becomes a SYSTEM NOTE telling the bot to ask which product it is or to
+resend, never to claim it can't see images. Every FAQ prompt now forbids saying images can't be
+seen, received or sent.
+**Tested:** `image-read.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
