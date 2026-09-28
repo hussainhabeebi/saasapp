@@ -16,6 +16,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .side-top,.chat-top{height:60px;background:var(--header);display:flex;align-items:center;gap:10px;padding:10px 14px;flex:none}
 .brand-avatar,.avatar{width:40px;height:40px;border-radius:50%;background:#dfe5e7;display:flex;align-items:center;justify-content:center;font-weight:700;color:#54656f;flex:none;overflow:hidden}.avatar{width:49px;height:49px;font-size:17px}.brand-avatar{background:var(--wa);color:#fff}
 .side-title{font-size:18px;font-weight:600;flex:1}.icon-btn{width:40px;height:40px;border:0;border-radius:50%;background:transparent;color:#54656f;display:grid;place-items:center;font-size:19px;flex:none;padding:0}.icon-btn:hover{background:#e5e8ea}.icon-btn:disabled{opacity:.35;cursor:default}
+.embedded .dash-btn,.embedded .dash-item{display:none!important}.embedded #app{max-width:none;box-shadow:none}
 .dash-btn{border:0;border-radius:8px;background:var(--wa-dark);color:#fff;padding:9px 12px;font-size:13px;font-weight:650;white-space:nowrap}.dash-btn:hover{background:#006f5c}
 .search-wrap{padding:8px 12px;background:#fff;border-bottom:1px solid #f1f2f3}.searchbox{height:36px;border-radius:8px;background:var(--header);display:flex;align-items:center;gap:10px;padding:0 12px;color:#54656f}.searchbox input{border:0;outline:0;background:transparent;width:100%;font-size:14px;color:var(--ink)}
 .channel-row,.filter-row{display:flex;gap:7px;overflow-x:auto;padding:7px 12px 0;scrollbar-width:none;flex:none}.channel-row::-webkit-scrollbar,.filter-row::-webkit-scrollbar{display:none}.filter-row{padding-bottom:7px;border-bottom:1px solid var(--line)}
@@ -23,7 +24,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 .list{flex:1 1 0;overflow-y:auto;overflow-x:hidden;min-height:0;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}.contact{display:flex;gap:12px;padding:0 12px;min-height:72px;align-items:center;cursor:pointer}.contact:hover{background:#f5f6f6}.contact.active{background:#f0f2f5}.contact .info{min-width:0;flex:1;border-bottom:1px solid #f0f2f5;padding:13px 0}.row1,.row2{display:flex;align-items:center;gap:7px}.row1{margin-bottom:4px}.name{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.time{font-size:12px;color:var(--muted);white-space:nowrap}.preview{font-size:13.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.preview .draft{color:#06cf9c}.unread .name{font-weight:650}.unread .time{color:var(--wa);font-weight:600}.badge{min-width:19px;height:19px;border-radius:12px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}.pin{font-size:12px;color:#8696a0}.handover{width:8px;height:8px;border-radius:50%;background:#e5484d;box-shadow:0 0 0 2px #fff;position:absolute;right:1px;top:1px}.avatar-wrap{position:relative;flex:none}
 .empty-list{padding:52px 20px;text-align:center;color:var(--muted)}
 .main{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--paper)}.empty-main{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);background:#f7f9fa;border-bottom:6px solid var(--wa)}.empty-main .box{max-width:430px;padding:30px}.empty-main .big{font-size:56px;margin-bottom:16px;opacity:.5}.empty-main h2{font-weight:400;color:#41525d;margin:0 0 8px}.empty-main p{line-height:1.55;font-size:14px}
-.chat-top{border-bottom:1px solid #ddd}.back{display:none}.chat-meta{min-width:0;flex:1;cursor:default}.chat-name{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-actions{display:flex;align-items:center;gap:2px;position:relative}.menu{position:absolute;right:4px;top:48px;z-index:20;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.18);border-radius:6px;min-width:220px;padding:7px 0}.menu button{display:block;width:100%;border:0;background:#fff;text-align:left;padding:11px 18px;color:var(--ink)}.menu button:hover{background:#f5f6f6}.menu .dash-item{color:#008069;font-weight:650;border-top:1px solid var(--line)}
+.chat-top{border-bottom:1px solid #ddd}.back{display:none}.chat-meta{min-width:0;flex:1;cursor:pointer}.chat-name{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-actions{display:flex;align-items:center;gap:2px;position:relative}.menu{position:absolute;right:4px;top:48px;z-index:20;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.18);border-radius:6px;min-width:220px;padding:7px 0}.menu button{display:block;width:100%;border:0;background:#fff;text-align:left;padding:11px 18px;color:var(--ink)}.menu button:hover{background:#f5f6f6}.menu .dash-item{color:#008069;font-weight:650;border-top:1px solid var(--line)}
 .thread{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding:14px 7% 18px;background-color:var(--paper);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='%23888' stroke-opacity='.08' stroke-width='1'%3E%3Ccircle cx='22' cy='28' r='8'/%3E%3Cpath d='M65 16l15 16-21 5zM22 92q13-18 29 0q9 14-5 20q-17 6-24-20zM95 80h25v17H95z'/%3E%3C/g%3E%3C/svg%3E")}
 .thread.drop{outline:3px dashed var(--wa);outline-offset:-10px}
 .day{display:flex;justify-content:center;margin:9px 0 12px}.day span{background:#fff;padding:6px 12px;border-radius:7px;font-size:11px;color:#54656f;box-shadow:0 1px 1px rgba(0,0,0,.08)}
@@ -87,6 +88,12 @@ const LEADS_TABLE='mvg6rcw0ia5qqrx';
 const params=new URLSearchParams(location.search);
 const clientId=params.get('client')||'';
 const sessionToken=params.get('token')||'';
+// Embedded in the CRM (dashboard.html #pageChats iframe) rather than opened as its own tab: the
+// dashboard's own navigation replaces our "← Dashboard" button, and lead details open as the CRM's
+// lead card on top of the chat. See chats.js for the dashboard half of this postMessage channel.
+const embedded=params.get('embed')==='1'&&window.parent!==window;
+if(embedded)document.documentElement.classList.add('embedded');
+function toParent(type,data={}){if(!embedded)return;try{window.parent.postMessage({source:'lv-chats',type,...data},location.protocol==='file:'?'*':location.origin)}catch{}}
 let leads=[],histCache={},current=null,channel='whatsapp',filter='all',meEmail='',clientRecord={};
 // Composer state for the open conversation. The thread and composer are separate DOM regions so a
 // background refresh redraws messages without wiping a half-typed reply or a running recording.
@@ -122,7 +129,7 @@ function toast(t){const e=$('toast');e.textContent=t;e.classList.remove('hidden'
 function ago(v){if(!v)return'';const d=new Date(v),n=new Date(),ms=n-d;if(ms<60000)return'now';if(ms<3600000)return Math.floor(ms/60000)+'m';if(ms<86400000)return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});if(ms<604800000)return d.toLocaleDateString([],{weekday:'short'});return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
 function readKey(){return `lv_chat_read_${clientId}`}
 function readMap(){try{return JSON.parse(localStorage.getItem(readKey())||'{}')}catch{return{}}}
-function markRead(id){try{const m=readMap();m[id]=new Date().toISOString();localStorage.setItem(readKey(),JSON.stringify(m))}catch{}}
+function markRead(id){try{const m=readMap();m[id]=new Date().toISOString();localStorage.setItem(readKey(),JSON.stringify(m))}catch{}toParent('read')}
 function unread(l){if(!l.LastMsgAt)return false;const r=readMap()[l.Id];return !r||new Date(l.LastMsgAt)>new Date(r)}
 const draftKey=id=>`lv_chat_draft_${clientId}_${id}`;
 function getDraft(id){try{return localStorage.getItem(draftKey(id))||''}catch{return''}}
@@ -130,7 +137,7 @@ function saveDraft(id,t){try{t?localStorage.setItem(draftKey(id),t):localStorage
 async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:headers({...opts.headers})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
 async function boot(){
  if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
- try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000)}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+ try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 async function loadLeads(show=true,silent=false){
  try{const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=c=>`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${c}&limit=200&sort=-LastMsgAt`;let d;try{d=await apiJson(url(ownerClause))}catch(e){if(!ownerClause)throw e;d=await apiJson(url(''))}leads=d.list||[];
@@ -197,7 +204,7 @@ async function openConversation(id){
  const lead=leads.find(l=>String(l.Id)===String(id));if(!lead)return;
  if(rec)cancelRecording();
  if(current&&$('msg'))saveDraft(current.Id,$('msg').value);
- current=lead;replyTarget=null;unseen=0;composeMode='reply';markRead(lead.Id);
+ current=lead;replyTarget=null;unseen=0;composeMode='reply';markRead(lead.Id);toParent('thread',{leadId:lead.Id});
  $('main').classList.add('open');$('sidebar').classList.add('thread-open');
  buildShell();renderContacts();
  const cached=!!histCache[String(id)];
@@ -212,11 +219,11 @@ async function refreshMessages(lead,stick=false){
  catch(e){if(!histCache[k])histCache[k]=hist(lead)}
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
-function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead in CRM</button><button onclick="goMatrimonial()">💍 Matrimonial profile</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button onclick="goMatrimonial()">💍 Matrimonial profile</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}${l.Owner?' · '+esc(l.Owner):''}</div></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}${l.Owner?' · '+esc(l.Owner):''}</div></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="searchThread(this.value)"></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -470,7 +477,7 @@ async function encodeVoice(blob){
  catch(e){const ext=/mp4/.test(blob.type)?'m4a':'webm';return new File([blob],`voice-${stamp}.${ext}`,{type:blob.type||'audio/webm'})}
 }
 let lameLoading=null;
-function loadLame(){if(window.lamejs)return Promise.resolve();return lameLoading||(lameLoading=new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';s.onload=res;s.onerror=()=>{lameLoading=null;rej(new Error('mp3 encoder unavailable'))};document.head.appendChild(s)}))}
+function loadLame(){if(window.lamejs)return Promise.resolve();return lameLoading||(lameLoading=new Promise((res,rej)=>{const s=document.createElement('script');s.src='vendor/lamejs/lame.min.js';s.onload=res;s.onerror=()=>{lameLoading=null;rej(new Error('mp3 encoder unavailable'))};document.head.appendChild(s)}))}
 async function toMp3(blob){
  await loadLame();
  const AC=window.AudioContext||window.webkitAudioContext,ctx=new AC();
@@ -485,19 +492,31 @@ async function toMp3(blob){
 async function togglePin(){const next=current.Pinned!=='Yes';try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
 async function toggleResolve(){const next=current.ConvResolved!=='Yes';try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
 function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
-function goLead(){location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
+function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
 function goMatrimonial(){
   toggleMenu(false);
   if(!current)return;
   const phone=(current.Phone||'').replace(/[^0-9]/g,'');
   window.open(`matrimonial.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&tab=activated&phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(current.Name||'')}`, '_blank');
 }
-function goBack(){if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
+function goBack(){if(embedded){toParent('home');return}if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
 function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySelectorAll('#thread .bubble').forEach(b=>{b.style.opacity=!q||b.textContent.toLowerCase().includes(q)?'1':'.22'})}
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
 document.addEventListener('click',e=>{if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
 document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+window.addEventListener('message',async e=>{
+ if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
+ const {channel:ch,leadId}=e.data;
+ if(ch&&ch!==channel)setChannel(ch);
+ if(!leadId)return;
+ // A live-message ping for the conversation already on screen just refreshes it — reopening
+ // would throw away the reply target and composer state.
+ if(current&&String(current.Id)===String(leadId))return refreshMessages(current);
+ if(!leads.some(l=>String(l.Id)===String(leadId)))await loadLeads(false,true);
+ const lead=leads.find(l=>String(l.Id)===String(leadId));
+ if(lead){if(isIg(lead)!==(channel==='instagram'))setChannel(isIg(lead)?'instagram':'whatsapp');openConversation(lead.Id)}
+});
 window.addEventListener('beforeunload',()=>{if(current&&$('msg'))saveDraft(current.Id,$('msg').value)});
 const EMOJI='😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😋 😜 🤪 🤗 🤔 🤐 😐 😏 😒 🙄 😬 😌 😔 😴 😷 🤒 🥳 😎 🤓 😕 😟 😮 😲 😳 🥺 😢 😭 😱 😤 😡 👍 👎 👌 ✌️ 🤞 🤝 👏 🙌 🙏 💪 👋 👉 👈 👆 👇 ☝️ ✋ ❤️ 🧡 💛 💚 💙 💜 🖤 💔 💯 ✅ ❌ ⚠️ ❓ ❗ 🔥 ⭐ 🌟 ✨ 🎉 🎊 🎁 🎂 💐 🌹 🌸 ☀️ 🌙 ⏰ 📅 📌 📍 📞 📱 💬 📷 🎥 🎤 📄 📎 💰 💵 💳 🛒 📦 🚚 🏠 🏢 🚗 ✈️ 🍽️ ☕ 🍰';
 boot();
