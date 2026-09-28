@@ -321,6 +321,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);font-size:15p
 .page{position:absolute;inset:0;overflow-y:auto;padding-bottom:calc(var(--nav)+16px)}
 #pageChats{overflow:hidden;display:none;flex-direction:column}
 #pageChats:not(.hidden){display:flex}
+#pageChats{padding-bottom:0!important}
+#chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
 #pageEcommerce,#pageEducation,#pageBusinessservices{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
@@ -1968,54 +1970,11 @@ const ROLES = {
     </div>
 
     <div class="page hidden" id="pageChats">
-      <div class="chats-layout">
-        <!-- Left: contact list -->
-        <div class="chat-sidebar">
-          <div class="chat-sidebar-hd">
-            <div class="chat-sidebar-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-              <span>Chats</span>
-              <div style="display:flex;align-items:center;gap:10px">
-                <div style="position:relative">
-                  <button class="chat-tool-btn" style="width:28px;height:28px;font-size:14px" onclick="chatToggleAppearanceMenu()" title="Chat appearance">🎨</button>
-                  <div id="chatAppearanceMenu" class="chat-appearance-menu" style="display:none"></div>
-                </div>
-                <a href="#" id="chatwootSsoLink" onclick="openChatwootSso();return false" style="font-size:11px;font-weight:600;color:#00a884;text-decoration:none;white-space:nowrap">Log in to Chatwoot ↗</a>
-              </div>
-            </div>
-            <!-- Instagram DM shares this exact page (same ConvHistory shape, same lead table) —
-                 this switch just changes which Channel chatConvoLeads() filters for. Defaults to
-                 WhatsApp so nothing about today's behavior changes unless you tap Instagram. -->
-            <div style="display:flex;gap:6px;margin:0 0 8px">
-              <button class="hosp-tab active" id="chatChannelWa" onclick="setChatChannel('whatsapp')">💬 WhatsApp</button>
-              <button class="hosp-tab" id="chatChannelIg" onclick="setChatChannel('instagram')">📷 Instagram</button>
-            </div>
-            <div class="chat-search-wrap">
-              <span class="chat-search-icon">🔍</span>
-              <input class="chat-search" id="chatSearch" type="text" placeholder="Search or start a new chat" oninput="chatSearchDebounce()" autocomplete="off" />
-            </div>
-            <div class="chat-filter-row" id="chatFilterRow"></div>
-          </div>
-          <!-- Opt-in only (see requestChatNotifyPermission/renderChatNotifyBanner) — never
-               auto-prompted, so opening Chats for the first time never throws an unexpected
-               browser permission popup at a rep. -->
-          <div id="chatNotifyBanner" style="display:none;align-items:center;gap:8px;padding:8px 16px;background:#eefaf6;border-bottom:1px solid #dcf5ed;font-size:12px;color:#00806a;flex-shrink:0">
-            <span style="flex:1">🔔 Get notified when a new message arrives</span>
-            <button class="chat-filter-btn" onclick="requestChatNotifyPermission()">Enable</button>
-            <button style="border:none;background:none;cursor:pointer;color:#8a99a3;font-size:13px" onclick="$id('chatNotifyBanner').style.display='none'" title="Dismiss">✕</button>
-          </div>
-          <div class="chat-contact-list" id="chatContactList">
-            <div class="chat-empty"><div class="chat-empty-icon">👤</div><div>Loading contacts…</div></div>
-          </div>
-          <button class="chat-load-more" id="chatLoadMore" style="display:none" onclick="chatLoadMore()">Load more contacts ↓</button>
-        </div>
-        <!-- Right: conversation panel -->
-        <div class="chat-main" id="chatMain">
-          <div class="chat-empty" style="flex:1;display:flex">
-            <div class="chat-empty-icon">💬</div>
-            <div>Select a contact to view their chats</div>
-          </div>
-        </div>
-      </div>
+      <!-- Chats lives right inside the CRM: the full WhatsApp-style workspace (chats.html) is
+           embedded here instead of opening in a separate tab. It talks to this page over
+           postMessage (see chats.js) — "View lead" opens the lead's CRM card on top, unread badges
+           stay in sync, and live-notification clicks jump straight to that conversation. -->
+      <iframe id="chatsFrame" title="Chats" allow="microphone; clipboard-write; autoplay"></iframe>
     </div>
 
     <!-- TASKS -->
