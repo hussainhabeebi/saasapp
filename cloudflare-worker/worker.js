@@ -1428,6 +1428,11 @@ async function handleGetChatMessages(request, env){
     }
   }
 
+  // One-off: bring in photos/files from before media was recorded (see chatsBackfillChatwootMedia).
+  if(!after){
+    try{ await chatsBackfillChatwootMedia(env, await getClientById(env, payload.cid), payload.cid, lead); }catch(e){}
+  }
+
   // Read from D1 — incremental if `after` is provided
   const rows=after
     ?await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? AND ts>? ORDER BY ts ASC')
@@ -1542,11 +1547,87 @@ async function chatsRecordOutgoing(env, cid, leadId, msg){
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
   const lead=leadR.ok?await leadR.json().catch(()=>({})):{};
   if(String(lead.ClientId)!==String(cid)) return;
+  if(await d1HasChatwootMessage(env, leadId, msg.attachment?.cw_id)) return;
   const ts=new Date().toISOString();
   await d1InsertLeadMessage(env, leadId, cid, {role:'assistant', ts, ...msg});
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
     {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
 }
+// Pure: the D1 rows for an outgoing Chatwoot message's attachments (one row per file — the table
+// holds one attachment per message). Content stays empty: the bot's caption is its reply text,
+// which the turn already stores as its own row, so repeating it here would show it twice.
+// cw_id (Chatwoot's message id) lets chatsRecordOutgoing and this path skip each other's rows.
+export function chatwootOutgoingMediaRows(body){
+  if(body?.message_type!=='outgoing'||body.private) return [];
+  return chatwootMediaRows(body, 'assistant', '');
+}
+// Same rows for any Chatwoot message (webhook or messages API shape). `content` goes on the
+// first row only — used for a customer's own caption when backfilling older photos.
+export function chatwootMediaRows(body, role, content){
+  const atts=body.attachments||body.message?.attachments||[];
+  const raw=body.created_at??body.message?.created_at;
+  let base=new Date(typeof raw==='number'?raw*1000:(raw||Date.now()));
+  if(isNaN(base)) base=new Date();
+  const cwId=Number(body.id||body.message?.id)||0;
+  return atts.map((a,i)=>{
+    const url=a.data_url||a.file_url||'';
+    if(!url) return null;
+    const ft=String(a.file_type||'').toLowerCase();
+    let name='';try{name=decodeURIComponent(url.split('?')[0].split('/').pop()||'');}catch(e){}
+    const kind=ft==='image'?'image':ft==='video'?'video':ft==='audio'?(/\.(ogg|opus|oga)$/i.test(name)?'voice':'audio'):'document';
+    return {role, content:i===0?String(content||''):'', ts:new Date(base.getTime()+i).toISOString(),
+      attachment:{kind, url, name, size:Number(a.file_size)||0, ...(cwId?{cw_id:cwId}:{})}};
+  }).filter(Boolean);
+}
+async function d1HasChatwootMessage(env, leadId, cwId){
+  if(!cwId) return false;
+  const row=await env.DB.prepare(`SELECT 1 AS x FROM lead_messages WHERE lead_id=? AND json_extract(attachment,'$.cw_id')=? LIMIT 1`)
+    .bind(Number(leadId), Number(cwId)).first().catch(()=>null);
+  return !!row;
+}
+// Photos/files sent or received BEFORE the webhook recording above existed only live in
+// Chatwoot. The first time a chat is opened, pull its recent history once (up to 5 pages of the
+// messages API) and add every attachment not already in D1 (matched by cw_id). A marker row per
+// lead makes this a one-off; from then on the webhook keeps the thread complete.
+async function chatsBackfillChatwootMedia(env, c, clientId, lead){
+  const convId=String(lead.ConversationID||'');
+  if(!convId||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS lead_media_backfill (lead_id INTEGER PRIMARY KEY, at TEXT)').run().catch(()=>{});
+  const claim=await env.DB.prepare('INSERT OR IGNORE INTO lead_media_backfill (lead_id, at) VALUES (?,?)')
+    .bind(Number(lead.Id), new Date().toISOString()).run().catch(()=>null);
+  if(!claim?.meta?.changes) return;
+  let before='';
+  for(let page=0;page<5;page++){
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages${before?`?before=${before}`:''}`,
+      {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+    if(!r?.ok) break;
+    const msgs=(await r.json().catch(()=>({})))?.payload||[];
+    if(!msgs.length) break;
+    for(const m of msgs){
+      const t=m.message_type, out=t===1||t==='outgoing', inc=t===0||t==='incoming';
+      if(m.private||!(out||inc)||!(m.attachments||[]).length) continue;
+      if(await d1HasChatwootMessage(env, lead.Id, m.id)) continue;
+      const rows=chatwootMediaRows(m, out?'assistant':'user', inc?m.content:'');
+      for(const row of rows) await d1InsertLeadMessage(env, lead.Id, clientId, row);
+    }
+    if(msgs.length<20) break;
+    before=Math.min(...msgs.map(m=>Number(m.id)||Infinity));
+    if(!isFinite(before)) break;
+  }
+}
+
+async function engineRecordOutgoingChatwootMedia(env, clientId, body){
+  const rows=chatwootOutgoingMediaRows(body);
+  const convId=String(body.conversation?.id||'');
+  if(!rows.length||!convId) return;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1&fields=Id`);
+  const leadId=(await r.json().catch(()=>({})))?.list?.[0]?.Id;
+  if(!leadId) return;
+  // A Chats-page upload is already saved (with this cw_id) by chatsRecordOutgoing.
+  if(await d1HasChatwootMessage(env, leadId, rows[0].attachment.cw_id)) return;
+  for(const row of rows) await d1InsertLeadMessage(env, leadId, clientId, row);
+}
+
 function chatsTemplateAttachment(template_name, buttons){
   const b=Array.isArray(buttons)?buttons.map(x=>String(x||'').slice(0,25)).filter(Boolean).slice(0,10):[];
   return {kind:'template', name:String(template_name||''), ...(b.length?{buttons:b}:{})};
@@ -1576,7 +1657,7 @@ async function handleQuoteSend(request, env){
     const kind=form.get('kind')==='voice'?'voice':type.startsWith('audio')?'audio':type.startsWith('image')?'image':type.startsWith('video')?'video':'document';
     const duration=Number(form.get('duration'))||0;
     await chatsRecordOutgoing(env, payload.cid, leadId, {content:caption,
-      attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{})}});
+      attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{}), ...(data?.id?{cw_id:Number(data.id)}:{})}});
   }
   return json({ok:true, data});
 }
@@ -14381,13 +14462,13 @@ function engineBuildTranscribeVocabHint(c){
 // turn's history content, so the bot keeps its context — but the thread should show the real
 // photo with the customer's own caption, like WhatsApp. `caption` marks that the content is the
 // AI's reading of the media, so chats.html shows the caption instead of the description.
-export function engineInboundMediaFields(mediaType, mediaUrl, caption){
+export function engineInboundMediaFields(mediaType, mediaUrl, caption, cwId){
   if(!mediaUrl) return {};
-  const cap={caption:String(caption||'').trim(), ai_text:true};
+  const cap={caption:String(caption||'').trim(), ai_text:true, ...(Number(cwId)?{cw_id:Number(cwId)}:{})};
   if(mediaType==='image') return {userMedia:{type:'image', url:mediaUrl, ...cap}};
   if(mediaType==='voice') return {userAttachment:{kind:'voice', url:mediaUrl, ...cap}};
   const name=decodeURIComponent(String(mediaUrl).split('?')[0].split('/').pop()||'')||'Document';
-  return {userAttachment:{kind:/\.(mp4|mov|3gp|webm)$/i.test(name)?'video':'document', url:mediaUrl, name}};
+  return {userAttachment:{kind:/\.(mp4|mov|3gp|webm)$/i.test(name)?'video':'document', url:mediaUrl, name, ...(Number(cwId)?{cw_id:Number(cwId)}:{})}};
 }
 
 async function engineResolveUserText(env, c, mediaType, mediaUrl, text){
@@ -18567,6 +18648,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
   }
 
+  // Every photo / video / voice / file that goes OUT on this Chatwoot conversation — the bot's
+  // product and category photos (sent from many places: engineSendChatwootImageReply,
+  // sendDriveMediaToChatwoot, the photoshoot sender…), voice replies, and whatever an agent sends
+  // from inside Chatwoot — lands in the D1 thread chats.html reads. Recording it here, where all
+  // of them come back as message_created, instead of at each sender means none gets missed.
+  // Best-effort: never blocks the rest of this webhook.
+  if(body.message_type==='outgoing' && !body.private){
+    try{ await engineRecordOutgoingChatwootMedia(env, clientId, body); }catch(e){}
+  }
+
   // Human agent reply tracking — fires when a real human (not the bot) sends an outgoing
   // message from inside Chatwoot. Chatwoot's sender.type is 'agent_bot' for bot-sent messages
   // and 'agent' (or 'user') for human agents. When a rep closes a sale in chat without
@@ -18952,7 +19043,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
-    Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text));
+    Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));
     // A generic ad CTA/business-information request must be answered from the client's prompt,
     // even if the probabilistic intent model guesses that the pronoun "this" means a product.
     // Explicit human/opt-out routes still win; explicit product language never matches the helper.
@@ -21103,9 +21194,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         {role:'user', content:routing.historyUserText||userText, ts:userTs,
          ...(routing.userMedia?{media:routing.userMedia}:{}),
          ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
+      // No `media` here: the photo itself was posted to Chatwoot and is recorded from its
+      // outgoing message_created webhook (engineRecordOutgoingChatwootMedia).
       if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
         {role:'assistant', content:routing.reply, ts:botTs,
-         ...(routing.media?{media:routing.media}:{}),
          ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
     }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
