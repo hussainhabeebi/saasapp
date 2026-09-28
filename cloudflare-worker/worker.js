@@ -1442,18 +1442,23 @@ async function handleGetChatMessages(request, env){
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, text, lead_id}=await request.json().catch(()=>({}));
+  const {conv_id, text, lead_id, reply_to}=await request.json().catch(()=>({}));
   if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  // A swipe/tap "Reply" from chats.html: there is no Chatwoot message id to thread against, so the
+  // quoted line is prefixed onto what the customer sees, while D1 keeps the plain text + reply_to
+  // so the Chats thread renders the quote as a proper reply card.
+  const quote=reply_to&&typeof reply_to==='object'?{who:String(reply_to.who||'').slice(0,40), snippet:String(reply_to.snippet||'').slice(0,200)}:null;
+  const outText=quote?.snippet?`*↩️ Replying to:* "${quote.snippet}"\n\n${text}`:text;
   const fd=new FormData();
-  fd.append('content', text); fd.append('message_type','outgoing'); fd.append('private','false');
+  fd.append('content', outText); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
   // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
   if(lead_id){
     const ts=new Date().toISOString();
-    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts});
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...(quote?.snippet?{reply_to:quote}:{})});
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
       {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
   }
@@ -1536,7 +1541,27 @@ async function handleQuoteSend(request, env){
   fd.append('attachments[]', file, file.name||'quotation.pdf');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
-  return json({ok:true, data:await r.json().catch(()=>({}))});
+  const data=await r.json().catch(()=>({}));
+  // chats.html sends photos, documents and recorded voice notes through here with lead_id — persist
+  // them to D1 like /chat/send does, otherwise the thread (which reads D1) loses them on reload.
+  // Other callers (quotation PDFs) omit lead_id and keep the old send-only behaviour.
+  const leadId=form.get('lead_id');
+  if(leadId){
+    const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    const lead=leadR.ok?await leadR.json().catch(()=>({})):{};
+    if(String(lead.ClientId)===String(payload.cid)){
+      const ts=new Date().toISOString();
+      const sent=data?.attachments?.[0]||{};
+      const type=String(file.type||sent.file_type||'');
+      const kind=form.get('kind')==='voice'?'voice':type.startsWith('audio')?'audio':type.startsWith('image')?'image':type.startsWith('video')?'video':'document';
+      const duration=Number(form.get('duration'))||0;
+      await d1InsertLeadMessage(env, leadId, payload.cid, {role:'assistant', content:caption, ts,
+        attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{})}});
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
+        {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
+    }
+  }
+  return json({ok:true, data});
 }
 
 async function handleWaTemplatesGet(request, env){
