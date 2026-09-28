@@ -3882,6 +3882,62 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
+## Hot Lead Alerts (Settings → 👥 User Management → 🔥 Hot Lead Alerts)
+
+WhatsApp message to the staff member who owns a lead the moment it turns hot, sent from the
+client's own WhatsApp Business number (`engineMaybeSendHotLeadAlert` in `cloudflare-worker/worker.js`).
+
+- **Staff numbers:** each user's WhatsApp number lives in `team_whatsapp` on CLIENTS
+  (`{"email":"919876543210"}`, the account owner included). Set from the Create New User form or
+  a user's profile (👤) → 📱 WhatsApp for alerts, via `POST /team/whatsapp` — the account owner
+  can set anyone's, a teammate only their own.
+- **Triggers** (each can be switched off): the lead's Score becomes `Hot` (booking intent), the
+  lead's first `HotMoment` (asks about price / availability / booking), or a new Facebook /
+  Instagram lead-form lead. Only transitions count, and a per-lead cooldown (default 12h)
+  stops repeats.
+- **Recipient:** the lead's Owner. The account owner gets it instead when the lead has no owner
+  or the owner has no number, and as a copy when "Also copy me" is ticked.
+- **Template:** staff rarely have an open 24h window with their own business number, so alerts
+  need an approved template. "✨ Create ready-made template" submits `hot_lead_alert_leadvyne`
+  (UTILITY, 4 variables: name, +phone, reason, lead link) to the client's WABA and selects it.
+  Without a template the alert goes as plain text, which only reaches someone who messaged the
+  number in the last 24h.
+- **Link:** `{{4}}` is `APP_BASE_URL?lead=<id>` — the dashboard opens that lead's detail panel
+  with the 📞 Call button (which starts the call timer and prompts for the outcome on return).
+- **Log:** D1 `hot_lead_alerts` (`migrations/0107_hot_alerts_lead_forms.sql`; also created
+  lazily). The last 20 show on the card.
+
+## Facebook & Instagram Lead Forms (Settings → Integrations → 📋 Lead Forms)
+
+Meta Lead Ads → lead created, routed to an owner, instant WhatsApp welcome, owner alerted
+(`processMetaLeadgenChange` in `cloudflare-worker/worker.js`).
+
+**One-time, per Meta app (platform side):**
+1. Worker secret `META_LEADGEN_VERIFY_TOKEN` — any random string (`wrangler secret put
+   META_LEADGEN_VERIFY_TOKEN`). Signatures are checked with the existing `META_APP_SECRET`, so
+   this must be the same Meta app.
+2. Meta app → Webhooks → **Page** → callback `<WORKER_BASE_URL>/meta/leadgen/webhook`, verify
+   token from step 1, subscribe to the **leadgen** field.
+3. The app needs `leads_retrieval`, `pages_manage_metadata`, `pages_show_list`,
+   `pages_read_engagement` (Advanced Access for other businesses' Pages). `ads_read` is optional:
+   with it, the campaign and ad names are saved on the lead too.
+
+**Per client (dashboard):** paste the Page ID and a Page access token generated for **this same
+app** (e.g. a System User token in the client's Business Settings with the app assigned) →
+**Connect Page**. The Worker checks the token can read the Page and subscribes the Page to the
+app's `leadgen` webhook. The token is stored in `meta_leadgen_page_token` (stripped by
+`safeClient`, rejected by the `/nocodb` passthrough); `meta_leadgen_page_id` is the webhook lookup
+key; everything else is in `meta_leadgen_config`.
+
+**What happens per lead:** the `leadgen_id` is claimed in D1 `meta_leadgen_events` (Meta's retries
+never double-send) → answers fetched from the Graph API → phone normalised with the card's default
+country code → lead created (or updated, keeping its name/stage/history) with `LeadSource`,
+`AdCampaign`, `AdName`, `LeadFormName`, `MetaLeadgenId` and the other answers in `QualAnswers` →
+normal lead routing picks an Owner → the welcome template goes out (skipped for opted-out leads)
+and is written to ConvHistory, so the bot has context when the customer replies → 🔥 alert to the
+owner. "✨ Create ready-made template" submits `lead_form_welcome_leadvyne` (`{{1}}` first name,
+`{{2}}` business name).
+
 ## Meta Ads ROI Report (`frontend/dashboard.html` — now the 📈 Reports page's Marketing tab)
 Ad spend against conversions and revenue this CRM already tracks, last 6 months. **Originally**
 built as its own view inside the Team page (a local tab toggle, `showTeamView()`); **since
