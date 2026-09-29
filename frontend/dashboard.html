@@ -3107,6 +3107,17 @@ const ROLES = {
           </div>
         </div>
 
+        <!-- Facebook & Instagram Lead Forms — Meta Lead Ads webhook → lead created + routed +
+             instant WhatsApp welcome template + hot-lead alert to the owner. Worker side:
+             processMetaLeadgenChange / /meta-leadgen/* in worker.js. Rendered by leadgenInit(). -->
+        <div class="card" style="margin-bottom:14px" id="leadgenCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📋 Facebook &amp; Instagram Lead Forms <span id="leadgenBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Off</span></div>
+            <div class="s-note">Someone fills your Instant Form on a Facebook or Instagram ad → within seconds they get a WhatsApp message from your business number, the lead appears here with an owner, and that owner gets a 🔥 alert on WhatsApp to call now. Replying in the first 5 minutes is what wins these leads.</div>
+            <div id="leadgenBody" class="s-note">Loading…</div>
+          </div>
+        </div>
+
         <!-- Google Sheets — consolidated view of the sheet connections configured elsewhere -->
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
@@ -3539,6 +3550,7 @@ const ROLES = {
                 <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
                 <input class="form-input" id="teamNewUsername" type="text" placeholder="Username">
                 <input class="form-input" id="teamNewUserEmail" type="email" placeholder="Email">
+                <input class="form-input" id="teamNewWhatsapp" type="tel" placeholder="WhatsApp number, e.g. +91 98765 43210 (for hot-lead alerts)" style="grid-column:1/-1">
                 <div style="display:flex;gap:6px">
                   <input class="form-input" id="teamNewPassword" type="text" placeholder="Password (optional)" style="flex:1">
                   <button type="button" class="save-btn sec" onclick="$id('teamNewPassword').value=generateStrongPassword()" title="Generate a strong password">🎲</button>
@@ -3563,6 +3575,9 @@ const ROLES = {
         </div>
         <!-- Lead Routing — auto-assignment rules for incoming leads. Rendered by
              renderLeadRoutingSettings(); only visible to the account owner. -->
+        <!-- Hot Lead Alerts — WhatsApp DM to the lead's owner the moment a lead turns hot. Rendered
+             by renderHotAlertsCard() from /hot-alerts/config; editable by the account owner only. -->
+        <div class="card" style="margin-bottom:14px" id="hotAlertsCard"></div>
         <div class="card" style="margin-bottom:14px" id="leadRoutingCard"></div>
       </div>
     </div>
@@ -5443,6 +5458,13 @@ function showApp(){
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
   navigate(landingPage);
+  // ?lead=<id> — from a 🔥 hot-lead WhatsApp alert: open that lead with Call one tap away.
+  const leadParam=Number(params.get('lead'));
+  if(leadParam){
+    params.delete('lead');
+    history.replaceState(null, '', location.pathname+(params.toString()?'?'+params.toString():''));
+    openLeadFromAlert(leadParam);
+  }
   if(instagramParam){
     if(instagramParam==='connected'){ showToast('Instagram connected ✓'); refreshClientRecord().then(renderInstagramStatus); }
     else showToast(params.get('msg')||'Instagram connection failed', 'error');
@@ -8537,7 +8559,7 @@ function openDetail(id){
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   const callLink=`tel:+${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   $id('detailActions').innerHTML=`
-    <a class="action-btn" href="${callLink}" onclick="openCallLog()"><span class="ab-icon">📞</span>Call</a>
+    <a class="action-btn" href="${callLink}" onclick="startCallTimer(${lead.Id})"><span class="ab-icon">📞</span>Call</a>
     <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
     <button class="action-btn" onclick="pushLeadToProjects(currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
@@ -8909,7 +8931,7 @@ function renderDetailCalls(lead){
   $id('detailCalls').innerHTML=(badge?`<div style="margin-bottom:8px">${badge}</div>`:'')+(calls.length
     ?calls.map(c=>{
         const by=c.by?(getTeamMembers().find(m=>m.email===c.by)?.name||c.by):'';
-        return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}</div></div></div>`;
+        return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':/callback/i.test(c.outcome||'')?'🔁':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}</div></div></div>`;
       }).join('')
     :'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No calls logged.</div>');
 }
@@ -9103,11 +9125,13 @@ function showInlineOutcomeChips(leadId){
   chips.className='outcome-chips';
   chips.onclick=e=>e.stopPropagation();
   const elapsed=callTimerElapsed(leadId);
-  [['✅','Answered','#059669'],['📵','No Answer','#D97706'],['📬','Voicemail','#6B7280'],['🔁','Callback','#7C3AED']].forEach(([emoji,outcome,color])=>{
+  // Stored outcome values must match modalCall's dropdown ("Callback Requested", not "Callback") —
+  // scheduleCallback and the Call Tracking report key off the exact string.
+  [['✅','Answered','#059669'],['📵','No Answer','#D97706'],['📬','Voicemail','#6B7280'],['🔁','Callback Requested','#7C3AED','Callback']].forEach(([emoji,outcome,color,label])=>{
     const b=document.createElement('button');
     b.className='outcome-chip';
     b.style.cssText=`background:${color};color:#fff`;
-    b.textContent=`${emoji} ${outcome}`;
+    b.textContent=`${emoji} ${label||outcome}`;
     b.onclick=(e)=>{e.stopPropagation();saveInlineOutcome(leadId,outcome,elapsed);chips.remove();};
     chips.appendChild(b);
   });
@@ -9150,10 +9174,18 @@ async function autoWaFollowUp(leadId){
   if(!phone) return;
   const name=(l.Name||'there').split(' ')[0];
   const msg=`Hi ${name}, we tried reaching you just now but couldn't connect. We'll try again soon — or feel free to call us back anytime! 😊`;
+  // /wa/send needs the session token and a `text` field — this used to post `message` with no
+  // auth, so every "No Answer" follow-up failed silently while the toast said it was sent.
   try{
-    await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,message:msg})});
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({phone,text:msg,inbox_id:l.InboxId||undefined})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     showToast('💬 WhatsApp follow-up sent','ok');
-  }catch(e){ console.warn('auto WA follow-up failed',e); }
+  }catch(e){
+    console.warn('auto WA follow-up failed',e);
+    // Outside WhatsApp's 24h window only a template can be delivered — say so instead of pretending.
+    showToast('WhatsApp follow-up not sent: '+e.message,'err');
+  }
 }
 
 // Schedule a callback in 2 hours → writes ReminderDate
@@ -10108,9 +10140,245 @@ function bizChatQuery(q,leads){
 function renderTeamMembers(){
   const owner=String(clientRecord.authentik_email||'').trim();
   const emails=(clientRecord.team_emails||'').split(',').map(e=>e.trim()).filter(Boolean);
-  const ownerChip=owner?`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px;font-weight:700">👑 ${esc(owner)}<span style="font-weight:400;color:var(--muted)">Owner</span><a href="#" onclick="openUserProfile('${esc(owner)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a></span>`:'';
-  const teamChips=emails.map(e=>`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px">${esc(e)}<a href="#" onclick="openUserProfile('${esc(e)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a><a href="#" onclick="removeTeamMember('${esc(e)}');return false" style="color:var(--muted);text-decoration:none;font-weight:700" title="Remove">✕</a></span>`).join('');
+  const wa=getTeamWhatsapp();
+  const waMark=e=>wa[String(e).trim().toLowerCase()]?'<span title="WhatsApp number on file for hot-lead alerts">📱</span>':'';
+  const ownerChip=owner?`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px;font-weight:700">👑 ${esc(owner)}${waMark(owner)}<span style="font-weight:400;color:var(--muted)">Owner</span><a href="#" onclick="openUserProfile('${esc(owner)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a></span>`:'';
+  const teamChips=emails.map(e=>`<span style="background:var(--accent-soft);border-radius:99px;padding:6px 10px;font-size:12px;display:inline-flex;align-items:center;gap:6px">${esc(e)}${waMark(e)}<a href="#" onclick="openUserProfile('${esc(e)}');return false" style="color:var(--accent-ink);text-decoration:none;font-weight:700" title="View profile">👤</a><a href="#" onclick="removeTeamMember('${esc(e)}');return false" style="color:var(--muted);text-decoration:none;font-weight:700" title="Remove">✕</a></span>`).join('');
   $id('teamMembersList').innerHTML=(ownerChip+teamChips)||'<div style="color:var(--muted);font-size:13px">No teammates added yet.</div>';
+}
+
+/* ── STAFF WHATSAPP + 🔥 HOT LEAD ALERTS (User Management) ──
+   Each user's own WhatsApp number (team_whatsapp on CLIENTS, {"email":"919876543210"}) is where
+   the Worker pages them when one of their leads turns hot — engineMaybeSendHotLeadAlert in
+   worker.js. Numbers are saved through /team/whatsapp (owner: anyone's, teammate: only their own);
+   the alert settings through /hot-alerts/* (owner only). */
+async function hotAlertsApi(path, body){
+  const r=await fetch(`${CONFIG.WORKER_BASE}${path}`, body===undefined
+    ? {headers:ncAuthHeaders()}
+    : {method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify(body)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+  return data;
+}
+function getTeamWhatsapp(){
+  let raw={}; try{ raw=JSON.parse(clientRecord?.team_whatsapp||'{}')||{}; }catch(e){}
+  const out={}; Object.entries(raw).forEach(([k,v])=>{ if(v) out[String(k).trim().toLowerCase()]=String(v); });
+  return out;
+}
+function fmtWaNumber(d){ return d?'+'+String(d).replace(/\D/g,''):''; }
+async function saveTeamWhatsapp(email, phone){
+  const data=await hotAlertsApi('/team/whatsapp', {email, phone});
+  clientRecord.team_whatsapp=JSON.stringify(data.team_whatsapp||{});
+  return data;
+}
+async function saveUserWhatsapp(email){
+  const msg=$id('upWhatsappMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    await saveTeamWhatsapp(email, $id('upWhatsapp').value.trim());
+    msg.textContent='✓ Saved'; msg.className='save-msg ok';
+    renderTeamMembers();
+    if($id('hotAlertsCard')) renderHotAlertsCard();
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function sendTestHotAlert(email, msgId){
+  const msg=$id(msgId); if(msg){ msg.textContent='Sending…'; msg.className='save-msg'; }
+  try{
+    await hotAlertsApi('/hot-alerts/test', {email});
+    if(msg){ msg.textContent='✓ Test alert sent — check WhatsApp'; msg.className='save-msg ok'; }
+  }catch(e){ if(msg){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; } }
+}
+function userWhatsappCardHTML(email){
+  const canEdit=isAccountOwner()||sameEmail(myEmail,email);
+  const num=getTeamWhatsapp()[email]||'';
+  if(!canEdit) return `<div class="profile-card" style="margin-bottom:14px"><div class="pc-title">📱 WhatsApp for alerts</div><div class="s-note">${num?'On file.':'Not set.'}</div></div>`;
+  return `<div class="profile-card" style="margin-bottom:14px">
+    <div class="pc-title">📱 WhatsApp for alerts</div>
+    <div class="s-note" style="margin-bottom:8px">Hot-lead alerts for leads owned by this person go to this number, sent from your business WhatsApp.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <input class="form-input" id="upWhatsapp" type="tel" value="${esc(fmtWaNumber(num))}" placeholder="+91 98765 43210" style="max-width:220px">
+      <button class="save-btn" onclick="saveUserWhatsapp('${esc(email)}')">Save</button>
+      ${num?`<button class="save-btn sec" onclick="sendTestHotAlert('${esc(email)}','upWhatsappMsg')">Send test</button>`:''}
+    </div>
+    <span class="save-msg" id="upWhatsappMsg"></span>
+  </div>`;
+}
+
+let _hotAlerts=null;
+async function renderHotAlertsCard(){
+  const card=$id('hotAlertsCard'); if(!card) return;
+  const head=`<div class="settings-section" style="margin-bottom:0"><div class="s-head">🔥 Hot Lead Alerts <span id="hotAlertsBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Off</span></div>
+    <div class="s-note">The moment a lead is ready to book, asks about price, or fills a Facebook/Instagram lead form, its owner gets a WhatsApp message with the customer's number (tap to call) and a link straight to the lead. Leads without an owner — or whose owner has no number — go to the account owner.</div>`;
+  card.innerHTML=head+'<div class="s-note">Loading…</div></div>';
+  try{ _hotAlerts=await hotAlertsApi('/hot-alerts/config'); }
+  catch(e){ card.innerHTML=head+`<div class="s-note" style="color:var(--red)">Couldn't load alert settings: ${esc(e.message)}</div></div>`; return; }
+  const cfg=_hotAlerts.config, owner=isAccountOwner(), dis=owner?'':'disabled';
+  const nums=_hotAlerts.team_whatsapp||{};
+  const people=[String(clientRecord.authentik_email||'').trim().toLowerCase(), ...(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase())].filter(Boolean);
+  const roster=[...new Set(people)].map(e=>`<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0;border-bottom:1px dashed var(--line)">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(e)}</span>
+      ${nums[e]?`<span style="font-family:var(--mono)">${esc(fmtWaNumber(nums[e]))}</span>`:`<span style="color:var(--red)">No number</span>`}
+      ${(owner||sameEmail(myEmail,e))?`<a href="#" onclick="openUserProfile('${esc(e)}');return false" style="font-size:12px">${nums[e]?'Edit':'Add'}</a>`:''}
+    </div>`).join('');
+  const log=(_hotAlerts.log||[]).slice(0,8).map(r=>`<div style="font-size:12px;padding:3px 0;color:${r.status==='sent'?'var(--ink)':'var(--muted)'}">${r.status==='sent'?'✅':r.status==='failed'?'⚠️':'⏭️'} ${esc(new Date(r.created_at).toLocaleString())} · ${esc(r.reason)}${r.lead_id?` · <a href="#" onclick="openLeadFromAlert(${Number(r.lead_id)});return false">lead ${Number(r.lead_id)}</a>`:''}${r.recipient_email?' → '+esc(r.recipient_email):''}${r.status!=='sent'?' — '+esc(r.detail||r.status):''}</div>`).join('');
+  card.innerHTML=head+`
+    ${owner?'':'<div class="s-note" style="margin:6px 0">Only the account owner can change these settings. You can add your own number from your profile.</div>'}
+    <label style="display:flex;align-items:center;gap:8px;margin:10px 0;font-weight:700;font-size:13px"><input type="checkbox" id="haEnabled" ${cfg.enabled?'checked':''} ${dis}> Send hot-lead alerts on WhatsApp</label>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:13px;margin-bottom:10px">
+      <label><input type="checkbox" id="haOnHot" ${cfg.on_hot?'checked':''} ${dis}> Lead is ready to book</label>
+      <label><input type="checkbox" id="haOnMoment" ${cfg.on_hot_moment?'checked':''} ${dis}> Lead asks about price / availability</label>
+      <label><input type="checkbox" id="haOnLeadAd" ${cfg.on_lead_ad?'checked':''} ${dis}> New Facebook / Instagram lead-form lead</label>
+      <label><input type="checkbox" id="haOwnerToo" ${cfg.notify_owner_too?'checked':''} ${dis}> Also copy me (account owner) on every alert</label>
+    </div>
+    <label class="form-label">Don't alert again for the same lead within</label>
+    <select class="form-input" id="haCooldown" style="max-width:180px;margin-bottom:10px" ${dis}>
+      ${[1,4,12,24,72].map(h=>`<option value="${h}" ${Number(cfg.cooldown_hours)===h?'selected':''}>${h} hour${h>1?'s':''}</option>`).join('')}
+    </select>
+    <label class="form-label">WhatsApp template</label>
+    <div class="s-note" style="margin-bottom:6px">Your team hasn't messaged your business number recently, so WhatsApp only delivers alerts as an approved template. One click creates ours in your WhatsApp account — Meta usually approves it within minutes.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+      <input class="form-input" id="haTemplate" type="text" value="${esc(cfg.template_name)}" placeholder="hot_lead_alert_leadvyne" style="max-width:260px" ${dis}>
+      <input class="form-input" id="haTemplateLang" type="text" value="${esc(cfg.template_lang)}" placeholder="en" style="max-width:70px" ${dis}>
+      ${owner?`<button class="save-btn sec" type="button" onclick="createHotAlertTemplate()">✨ Create ready-made template</button>`:''}
+    </div>
+    <div class="s-note" style="margin-bottom:12px;font-style:italic">"${esc(_hotAlerts.preset.body)}"</div>
+    <label class="form-label">Who gets alerts</label>
+    <div style="margin-bottom:12px">${roster}</div>
+    ${owner?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="save-btn" onclick="saveHotAlerts()">Save</button>
+      ${nums[String(myEmail||'').toLowerCase()]?`<button class="save-btn sec" onclick="sendTestHotAlert('${esc(String(myEmail||'').toLowerCase())}','haMsg')">Send me a test</button>`:''}
+      <span class="save-msg" id="haMsg"></span>
+    </div>`:''}
+    ${log?`<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)"><div style="font-weight:700;font-size:13px;margin-bottom:4px">Recent alerts</div>${log}</div>`:''}
+  </div>`;
+  const badge=$id('hotAlertsBadge');
+  if(badge){ badge.textContent=cfg.enabled?'On':'Off'; badge.style.background=cfg.enabled?'#DCFCE7':'var(--bg)'; badge.style.color=cfg.enabled?'#166534':'var(--muted)'; }
+}
+async function saveHotAlerts(){
+  const msg=$id('haMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/hot-alerts/config', {
+      enabled:$id('haEnabled').checked, on_hot:$id('haOnHot').checked, on_hot_moment:$id('haOnMoment').checked,
+      on_lead_ad:$id('haOnLeadAd').checked, notify_owner_too:$id('haOwnerToo').checked,
+      cooldown_hours:Number($id('haCooldown').value), template_name:$id('haTemplate').value.trim(), template_lang:$id('haTemplateLang').value.trim()||'en'});
+    clientRecord.hot_lead_alert_config=JSON.stringify(data.config);
+    const noNums=!Object.keys(getTeamWhatsapp()).length;
+    await renderHotAlertsCard();
+    const m=$id('haMsg');
+    if(m){ m.textContent=noNums&&data.config.enabled?'✓ Saved — now add a WhatsApp number for each person':'✓ Saved'; m.className='save-msg ok'; }
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function createHotAlertTemplate(){
+  const msg=$id('haMsg'); msg.textContent='Creating template…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/hot-alerts/template-preset', {});
+    $id('haTemplate').value=data.name; $id('haTemplateLang').value=data.language;
+    msg.textContent=data.status==='EXISTS'?'✓ Template already exists — selected':`✓ Template submitted (${data.status}). Meta usually approves it within minutes.`;
+    msg.className='save-msg ok';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+/* ── FACEBOOK & INSTAGRAM LEAD FORMS (Integrations → 📋 card) ── */
+let _leadgen=null;
+const LEADGEN_PARAM_LABELS={first_name:'First name', full_name:'Full name', business_name:'Your business name', form_name:'Form name', campaign_name:'Campaign name', ad_name:'Ad name'};
+async function leadgenInit(){
+  const body=$id('leadgenBody'); if(!body) return;
+  try{ _leadgen=await hotAlertsApi('/meta-leadgen/config'); }
+  catch(e){ body.innerHTML=`<span style="color:var(--red)">Couldn't load: ${esc(e.message)}</span>`; return; }
+  renderLeadgenCard();
+}
+function renderLeadgenCard(){
+  const body=$id('leadgenBody'); if(!body||!_leadgen) return;
+  const cfg=_leadgen.config, owner=isAccountOwner(), connected=_leadgen.connected;
+  const badge=$id('leadgenBadge');
+  if(badge){ const on=connected&&cfg.enabled; badge.textContent=on?'On':connected?'Paused':'Off'; badge.style.background=on?'#DCFCE7':'var(--bg)'; badge.style.color=on?'#166534':'var(--muted)'; }
+  if(!owner){ body.innerHTML=connected?`Connected to <b>${esc(cfg.page_name||cfg.page_id)}</b>. Only the account owner can change this.`:'Not connected. Ask the account owner to connect your Facebook Page here.'; return; }
+  const log=(_leadgen.log||[]).slice(0,8).map(r=>`<div style="font-size:12px;padding:3px 0">${r.status==='sent'?'✅':r.status==='failed'?'⚠️':r.status==='saved'?'💾':'⏭️'} ${esc(new Date(r.created_at).toLocaleString())} · ${esc(r.name||r.phone||r.leadgen_id)}${r.lead_id?` · <a href="#" onclick="openLeadFromAlert(${Number(r.lead_id)});return false">open lead</a>`:''}${r.status!=='sent'&&r.detail?' — '+esc(r.detail):''}</div>`).join('');
+  const params=cfg.params.length?cfg.params:(_leadgen.preset.params||[]);
+  body.innerHTML=`
+    ${connected?`<div style="margin:8px 0">✅ Connected to Page <b>${esc(cfg.page_name||cfg.page_id)}</b> (${esc(cfg.page_id)}) · <a href="#" onclick="leadgenDisconnect();return false" style="color:var(--red)">Disconnect</a></div>`:''}
+    <details ${connected?'':'open'} style="margin:8px 0">
+      <summary style="cursor:pointer;font-weight:700;font-size:13px">${connected?'Reconnect / change Page':'1. Connect your Facebook Page'}</summary>
+      <div class="s-note" style="margin:6px 0">In <b>Meta Business Settings → Users → System users</b>, generate a token for your Page with <b>leads_retrieval</b>, <b>pages_manage_metadata</b>, <b>pages_show_list</b> and <b>pages_read_engagement</b>. Your Page ID is under Page → About → Page transparency.</div>
+      <label class="form-label">Page ID</label>
+      <input class="form-input" id="lgPageId" type="text" value="${esc(cfg.page_id||'')}" placeholder="123456789012345" style="margin-bottom:8px;max-width:280px">
+      <label class="form-label">Page access token</label>
+      <input class="form-input" id="lgPageToken" type="password" placeholder="EAAG…" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="save-btn" onclick="leadgenConnect()">Connect Page</button><span class="save-msg" id="lgConnectMsg"></span></div>
+      <div class="s-note" style="margin-top:8px">Webhook (set once in your Meta app → Webhooks → Page → <b>leadgen</b>): <span style="font-family:var(--mono);font-size:11.5px;word-break:break-all">${esc(_leadgen.webhook_url)}</span>${_leadgen.verify_token_configured?'':' — <span style="color:var(--red)">META_LEADGEN_VERIFY_TOKEN is not set on the server yet</span>'}</div>
+    </details>
+    <div style="${connected?'':'opacity:.55;pointer-events:none'}">
+      <label style="display:flex;align-items:center;gap:8px;margin:12px 0 8px;font-weight:700;font-size:13px"><input type="checkbox" id="lgEnabled" ${cfg.enabled?'checked':''}> Capture lead-form leads and send each one an instant WhatsApp</label>
+      <label class="form-label">2. WhatsApp welcome template</label>
+      <div class="s-note" style="margin-bottom:6px">These people have never messaged you, so WhatsApp only allows an approved template as the first message. When they reply, your bot takes over as usual.</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px">
+        <input class="form-input" id="lgTemplate" type="text" value="${esc(cfg.template_name)}" placeholder="lead_form_welcome_leadvyne" style="max-width:260px">
+        <input class="form-input" id="lgTemplateLang" type="text" value="${esc(cfg.template_lang)}" placeholder="en" style="max-width:70px">
+        <button class="save-btn sec" type="button" onclick="leadgenCreateTemplate()">✨ Create ready-made template</button>
+      </div>
+      <div class="s-note" style="margin-bottom:8px;font-style:italic">"${esc(_leadgen.preset.body)}"</div>
+      <label class="form-label">Template variables, in order ({{1}}, {{2}}, …)</label>
+      <div id="lgParams" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        ${[0,1,2].map(i=>`<select class="form-input lgParam" style="max-width:180px"><option value="">${i===0?'(no variables)':'—'}</option>${_leadgen.param_keys.map(k=>`<option value="${k}" ${params[i]===k?'selected':''}>{{${i+1}}} ${esc(LEADGEN_PARAM_LABELS[k]||k)}</option>`).join('')}</select>`).join('')}
+      </div>
+      <label class="form-label">Country code for numbers entered without one</label>
+      <input class="form-input" id="lgCc" type="text" value="+${esc(cfg.default_country_code)}" style="max-width:90px;margin-bottom:10px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="save-btn" onclick="leadgenSave()">Save</button><span class="save-msg" id="lgSaveMsg"></span></div>
+      <div class="s-note" style="margin-top:8px">The lead's owner also gets a 🔥 alert if <a href="#" onclick="navigate('usermanagement');return false">Hot Lead Alerts</a> is on.</div>
+    </div>
+    ${log?`<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)"><div style="font-weight:700;font-size:13px;margin-bottom:4px">Recent lead-form leads</div>${log}</div>`:''}`;
+}
+async function leadgenConnect(){
+  const msg=$id('lgConnectMsg'); msg.textContent='Connecting…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/meta-leadgen/connect', {page_id:$id('lgPageId').value.trim(), page_token:$id('lgPageToken').value.trim()});
+    _leadgen.config=data.config; _leadgen.connected=true;
+    renderLeadgenCard();
+    showToast(data.warning||'Facebook Page connected ✓', data.warning?'err':'ok');
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function leadgenDisconnect(){
+  if(!confirm('Disconnect this Page? New lead-form leads will stop coming in.')) return;
+  try{
+    const data=await hotAlertsApi('/meta-leadgen/disconnect', {});
+    _leadgen.config=data.config; _leadgen.connected=false;
+    renderLeadgenCard();
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
+async function leadgenSave(){
+  const msg=$id('lgSaveMsg'); msg.textContent='Saving…'; msg.className='save-msg';
+  try{
+    const params=[...document.querySelectorAll('#lgParams .lgParam')].map(el=>el.value).filter(Boolean);
+    const data=await hotAlertsApi('/meta-leadgen/config', {enabled:$id('lgEnabled').checked, template_name:$id('lgTemplate').value.trim(),
+      template_lang:$id('lgTemplateLang').value.trim()||'en', params, default_country_code:$id('lgCc').value});
+    _leadgen.config=data.config;
+    renderLeadgenCard();
+    const m=$id('lgSaveMsg'); if(m){ m.textContent=data.config.template_name?'✓ Saved':'✓ Saved — add a template so leads get a WhatsApp'; m.className='save-msg ok'; }
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+async function leadgenCreateTemplate(){
+  const msg=$id('lgSaveMsg'); msg.textContent='Creating template…'; msg.className='save-msg';
+  try{
+    const data=await hotAlertsApi('/meta-leadgen/template-preset', {});
+    await leadgenInit();
+    const m=$id('lgSaveMsg');
+    if(m){ m.textContent=data.status==='EXISTS'?'✓ Template already exists — selected':`✓ Template submitted (${data.status}) and selected. Meta usually approves it within minutes.`; m.className='save-msg ok'; }
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+
+/* ── ?lead=<id> deep link — the 🔥 alert's link lands the owner on that lead's detail panel with
+   the Call button one tap away. Waits for leads to load (they arrive progressively). ── */
+function openLeadFromAlert(id){
+  id=Number(id); if(!id) return;
+  const tryOpen=(left)=>{
+    if(allLeads.some(l=>l.Id===id)){
+      if(typeof navigate==='function') navigate('leads');
+      setTimeout(()=>openDetail(id),150);
+      return;
+    }
+    if(left>0) setTimeout(()=>tryOpen(left-1),500);
+    else showToast('That lead isn\'t visible to you — it may be assigned to someone else.','err');
+  };
+  tryOpen(60); // up to ~30s — big accounts load leads progressively
 }
 
 /* ── PER-USER ACCESS (User Management → profile) ──
@@ -10432,6 +10700,7 @@ function renderUserProfileModal(email){
       <div class="pc-title">💬 Chatwoot Login</div>
       ${chatwootHtml}
     </div>
+    ${userWhatsappCardHTML(email)}
     ${passwordHtml}
     ${!owner?`
     <div style="font-weight:700;font-size:13px;margin-bottom:6px">Role</div>
@@ -10597,7 +10866,10 @@ async function createTeamUser(){
       fields.team_names=JSON.stringify(names);
     }
     if(Object.keys(fields).length) await patchClient(fields);
-    msg.textContent=data.inviteLink?'✓ User created — invite sent':'✓ User created'; msg.className='save-msg ok';
+    const wa=$id('teamNewWhatsapp').value.trim();
+    let waErr='';
+    if(wa){ try{ await saveTeamWhatsapp(data.email, wa); $id('teamNewWhatsapp').value=''; }catch(e){ waErr=' (WhatsApp number not saved: '+e.message+')'; } }
+    msg.textContent=(data.inviteLink?'✓ User created — invite sent':'✓ User created')+waErr; msg.className='save-msg ok';
     renderTeamMembers();
     renderTeamCreateResult(email, data);
     $id('teamNewName').value=''; $id('teamNewUsername').value=''; $id('teamNewUserEmail').value=''; $id('teamNewPassword').value='';
@@ -12510,6 +12782,7 @@ function integrationsInit(){
   loadGsheetStatus();
   flowvyneInit();
   mtgInit();
+  leadgenInit();
   aiInit();
 }
 
@@ -18217,6 +18490,7 @@ function populateModulesPage(){
 function populateUserManagementPage(){
   if(!clientRecord)return;
   renderTeamMembers();
+  renderHotAlertsCard();
   renderLeadRoutingSettings();
 }
 

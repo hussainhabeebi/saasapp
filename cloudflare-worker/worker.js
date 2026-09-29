@@ -580,8 +580,8 @@ async function verifyStripeSignature(env, rawBody, sigHeader){
 // the rest of this object (clientRecord) sits in a page-lifetime JS variable in
 // dashboard.html/broadcast.html, inspectable via devtools for as long as the tab is open.
 export function safeClient(rec){
-  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, ...safe}=rec;
-  return {...safe, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
+  const {dashboard_password, resend_api_key, smtp_pass, shopify_access_token, meta_capi_token, gsc_refresh_token, gcal_refresh_token, meta_channel_credentials, wa_token, sarvam_api_key, meta_leadgen_page_token, ...safe}=rec;
+  return {...safe, meta_leadgen_connected:!!meta_leadgen_page_token, meta_capi_connected:!!meta_capi_token, wa_token_connected:!!wa_token, gsc_connected:!!gsc_refresh_token, gcal_connected:!!gcal_refresh_token, sarvam_api_key_configured:!!sarvam_api_key};
 }
 
 /* ── Session token: HMAC-signed, not a full JWT — just enough to avoid a
@@ -1248,7 +1248,10 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // (1) only the account owner may change anyone's permissions or stored Chatwoot credentials,
   // (2) a travel-industry teammate restricted to specific lead categories gets that enforced on
   // the underlying NocoDB query itself, not just hidden client-side.
-  const PROTECTED_CLIENT_FIELDS=['team_permissions','team_chatwoot_passwords','chatwoot_owner_password'];
+  // team_whatsapp / hot_lead_alert_config / meta_leadgen_* have their own routes (/team/whatsapp,
+  // /hot-alerts/*, /meta-leadgen/*) that let a teammate edit only their own number — the raw
+  // passthrough stays owner-only for them.
+  const PROTECTED_CLIENT_FIELDS=['team_permissions','team_chatwoot_passwords','chatwoot_owner_password','team_whatsapp','hot_lead_alert_config','meta_leadgen_config','meta_leadgen_page_id'];
   const isClientPatch=method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && !!body;
   let parsedBody=null;
   if(isClientPatch){ try{ parsedBody=JSON.parse(body); }catch(e){} }
@@ -1262,6 +1265,7 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   if(isClientPatch && parsedBody){
     if(META_CHANNEL_CREDENTIALS_FIELD in parsedBody) return json({error:'Per-channel credentials are managed by the secure channel connection flow.'},403);
     if('sarvam_api_key' in parsedBody) return json({error:'Sarvam credentials are managed by the secure Voice settings flow.'},403);
+    if('meta_leadgen_page_token' in parsedBody) return json({error:'Lead Form credentials are managed by Integrations → Facebook & Instagram Lead Forms.'},403);
     // plan_tier is billing-controlled — never something a client's own session can set, no matter
     // who's logged in. Distinct from PROTECTED_CLIENT_FIELDS above (owner-only, but still
     // client-writable) because this one has no legitimate client-side writer at all.
@@ -14048,6 +14052,572 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   // Otherwise: Unmatched — lead stays without an Owner
 }
 
+/* ── HOT-LEAD STAFF ALERTS (Settings → 👥 User Management → 🔥 Hot Lead Alerts) ─────────────────
+   A WhatsApp message straight to the staff member who owns a lead the moment it turns hot, so
+   they call while the customer is still on their phone. Each teammate's own WhatsApp number is
+   stored in team_whatsapp ({"email":"919876543210"}, the account owner included) — entered in
+   their User Management profile. Settings live in hot_lead_alert_config:
+     {enabled, template_name, template_lang, notify_owner_too, on_hot, on_hot_moment, on_lead_ad,
+      cooldown_hours}
+   Sent from the client's own WhatsApp Business number via Meta's Graph API. A staff member almost
+   never has an open 24h window with their own company's number, so a real alert needs an approved
+   template — HOT_LEAD_ALERT_TEMPLATE below is created in one click from the settings card. Without
+   one it falls back to plain text, which only reaches someone who messaged the number in the last
+   24h. Every attempt (sent / failed / skipped) is logged to D1 hot_lead_alerts, which is also what
+   the per-lead cooldown reads. ── */
+const HOT_LEAD_ALERT_TEMPLATE={
+  name:'hot_lead_alert_leadvyne', category:'UTILITY', language:'en',
+  // Meta rejects a body that starts or ends on a variable, so the link is never last.
+  body:'🔥 Hot lead for you: {{1}} ({{2}}) {{3}}. Call them now while they are interested, or open the lead here: {{4}} - sent by Leadvyne.',
+  example:['Priya', '+919876543210', 'asked about the price', 'https://app.leadvyne.com/dashboard.html?lead=42'],
+};
+export function normalizeStaffWhatsapp(raw, defaultCc='91'){
+  let d=String(raw||'').replace(/\D/g,'');
+  if(d.startsWith('00')) d=d.slice(2);
+  const cc=String(defaultCc||'').replace(/\D/g,'');
+  if(d.length===11 && d.startsWith('0') && cc) d=cc+d.slice(1);
+  else if(d.length===10 && cc) d=cc+d;
+  return d.length>=8 && d.length<=15 ? d : '';
+}
+export function parseTeamWhatsapp(c){
+  let raw={}; try{ raw=JSON.parse(c?.team_whatsapp||'{}')||{}; }catch(e){}
+  const out={};
+  for(const [email, phone] of Object.entries(raw)){
+    const e=String(email).trim().toLowerCase(), p=String(phone||'').replace(/\D/g,'');
+    if(e && p) out[e]=p;
+  }
+  return out;
+}
+export function hotLeadAlertSettings(c){
+  let s={}; try{ s=JSON.parse(c?.hot_lead_alert_config||'{}')||{}; }catch(e){}
+  const hours=Number(s.cooldown_hours);
+  return {
+    enabled:s.enabled===true,
+    template_name:String(s.template_name||'').trim(),
+    template_lang:String(s.template_lang||'en').trim()||'en',
+    notify_owner_too:s.notify_owner_too===true,
+    on_hot:s.on_hot!==false, on_hot_moment:s.on_hot_moment!==false, on_lead_ad:s.on_lead_ad!==false,
+    cooldown_hours:Number.isFinite(hours)&&hours>=1 ? Math.min(hours, 168) : 12,
+  };
+}
+// Only transitions count — a lead that was already Hot (or already had its hot moment) last turn
+// doesn't page anyone again just because the customer kept talking.
+export function hotLeadAlertReason(prevLead, body, cfg){
+  if(cfg.on_hot && body?.Score==='Hot' && prevLead?.Score!=='Hot') return 'hot';
+  if(cfg.on_hot_moment && body?.HotMoment==='Yes' && prevLead?.HotMoment!=='Yes') return 'hot_moment';
+  return null;
+}
+// The lead's own owner first. The account owner is added when the lead has no owner, the owner
+// has no WhatsApp number on file, or "also notify me" is on. Deduped by phone.
+export function hotLeadAlertRecipients(c, ownerEmail, cfg){
+  const phones=parseTeamWhatsapp(c);
+  const out=[];
+  const add=email=>{
+    const e=String(email||'').trim().toLowerCase(), p=phones[e];
+    if(e && p && !out.some(r=>r.phone===p)) out.push({email:e, phone:p});
+  };
+  add(ownerEmail);
+  if(!out.length || cfg.notify_owner_too) add(c?.authentik_email);
+  return out;
+}
+// WhatsApp template parameters can't carry newlines, tabs, 4+ spaces in a row, or be empty.
+function hotAlertParam(v, max=160){
+  const s=String(v??'').replace(/\s+/g,' ').trim().slice(0, max);
+  return s||'-';
+}
+export function hotLeadAlertReasonText(reason, detail){
+  const d=hotAlertParam(detail, 120);
+  if(reason==='hot') return 'is ready to book';
+  if(reason==='hot_moment') return detail?`asked: "${d}"`:'is asking about price or availability';
+  if(reason==='lead_ad') return detail?`just filled your lead form (${d})`:'just filled your lead form';
+  if(reason==='test') return 'is a test alert, all set';
+  return 'needs a call';
+}
+export function hotLeadAlertParams({name, phone, reason, detail, link}){
+  const digits=String(phone||'').replace(/\D/g,'');
+  return [hotAlertParam(name||'New lead', 60), digits?'+'+digits:'-', hotAlertParam(hotLeadAlertReasonText(reason, detail)), hotAlertParam(link, 300)];
+}
+function appDashboardBase(env){ return env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html'; }
+export function hotLeadAlertLink(env, leadId){
+  const base=appDashboardBase(env);
+  return `${base}${base.includes('?')?'&':'?'}lead=${encodeURIComponent(leadId)}`;
+}
+let _hotAlertSchemaEnsured=false;
+async function hotAlertEnsureSchema(env){
+  if(_hotAlertSchemaEnsured||!env.DB) return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS hot_lead_alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, lead_id INTEGER, recipient_email TEXT, recipient_phone TEXT, reason TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_hot_lead_alerts_lead ON hot_lead_alerts(client_id, lead_id, created_at)`),
+  ]);
+  _hotAlertSchemaEnsured=true;
+}
+async function hotAlertLog(env, clientId, leadId, recipient, reason, status, detail){
+  if(!env.DB) return;
+  try{
+    await env.DB.prepare(`INSERT INTO hot_lead_alerts (client_id, lead_id, recipient_email, recipient_phone, reason, status, detail, created_at) VALUES (?,?,?,?,?,?,?,?)`)
+      .bind(Number(clientId)||0, leadId?Number(leadId):null, recipient?.email||null, recipient?.phone||null, reason, status, String(detail||'').slice(0,300), new Date().toISOString()).run();
+  }catch(e){ console.error('[hotAlertLog]', e.message); }
+}
+async function hotAlertSendOne(creds, cfg, to, params){
+  const msg=cfg.template_name
+    ? {type:'template', template:{name:cfg.template_name, language:{code:cfg.template_lang}, components:[{type:'body', parameters:params.map(text=>({type:'text', text}))}]}}
+    : {type:'text', text:{body:`🔥 Hot lead: ${params[0]} (${params[1]}) ${params[2]}.\nCall now or open the lead: ${params[3]}`}};
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({messaging_product:'whatsapp', to, ...msg})
+  });
+  const data=await r.json().catch(()=>({}));
+  return r.ok ? {ok:true, detail:data?.messages?.[0]?.id||'sent'} : {ok:false, detail:data?.error?.message||'HTTP '+r.status};
+}
+// Never throws — a failed alert must never cost the customer their bot reply. `opts.reason` forces
+// a reason (lead-form leads, the settings card's test button) instead of reading the transition.
+export async function engineMaybeSendHotLeadAlert(env, c, clientId, leadId, prevLead, body, opts={}){
+  try{
+    const cfg=hotLeadAlertSettings(c);
+    if(!cfg.enabled || !leadId) return null;
+    const reason=opts.reason || hotLeadAlertReason(prevLead, body, cfg);
+    if(!reason) return null;
+    if(reason==='lead_ad' && !cfg.on_lead_ad) return null;
+    await hotAlertEnsureSchema(env);
+    if(reason!=='test' && env.DB){
+      const since=new Date(Date.now()-cfg.cooldown_hours*3600000).toISOString();
+      const recent=await env.DB.prepare(`SELECT 1 AS x FROM hot_lead_alerts WHERE client_id=? AND lead_id=? AND status='sent' AND created_at>? LIMIT 1`)
+        .bind(Number(clientId)||0, Number(leadId), since).first().catch(()=>null);
+      if(recent) return {skipped:'cooldown'};
+    }
+    const owner=body?.Owner||prevLead?.Owner||'';
+    const recipients=opts.recipients || hotLeadAlertRecipients(c, owner, cfg);
+    if(!recipients.length){ await hotAlertLog(env, clientId, leadId, null, reason, 'skipped', 'No staff WhatsApp number on file (User Management → profile)'); return {skipped:'no-recipient'}; }
+    const creds=await resolveOrDetectMetaCredentials(env, c, clientId, {inbox_id:opts.inboxId||body?.InboxId||prevLead?.InboxId||''});
+    if(!creds?.wa_phone_id || !creds?.wa_token){ await hotAlertLog(env, clientId, leadId, null, reason, 'skipped', 'WhatsApp Business API not connected'); return {skipped:'no-credentials'}; }
+    const detail=opts.detail ?? (reason==='hot_moment' ? (body?.HotMomentText||'') : '');
+    const params=hotLeadAlertParams({name:body?.Name||prevLead?.Name, phone:body?.Phone||prevLead?.Phone, reason, detail, link:hotLeadAlertLink(env, leadId)});
+    const results=[];
+    for(const rcpt of recipients){
+      const res=await hotAlertSendOne(creds, cfg, rcpt.phone, params).catch(e=>({ok:false, detail:e.message}));
+      await hotAlertLog(env, clientId, leadId, rcpt, reason, res.ok?'sent':'failed', res.detail);
+      results.push({...rcpt, ...res});
+    }
+    return {reason, results};
+  }catch(e){
+    console.error('[engineMaybeSendHotLeadAlert]', e.message);
+    return {error:e.message};
+  }
+}
+
+function isClientOwner(c, email){
+  const e=String(email||'').trim().toLowerCase();
+  return !!e && e===String(c?.authentik_email||'').trim().toLowerCase();
+}
+function isClientMember(c, email){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return false;
+  return isClientOwner(c, e) || String(c?.team_emails||'').split(',').map(x=>x.trim().toLowerCase()).includes(e);
+}
+
+// POST /team/whatsapp {email, phone} — the account owner can set anyone's; a teammate only their own.
+async function handleTeamWhatsappSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {email, phone}=await request.json().catch(()=>({}));
+  const target=String(email||'').trim().toLowerCase();
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const me=String(payload.email||'').trim().toLowerCase();
+  if(!me) return json({error:'Please sign in once to securely refresh user access.', code:'SESSION_IDENTITY_REQUIRED'}, 401);
+  if(!isClientMember(c, target)) return json({error:'That email is not a user on this account.'}, 400);
+  if(!isClientOwner(c, me) && me!==target) return json({error:'Only the account owner can change another user\'s WhatsApp number.'}, 403);
+  const map=parseTeamWhatsapp(c);
+  if(String(phone||'').trim()){
+    const norm=normalizeStaffWhatsapp(phone, hotLeadAlertDefaultCc(c));
+    if(!norm) return json({error:'Enter a valid WhatsApp number with country code, e.g. +91 98765 43210.'}, 400);
+    map[target]=norm;
+  }else delete map[target];
+  await ensureClientColumns(env, ['team_whatsapp']);
+  await patchClientFields(env, payload.cid, {team_whatsapp:JSON.stringify(map)});
+  return json({ok:true, team_whatsapp:map});
+}
+function hotLeadAlertDefaultCc(c){
+  const cc=String(metaLeadgenSettings(c).default_country_code||'').replace(/\D/g,'');
+  return cc||'91';
+}
+
+async function handleHotAlertsConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  let log=[];
+  if(env.DB){
+    try{
+      await hotAlertEnsureSchema(env);
+      log=(await env.DB.prepare(`SELECT lead_id, recipient_email, reason, status, detail, created_at FROM hot_lead_alerts WHERE client_id=? ORDER BY id DESC LIMIT 20`).bind(Number(payload.cid)).all())?.results||[];
+    }catch(e){}
+  }
+  return json({config:hotLeadAlertSettings(c), team_whatsapp:parseTeamWhatsapp(c), preset:{name:HOT_LEAD_ALERT_TEMPLATE.name, language:HOT_LEAD_ALERT_TEMPLATE.language, body:HOT_LEAD_ALERT_TEMPLATE.body}, log});
+}
+async function handleHotAlertsConfigSet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can change alert settings.'}, 403);
+  const body=await request.json().catch(()=>({}));
+  const cur=hotLeadAlertSettings(c);
+  const next={...cur};
+  for(const k of ['enabled','notify_owner_too','on_hot','on_hot_moment','on_lead_ad']) if(k in body) next[k]=body[k]===true;
+  if('template_name' in body) next.template_name=String(body.template_name||'').trim().slice(0,512);
+  if('template_lang' in body) next.template_lang=String(body.template_lang||'en').trim().slice(0,15)||'en';
+  if('cooldown_hours' in body) next.cooldown_hours=Number(body.cooldown_hours);
+  const saved=hotLeadAlertSettings({hot_lead_alert_config:JSON.stringify(next)});
+  await ensureClientColumns(env, ['hot_lead_alert_config']);
+  await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(saved)});
+  return json({ok:true, config:saved});
+}
+// Creates a WhatsApp template in the client's own WABA from a preset. Shared by hot alerts and
+// lead-form welcomes. Meta now requires example values for every {{n}} in a new template.
+async function createPresetWaTemplate(env, c, clientId, preset){
+  const creds=await resolveOrDetectMetaCredentials(env, c, clientId, {});
+  if(!creds?.waba_id || !creds?.wa_token) return json({error:'WhatsApp Business Account ID / token not configured — connect WhatsApp in Settings → Channels first.'}, 400);
+  const r=await fetch(`https://graph.facebook.com/v18.0/${creds.waba_id}/message_templates`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({name:preset.name, category:preset.category, language:preset.language,
+      components:[{type:'BODY', text:preset.body, example:{body_text:[preset.example]}}]})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const msg=data?.error?.error_user_msg||data?.error?.message||'HTTP '+r.status;
+    // Already created earlier (same name + language) — that's fine, just use it.
+    if(/already exists|duplicate/i.test(msg)) return json({ok:true, name:preset.name, language:preset.language, status:'EXISTS'});
+    return json({error:msg}, 502);
+  }
+  return json({ok:true, name:preset.name, language:preset.language, status:data?.status||'PENDING'});
+}
+async function handleHotAlertsTemplatePreset(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!isClientOwner(c, payload.email)) return json({error:'Only the account owner can create templates here.'}, 403);
+  const res=await createPresetWaTemplate(env, c, payload.cid, HOT_LEAD_ALERT_TEMPLATE);
+  if(res.status===200){
+    const next={...hotLeadAlertSettings(c), template_name:HOT_LEAD_ALERT_TEMPLATE.name, template_lang:HOT_LEAD_ALERT_TEMPLATE.language};
+    await ensureClientColumns(env, ['hot_lead_alert_config']);
+    await patchClientFields(env, payload.cid, {hot_lead_alert_config:JSON.stringify(next)});
+  }
+  return res;
+}
+// POST /hot-alerts/test {email} — sends a sample alert to one person, ignoring the cooldown.
+async function handleHotAlertsTest(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {email}=await request.json().catch(()=>({}));
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const me=String(payload.email||'').trim().toLowerCase();
+  const target=String(email||me).trim().toLowerCase();
+  if(!isClientOwner(c, me) && target!==me) return json({error:'You can only send a test alert to yourself.'}, 403);
+  const phone=parseTeamWhatsapp(c)[target];
+  if(!phone) return json({error:'Add a WhatsApp number for this user first.'}, 400);
+  const cfg=hotLeadAlertSettings(c);
+  const creds=await resolveOrDetectMetaCredentials(env, c, payload.cid, {});
+  if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API not connected — connect WhatsApp in Settings → Channels first.'}, 400);
+  const params=hotLeadAlertParams({name:'Test Lead', phone, reason:'test', link:appDashboardBase(env)});
+  const out=await hotAlertSendOne(creds, cfg, phone, params).catch(e=>({ok:false, detail:e.message}));
+  await hotAlertEnsureSchema(env).catch(()=>{});
+  await hotAlertLog(env, payload.cid, null, {email:target, phone}, 'test', out.ok?'sent':'failed', out.detail);
+  if(out.ok) return json({ok:true});
+  return json({error:out.detail+(cfg.template_name?'':' — no template set, so plain text only reaches someone who messaged your business number in the last 24h. Create the template first.')}, 502);
+}
+
+/* ── META LEAD ADS → INSTANT WHATSAPP (Integrations → 📋 Facebook & Instagram Lead Forms) ────────
+   Meta calls /meta/leadgen/webhook with a leadgen_id the moment someone submits an Instant Form
+   on a Facebook or Instagram ad. We fetch the answers with the connected Page's token, create (or
+   update) the lead, run the normal lead routing so it gets an owner, send the customer a WhatsApp
+   template within seconds (they have never messaged us, so only a template is allowed), and page
+   the owner through the hot-lead alert above. When the customer replies, the normal bot picks up
+   the conversation by phone number with the welcome already in ConvHistory.
+   Setup (once per Meta app — SETUP.md "Lead Ads"): subscribe the app's Page webhook to the
+   `leadgen` field with callback <WORKER_BASE_URL>/meta/leadgen/webhook and verify token
+   META_LEADGEN_VERIFY_TOKEN; the app needs leads_retrieval + pages_manage_metadata. Per client:
+   paste Page ID + a Page access token in Integrations, which subscribes the Page to the app.
+   Config lives in meta_leadgen_config (non-secret) + meta_leadgen_page_id (webhook lookup) +
+   meta_leadgen_page_token (secret — stripped by safeClient, blocked in the /nocodb passthrough).
+   Every leadgen_id is claimed in D1 meta_leadgen_events first, so Meta's retries never double-send. */
+const META_LEADGEN_WELCOME_TEMPLATE={
+  name:'lead_form_welcome_leadvyne', category:'UTILITY', language:'en',
+  body:'Hi {{1}}, thank you for your enquiry with {{2}}. We have received your details and our team will contact you shortly. Reply to this message if you have any questions.',
+  example:['Priya', 'Acme Tours'],
+  params:['first_name','business_name'],
+};
+const META_LEADGEN_PARAM_KEYS=['first_name','full_name','business_name','form_name','campaign_name','ad_name'];
+export function metaLeadgenSettings(c){
+  let s={}; try{ s=JSON.parse(c?.meta_leadgen_config||'{}')||{}; }catch(e){}
+  const params=Array.isArray(s.params)?s.params.filter(p=>META_LEADGEN_PARAM_KEYS.includes(p)).slice(0,5):[];
+  return {
+    enabled:s.enabled===true,
+    page_id:String(s.page_id||c?.meta_leadgen_page_id||''),
+    page_name:String(s.page_name||''),
+    template_name:String(s.template_name||'').trim(),
+    template_lang:String(s.template_lang||'en').trim()||'en',
+    params,
+    default_country_code:String(s.default_country_code||'91').replace(/\D/g,'')||'91',
+    connected_at:s.connected_at||'',
+  };
+}
+const LEADGEN_NAME_KEYS=['full_name','name','first_name','last_name'];
+const LEADGEN_PHONE_KEYS=['phone_number','phone','mobile_number','whatsapp_number','work_phone_number'];
+const LEADGEN_EMAIL_KEYS=['email','work_email'];
+export function metaLeadgenParseFields(fieldData, defaultCc='91'){
+  const map={};
+  for(const f of (Array.isArray(fieldData)?fieldData:[])){
+    const k=String(f?.name||'').trim().toLowerCase();
+    const v=(Array.isArray(f?.values)?f.values:[f?.values]).filter(x=>x!=null&&String(x).trim()!=='').join(', ');
+    if(k && v) map[k]=String(v).trim();
+  }
+  const name=map.full_name||map.name||[map.first_name, map.last_name].filter(Boolean).join(' ');
+  const rawPhone=LEADGEN_PHONE_KEYS.map(k=>map[k]).find(Boolean)||'';
+  const phone=normalizeStaffWhatsapp(rawPhone, defaultCc);
+  const email=LEADGEN_EMAIL_KEYS.map(k=>map[k]).find(Boolean)||'';
+  const answers={};
+  for(const [k,v] of Object.entries(map)){
+    if(LEADGEN_NAME_KEYS.includes(k)||LEADGEN_PHONE_KEYS.includes(k)||LEADGEN_EMAIL_KEYS.includes(k)) continue;
+    const label=k.replace(/_/g,' ').replace(/\?+$/,'').trim();
+    answers[label.charAt(0).toUpperCase()+label.slice(1)]=v;
+  }
+  return {name:name.trim(), firstName:(map.first_name||name.split(' ')[0]||'').trim(), phone, email, answers};
+}
+export function metaLeadgenTemplateParams(keys, ctx){
+  return keys.map(k=>hotAlertParam({
+    first_name:ctx.firstName||ctx.name||'there', full_name:ctx.name||'there', business_name:ctx.businessName||'our team',
+    form_name:ctx.formName, campaign_name:ctx.campaignName, ad_name:ctx.adName,
+  }[k], 60));
+}
+export function metaLeadgenRenderWelcome(templateName, keys, params){
+  if(templateName!==META_LEADGEN_WELCOME_TEMPLATE.name) return `[WhatsApp template: ${templateName}]`;
+  return META_LEADGEN_WELCOME_TEMPLATE.body.replace(/\{\{(\d+)\}\}/g, (_,n)=>params[Number(n)-1]??'');
+}
+let _leadgenSchemaEnsured=false;
+async function metaLeadgenEnsureSchema(env){
+  if(_leadgenSchemaEnsured||!env.DB) return;
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS meta_leadgen_events (leadgen_id TEXT PRIMARY KEY, client_id INTEGER, page_id TEXT, form_id TEXT, lead_id INTEGER, name TEXT, phone TEXT, status TEXT NOT NULL, detail TEXT, created_at TEXT NOT NULL, updated_at TEXT)`),
+    env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_meta_leadgen_events_client ON meta_leadgen_events(client_id, created_at)`),
+  ]);
+  _leadgenSchemaEnsured=true;
+}
+async function metaLeadgenFinish(env, leadgenId, fields){
+  if(!env.DB) return;
+  try{
+    await env.DB.prepare(`UPDATE meta_leadgen_events SET client_id=COALESCE(?,client_id), lead_id=COALESCE(?,lead_id), name=COALESCE(?,name), phone=COALESCE(?,phone), status=?, detail=?, updated_at=? WHERE leadgen_id=?`)
+      .bind(fields.client_id??null, fields.lead_id??null, fields.name??null, fields.phone??null, fields.status, String(fields.detail||'').slice(0,300), new Date().toISOString(), String(leadgenId)).run();
+  }catch(e){ console.error('[metaLeadgenFinish]', e.message); }
+}
+async function metaLeadgenFindClients(env, pageId){
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?where=(meta_leadgen_page_id,eq,${encodeURIComponent(pageId)})&limit=5`);
+  if(!r.ok) return [];
+  const data=await r.json().catch(()=>({}));
+  return (data?.list||[]).filter(c=>metaLeadgenSettings(c).enabled && c.meta_leadgen_page_token);
+}
+async function metaLeadgenFetchLead(leadgenId, token){
+  const base=`https://graph.facebook.com/v18.0/${encodeURIComponent(leadgenId)}`;
+  // ad/campaign names need ads_read on top of leads_retrieval — ask, and drop them on refusal.
+  for(const fields of ['created_time,field_data,ad_id,ad_name,campaign_name,form_id,platform', 'created_time,field_data,ad_id,form_id,platform']){
+    const r=await fetch(`${base}?fields=${fields}&access_token=${encodeURIComponent(token)}`);
+    const data=await r.json().catch(()=>({}));
+    if(r.ok) return {ok:true, data};
+    if(fields.includes('ad_name')) continue;
+    return {ok:false, error:data?.error?.message||'HTTP '+r.status};
+  }
+}
+async function metaLeadgenFormName(formId, token){
+  if(!formId) return '';
+  try{
+    const r=await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(formId)}?fields=name&access_token=${encodeURIComponent(token)}`);
+    return r.ok ? String((await r.json().catch(()=>({})))?.name||'') : '';
+  }catch(e){ return ''; }
+}
+
+// One `leadgen` change → one lead. Exported for tests; never throws.
+export async function processMetaLeadgenChange(env, value){
+  const leadgenId=String(value?.leadgen_id||'');
+  const pageId=String(value?.page_id||'');
+  if(!leadgenId || !pageId) return {skipped:'bad-payload'};
+  try{
+    await metaLeadgenEnsureSchema(env);
+    if(env.DB){
+      const ins=await env.DB.prepare(`INSERT OR IGNORE INTO meta_leadgen_events (leadgen_id, page_id, form_id, status, created_at) VALUES (?,?,?,?,?)`)
+        .bind(leadgenId, pageId, String(value.form_id||''), 'processing', new Date().toISOString()).run();
+      if(!ins.meta?.changes) return {skipped:'duplicate'};
+    }
+    const clients=await metaLeadgenFindClients(env, pageId);
+    const c=clients[0];
+    if(!c){ await metaLeadgenFinish(env, leadgenId, {status:'skipped', detail:'No client has Lead Forms enabled for page '+pageId}); return {skipped:'no-client'}; }
+    const clientId=c.Id;
+    const cfg=metaLeadgenSettings(c);
+    const fetched=await metaLeadgenFetchLead(leadgenId, c.meta_leadgen_page_token);
+    if(!fetched.ok){ await metaLeadgenFinish(env, leadgenId, {client_id:clientId, status:'failed', detail:'Could not read lead from Meta: '+fetched.error}); return {error:fetched.error}; }
+    const lg=fetched.data;
+    const parsed=metaLeadgenParseFields(lg.field_data, cfg.default_country_code);
+    if(!parsed.phone){ await metaLeadgenFinish(env, leadgenId, {client_id:clientId, name:parsed.name, status:'skipped', detail:'Form has no usable phone number field'}); return {skipped:'no-phone'}; }
+    const formName=await metaLeadgenFormName(lg.form_id||value.form_id, c.meta_leadgen_page_token);
+
+    const state=await engineGetLeadState(env, clientId, parsed.phone, 'Phone');
+    const isNewLead=!state.leadId;
+    const now=new Date().toISOString();
+    const source=lg.platform==='ig'?'Instagram Lead Ad':'Facebook Lead Ad';
+    const leadBody={
+      ClientId:String(clientId), Phone:parsed.phone, LastMsgAt:now, Channel:state.lead?.Channel||'whatsapp',
+      QualAnswers:JSON.stringify({...state.qualAnswers, ...parsed.answers}),
+      LeadSource:source, AdCampaign:lg.campaign_name||'', AdName:lg.ad_name||'', LeadFormName:formName, MetaLeadgenId:leadgenId,
+    };
+    if(parsed.name && (!state.lead?.Name || isNewLead)) leadBody.Name=parsed.name;
+    if(parsed.email && !state.lead?.Email) leadBody.Email=parsed.email;
+    if(isNewLead){ leadBody.Stage='new'; leadBody.Date=now; leadBody.Score='Warm'; }
+    await ensureLeadsColumns(env, ['LeadSource','AdCampaign','AdName','LeadFormName','MetaLeadgenId']).catch(()=>{});
+    await engineResolveLeadOwner(env, c, clientId, leadBody, {phone:parsed.phone, lead:state.lead, qualAnswers:{...state.qualAnswers, ...parsed.answers}}, isNewLead);
+
+    // Instant WhatsApp welcome — a template, since this customer has never messaged us.
+    let sendStatus='no-template', sendDetail='No welcome template set — lead saved without a WhatsApp message', welcomeText='';
+    const creds=await resolveOrDetectMetaCredentials(env, c, clientId, {});
+    if(state.leadOptOut==='Yes'){ sendStatus='opted-out'; sendDetail='Lead opted out earlier — no WhatsApp sent'; }
+    else if(cfg.template_name && creds?.wa_phone_id && creds?.wa_token){
+      const params=metaLeadgenTemplateParams(cfg.params, {name:parsed.name, firstName:parsed.firstName, businessName:c.client_name, formName, campaignName:lg.campaign_name, adName:lg.ad_name});
+      const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+        method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to:parsed.phone, type:'template', template:{name:cfg.template_name, language:{code:cfg.template_lang}, components:params.length?[{type:'body', parameters:params.map(text=>({type:'text', text}))}]:[]}})
+      });
+      const data=await r.json().catch(()=>({}));
+      sendStatus=r.ok?'sent':'failed';
+      sendDetail=r.ok?(data?.messages?.[0]?.id||'sent'):(data?.error?.message||'HTTP '+r.status);
+      if(r.ok){
+        welcomeText=metaLeadgenRenderWelcome(cfg.template_name, cfg.params, params);
+        const history=(state.history||[]).slice();
+        history.push({role:'assistant', content:welcomeText, ts:now});
+        leadBody.ConvHistory=JSON.stringify(history.slice(-40));
+      }
+    }else if(cfg.template_name){ sendStatus='failed'; sendDetail='WhatsApp Business API not connected'; }
+
+    const leadId=isNewLead
+      ? await engineCreateLeadOnce(env, clientId, parsed.phone, leadBody)
+      : await engineUpsertLead(env, 'PATCH', state.leadId, leadBody);
+    if(!leadId){ await metaLeadgenFinish(env, leadgenId, {client_id:clientId, name:parsed.name, phone:parsed.phone, status:'failed', detail:'Could not save the lead'}); return {error:'lead-save'}; }
+    if(isNewLead) await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...leadBody}}).catch(()=>{});
+    if(welcomeText) await d1InsertLeadMessage(env, leadId, clientId, {role:'assistant', content:welcomeText, ts:now, attachment:chatsTemplateAttachment(cfg.template_name)}).catch(()=>{});
+
+    await engineMaybeSendHotLeadAlert(env, c, clientId, leadId, state.lead, {...leadBody, Name:leadBody.Name||state.lead?.Name},
+      {reason:'lead_ad', detail:formName||lg.campaign_name||source});
+    await engineBroadcastUpdate(env, clientId, isNewLead
+      ? {type:'new_lead', lead_id:leadId, lead_name:leadBody.Name||parsed.phone, at:now}
+      : {type:'message', lead_id:leadId, channel:'whatsapp', at:now});
+    await metaLeadgenFinish(env, leadgenId, {client_id:clientId, lead_id:leadId, name:parsed.name, phone:parsed.phone,
+      status:sendStatus==='sent'?'sent':sendStatus==='failed'?'failed':'saved', detail:sendDetail});
+    return {ok:true, leadId, isNewLead, whatsapp:sendStatus};
+  }catch(e){
+    console.error('[processMetaLeadgenChange]', e.message);
+    await metaLeadgenFinish(env, leadgenId, {status:'failed', detail:e.message});
+    return {error:e.message};
+  }
+}
+async function handleMetaLeadgenWebhookVerify(request, env){
+  const url=new URL(request.url);
+  const token=env.META_LEADGEN_VERIFY_TOKEN;
+  if(token && url.searchParams.get('hub.mode')==='subscribe' && url.searchParams.get('hub.verify_token')===token){
+    return new Response(url.searchParams.get('hub.challenge')||'', {status:200});
+  }
+  return json({error:'Verification failed'}, 403);
+}
+async function handleMetaLeadgenWebhook(request, env, ctx){
+  const rawBody=await request.text();
+  if(!await verifyMetaWebhookSignature(env, rawBody, request.headers.get('X-Hub-Signature-256'))) return new Response('Invalid signature', {status:401});
+  let body; try{ body=JSON.parse(rawBody); }catch(e){ return json({error:'Invalid JSON'}, 400); }
+  if(body.object!=='page') return json({ok:true, skipped:'not-page'});
+  const changes=[];
+  for(const entry of (body.entry||[])) for(const ch of (entry.changes||[])) if(ch?.field==='leadgen') changes.push({...ch.value, page_id:ch.value?.page_id||entry.id});
+  const work=(async()=>{ const out=[]; for(const v of changes) out.push(await processMetaLeadgenChange(env, v)); return out; })();
+  // Meta retries anything that doesn't answer 200 quickly — acknowledge first, work in background.
+  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true, accepted:changes.length}); }
+  return json({ok:true, results:await work});
+}
+
+async function handleMetaLeadgenConfigGet(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  let log=[];
+  if(env.DB){
+    try{
+      await metaLeadgenEnsureSchema(env);
+      log=(await env.DB.prepare(`SELECT leadgen_id, lead_id, name, phone, status, detail, created_at FROM meta_leadgen_events WHERE client_id=? ORDER BY created_at DESC LIMIT 20`).bind(Number(payload.cid)).all())?.results||[];
+    }catch(e){}
+  }
+  return json({config:metaLeadgenSettings(c), connected:!!(c.meta_leadgen_page_token&&c.meta_leadgen_page_id),
+    webhook_url:`${env.WORKER_BASE_URL||''}/meta/leadgen/webhook`, verify_token_configured:!!env.META_LEADGEN_VERIFY_TOKEN,
+    param_keys:META_LEADGEN_PARAM_KEYS, preset:{name:META_LEADGEN_WELCOME_TEMPLATE.name, language:META_LEADGEN_WELCOME_TEMPLATE.language, body:META_LEADGEN_WELCOME_TEMPLATE.body, params:META_LEADGEN_WELCOME_TEMPLATE.params}, log});
+}
+async function metaLeadgenOwnerContext(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return {error:json({error:'Invalid or expired session'}, 401)};
+  const c=await getClientById(env, payload.cid);
+  if(!c) return {error:json({error:'Client not found'}, 404)};
+  if(!isClientOwner(c, payload.email)) return {error:json({error:'Only the account owner can change Lead Form settings.'}, 403)};
+  return {payload, c};
+}
+async function metaLeadgenSaveConfig(env, clientId, cfg, extra={}){
+  await ensureClientColumns(env, ['meta_leadgen_config','meta_leadgen_page_id','meta_leadgen_page_token']);
+  await patchClientFields(env, clientId, {meta_leadgen_config:JSON.stringify(cfg), ...extra});
+}
+// POST /meta-leadgen/connect {page_id, page_token} — checks the token can see the Page, then
+// subscribes the Page to this app's `leadgen` webhook (idempotent on Meta's side).
+async function handleMetaLeadgenConnect(request, env){
+  const ctx=await metaLeadgenOwnerContext(request, env); if(ctx.error) return ctx.error;
+  const {page_id, page_token}=await request.json().catch(()=>({}));
+  const pageId=String(page_id||'').replace(/\D/g,''), token=String(page_token||'').trim();
+  if(!pageId || !token) return json({error:'Page ID and Page access token are both required.'}, 400);
+  const pr=await fetch(`https://graph.facebook.com/v18.0/${pageId}?fields=id,name&access_token=${encodeURIComponent(token)}`);
+  const page=await pr.json().catch(()=>({}));
+  if(!pr.ok) return json({error:'Meta rejected the token for this Page: '+(page?.error?.message||'HTTP '+pr.status)}, 400);
+  const sr=await fetch(`https://graph.facebook.com/v18.0/${pageId}/subscribed_apps`, {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({subscribed_fields:'leadgen', access_token:token})
+  });
+  const sub=await sr.json().catch(()=>({}));
+  if(!sr.ok || sub?.success===false) return json({error:'Could not subscribe the Page to lead webhooks: '+(sub?.error?.message||'HTTP '+sr.status)+'. The token needs pages_manage_metadata and leads_retrieval.'}, 400);
+  const other=await findOtherClientByField(env, 'meta_leadgen_page_id', pageId, ctx.payload.cid);
+  const cfg={...metaLeadgenSettings(ctx.c), enabled:true, page_id:pageId, page_name:String(page.name||''), connected_at:new Date().toISOString()};
+  await metaLeadgenSaveConfig(env, ctx.payload.cid, cfg, {meta_leadgen_page_id:pageId, meta_leadgen_page_token:token});
+  return json({ok:true, config:cfg, warning:other?'This Page is also connected to another Leadvyne account — its leads will go to whichever account connected first.':undefined});
+}
+async function handleMetaLeadgenConfigSet(request, env){
+  const ctx=await metaLeadgenOwnerContext(request, env); if(ctx.error) return ctx.error;
+  const body=await request.json().catch(()=>({}));
+  const next={...metaLeadgenSettings(ctx.c)};
+  if('enabled' in body) next.enabled=body.enabled===true;
+  if('template_name' in body) next.template_name=String(body.template_name||'').trim().slice(0,512);
+  if('template_lang' in body) next.template_lang=String(body.template_lang||'en').trim().slice(0,15)||'en';
+  if('params' in body) next.params=Array.isArray(body.params)?body.params:[];
+  if('default_country_code' in body) next.default_country_code=String(body.default_country_code||'');
+  const saved=metaLeadgenSettings({meta_leadgen_config:JSON.stringify(next), meta_leadgen_page_id:ctx.c.meta_leadgen_page_id});
+  await metaLeadgenSaveConfig(env, ctx.payload.cid, saved);
+  return json({ok:true, config:saved});
+}
+async function handleMetaLeadgenDisconnect(request, env){
+  const ctx=await metaLeadgenOwnerContext(request, env); if(ctx.error) return ctx.error;
+  const cfg={...metaLeadgenSettings(ctx.c), enabled:false, page_id:'', page_name:'', connected_at:''};
+  await metaLeadgenSaveConfig(env, ctx.payload.cid, cfg, {meta_leadgen_page_id:'', meta_leadgen_page_token:''});
+  return json({ok:true, config:cfg});
+}
+async function handleMetaLeadgenTemplatePreset(request, env){
+  const ctx=await metaLeadgenOwnerContext(request, env); if(ctx.error) return ctx.error;
+  const res=await createPresetWaTemplate(env, ctx.c, ctx.payload.cid, META_LEADGEN_WELCOME_TEMPLATE);
+  if(res.status===200){
+    const cfg={...metaLeadgenSettings(ctx.c), template_name:META_LEADGEN_WELCOME_TEMPLATE.name, template_lang:META_LEADGEN_WELCOME_TEMPLATE.language, params:META_LEADGEN_WELCOME_TEMPLATE.params};
+    await metaLeadgenSaveConfig(env, ctx.payload.cid, cfg);
+  }
+  return res;
+}
+
 /* ── COLD-LEAD AUTO-REALLOCATION ─────────────────────────────────────────────────────────────────
    Settings → 🔀 Lead Routing → "Auto-reallocate cold leads". A lead whose Score is Cold and whose
    current owner hasn't added a single note to it (NotesList — the Leads detail pane / Chats
@@ -16209,6 +16779,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
   built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
   const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
+  if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env,c,clientId,resolvedLeadId,state.lead,built.body,{inboxId:state.inboxId});
   if(resolvedLeadId){
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
@@ -21206,6 +21777,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+    // Page the owner on WhatsApp the moment this turn made the lead hot (Settings → 👥 User
+    // Management → 🔥 Hot Lead Alerts). Never throws; a no-op unless enabled.
+    if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env, c, clientId, resolvedLeadId, state.lead, leadBody, {inboxId:state.inboxId});
     // Dual-write new messages to D1 lead_messages for chats.html display
     if(resolvedLeadId){
       const userTs=new Date(startMs).toISOString();
@@ -21400,6 +21974,7 @@ async function persistInstagramTurn(env, c, clientId, state, routing, userText, 
   const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
   if(newFacts) leadBody['Customer Facts']=newFacts;
   const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
+  if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env, c, clientId, resolvedLeadId, state.lead, leadBody);
   // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
   if(resolvedLeadId){
     const now=new Date().toISOString();
@@ -32088,6 +32663,18 @@ export default {
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
+      else if(url.pathname==='/team/whatsapp' && request.method==='POST'){ res=await handleTeamWhatsappSet(request, env); }
+      else if(url.pathname==='/hot-alerts/config' && request.method==='GET'){ res=await handleHotAlertsConfigGet(request, env); }
+      else if(url.pathname==='/hot-alerts/config' && request.method==='POST'){ res=await handleHotAlertsConfigSet(request, env); }
+      else if(url.pathname==='/hot-alerts/template-preset' && request.method==='POST'){ res=await handleHotAlertsTemplatePreset(request, env); }
+      else if(url.pathname==='/hot-alerts/test' && request.method==='POST'){ res=await handleHotAlertsTest(request, env); }
+      else if(url.pathname==='/meta/leadgen/webhook' && request.method==='GET'){ res=await handleMetaLeadgenWebhookVerify(request, env); }
+      else if(url.pathname==='/meta/leadgen/webhook' && request.method==='POST'){ res=await handleMetaLeadgenWebhook(request, env, ctx); }
+      else if(url.pathname==='/meta-leadgen/config' && request.method==='GET'){ res=await handleMetaLeadgenConfigGet(request, env); }
+      else if(url.pathname==='/meta-leadgen/config' && request.method==='POST'){ res=await handleMetaLeadgenConfigSet(request, env); }
+      else if(url.pathname==='/meta-leadgen/connect' && request.method==='POST'){ res=await handleMetaLeadgenConnect(request, env); }
+      else if(url.pathname==='/meta-leadgen/disconnect' && request.method==='POST'){ res=await handleMetaLeadgenDisconnect(request, env); }
+      else if(url.pathname==='/meta-leadgen/template-preset' && request.method==='POST'){ res=await handleMetaLeadgenTemplatePreset(request, env); }
       else if(url.pathname==='/live-travel/bootstrap' && request.method==='GET'){ res=await handleLtBootstrap(request, env); }
       else if(url.pathname==='/live-travel/suppliers' && request.method==='PATCH'){ res=await handleLtSuppliersUpdate(request, env); }
       else if(url.pathname==='/live-travel/suppliers/health' && request.method==='GET'){ res=await handleLtSupplierHealth(request, env); }
