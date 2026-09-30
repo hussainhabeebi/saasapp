@@ -15126,7 +15126,9 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
   // deterministic lookup, validated against the real configured stage ids below before use.
   const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
-  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  // Healthcare only — feeds hcBuildReplyStyle (patient style mirroring). Other industries' prompts are unchanged.
+  const hcStyleInstruction=c.industry==='healthcare'?', tone (one of casual, polite — how the customer writes across their recent messages, not just the latest), customer_words (array of up to 6 everyday/colloquial words or spellings the customer themselves used, e.g. "chikilsa", "dawai", "ethra", "irukkara" — [] if none). For language: Malayalam/Tamil/Hindi/Telugu/Kannada etc. written in English letters (Manglish/Tanglish/Hinglish…) is that language\'s code, not "en"':'';
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}${hcStyleInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
@@ -15233,7 +15235,9 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // signal, never overwrite with blank" treatment as LastObjectionCategory.
   const productInterest=typeof aiResult?.product_interest==='string'?aiResult.product_interest.trim().slice(0,120):'';
   const productCategory=typeof aiResult?.product_category==='string'?aiResult.product_category.trim().slice(0,60):'';
-  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory};
+  const customerTone=aiResult?.tone==='casual'||aiResult?.tone==='polite'?aiResult.tone:null;
+  const customerWords=Array.isArray(aiResult?.customer_words)?aiResult.customer_words.filter(w=>typeof w==='string').slice(0,6):[];
+  return {intent, intentData, sentiment, objectionCategory, aiWinProbability, customerLanguage, nextStage, confidence, productInterest, productCategory, customerTone, customerWords};
 }
 
 // Mirrors "Code · Intent + flow" — decides where this turn goes (human handover / qualify / FAQ /
@@ -16068,6 +16072,80 @@ async function engineBuildEvChargingContext(env, clientId){
 // Mirrors "Code · FAQ prep" (contextBlock omitted, industry !== 'ecommerce'/'travel') /
 // "Code · Ecom FAQ prep" (industry === 'ecommerce') / "Code · Travel FAQ prep"
 // (industry === 'travel') — one function, parameterized, instead of three near-duplicates.
+// Healthcare-only reply-style mirroring. Real observed failure (Sep 2026, hospital client): a
+// patient typed Manglish ("Ithinn chikilsa undo") and got back a paragraph of formal, textbook
+// Malayalam script ("…ലഭ്യമാണോ എന്ന് സ്ഥിരീകരിക്കാൻ കഴിയില്ല…") that no receptionist would
+// type. The classifier only reports a language code, so Malayalam in English letters and Malayalam
+// script both became plain 'ml' and every reply came out in formal script. Script is read
+// deterministically from the customer's own recent messages (free, testable, and sticky — one
+// "ok"/"Yes" or a button tap doesn't flip it); tone and the customer's own words come from the
+// existing classifier call. The result rides on the per-request client object as c._hcReplyStyle
+// (a fresh object per request — see getClientById) so the FAQ/objection prompts and every
+// engineLocalizeReply call site pick it up without threading a new argument through each one.
+const HC_STYLE_SKIP_RE=/^(?:yes|yeah|yep|ya|ok|okay|k|no|nope|sure|done|thanks?|thank\s*you|thx|hi+|hello|hey|hmm+|ha+|ho|um|sheri|seri|ok+i?|👍|🙏|\s)*[.!?\s]*$/iu;
+const HC_STYLE_PAYLOAD_RE=/^[A-Z0-9_:\-]+$/;
+export function hcDetectCustomerScript(userText, history){
+  const texts=(history||[]).filter(m=>m&&m.role==='user').map(m=>String(m.content||''));
+  texts.push(String(userText||''));
+  const recent=texts.map(t=>t.trim())
+    .filter(t=>t && !HC_STYLE_PAYLOAD_RE.test(t) && !HC_STYLE_SKIP_RE.test(t.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'')))
+    .slice(-3);
+  let latin=0, native=0;
+  for(const t of recent){
+    for(const ch of t){
+      if(/\p{Script=Latin}/u.test(ch)) latin++;
+      else if(/[\p{L}\p{M}]/u.test(ch)) native++;
+    }
+  }
+  if(!latin && !native) return null;
+  // Native-script messages routinely carry English words ("ഫീസ് എത്ര? doctor available ആണോ"),
+  // so native script only needs a solid share, not a majority, to count as native.
+  return native>=Math.max(4, (latin+native)*0.3) ? 'native' : 'latin';
+}
+export function hcBuildReplyStyle(lang, userText, history, cls){
+  const words=Array.isArray(cls?.customerWords)?cls.customerWords.filter(w=>typeof w==='string'&&w.trim()).map(w=>w.trim().slice(0,30)).slice(0,6):[];
+  return {
+    lang:(lang||'en').toLowerCase(),
+    script:hcDetectCustomerScript(userText, history)||'native',
+    tone:cls?.customerTone==='casual'?'casual':'polite',
+    words
+  };
+}
+// Romanized names customers themselves use for each language written in English letters.
+const HC_ROMANIZED_NAMES={ml:'Manglish (Malayalam in English letters)', ta:'Tanglish (Tamil in English letters)', hi:'Hinglish (Hindi in English letters)', te:'Tenglish (Telugu in English letters)', kn:'Kanglish (Kannada in English letters)', mr:'Marathi in English letters', bn:'Banglish (Bengali in English letters)', gu:'Gujarati in English letters', pa:'Punjabi in English letters', ur:'Roman Urdu', ar:'Arabizi (Arabic in English letters)'};
+// Tone samples only — deliberately fact-free (no times, fees, departments) so the model can't
+// copy a made-up detail into a real patient reply under HEALTHCARE SAFETY LOCK.
+const HC_STYLE_SAMPLES={
+  ml:{latin:'Athu doctor kandittu mathrame correct aayi parayan pattu. Pazhaya reports undenkil kondu varanam. Appointment edukkatte?', native:'അത് doctor കണ്ടിട്ടേ correct ആയി പറയാൻ പറ്റൂ. പഴയ reports ഉണ്ടെങ്കിൽ കൊണ്ടുവരണം. Appointment എടുക്കട്ടേ?', avoid:'ലഭ്യമാണ്, സ്ഥിരീകരിക്കാൻ, ബന്ധപ്പെടുക, ദയവായി, നിലവിൽ, താങ്കൾ, പ്രോട്ടോക്കോൾ, അറിയിക്കുന്നതാണ്, ചികിത്സാ പ്രോട്ടോക്കോൾ'},
+  ta:{latin:'Adhu doctor paathutu dhaan correct-a solla mudiyum. Pazhaya reports irundha kondu vaanga. Appointment book pannatuma?', native:'அது doctor பார்த்துட்டு தான் correct-ஆ சொல்ல முடியும். பழைய reports இருந்தா கொண்டு வாங்க. Appointment book பண்ணட்டுமா?', avoid:'தாங்கள், தொடர்பு கொள்ளவும், உறுதிப்படுத்த இயலாது, கிடைக்கப்பெறும்'},
+  hi:{latin:'Iske baare mein doctor check karke hi sahi bata payenge. Purani reports ho to saath le aaiye. Appointment book kar doon?', native:'इसके बारे में doctor check करके ही सही बता पाएंगे। पुरानी reports हो तो साथ ले आइए। Appointment book कर दूँ?', avoid:'कृपया संपर्क करें, उपलब्धता की पुष्टि, सुनिश्चित करने में असमर्थ, चिकित्सा प्रोटोकॉल'},
+  te:{latin:'Adi doctor chusaake correct ga cheppagalaru. Paatha reports unte teesukuni randi. Appointment book cheyyana?', native:'అది doctor చూశాకే correct గా చెప్పగలరు. పాత reports ఉంటే తీసుకుని రండి. Appointment book చేయనా?', avoid:''},
+  kn:{latin:'Adu doctor nodidmele correct aagi helthare. Hale reports idre tagondu banni. Appointment book madla?', native:'ಅದು doctor ನೋಡಿದ್ಮೇಲೆ correct ಆಗಿ ಹೇಳ್ತಾರೆ. ಹಳೆ reports ಇದ್ರೆ ತಗೊಂಡು ಬನ್ನಿ. Appointment book ಮಾಡ್ಲಾ?', avoid:''}
+};
+export function hcReplyStyleInstruction(style){
+  if(!style) return '';
+  const lang=style.lang||'en';
+  const latin=style.script==='latin' && lang!=='en';
+  let s='\n\nPATIENT STYLE MIRROR (healthcare): Write the way a warm, respectful local hospital receptionist types on WhatsApp — spoken, everyday language, never formal, literary, news-style or word-for-word translated. Short sentences, 2–4 lines, no paragraph blocks.';
+  if(lang!=='en'){
+    s+=latin
+      ? ` The patient writes ${HC_ROMANIZED_NAMES[lang]||'their language in English letters'}. Reply the same way — in English letters, NOT in the native script. This still counts as replying in "${lang}".`
+      : ` The patient writes in the native script. Reply in the native script, in colloquial spoken form.`;
+    s+=' Keep everyday English words the way locals actually say them — doctor, treatment, appointment, booking, OP, scan, test, report, fees, time, confirm, department names, medical condition and medicine names — instead of forcing a formal native translation.';
+  }
+  s+=style.tone==='casual'
+    ? ' The patient is casual — be friendly and relaxed, but always respectful (no "da", "eda", "bro", "machane", "yaar", "abe" even if the patient uses them).'
+    : ' The patient is polite/formal — keep a respectful tone (e.g. "ningal"/"neenga"/"aap"), without stiff officialese.';
+  if(style.words?.length) s+=` Where natural, reuse the patient's own words and spellings: ${style.words.join(', ')}.`;
+  const sample=HC_STYLE_SAMPLES[lang];
+  if(sample){
+    s+=` Tone example only (never copy facts from it): "${latin?sample.latin:sample.native}"`;
+    if(!latin && sample.avoid) s+=` Avoid bookish words like: ${sample.avoid}.`;
+  }
+  s+=' Style never changes facts: names, times, fees, doctor details and safety wording stay exact.';
+  return s;
+}
+
 export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, replyLang, isNewLead, intent){
   const history=state.activeHistory||[];
   const lang=replyLang||c.language||'en';
@@ -16447,6 +16525,7 @@ BUTTONS — mandatory after EVERY reply:
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) sys+=`\n\nMANGLISH WORDS RULE: The following English words have no natural Malayalam equivalent and are better understood by customers in their original English/Manglish form. Do NOT translate them into Malayalam script — write them exactly as they are: ${mw.join(', ')}.`;
   }
+  if(industry==='healthcare') sys+=hcReplyStyleInstruction(c._hcReplyStyle);
   return sys;
 }
 
@@ -16826,6 +16905,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
+  if(c.industry==='healthcare') sys+=hcReplyStyleInstruction(c._hcReplyStyle);
   return sys;
 }
 
@@ -17200,7 +17280,10 @@ async function engineLocalizeReply(env, c, text, targetLang){
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) manglishNote=` MANGLISH RULE: Do NOT translate these words — keep them exactly as they appear in the source text: ${mw.join(', ')}.`;
   }
-  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  // Healthcare: fixed/scripted texts follow the same patient style as AI replies (see hcBuildReplyStyle).
+  const hcStyle=c?.industry==='healthcare'&&c._hcReplyStyle?.lang===targetLang?c._hcReplyStyle:null;
+  const styleNote=hcStyle?hcReplyStyleInstruction(hcStyle).replace(/^\n\n/,' ')+' Translate the meaning naturally, not word for word.':'';
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote}${styleNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
     const geminiRaw=await aiClientFirst(env, c, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'},
       ()=>engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'}));
@@ -19685,6 +19768,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // isn't confident) — see engineLocalizeReply's own comment for the scripted-content half of
     // this; the AI-generated branches below pass this straight into their own system prompt.
     const replyLang=routing.customerLanguage||c.language||'en';
+    if(c.industry==='healthcare') c._hcReplyStyle=hcBuildReplyStyle(replyLang, userText, state.activeHistory, cls);
     const isFashionEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='fashion';
     const isElectronicsEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='electronics';
     // Per-customer flow override: check if this phone has a specific enabled flag in baby_care_customer_flows.
@@ -22043,6 +22127,7 @@ export async function processInstagramWebhookBody(env, body){
       Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
       if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
       const replyLang=routing.customerLanguage||c.language||'en';
+      if(c.industry==='healthcare') c._hcReplyStyle=hcBuildReplyStyle(replyLang,userText,state.activeHistory,cls);
       const deliverOpts={channel:'instagram',igRecipientId:parsed.igId,langCode:replyLang};
       let sentText=null, deliveryFailed=false;
       const deliver=async text=>{
