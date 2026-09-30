@@ -572,6 +572,20 @@ resend, never to claim it can't see images. Every FAQ prompt now forbids saying 
 seen, received or sent.
 **Tested:** `image-read.test.js`.
 
+### 34 — [frontend + backend] Chats loads faster: delta poll, batched D1 inserts
+**Area:** `loadLeads`/`fetchLeads`/`boot` (`frontend/chats.html`); `d1InsertLeadMessages`,
+`handleGetChatMessages`, `chatsBackfillChatwootMedia`, `engineRecordOutgoingChatwootMedia`
+(`cloudflare-worker/worker.js`)
+**Broke:** Chats was slow. Every 12s the page downloaded all 200 leads again, each one with its
+full `ConvHistory`. The first open of a chat also wrote its history and backfilled photos into D1
+one INSERT at a time.
+**Fix:** The 12s poll asks only for leads with `LastMsgAt` ≥ the newest one already loaded and
+merges them into the list. First load, the Refresh button and every 5th tick (~1 min) still do a
+full reload, which also picks up pin, resolve and owner changes, and a delta that fails falls back
+to a full reload. D1 message writes for seeding and media backfill go through `env.DB.batch` in
+chunks of 100. If a batch fails, the rows are written one by one.
+**Tested:** `frontend/tests/chats-delta-poll.spec.js`, `chat-media.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)

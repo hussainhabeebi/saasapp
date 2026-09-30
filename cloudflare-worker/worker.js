@@ -1382,27 +1382,39 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
 // Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
 // (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
-export async function d1InsertLeadMessage(env, leadId, clientId, msg){
-  if(!msg?.role) return;
+function leadMessageStmt(env, leadId, clientId, msg){
+  if(!msg?.role) return null;
   // Photos travel as `media` ({type,url}) through the engine (inbound customer photos, product
   // photos the bot sends); the D1 row only has an attachment column, so fold media into it.
   if((!msg.attachment||!Object.keys(msg.attachment).length)&&msg.media?.url){
     const {type, ...rest}=msg.media;
     msg={...msg, attachment:{...rest, kind:type==='video'?'video':'image'}};
   }
-  try{
-    await env.DB.prepare(
-      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(
-      Number(leadId), Number(clientId),
-      msg.role,
-      msg.content||'',
-      (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
-      (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
-      msg.ts||new Date().toISOString()
-    ).run();
-  }catch(e){}
+  return env.DB.prepare(
+    `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
+     VALUES (?,?,?,?,?,?,?)`
+  ).bind(
+    Number(leadId), Number(clientId),
+    msg.role,
+    msg.content||'',
+    (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
+    (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
+    msg.ts||new Date().toISOString()
+  );
+}
+export async function d1InsertLeadMessage(env, leadId, clientId, msg){
+  try{ await leadMessageStmt(env, leadId, clientId, msg)?.run(); }catch(e){}
+}
+// Many rows in one D1 round trip (env.DB.batch) instead of one INSERT per message. If a batch
+// fails it falls back to row-by-row, so one bad row can't drop the rest.
+export async function d1InsertLeadMessages(env, leadId, clientId, msgs){
+  const stmts=[];
+  for(const m of msgs||[]){ try{ const st=leadMessageStmt(env, leadId, clientId, m); if(st) stmts.push(st); }catch(e){} }
+  for(let i=0;i<stmts.length;i+=100){
+    const chunk=stmts.slice(i, i+100);
+    try{ await env.DB.batch(chunk); }
+    catch(e){ for(const st of chunk){ try{ await st.run(); }catch(e2){} } }
+  }
 }
 
 // GET /chat/messages?lead_id=X[&after=ISO] — returns messages from D1.
@@ -1427,9 +1439,7 @@ async function handleGetChatMessages(request, env){
   if(!countRow||!countRow.n){
     let history=[];
     try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-    for(const msg of history){
-      await d1InsertLeadMessage(env, leadId, payload.cid, msg);
-    }
+    await d1InsertLeadMessages(env, leadId, payload.cid, history);
   }
 
   // One-off: bring in photos/files from before media was recorded (see chatsBackfillChatwootMedia).
@@ -1607,13 +1617,14 @@ async function chatsBackfillChatwootMedia(env, c, clientId, lead){
     if(!r?.ok) break;
     const msgs=(await r.json().catch(()=>({})))?.payload||[];
     if(!msgs.length) break;
+    const rows=[];
     for(const m of msgs){
       const t=m.message_type, out=t===1||t==='outgoing', inc=t===0||t==='incoming';
       if(m.private||!(out||inc)||!(m.attachments||[]).length) continue;
       if(await d1HasChatwootMessage(env, lead.Id, m.id)) continue;
-      const rows=chatwootMediaRows(m, out?'assistant':'user', inc?m.content:'');
-      for(const row of rows) await d1InsertLeadMessage(env, lead.Id, clientId, row);
+      rows.push(...chatwootMediaRows(m, out?'assistant':'user', inc?m.content:''));
     }
+    await d1InsertLeadMessages(env, lead.Id, clientId, rows);
     if(msgs.length<20) break;
     before=Math.min(...msgs.map(m=>Number(m.id)||Infinity));
     if(!isFinite(before)) break;
@@ -1629,7 +1640,7 @@ async function engineRecordOutgoingChatwootMedia(env, clientId, body){
   if(!leadId) return;
   // A Chats-page upload is already saved (with this cw_id) by chatsRecordOutgoing.
   if(await d1HasChatwootMessage(env, leadId, rows[0].attachment.cw_id)) return;
-  for(const row of rows) await d1InsertLeadMessage(env, leadId, clientId, row);
+  await d1InsertLeadMessages(env, leadId, clientId, rows);
 }
 
 function chatsTemplateAttachment(template_name, buttons){

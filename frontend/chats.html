@@ -159,10 +159,18 @@ function saveDraft(id,t){try{t?localStorage.setItem(draftKey(id),t):localStorage
 async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:headers({...opts.headers})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
 async function boot(){
  if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
- try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');setInterval(()=>loadLeads(false,true),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+ try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
-async function loadLeads(show=true,silent=false){
- try{const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=c=>`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${c}&limit=200&sort=-LastMsgAt`;let d;try{d=await apiJson(url(ownerClause))}catch(e){if(!ownerClause)throw e;d=await apiJson(url(''))}leads=d.list||[];
+// The 12s poll asks only for leads whose LastMsgAt moved since the newest one we hold (delta) and
+// merges them in, instead of re-downloading 200 full lead rows (each with its ConvHistory) every
+// time. First load, the Refresh button and every 5th tick (~1 min) still do a full reload, which
+// also picks up pin/resolve/owner changes made elsewhere. A delta that fails falls back to full.
+let leadsSince='';
+async function fetchLeads(extra){const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=c=>`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${c}${extra}&limit=200&sort=-LastMsgAt`;let d;try{d=await apiJson(url(ownerClause))}catch(e){if(!ownerClause)throw e;d=await apiJson(url(''))}return d.list||[]}
+async function loadLeads(show=true,silent=false,delta=false){
+ try{let got=null;if(delta&&leadsSince){try{got=await fetchLeads(`~and(LastMsgAt,gte,${encodeURIComponent(leadsSince)})`)}catch{}}
+  if(got){const ids=new Set(got.map(l=>String(l.Id)));leads=[...got,...leads.filter(l=>!ids.has(String(l.Id)))]}else leads=await fetchLeads('');
+  leadsSince=leads.reduce((m,l)=>l.LastMsgAt&&String(l.LastMsgAt)>m?String(l.LastMsgAt):m,'');
   if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt&&fresh.LastMsgAt!==current.LastMsgAt;current=fresh;if(newMsg){markRead(fresh.Id);await refreshMessages(fresh)}}}
   renderContacts();if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
 }
