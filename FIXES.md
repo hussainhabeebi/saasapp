@@ -572,6 +572,24 @@ resend, never to claim it can't see images. Every FAQ prompt now forbids saying 
 seen, received or sent.
 **Tested:** `image-read.test.js`.
 
+### 34 — [backend] Healthcare: replies follow the patient's own script, tone and words
+**Area:** `hcDetectCustomerScript`, `hcBuildReplyStyle`, `hcReplyStyleInstruction`,
+`engineClassifyIntent`, `engineBuildFaqSystemPrompt`, `engineBuildObjectionSystemPrompt`,
+`engineLocalizeReply` (`cloudflare-worker/worker.js`)
+**Broke:** A hospital patient typed Manglish ("Ithinn chikilsa undo") and got back a paragraph of
+formal, textbook Malayalam script ("…ലഭ്യമാണോ എന്ന് സ്ഥിരീകരിക്കാൻ കഴിയില്ല…"). The classifier
+only returned a language code, so Malayalam in English letters and Malayalam script were both
+plain `ml`, and every reply came out in formal script.
+**Fix (healthcare clients only):** `hcDetectCustomerScript` reads the script (English letters vs
+native) from the patient's last 3 real messages. "Yes"/"ok"/emoji/button payloads are skipped, so
+the choice sticks. The classifier also returns `tone` and `customer_words` for healthcare, and
+counts Manglish/Tanglish/Hinglish as that language, not `en`. `hcReplyStyleInstruction` is added to
+the healthcare FAQ and objection prompts and to `engineLocalizeReply`: reply in the same script,
+spoken register, English medical words kept as locals say them, the patient's own words reused,
+never "da"/"bro"-style slang, facts unchanged. It has fact-free tone samples for ml/ta/hi/te/kn,
+plus bookish-word blocklists for ml/ta/hi. Other industries are unchanged.
+**Tested:** `healthcare-style.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
