@@ -389,7 +389,31 @@ no SSO into these the way there is for the primary account (`handleChannelsChatw
 this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself — an externally
 owned account needs its own normal Chatwoot login.
 
-**Creating users directly (User Management → Create New User):** `POST /team/create-user`
+**Inviting teammates (User Management → ✉️ Invite Teammate — the primary way to add someone):**
+`POST /team/invite` (session-gated, takes `name`/`email`) creates a single-use Authentik
+**Invitation** (expires in 7 days) instead of an Authentik user. Email, username (= email) and name
+are fixed on the invitation, so the invitee only chooses a password. The Worker adds them to
+`team_emails`/`team_names` immediately, creates their Chatwoot agent if Chatwoot is connected, and
+emails `https://app.leadvyne.com/dashboard.html?invite=<id>` via Resend (link also shown to the
+admin to share directly). That link starts a normal PKCE login in the same tab via the invite flow,
+so they land in the dashboard as soon as they've set a password. If the email already has an
+Authentik login, they're just added to the team with no invite. Initial signup is unchanged.
+
+Setup (once): apply `authentik/leadvyne-team-access-blueprint.yaml` (creates the
+`leadvyne-team-invite` enrollment flow and the `leadvyne-magic-link` sign-in flow — test both on
+your instance first, see the file header), and give the `AUTHENTIK_API_TOKEN` service account
+`authentik_stages_invitation.add_invitation` + `authentik_flows.view_flow`. Until the invite flow
+exists, `/team/invite` returns 503 `INVITE_FLOW_MISSING` and the "Create User With a Password"
+form below still works. Optional Worker vars: `AUTHENTIK_INVITE_FLOW_SLUG`, `APP_BASE_URL`.
+
+**Emailed sign-in link (passwordless):** once the magic-link flow is applied and Authentik's email
+settings are configured, set `CONFIG.AUTHENTIK_MAGIC_LINK_FLOW = 'leadvyne-magic-link'` in
+`dashboard.html` to show "Email me a sign-in link instead" under the login button. Users enter
+their email, Authentik emails them a link, and it signs them in — still a normal Authentik login,
+so disabling a user in Authentik blocks it too. If the link is opened in a different tab,
+`handleAuthentikCallback` retries the authorize step once to finish the login there.
+
+**Creating users directly (User Management → Or Create User With a Password):** `POST /team/create-user`
 (session-gated, takes only `name`/`username`/`email` — no password field anymore) calls Authentik's
 own Core API — `POST /api/v3/core/users/` to create the account (`username`/`email`/`name`/
 `is_active`), then `POST /api/v3/core/users/{id}/set_password/` with a server-generated random

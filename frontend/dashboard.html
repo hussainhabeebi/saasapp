@@ -1023,6 +1023,12 @@ const CONFIG = {
   // trySilentAuthentikLogin()'s hidden-iframe target — must also be registered on the Authentik
   // provider's redirect_uris (see authentik/leadvyne-blueprint.yaml).
   AUTHENTIK_REDIRECT_URI_SILENT:'https://app.leadvyne.com/auth-silent.html',
+  // Flows from authentik/leadvyne-team-access-blueprint.yaml. AUTHENTIK_INVITE_FLOW is where a
+  // teammate's emailed invite (dashboard.html?invite=<id>) sends them to pick their password.
+  // AUTHENTIK_MAGIC_LINK_FLOW turns on the gate's "Email me a sign-in link" option — leave it ''
+  // until that blueprint has been applied, or the link would land on a missing Authentik flow.
+  AUTHENTIK_INVITE_FLOW:'leadvyne-team-invite',
+  AUTHENTIK_MAGIC_LINK_FLOW:'',
   // Both are public identifiers used only in browser-side Meta JS SDK calls (never secrets —
   // the App Secret used for the server-side token exchange lives only in the Worker). Get
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
@@ -1255,6 +1261,7 @@ const ROLES = {
     <div id="gPanelLogin">
       <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Secure Login</button>
       <div class="gerr" id="gErr"></div>
+      <button type="button" id="gMagicLink" onclick="startAuthentikFlowLogin(CONFIG.AUTHENTIK_MAGIC_LINK_FLOW)" style="display:none;margin:12px auto 0;background:none;border:0;color:rgba(255,255,255,.8);font-size:13px;text-decoration:underline;cursor:pointer">Email me a sign-in link instead</button>
       <div style="margin-top:14px;color:rgba(255,255,255,.55);font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px">🔒 Secured by Authentik</div>
     </div>
     <!-- Shown instead of #gPanelLogin the instant boot() knows a saved session exists and is
@@ -3582,7 +3589,22 @@ const ROLES = {
             <div id="teamMembersList" style="margin:10px 0;display:flex;flex-wrap:wrap;gap:8px"></div>
 
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
-              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Create New User</div>
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">✉️ Invite Teammate</div>
+              <div class="s-note" style="margin-bottom:8px">The easiest way to add someone. They get an email invite, choose their own password, and land straight in this account. No username or password for you to manage. The link works once and expires in 7 days. A matching Chatwoot agent is also created if Chatwoot is connected.</div>
+              <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
+                <input class="form-input" id="teamInviteName" type="text" placeholder="Full Name">
+                <input class="form-input" id="teamInviteEmail" type="email" placeholder="Email">
+                <input class="form-input" id="teamInviteWhatsapp" type="tel" placeholder="WhatsApp number, e.g. +91 98765 43210 (for hot-lead alerts)" style="grid-column:1/-1">
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <button class="save-btn" onclick="inviteTeamUser()">Send Invite</button>
+                <span class="save-msg" id="teamInviteMsg"></span>
+              </div>
+              <div id="teamInviteResult"></div>
+            </div>
+
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+              <div style="font-weight:700;font-size:13px;margin-bottom:6px">Or Create User With a Password</div>
               <div class="s-note" style="margin-bottom:8px">Creates a real Authentik login for them, and a matching Chatwoot agent if Chatwoot is connected. Set a password directly below, or leave it blank to email them an invite link to set their own instead.</div>
               <div style="display:grid;gap:8px;grid-template-columns:1fr 1fr;max-width:520px">
                 <input class="form-input" id="teamNewName" type="text" placeholder="Full Name">
@@ -5141,7 +5163,39 @@ function openPasskeySetup(){
   window.open(`${CONFIG.AUTHENTIK_BASE}/if/flow/default-authenticator-webauthn-setup/`, '_blank', 'noopener');
 }
 
+async function authorizePath(verifier, state){
+  const params=new URLSearchParams({
+    client_id:CONFIG.AUTHENTIK_CLIENT_ID,
+    redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
+    response_type:'code',
+    scope:'openid email profile',
+    state,
+    code_challenge:await pkceChallenge(verifier),
+    code_challenge_method:'S256'
+  });
+  return `/application/o/authorize/?${params.toString()}`;
+}
+
+// Full-page counterpart of startAuthentikLogin for Authentik flows other than its default login
+// page — a teammate's invite (flowSlug=AUTHENTIK_INVITE_FLOW, extra {itoken}) and the emailed
+// sign-in link (AUTHENTIK_MAGIC_LINK_FLOW). Same PKCE setup, but the browser goes to that flow
+// first with the authorize path as `next`, so once the flow logs them in Authentik carries on
+// straight into the normal ?code= callback below. No flowSlug = straight to authorize, used by
+// handleAuthentikCallback's one-time retry.
+async function startAuthentikFlowLogin(flowSlug, extra={}){
+  sessionStorage.removeItem('lv_no_silent_auth');
+  setGBtnState(true, 'Connecting…');
+  const verifier=randomToken(), state=randomToken();
+  sessionStorage.setItem('lv_pkce_verifier',verifier);
+  sessionStorage.setItem('lv_oidc_state',state);
+  const next=await authorizePath(verifier, state);
+  window.location.href=flowSlug
+    ? `${CONFIG.AUTHENTIK_BASE}/if/flow/${encodeURIComponent(flowSlug)}/?${new URLSearchParams({...extra, next})}`
+    : CONFIG.AUTHENTIK_BASE+next;
+}
+
 async function startAuthentikLogin(){
+  sessionStorage.removeItem('lv_oidc_retry');
   $id('gErr').textContent='';
   // A deliberate login click always wins over the post-logout silent-auth suppression (see
   // hLogout) — that flag only exists to stop an *automatic* re-login from undoing an explicit
@@ -5165,16 +5219,7 @@ async function startAuthentikLogin(){
   sessionStorage.setItem('lv_oidc_state',state);
   if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
 
-  const params=new URLSearchParams({
-    client_id:CONFIG.AUTHENTIK_CLIENT_ID,
-    redirect_uri:CONFIG.AUTHENTIK_REDIRECT_URI,
-    response_type:'code',
-    scope:'openid email profile',
-    state,
-    code_challenge:await pkceChallenge(verifier),
-    code_challenge_method:'S256'
-  });
-  const authorizeUrl=`${CONFIG.AUTHENTIK_BASE}/application/o/authorize/?${params.toString()}`;
+  const authorizeUrl=CONFIG.AUTHENTIK_BASE+await authorizePath(verifier, state);
   if(useMobileRedirect || !_authPopup){
     // Mobile, or popup blocked by the desktop browser — full-page redirect so login still works.
     // Leave the button in its loading state; the page is about to navigate away anyway.
@@ -5228,7 +5273,15 @@ async function handleAuthentikCallback(){
   const verifier=sessionStorage.getItem('lv_pkce_verifier');
   sessionStorage.removeItem('lv_oidc_state'); sessionStorage.removeItem('lv_pkce_verifier');
   window.history.replaceState({},'',window.location.pathname); // strip ?code=&state= either way
-  if(!verifier||!state||state!==savedState){completeLoginError('Login session expired — try again.');return true;}
+  if(!verifier||!state||state!==savedState){
+    // An emailed sign-in link is often opened in a new tab (or the mail app's browser), which has
+    // none of the original tab's sessionStorage. Authentik has already signed them in by then, so
+    // one fresh authorize round trip from here completes silently — retried once, never looped.
+    if(!sessionStorage.getItem('lv_oidc_retry')){ sessionStorage.setItem('lv_oidc_retry','1'); startAuthentikFlowLogin(null); return true; }
+    sessionStorage.removeItem('lv_oidc_retry');
+    completeLoginError('Login session expired — try again.');return true;
+  }
+  sessionStorage.removeItem('lv_oidc_retry');
   // A brand-new signup's exchange call can run a few seconds longer than a returning login's
   // (creating the CLIENTS row, best-effort onboarding webhook) — if it's still going after 3s,
   // say so explicitly rather than leaving "Verifying your login…" sitting there looking stalled.
@@ -10895,6 +10948,49 @@ function generateStrongPassword(){
   const chars='ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*';
   const bytes=crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes,b=>chars[b%chars.length]).join('');
+}
+
+// User Management → Invite Teammate (POST /team/invite, handleTeamInvite in worker.js). The Worker
+// adds them to team_emails/team_names itself, so this only mirrors that onto clientRecord.
+async function inviteTeamUser(){
+  const msg=$id('teamInviteMsg'); msg.textContent=''; msg.className='save-msg';
+  $id('teamInviteResult').innerHTML='';
+  const name=$id('teamInviteName').value.trim();
+  const email=$id('teamInviteEmail').value.trim().toLowerCase();
+  if(!email){ msg.textContent='Email is required.'; msg.className='save-msg err'; return; }
+  msg.textContent='Sending invite…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/team/invite`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name,email})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    const current=(clientRecord.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+    if(!current.includes(data.email)){
+      clientRecord.team_emails=[...current, data.email].join(',');
+      let names={}; try{ names=JSON.parse(clientRecord.team_names||'{}'); }catch(e){}
+      names[data.email]=name||data.email.split('@')[0];
+      clientRecord.team_names=JSON.stringify(names);
+    }
+    const wa=$id('teamInviteWhatsapp').value.trim();
+    let waErr='';
+    if(wa){ try{ await saveTeamWhatsapp(data.email, wa); $id('teamInviteWhatsapp').value=''; }catch(e){ waErr=' (WhatsApp number not saved: '+e.message+')'; } }
+    msg.textContent=(data.alreadyHasLogin?'✓ Added':'✓ Invite sent')+waErr; msg.className='save-msg ok';
+    renderTeamMembers();
+    renderTeamInviteResult(data);
+    $id('teamInviteName').value=''; $id('teamInviteEmail').value='';
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+}
+function renderTeamInviteResult(data){
+  let html=`<div class="card" style="margin-top:10px;padding:12px 14px;background:var(--accent-soft)">`;
+  if(data.alreadyHasLogin){
+    html+=`<div class="s-note">${esc(data.email)} already has a Leadvyne login, so no invite was needed. They now have access to this account the next time they sign in.</div>`;
+  }else{
+    html+=`<div class="s-note" style="margin-bottom:6px">${data.inviteEmailSent?`Invite emailed to ${esc(data.email)}.`:`Couldn't confirm the invite email was sent.`} You can also share this link directly (WhatsApp, Slack). It works once and expires ${esc(new Date(data.expiresAt).toLocaleDateString())}.</div>
+    <div style="font-size:12px;font-family:var(--mono);word-break:break-all;background:var(--bg);padding:8px;border-radius:6px;margin-bottom:4px">${esc(data.inviteLink)}</div>
+    <button class="save-btn sec" style="margin-top:4px" data-invite-link="${esc(data.inviteLink)}" onclick="copyInviteLink(this)">Copy link</button>`;
+    if(data.chatwoot && !data.chatwoot.ok) html+=`<div class="s-note" style="margin-top:6px;color:var(--red)">Chatwoot agent wasn't created: ${esc(data.chatwoot.error||'unknown error')}. Their dashboard invite above still works.</div>`;
+  }
+  html+='</div>';
+  $id('teamInviteResult').innerHTML=html;
 }
 
 async function createTeamUser(){
@@ -20987,10 +21083,18 @@ function showUpdateBanner(){
   if('serviceWorker' in navigator){
     navigator.serviceWorker.register('/sw.js').then(reg=>{ if(reg) initSwUpdatePrompt(reg); }).catch(()=>{});
   }
+  if(CONFIG.AUTHENTIK_MAGIC_LINK_FLOW) $id('gMagicLink').style.display='block';
   // Authentik redirects back here with ?code=&state= — handle that before falling
   // back to any existing session, since a fresh login always takes priority.
   const wasCallback=await handleAuthentikCallback();
   if(wasCallback) return;
+  // Teammate invite email (handleTeamInvite, worker.js) links here with ?invite=<Authentik
+  // invitation id> — straight into the invite flow, ahead of any saved session in this browser.
+  const _inviteId=new URLSearchParams(location.search).get('invite');
+  if(_inviteId){
+    history.replaceState({},'',location.pathname);
+    if(/^[0-9a-f-]{32,36}$/i.test(_inviteId)){ startAuthentikFlowLogin(CONFIG.AUTHENTIK_INVITE_FLOW, {itoken:_inviteId}); return; }
+  }
   const saved=localStorage.getItem('lv_cid');
   if(saved){ resumeSession(saved); return; }
   // The marketing site's "Sign Up Free" button links straight here with ?signup=1 — skip the

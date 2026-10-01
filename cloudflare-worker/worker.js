@@ -1001,6 +1001,28 @@ async function createChatwootAgent(env, c, {name, email, password}){
     return {ok:false, error:e.message||'Chatwoot agent creation failed'};
   }
 }
+// Shared by handleTeamCreateUser and handleTeamInvite — creates the teammate's matching Chatwoot
+// agent when Chatwoot is connected. Returns null when it isn't, else createChatwootAgent's result.
+async function provisionTeamChatwootAgent(env, c, clientId, {name, email, password}){
+  if(!c.chatwoot_account_id || !env.CHATWOOT_PLATFORM_TOKEN) return null;
+  const chatwoot=await createChatwootAgent(env, c, {name, email, password});
+  if(chatwoot.ok && chatwoot.user_id){
+    // Persists which Chatwoot user belongs to this email so handleChannelsChatwootSso can mint
+    // this specific teammate their own SSO link later, not just at creation time. Also persists
+    // the Chatwoot password itself (normally only ever shown once, right after creation) so the
+    // User Management profile view can surface it again later — see renderUserProfileModal in
+    // dashboard.html. Deliberately not folded into safeClient()'s strip list: unlike
+    // dashboard_password (the Authentik login), this is scoped to Chatwoot only and is exactly
+    // what was asked to be visible on a teammate's profile.
+    let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
+    let teamPasswords={}; try{ teamPasswords=JSON.parse(c.team_chatwoot_passwords||'{}'); }catch(e){}
+    teamUsers[email]=chatwoot.user_id;
+    teamPasswords[email]=password;
+    await ensureClientColumns(env, ['team_chatwoot_passwords']);
+    await patchClientFields(env, clientId, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)}).catch(()=>{});
+  }
+  return chatwoot;
+}
 async function handleTeamCreateUser(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1068,25 +1090,7 @@ async function handleTeamCreateUser(request, env){
     if(inviteLink) inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:name||username, inviteUrl:inviteLink, clientName:c.client_name||'your team'});
   }
 
-  let chatwoot=null;
-  if(c.chatwoot_account_id && env.CHATWOOT_PLATFORM_TOKEN){
-    chatwoot=await createChatwootAgent(env, c, {name:String(name||username).trim(), email:emailNorm, password});
-    if(chatwoot.ok && chatwoot.user_id){
-      // Persists which Chatwoot user belongs to this email so handleChannelsChatwootSso can mint
-      // this specific teammate their own SSO link later, not just at creation time. Also persists
-      // the Chatwoot password itself (normally only ever shown once, right after creation) so the
-      // User Management profile view can surface it again later — see renderUserProfileModal in
-      // dashboard.html. Deliberately not folded into safeClient()'s strip list: unlike
-      // dashboard_password (the Authentik login), this is scoped to Chatwoot only and is exactly
-      // what was asked to be visible on a teammate's profile.
-      let teamUsers={}; try{ teamUsers=JSON.parse(c.team_chatwoot_users||'{}'); }catch(e){}
-      let teamPasswords={}; try{ teamPasswords=JSON.parse(c.team_chatwoot_passwords||'{}'); }catch(e){}
-      teamUsers[emailNorm]=chatwoot.user_id;
-      teamPasswords[emailNorm]=password;
-      await ensureClientColumns(env, ['team_chatwoot_passwords']);
-      await patchClientFields(env, payload.cid, {team_chatwoot_users:JSON.stringify(teamUsers), team_chatwoot_passwords:JSON.stringify(teamPasswords)}).catch(()=>{});
-    }
-  }
+  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:String(name||username).trim(), email:emailNorm, password});
   // fallbackPassword is populated whenever there's no invite link to show instead — either because
   // the admin chose an explicit password (explicitPassword:true) or because the invite link
   // couldn't be generated (no Recovery flow bound). chatwootPassword is separate: Chatwoot has no
@@ -1094,6 +1098,82 @@ async function handleTeamCreateUser(request, env){
   // server-side in team_chatwoot_passwords for the User Management profile view to show again
   // later) whenever a Chatwoot agent was actually created.
   return json({ok:true, email:emailNorm, chatwoot, chatwootPassword:chatwoot?.ok?password:null, inviteLink, inviteEmailSent, fallbackPassword:inviteLink?null:password, explicitPassword});
+}
+
+/* ── Team invite (User Management → "Invite teammate", the primary way to add someone). Creates
+   an Authentik Invitation instead of an Authentik user: the teammate opens the link, picks their
+   own password on Authentik's enrollment flow (AUTHENTIK_INVITE_FLOW_SLUG, built by
+   authentik/leadvyne-team-access-blueprint.yaml), and Authentik itself creates their account —
+   no temporary password, and no dependency on a bound Recovery flow. Email/username/name are
+   fixed on the invitation (fixed_data), so the invitee can't sign up under a different address
+   than the one added to team_emails here. The emailed link points at dashboard.html?invite=<id>
+   rather than straight at Authentik, so the dashboard can start a normal PKCE login in the same
+   tab and drop them into the app the moment enrollment finishes (see startAuthentikInvite).
+   Needs the service token to also hold authentik_stages_invitation.add_invitation and
+   authentik_flows.view_flow. handleTeamCreateUser stays as the "set a password yourself" path. ── */
+export const TEAM_INVITE_TTL_DAYS=7;
+export function teamInviteLink(env, invitationId){
+  const base=String(env.APP_BASE_URL||'https://app.leadvyne.com').replace(/\/+$/,'');
+  return `${base}/dashboard.html?invite=${encodeURIComponent(invitationId)}`;
+}
+export async function handleTeamInvite(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  if(!env.AUTHENTIK_API_TOKEN) return json({error:'Authentik admin API is not configured on the server.'}, 500);
+  const {name, email}=await request.json().catch(()=>({}));
+  const emailNorm=String(email||'').trim().toLowerCase();
+  if(!/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(emailNorm)) return json({error:'Please enter a valid email address.'}, 400);
+  const displayName=String(name||'').trim()||emailNorm.split('@')[0];
+
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(emailNorm===String(c.authentik_email||'').trim().toLowerCase()) return json({error:"That's the account owner's own email."}, 409);
+  const teamEmails=(c.team_emails||'').split(',').map(e=>e.trim().toLowerCase()).filter(Boolean);
+  const alreadyMember=teamEmails.includes(emailNorm);
+  if(!alreadyMember){
+    if(await getClientByAuthentikEmail(env, emailNorm)) return json({error:'This email is already linked to another account.'}, 409);
+    const planLimits=getPlanLimits(c.plan_tier);
+    if(planLimits && countClientTeamUsers(c)>=planLimits.max_users){
+      return json({error:`Your ${planLimits.label} plan includes ${planLimits.max_users} user${planLimits.max_users===1?'':'s'}. Upgrade your plan to add more team members.`}, 402);
+    }
+  }
+  const addToTeam=async()=>{
+    if(alreadyMember) return;
+    let names={}; try{ names=JSON.parse(c.team_names||'{}'); }catch(e){}
+    names[emailNorm]=displayName;
+    await patchClientFields(env, payload.cid, {team_emails:[...teamEmails, emailNorm].join(','), team_names:JSON.stringify(names)});
+  };
+
+  // They already have an Authentik login (e.g. used Leadvyne elsewhere) — nothing to invite,
+  // just give them access; their existing login lands them on this account from now on.
+  if(await authentikFindUserByEmail(env, emailNorm)){
+    await addToTeam();
+    return json({ok:true, email:emailNorm, alreadyHasLogin:true});
+  }
+
+  const slug=String(env.AUTHENTIK_INVITE_FLOW_SLUG||'leadvyne-team-invite').trim();
+  const flowR=await authentikApiFetch(env, `/flows/instances/${encodeURIComponent(slug)}/`);
+  if(!flowR.ok) return json({error:`Invite links aren't set up on Authentik yet (flow "${slug}" not found). Use "Create user with a password" below for now.`, code:'INVITE_FLOW_MISSING'}, 503);
+  const flow=await flowR.json().catch(()=>({}));
+
+  const expiresAt=new Date(Date.now()+TEAM_INVITE_TTL_DAYS*86400000).toISOString();
+  const suffix=Array.from(crypto.getRandomValues(new Uint8Array(5)), b=>b.toString(16).padStart(2,'0')).join('');
+  const invR=await authentikApiFetch(env, '/stages/invitation/invitations/', {method:'POST', body:JSON.stringify({
+    name:`leadvyne-${payload.cid}-${suffix}`, expires:expiresAt, single_use:true, flow:flow.pk,
+    fixed_data:{email:emailNorm, username:emailNorm, name:displayName}
+  })});
+  const inv=await invR.json().catch(()=>({}));
+  if(!invR.ok||!inv.pk){
+    const detail=inv?.name?.[0]||inv?.non_field_errors?.[0]||inv?.detail||('HTTP '+invR.status);
+    return json({error:'Authentik rejected the invitation: '+detail}, 502);
+  }
+  await addToTeam();
+
+  const inviteLink=teamInviteLink(env, inv.pk);
+  const chatwoot=await provisionTeamChatwootAgent(env, c, payload.cid, {name:displayName, email:emailNorm, password:generateRandomPassword()});
+  const inviteEmailSent=await sendTeamInviteEmail(env, {to:emailNorm, name:displayName, inviteUrl:inviteLink, clientName:c.client_name||'your team',
+    intro:`Click below to accept and create your login — you'll choose your own password. The link expires in ${TEAM_INVITE_TTL_DAYS} days.`, ctaLabel:'Accept invite'});
+  return json({ok:true, email:emailNorm, inviteLink, inviteEmailSent, expiresAt, chatwoot});
 }
 
 // Looks up an Authentik user's pk by email — needed because neither "Add Existing Authentik User"
@@ -7772,16 +7852,16 @@ async function sendBillingEmail(env, {to, subject, heading, bodyHtml, ctaLabel, 
 // missing RESEND_API_KEY (or a bad `to`) just means the invite link never got emailed; the caller
 // (handleTeamCreateUser) always also returns the link itself so the admin has something to hand
 // over manually either way.
-async function sendTeamInviteEmail(env, {to, name, inviteUrl, clientName}){
+async function sendTeamInviteEmail(env, {to, name, inviteUrl, clientName, intro='Click below to set your own password and sign in.', ctaLabel='Set your password'}){
   if(!env.RESEND_API_KEY||!to||!inviteUrl) return false;
   const from=env.TEAM_INVITE_FROM_EMAIL||'Leadvyne <team@leadvyne.com>';
   const bodyHtml=`<p>Hi ${esc(name||'there')},</p>
-    <p>You've been added to <b>${esc(clientName||'a Leadvyne account')}</b>. Click below to set your own password and sign in.</p>
+    <p>You've been added to <b>${esc(clientName||'a Leadvyne account')}</b>. ${esc(intro)}</p>
     <p style="color:#6b7280;font-size:13px">This link is single-use and tied to your account — don't forward it.</p>`;
   try{
     const r=await fetch('https://api.resend.com/emails', {
       method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({from, to:[to], subject:`You've been invited to ${clientName||'Leadvyne'}`, html:renderBillingEmailHtml({heading:'You\'re invited', bodyHtml, ctaLabel:'Set your password', ctaUrl:inviteUrl})})
+      body:JSON.stringify({from, to:[to], subject:`You've been invited to ${clientName||'Leadvyne'}`, html:renderBillingEmailHtml({heading:'You\'re invited', bodyHtml, ctaLabel, ctaUrl:inviteUrl})})
     });
     return r.ok;
   }catch(e){ return false; }
@@ -32717,6 +32797,7 @@ export default {
       else if(url.pathname==='/voice/settings' && request.method==='POST'){ res=await handleVoiceSettingsUpdate(request, env); }
       else if(url.pathname==='/voice/summary-callback' && request.method==='POST'){ res=await handleVoiceSummaryCallback(request, env); }
       else if(url.pathname==='/team/create-user' && request.method==='POST'){ res=await handleTeamCreateUser(request, env); }
+      else if(url.pathname==='/team/invite' && request.method==='POST'){ res=await handleTeamInvite(request, env); }
       else if(url.pathname==='/team/set-password' && request.method==='POST'){ res=await handleTeamSetPassword(request, env); }
       else if(url.pathname==='/team/chatwoot-agent' && request.method==='POST'){ res=await handleTeamChatwootAgent(request, env); }
       else if(url.pathname==='/team/whatsapp' && request.method==='POST'){ res=await handleTeamWhatsappSet(request, env); }
