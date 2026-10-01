@@ -2,7 +2,7 @@
 // must reach the D1 lead_messages row chats.html reads — not just the AI's text reading of them.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { engineInboundMediaFields, d1InsertLeadMessage, chatwootOutgoingMediaRows, chatwootMediaRows } from './worker.js';
+import { engineInboundMediaFields, d1InsertLeadMessage, d1InsertLeadMessages, chatwootOutgoingMediaRows, chatwootMediaRows } from './worker.js';
 
 function fakeDb(){
   const rows=[];
@@ -66,4 +66,35 @@ describe('chatwootOutgoingMediaRows (bot/agent photos from the message_created w
 
 test('inbound media carries its Chatwoot message id so the one-off backfill skips it', ()=>{
   assert.equal(engineInboundMediaFields('image','https://cw.test/p.jpg','',77).userMedia.cw_id, 77);
+});
+
+describe('d1InsertLeadMessages', ()=>{
+  function batchDb({failBatch=false}={}){
+    const rows=[], batches=[];
+    return {rows, batches,
+      prepare(){ return {bind(...args){ return {args, async run(){ rows.push(args); }}; }}; },
+      async batch(list){ if(failBatch) throw new Error('batch failed'); batches.push(list.length); for(const st of list) await st.run(); }};
+  }
+  test('writes a whole history in one batch, skipping rows with no role', async ()=>{
+    const DB=batchDb();
+    await d1InsertLeadMessages({DB}, 7, 48, [{role:'user', content:'hi', ts:'1'}, {content:'no role'}, {role:'assistant', content:'hello', ts:'2', media:{type:'image', url:'p'}}]);
+    assert.deepEqual(DB.batches, [2]);
+    assert.deepEqual(DB.rows.map(r=>r[3]), ['hi', 'hello']);
+    assert.equal(JSON.parse(DB.rows[1][4]).kind, 'image');
+  });
+  test('splits long histories into chunks of 100', async ()=>{
+    const DB=batchDb();
+    await d1InsertLeadMessages({DB}, 7, 48, Array.from({length:250}, (_, i)=>({role:'user', content:String(i), ts:String(i)})));
+    assert.deepEqual(DB.batches, [100, 100, 50]);
+  });
+  test('falls back to row-by-row when the batch fails', async ()=>{
+    const DB=batchDb({failBatch:true});
+    await d1InsertLeadMessages({DB}, 7, 48, [{role:'user', content:'a', ts:'1'}, {role:'user', content:'b', ts:'2'}]);
+    assert.deepEqual(DB.rows.map(r=>r[3]), ['a', 'b']);
+  });
+  test('an empty list does nothing', async ()=>{
+    const DB=batchDb();
+    await d1InsertLeadMessages({DB}, 7, 48, []);
+    assert.deepEqual(DB.batches, []);
+  });
 });
