@@ -256,13 +256,14 @@ async function refreshMessages(lead,stick=false){
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
 function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button onclick="goMatrimonial()">💍 Matrimonial profile</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${l.Handover==='Yes'?'🤖 Hand back to bot':'🙋 Take over from bot'}</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
  $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}${l.Owner?' · '+esc(l.Owner):''}</div></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="searchThread(this.value)"></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
+ <div id="handoverBar" class="window-bar hidden"><span>🙋 A person is handling this chat — the bot won't reply.</span><button onclick="toggleHandover()">Hand back to bot</button></div>
  <div id="windowBar" class="window-bar hidden"><span>⏱ The 24-hour reply window has closed. WhatsApp only delivers an approved template until the customer writes again.</span><button onclick="openTemplates()">Send template</button></div>
  <div id="replyBox" class="reply-preview hidden"></div>
  <div class="composer-mode" id="modeRow"><button class="mode-btn active" id="replyMode" onclick="setComposeMode('reply')">Reply</button><button class="mode-btn" id="noteMode" onclick="setComposeMode('note')">Internal note</button></div>
@@ -325,7 +326,7 @@ function drawMessages(stick=false){
   const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:'';
   body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
  });
- updateWindowBar();
+ updateWindowBar();updateHandoverBar();
  let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
  t.innerHTML=body||'<div class="empty-list">No messages yet. Say hello 👋</div>';
  t.dataset.count=h.length;
@@ -443,6 +444,7 @@ function viewImage(src){let ov=$('lightbox');if(!ov){ov=document.createElement('
 // composer shows a banner with a shortcut to the picker. Unknown timing counts as open (no banner).
 function lastCustomerAt(lead){let t=lead.LastCustomerMsgAt||'';const h=hist(lead);for(let i=h.length-1;i>=0;i--){if(isOut(h[i]))continue;const ts=h[i].ts||h[i].timestamp||h[i].created_at;if(ts&&(!t||new Date(ts)>new Date(t)))t=ts;break}return t}
 function windowOpen(lead){const t=lastCustomerAt(lead);return !t||isNaN(new Date(t))||Date.now()-new Date(t)<24*3600*1000}
+function updateHandoverBar(){const b=$('handoverBar');if(!b||!current)return;b.classList.toggle('hidden',current.Handover!=='Yes')}
 function updateWindowBar(){const b=$('windowBar');if(!b||!current)return;b.classList.toggle('hidden',isIg(current)||windowOpen(current))}
 const tplCache={};let tplList=[],tplSel=null;
 const tplComp=(t,type)=>(t?.components||[]).find(c=>String(c.type||'').toUpperCase()===type);
@@ -609,15 +611,12 @@ async function toMp3(blob){
 
 // ── Header menu actions ──────────────────────────────────────────────────────────────────────
 async function togglePin(){const next=current.Pinned!=='Yes';try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
+// Manual takeover: the worker marks the lead handed over to this person (HandoverBy) so the bot
+// stays silent on it until someone hands it back — see handleChatHandover in worker.js.
+async function toggleHandover(){const lead=current,next=lead.Handover!=='Yes';try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
 async function toggleResolve(){const next=current.ConvResolved!=='Yes';try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
 function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
 function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
-function goMatrimonial(){
-  toggleMenu(false);
-  if(!current)return;
-  const phone=(current.Phone||'').replace(/[^0-9]/g,'');
-  window.open(`matrimonial.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&tab=activated&phone=${encodeURIComponent(phone)}&name=${encodeURIComponent(current.Name||'')}`, '_blank');
-}
 function goBack(){if(embedded){toParent('home');return}if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
 function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySelectorAll('#thread .bubble').forEach(b=>{b.style.opacity=!q||b.textContent.toLowerCase().includes(q)?'1':'.22'})}
 
