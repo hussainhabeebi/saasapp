@@ -1553,6 +1553,35 @@ async function handleChatResolveLead(request, env){
   return json({ok:true, resolved:!!resolved});
 }
 
+// Manual human takeover from chats.html's ⋮ menu. Take over: Handover='Yes' plus HandoverBy (who
+// took it), which the engine reads as "stay silent on this lead" even when the client's
+// handover_silence_enabled is off — a bot-triggered handover leaves HandoverBy blank and keeps the
+// old behavior. Stage is left alone, so handing back just clears both fields and the bot resumes
+// at the stage the lead was already in. Follow-ups already skip any lead with Handover='Yes'.
+export function engineManualTakeoverActive(lead){
+  return !!lead && lead.Handover==='Yes' && !!String(lead.HandoverBy||'').trim();
+}
+async function handleChatHandover(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const {lead_id, takeover}=await request.json().catch(()=>({}));
+  if(!lead_id) return json({error:'lead_id required'}, 400);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
+  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  const lead=await leadR.json().catch(()=>({}));
+  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  await ensureLeadsColumns(env, ['HandoverBy']);
+  const by=String(payload.email||payload.sub||'Team').slice(0,120);
+  const patch=takeover
+    // SlaAlerted 'Yes': someone is already on it, so no "waiting for a human" SLA alert.
+    ?{Id:Number(lead_id), Handover:'Yes', HandoverBy:by, HandoverAt:new Date().toISOString(), SlaAlerted:'Yes'}
+    :{Id:Number(lead_id), Handover:'No', HandoverBy:'', HandoverAt:'', SlaAlerted:'No'};
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
+  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  const {Id, ...fields}=patch;
+  return json({ok:true, lead:fields});
+}
+
 // A message a person sent from chats.html (attachment, voice note, template) — saved to the D1
 // thread the page reads from, after checking the lead belongs to this client, and LastMsgAt bumped
 // so the chat list re-sorts. Callers that pass no lead_id (quotations, broadcasts) skip this.
@@ -19315,6 +19344,22 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
 
+    // Manual takeover from Chats (see handleChatHandover): the bot stays silent on this lead,
+    // whatever handover_silence_enabled says, until someone taps "Hand back to bot". The
+    // customer's message still goes into the Chats thread and bumps LastMsgAt so staff see it.
+    if(engineManualTakeoverActive(state.lead)){
+      const msgId=String(body.id||body.message?.id||'');
+      if(msgId && state.lead.LastProcessedMessageId===msgId) return json({ok:true, skipped:'duplicate-delivery'});
+      if(msgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, msgId)||state.leadId;
+      const now=new Date().toISOString();
+      const media=engineInboundMediaFields(mediaType, mediaUrl, text, msgId);
+      await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
+        ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
+      await engineUpsertLead(env, 'PATCH', state.leadId, {LastMsgAt:now});
+      await logEngineSkip(env, clientId, phone, convId, 'manual-takeover', `taken over by ${state.lead.HandoverBy}`);
+      return json({ok:true, skipped:'manual-takeover'});
+    }
+
     // Global bot-reply toggle (CLIENTS.bot_reply_disabled='Yes', Settings → Bot Auto-Reply).
     // Exit before any AI classification or LLM call so no tokens are consumed — collect/upsert
     // the lead so the CRM stays current, then return. Mirrors the per-inbox check below.
@@ -22037,7 +22082,7 @@ export async function processInstagramWebhookBody(env, body){
       state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
       const isNewLead=!state.leadId;
       recovery={c,clientId,state,isNewLead};
-      const inboxReason=env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
+      const inboxReason=engineManualTakeoverActive(state.lead)?'manual-takeover':env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
       if(inboxReason){
         const routing={route:'inbox_only',next:state.stage||'new',customerLanguage:c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
         const saved=await persistInstagramTurn(env,c,clientId,state,routing,parsed.text,mid,isNewLead);
@@ -32710,6 +32755,7 @@ export default {
       else if(url.pathname==='/chat/send' && request.method==='POST'){ res=await handleChatSend(request, env); }
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
+      else if(url.pathname==='/chat/handover' && request.method==='POST'){ res=await handleChatHandover(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }

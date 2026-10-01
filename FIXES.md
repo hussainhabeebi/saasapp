@@ -586,6 +586,23 @@ to a full reload. D1 message writes for seeding and media backfill go through `e
 chunks of 100. If a batch fails, the rows are written one by one.
 **Tested:** `frontend/tests/chats-delta-poll.spec.js`, `chat-media.test.js`.
 
+### 35 — [frontend + backend] Chats: manual "Take over from bot"; Matrimonial link removed
+**Area:** `menuHtml`/`toggleHandover`/`updateHandoverBar` (`frontend/chats.html`);
+`handleChatHandover`, `engineManualTakeoverActive`, `handleEngineWebhook`, Instagram `inboxReason`
+(`cloudflare-worker/worker.js`)
+**Broke:** Staff could not stop the bot from Chats to reply themselves. A handover only silenced
+the bot when Settings → "Silence bot after handover" was on. The ⋮ menu also linked to the
+Matrimonial profile, which doesn't belong in Chats.
+**Fix:** The ⋮ menu has "Take over from bot" / "Hand back to bot" (POST `/chat/handover`). Taking
+over sets `Handover='Yes'`, a new `HandoverBy` (staff email) and `HandoverAt`, and sets `SlaAlerted='Yes'` so no
+"waiting for a human" alert fires. While `HandoverBy` is set and `Handover='Yes'`, the WhatsApp and
+Instagram engines stay silent on that lead whatever the silence setting says, but the customer's
+message is still saved to the Chats thread and bumps `LastMsgAt`. Stage is not changed, so handing
+back clears both fields and the bot resumes where the lead was. A bar in the thread shows while a
+chat is handed over, with a Hand back button. A bot-triggered handover (`HandoverBy` blank) behaves
+as before. The Matrimonial menu item and `goMatrimonial` are removed.
+**Tested:** `frontend/tests/chats-handover.spec.js`, `manual-takeover.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
