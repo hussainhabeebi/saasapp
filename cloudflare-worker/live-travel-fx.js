@@ -8,13 +8,12 @@
 
    Rates are USD-based. Live rates come from Open Exchange Rates when
    FX_API_KEY is set, otherwise from ExchangeRate-API's keyless open endpoint.
-   They are cached in D1 (live_travel_fx_rates) and in isolate memory for
-   LT_FX_TTL_MS; the 15-minute cron refreshes them once they go stale, so a search
-   never waits on the rate provider. If the provider is down the last stored
-   rates are used, and if nothing was ever stored the USD pegs below still
-   cover the Gulf currencies. A non-pegged currency (INR, KWD, EUR, GBP) with
-   no stored rate is never guessed: the offer stays in its supplier currency
-   and is flagged fx_status:'unconverted'.
+   All of Live Agency uses ONE stored snapshot (live_travel_fx_rates), refreshed
+   at most LT_FX_MAX_REFRESHES_PER_DAY (4) times per UTC day — see "Rate storage".
+   If the provider is down the last snapshot keeps being used, and if none was
+   ever stored the USD pegs below still cover the Gulf currencies. A non-pegged
+   currency (INR, KWD, EUR, GBP) with no stored rate is never guessed: the offer
+   stays in its supplier currency and is flagged fx_status:'unconverted'.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export const LT_FX_CURRENCIES={
@@ -33,13 +32,16 @@ export const LT_FX_CODES=Object.keys(LT_FX_CURRENCIES);
 export const LT_FX_ROUNDING_MODES=['auto','none','up_1','up_5','up_10'];
 // Currencies hard-pegged to USD — safe to use when no live rate was ever stored.
 export const LT_FX_USD_PEGS={USD:1,AED:3.6725,SAR:3.75,QAR:3.64,OMR:0.3845,BHD:0.376};
-export const LT_FX_TTL_MS=60*60*1000;
+export const LT_FX_MAX_REFRESHES_PER_DAY=4;
+export const LT_FX_SLOT_HOURS=24/LT_FX_MAX_REFRESHES_PER_DAY;
+// Rates older than two missed slots are flagged stale in the UI (they are still used).
+export const LT_FX_STALE_MS=12*60*60*1000;
 export const LT_FX_DEFAULT_SETTINGS={default_currency:'AED',fx_buffer_pct:1.5,rounding:'auto',allow_currency_override:1,auto_detect_phone_currency:1};
 
 // Longest prefix first so +1 never shadows anything longer.
 const LT_FX_PHONE_PREFIXES=[['971','AED'],['966','SAR'],['974','QAR'],['968','OMR'],['965','KWD'],['973','BHD'],['91','INR'],['44','GBP'],['1','USD']];
 
-let _memRates=null;
+let _tableReady=false;
 
 export function ltFxCode(value){
   const code=String(value||'').trim().toUpperCase();
@@ -163,12 +165,28 @@ export function ltFxDriftPct(lockedRate,from,to,rates,bufferPct=0){
   return Math.round(((now-lockedMarket)/lockedMarket)*10000)/100;
 }
 
-/* ── Rate storage ── */
+/* ── Rate storage ──
+   One shared snapshot in D1 is the only source of rates. Every Live Agency path (search,
+   revalidate, quotes, booking drift check, payments, wallet, WhatsApp, Currency page) reads that
+   same row on each request — there is deliberately no per-isolate memory cache, so two Worker
+   instances can never price with different rates after a refresh.
+
+   Only a refresh writes the row, and refreshes are capped at LT_FX_MAX_REFRESHES_PER_DAY per UTC
+   day. The cron refreshes once per 6-hour UTC slot (00:00, 06:00, 12:00, 18:00); a manual
+   "Refresh rates" uses up one of the same 4. The cap and a 60-second lock are claimed atomically
+   in D1 before calling the provider, so concurrent isolates can't double-refresh. Only successful
+   refreshes count; a failed attempt releases the lock and the next 15-minute tick retries. */
 async function ltFxEnsureTable(env){
+  if(_tableReady)return;
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_fx_rates (base TEXT PRIMARY KEY,rates_json TEXT NOT NULL,source TEXT NOT NULL DEFAULT '',fetched_at TEXT NOT NULL)`).run();
+  // Refresh bookkeeping added after 0108 shipped — ignore "duplicate column" on later runs.
+  for(const col of [`refresh_day TEXT NOT NULL DEFAULT ''`,`refresh_count INTEGER NOT NULL DEFAULT 0`,`refreshing_until TEXT`]){
+    try{await env.DB.prepare(`ALTER TABLE live_travel_fx_rates ADD COLUMN ${col}`).run();}catch(e){}
+  }
+  _tableReady=true;
 }
 function ltFxPegFallback(){
-  return {base:'USD',rates:{...LT_FX_USD_PEGS},source:'usd_peg_fallback',fetched_at:null,stale:true};
+  return {base:'USD',rates:{...LT_FX_USD_PEGS},source:'usd_peg_fallback',fetched_at:null,stale:true,refreshes_today:0};
 }
 async function ltFxFetchLive(env,fetchImpl=fetch){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),8000);
@@ -191,41 +209,71 @@ function ltFxPick(rates){
   out.USD=1;
   return out;
 }
+const ltFxDay=d=>d.toISOString().slice(0,10);
+// Start of the current 6-hour UTC slot.
+export function ltFxSlotStart(now=new Date()){
+  const d=new Date(now);d.setUTCMinutes(0,0,0);d.setUTCHours(Math.floor(d.getUTCHours()/LT_FX_SLOT_HOURS)*LT_FX_SLOT_HOURS);return d;
+}
+export function ltFxNextSlot(now=new Date()){
+  return new Date(ltFxSlotStart(now).getTime()+LT_FX_SLOT_HOURS*3600*1000);
+}
+async function ltFxReadRow(env){
+  try{await ltFxEnsureTable(env);return await env.DB.prepare(`SELECT * FROM live_travel_fx_rates WHERE base='USD'`).first();}catch(e){return null;}
+}
+function ltFxFromRow(row,now=new Date()){
+  const refreshesToday=row&&row.refresh_day===ltFxDay(now)?Number(row.refresh_count||0):0;
+  let rates=null;try{rates=JSON.parse(row?.rates_json||'null')}catch(e){}
+  if(!row?.fetched_at||!rates||!Object.keys(rates).length)return {...ltFxPegFallback(),refreshes_today:refreshesToday};
+  return {base:'USD',rates:{...LT_FX_USD_PEGS,...rates},source:row.source,fetched_at:row.fetched_at,
+    stale:now.getTime()-new Date(row.fetched_at).getTime()>LT_FX_STALE_MS,refreshes_today:refreshesToday};
+}
 
-/* Returns {base:'USD',rates,source,fetched_at,stale}. Never throws.
-   opts.force refreshes regardless of age; opts.allowFetch=false only reads the cache. */
+/* The rates every Live Agency calculation uses: the one stored snapshot. Never throws and never
+   calls the provider — except on a brand-new deployment with no snapshot at all, where it tries
+   one (capped) refresh so the first search isn't stuck on peg-only rates. */
 export async function ltFxRates(env,opts={}){
-  const now=Date.now(),fresh=r=>r?.fetched_at&&now-new Date(r.fetched_at).getTime()<LT_FX_TTL_MS;
-  if(!opts.force&&fresh(_memRates))return _memRates;
-  let stored=null;
+  const row=await ltFxReadRow(env),current=ltFxFromRow(row);
+  if(current.fetched_at||opts.allowFetch===false)return current;
+  const r=await ltFxRefresh(env,{fetchImpl:opts.fetchImpl});
+  return r.rates;
+}
+
+/* Claims one of today's refreshes and calls the provider.
+   Returns {refreshed, reason, rates}. reason: 'ok' | 'daily_limit' | 'in_progress' | 'provider_error'. */
+export async function ltFxRefresh(env,opts={}){
+  const now=opts.now||new Date(),day=ltFxDay(now),nowIso=now.toISOString();
   try{
     await ltFxEnsureTable(env);
-    const row=await env.DB.prepare(`SELECT * FROM live_travel_fx_rates WHERE base='USD'`).first();
-    if(row){let rates={};try{rates=JSON.parse(row.rates_json)}catch(e){}stored={base:'USD',rates:{...LT_FX_USD_PEGS,...rates},source:row.source,fetched_at:row.fetched_at,stale:false};}
-  }catch(e){}
-  if(!opts.force&&fresh(stored)){_memRates=stored;return stored;}
-  if(opts.allowFetch!==false){
-    try{
-      const live=await ltFxFetchLive(env,opts.fetchImpl);
-      const rates=ltFxPick(live.rates),fetchedAt=new Date().toISOString();
-      try{
-        await env.DB.prepare(`INSERT INTO live_travel_fx_rates (base,rates_json,source,fetched_at) VALUES ('USD',?,?,?)
-          ON CONFLICT(base) DO UPDATE SET rates_json=excluded.rates_json,source=excluded.source,fetched_at=excluded.fetched_at`).bind(JSON.stringify(rates),live.source,fetchedAt).run();
-      }catch(e){}
-      _memRates={base:'USD',rates:{...LT_FX_USD_PEGS,...rates},source:live.source,fetched_at:fetchedAt,stale:false};
-      return _memRates;
-    }catch(e){/* fall through to stored or pegs */}
+    await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_fx_rates (base,rates_json,source,fetched_at,refresh_day,refresh_count) VALUES ('USD','{}','','',?,0)`).bind(day).run();
+    const claim=await env.DB.prepare(`UPDATE live_travel_fx_rates
+      SET refresh_count=CASE WHEN refresh_day=? THEN refresh_count ELSE 0 END,refresh_day=?,refreshing_until=?
+      WHERE base='USD' AND (refreshing_until IS NULL OR refreshing_until<?) AND (refresh_day<>? OR refresh_count<?)`)
+      .bind(day,day,new Date(now.getTime()+60000).toISOString(),nowIso,day,LT_FX_MAX_REFRESHES_PER_DAY).run();
+    if(!(claim?.meta?.changes>0)){
+      const row=await ltFxReadRow(env),current=ltFxFromRow(row,now);
+      const locked=row?.refreshing_until&&row.refreshing_until>=nowIso;
+      return {refreshed:false,reason:locked?'in_progress':'daily_limit',rates:current};
+    }
+  }catch(e){return {refreshed:false,reason:'provider_error',rates:ltFxFromRow(await ltFxReadRow(env),now)};}
+  try{
+    const live=await ltFxFetchLive(env,opts.fetchImpl);
+    await env.DB.prepare(`UPDATE live_travel_fx_rates SET rates_json=?,source=?,fetched_at=?,refresh_count=refresh_count+1,refreshing_until=NULL WHERE base='USD'`)
+      .bind(JSON.stringify(ltFxPick(live.rates)),live.source,nowIso).run();
+    return {refreshed:true,reason:'ok',rates:ltFxFromRow(await ltFxReadRow(env),now)};
+  }catch(e){
+    try{await env.DB.prepare(`UPDATE live_travel_fx_rates SET refreshing_until=NULL WHERE base='USD'`).run();}catch(e2){}
+    return {refreshed:false,reason:'provider_error',error:String(e?.message||e),rates:ltFxFromRow(await ltFxReadRow(env),now)};
   }
-  if(stored)return {...stored,stale:!fresh(stored)};
-  return ltFxPegFallback();
 }
 
-// Cron hook: refresh only when the stored rates are older than the TTL.
-export async function ltFxRefreshIfStale(env){
-  try{await ltFxRates(env);}catch(e){}
+// Cron hook (every 15 min): refresh once per 6-hour UTC slot, within the daily cap.
+export async function ltFxRefreshIfStale(env,opts={}){
+  try{
+    const now=opts.now||new Date(),current=ltFxFromRow(await ltFxReadRow(env),now);
+    if(current.fetched_at&&new Date(current.fetched_at)>=ltFxSlotStart(now))return {refreshed:false,reason:'fresh'};
+    return await ltFxRefresh(env,{...opts,now});
+  }catch(e){return {refreshed:false,reason:'provider_error'};}
 }
-
-export function ltFxResetMemoryCache(){ _memRates=null; }
 
 /* ── Per-agency settings ── */
 export async function ltFxEnsureSettingsTable(env){

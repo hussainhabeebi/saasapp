@@ -1,4 +1,4 @@
-import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
+import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxRefresh,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
 // (avoids the Docker cross-resource networking problem hit trying to do this on
@@ -31793,7 +31793,9 @@ async function ltEnsureSchema(env){
 }
 
 function ltFxPublic(info){
-  return {currency:info.settings.default_currency,source:info.rates.source,fetched_at:info.rates.fetched_at,stale:!!info.rates.stale,rates:ltFxRateTable(info.rates,info.settings.default_currency)};
+  return {currency:info.settings.default_currency,source:info.rates.source,fetched_at:info.rates.fetched_at,stale:!!info.rates.stale,
+    refreshes_today:Number(info.rates.refreshes_today||0),max_refreshes_per_day:LT_FX_MAX_REFRESHES_PER_DAY,next_refresh_at:ltFxNextSlot().toISOString(),
+    rates:ltFxRateTable(info.rates,info.settings.default_currency)};
 }
 // GET/PATCH /live-travel/currency-settings — agency default currency, FX buffer and rounding.
 async function handleLtCurrencySettings(request,env){
@@ -31807,14 +31809,18 @@ async function handleLtCurrencySettings(request,env){
   const info=await ltFxForClient(env,auth.cid);
   return json({settings:info.settings,fx:ltFxPublic(info),supported:LT_FX_CODES.map(code=>({code,...LT_FX_CURRENCIES[code]})),rounding_modes:LT_FX_ROUNDING_MODES});
 }
-// GET /live-travel/fx-rates[?refresh=1] — current rates against the agency currency.
+// GET /live-travel/fx-rates[?refresh=1] — the shared rate snapshot against the agency currency.
+// ?refresh=1 uses one of the day's capped refreshes (see ltFxRefresh); it never bypasses the cap.
 async function handleLtFxRates(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const settings=await ltFxSettings(env,auth.cid);
-  let rates=await ltFxRates(env);
-  // A manual refresh is honoured at most every 5 minutes so the free rate quota isn't burned.
-  if(new URL(request.url).searchParams.get('refresh')==='1'&&(!rates.fetched_at||Date.now()-new Date(rates.fetched_at).getTime()>5*60*1000))rates=await ltFxRates(env,{force:true});
-  return json({fx:ltFxPublic({settings,rates})});
+  if(new URL(request.url).searchParams.get('refresh')==='1'){
+    const r=await ltFxRefresh(env);
+    if(r.refreshed)await ltAudit(env,auth.cid,'settings','fx_rates','refreshed',auth.email,{source:r.rates.source,fetched_at:r.rates.fetched_at});
+    const message={ok:'Rates refreshed.',daily_limit:`Rates were already refreshed ${LT_FX_MAX_REFRESHES_PER_DAY} times today. The current rates stay in use until tomorrow (UTC).`,in_progress:'A refresh is already running. Try again in a minute.',provider_error:'The rate provider could not be reached. The current rates stay in use.'}[r.reason];
+    return json({fx:ltFxPublic({settings,rates:r.rates}),refreshed:r.refreshed,reason:r.reason,message});
+  }
+  return json({fx:ltFxPublic({settings,rates:await ltFxRates(env)})});
 }
 
 async function handleLtBootstrap(request,env){
@@ -33631,7 +33637,7 @@ export default {
       ctx.waitUntil(runMeetingsForAllClients(env));
       // End-of-session voice summary (Malayalam/Hindi) — see runVoiceSummariesForAllClients.
       ctx.waitUntil(runVoiceSummariesForAllClients(env));
-      // Live Agency exchange rates — refreshed only once the stored rates are an hour old; see live-travel-fx.js.
+      // Live Agency exchange rates — one refresh per 6-hour UTC slot, max 4/day; see live-travel-fx.js.
       ctx.waitUntil(ltFxRefreshIfStale(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }

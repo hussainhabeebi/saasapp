@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import worker from './worker.js';
-import { ltFxResetMemoryCache } from './live-travel-fx.js';
 
 class D1Statement {
   constructor(db,sql,args=[]){this.db=db;this.sql=sql;this.args=args;}
@@ -33,7 +32,7 @@ async function call(env,session,path,method='GET',body){
 // per process, and this test needs the runtime FX columns on its own fresh database.
 test('Live Agency converts mixed-currency supplier fares to the agency currency and locks the rate',async()=>{
   const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
-  const setRates=rates=>{DB.db.prepare(`INSERT INTO live_travel_fx_rates (base,rates_json,source,fetched_at) VALUES ('USD',?,'test',?) ON CONFLICT(base) DO UPDATE SET rates_json=excluded.rates_json,fetched_at=excluded.fetched_at`).run(JSON.stringify(rates),new Date().toISOString());ltFxResetMemoryCache();};
+  const setRates=rates=>{DB.db.prepare(`INSERT INTO live_travel_fx_rates (base,rates_json,source,fetched_at) VALUES ('USD',?,'test',?) ON CONFLICT(base) DO UPDATE SET rates_json=excluded.rates_json,fetched_at=excluded.fetched_at`).run(JSON.stringify(rates),new Date().toISOString());};
   setRates({USD:1,INR:88,AED:3.6725,SAR:3.75,QAR:3.64});
   const realFetch=globalThis.fetch,calls=[];
   globalThis.fetch=async(url,opts={})=>{

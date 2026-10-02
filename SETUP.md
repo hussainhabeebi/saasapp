@@ -8683,11 +8683,18 @@ quotes and bookings are added at runtime by `ltEnsureSchema`.
   rounded. Offers keep `supplier_currency`/`supplier_total`/`fx_rate` for staff and accounting.
   A fare whose currency has no known rate is never guessed: it stays in its supplier currency,
   is flagged `fx_status='unconverted'` and is listed last.
-- **Rates:** USD-based, cached in D1 (`live_travel_fx_rates`) for 1 hour and refreshed by the
-  `*/15` cron once stale. They come from Open Exchange Rates if the optional `FX_API_KEY` secret
-  is set (`npx wrangler secret put FX_API_KEY`), otherwise from ExchangeRate-API's keyless open
-  endpoint (daily updates). If the provider is down, the last stored rates are used; if no rate
-  was ever stored, only the USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
+- **Rates:** USD-based. All of Live Agency (search, revalidate, quotes, booking drift check,
+  payments, wallet, WhatsApp, Currency page) reads **one shared snapshot** in D1
+  (`live_travel_fx_rates`). There is no per-instance memory cache, so every Worker instance
+  prices with identical rates. The snapshot refreshes at most **4 times per UTC day**: the `*/15`
+  cron refreshes once per 6-hour slot (00:00, 06:00, 12:00, 18:00 UTC), and a manual
+  **Refresh rates** on the Currency page uses up one of the same 4. The cap and a 60-second
+  lock are claimed atomically in D1, so concurrent instances can't double-refresh. Only
+  successful refreshes count; after a failed one the next tick retries. Rates come from Open
+  Exchange Rates if the optional `FX_API_KEY` secret is set (`npx wrangler secret put FX_API_KEY`),
+  otherwise from ExchangeRate-API's keyless open endpoint. If the provider is down, the last
+  snapshot stays in use (flagged stale after 12h). If no snapshot was ever stored, only the
+  USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
 - **Rate lock:** quotes and bookings store the rate they were priced at. Creating a booking
   returns `409 code:'fx_drift'` when the market has moved past the buffer since the quote. Staff
   can re-quote, or confirm to book at the quoted price (`confirm_fx_drift:true`).
