@@ -16562,12 +16562,30 @@ BUTTONS — mandatory after EVERY reply:
   if(lang && lang!=='en'){
     sys+='\n\nPROPER NOUNS RULE: Always write person names (customer names, client names, contact names), place names (cities, countries, landmarks), and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
   }
+  sys+=engineBusinessNameMlRule(c, lang);
   if(lang==='ml'){
     const botCfg=engineParseJsonField(c.bot_config,{});
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) sys+=`\n\nMANGLISH WORDS RULE: The following English words have no natural Malayalam equivalent and are better understood by customers in their original English/Manglish form. Do NOT translate them into Malayalam script — write them exactly as they are: ${mw.join(', ')}.`;
   }
   return sys;
+}
+
+// Optional per-client approved Malayalam-script spelling of the business name
+// (bot_config.name_ml). Real observed failure: "Pulamanthole Mooss" came out as
+// "പുളിക്കൽ മൂസ്" in a Malayalam greeting — the model guessed a transliteration of an unfamiliar
+// name. When the client supplies the exact spelling, every Malayalam prompt pins the name to it;
+// without it, the existing keep-in-English rule applies unchanged.
+export function engineBusinessNameMl(c){
+  const botCfg=engineParseJsonField(c?.bot_config,{});
+  return typeof botCfg.name_ml==='string'?botCfg.name_ml.trim().slice(0,120):'';
+}
+export function engineBusinessNameMlRule(c, lang){
+  if(lang!=='ml') return '';
+  const nameMl=engineBusinessNameMl(c);
+  if(!nameMl) return '';
+  const nameEn=String(c?.client_name||'').trim();
+  return `\n\nBUSINESS NAME IN MALAYALAM: This is the one exception to keeping names in English. Whenever you mention this business${nameEn?` ("${nameEn}")`:''} in Malayalam, write its name exactly as "${nameMl}" — copy it character for character. Never use any other spelling, transliteration, or translation of the business name.`;
 }
 
 // A brand-new lead's very first bot reply, when the route is 'qualify' — previously just the raw
@@ -16797,7 +16815,7 @@ export function engineNormalizeIntroButtons(buttons,c={}){
   return defaults.slice(0,3);
 }
 function engineIntroCacheKey(c,lang,firstQuestion){
-  const seed=[c.main_prompt||'',c.services||'',c.kb_summary||'',firstQuestion||''].join('|');
+  const seed=[c.main_prompt||'',c.services||'',c.kb_summary||'',firstQuestion||'',engineBusinessNameMl(c)].join('|');
   let hash=2166136261;
   for(let i=0;i<seed.length;i++){ hash^=seed.charCodeAt(i); hash=Math.imul(hash,16777619); }
   return `greeting-intro:v1:${c.Id||'client'}:${lang}:${hash>>>0}`;
@@ -16818,6 +16836,8 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   if(c.google_maps_url && c.google_maps_url.trim()) sys+=`\n\n## Location\nGoogle Maps: ${c.google_maps_url.trim()}`;
   if(services.length) sys+='\n\n## Services\n'+services.slice(0,12).map(s=>`- ${s.name}: ${s.description||''}`).join('\n');
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
+  if(lang!=='en') sys+='\n\nPROPER NOUNS RULE: Always write person names, place names, and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
+  sys+=engineBusinessNameMlRule(c, lang);
   sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
   const out=await engineCallLlm(env, c, sys, '(new conversation)', 120);
   // When the LLM fails, build a minimal intro from the business name so the customer sees
@@ -16946,6 +16966,8 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
+  if(lang && lang!=='en') sys+='\n\nPROPER NOUNS RULE: Always write person names, place names, and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
+  sys+=engineBusinessNameMlRule(c, lang);
   return sys;
 }
 
@@ -17320,7 +17342,7 @@ async function engineLocalizeReply(env, c, text, targetLang){
     const mw=Array.isArray(botCfg.manglish_words)?botCfg.manglish_words.filter(w=>w&&typeof w==='string'):[];
     if(mw.length) manglishNote=` MANGLISH RULE: Do NOT translate these words — keep them exactly as they appear in the source text: ${mw.join(', ')}.`;
   }
-  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
+  const system=`Translate the following WhatsApp message into the language with ISO 639-1 code "${targetLang}". Keep any URLs, product SKUs/codes, numbers, and emoji exactly as they are — translate only the natural-language wording around them. Keep all proper nouns (person names, customer names, place names, city names, country names, business names, and brand names) in their original English form — do not transliterate or render them in the local script.${manglishNote}${engineBusinessNameMlRule(c, targetLang).replace(/\n+/g,' ')} Respond with ONLY the translated text, no explanation, no quotes, no markdown.`;
   try{
     const geminiRaw=await aiClientFirst(env, c, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'},
       ()=>engineGeminiGenerate(env, system, trimmed, {temperature:0.2, maxOutputTokens:400, caller:'localize'}));

@@ -3779,6 +3779,21 @@ const ROLES = {
           </div>
         </div>
 
+        <div class="card" style="margin-bottom:14px" id="nameMlCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🏷️ Business Name in Malayalam</div>
+            <div class="s-note">Optional. By default your business name stays in English even in Malayalam replies. If you want it written in Malayalam script, enter the exact approved spelling here — the bot will copy it character for character instead of guessing a transliteration. Leave blank to keep the name in English.</div>
+            <div style="flex:1;min-width:240px;max-width:520px;margin-top:10px">
+              <label class="form-label">Malayalam spelling of business name</label>
+              <input class="form-input" id="cfgNameMl" maxlength="120" lang="ml" placeholder="e.g. പുലാമന്തോൾ മൂസ്">
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+              <button class="save-btn" id="saveNameMl">Save</button>
+              <span class="save-msg" id="saveNameMlMsg"></span>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">⚡ Speed &amp; AI Usage</div>
@@ -12263,6 +12278,7 @@ function populateBotBehaviorPage(){
   const mw=Array.isArray(botConfig.manglish_words)?botConfig.manglish_words:[];
   $id('cfgManglishWords').value=mw.join(', ');
   renderManglishSuggestions(mw);
+  $id('cfgNameMl').value=typeof botConfig.name_ml==='string'?botConfig.name_ml:'';
   $id('cfgManglishWords').addEventListener('input',function(){
     renderManglishSuggestions(this.value.split(',').map(s=>s.trim()).filter(Boolean));
   },{once:true});
@@ -12301,6 +12317,14 @@ $id('saveManglishWords').addEventListener('click',async()=>{
   if(words.length) botConfig.manglish_words=words;
   else delete botConfig.manglish_words;
   await saveField('saveManglishWords','saveManglishWordsMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveNameMl').addEventListener('click',async()=>{
+  let botConfig={};
+  try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  const val=$id('cfgNameMl').value.normalize('NFC').trim().slice(0,120);
+  if(val) botConfig.name_ml=val;
+  else delete botConfig.name_ml;
+  await saveField('saveNameMl','saveNameMlMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveDefaultLanguage').addEventListener('click',async()=>{
   const lang=$id('cfgDefaultLanguage').value||'en';
