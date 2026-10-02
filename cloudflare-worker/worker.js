@@ -15854,7 +15854,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers){
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
     return;
   }
-  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',displayCurrency:o.currency,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
   const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
     VALUES (?,?,'select',?,NULL,NULL,?,?)
@@ -15907,8 +15907,10 @@ export function ltStoredOfferSelectionIndex(offers,input){
   const list=Array.isArray(offers)?offers:[],text=String(input||'').trim();
   const numbered=text.match(/^(?:book\s+(?:option\s+)?)?([1-3])$/i);
   if(numbered){const idx=Number(numbered[1])-1;return idx<list.length?idx:-1;}
-  const ordinals={first:0,one:0,second:1,two:1,third:2,three:2};
-  const ordinal=text.match(/\b(first|one|second|two|third|three)\b/i);
+  // The WHOLE message must be a choice ("first", "option two", "book the 2nd one"). A word like
+  // "one" inside another answer ("One Way", "two adults") must never pick a flight.
+  const ordinals={first:0,'1st':0,one:0,second:1,'2nd':1,two:1,third:2,'3rd':2,three:2};
+  const ordinal=text.replace(/[.!]+$/,'').match(/^(?:(?:book|select|choose|take|i(?:'ll| will)? take|i want)\s+)?(?:the\s+)?(?:(?:option|flight|no\.?|number)\s+)?(first|1st|one|second|2nd|two|third|3rd|three)(?:\s+(?:one|option|flight))?(?:\s+please)?$/i);
   if(ordinal){const idx=ordinals[ordinal[1].toLowerCase()];return idx<list.length?idx:-1;}
   const normalize=v=>String(v||'').toLowerCase().replace(/\b(?:book|booking|please|ticket|flight|option)\b/g,'').replace(/[^a-z0-9]/g,'');
   const query=normalize(text);if(query.length<3)return -1;
@@ -15954,9 +15956,25 @@ export function ltChatCurrencySwitch(text){
 // Re-prices stored chat offers (POOMAS, no agency markup) into another currency.
 export function ltConvertStoredChatOffers(offers,fx){
   return (offers||[]).map(o=>{
-    const c=ltFxApplyToOffer({currency:o.supplierCurrency||o.currency,total_amount:Number(o.supplierTotal??o.total),base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0});
-    return c.fx_status==='unconverted'?o:{...o,currency:c.currency,total:c.total_amount,fxStatus:c.fx_status};
+    // Offers saved before currency support have no supplier fields: their currency/total ARE the supplier's.
+    const supplierCurrency=o.supplierCurrency||o.currency,supplierTotal=Number(o.supplierTotal??o.total);
+    const c=ltFxApplyToOffer({currency:supplierCurrency,total_amount:supplierTotal,base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0});
+    const base={...o,supplierCurrency,supplierTotal,displayCurrency:fx.target};
+    return c.fx_status==='unconverted'?{...base,currency:supplierCurrency,total:supplierTotal,fxStatus:'unconverted'}:{...base,currency:c.currency,total:c.total_amount,fxStatus:c.fx_status};
   });
+}
+// The currency a WhatsApp customer sees: one they asked for, else their phone country, else the agency default.
+export function ltChatCustomerCurrency(settings,phone,requested=''){
+  if(!settings.allow_currency_override)return settings.default_currency;
+  return ltFxCode(requested)||(settings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):'')||settings.default_currency;
+}
+// Re-prices stored offers at today's rate into the customer's currency every time they are shown,
+// so options saved earlier (or before currency support) never reach the customer in a stale currency.
+async function ltRepriceStoredChatOffers(env,clientId,phone,offers,requested=''){
+  const settings=await ltFxSettings(env,clientId);
+  const target=ltChatCustomerCurrency(settings,phone,requested||offers?.[0]?.displayCurrency);
+  const info=await ltFxForClient(env,clientId,target);
+  return ltConvertStoredChatOffers(offers,info.fx);
 }
 
 export function ltExactRouteOffers(offers,origin,destination){
@@ -15998,8 +16016,8 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     return send('Send route, date and passengers.\nExample: CCJ to SHJ on 2026-09-15, 1 adult, economy.');
   }
   if(/^(continue previous|continue old|previous search|old search)$/i.test(input)){
-    const offers=ltJson(row.offers_json,[]);
-    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',updated_at=? WHERE client_id=? AND phone=?`).bind(new Date().toISOString(),Number(clientId),String(phone)).run();
+    const offers=await ltRepriceStoredChatOffers(env,clientId,phone,ltJson(row.offers_json,[]));
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(offers),new Date().toISOString(),Number(clientId),String(phone)).run();
     return send(ltStoredOfferText(offers),ltBookButtons(offers));
   }
   const switchTo=ltChatCurrencySwitch(input);
@@ -16011,12 +16029,15 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     return send(ltStoredOfferText(converted).replace('Previous live flight options:',`Flight options in ${switchTo}:`),ltBookButtons(converted));
   }
   if(row.step==='select'){
-    const offers=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(offers,input);
+    // While the customer is answering a NEW search (a draft is open, or the message itself is a
+    // flight request), only an explicit "Book Option N" tap may pick from the older options.
+    if(!/^book\b/i.test(input)&&(ltChatFlightIntent(input)||await ltLoadChatSearchDraft(env,clientId,phone)))return null;
+    const stored=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(stored,input);
     if(idx<0){
-      if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(offers));
+      if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(stored));
       return null;
     }
-    const selected=offers[idx];
+    const selected=(await ltRepriceStoredChatOffers(env,clientId,phone,[stored[idx]]))[0];
     if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
     const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;

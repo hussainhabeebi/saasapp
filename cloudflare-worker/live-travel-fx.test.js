@@ -5,7 +5,7 @@ import {
   ltFxRate, ltFxRound, ltFxFormat, ltFxApplyToOffer, ltFxCurrencyFromPhone, ltFxCurrencyFromText,
   ltFxDriftPct, ltFxNormalizeSettings, ltFxRates, ltFxRefresh, ltFxRefreshIfStale, ltFxSlotStart, ltFxNextSlot, LT_FX_USD_PEGS,
 } from './live-travel-fx.js';
-import { ltNormalizeOffer, ltChatCurrencySwitch, ltConvertStoredChatOffers, ltFormatChatOffers, ltNormalizeChatFlightRequest } from './worker.js';
+import { ltNormalizeOffer, ltChatCurrencySwitch, ltConvertStoredChatOffers, ltFormatChatOffers, ltNormalizeChatFlightRequest, ltStoredOfferSelectionIndex, ltChatCustomerCurrency } from './worker.js';
 
 const RATES={USD:1,INR:88,AED:3.6725,SAR:3.75,QAR:3.64,KWD:0.3065};
 const fx=(target,extra={})=>({target,rates:RATES,buffer_pct:0,rounding:'none',fetched_at:'2026-10-02T00:00:00Z',source:'test',...extra});
@@ -216,5 +216,37 @@ describe('Live Agency WhatsApp currency', () => {
   test('chat requests default to the agency currency', () => {
     assert.equal(ltNormalizeChatFlightRequest({origin:'DXB',destination:'COK',departure_date:'2026-10-20'},'QAR').currency,'QAR');
     assert.equal(ltNormalizeChatFlightRequest({currency:'kwd'},'QAR').currency,'KWD');
+  });
+});
+
+describe('Live Agency WhatsApp stored options (regression: "One Way" picked an old INR fare)', () => {
+  const offers=[{fareId:'a',airline:'Flynas Airline',flightNumber:'66'},{fareId:'b',airline:'Saudia',flightNumber:'SV 1'},{fareId:'c',airline:'Air India',flightNumber:'AI 9'}];
+
+  test('answers to other questions never select a flight', () => {
+    for(const t of ['One Way','one way','Round Trip','two adults','1 adult','one adult, economy','Singapore to Dubai on October 20','I need one ticket'])
+      assert.equal(ltStoredOfferSelectionIndex(offers,t),-1,t);
+  });
+
+  test('explicit choices still select', () => {
+    const cases={'1':0,'book first':0,'Book Option 2':1,'book second':1,'second':1,'the third one':2,'option two':1,'2nd':1,'first please':0,'saudia':1};
+    for(const [t,want] of Object.entries(cases))assert.equal(ltStoredOfferSelectionIndex(offers,t),want,t);
+  });
+
+  test('customer currency: asked > phone country > agency default', () => {
+    const on={default_currency:'AED',allow_currency_override:1,auto_detect_phone_currency:1};
+    assert.equal(ltChatCustomerCurrency(on,'+966509980182'),'SAR');
+    assert.equal(ltChatCustomerCurrency(on,'+966509980182','INR'),'INR');
+    assert.equal(ltChatCustomerCurrency({...on,auto_detect_phone_currency:0},'+966509980182'),'AED');
+    assert.equal(ltChatCustomerCurrency({...on,allow_currency_override:0},'+966509980182','INR'),'AED');
+  });
+
+  test('an option saved in INR before currency support is re-priced into SAR, and re-pricing is stable', () => {
+    const legacy=[{fareId:'f',airline:'Flynas Airline',currency:'INR',total:34100}];
+    const sar=ltConvertStoredChatOffers(legacy,fx('SAR',{rounding:'auto'}));
+    assert.equal(sar[0].currency,'SAR');
+    assert.equal(sar[0].total,Math.ceil(34100*3.75/88));
+    assert.equal(sar[0].supplierCurrency,'INR');
+    assert.equal(sar[0].supplierTotal,34100);
+    assert.deepEqual(ltConvertStoredChatOffers(sar,fx('SAR',{rounding:'auto'})),sar,'converting again does not compound');
   });
 });
