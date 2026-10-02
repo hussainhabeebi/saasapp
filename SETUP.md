@@ -8670,6 +8670,36 @@ UAT/certification passes. SerpApi Google Flights is always non-bookable comparis
 revalidated Riya or TripJack offer can become a booking. Never point staging at production
 credentials or the production D1 database.
 
+### Default currency & live exchange rates (`cloudflare-worker/live-travel-fx.js`)
+
+Each agency sets its currency in **Live Agency → 💱 Currency**: INR, AED, SAR, QAR, OMR, KWD, BHD,
+USD, EUR or GBP, plus an FX buffer % (default 1.5), a rounding rule and two switches (allow other
+display currencies; WhatsApp currency from the customer's country code). Migration
+`0108_live_travel_currency.sql` creates the settings and rate tables. The FX columns on offers,
+quotes and bookings are added at runtime by `ltEnsureSchema`.
+
+- **Pricing order:** supplier fare (its own currency) → converted at live rate + buffer → supplier
+  markup added *in the agency currency* (so a fixed markup of 50 is 50 AED for every supplier) →
+  rounded. Offers keep `supplier_currency`/`supplier_total`/`fx_rate` for staff and accounting.
+  A fare whose currency has no known rate is never guessed: it stays in its supplier currency,
+  is flagged `fx_status='unconverted'` and is listed last.
+- **Rates:** USD-based, cached in D1 (`live_travel_fx_rates`) for 1 hour and refreshed by the
+  `*/15` cron once stale. They come from Open Exchange Rates if the optional `FX_API_KEY` secret
+  is set (`npx wrangler secret put FX_API_KEY`), otherwise from ExchangeRate-API's keyless open
+  endpoint (daily updates). If the provider is down, the last stored rates are used; if no rate
+  was ever stored, only the USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
+- **Rate lock:** quotes and bookings store the rate they were priced at. Creating a booking
+  returns `409 code:'fx_drift'` when the market has moved past the buffer since the quote. Staff
+  can re-quote, or confirm to book at the quoted price (`confirm_fx_drift:true`).
+- **Wallet / payments:** the wallet ledger is kept in the agency currency only. Entries in another
+  currency convert at the linked booking's locked rate, or else at today's rate. Payments in
+  another currency convert into the booking currency. The original amount is kept in the notes.
+- **WhatsApp:** fares are shown in the agency currency. The customer can name one in their search
+  ("in INR", "rupees") or reply with just a currency to re-price the listed options. When the
+  setting is on, the phone prefix (+91 INR, +971 AED, +966 SAR, +974 QAR, +968 OMR, +965 KWD,
+  +973 BHD) picks the currency. Converted fares note that POOMAS checkout charges in the
+  supplier currency.
+
 ## Product photoshoot folder (`frontend/ecom.html` — Ecommerce products)
 
 Each product has an optional **Photoshoot Folder Link** (`photoshoot_folder_url`) — a Google Drive
