@@ -1,3 +1,4 @@
+import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
 // (avoids the Docker cross-resource networking problem hit trying to do this on
@@ -15764,7 +15765,7 @@ export function ltChatFlightIntent(text){
   return (explicitFlight&&shopping)||travelTicket||((compactIataRoute||knownCityRoute)&&hasTravelDetail)||(knownCityRoute&&(explicitFlight||travelTicket));
 }
 
-export function ltNormalizeChatFlightRequest(raw={}){
+export function ltNormalizeChatFlightRequest(raw={},defaultCurrency='AED'){
   const code=v=>String(v||'').trim().toUpperCase().match(/^[A-Z]{3}$/)?.[0]||'';
   const date=v=>String(v||'').trim().match(/^\d{4}-\d{2}-\d{2}$/)?.[0]||'';
   const clamp=(v,min,max,def)=>Math.max(min,Math.min(max,Number.parseInt(v,10)||def));
@@ -15772,7 +15773,7 @@ export function ltNormalizeChatFlightRequest(raw={}){
   const out={origin:code(raw.origin),destination:code(raw.destination),departure_date:date(raw.departure_date),return_date:date(raw.return_date),trip_type,
     adults:clamp(raw.adults,1,9,1),children:clamp(raw.children,0,9,0),infants:clamp(raw.infants,0,9,0),
     cabin:['economy','premium_economy','business','first'].includes(String(raw.cabin||'').toLowerCase())?String(raw.cabin).toLowerCase():'economy',
-    currency:['AED','INR','USD','SAR','EUR','GBP'].includes(String(raw.currency||'').toUpperCase())?String(raw.currency).toUpperCase():'AED'};
+    currency:ltFxCode(raw.currency)||ltFxCode(defaultCurrency)||'AED'};
   const missing=[];
   if(!out.origin) missing.push('origin airport code');
   if(!out.destination) missing.push('destination airport code');
@@ -15853,7 +15854,7 @@ async function ltSaveChatOffers(env,clientId,phone,offers){
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
     return;
   }
-  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
+  const safe=top.map(o=>{const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};return {fareId:o.supplier_offer_id,supplier:String(o.raw?._poomas_supplier||o.raw?.supplier||o.poomas_supplier||'').toUpperCase(),airline:o.airline_name||o.airline_code||'Flight',flightNumber:o.flight_numbers||'',origin:leg.origin||'',destination:leg.destination||'',departureTime:leg.departureTime||'',arrivalTime:leg.arrivalTime||'',duration:Number(leg.duration||0),stops:Number(leg.stops||0),cabin:o.cabin||'economy',baggage:o.baggage||{},seatsLeft:o.seats_left,currency:o.currency,total:o.total_amount,supplierCurrency:o.supplier_currency||o.currency,supplierTotal:Number(o.supplier_total||o.total_amount),fxStatus:o.fx_status||'native',checkoutBase:o.raw?._checkout_base||'https://flypoomas.com'};});
   const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString();
   await env.DB.prepare(`INSERT INTO live_travel_chat_checkout_state (client_id,phone,step,offers_json,selected_offer_json,passenger_json,expires_at,updated_at)
     VALUES (?,?,'select',?,NULL,NULL,?,?)
@@ -15896,8 +15897,8 @@ async function engineSendGoogleMapsButton(env,c,clientId,convId,phone,inboxId){
   await engineSendChatwootReply(env,c,clientId,convId,`📍 Google Maps: ${mapsUrl}`);
 }
 function ltStoredOfferText(offers){
-  const rows=(offers||[]).slice(0,3).map((o,i)=>`${i+1}. ${o.airline||'Flight'}${o.flightNumber?' · '+o.flightNumber:''} — ${o.currency||''} ${Number(o.total||0).toFixed(2)}\n${o.origin||'—'} → ${o.destination||'—'}`);
-  return `Previous live flight options:\n\n${rows.join('\n\n')}\n\nSelect a flight below.`;
+  const rows=(offers||[]).slice(0,3).map((o,i)=>`${i+1}. ${o.airline||'Flight'}${o.flightNumber?' · '+o.flightNumber:''} — ${ltFxFormat(o.total,o.currency)}\n${o.origin||'—'} → ${o.destination||'—'}`);
+  return `Previous live flight options:\n\n${rows.join('\n\n')}${ltChatFxNote((offers||[]).map(o=>({fx_status:o.fxStatus,supplier_currency:o.supplierCurrency})))}\n\nSelect a flight below.`;
 }
 export function ltBookButtons(offers){
   return (offers||[]).slice(0,3).map((_,i)=>({title:`Book Option ${i+1}`,value:`book ${['first','second','third'][i]}`}));
@@ -15929,12 +15930,33 @@ export function ltFormatChatOffers(offers){
     const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
-    let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${o.currency} ${Number(o.total_amount).toFixed(2)}*`;
+    let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${ltFxFormat(o.total_amount,o.currency)}*`;
     if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
     lines.push(line);
   });
-  lines.push('Select a flight below.\n_Fares may change until checkout._');
+  lines.push(`Select a flight below.\n_Fares may change until checkout._${ltChatFxNote(top)}`);
   return lines.join('\n\n');
+}
+// Converted chat fares are estimates: POOMAS charges in its own currency at checkout.
+function ltChatFxNote(offers){
+  const sources=[...new Set((offers||[]).filter(o=>o?.fx_status==='converted').map(o=>o.supplier_currency).filter(Boolean))];
+  return sources.length?`\n_Converted from ${sources.join('/')} at today's rate; checkout is charged in ${sources.join('/')}._`:'';
+}
+// "show in INR", "rupees", "prices in SAR please" → the currency code; anything longer or with
+// other content (a new route, a date) → '' so it reaches the normal flow.
+export function ltChatCurrencySwitch(text){
+  const t=String(text||'').trim();
+  if(!t||t.length>40)return '';
+  const rest=t.replace(/\b(?:show|me|see|send|the|prices?|fares?|rates?|amounts?|in|to|into|convert|change|switch|currency|please|pls|can|you|i|want)\b/gi,' ').replace(/[?.!,]/g,' ').trim();
+  if(!rest||rest.split(/\s+/).length>2)return '';
+  return ltFxCurrencyFromText(rest);
+}
+// Re-prices stored chat offers (POOMAS, no agency markup) into another currency.
+export function ltConvertStoredChatOffers(offers,fx){
+  return (offers||[]).map(o=>{
+    const c=ltFxApplyToOffer({currency:o.supplierCurrency||o.currency,total_amount:Number(o.supplierTotal??o.total),base_amount:0,tax_amount:0,markup_amount:0},{fx,markup_type:'fixed',markup_value:0});
+    return c.fx_status==='unconverted'?o:{...o,currency:c.currency,total:c.total_amount,fxStatus:c.fx_status};
+  });
 }
 
 export function ltExactRouteOffers(offers,origin,destination){
@@ -15980,6 +16002,14 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',updated_at=? WHERE client_id=? AND phone=?`).bind(new Date().toISOString(),Number(clientId),String(phone)).run();
     return send(ltStoredOfferText(offers),ltBookButtons(offers));
   }
+  const switchTo=ltChatCurrencySwitch(input);
+  if(switchTo&&row.step==='select'){
+    const info=await ltFxForClient(env,clientId,switchTo);
+    if(info.target!==switchTo)return send(`Prices are shown in ${info.settings.default_currency} for this agency.`,ltBookButtons(ltJson(row.offers_json,[])));
+    const converted=ltConvertStoredChatOffers(ltJson(row.offers_json,[]),info.fx);
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(converted),new Date().toISOString(),Number(clientId),String(phone)).run();
+    return send(ltStoredOfferText(converted).replace('Previous live flight options:',`Flight options in ${switchTo}:`),ltBookButtons(converted));
+  }
   if(row.step==='select'){
     const offers=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(offers,input);
     if(idx<0){
@@ -15991,7 +16021,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
     const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
     const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'—';
-    const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${selected.currency} ${Number(selected.total).toFixed(2)}`;
+    const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${ltFxFormat(selected.total,selected.currency)}${selected.supplierCurrency&&selected.supplierCurrency!==selected.currency?`\nCharged at checkout: ${ltFxFormat(selected.supplierTotal,selected.supplierCurrency)}`:''}`;
     await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
     await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
     return {handled:true,step:'checkout_ready'};
@@ -16005,7 +16035,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
   }
   return null;
 }
-function ltMergeChatFlightDraft(draft,input,userText){
+function ltMergeChatFlightDraft(draft,input,userText,fxPrefs={}){
   const old=draft||{},next={...old},text=String(userText||'');
   const route=ltParseFlightRoute(text);
   if(route){next.origin=route.origin;next.destination=route.destination}else{next.origin=old.origin||input.origin;next.destination=old.destination||input.destination}
@@ -16016,9 +16046,11 @@ function ltMergeChatFlightDraft(draft,input,userText){
   next.infants=infant?Number(infant[1]):(old.infants??input.infants??0);
   const cabin=text.match(/\b(premium[ _-]?economy|economy|business|first)\b/i);
   next.cabin=cabin?cabin[1].toLowerCase().replace(/[ -]/g,'_'):(old.cabin||input.cabin||'economy');
-  const currency=text.match(/\b(AED|INR|USD|SAR|EUR|GBP)\b/i);next.currency=currency?currency[1].toUpperCase():(old.currency||input.currency||'AED');
+  // The extractor's own currency guess is ignored: it tends to invent one the customer never asked for.
+  const asked=fxPrefs.allowOverride===false?'':ltFxCurrencyFromText(text);
+  next.currency=asked||old.currency||(fxPrefs.allowOverride===false?'':fxPrefs.phoneCurrency)||fxPrefs.defaultCurrency||'AED';
   next.trip_type=old.trip_type||input.trip_type||'one_way';next.return_date=old.return_date||input.return_date||'';
-  return ltNormalizeChatFlightRequest(next);
+  return ltNormalizeChatFlightRequest(next,fxPrefs.defaultCurrency||'AED');
 }
 
 export function ltLiveAgencyEnabled(c={}){
@@ -16042,7 +16074,8 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
   if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
   const extracted=await engineExtractChatFlightRequest(env,c,userText,history);
-  const input=ltMergeChatFlightDraft(draft,extracted,userText);
+  const fxSettings=await ltFxSettings(env,clientId);
+  const input=ltMergeChatFlightDraft(draft,extracted,userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
   if(input.missing.length){
     await ltSaveChatSearchDraft(env,clientId,phone,input);
     const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
@@ -16053,7 +16086,8 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const runtime=await ltSupplierRuntime(env,setting); runtime.client_id=Number(clientId);
     const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
     const data=await ltSupplierSearch(runtime,input,env);
-    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId)};
+    const fxInfo=await ltFxForClient(env,clientId,input.currency);
+    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId),fx:fxInfo.fx};
     const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
     const bookingOffers=ltBookableChatOffers(offers);
     await ltSaveChatOffers(env,clientId,phone,bookingOffers);
@@ -31537,10 +31571,18 @@ function ltSearchParams(body={}){
   const adults=ltPositiveInt(body.adults,1,1,9), children=ltPositiveInt(body.children,0), infants=ltPositiveInt(body.infants,0);
   if(infants>adults) throw new Error('Infants cannot exceed adults.');
   return {trip_type:tripType,origin,destination,departure_date:date,return_date:tripType==='round_trip'?ret:null,adults,children,infants,
-    cabin:['economy','premium_economy','business','first'].includes(body.cabin)?body.cabin:'economy',currency:/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED',lead_id:ltText(body.lead_id,80)};
+    cabin:['economy','premium_economy','business','first'].includes(body.cabin)?body.cabin:'economy',currency:ltFxCode(body.currency),lead_id:ltText(body.lead_id,80)};
 }
 
+// Normalizes a supplier fare, then converts it into the agency currency (ctx.fx) with markup
+// applied after conversion. Without ctx.fx the fare stays in the supplier's own currency.
 export function ltNormalizeOffer(supplier,raw,ctx={}){
+  const offer=ltNormalizeOfferNative(supplier,raw,ctx);
+  // POOMAS displayPrice already carries POOMAS's own markup; we never add ours on top.
+  const fxCtx=offer.supplier==='poomas'?{...ctx,markup_type:'fixed',markup_value:0}:ctx;
+  return ltFxApplyToOffer(offer,fxCtx);
+}
+function ltNormalizeOfferNative(supplier,raw,ctx={}){
   const source=String(supplier||'').toLowerCase();
   if(source==='poomas'){
     const isBook=Boolean(raw?.isBookable);
@@ -31589,6 +31631,9 @@ async function ltAudit(env,cid,entityType,entityId,action,email,details={}){
 async function ltAuth(request,env){
   const payload=await requireSession(request,env);
   if(!payload)return null;
+  // FX columns are read/written by search, quotes and bookings — make sure they exist even when
+  // this isolate never served /live-travel/bootstrap.
+  await ltEnsureSchema(env);
   return {cid:Number(payload.cid),email:ltText(payload.email,250)};
 }
 async function ltSeedSuppliers(env,cid){
@@ -31678,6 +31723,17 @@ async function ltSupplierAction(config,action,payload){
   if(!endpoint||!ltSupplierConfigured(config)) throw new Error(`${config.supplier} client ${action} settings are not configured.`);
   return ltFetchJson(endpoint,{method:'POST',headers:ltSupplierHeaders(config),body:JSON.stringify(payload)});
 }
+// Agency currency settings + current rates, and the display currency for this request
+// (the requested one only when the agency allows overriding its default).
+async function ltFxForClient(env,cid,requested=''){
+  const [settings,rates]=await Promise.all([ltFxSettings(env,cid),ltFxRates(env)]);
+  const target=(settings.allow_currency_override&&ltFxCode(requested))||settings.default_currency;
+  return {settings,rates,target,fx:ltFxContext(settings,rates,target)};
+}
+function ltSortOffers(offers){
+  // Unconverted fares (no exchange rate available) are not comparable with the rest — list them last.
+  return offers.sort((a,b)=>(a.fx_status==='unconverted')-(b.fx_status==='unconverted')||a.total_amount-b.total_amount);
+}
 async function ltOfferById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_offers WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
 async function ltBookingById(env,cid,id){return env.DB.prepare(`SELECT * FROM live_travel_bookings WHERE id=? AND client_id=?`).bind(Number(id),cid).first();}
 async function ltEnsureSchema(env){
@@ -31713,9 +31769,52 @@ async function ltEnsureSchema(env){
   await Promise.allSettled([
     env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN hold_ref TEXT NOT NULL DEFAULT ''`).run(),
     env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN checkout_url TEXT NOT NULL DEFAULT ''`).run(),
+    // Live Agency currency (live-travel-fx.js): original supplier price + the locked exchange rate.
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN supplier_currency TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN supplier_total REAL NOT NULL DEFAULT 0`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN fx_rate_at TEXT`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN fx_source TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_offers ADD COLUMN fx_status TEXT NOT NULL DEFAULT 'native'`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_quotes ADD COLUMN supplier_currency TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_quotes ADD COLUMN supplier_total REAL NOT NULL DEFAULT 0`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_quotes ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_quotes ADD COLUMN fx_rate_at TEXT`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_quotes ADD COLUMN fx_buffer_pct REAL NOT NULL DEFAULT 0`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN supplier_currency TEXT NOT NULL DEFAULT ''`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN supplier_total REAL NOT NULL DEFAULT 0`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN fx_rate_at TEXT`).run(),
+    env.DB.prepare(`ALTER TABLE live_travel_bookings ADD COLUMN fx_buffer_pct REAL NOT NULL DEFAULT 0`).run(),
+    ltFxEnsureSettingsTable(env),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_poomas_settings (client_id INTEGER PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 0,api_base TEXT NOT NULL DEFAULT 'https://api.flypoomas.com',checkout_base TEXT NOT NULL DEFAULT 'https://flypoomas.com',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`).run(),
   ]);
   _ltSchemaEnsured=true;
+}
+
+function ltFxPublic(info){
+  return {currency:info.settings.default_currency,source:info.rates.source,fetched_at:info.rates.fetched_at,stale:!!info.rates.stale,rates:ltFxRateTable(info.rates,info.settings.default_currency)};
+}
+// GET/PATCH /live-travel/currency-settings — agency default currency, FX buffer and rounding.
+async function handleLtCurrencySettings(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='PATCH'||request.method==='PUT'){
+    const body=await request.json().catch(()=>({}));
+    const before=await ltFxSettings(env,auth.cid);
+    let settings; try{settings=await ltFxSaveSettings(env,auth.cid,body);}catch(e){return json({error:e.message},400);}
+    await ltAudit(env,auth.cid,'settings','currency','updated',auth.email,{before,after:settings});
+  }
+  const info=await ltFxForClient(env,auth.cid);
+  return json({settings:info.settings,fx:ltFxPublic(info),supported:LT_FX_CODES.map(code=>({code,...LT_FX_CURRENCIES[code]})),rounding_modes:LT_FX_ROUNDING_MODES});
+}
+// GET /live-travel/fx-rates[?refresh=1] — current rates against the agency currency.
+async function handleLtFxRates(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  const settings=await ltFxSettings(env,auth.cid);
+  let rates=await ltFxRates(env);
+  // A manual refresh is honoured at most every 5 minutes so the free rate quota isn't burned.
+  if(new URL(request.url).searchParams.get('refresh')==='1'&&(!rates.fetched_at||Date.now()-new Date(rates.fetched_at).getTime()>5*60*1000))rates=await ltFxRates(env,{force:true});
+  return json({fx:ltFxPublic({settings,rates})});
 }
 
 async function handleLtBootstrap(request,env){
@@ -31737,7 +31836,9 @@ async function handleLtBootstrap(request,env){
     env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(auth.cid).first(),
   ]);
   const poomasSettings={enabled:Boolean(poomasRow?.enabled),api_base:poomasRow?.api_base||'https://api.flypoomas.com',checkout_base:poomasRow?.checkout_base||'https://flypoomas.com'};
-  return json({suppliers:supplierList,poomas_settings:poomasSettings,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,hold:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
+  // Bootstrap must not wait on the rate provider — read cached rates only.
+  const [fxSettings,fxRates]=await Promise.all([ltFxSettings(env,auth.cid),ltFxRates(env,{allowFetch:false})]);
+  return json({currency_settings:fxSettings,fx:ltFxPublic({settings:fxSettings,rates:fxRates}),supported_currencies:LT_FX_CODES.map(code=>({code,...LT_FX_CURRENCIES[code]})),suppliers:supplierList,poomas_settings:poomasSettings,searches:(searches.results||[]).map(ltRow),quotes:quotes.results||[],bookings:(bookings.results||[]).map(ltRow),service_requests:service.results||[],wallet:wallet.results||[],wallet_entries:walletEntries.results||[],agents:agents.results||[],commissions:commissions.results||[],capabilities:{search:true,revalidate:true,hold:true,book:true,ticket:true,cancel:true,refund:true,reissue:true}});
 }
 async function handleLtSuppliersUpdate(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
@@ -31772,6 +31873,8 @@ async function handleLtSupplierHealth(request,env){
 async function handleLtSearch(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   let input; try{input=ltSearchParams(await request.json().catch(()=>({})));}catch(e){return json({error:e.message},400);}
+  const fxInfo=await ltFxForClient(env,auth.cid,input.currency);
+  input.currency=fxInfo.target;
   const [,{results:settings}]=await Promise.all([ltSeedSuppliers(env,auth.cid),env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND enabled=1 ORDER BY priority`).bind(auth.cid).all()]);
   if(!(settings||[]).length)return json({error:'Enable at least one supplier in Supplier Settings.'},400);
   const now=ltNow(), expires=new Date(Date.now()+20*60*1000).toISOString(), searchRef=ltRef('FS');
@@ -31787,22 +31890,22 @@ async function handleLtSearch(request,env){
   for(const result of settled){
     const supplier=result.setting.supplier;
     if(result.error){errors[supplier]=result.error;continue;}
-    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value};
+    const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value,fx:fxInfo.fx};
     if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;}
     for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
       const normalized=ltNormalizeOffer(supplier,raw,ctx);
       if(!normalized.total_amount)continue;
       const offerRef=ltRef('OF');
-      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,checkout_url,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),normalized.checkout_url||'',now).run();
+      const saved=await env.DB.prepare(`INSERT INTO live_travel_offers (client_id,search_id,offer_ref,supplier,supplier_offer_id,bookable,validating,validating_supplier,airline_code,airline_name,flight_numbers,itinerary_json,baggage_json,fare_rules_json,cabin,seats_left,currency,base_amount,tax_amount,markup_amount,total_amount,expires_at,raw_json,checkout_url,created_at,supplier_currency,supplier_total,fx_rate,fx_rate_at,fx_source,fx_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(auth.cid,searchId,offerRef,normalized.supplier,normalized.supplier_offer_id,normalized.bookable?1:0,normalized.validating?1:0,normalized.validating_supplier,normalized.airline_code,normalized.airline_name,normalized.flight_numbers,JSON.stringify(normalized.itinerary),JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),normalized.cabin,normalized.seats_left,normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,expires,JSON.stringify(normalized.raw),normalized.checkout_url||'',now,normalized.supplier_currency,normalized.supplier_total,normalized.fx_rate,normalized.fx_rate_at,normalized.fx_source,normalized.fx_status).run();
       offers.push(ltRow({id:saved.meta.last_row_id,search_id:searchId,offer_ref:offerRef,...normalized,expires_at:expires,created_at:now}));
     }
   }
-  offers.sort((a,b)=>a.total_amount-b.total_amount);
+  ltSortOffers(offers);
   const status=offers.length?'complete':'failed';
   await env.DB.prepare(`UPDATE live_travel_searches SET status=?,supplier_errors_json=? WHERE id=? AND client_id=?`).bind(status,JSON.stringify(errors),searchId,auth.cid).run();
   await ltAudit(env,auth.cid,'search',searchRef,'completed',auth.email,{offer_count:offers.length,suppliers:(settings||[]).map(s=>s.supplier),errors});
-  return json({search:{id:searchId,search_ref:searchRef,...input,status,errors,created_at:now,expires_at:expires},offers});
+  return json({search:{id:searchId,search_ref:searchRef,...input,status,errors,created_at:now,expires_at:expires},offers,fx:{currency:fxInfo.target,source:fxInfo.rates.source,fetched_at:fxInfo.rates.fetched_at,stale:!!fxInfo.rates.stale,buffer_pct:fxInfo.settings.fx_buffer_pct}});
 }
 async function handleLtSearchList(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
@@ -31810,7 +31913,7 @@ async function handleLtSearchList(request,env){
   if(searchId){
     const search=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE id=? AND client_id=?`).bind(searchId,auth.cid).first();
     if(!search)return json({error:'Search not found'},404);
-    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_offers WHERE search_id=? AND client_id=? ORDER BY total_amount`).bind(searchId,auth.cid).all();
+    const {results}=await env.DB.prepare(`SELECT * FROM live_travel_offers WHERE search_id=? AND client_id=? ORDER BY fx_status='unconverted',total_amount`).bind(searchId,auth.cid).all();
     return json({search:ltRow(search),offers:(results||[]).map(ltRow)});
   }
   const {results}=await env.DB.prepare(`SELECT * FROM live_travel_searches WHERE client_id=? ORDER BY created_at DESC LIMIT 100`).bind(auth.cid).all();
@@ -31824,10 +31927,14 @@ async function handleLtRevalidate(request,env){
   if(new Date(offer.expires_at).getTime()<Date.now())return json({error:'This offer expired. Run a new search.'},409);
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier=?`).bind(auth.cid,offer.supplier).first();
   let data; try{data=await ltSupplierAction(await ltSupplierRuntime(env,setting),'revalidate',{supplier_offer_id:offer.supplier_offer_id,offer:ltJson(offer.raw_json,{})});}catch(e){return json({error:e.message},502);}
-  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.currency,cabin:offer.cabin,markup_type:'fixed',markup_value:offer.markup_amount});
+  // The supplier answers in its own currency; convert again at today's rate into the currency the
+  // offer was shown in, with the supplier's markup re-applied after conversion.
+  const fxInfo=await ltFxForClient(env,auth.cid,offer.currency);
+  const fxCtx=ltFxContext(fxInfo.settings,fxInfo.rates,offer.currency);
+  const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.supplier_currency||offer.currency,cabin:offer.cabin,markup_type:setting?.markup_type||'fixed',markup_value:setting?.markup_value||0,fx:fxCtx});
   const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
-  await env.DB.prepare(`UPDATE live_travel_offers SET base_amount=?,tax_amount=?,total_amount=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
-    .bind(normalized.base_amount,normalized.tax_amount,normalized.total_amount,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
+  await env.DB.prepare(`UPDATE live_travel_offers SET currency=?,base_amount=?,tax_amount=?,markup_amount=?,total_amount=?,supplier_currency=?,supplier_total=?,fx_rate=?,fx_rate_at=?,fx_source=?,fx_status=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
+    .bind(normalized.currency,normalized.base_amount,normalized.tax_amount,normalized.markup_amount,normalized.total_amount,normalized.supplier_currency,normalized.supplier_total,normalized.fx_rate,normalized.fx_rate_at,normalized.fx_source,normalized.fx_status,normalized.seats_left,JSON.stringify(normalized.baggage),JSON.stringify(normalized.fare_rules),JSON.stringify(normalized.raw),now,expires,offer.id,auth.cid).run();
   await ltAudit(env,auth.cid,'offer',offer.offer_ref,'revalidated',auth.email,{old_total:offer.total_amount,new_total:normalized.total_amount});
   return json({offer:ltRow(await ltOfferById(env,auth.cid,offer.id)),price_changed:Number(offer.total_amount)!==Number(normalized.total_amount)});
 }
@@ -31841,9 +31948,11 @@ async function handleLtQuotes(request,env){
   if(request.method==='POST'){
     const offer=await ltOfferById(env,auth.cid,body.offer_id); if(!offer)return json({error:'Offer not found'},404);
     const serviceFee=ltMoney(body.service_fee),discount=ltMoney(body.discount),subtotal=ltMoney(offer.total_amount),total=ltMoney(subtotal+serviceFee-discount),now=ltNow(),ref=ltRef('QT');
-    const r=await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,search_id,offer_id,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,valid_until,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)`)
-      .bind(auth.cid,ref,offer.search_id,offer.id,ltText(body.lead_id,80),ltText(body.customer_name,180),ltText(body.customer_phone,40),ltText(body.customer_email,250),offer.currency,subtotal,serviceFee,discount,total,ltText(body.notes,2000),body.valid_until||offer.expires_at,auth.email,now,now).run();
-    await ltAudit(env,auth.cid,'quote',ref,'created',auth.email,{offer_ref:offer.offer_ref,total});
+    // The quote locks the offer's exchange rate so the customer's price can't drift after it is sent.
+    const fxSettings=await ltFxSettings(env,auth.cid),bufferPct=offer.fx_status==='converted'?fxSettings.fx_buffer_pct:0;
+    const r=await env.DB.prepare(`INSERT INTO live_travel_quotes (client_id,quote_ref,search_id,offer_id,lead_id,customer_name,customer_phone,customer_email,status,currency,subtotal,service_fee,discount,total_amount,notes,valid_until,created_by,created_at,updated_at,supplier_currency,supplier_total,fx_rate,fx_rate_at,fx_buffer_pct) VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(auth.cid,ref,offer.search_id,offer.id,ltText(body.lead_id,80),ltText(body.customer_name,180),ltText(body.customer_phone,40),ltText(body.customer_email,250),offer.currency,subtotal,serviceFee,discount,total,ltText(body.notes,2000),body.valid_until||offer.expires_at,auth.email,now,now,offer.supplier_currency||offer.currency,Number(offer.supplier_total||offer.total_amount),Number(offer.fx_rate||1),offer.fx_rate_at||null,bufferPct).run();
+    await ltAudit(env,auth.cid,'quote',ref,'created',auth.email,{offer_ref:offer.offer_ref,total,currency:offer.currency,fx_rate:Number(offer.fx_rate||1)});
     return json(await env.DB.prepare(`SELECT * FROM live_travel_quotes WHERE id=? AND client_id=?`).bind(r.meta.last_row_id,auth.cid).first());
   }
   const id=Number(body.id||0), status=['draft','sent','accepted','expired','cancelled'].includes(body.status)?body.status:'draft';
@@ -31873,9 +31982,16 @@ async function handleLtBookings(request,env){
   if(!quote)return json({error:'Quote not found'},404);
   const offer=await ltOfferById(env,auth.cid,quote.offer_id); if(!offer||!offer.bookable)return json({error:'A revalidated Riya or TripJack offer, or a bookable POOMAS offer, is required.'},409);
   if(offer.supplier!=='poomas'&&!offer.last_validated_at)return json({error:'Revalidate the fare before creating a booking.'},409);
+  // If the market rate has moved past the buffer since the quote, the agency would lose money on
+  // the supplier payment — stop and let staff re-quote or knowingly accept it.
+  const supplierCurrency=quote.supplier_currency||quote.currency;
+  if(supplierCurrency&&supplierCurrency!==quote.currency&&!body.confirm_fx_drift){
+    const rates=await ltFxRates(env),drift=ltFxDriftPct(quote.fx_rate,supplierCurrency,quote.currency,rates.rates,quote.fx_buffer_pct);
+    if(drift>Number(quote.fx_buffer_pct||0))return json({error:`The ${supplierCurrency}→${quote.currency} rate moved ${drift}% since this quote, more than the ${Number(quote.fx_buffer_pct||0)}% buffer. Re-quote the customer, or confirm to book at the quoted price.`,code:'fx_drift',fx_drift_pct:drift},409);
+  }
   const now=ltNow(),ref=ltRef('BK');
-  const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?, ?,?)`)
-    .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now).run();
+  const r=await env.DB.prepare(`INSERT INTO live_travel_bookings (client_id,booking_ref,quote_id,offer_id,lead_id,supplier,status,payment_status,currency,total_amount,amount_paid,balance_due,hold_expires_at,created_by,created_at,updated_at,supplier_currency,supplier_total,fx_rate,fx_rate_at,fx_buffer_pct) VALUES (?,?,?,?,?,?,'draft','unpaid',?,?,0,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(auth.cid,ref,quote.id,offer.id,quote.lead_id,offer.supplier,quote.currency,quote.total_amount,quote.total_amount,offer.expires_at,auth.email,now,now,supplierCurrency,Number(quote.supplier_total||0),Number(quote.fx_rate||1),quote.fx_rate_at||null,Number(quote.fx_buffer_pct||0)).run();
   const bookingId=r.meta.last_row_id;
   await env.DB.prepare(`UPDATE live_travel_quotes SET status='accepted',updated_at=? WHERE id=? AND client_id=?`).bind(now,quote.id,auth.cid).run();
   for(const pax of Array.isArray(body.passengers)?body.passengers:[]){
@@ -31960,10 +32076,20 @@ async function handleLtPassengers(request,env){
 async function handleLtPayment(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({})), booking=await ltBookingById(env,auth.cid,body.booking_id); if(!booking)return json({error:'Booking not found'},404);
-  const amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
+  const received=ltMoney(body.amount); if(!received)return json({error:'A positive amount is required'},400);
+  // A payment in another currency is converted into the booking currency at today's market rate
+  // (no buffer) and the original amount is kept in the notes.
+  const payCurrency=ltFxCode(body.currency)||booking.currency;
+  let amount=received,notes=ltText(body.notes,1000);
+  if(payCurrency!==booking.currency){
+    const rate=ltFxRate(payCurrency,booking.currency,(await ltFxRates(env)).rates);
+    if(!rate)return json({error:`No exchange rate available for ${payCurrency}→${booking.currency}.`},409);
+    amount=ltMoney(received*rate);
+    notes=ltText(`Received ${ltFxFormat(received,payCurrency)} @ ${Math.round(rate*1e6)/1e6}${notes?' · '+notes:''}`,1000);
+  }
   const now=ltNow(),ref=ltRef('PY'),direction=body.direction==='refund'?'refund':'receipt';
   await env.DB.prepare(`INSERT INTO live_travel_payments (client_id,booking_id,payment_ref,method,direction,amount,currency,status,external_ref,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,'received',?,?,?,?)`)
-    .bind(auth.cid,booking.id,ref,ltText(body.method||'cash',40),direction,amount,booking.currency,ltText(body.external_ref,120),ltText(body.notes,1000),auth.email,now).run();
+    .bind(auth.cid,booking.id,ref,ltText(body.method||'cash',40),direction,amount,booking.currency,ltText(body.external_ref,120),notes,auth.email,now).run();
   const paid=ltMoney(Number(booking.amount_paid)+(direction==='receipt'?amount:-amount)),balance=ltMoney(Number(booking.total_amount)-paid),paymentStatus=balance<=0?'paid':paid>0?'partial':'unpaid';
   await env.DB.prepare(`UPDATE live_travel_bookings SET amount_paid=?,balance_due=?,payment_status=?,updated_at=? WHERE id=? AND client_id=?`).bind(paid,balance,paymentStatus,now,booking.id,auth.cid).run();
   await ltAudit(env,auth.cid,'booking',booking.booking_ref,direction==='receipt'?'payment_received':'payment_refunded',auth.email,{amount,currency:booking.currency,reference:ref});
@@ -31975,12 +32101,24 @@ async function handleLtWallet(request,env){
     const {results}=await env.DB.prepare(`SELECT * FROM live_travel_wallet_ledger WHERE client_id=? ORDER BY created_at DESC LIMIT 500`).bind(auth.cid).all();
     return json({list:results||[]});
   }
-  const body=await request.json().catch(()=>({})),amount=ltMoney(body.amount); if(!amount)return json({error:'A positive amount is required'},400);
-  const currency=/^[A-Z]{3}$/.test(String(body.currency||''))?String(body.currency).toUpperCase():'AED', agent=ltText(body.agent_ref||'owner',100),type=['credit','debit','refund','commission'].includes(body.entry_type)?body.entry_type:'credit';
+  const body=await request.json().catch(()=>({})),entered_amount=ltMoney(body.amount); if(!entered_amount)return json({error:'A positive amount is required'},400);
+  // The ledger is kept in the agency's default currency only, so balances never mix currencies.
+  // Booking-linked entries convert at that booking's locked rate; anything else at today's rate.
+  const fxSettings=await ltFxSettings(env,auth.cid),currency=fxSettings.default_currency,entered=ltFxCode(body.currency)||currency;
+  let amount=entered_amount,notes=ltText(body.notes,1000);
+  if(entered!==currency){
+    const booking=body.booking_id?await ltBookingById(env,auth.cid,body.booking_id):null;
+    const lockedRate=booking&&booking.supplier_currency===entered&&booking.currency===currency&&Number(booking.fx_rate)>0?Number(booking.fx_rate):null;
+    const rate=lockedRate||ltFxRate(entered,currency,(await ltFxRates(env)).rates);
+    if(!rate)return json({error:`No exchange rate available for ${entered}→${currency}.`},409);
+    amount=ltMoney(entered_amount*rate);
+    notes=ltText(`Entered ${ltFxFormat(entered_amount,entered)} @ ${Math.round(rate*1e6)/1e6}${lockedRate?' (booking rate)':''}${notes?' · '+notes:''}`,1000);
+  }
+  const agent=ltText(body.agent_ref||'owner',100),type=['credit','debit','refund','commission'].includes(body.entry_type)?body.entry_type:'credit';
   const prev=await env.DB.prepare(`SELECT balance_after FROM live_travel_wallet_ledger WHERE client_id=? AND agent_ref=? AND currency=? ORDER BY id DESC LIMIT 1`).bind(auth.cid,agent,currency).first(), balance=ltMoney(Number(prev?.balance_after||0)+(type==='credit'||type==='refund'?amount:-amount)),now=ltNow(),ref=ltRef('WL');
-  await env.DB.prepare(`INSERT INTO live_travel_wallet_ledger (client_id,entry_ref,agent_ref,booking_id,entry_type,amount,currency,balance_after,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,agent,body.booking_id||null,type,amount,currency,balance,ltText(body.notes,1000),auth.email,now).run();
+  await env.DB.prepare(`INSERT INTO live_travel_wallet_ledger (client_id,entry_ref,agent_ref,booking_id,entry_type,amount,currency,balance_after,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).bind(auth.cid,ref,agent,body.booking_id||null,type,amount,currency,balance,notes,auth.email,now).run();
   await ltAudit(env,auth.cid,'wallet',ref,'entry_created',auth.email,{type,amount,currency,agent_ref:agent});
-  return json({entry_ref:ref,balance});
+  return json({entry_ref:ref,balance,currency,amount});
 }
 async function handleLtServiceRequests(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
@@ -32846,6 +32984,8 @@ export default {
         const action=url.pathname.slice('/live-travel/bookings/'.length);
         res=['hold','book','ticket','sync','cancel'].includes(action)?await handleLtBookingAction(request,env,action):json({error:'Not found'},404);
       }
+      else if(url.pathname==='/live-travel/currency-settings' && ['GET','PATCH','PUT'].includes(request.method)){ res=await handleLtCurrencySettings(request,env); }
+      else if(url.pathname==='/live-travel/fx-rates' && request.method==='GET'){ res=await handleLtFxRates(request,env); }
       else if(url.pathname==='/live-travel/poomas/settings' && ['GET','PATCH'].includes(request.method)){ res=await handleLtPoomasSettings(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
@@ -33491,6 +33631,8 @@ export default {
       ctx.waitUntil(runMeetingsForAllClients(env));
       // End-of-session voice summary (Malayalam/Hindi) — see runVoiceSummariesForAllClients.
       ctx.waitUntil(runVoiceSummariesForAllClients(env));
+      // Live Agency exchange rates — refreshed only once the stored rates are an hour old; see live-travel-fx.js.
+      ctx.waitUntil(ltFxRefreshIfStale(env));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
