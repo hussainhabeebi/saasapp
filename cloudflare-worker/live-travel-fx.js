@@ -8,8 +8,9 @@
 
    Rates are USD-based. Live rates come from Open Exchange Rates when
    FX_API_KEY is set, otherwise from ExchangeRate-API's keyless open endpoint.
-   All of Live Agency uses ONE stored snapshot (live_travel_fx_rates), refreshed
-   at most LT_FX_MAX_REFRESHES_PER_DAY (4) times per UTC day — see "Rate storage".
+   Every Live Agency client uses ONE platform-wide snapshot (live_travel_fx_rates),
+   refreshed by one provider call per 6-hour slot, max 4 per UTC day for all
+   clients together — see "Rate storage".
    If the provider is down the last snapshot keeps being used, and if none was
    ever stored the USD pegs below still cover the Gulf currencies. A non-pegged
    currency (INR, KWD, EUR, GBP) with no stored rate is never guessed: the offer
@@ -166,21 +167,23 @@ export function ltFxDriftPct(lockedRate,from,to,rates,bufferPct=0){
 }
 
 /* ── Rate storage ──
-   One shared snapshot in D1 is the only source of rates. Every Live Agency path (search,
-   revalidate, quotes, booking drift check, payments, wallet, WhatsApp, Currency page) reads that
-   same row on each request — there is deliberately no per-isolate memory cache, so two Worker
-   instances can never price with different rates after a refresh.
+   ONE platform-wide snapshot (row base='USD' in live_travel_fx_rates — no client_id) is the only
+   source of rates for every Live Agency client and every path: search, revalidate, quotes,
+   booking drift check, payments, wallet, WhatsApp and the Currency page. There is deliberately no
+   per-isolate memory cache, so no Worker instance can ever price with a different rate.
 
-   Only a refresh writes the row, and refreshes are capped at LT_FX_MAX_REFRESHES_PER_DAY per UTC
-   day. The cron refreshes once per 6-hour UTC slot (00:00, 06:00, 12:00, 18:00); a manual
-   "Refresh rates" uses up one of the same 4. The cap and a 60-second lock are claimed atomically
-   in D1 before calling the provider, so concurrent isolates can't double-refresh. Only successful
-   refreshes count; a failed attempt releases the lock and the next 15-minute tick retries. */
+   No API wastage: the rate provider is called at most LT_FX_MAX_REFRESHES_PER_DAY (4) times per
+   UTC day for the whole platform, and at most once per 6-hour UTC slot (00:00, 06:00, 12:00,
+   18:00). Every call counts, successful or not, and a failed slot is not retried until the
+   next slot (the last snapshot stays in use meanwhile). The slot, the daily count and a
+   60-second lock are claimed atomically in D1 before the call, so concurrent isolates can't
+   double-call. Agencies cannot trigger a refresh. Reads never call the provider, except to seed
+   a brand-new deployment, and that goes through the same slot claim. */
 async function ltFxEnsureTable(env){
   if(_tableReady)return;
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_fx_rates (base TEXT PRIMARY KEY,rates_json TEXT NOT NULL,source TEXT NOT NULL DEFAULT '',fetched_at TEXT NOT NULL)`).run();
   // Refresh bookkeeping added after 0108 shipped — ignore "duplicate column" on later runs.
-  for(const col of [`refresh_day TEXT NOT NULL DEFAULT ''`,`refresh_count INTEGER NOT NULL DEFAULT 0`,`refreshing_until TEXT`]){
+  for(const col of [`refresh_day TEXT NOT NULL DEFAULT ''`,`refresh_count INTEGER NOT NULL DEFAULT 0`,`refreshing_until TEXT`,`last_attempt_at TEXT`]){
     try{await env.DB.prepare(`ALTER TABLE live_travel_fx_rates ADD COLUMN ${col}`).run();}catch(e){}
   }
   _tableReady=true;
@@ -221,43 +224,44 @@ async function ltFxReadRow(env){
   try{await ltFxEnsureTable(env);return await env.DB.prepare(`SELECT * FROM live_travel_fx_rates WHERE base='USD'`).first();}catch(e){return null;}
 }
 function ltFxFromRow(row,now=new Date()){
-  const refreshesToday=row&&row.refresh_day===ltFxDay(now)?Number(row.refresh_count||0):0;
+  const callsToday=row&&row.refresh_day===ltFxDay(now)?Number(row.refresh_count||0):0;
   let rates=null;try{rates=JSON.parse(row?.rates_json||'null')}catch(e){}
-  if(!row?.fetched_at||!rates||!Object.keys(rates).length)return {...ltFxPegFallback(),refreshes_today:refreshesToday};
+  const meta={refreshes_today:callsToday,last_attempt_at:row?.last_attempt_at||null};
+  if(!row?.fetched_at||!rates||!Object.keys(rates).length)return {...ltFxPegFallback(),...meta};
   return {base:'USD',rates:{...LT_FX_USD_PEGS,...rates},source:row.source,fetched_at:row.fetched_at,
-    stale:now.getTime()-new Date(row.fetched_at).getTime()>LT_FX_STALE_MS,refreshes_today:refreshesToday};
+    stale:now.getTime()-new Date(row.fetched_at).getTime()>LT_FX_STALE_MS,...meta};
 }
 
 /* The rates every Live Agency calculation uses: the one stored snapshot. Never throws and never
-   calls the provider — except on a brand-new deployment with no snapshot at all, where it tries
-   one (capped) refresh so the first search isn't stuck on peg-only rates. */
+   calls the provider — except on a brand-new deployment with no snapshot at all, where it makes
+   the current slot's (single, capped) attempt so the first search isn't stuck on peg-only rates. */
 export async function ltFxRates(env,opts={}){
-  const row=await ltFxReadRow(env),current=ltFxFromRow(row);
+  const current=ltFxFromRow(await ltFxReadRow(env));
   if(current.fetched_at||opts.allowFetch===false)return current;
-  const r=await ltFxRefresh(env,{fetchImpl:opts.fetchImpl});
-  return r.rates;
+  return (await ltFxRefresh(env,opts)).rates;
 }
 
-/* Claims one of today's refreshes and calls the provider.
-   Returns {refreshed, reason, rates}. reason: 'ok' | 'daily_limit' | 'in_progress' | 'provider_error'. */
+/* Claims this slot's single provider call and makes it.
+   Returns {refreshed, reason, rates}; reason: 'ok' | 'slot_used' | 'daily_limit' | 'in_progress' | 'provider_error'. */
 export async function ltFxRefresh(env,opts={}){
-  const now=opts.now||new Date(),day=ltFxDay(now),nowIso=now.toISOString();
+  const now=opts.now||new Date(),day=ltFxDay(now),nowIso=now.toISOString(),slotIso=ltFxSlotStart(now).toISOString();
   try{
     await ltFxEnsureTable(env);
     await env.DB.prepare(`INSERT OR IGNORE INTO live_travel_fx_rates (base,rates_json,source,fetched_at,refresh_day,refresh_count) VALUES ('USD','{}','','',?,0)`).bind(day).run();
+    // The call is counted when claimed, so a failing provider can never burn more than 4 calls a day.
     const claim=await env.DB.prepare(`UPDATE live_travel_fx_rates
-      SET refresh_count=CASE WHEN refresh_day=? THEN refresh_count ELSE 0 END,refresh_day=?,refreshing_until=?
-      WHERE base='USD' AND (refreshing_until IS NULL OR refreshing_until<?) AND (refresh_day<>? OR refresh_count<?)`)
-      .bind(day,day,new Date(now.getTime()+60000).toISOString(),nowIso,day,LT_FX_MAX_REFRESHES_PER_DAY).run();
+      SET refresh_count=CASE WHEN refresh_day=? THEN refresh_count+1 ELSE 1 END,refresh_day=?,last_attempt_at=?,refreshing_until=?
+      WHERE base='USD' AND (refreshing_until IS NULL OR refreshing_until<?) AND (last_attempt_at IS NULL OR last_attempt_at<?) AND (refresh_day<>? OR refresh_count<?)`)
+      .bind(day,day,nowIso,new Date(now.getTime()+60000).toISOString(),nowIso,slotIso,day,LT_FX_MAX_REFRESHES_PER_DAY).run();
     if(!(claim?.meta?.changes>0)){
       const row=await ltFxReadRow(env),current=ltFxFromRow(row,now);
-      const locked=row?.refreshing_until&&row.refreshing_until>=nowIso;
-      return {refreshed:false,reason:locked?'in_progress':'daily_limit',rates:current};
+      const reason=row?.refreshing_until&&row.refreshing_until>=nowIso?'in_progress':row?.last_attempt_at&&row.last_attempt_at>=slotIso?'slot_used':'daily_limit';
+      return {refreshed:false,reason,rates:current};
     }
   }catch(e){return {refreshed:false,reason:'provider_error',rates:ltFxFromRow(await ltFxReadRow(env),now)};}
   try{
     const live=await ltFxFetchLive(env,opts.fetchImpl);
-    await env.DB.prepare(`UPDATE live_travel_fx_rates SET rates_json=?,source=?,fetched_at=?,refresh_count=refresh_count+1,refreshing_until=NULL WHERE base='USD'`)
+    await env.DB.prepare(`UPDATE live_travel_fx_rates SET rates_json=?,source=?,fetched_at=?,refreshing_until=NULL WHERE base='USD'`)
       .bind(JSON.stringify(ltFxPick(live.rates)),live.source,nowIso).run();
     return {refreshed:true,reason:'ok',rates:ltFxFromRow(await ltFxReadRow(env),now)};
   }catch(e){
@@ -266,13 +270,10 @@ export async function ltFxRefresh(env,opts={}){
   }
 }
 
-// Cron hook (every 15 min): refresh once per 6-hour UTC slot, within the daily cap.
+// Cron hook (every 15 min): the first tick of each 6-hour UTC slot makes that slot's one call;
+// every other tick is a single D1 update that matches no row.
 export async function ltFxRefreshIfStale(env,opts={}){
-  try{
-    const now=opts.now||new Date(),current=ltFxFromRow(await ltFxReadRow(env),now);
-    if(current.fetched_at&&new Date(current.fetched_at)>=ltFxSlotStart(now))return {refreshed:false,reason:'fresh'};
-    return await ltFxRefresh(env,{...opts,now});
-  }catch(e){return {refreshed:false,reason:'provider_error'};}
+  try{return await ltFxRefresh(env,opts);}catch(e){return {refreshed:false,reason:'provider_error'};}
 }
 
 /* ── Per-agency settings ── */

@@ -99,7 +99,7 @@ describe('Live Agency currency conversion', () => {
   });
 });
 
-describe('Live Agency shared rate snapshot (max 4 refreshes/day)', () => {
+describe('Live Agency platform-wide rate snapshot (max 4 provider calls/day)', () => {
   // One in-memory SQLite DB for the whole file: ltFxEnsureTable runs once per process.
   const sql=new DatabaseSync(':memory:');
   const st=(q,a=[])=>({bind:(...b)=>st(q,b),run:async()=>{const r=sql.prepare(q).run(...a);return {meta:{changes:r.changes}}},first:async()=>sql.prepare(q).get(...a)||null});
@@ -140,33 +140,36 @@ describe('Live Agency shared rate snapshot (max 4 refreshes/day)', () => {
     assert.equal(next.refreshed,true);
   });
 
-  test('manual refreshes share the same daily cap as the cron', async () => {
+  test('a second call in the same slot is refused, from any client or isolate', async () => {
     reset();calls=0;
-    const results=[];
-    for(let i=0;i<5;i++)results.push((await ltFxRefresh(env,{now:at(`01:0${i}:00`),fetchImpl:ok({INR:88+i})})).reason);
-    assert.deepEqual(results,['ok','ok','ok','ok','daily_limit']);
-    const cron=await ltFxRefreshIfStale(env,{now:at('06:10:00'),fetchImpl:ok({INR:1})});
-    assert.equal(cron.reason,'daily_limit');
-    assert.equal(calls,4,'the provider is called at most 4 times in the day');
-    assert.equal((await ltFxRates(env)).rates.INR,91,'the last successful snapshot stays in use');
+    const first=await ltFxRefresh(env,{now:at('01:00:00'),fetchImpl:ok({INR:88})});
+    const again=await ltFxRefresh(env,{now:at('03:00:00'),fetchImpl:ok({INR:99})});
+    assert.equal(first.reason,'ok');
+    assert.equal(again.reason,'slot_used');
+    assert.equal(calls,1);
+    assert.equal((await ltFxRates(env)).rates.INR,88);
   });
 
-  test('a failed refresh keeps the old snapshot, does not count, and releases the lock', async () => {
+  test('a provider outage still costs at most 4 calls a day and keeps the last snapshot', async () => {
     reset();calls=0;
-    await ltFxRefresh(env,{now:at('00:05:00'),fetchImpl:ok({INR:88})});
-    const failed=await ltFxRefreshIfStale(env,{now:at('06:05:00'),fetchImpl:down});
-    assert.equal(failed.reason,'provider_error');
-    assert.equal(failed.rates.rates.INR,88);
-    assert.equal(failed.rates.refreshes_today,1);
-    const retry=await ltFxRefreshIfStale(env,{now:at('06:20:00'),fetchImpl:ok({INR:89})});
-    assert.equal(retry.refreshed,true,'next tick retries');
-    assert.equal(retry.rates.refreshes_today,2);
+    await ltFxRefresh(env,{now:new Date('2026-10-01T18:00:00Z'),fetchImpl:ok({INR:88})});
+    calls=0;
+    for(let m=0;m<24*60;m+=15)await ltFxRefreshIfStale(env,{now:new Date(Date.UTC(2026,9,2,0,m)),fetchImpl:down});
+    assert.equal(calls,4,'one failed call per slot, never a retry storm');
+    const r=await ltFxRates(env,{fetchImpl:down});
+    assert.equal(r.rates.INR,88);
+  });
+
+  test('a brand-new deployment seeds once per slot, however many requests arrive', async () => {
+    reset();calls=0;
+    for(let k=0;k<25;k++)await ltFxRates(env,{fetchImpl:down});
+    assert.equal(calls,1);
   });
 
   test('a refresh already running elsewhere is not duplicated', async () => {
     reset();calls=0;
     await ltFxRefresh(env,{now:at('00:05:00'),fetchImpl:ok({INR:88})});
-    sql.prepare(`UPDATE live_travel_fx_rates SET refreshing_until=? WHERE base='USD'`).run(at('06:01:00').toISOString());
+    sql.prepare(`UPDATE live_travel_fx_rates SET refreshing_until=?,last_attempt_at=NULL WHERE base='USD'`).run(at('06:01:00').toISOString());
     const r=await ltFxRefresh(env,{now:at('06:00:30'),fetchImpl:ok({INR:89})});
     assert.equal(r.reason,'in_progress');
     assert.equal(calls,1);

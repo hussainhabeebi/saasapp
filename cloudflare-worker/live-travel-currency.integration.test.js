@@ -109,6 +109,11 @@ test('Live Agency converts mixed-currency supplier fares to the agency currency 
     await call(env,session,'/live-travel/currency-settings','PATCH',{allow_currency_override:0});
     r=await call(env,session,'/live-travel/search','POST',{trip_type:'one_way',origin:'DXB',destination:'DEL',departure_date:'2026-11-01',currency:'QAR'});
     assert.equal(r.data.search.currency,'AED');
-    assert.equal(calls.some(u=>/er-api|openexchangerates/.test(u)),false,'fresh stored rates mean no provider calls');
+    // Every agency reads the same platform-wide snapshot, and none of them can trigger a provider call.
+    const other=await token(env.SESSION_SIGNING_KEY,8,'other@example.com');
+    const mine=await call(env,session,'/live-travel/fx-rates?refresh=1'),theirs=await call(env,other,'/live-travel/fx-rates?refresh=1');
+    assert.equal(mine.data.fx.fetched_at,theirs.data.fx.fetched_at);
+    assert.equal(mine.data.fx.rates.find(x=>x.currency==='INR').rate_to_default,theirs.data.fx.rates.find(x=>x.currency==='INR').rate_to_default);
+    assert.equal(calls.some(u=>/er-api|openexchangerates/.test(u)),false,'agency requests never call the rate provider');
   }finally{globalThis.fetch=realFetch;}
 });

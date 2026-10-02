@@ -1,4 +1,4 @@
-import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxRefresh,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
+import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
 // (avoids the Docker cross-resource networking problem hit trying to do this on
@@ -31809,18 +31809,13 @@ async function handleLtCurrencySettings(request,env){
   const info=await ltFxForClient(env,auth.cid);
   return json({settings:info.settings,fx:ltFxPublic(info),supported:LT_FX_CODES.map(code=>({code,...LT_FX_CURRENCIES[code]})),rounding_modes:LT_FX_ROUNDING_MODES});
 }
-// GET /live-travel/fx-rates[?refresh=1] — the shared rate snapshot against the agency currency.
-// ?refresh=1 uses one of the day's capped refreshes (see ltFxRefresh); it never bypasses the cap.
+// GET /live-travel/fx-rates — the platform-wide rate snapshot against this agency's currency.
+// Read-only: rates are shared by every client, so no agency can spend the platform's 4 daily
+// provider calls; only the scheduled refresh (ltFxRefreshIfStale) calls the provider.
 async function handleLtFxRates(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
-  const settings=await ltFxSettings(env,auth.cid);
-  if(new URL(request.url).searchParams.get('refresh')==='1'){
-    const r=await ltFxRefresh(env);
-    if(r.refreshed)await ltAudit(env,auth.cid,'settings','fx_rates','refreshed',auth.email,{source:r.rates.source,fetched_at:r.rates.fetched_at});
-    const message={ok:'Rates refreshed.',daily_limit:`Rates were already refreshed ${LT_FX_MAX_REFRESHES_PER_DAY} times today. The current rates stay in use until tomorrow (UTC).`,in_progress:'A refresh is already running. Try again in a minute.',provider_error:'The rate provider could not be reached. The current rates stay in use.'}[r.reason];
-    return json({fx:ltFxPublic({settings,rates:r.rates}),refreshed:r.refreshed,reason:r.reason,message});
-  }
-  return json({fx:ltFxPublic({settings,rates:await ltFxRates(env)})});
+  const [settings,rates]=await Promise.all([ltFxSettings(env,auth.cid),ltFxRates(env)]);
+  return json({fx:ltFxPublic({settings,rates})});
 }
 
 async function handleLtBootstrap(request,env){
