@@ -8683,11 +8683,22 @@ quotes and bookings are added at runtime by `ltEnsureSchema`.
   rounded. Offers keep `supplier_currency`/`supplier_total`/`fx_rate` for staff and accounting.
   A fare whose currency has no known rate is never guessed: it stays in its supplier currency,
   is flagged `fx_status='unconverted'` and is listed last.
-- **Rates:** USD-based, cached in D1 (`live_travel_fx_rates`) for 1 hour and refreshed by the
-  `*/15` cron once stale. They come from Open Exchange Rates if the optional `FX_API_KEY` secret
-  is set (`npx wrangler secret put FX_API_KEY`), otherwise from ExchangeRate-API's keyless open
-  endpoint (daily updates). If the provider is down, the last stored rates are used; if no rate
-  was ever stored, only the USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
+- **Rates:** USD-based, **one platform-wide snapshot** (`live_travel_fx_rates`, a single row
+  with no client key) shared by every Live Agency client. Every path (search, revalidate,
+  quotes, booking drift check, payments, wallet, WhatsApp, Currency page) reads that same row
+  on each request. There is no per-instance memory cache, so all clients and all Worker
+  instances price with identical rates.
+- **No API wastage:** the provider is called by the `*/15` cron at most **once per 6-hour UTC
+  slot** (00:00, 06:00, 12:00, 18:00), so **at most 4 calls per day for the whole platform**.
+  Every call counts, successful or not. A failed slot isn't retried until the next slot, and
+  the last snapshot stays in use (flagged stale after 12h). The slot, the daily count and a
+  60-second lock are claimed atomically in D1 before calling, so concurrent instances can't
+  double-call. Agencies can't trigger a refresh; `GET /live-travel/fx-rates` is read-only.
+  Rates come from Open Exchange Rates if the optional `FX_API_KEY` secret is set
+  (`npx wrangler secret put FX_API_KEY`; 4/day ≈ 120/month, inside its free 1,000/month),
+  otherwise from ExchangeRate-API's keyless open endpoint. On a brand-new deployment the first
+  request seeds the snapshot through the same slot claim. If nothing was ever stored, only the
+  USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
 - **Rate lock:** quotes and bookings store the rate they were priced at. Creating a booking
   returns `409 code:'fx_drift'` when the market has moved past the buffer since the quote. Staff
   can re-quote, or confirm to book at the quoted price (`confirm_fx_drift:true`).

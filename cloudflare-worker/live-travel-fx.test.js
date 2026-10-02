@@ -1,8 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import {
   ltFxRate, ltFxRound, ltFxFormat, ltFxApplyToOffer, ltFxCurrencyFromPhone, ltFxCurrencyFromText,
-  ltFxDriftPct, ltFxNormalizeSettings, ltFxRates, ltFxResetMemoryCache, LT_FX_USD_PEGS,
+  ltFxDriftPct, ltFxNormalizeSettings, ltFxRates, ltFxRefresh, ltFxRefreshIfStale, ltFxSlotStart, ltFxNextSlot, LT_FX_USD_PEGS,
 } from './live-travel-fx.js';
 import { ltNormalizeOffer, ltChatCurrencySwitch, ltConvertStoredChatOffers, ltFormatChatOffers, ltNormalizeChatFlightRequest } from './worker.js';
 
@@ -98,34 +99,94 @@ describe('Live Agency currency conversion', () => {
   });
 });
 
-describe('Live Agency rate cache', () => {
-  const db=row=>({prepare:sql=>({bind:()=>({first:async()=>row,run:async()=>({})}),first:async()=>/SELECT/.test(sql)?row:null,run:async()=>({})})});
+describe('Live Agency platform-wide rate snapshot (max 4 provider calls/day)', () => {
+  // One in-memory SQLite DB for the whole file: ltFxEnsureTable runs once per process.
+  const sql=new DatabaseSync(':memory:');
+  const st=(q,a=[])=>({bind:(...b)=>st(q,b),run:async()=>{const r=sql.prepare(q).run(...a);return {meta:{changes:r.changes}}},first:async()=>sql.prepare(q).get(...a)||null});
+  const env={DB:{prepare:q=>st(q)}};
+  const reset=()=>{try{sql.exec(`DELETE FROM live_travel_fx_rates`)}catch(e){}};
+  let calls=0;
+  const ok=rates=>async()=>{calls++;return new Response(JSON.stringify({result:'success',rates}))};
+  const down=async()=>{calls++;throw new Error('offline')};
+  const at=t=>new Date(`2026-10-02T${t}Z`);
 
-  test('falls back to USD pegs when the provider fails and nothing is stored', async () => {
-    ltFxResetMemoryCache();
-    const r=await ltFxRates({DB:db(null)},{fetchImpl:async()=>{throw new Error('offline')}});
+  test('falls back to USD pegs when nothing was ever stored and the provider is down', async () => {
+    reset();calls=0;
+    const r=await ltFxRates(env,{fetchImpl:down});
     assert.equal(r.source,'usd_peg_fallback');
     assert.deepEqual(r.rates,LT_FX_USD_PEGS);
     assert.equal(r.rates.INR,undefined,'INR is never guessed');
   });
 
-  test('uses stored rates (marked stale) when the provider fails', async () => {
-    ltFxResetMemoryCache();
-    const old={rates_json:JSON.stringify({INR:87}),source:'exchangerate-api',fetched_at:'2020-01-01T00:00:00Z'};
-    const r=await ltFxRates({DB:db(old)},{fetchImpl:async()=>{throw new Error('offline')}});
-    assert.equal(r.rates.INR,87);
-    assert.equal(r.stale,true);
+  test('every read returns the one stored snapshot and never calls the provider', async () => {
+    reset();calls=0;
+    await ltFxRefresh(env,{now:at('00:05:00'),fetchImpl:ok({INR:88,AED:3.6725})});
+    assert.equal(calls,1);
+    const a=await ltFxRates(env,{fetchImpl:ok({INR:99})}),b=await ltFxRates(env,{fetchImpl:ok({INR:99})});
+    assert.equal(calls,1,'reads never refresh, however old the snapshot is');
+    assert.equal(a.rates.INR,88);
+    assert.deepEqual(a,b,'search, quotes, wallet and chat all see identical rates');
+  });
+
+  test('cron refreshes once per 6-hour UTC slot, so at most 4 times a day', async () => {
+    reset();calls=0;
+    const tick=t=>ltFxRefreshIfStale(env,{now:at(t),fetchImpl:ok({INR:88,AED:3.6725})});
+    for(const t of ['00:00:00','00:15:00','05:45:00','06:00:00','06:15:00','11:59:00','12:00:00','17:30:00','18:00:00','23:45:00'])await tick(t);
+    assert.equal(calls,4,'one refresh in each of 00:00, 06:00, 12:00 and 18:00 slots');
+    const r=await ltFxRates(env);
+    assert.equal(r.refreshes_today,4);
+    // Next UTC day the count starts again.
+    const next=await ltFxRefreshIfStale(env,{now:new Date('2026-10-03T00:05:00Z'),fetchImpl:ok({INR:87})});
+    assert.equal(next.refreshed,true);
+  });
+
+  test('a second call in the same slot is refused, from any client or isolate', async () => {
+    reset();calls=0;
+    const first=await ltFxRefresh(env,{now:at('01:00:00'),fetchImpl:ok({INR:88})});
+    const again=await ltFxRefresh(env,{now:at('03:00:00'),fetchImpl:ok({INR:99})});
+    assert.equal(first.reason,'ok');
+    assert.equal(again.reason,'slot_used');
+    assert.equal(calls,1);
+    assert.equal((await ltFxRates(env)).rates.INR,88);
+  });
+
+  test('a provider outage still costs at most 4 calls a day and keeps the last snapshot', async () => {
+    reset();calls=0;
+    await ltFxRefresh(env,{now:new Date('2026-10-01T18:00:00Z'),fetchImpl:ok({INR:88})});
+    calls=0;
+    for(let m=0;m<24*60;m+=15)await ltFxRefreshIfStale(env,{now:new Date(Date.UTC(2026,9,2,0,m)),fetchImpl:down});
+    assert.equal(calls,4,'one failed call per slot, never a retry storm');
+    const r=await ltFxRates(env,{fetchImpl:down});
+    assert.equal(r.rates.INR,88);
+  });
+
+  test('a brand-new deployment seeds once per slot, however many requests arrive', async () => {
+    reset();calls=0;
+    for(let k=0;k<25;k++)await ltFxRates(env,{fetchImpl:down});
+    assert.equal(calls,1);
+  });
+
+  test('a refresh already running elsewhere is not duplicated', async () => {
+    reset();calls=0;
+    await ltFxRefresh(env,{now:at('00:05:00'),fetchImpl:ok({INR:88})});
+    sql.prepare(`UPDATE live_travel_fx_rates SET refreshing_until=?,last_attempt_at=NULL WHERE base='USD'`).run(at('06:01:00').toISOString());
+    const r=await ltFxRefresh(env,{now:at('06:00:30'),fetchImpl:ok({INR:89})});
+    assert.equal(r.reason,'in_progress');
+    assert.equal(calls,1);
   });
 
   test('fetches the keyless provider and keeps only supported currencies', async () => {
-    ltFxResetMemoryCache();
+    reset();
     let url='';
-    const r=await ltFxRates({DB:db(null)},{fetchImpl:async u=>{url=u;return new Response(JSON.stringify({result:'success',rates:{USD:1,INR:88.1,AED:3.6725,JPY:150}}))}});
+    const r=await ltFxRefresh(env,{now:at('00:05:00'),fetchImpl:async u=>{url=u;return new Response(JSON.stringify({result:'success',rates:{USD:1,INR:88.1,AED:3.6725,JPY:150}}))}});
     assert.match(url,/open\.er-api\.com/);
-    assert.equal(r.rates.INR,88.1);
-    assert.equal(r.rates.JPY,undefined);
-    assert.equal(r.stale,false);
-    ltFxResetMemoryCache();
+    assert.equal(r.rates.rates.INR,88.1);
+    assert.equal(r.rates.rates.JPY,undefined);
+  });
+
+  test('slot boundaries are 00, 06, 12 and 18 UTC', () => {
+    assert.equal(ltFxSlotStart(at('13:47:00')).toISOString(),'2026-10-02T12:00:00.000Z');
+    assert.equal(ltFxNextSlot(at('18:00:00')).toISOString(),'2026-10-03T00:00:00.000Z');
   });
 });
 

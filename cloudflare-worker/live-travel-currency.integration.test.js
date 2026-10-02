@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import worker from './worker.js';
-import { ltFxResetMemoryCache } from './live-travel-fx.js';
 
 class D1Statement {
   constructor(db,sql,args=[]){this.db=db;this.sql=sql;this.args=args;}
@@ -33,7 +32,7 @@ async function call(env,session,path,method='GET',body){
 // per process, and this test needs the runtime FX columns on its own fresh database.
 test('Live Agency converts mixed-currency supplier fares to the agency currency and locks the rate',async()=>{
   const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
-  const setRates=rates=>{DB.db.prepare(`INSERT INTO live_travel_fx_rates (base,rates_json,source,fetched_at) VALUES ('USD',?,'test',?) ON CONFLICT(base) DO UPDATE SET rates_json=excluded.rates_json,fetched_at=excluded.fetched_at`).run(JSON.stringify(rates),new Date().toISOString());ltFxResetMemoryCache();};
+  const setRates=rates=>{DB.db.prepare(`INSERT INTO live_travel_fx_rates (base,rates_json,source,fetched_at) VALUES ('USD',?,'test',?) ON CONFLICT(base) DO UPDATE SET rates_json=excluded.rates_json,fetched_at=excluded.fetched_at`).run(JSON.stringify(rates),new Date().toISOString());};
   setRates({USD:1,INR:88,AED:3.6725,SAR:3.75,QAR:3.64});
   const realFetch=globalThis.fetch,calls=[];
   globalThis.fetch=async(url,opts={})=>{
@@ -110,6 +109,11 @@ test('Live Agency converts mixed-currency supplier fares to the agency currency 
     await call(env,session,'/live-travel/currency-settings','PATCH',{allow_currency_override:0});
     r=await call(env,session,'/live-travel/search','POST',{trip_type:'one_way',origin:'DXB',destination:'DEL',departure_date:'2026-11-01',currency:'QAR'});
     assert.equal(r.data.search.currency,'AED');
-    assert.equal(calls.some(u=>/er-api|openexchangerates/.test(u)),false,'fresh stored rates mean no provider calls');
+    // Every agency reads the same platform-wide snapshot, and none of them can trigger a provider call.
+    const other=await token(env.SESSION_SIGNING_KEY,8,'other@example.com');
+    const mine=await call(env,session,'/live-travel/fx-rates?refresh=1'),theirs=await call(env,other,'/live-travel/fx-rates?refresh=1');
+    assert.equal(mine.data.fx.fetched_at,theirs.data.fx.fetched_at);
+    assert.equal(mine.data.fx.rates.find(x=>x.currency==='INR').rate_to_default,theirs.data.fx.rates.find(x=>x.currency==='INR').rate_to_default);
+    assert.equal(calls.some(u=>/er-api|openexchangerates/.test(u)),false,'agency requests never call the rate provider');
   }finally{globalThis.fetch=realFetch;}
 });
