@@ -334,15 +334,32 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #hUpdated{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
 .icon-btn{width:36px;height:36px;border:none;background:none;cursor:pointer;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--muted);transition:background .15s}
 .icon-btn:hover{background:var(--bg)}
-/* Header on mobile — the timestamp and 5 icon buttons don't fit next to the client-name chip on
-   a phone screen without overlapping (matches how #hdr looks unmodified at phone width). Keep
-   only the two used outside a deliberate "I want this" moment (dark mode toggle, notifications)
-   inline; PDF report / Passkey / Sign out move into the existing mobile More sheet instead of
-   disappearing outright — see the new .more-item buttons in the More sheet markup. */
+/* Header on mobile — the timestamp doesn't fit next to the client-name chip on a phone. Account
+   actions (theme, Passkey, PDF report, Sign out) live in the profile menu below on every screen
+   size, so nothing else needs hiding here. */
 @media(max-width:767px){
   .hchip{max-width:none;min-width:0;flex:0 1 auto}
-  #hUpdated,#hdr .icon-btn[title="PDF Report"],#hPasskey,#hLogout{display:none}
+  #hUpdated{display:none}
 }
+/* Profile avatar + dropdown menu */
+#profileWrap{position:relative}
+#profileBtn{width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;background:var(--accent);color:#fff;font-family:var(--disp);font-weight:700;font-size:13px;letter-spacing:.3px;display:flex;align-items:center;justify-content:center;flex-shrink:0;-webkit-tap-highlight-color:transparent}
+#profileBtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#profileMenu{display:none;position:absolute;right:0;top:42px;width:260px;max-width:calc(100vw - 24px);background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.18);z-index:1000;padding:6px;overflow:hidden}
+#profileMenu.show{display:block}
+.pm-head{display:flex;align-items:center;gap:10px;padding:10px 10px 12px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.pm-head .pm-av{width:38px;height:38px;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--disp);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.pm-name{font-family:var(--disp);font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm-email{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pm-item{display:flex;align-items:center;gap:10px;width:100%;padding:11px 10px;border:none;background:none;cursor:pointer;border-radius:10px;font-size:13.5px;color:var(--ink);text-align:left;font-family:inherit;-webkit-tap-highlight-color:transparent}
+.pm-item:hover,.pm-item:active{background:var(--bg)}
+.pm-item .pm-ic{width:20px;text-align:center;font-size:16px}
+.pm-item .pm-sw{margin-left:auto;width:36px;height:20px;border-radius:20px;background:var(--line);position:relative;transition:background .2s;flex-shrink:0}
+.pm-item .pm-sw::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.pm-item[aria-checked="true"] .pm-sw{background:var(--accent)}
+.pm-item[aria-checked="true"] .pm-sw::after{transform:translateX(16px)}
+.pm-sep{height:1px;background:var(--line);margin:4px 6px}
+.pm-item.pm-danger{color:#dc2626}
 
 /* desktop tab nav */
 #desktopNav{display:none;gap:2px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--card);flex-shrink:0}
@@ -398,7 +415,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 /* Mobile "More" sheet — everything besides the 5 daily-driver bottom-nav tabs */
 .more-backdrop{position:fixed;inset:0;background:rgba(10,20,30,.45);z-index:98;opacity:0;pointer-events:none;transition:opacity .2s}
 .more-backdrop.show{opacity:1;pointer-events:auto}
-.more-sheet{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-radius:20px 20px 0 0;z-index:99;box-shadow:0 -8px 30px rgba(0,0,0,.15);padding:10px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .25s ease}
+.more-sheet{position:fixed;left:0;right:0;bottom:0;max-height:85vh;overflow-y:auto;background:var(--card);border-radius:20px 20px 0 0;z-index:99;box-shadow:0 -8px 30px rgba(0,0,0,.15);padding:10px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(100%);transition:transform .25s ease}
 .more-sheet.show{transform:translateY(0)}
 .more-sheet-handle{width:36px;height:4px;border-radius:3px;background:var(--ls);margin:2px auto 12px}
 .more-sheet-title{font-family:var(--disp);font-weight:700;font-size:14px;margin-bottom:12px}
@@ -1287,11 +1304,24 @@ const ROLES = {
     </div>
     <div class="hright">
       <span id="hUpdated"></span>
-      <button class="icon-btn" id="hDarkToggle" title="Toggle dark mode" onclick="toggleDarkMode()">🌙</button>
-      <button class="icon-btn" title="PDF Report" onclick="generateReport()">📄</button>
       <button class="icon-btn" id="hRefresh" title="Refresh">↻</button>
-      <button class="icon-btn" id="hPasskey" title="Set up a Passkey — sign in with Face ID/Touch ID/Windows Hello instead of typing your password" onclick="openPasskeySetup()">🔑</button>
-      <button class="icon-btn" id="hLogout" title="Sign out">⏻</button>
+      <div id="profileWrap">
+        <button id="profileBtn" title="Account" aria-haspopup="menu" aria-expanded="false" onclick="toggleProfileMenu(event)">?</button>
+        <div id="profileMenu" role="menu" onclick="event.stopPropagation()">
+          <div class="pm-head">
+            <div class="pm-av" id="pmAvatar">?</div>
+            <div style="min-width:0">
+              <div class="pm-name" id="pmName">—</div>
+              <div class="pm-email" id="pmEmail"></div>
+            </div>
+          </div>
+          <button class="pm-item" id="hDarkToggle" role="menuitemcheckbox" aria-checked="false" onclick="toggleDarkMode()"><span class="pm-ic" id="pmThemeIcon">🌙</span><span id="pmThemeLabel">Night mode</span><span class="pm-sw"></span></button>
+          <button class="pm-item" role="menuitem" title="Sign in with Face ID/Touch ID/Windows Hello instead of typing your password" onclick="closeProfileMenu();openPasskeySetup()"><span class="pm-ic">🔑</span>Passkey</button>
+          <button class="pm-item" role="menuitem" onclick="closeProfileMenu();generateReport()"><span class="pm-ic">📄</span>PDF Report</button>
+          <div class="pm-sep"></div>
+          <button class="pm-item pm-danger" id="hLogout" role="menuitem"><span class="pm-ic">⏻</span>Sign out</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -4031,11 +4061,6 @@ const ROLES = {
       <button class="more-item industry-tab" data-industry="education" style="display:none" data-page="education"><span class="bnIcon">🎓</span><span class="bnLabel">Education</span></button>
       <button class="more-item industry-tab" data-industry="business_services" style="display:none" data-page="businessservices"><span class="bnIcon">🏢</span><span class="bnLabel">Business Services</span></button>
       <button class="more-item" data-page="settings"><span class="bnIcon">⚙️</span><span class="bnLabel">Settings</span></button>
-      <!-- Header actions that don't fit inline on mobile (#hdr's @media(max-width:767px) rule
-           hides these icon buttons there) — same functions, just reachable from here instead. -->
-      <button class="more-item" onclick="generateReport();closeMoreSheet()"><span class="bnIcon">📄</span><span class="bnLabel">PDF Report</span></button>
-      <button class="more-item" onclick="openPasskeySetup();closeMoreSheet()"><span class="bnIcon">🔑</span><span class="bnLabel">Passkey</span></button>
-      <button class="more-item" onclick="$id('hLogout').click();closeMoreSheet()"><span class="bnIcon">⏻</span><span class="bnLabel">Sign Out</span></button>
     </div>
   </div>
 
@@ -5349,6 +5374,7 @@ async function resumeSession(id){
 }
 
 $id('hLogout').addEventListener('click',()=>{
+  closeProfileMenu();
   localStorage.removeItem('lv_cid');
   localStorage.removeItem('lv_session');
   localStorage.removeItem('lv_me_email');
@@ -5381,7 +5407,12 @@ $id('hRefresh').addEventListener('click',()=>loadAll());
    Both classes are mutually exclusive on <html> — toggleDarkMode always removes the other before
    adding its own, so a user flips their pick without ever landing in a state with both/neither. */
 function isDarkModeOn(){ return document.documentElement.classList.contains('dark')||(!document.documentElement.classList.contains('light')&&matchMedia('(prefers-color-scheme: dark)').matches); }
-function setDarkModeBtnIcon(){ const b=$id('hDarkToggle'); if(b) b.textContent=isDarkModeOn()?'☀️':'🌙'; }
+// The toggle lives in the profile menu as a "Night mode" switch row; the icon shows the current mode.
+function setDarkModeBtnIcon(){
+  const on=isDarkModeOn(), b=$id('hDarkToggle');
+  if(b) b.setAttribute('aria-checked',on?'true':'false');
+  const ic=$id('pmThemeIcon'); if(ic) ic.textContent=on?'🌙':'☀️';
+}
 function initDarkMode(){
   const stored=localStorage.getItem('lv_theme_mode');
   if(stored==='dark') document.documentElement.classList.add('dark');
@@ -5396,6 +5427,47 @@ function toggleDarkMode(){
   setDarkModeBtnIcon();
 }
 initDarkMode();
+
+/* ── PROFILE MENU ──
+   Header avatar with the signed-in user's initials; tapping it opens name/email, the day/night
+   switch, Passkey, PDF Report and Sign out. Same menu on desktop and mobile. */
+function profileDisplayName(){
+  const email=myEmail||localStorage.getItem('lv_me_email')||'';
+  let names={}; try{ names=JSON.parse(clientRecord?.team_names||'{}'); }catch(e){}
+  const key=Object.keys(names).find(k=>k.toLowerCase()===email);
+  if(key&&names[key]) return names[key];
+  // No stored name — turn "jane.doe@x.com" into "Jane Doe".
+  const local=email.split('@')[0]||'';
+  return local.split(/[._\-+]+/).filter(Boolean).map(w=>w[0].toUpperCase()+w.slice(1)).join(' ')||'Account';
+}
+function profileInitials(name){
+  const parts=String(name||'').trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return '?';
+  return ((parts[0][0]||'')+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase();
+}
+function updateProfileMenu(){
+  const name=profileDisplayName(), ini=profileInitials(name);
+  const btn=$id('profileBtn'); if(btn){ btn.textContent=ini; btn.title=name; }
+  const av=$id('pmAvatar'); if(av) av.textContent=ini;
+  const n=$id('pmName'); if(n) n.textContent=name;
+  const e=$id('pmEmail'); if(e) e.textContent=myEmail||'';
+  setDarkModeBtnIcon();
+}
+function toggleProfileMenu(ev){
+  ev?.stopPropagation();
+  const m=$id('profileMenu'); if(!m) return;
+  if(m.classList.contains('show')) return closeProfileMenu();
+  updateProfileMenu();
+  const dd=$id('notifDropdown'); if(dd) dd.style.display='none';
+  m.classList.add('show');
+  $id('profileBtn')?.setAttribute('aria-expanded','true');
+}
+function closeProfileMenu(){
+  $id('profileMenu')?.classList.remove('show');
+  $id('profileBtn')?.setAttribute('aria-expanded','false');
+}
+document.addEventListener('click',closeProfileMenu);
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeProfileMenu(); });
 
 /* ── NAVIGATION ── */
 const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','knowledgebase']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
@@ -5523,6 +5595,7 @@ function showApp(){
   $id('gate').classList.add('hidden');
   $id('app').classList.add('show');
   $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
+  updateProfileMenu();
   applyHeaderLogo();
   taMergeLocal();
   apptMergeLocal();
