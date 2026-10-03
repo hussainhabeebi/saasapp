@@ -68,6 +68,7 @@ tr:last-child td{border-bottom:none}
 .badge.pending{background:#FEF3C7;color:#92400E}
 .badge.cancelled{background:#FEE2E2;color:#991B1B}
 .badge.processing{background:#DBEAFE;color:#1E3A8A}
+.badge.draft{background:#EDE9FE;color:#5B21B6}
 .thumb{width:36px;height:36px;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
 .thumb-empty{background:var(--accent-soft)}
 select.badge{border:none;cursor:pointer;font-family:inherit;appearance:auto}
@@ -325,9 +326,12 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="card-title">Orders</div>
       <div class="card-actions">
         <input class="search-input" id="orderSearch" type="text" placeholder="🔍 Search orders…" oninput="renderOrdersTable()">
+        <button class="save-btn sec" onclick="syncOrdersFromChats(this)" title="Add or refresh a Draft order for every customer who's partway through ordering in WhatsApp">🔄 Sync from chats</button>
         <button class="save-btn" onclick="openAddOrderModal()">+ Add Order</button>
       </div>
     </div>
+    <div class="s-hint" style="margin:-4px 0 12px"><strong>Draft</strong> = the customer started ordering in WhatsApp but hasn't confirmed yet. It fills in as they answer and becomes Pending when they confirm. Use ✏️ to add or correct details — or "Fill from chat" to read them from the conversation.</div>
+    <span class="save-msg" id="ordersSyncMsg"></span>
     <div class="tbl-wrap">
       <table>
         <thead>
@@ -1028,7 +1032,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <!-- ADD ORDER MODAL -->
 <div class="modal-overlay" id="orderModalOverlay" onclick="if(event.target===this) closeOrderModal()">
   <div class="modal-card">
-    <div class="modal-title">Add Order</div>
+    <div class="modal-title" id="orderModalTitle">Add Order</div>
     <div class="modal-grid">
       <div class="s-sec"><span class="s-lbl">Order ID</span><input class="s-input" id="omOrderId" type="text" placeholder="Auto-generated if left blank"></div>
       <div class="s-sec"><span class="s-lbl">Order Date</span><input class="s-input" id="omOrderDate" type="date"></div>
@@ -1040,6 +1044,8 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="s-sec">
         <span class="s-lbl">Status</span>
         <select class="s-input" id="omStatus">
+          <option value="draft">Draft (in chat)</option>
+          <option value="pending">Pending</option>
           <option value="received">Received</option>
           <option value="processing">Processing</option>
           <option value="shipped">Shipped</option>
@@ -1052,6 +1058,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="s-sec"><span class="s-lbl">Delivery Address</span><textarea class="s-input" id="omAddress" rows="2"></textarea></div>
     <div class="s-sec"><span class="s-lbl">Notes</span><textarea class="s-input" id="omNotes" rows="2"></textarea></div>
     <div class="s-row" style="justify-content:flex-end">
+      <button class="save-btn sec" id="omFromChatBtn" style="margin-right:auto;display:none" onclick="fillOrderFromChat(this)" title="Read the latest order details from this customer's WhatsApp chat — review, then Save">💬 Fill from chat</button>
       <button class="save-btn sec" onclick="closeOrderModal()">Cancel</button>
       <button class="save-btn" onclick="submitAddOrder()">Save Order</button>
       <span class="save-msg" id="orderModalMsg"></span>
@@ -1138,7 +1145,8 @@ let allPromotions = [];
 let pmSelectedProductIds = new Set();
 let allTestimonials = [];
 let tmSelectedProductIds = new Set();
-const ORDER_STATUS_OPTIONS = ['pending','received','processing','shipped','delivered','cancelled'];
+const ORDER_STATUS_OPTIONS = ['draft','pending','received','processing','shipped','delivered','cancelled'];
+let editingOrderId = null;
 
 const WA_TEMPLATE_KINDS = [
   { key:'received',  label:'Order Received Template' },
@@ -2353,12 +2361,13 @@ function renderOrdersTable() {
   const tbody = document.getElementById('ordersTbody');
   const q = (document.getElementById('orderSearch')?.value || '').trim().toLowerCase();
   const list = q
-    ? allOrders.filter(o => [o.customer_name, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
+    ? allOrders.filter(o => [o.customer_name, o.customer_phone, o.items, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
     : allOrders;
 
   const pending  = allOrders.filter(o => o.status === 'pending').length;
   const shipped  = allOrders.filter(o => o.status === 'shipped').length;
-  const revenue  = allOrders.reduce((s, o) => s + (parseFloat(o.total)||0), 0);
+  // Drafts are orders still being taken in chat — not revenue yet.
+  const revenue  = allOrders.filter(o => o.status !== 'draft' && o.status !== 'cancelled').reduce((s, o) => s + (parseFloat(o.total)||0), 0);
   document.getElementById('statTotalOrders').textContent = allOrders.length;
   document.getElementById('statPending').textContent = pending;
   document.getElementById('statShipped').textContent = shipped;
@@ -2368,19 +2377,19 @@ function renderOrdersTable() {
     tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
     return;
   }
-  const statusClass = s => ({shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
-  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  const statusClass = s => ({draft:'draft',shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
+  const cap = s => s === 'draft' ? 'Draft (in chat)' : (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   tbody.innerHTML = list.map(o => {
     const opts = ORDER_STATUS_OPTIONS.includes(o.status) ? ORDER_STATUS_OPTIONS : [...ORDER_STATUS_OPTIONS, o.status].filter(Boolean);
     return `
     <tr>
       <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
-      <td>${esc(o.customer_name||'—')}</td>
+      <td>${esc(o.customer_name||'—')}${o.customer_phone ? `<div style="font-size:11px;color:var(--muted)">${esc(o.customer_phone)}</div>` : ''}</td>
       <td>${esc(o.order_date||'—')}</td>
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
-      <td><div class="row-actions"><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
+      <td><div class="row-actions"><button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`;
   }).join('');
 }
@@ -2388,6 +2397,9 @@ function renderOrdersTable() {
 // ── ADD / DELETE ORDER ────────────────────────────
 function openAddOrderModal() {
   if (!ecomTableIds.orders) { alert('Set the Orders Table ID in Settings first.'); return; }
+  editingOrderId = null;
+  document.getElementById('orderModalTitle').textContent = 'Add Order';
+  document.getElementById('omFromChatBtn').style.display = 'none';
   ['omOrderId','omCustomerName','omCustomerPhone','omCustomerEmail','omTotal','omItems','omAddress','omNotes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('omCurrency').value = 'INR';
   document.getElementById('omStatus').value = 'received';
@@ -2395,6 +2407,69 @@ function openAddOrderModal() {
   document.getElementById('orderModalMsg').textContent = '';
   document.getElementById('orderModalOverlay').classList.add('active');
   document.getElementById('omCustomerName').focus();
+}
+
+// Edit an existing order (incl. chat drafts) — staff can add or correct any detail.
+function openEditOrderModal(id) {
+  const o = allOrders.find(x => x.Id === id);
+  if (!o) return;
+  editingOrderId = id;
+  document.getElementById('orderModalTitle').textContent = 'Edit Order #' + (o.order_id || o.Id);
+  const set = (el, v) => document.getElementById(el).value = v == null ? '' : v;
+  set('omOrderId', o.order_id); set('omOrderDate', (o.order_date||'').slice(0,10));
+  set('omCustomerName', o.customer_name); set('omCustomerPhone', o.customer_phone);
+  set('omCustomerEmail', o.customer_email); set('omTotal', o.total || '');
+  set('omCurrency', o.currency || 'INR'); set('omItems', o.items);
+  set('omAddress', o.delivery_address); set('omNotes', o.notes);
+  const st = document.getElementById('omStatus');
+  if (o.status && ![...st.options].some(x => x.value === o.status)) st.add(new Option(o.status, o.status));
+  st.value = o.status || 'pending';
+  document.getElementById('omFromChatBtn').style.display = o.customer_phone ? '' : 'none';
+  document.getElementById('orderModalMsg').textContent = '';
+  document.getElementById('orderModalOverlay').classList.add('active');
+}
+
+// Reads the customer's WhatsApp chat and fills in what it finds — nothing is saved until Save.
+async function fillOrderFromChat(btn) {
+  if (!editingOrderId) return;
+  btn.disabled = true;
+  showMsg('orderModalMsg', 'Reading the chat…', 30000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/from-chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, Id: editingOrderId })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    const s = data.suggested || {};
+    const filled = [];
+    const fill = (el, v, label) => { if (v && document.getElementById(el).value.trim() !== v) { document.getElementById(el).value = v; filled.push(label); } };
+    fill('omItems', s.items, 'items'); fill('omCustomerName', s.customer_name, 'name'); fill('omAddress', s.delivery_address, 'address');
+    if (s.notes) {
+      const n = document.getElementById('omNotes');
+      if (!n.value.includes(s.notes)) { n.value = [n.value.trim(), 'From chat: ' + s.notes].filter(Boolean).join('\n'); filled.push('notes'); }
+    }
+    showMsg('orderModalMsg', filled.length ? `Updated ${filled.join(', ')} from chat — review and Save` : 'Chat has nothing new for this order', 6000);
+  } catch(e) {
+    showMsg('orderModalMsg', 'Error: ' + e.message, 6000);
+  } finally { btn.disabled = false; }
+}
+
+async function syncOrdersFromChats(btn) {
+  btn.disabled = true;
+  showMsg('ordersSyncMsg', 'Checking chats…', 60000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/sync-chats`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    showMsg('ordersSyncMsg', `${data.created||0} new draft order(s), ${data.updated||0} refreshed from chats`, 6000);
+    loadOrders();
+  } catch(e) {
+    showMsg('ordersSyncMsg', 'Error: ' + e.message, 6000);
+  } finally { btn.disabled = false; }
 }
 
 function closeOrderModal() {
@@ -2421,9 +2496,9 @@ async function submitAddOrder() {
   showMsg('orderModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
-      method: 'POST',
+      method: editingOrderId ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(editingOrderId ? { ...body, Id: editingOrderId } : body)
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     closeOrderModal();

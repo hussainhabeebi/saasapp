@@ -10974,6 +10974,25 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
           ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
           : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
   };
+  // Baby Care in-chat orders already have a 'draft' row (engineSyncDraftChatOrder) — complete
+  // that row instead of adding a second one, keeping its order id and anything staff noted on it.
+  if(seed?.chatOrder||seed?.babyCareFlow){
+    try{
+      const draft=await ecomGetOrderRow(env, ordersTable, clientId, seed.draftOrderId)
+        ||await ecomFindLatestOrder(env, ordersTable, clientId, phone, ['draft']);
+      if(draft && draft.status==='draft'){
+        const staffNotes=String(draft.notes||'').replace(ECOM_DRAFT_ORDER_NOTE,'').trim();
+        const {order_id:_ignored, ...rest}=body;
+        // Keep a total/name staff (or the chat) already put on the draft when the final seed has none.
+        if(!(Number(rest.total)>0) && Number(draft.total)>0){ rest.total=draft.total; rest.currency=draft.currency||rest.currency; }
+        if(seed.customerName) rest.customer_name=seed.customerName;
+        else if(!rest.customer_name) rest.customer_name=draft.customer_name||'';
+        const pr=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH',
+          body:{...rest, Id:draft.Id, order_date:draft.order_date||rest.order_date, notes:[rest.notes, staffNotes].filter(Boolean).join('\n')}});
+        if(pr.ok) return {ok:true, order_id:draft.order_id||order_id};
+      }
+    }catch(e){ console.error('[ecom] finalizeChatOrder draft completion failed', e.message); }
+  }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
     const data=await r.json().catch(()=>({}));
@@ -11066,7 +11085,7 @@ async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed
     const d=nextSeed.details;
     const qty=Math.max(1, parseInt(d.quantity,10)||1);
     const order=await finalizeChatOrder(env, c, clientId, phone, d.customer_name||name,
-      {chatOrder:true, items:ecomChatOrderItems(nextSeed), price:nextSeed.price?nextSeed.price*qty:0, currency:nextSeed.currency}, d.delivery_address);
+      {chatOrder:true, draftOrderId:nextSeed.draftOrderId, items:ecomChatOrderItems(nextSeed), price:nextSeed.price?nextSeed.price*qty:0, currency:nextSeed.currency}, d.delivery_address);
     text=order.ok ? turn.reply
       : await engineLocalizeReply(env, c, "Thank you! I've noted your order — our team will confirm everything with you shortly 😊", replyLang);
     if(!order.ok) await engineSendHandoverLabel(c, convId);
@@ -11083,6 +11102,245 @@ async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed
   if(nextSeed) routing.orderCollectSeed=nextSeed; else routing.clearOrderCollect=true;
   if(routing.route==='human') routing.route='ecom_faq';
   return {handled:true, text};
+}
+
+/* ── Baby Care: in-progress chat orders on the Orders tab (status 'draft') ─────────────────
+   A Baby Care customer who has shown order intent but not finished (stage chat_order or one of the
+   baby_* custom-set steps) used to leave nothing on the Orders page until the very last "yes", so
+   staff couldn't see or follow up on half-taken orders. Each such turn now upserts one 'draft' row
+   per order (its Id kept on the seed as draftOrderId) with whatever the customer has said so far;
+   finalizeChatOrder then turns that same row into the 'pending' order instead of adding a second
+   one. Only fields whose chat-derived value actually changed this turn are written, so anything
+   staff typed into the row (notes, a corrected total) survives unrelated turns. All of it is
+   best-effort and runs after the reply has been sent — it never changes what the customer sees. */
+export const ECOM_DRAFT_ORDER_STAGES=new Set(['chat_order','baby_quality_select','baby_customize','baby_print_theme','baby_addons','baby_order_details','baby_order_confirm']);
+export const ECOM_DRAFT_ORDER_NOTE='Order intent detected in WhatsApp chat — not completed yet. Updated automatically as the customer shares details.';
+// Order-row fields derivable from an in-progress seed (only the ones actually known).
+export function ecomDraftOrderFields(seed){
+  if(!seed || typeof seed!=='object') return {};
+  const out={};
+  if(seed.chatOrder){
+    const d=seed.details||{};
+    if(seed.productName) out.items=ecomChatOrderItems(seed).slice(0,500);
+    const qty=Math.max(1, parseInt(d.quantity,10)||1);
+    if(Number(seed.price)>0){ out.total=Number(seed.price)*qty; out.currency=seed.currency||''; }
+    if(d.customer_name) out.customer_name=String(d.customer_name).slice(0,200);
+    if(d.delivery_address) out.delivery_address=String(d.delivery_address).slice(0,500);
+  } else if(seed.babyCareFlow){
+    out.items=ecomBabyCareOrderItems({...seed, productName:seed.productName||'Custom Baby Set'}).slice(0,500);
+    if(seed.customerName) out.customer_name=String(seed.customerName).slice(0,200);
+    if(seed.address) out.delivery_address=String(seed.address).slice(0,500);
+  }
+  return out;
+}
+// What to write to an existing draft: only fields whose derived value moved since the last turn.
+export function ecomDraftOrderChanges(prevSeed, nextSeed){
+  const prev=ecomDraftOrderFields(prevSeed), next=ecomDraftOrderFields(nextSeed), out={};
+  for(const [k,v] of Object.entries(next)) if(String(prev[k]??'')!==String(v)) out[k]=v;
+  return out;
+}
+async function ecomGetOrderRow(env, ordersTable, clientId, id){
+  if(!id) return null;
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records/${parseInt(id,10)}`);
+  const row=await r.json().catch(()=>null);
+  return r.ok && row && String(row.client_id)===String(clientId) ? row : null;
+}
+async function ecomFindLatestOrder(env, ordersTable, clientId, phone, statuses){
+  const st=statuses.map(s=>`(status,eq,${s})`).join('~or');
+  const where=`(client_id,eq,${clientId})~and(customer_phone,eq,${ecomSanitizeFilterValue(phone)})~and(${st})`;
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(where)}&sort=-Id&limit=1`);
+  const d=await r.json().catch(()=>({}));
+  return r.ok ? ((d.list||[])[0]||null) : null;
+}
+// Creates or updates this lead's draft row from the seed. Mutates nextSeed.draftOrderId so the
+// caller's lead upsert (OrderCollect) remembers which row belongs to this order. Never throws.
+async function engineSyncDraftChatOrder(env, clientId, phone, name, prevSeed, nextSeed){
+  try{
+    if(!nextSeed || !(nextSeed.chatOrder||nextSeed.babyCareFlow)) return null;
+    const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+    if(!ordersTable) return null;
+    let existing=await ecomGetOrderRow(env, ordersTable, clientId, nextSeed.draftOrderId);
+    let reused=false;
+    // A restarted order (seed cleared after an abandoned one) reuses that customer's latest draft
+    // from the last week rather than piling up a new row per attempt.
+    if(!existing){
+      const last=await ecomFindLatestOrder(env, ordersTable, clientId, phone, ['draft']);
+      const at=Date.parse(last?.order_date||'');
+      if(last && (!at || Date.now()-at<7*24*3600*1000)){ existing=last; reused=true; nextSeed.draftOrderId=last.Id; }
+    }
+    if(existing){
+      const changes=reused ? ecomDraftOrderFields(nextSeed)
+        : ecomDraftOrderChanges(prevSeed?.draftOrderId===nextSeed.draftOrderId?prevSeed:null, nextSeed);
+      if(!Object.keys(changes).length) return existing.Id;
+      await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:{Id:existing.Id, ...changes}});
+      return existing.Id;
+    }
+    const fields=ecomDraftOrderFields(nextSeed);
+    const body={client_id:clientId, order_id:'ORD-'+Date.now(), customer_phone:phone,
+      order_date:new Date().toISOString().slice(0,10), status:'draft', notes:ECOM_DRAFT_ORDER_NOTE,
+      ...fields, customer_name:fields.customer_name||name||'', items:fields.items||'Order in progress (WhatsApp chat)'};
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok || !data?.Id){ await reportOpsError(env, 'engineSyncDraftChatOrder', new Error(data?.msg||data?.error||`HTTP ${r.status}`), {clientId, phone, ordersTable}); return null; }
+    nextSeed.draftOrderId=data.Id;
+    return data.Id;
+  }catch(e){ console.error('[ecom] engineSyncDraftChatOrder failed', e.message); return null; }
+}
+
+/* ── Customer changes an order later in the chat ───────────────────────────────────────────
+   "Address maattanam — new address is …", "make it 2 sets", "baby's name is Ayra not Aira": once
+   a customer has an open order (draft/pending/received/processing, last 30 days) and is outside
+   the order-taking steps, each text message is checked for a change to that order and the row is
+   patched, with a dated line appended to notes so staff see what changed and when. Runs after the
+   reply is sent; no reply is ever produced from here. */
+export const ECOM_UPDATABLE_ORDER_STATUSES=['draft','pending','received','processing'];
+export function ecomOrderUpdateWorthChecking(text){
+  const t=String(text||'').trim();
+  if(t.length<4) return false;
+  if(/^[A-Z][A-Z0-9_]+$/.test(t)) return false; // button payloads (BABY_CONFIRM, CHAT_…)
+  if(/^(?:ok+|okay|thanks?|thank you|thx|tnx|yes|no|hi+|hello|hai|ha+|hmm+|👍|🙏)[.!\s]*$/i.test(t)) return false;
+  return true;
+}
+export function ecomOrderUpdatePrompt(order){
+  return `You check whether a customer's latest WhatsApp message changes or adds details to their existing order.
+
+CURRENT ORDER:
+Items: ${order.items||''}
+Customer name: ${order.customer_name||''}
+Delivery address: ${order.delivery_address||''}
+
+Rules:
+- Only report a change the customer clearly asks for or states in the LATEST message (new/corrected address, name, quantity, size, colour, print name, add-ons, or an extra item for this order). Questions, greetings, thanks, payment chat and anything about a different new order are NOT changes.
+- "items" must be the FULL updated items text (keep the existing parts that did not change), or "" if items did not change.
+- Never invent values.
+
+Respond with ONLY JSON: {"changed":true|false,"items":"","customer_name":"","delivery_address":"","summary":"one short line, in English, describing what the customer changed"}`;
+}
+export function ecomParseOrderUpdate(order, raw){
+  let t=null;
+  try{ t=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]); }catch(e){ return null; }
+  if(!t || t.changed!==true) return null;
+  const patch={};
+  for(const [k,max] of [['items',500],['customer_name',200],['delivery_address',500]]){
+    const v=String(t[k]??'').trim().slice(0,max);
+    if(v && v!==String(order[k]||'').trim()) patch[k]=v;
+  }
+  if(!Object.keys(patch).length) return null;
+  const summary=String(t.summary||'').trim().slice(0,200)||Object.keys(patch).join(', ')+' updated';
+  return {patch, summary};
+}
+async function engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, userText, history){
+  try{
+    if(!ecomOrderUpdateWorthChecking(userText)) return null;
+    const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+    if(!ordersTable) return null;
+    const order=await ecomFindLatestOrder(env, ordersTable, clientId, phone, ECOM_UPDATABLE_ORDER_STATUSES);
+    if(!order) return null;
+    const placed=Date.parse(order.order_date||order.CreatedAt||'');
+    if(placed && Date.now()-placed>30*24*3600*1000) return null;
+    const recent=(history||[]).slice(-6).map(m=>`${m.role==='user'?'Customer':'Shop'}: ${String(m.content||'').slice(0,400)}`).join('\n');
+    const raw=await engineGeminiGenerateWithFallback(env, c, ecomOrderUpdatePrompt(order),
+      `Recent conversation:\n${recent}\n\nCustomer's LATEST message: ${userText}`, {temperature:0, maxOutputTokens:400, json:true}).catch(()=>null);
+    const upd=ecomParseOrderUpdate(order, raw);
+    if(!upd) return null;
+    const stamp=new Date().toISOString().slice(0,16).replace('T',' ');
+    const notes=[String(order.notes||'').trim(), `[${stamp}] Customer update via chat: ${upd.summary}`].filter(Boolean).join('\n').slice(-2000);
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:{Id:order.Id, ...upd.patch, notes}});
+    return r.ok ? order.Id : null;
+  }catch(e){ console.error('[ecom] engineMaybeApplyCustomerOrderUpdate failed', e.message); return null; }
+}
+// End-of-turn hook for Baby Care clients (handleEngineWebhook, right before the lead upsert so
+// a new draft's Id lands in OrderCollect). Order-taking turns sync the draft; any other turn
+// checks for a change to an open order in the background.
+async function engineTrackBabyCareChatOrder(env, c, clientId, phone, name, state, routing, userText, ctx){
+  let prevSeed=null; try{ prevSeed=JSON.parse(state.lead?.OrderCollect||'null'); }catch(e){}
+  const nextStage=routing.next||state.stage;
+  if(!routing.orderPlaced && ECOM_DRAFT_ORDER_STAGES.has(nextStage)){
+    // "Custom order" tapped (fabric step) carries no seed yet — start one so the draft shows up
+    // from the moment of intent; the next step reads it back and adds the fabric.
+    if(!routing.orderCollectSeed && nextStage==='baby_quality_select')
+      routing.orderCollectSeed={babyCareFlow:true, ...(prevSeed?.babyCareFlow&&prevSeed.draftOrderId?{draftOrderId:prevSeed.draftOrderId}:{})};
+    if(routing.orderCollectSeed) await engineSyncDraftChatOrder(env, clientId, phone, name, prevSeed, routing.orderCollectSeed);
+    return;
+  }
+  if(routing.orderPlaced || ECOM_DRAFT_ORDER_STAGES.has(state.stage) || !userText) return;
+  const work=engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, userText, state.activeHistory||state.history);
+  if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
+}
+
+// Same customer-change check for turns where the bot stays silent (handover silence, manual
+// takeover from Chats) — Baby Care hands every confirmed order to the team, so that's exactly
+// when "please change the address" tends to arrive.
+async function engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, lead, ctx){
+  try{
+    if(!text || c.industry!=='ecommerce' || engineParseJsonField(c.bot_config,{}).ecom_communication_style!=='baby_care') return;
+    if(ECOM_DRAFT_ORDER_STAGES.has(lead?.Stage)) return;
+    let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+    const work=engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, text, hist);
+    if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
+  }catch(e){}
+}
+
+// Staff: Orders tab → "Sync from chats". Creates/refreshes a draft for every Baby Care lead that's
+// currently partway through an in-chat order (existing conversations from before this feature).
+async function handleEcomOrdersSyncChats(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  const stageOr=[...ECOM_DRAFT_ORDER_STAGES].map(s=>`(Stage,eq,${s})`).join('~or');
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(${stageOr})`)}&fields=Id,Name,Phone,Stage,OrderCollect&limit=200`);
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) return json({error:'Could not read chats'},502);
+  let created=0, updated=0;
+  for(const lead of d.list||[]){
+    let seed=null; try{ seed=JSON.parse(lead.OrderCollect||'null'); }catch(e){}
+    if(!seed || !(seed.chatOrder||seed.babyCareFlow) || !lead.Phone) continue;
+    const had=seed.draftOrderId;
+    // prevSeed=null → every known field is (re)written from the chat.
+    const id=await engineSyncDraftChatOrder(env, clientId, lead.Phone, lead.Name, null, seed);
+    if(!id) continue;
+    if(had && had===id){ updated++; continue; }
+    created++;
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:lead.Id, OrderCollect:JSON.stringify(seed)}});
+  }
+  return json({ok:true, created, updated});
+}
+
+// Staff: Edit Order → "Fill from chat". Reads the customer's conversation and suggests order
+// details; nothing is saved here — the modal shows the values and staff save them.
+export function ecomOrderFromChatPrompt(order){
+  return `From the WhatsApp conversation, extract the details of the order this customer placed or is placing with the shop.
+
+EXISTING ORDER (may be incomplete or outdated): ${JSON.stringify({items:order.items||'', customer_name:order.customer_name||'', delivery_address:order.delivery_address||''})}
+
+Use the LATEST value the customer gave for each detail (a later correction wins). Items must include product, quantity and every customisation mentioned (baby's name, size/age, colour, theme, add-ons). Leave a field "" if the conversation doesn't state it. Never invent values.
+
+Respond with ONLY JSON: {"items":"","customer_name":"","delivery_address":"","notes":"anything else staff should know, e.g. delivery date wanted, payment preference"}`;
+}
+async function handleEcomOrderFromChat(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const id=parseInt(body.Id,10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  const order=await ecomGetOrderRow(env, ordersTable, clientId, id);
+  if(!order) return json({error:'Not found'},404);
+  if(!order.customer_phone) return json({error:'This order has no customer phone to match a chat'},400);
+  const lr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(Phone,eq,${ecomSanitizeFilterValue(order.customer_phone)})`)}&fields=Id,ConvHistory&limit=1`);
+  const ld=await lr.json().catch(()=>({}));
+  const lead=(ld.list||[])[0];
+  let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  if(!hist.length) return json({error:'No chat found for this customer'},404);
+  const c=await getClientById(env, clientId);
+  const convo=hist.slice(-40).map(m=>`${m.role==='user'?'Customer':'Shop'}: ${String(m.content||'').slice(0,500)}`).join('\n');
+  const raw=await engineGeminiGenerateWithFallback(env, c, ecomOrderFromChatPrompt(order), `Conversation:\n${convo}`, {temperature:0, maxOutputTokens:600, json:true}).catch(()=>null);
+  let t=null; try{ t=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]); }catch(e){}
+  if(!t || typeof t!=='object') return json({error:'Could not read the order from the chat — try again'},502);
+  const pick=(k,max)=>String(t[k]??'').trim().slice(0,max);
+  return json({ok:true, suggested:{items:pick('items',500), customer_name:pick('customer_name',200), delivery_address:pick('delivery_address',500), notes:pick('notes',500)}});
 }
 
 // A message about one product that asks something ("Ith oru jodi alliyo" — isn't this a pair?,
@@ -19513,6 +19771,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
         ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
       await engineUpsertLead(env, 'PATCH', state.leadId, {LastMsgAt:now});
+      await engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, state.lead, ctx);
       await logEngineSkip(env, clientId, phone, convId, 'manual-takeover', `taken over by ${state.lead.HandoverBy}`);
       return json({ok:true, skipped:'manual-takeover'});
     }
@@ -19584,6 +19843,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       (state.lead.Handover==='Yes' || state.stage==='human_handover') &&
       c.handover_silence_enabled==='Yes';
     if(healthcareHandoverSilence||configuredHandoverSilence){
+      // Bot stays silent, but a Baby Care customer changing their order still updates it.
+      if(configuredHandoverSilence) await engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, state.lead, ctx);
       await logEngineSkip(env,clientId,phone,convId,healthcareHandoverSilence?'healthcare-handover-5h':'handed-over',`stage ${state.stage||''}`);
       return json({ok:true,skipped:healthcareHandoverSilence?'healthcare-handover-5h':'handed-over'});
     }
@@ -21967,6 +22228,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
+    // Baby Care: keep the Orders tab in step with the chat (draft orders + customer changes).
+    // After the reply has gone out and never throws, so it can't change what the customer sees.
+    if(c.industry==='ecommerce' && botConfig.ecom_communication_style==='baby_care')
+      await engineTrackBabyCareChatOrder(env, c, clientId, phone, name, state, routing, userText, ctx).catch(()=>{});
     const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messageId, isNewLead);
     await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
     // LastCustomerMsgAt — separate from LastMsgAt (which the upsert body above already stamps
@@ -33091,6 +33356,8 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='POST'){ res=await handleEcomCreate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='PATCH'){ res=await handleEcomUpdate(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
+      else if(url.pathname==='/ecom/orders/sync-chats' && request.method==='POST'){ res=await handleEcomOrdersSyncChats(request, env); }
+      else if(url.pathname==='/ecom/orders/from-chat' && request.method==='POST'){ res=await handleEcomOrderFromChat(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='PATCH'){ res=await handleEcomCategoryUpdate(request, env); }

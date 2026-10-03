@@ -603,6 +603,32 @@ chat is handed over, with a Hand back button. A bot-triggered handover (`Handove
 as before. The Matrimonial menu item and `goMatrimonial` are removed.
 **Tested:** `frontend/tests/chats-handover.spec.js`, `manual-takeover.test.js`.
 
+
+### 36 — [frontend + backend] Baby Care: half-taken chat orders show on the Orders tab and follow the chat
+**Area:** `engineTrackBabyCareChatOrder`, `engineSyncDraftChatOrder`, `ecomDraftOrderFields`,
+`engineMaybeApplyCustomerOrderUpdate`, `engineSilentBabyCareOrderUpdate`, `finalizeChatOrder`,
+`POST /ecom/orders/sync-chats`, `POST /ecom/orders/from-chat` (`cloudflare-worker/worker.js`);
+Orders tab in `frontend/ecom.html`
+**Broke:** A Baby Care customer who showed order intent but hadn't confirmed yet (stage `chat_order`
+or any `baby_*` custom-set step) left nothing on the Orders tab, so staff couldn't see or follow up
+on it. Orders couldn't be edited, and a customer changing their address/name/items after ordering
+never reached the order.
+**Fix:** Every order-taking turn upserts one `draft` order row ("Draft (in chat)"), its row Id kept
+on the `OrderCollect` seed as `draftOrderId`. Only fields whose chat-derived value changed that turn
+are written, so staff edits survive. On confirmation `finalizeChatOrder` turns that row into the
+`pending` order (keeps its order id, staff notes and a staff-entered total) instead of adding a
+second row. A restarted order reuses the customer's latest draft from the last 7 days. Outside the
+order steps, a text message from a customer with an open order (draft/pending/received/processing,
+last 30 days) is checked by the LLM for a change; real changes are patched and a dated
+"Customer update via chat: …" line is appended to notes. That also runs while the bot is silent
+(handover silence, manual takeover). Orders tab: ✏️ Edit order (all fields, any status),
+"💬 Fill from chat" (reads the conversation, fills the modal, nothing saved until Save), and
+"🔄 Sync from chats" (creates/refreshes drafts for leads already partway through an order).
+Drafts are left out of Revenue.
+**Don't:** let any of this change what the customer is sent. It runs after the reply, never throws,
+and the change check runs in `ctx.waitUntil`.
+**Tested:** `chat-order-draft.test.js`, `frontend/tests/ecom-chat-orders.spec.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
