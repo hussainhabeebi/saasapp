@@ -4090,13 +4090,25 @@ async function runClassicFollowupsForAllClients(env){
   }
 }
 async function classicFollowupProcessClient(env, c){
-  if(c.followup_do_enabled==='Yes') return; // handed off to LeadFollowupAgent Durable Objects
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
+  // Smart Follow-ups (LeadFollowupAgent DOs): leads that already have a DO are left to it. Every
+  // other lead is auto-migrated here (its DO spawned, up to FOLLOWUP_DO_SPAWN_PER_TICK per tick),
+  // and only if that spawn fails does this sweep send to it itself — so enabling Smart Follow-ups
+  // never leaves an existing lead with no follow-ups. Without the DO binding deployed, the
+  // setting is ignored and this sweep covers everyone, same as a non-Smart client.
+  const smart=c.followup_do_enabled==='Yes' && !!env.LEAD_AGENT;
+  let doLeads=null, spawnBudget=0;
+  if(smart){
+    doLeads=await followupDoLeadIds(env, c.Id);
+    spawnBudget=FOLLOWUP_DO_SPAWN_PER_TICK;
+  }
   // Checked once per client per tick, not per lead — it's the same answer for every lead of this
   // client this tick. A lead who becomes due while outside the window is simply picked up on a
-  // later tick (nothing is marked sent here), not skipped forever.
-  if(!followupWithinQuietHours(c)) return;
+  // later tick (nothing is marked sent here), not skipped forever. A Smart client still walks its
+  // leads outside the window so migration isn't held up — the DOs apply the window themselves.
+  const inWindow=followupWithinQuietHours(c);
+  if(!inWindow && !smart) return;
   const steps={}; stepRows.forEach(r=>{ steps[r.step]=r; });
   // Silent-hours threshold per step: 1-2 use their own configured `hours`; 3-5 are fixed at their
   // day count * 24 (not merchant-editable — see FOLLOWUP_LADDER_STEP_SHAPE's own comment).
@@ -4118,6 +4130,18 @@ async function classicFollowupProcessClient(env, c){
     const dueTasks=[];
     for(const lead of leadRows){
       if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      if(smart){
+        if(doLeads.has(Number(lead.Id))) continue; // its DO owns the ladder
+        const doStep=followupNextUnsentStep(lead);
+        if(!doStep) continue; // ladder already finished — nothing to hand over
+        // Over this tick's spawn budget: leave it for the next tick rather than sending from here,
+        // since a lead created before DO tracking existed may already have a live DO of its own.
+        if(spawnBudget<=0) continue;
+        spawnBudget--;
+        try{ await followupDoSpawn(env, c.Id, lead, doStep); doLeads.add(Number(lead.Id)); continue; }
+        catch(e){ console.error('[classic-followups] DO spawn failed for lead', lead.Id, '— cron covers it this tick:', e.message); }
+      }
+      if(!inWindow) continue;
       const lastRealMs=lead.LastMsgAt||lead.Date;
       if(!lastRealMs) continue;
       // Skip leads where a human agent replied more recently than the customer — the rep is
@@ -22043,7 +22067,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         const doId=env.LEAD_AGENT.idFromName(`${clientId}-${resolvedLeadId}`);
         const stub=env.LEAD_AGENT.get(doId);
         if(isNewLead){
-          stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1,lastMsgAt:startMs})}).catch(()=>{});
+          // Recorded in followup_do_leads only once the DO accepted the init — until then the
+          // cron sweep treats the lead as un-migrated and spawns/covers it itself.
+          const initR=await stub.fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:resolvedLeadId,clientId,step:1,lastMsgAt:startMs})}).catch(()=>null);
+          if(initR?.ok) await followupDoRecord(env, clientId, resolvedLeadId).catch(()=>{});
         } else if(userText){
           stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
         }
@@ -32231,8 +32258,69 @@ export function ltPoomasEnabledAfterSettingsSave(body={},existing=null){
 // ── Smart Follow-ups — one Durable Object per lead ──────────────────────────────────────────────
 // Only active for clients who enable followup_do_enabled='Yes' in the Follow-up Engine settings.
 // Each DO self-schedules alarms (setAlarm) timed to the ladder step's hours/days, resets on
-// customer reply, and respects the client's quiet-hours window — replacing the 15-min cron sweep
-// entirely for opted-in clients. The cron skips these clients at its own gate (below).
+// customer reply, and respects the client's quiet-hours window. Which leads have a DO is tracked in
+// D1 followup_do_leads (migrations/0109): the 15-min cron skips those, auto-migrates every other
+// lead of an opted-in client (spawns its DO), and sends from the cron itself only when a spawn
+// fails — see classicFollowupProcessClient.
+const FOLLOWUP_DO_SPAWN_PER_TICK=100;    // per client per cron tick — keeps the sweep's subrequests bounded
+const FOLLOWUP_DO_SPAWN_PER_REQUEST=300; // per enable/"Migrate now" request; the cron finishes any rest
+let followupDoTableReady=false;
+async function ensureFollowupDoTable(env){
+  if(followupDoTableReady) return;
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS followup_do_leads (lead_id INTEGER PRIMARY KEY, client_id INTEGER NOT NULL, created_at TEXT NOT NULL)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_followup_do_leads_client ON followup_do_leads(client_id)`).run();
+  followupDoTableReady=true;
+}
+async function followupDoLeadIds(env, clientId){
+  await ensureFollowupDoTable(env);
+  const {results}=await env.DB.prepare(`SELECT lead_id FROM followup_do_leads WHERE client_id=?`).bind(Number(clientId)).all();
+  return new Set((results||[]).map(r=>Number(r.lead_id)));
+}
+async function followupDoRecord(env, clientId, leadId){
+  await ensureFollowupDoTable(env);
+  await env.DB.prepare(`INSERT OR REPLACE INTO followup_do_leads (lead_id, client_id, created_at) VALUES (?,?,?)`)
+    .bind(Number(leadId), Number(clientId), new Date().toISOString()).run();
+}
+// First ladder step whose `Follow up N` flag isn't set yet, or null once all five have gone out.
+function followupNextUnsentStep(lead){
+  return [1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes')||null;
+}
+// Spawns (or re-seeds) this lead's DO at `step`, anchored to the customer's last message, then
+// records it. force:true so a DO left idle by an earlier disable is re-armed rather than ignored.
+// Throws if the DO didn't accept the init — the lead is then NOT recorded, so the cron covers it.
+async function followupDoSpawn(env, clientId, lead, step){
+  const stub=env.LEAD_AGENT.get(env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`));
+  const r=await stub.fetch('https://internal/init', {method:'POST', body:JSON.stringify({
+    leadId:lead.Id, clientId:String(clientId), step,
+    lastMsgAt:new Date(lead.LastMsgAt||lead.Date||Date.now()).getTime(), force:true,
+  })});
+  if(!r.ok) throw new Error('DO init HTTP '+r.status);
+  await followupDoRecord(env, clientId, lead.Id);
+}
+// Pages through this client's active leads and spawns a DO for each one not tracked yet, up to
+// `cap` spawns. Returns {spawned, failed, more} — more=true when the cap stopped it early.
+async function followupDoMigrateClient(env, clientId, cap){
+  const doLeads=await followupDoLeadIds(env, clientId);
+  const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
+  const fields='Id,Stage,LastMsgAt,Date,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5';
+  let spawned=0, failed=0, page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&offset=${(page-1)*200}&fields=${encodeURIComponent(fields)}`);
+    if(!r.ok) throw new Error('Failed to fetch leads (HTTP '+r.status+')');
+    const leads=(await r.json().catch(()=>({})))?.list||[];
+    for(const lead of leads){
+      if(doLeads.has(Number(lead.Id)) || PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
+      const step=followupNextUnsentStep(lead);
+      if(!step) continue;
+      if(spawned+failed>=cap) return {spawned, failed, more:true};
+      try{ await followupDoSpawn(env, clientId, lead, step); spawned++; }
+      catch(e){ failed++; console.error('[smart-followups] DO spawn failed for lead', lead.Id, e.message); }
+    }
+    if(leads.length<200) return {spawned, failed, more:false};
+    page++;
+  }
+}
+
 export class LeadFollowupAgent{
   constructor(state, env){ this.state=state; this.env=env; }
 
@@ -32313,6 +32401,12 @@ export class LeadFollowupAgent{
     const cData=await cR.json().catch(()=>null);
     const c=cData?.list?.[0];
     if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    // Smart Follow-ups turned off since this DO was armed — the cron sweep owns this lead again, so
+    // stand down (no re-arm) instead of sending alongside it. Re-enabling re-seeds it (force:true).
+    if(c.followup_do_enabled!=='Yes'){
+      await this.env.DB.prepare(`DELETE FROM followup_do_leads WHERE lead_id=?`).bind(Number(leadId)).run().catch(()=>{});
+      return;
+    }
 
     if(!followupWithinQuietHours(c)){
       await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
@@ -32394,12 +32488,28 @@ async function handleFollowupSmartPatch(request, env){
   if(!payload) return json({error:'Invalid or expired session'},401);
   const body=await request.json().catch(()=>({}));
   const val=body.enabled===true?'Yes':null;
-  await patchClientFields(env, String(payload.cid), {followup_do_enabled: val});
-  return json({ok:true, enabled: val==='Yes'});
+  const clientId=String(payload.cid);
+  await patchClientFields(env, clientId, {followup_do_enabled: val});
+  if(!val){
+    // Hand every lead back to the cron sweep; each DO stands down on its next alarm (see alarm()).
+    await ensureFollowupDoTable(env);
+    await env.DB.prepare(`DELETE FROM followup_do_leads WHERE client_id=?`).bind(Number(clientId)).run();
+    return json({ok:true, enabled:false});
+  }
+  // Auto-migrate existing leads right away; anything past this request's cap (or any lead whose
+  // spawn failed) is picked up by the 15-min cron, which keeps sending to it until its DO exists.
+  let migration=null;
+  if(env.LEAD_AGENT){
+    const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
+    if(configured?.length){
+      try{ migration=await followupDoMigrateClient(env, clientId, FOLLOWUP_DO_SPAWN_PER_REQUEST); }
+      catch(e){ migration={error:e.message}; }
+    }
+  }
+  return json({ok:true, enabled:true, migration});
 }
-// One-time migration — spawns a DO for every active lead of this client so they inherit the
-// smart ladder from their current next-unsent step.  Safe to call again; `force:false` means an
-// already-running DO for a lead is not reset.
+// "Migrate now" — same migration the enable toggle and the cron run, pages through every active
+// lead (not just the first 200). Safe to call repeatedly: already-migrated leads are skipped.
 async function handleFollowupSmartMigrate(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'},401);
@@ -32410,20 +32520,10 @@ async function handleFollowupSmartMigrate(request, env){
   if(c.followup_do_enabled!=='Yes') return json({error:'Enable Smart Follow-ups first'},400);
   const {results:configured}=await env.DB.prepare(`SELECT step FROM followup_ladder_steps WHERE client_id=?`).bind(Number(clientId)).all();
   if(!configured?.length) return json({error:'No follow-up steps configured'},400);
-  const where=`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`;
-  const leadsR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=200&fields=${encodeURIComponent('Id,Stage,LastMsgAt,Date,Follow up 1,Follow up 2,Follow up 3,Follow up 4,Follow up 5')}`);
-  if(!leadsR.ok) return json({error:'Failed to fetch leads'},502);
-  const {list:leads=[]}=await leadsR.json().catch(()=>({}));
-  let spawned=0;
-  for(const lead of leads){
-    if(PIPELINE_TERMINAL_STAGES.has(lead.Stage)) continue;
-    const nextStep=[1,2,3,4,5].find(s=>lead[`Follow up ${s}`]!=='Yes');
-    if(!nextStep) continue;
-    const doId=env.LEAD_AGENT.idFromName(`${clientId}-${lead.Id}`);
-    env.LEAD_AGENT.get(doId).fetch('https://internal/init',{method:'POST',body:JSON.stringify({leadId:lead.Id,clientId,step:nextStep,lastMsgAt:new Date(lead.LastMsgAt||lead.Date||Date.now()).getTime(),force:true})}).catch(()=>{});
-    spawned++;
-  }
-  return json({ok:true, spawned});
+  try{
+    const {spawned, failed, more}=await followupDoMigrateClient(env, clientId, FOLLOWUP_DO_SPAWN_PER_REQUEST);
+    return json({ok:true, spawned, failed, more});
+  }catch(e){ return json({error:e.message||'Migration failed'},502); }
 }
 // Returns the most recent template send failures for this client so the Follow-up Engine UI can
 // surface actionable errors (expired token, unapproved template, etc.) instead of silently hiding them.

@@ -773,8 +773,8 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <span id="smartFuMsg" style="font-size:12.5px;color:var(--muted)"></span>
       </div>
       <div id="smartFuMigrateRow" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
-        <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">Smart Follow-ups is enabled. Run the one-time migration below to bring your existing active leads onto the new system. New leads are handled automatically.</div>
-        <button class="btn btn-sec" onclick="migrateSmartFollowups()">Migrate existing leads</button>
+        <div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">Smart Follow-ups is enabled. Your existing active leads are moved over automatically (large accounts finish within a few 15-minute rounds), and keep getting the standard follow-ups until they are. New leads are handled automatically.</div>
+        <button class="btn btn-sec" onclick="migrateSmartFollowups()">Migrate now</button>
         <span id="smartFuMigrateMsg" style="font-size:12.5px;margin-left:10px"></span>
       </div>
     </div>
@@ -3357,7 +3357,10 @@ async function toggleSmartFollowups(enabled){
     const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart`,{method:'PATCH',headers:ncAuthHeaders(),body:JSON.stringify({enabled})});
     const d=await r.json();
     if(d.ok){
-      msg.textContent=enabled?'Enabled — new leads will use Smart Follow-ups.':'Disabled — reverting to standard sweep.';
+      const mig=d.migration;
+      msg.textContent=!enabled?'Disabled — reverting to standard sweep.'
+        : mig&&!mig.error ? `Enabled — ${mig.spawned} existing lead${mig.spawned===1?'':'s'} moved over${mig.more||mig.failed?', the rest follow automatically':''}.`
+        : 'Enabled — existing leads are moved over automatically.';
       const migrateRow=$id('smartFuMigrateRow');
       if(migrateRow) migrateRow.style.display=enabled?'':'none';
     } else { msg.textContent='Error saving.'; }
@@ -3370,7 +3373,7 @@ async function migrateSmartFollowups(){
   try{
     const r=await fetch(`${CONFIG.WORKER_BASE}/followups/smart/migrate`,{method:'POST',headers:ncAuthHeaders()});
     const d=await r.json();
-    if(d.ok) msg.textContent=`Done — ${d.spawned} lead${d.spawned===1?'':'s'} migrated.`;
+    if(d.ok) msg.textContent=`Done — ${d.spawned} lead${d.spawned===1?'':'s'} migrated${d.more||d.failed?'; the rest follow automatically':''}.`;
     else msg.textContent=d.error||'Error.';
   }catch(e){ msg.textContent='Network error.'; }
 }
