@@ -1642,6 +1642,19 @@ async function handleChatResolveLead(request, env){
 export function engineManualTakeoverActive(lead){
   return !!lead && lead.Handover==='Yes' && !!String(lead.HandoverBy||'').trim();
 }
+// Pure: drops the end-of-turn fields that would undo a change a person made to the lead while
+// the bot's turn was running (state = the lead as the turn read it, fresh = as it is now).
+export function engineKeepStaffLeadChanges(body, state, fresh){
+  if(!fresh) return body;
+  if(String(fresh.Stage||'new')!==String(state?.stage||'new')){
+    delete body.Stage;
+    for(let i=1;i<=5;i++) delete body[`Follow up ${i}`];
+  }
+  if(engineManualTakeoverActive(fresh) && !engineManualTakeoverActive(state?.lead)){
+    delete body.Stage; delete body.Handover; delete body.HandoverAt; delete body.SlaAlerted;
+  }
+  return body;
+}
 async function handleChatHandover(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -22254,6 +22267,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(newSummary) leadBody.ConvSummary=newSummary;
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
     if(newFacts) leadBody['Customer Facts']=newFacts;
+    // A rep can mark the lead Won/Lost or take the chat over while this turn is still running —
+    // re-read it so the upsert below doesn't put back the stage this turn started from.
+    if(method==='PATCH' && leadId){
+      const freshR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`).catch(()=>null);
+      const fresh=freshR?.ok?await freshR.json().catch(()=>null):null;
+      engineKeepStaffLeadChanges(leadBody, state, fresh);
+    }
     const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
     // Page the owner on WhatsApp the moment this turn made the lead hot (Settings → 👥 User
     // Management → 🔥 Hot Lead Alerts). Never throws; a no-op unless enabled.

@@ -52,11 +52,22 @@ test('take over from the bot, then hand it back', async ({ page }) => {
   await expect(page.locator('#handoverBar')).toBeHidden();
 });
 
-test('a chat already handed over shows the bar and offers Hand back', async ({ page }) => {
-  await open(page, { ...LEAD, Handover: 'Yes' });
+test('a chat a person already took over shows the bar and offers Hand back', async ({ page }) => {
+  await open(page, { ...LEAD, Handover: 'Yes', HandoverBy: 'rep@x.test' });
   await expect(page.locator('#handoverBar')).toBeVisible();
   await page.locator('[onclick="toggleMenu()"]').click();
   await expect(page.locator('#chatMenu button', { hasText: 'Hand back to bot' })).toBeVisible();
+});
+
+// The bot's own handover (no HandoverBy) doesn't silence it, so the page mustn't say it does —
+// and a person still needs to be able to take the chat over.
+test('a bot-triggered handover still offers Take over', async ({ page }) => {
+  const calls = await open(page, { ...LEAD, Handover: 'Yes' });
+  await expect(page.locator('#handoverBar')).toBeHidden();
+  await page.locator('[onclick="toggleMenu()"]').click();
+  await page.locator('#chatMenu button', { hasText: 'Take over from bot' }).click();
+  await expect.poll(() => calls).toEqual([{ lead_id: 7, takeover: true }]);
+  await expect(page.locator('#handoverBar')).toBeVisible();
 });
 
 test('the menu no longer links to the Matrimonial profile', async ({ page }) => {
