@@ -395,6 +395,240 @@ instructions still in place.
 **Tested:** `worker.test.js` → `engineFindHallucinatedLink`, including the exact Wellness Virtue
 case as a named test.
 
+### 22 — [backend] Voice notes at the final funnel stage wrongly triggered human handoff
+**Area:** `engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** A customer who sent a voice note in reply to the bot's final-stage question (e.g. "Are
+you free tomorrow evening?") received "Sure 🙏 connecting you to our advisor now" immediately —
+even when the voice note couldn't be transcribed (returned the `(sent a voice note)` placeholder).
+The `isFinalStage + POSITIVE` heuristic was firing because the AI classifier, given the context
+of the previous yes/no question, was returning `AFFIRMATIVE` or `SHORT_NEUTRAL` for the opaque
+placeholder text, and both are in the `POSITIVE` set that triggers the heuristic.
+**Fix:** `engineRouteFlow` now accepts an optional `mediaType` parameter (default `'text'`).
+The `isFinalStage + POSITIVE` human-handoff heuristic is skipped entirely when `mediaType ===
+'voice'`. Only an explicit `WANTS_HUMAN` intent (resolved from a successful transcription) still
+routes voice-note senders to a human — the ambiguous-intent heuristic no longer fires on them.
+Both main call sites (`handleEngineWebhook` and the Instagram batch handler) pass `mediaType`
+through.
+**Don't revert:** Reverting restores the false-positive handoff for every voice note sent at the
+final stage, which was observed triggering the `human-requested` Chatwoot label and pulling a
+human agent into the conversation prematurely.
+**Tested:** `worker.test.js` → `engineRouteFlow — voice notes do not trigger isFinalStage+POSITIVE handoff`
+(three cases: text affirmative after 5 turns still hands off, voice note does not, explicit WANTS_HUMAN from voice still hands off).
+
+### 23 — [backend] Initial phase of conversation must be handled by bot prompt/industry module
+**Area:** `engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** The bot was automatically routing to human too early — final-stage-positive heuristic,
+low-confidence escalation, or frustrated-sentiment detection could all trigger human handoff in
+the very first few exchanges, before the bot had a chance to engage the customer through its
+configured prompt and industry module (travel_faq, ecom_faq, faq, etc.).
+**Fix:** After all routing decisions are resolved, a final guard checks `botTurnCount` — the number
+of assistant turns already in `state.history`. If fewer than 5, any non-explicit human route is
+overridden back to the industry FAQ route. Only `humanReason='explicit'` (a genuine
+`WANTS_HUMAN` intent from the customer) bypasses this gate — customers who explicitly ask for a
+human are always connected regardless of where the conversation stands. After 5 bot turns, all
+handoff paths proceed as before.
+**Don't revert:** Removing this guard restores premature automatic handoffs during the initial
+phase of every conversation, bypassing the configured bot prompt and industry knowledge base
+before the customer has even been engaged properly.
+**Tested:** `worker.test.js` → `engineRouteFlow — initial phase (< 5 bot turns) handled by industry module`
+(four cases: 0 turns → FAQ, 4 turns → FAQ, 5 turns → human allowed, explicit WANTS_HUMAN on turn 1 → human).
+
+
+### 24 — [backend] Greetings and language preferences never trigger an anti-loop handover
+**Area:** `engineIsNonHandoverSmallTalk`, `engineGetLeadState` (looping), `engineClassifyIntent`,
+`engineRouteFlow` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo (baby care ecom): "Hi" then "Hy" each correctly got the same welcome, which the
+anti-loop detector (fix #1) read as a stuck bot. The next message ("Hy", "Only English/Hindi") was
+force-routed to a human ("connecting you to our advisor"). With handover silence on, the bot then
+went quiet. The AI classifier also sometimes labelled "Only English/Hindi" as WANTS_HUMAN.
+**Fix:** Two similar bot replies to two greetings don't count as a loop. A loop never escalates a
+greeting or language-preference message, and the classifier's WANTS_HUMAN is ignored for those.
+Explicit keyword asks ("talk to a person", "agent", …) and the 2-reply threshold are unchanged.
+**Don't revert:** Removing any one guard re-opens the path from a greeting to a silent bot.
+**Tested:** `handover-small-talk.test.js`.
+
+### 25 — [backend] Photo asks for the whole range send real images
+**Area:** `ecomIsPhotoRequest`, `ecomPlanGallery`, `engineMaybeSendEcomGallery`, `handleEngineWebhook`
+(`cloudflare-worker/worker.js`)
+**Broke:** "send all photos" / "I want to see photos" matched no photo regex, so they reached the
+FAQ LLM or the catalogue list: product names, no images.
+**Fix:** Such asks send one photo per category (Ecom → Categories image, else that category's first
+product photo), then a category picker. Naming a category ("photos of frocks") sends that category's
+photos plus its products with name + price. A named product, or a bare "Pictures" right after a
+product, still goes to the product flow (fix for #783).
+**Tested:** `ecom-photo-request.test.js` → `ecomPlanGallery`.
+
+### 26 — [backend] Product style fields: repair a missing or mis-titled NocoDB column
+**Area:** `ecomRepairFieldType`, `ecomVerifyProductWrite` (`cloudflare-worker/worker.js`)
+**Broke:** "Age group" / "Set includes" reported "didn't stick" on every save. The repair only
+converted a column's type. It did nothing when the column was missing, or when it existed under
+another title (e.g. a hand-made "Age Group"). In that case ensureEcomProductStyleFields' create
+also fails on the duplicate column_name, and NocoDB silently ignores writes keyed by an unknown title.
+**Fix:** The column is matched by normalised title/column_name and retitled to the exact key, or
+created if missing. The retry waits out NocoDB's schema-cache lag, and the per-isolate "ensured"
+memo is cleared when a field is dropped.
+
+### 27 — [frontend] Standalone Chats: staff see only their routed chats
+**Area:** `staffLocked`/`baseLeads`/`loadLeads` (`frontend/chats.html`)
+**Broke:** chats.html listed every lead for the client, whoever was signed in. Only the dashboard's
+Leads tab locked staff to their own leads when Lead Routing is on.
+**Fix:** A non-owner never sees a chat whose Owner is someone else, whether Lead Routing set the owner
+or someone assigned it by hand in the Leads panel. Unassigned chats are hidden while routing is on
+and shown while it's off, matching the Leads tab. The query is also narrowed by Owner so the
+200-row cap can't hide their chats. The account owner sees everything.
+(A first version locked staff only when routing was on, so manually assigned chats still showed to
+every teammate.)
+Teammates with the Admin or General Manager role (`team_permissions[email].role`) see every chat,
+same as the owner. If the Owner-narrowed query fails, loadLeads retries without it and filters in
+the page, so the chat list never goes blank over a filter error (it did after the change above).
+**Tested:** also covers admin roles and the fallback.
+**Tested:** `frontend/tests/chats-staff-scope.spec.js`.
+
+
+### 28 — [backend] Opt-in "Always send photos" (Ecom → Settings → Image Send Settings)
+**Area:** `ecomPhotosUnrestricted`, `handleEngineWebhook` product branches, `engineMaybeSendEcomCategoryMedia`
+(`cloudflare-worker/worker.js`); `frontend/ecom.html`
+**What:** `bot_config.ecom_photos_unrestricted` (off by default). When on, a product's main photo goes
+out on every mention or photo ask, even inside the 5-hour tier window and on branches that answer
+via the FAQ LLM (Baby Care product questions, follow-ups). Category photos go out every time a
+category is named, with no once-per-customer dedup and no text nudge in their place. The tier
+window still governs the full media bundle.
+**Don't:** make it default-on. Every existing gate must behave exactly as before while it's off.
+**Tested:** `ecom-photo-request.test.js` → `"Always send photos" is only on when explicitly enabled`.
+
+
+### 29 — [backend] No link → take the order in the chat, conversationally (no handover)
+**Area:** `ecomChatOrderSeed`/`ecomChatOrderSystemPrompt`/`ecomApplyChatOrderTurn`/`engineHandleChatOrder`,
+stage `chat_order`, enquiry + Baby Care product branches in `handleEngineWebhook` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: a product with no product/store link got "An online product link is not available.
+I'll connect you with our team." plus a human handover, which ended the conversation. The only
+in-chat ordering was a fixed two-question ladder, or Baby Care's button-only Custom Order flow.
+**Fix:** The card now offers "Would you like to order this? I can take your order right here 😊"
+(Baby Care adds an "Order this 🛒" button). Only when the customer wants to order (order intent or
+the button) does stage `chat_order` start. There, an LLM talks like a shop assistant: it asks only
+what the product's description calls for (e.g. baby's name), answers side questions from the
+product row, and summarises before asking for confirmation. Code-enforced guards: no order is saved
+without a summary shown first, then an explicit yes, plus a name and address. Off-topic messages
+leave the order and route normally, and an explicit ask for a person still hands over.
+"Talk to sales team" (`ecom_order_link_enabled='Human'`) keeps its handover. Fashion, Electronics
+and Medical keep their own order flows.
+**Tested:** `chat-order.test.js`.
+
+
+### 30 — [backend] Category enquiry: answer what was asked first, product picker second
+**Area:** `engineEcomCategoryAnswer`, `engineSendAnswerThenPicker`, category branch in `handleEngineWebhook`
+(`cloudflare-worker/worker.js`)
+**Broke:** Couplo: "New born baby aanu" and then "23 days aayittulloo" each got only "Please choose
+a product from Premium Baby Set:" plus a picker. The deterministic category branch never produced
+an answer at all.
+**Fix:** The AI first replies to what the customer actually said (business prompt + verified
+catalogue only), sent as its own message. The verified product choices then follow as a short,
+separate picker ("Tap a set to see details and photos 👇"). Kept separate because WhatsApp caps an
+interactive body at 1024 chars. If the AI fails, it falls back to the old picker intro.
+**Tested:** `answer-then-picker.test.js`.
+
+
+### 31 — [backend] Baby Care: product summary follow-up ~30 min after the customer goes quiet (opt-in)
+**Area:** `babyCareSummaryDue`, `babyCareWriteSummary`, `runBabyCareSummaryFollowupsForAllClients`
+(15-min cron) (`cloudflare-worker/worker.js`); Ecom → Settings toggle in `frontend/ecom.html`
+**What:** `bot_config.baby_care_summary_followup_enabled` (off by default) and `_mins` (default 30).
+A Baby Care customer who asked about a product and went quiet gets ONE warm recap: the product,
+its price, and anything they told us. It comes with "Order this 🛒" / "Talk to Us 💬" buttons, or
+no buttons while an in-chat order is in progress. The recap is AI-written from the product row +
+conversation only, with a plain template fallback.
+**Guards (tested):** it sends only when the bot had the last word, no staff replied after the
+customer, the chat isn't handed over / opted out / won, it's inside WhatsApp's 24h window, and at
+most once per 24h. It never sends right after an in-chat order (`routing.orderPlaced` stamps
+`ProductSummarySentAt`). The lead is claimed before sending, so overlapping ticks can't double-send.
+The message is appended to ConvHistory with its options, so button taps resolve.
+**Tested:** `baby-summary-followup.test.js`.
+
+
+### 32 — [backend] Product question: answer first, then the product card + photo
+**Area:** `ecomIsProductQuestion`, `engineEcomProductAnswer`, Baby Care card branch and generic enquiry
+branch in `handleEngineWebhook` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: "Ith oru jodi alliyo" ("isn't this a pair?") about Kids T-Shirt V2 got only the
+verbatim product card + order offer, with no answer, so staff had to reply "it's only a T-shirt".
+Baby Care instead sent first-time product questions to the FAQ LLM with no photo at all.
+**Fix:** When the message names a product (not a follow-up via Last Product Sku) and asks something
+(English / Manglish / Hindi / Malayalam-script markers), the AI first answers from that product's
+own row + the business prompt only. If a fact isn't stated, it says the team will confirm. Then
+the product card + photo go out. A bare product name/tap, a photo ask, or a sent image still gets
+just the card. Follow-up questions about the same product stay answer-only.
+**Tested:** `product-question.test.js`.
+
+
+### 33 — [backend] A customer photo that can't be read never becomes "I can't see images"
+**Area:** `engineGeminiDescribeImage`, `engineImageMimeType`, `ENGINE_IMAGE_UNREADABLE_NOTE`,
+`engineResolveUserText`, `engineBuildFaqSystemPrompt` (`cloudflare-worker/worker.js`)
+**Broke:** Couplo: a customer sent a photo, then "Pic sent", and the bot replied "I can't see images
+here, but I can help you if you describe the item". When image reading failed (silently: nothing
+logged), the photo reached the LLM as a bare "(image received)". The OpenRouter fallback was also
+called even with no key.
+**Fix:** Chatwoot/S3's `application/octet-stream` is sent to Gemini as `image/jpeg`, with one retry
+on 429/5xx. Every failure is reported to the ops log. The OpenRouter fallback is skipped without a
+key. An unreadable photo becomes a SYSTEM NOTE telling the bot to ask which product it is or to
+resend, never to claim it can't see images. Every FAQ prompt now forbids saying images can't be
+seen, received or sent.
+**Tested:** `image-read.test.js`.
+
+### 34 — [frontend + backend] Chats loads faster: delta poll, batched D1 inserts
+**Area:** `loadLeads`/`fetchLeads`/`boot` (`frontend/chats.html`); `d1InsertLeadMessages`,
+`handleGetChatMessages`, `chatsBackfillChatwootMedia`, `engineRecordOutgoingChatwootMedia`
+(`cloudflare-worker/worker.js`)
+**Broke:** Chats was slow. Every 12s the page downloaded all 200 leads again, each one with its
+full `ConvHistory`. The first open of a chat also wrote its history and backfilled photos into D1
+one INSERT at a time.
+**Fix:** The 12s poll asks only for leads with `LastMsgAt` ≥ the newest one already loaded and
+merges them into the list. First load, the Refresh button and every 5th tick (~1 min) still do a
+full reload, which also picks up pin, resolve and owner changes, and a delta that fails falls back
+to a full reload. D1 message writes for seeding and media backfill go through `env.DB.batch` in
+chunks of 100. If a batch fails, the rows are written one by one.
+**Tested:** `frontend/tests/chats-delta-poll.spec.js`, `chat-media.test.js`.
+
+### 35 — [frontend + backend] Chats: manual "Take over from bot"; Matrimonial link removed
+**Area:** `menuHtml`/`toggleHandover`/`updateHandoverBar` (`frontend/chats.html`);
+`handleChatHandover`, `engineManualTakeoverActive`, `handleEngineWebhook`, Instagram `inboxReason`
+(`cloudflare-worker/worker.js`)
+**Broke:** Staff could not stop the bot from Chats to reply themselves. A handover only silenced
+the bot when Settings → "Silence bot after handover" was on. The ⋮ menu also linked to the
+Matrimonial profile, which doesn't belong in Chats.
+**Fix:** The ⋮ menu has "Take over from bot" / "Hand back to bot" (POST `/chat/handover`). Taking
+over sets `Handover='Yes'`, a new `HandoverBy` (staff email) and `HandoverAt`, and sets `SlaAlerted='Yes'` so no
+"waiting for a human" alert fires. While `HandoverBy` is set and `Handover='Yes'`, the WhatsApp and
+Instagram engines stay silent on that lead whatever the silence setting says, but the customer's
+message is still saved to the Chats thread and bumps `LastMsgAt`. Stage is not changed, so handing
+back clears both fields and the bot resumes where the lead was. A bar in the thread shows while a
+chat is handed over, with a Hand back button. A bot-triggered handover (`HandoverBy` blank) behaves
+as before. The Matrimonial menu item and `goMatrimonial` are removed.
+**Tested:** `frontend/tests/chats-handover.spec.js`, `manual-takeover.test.js`.
+
+
+### 36 — [frontend + backend] Baby Care: half-taken chat orders show on the Orders tab and follow the chat
+**Area:** `engineTrackBabyCareChatOrder`, `engineSyncDraftChatOrder`, `ecomDraftOrderFields`,
+`engineMaybeApplyCustomerOrderUpdate`, `engineSilentBabyCareOrderUpdate`, `finalizeChatOrder`,
+`POST /ecom/orders/sync-chats`, `POST /ecom/orders/from-chat` (`cloudflare-worker/worker.js`);
+Orders tab in `frontend/ecom.html`
+**Broke:** A Baby Care customer who showed order intent but hadn't confirmed yet (stage `chat_order`
+or any `baby_*` custom-set step) left nothing on the Orders tab, so staff couldn't see or follow up
+on it. Orders couldn't be edited, and a customer changing their address/name/items after ordering
+never reached the order.
+**Fix:** Every order-taking turn upserts one `draft` order row ("Draft (in chat)"), its row Id kept
+on the `OrderCollect` seed as `draftOrderId`. Only fields whose chat-derived value changed that turn
+are written, so staff edits survive. On confirmation `finalizeChatOrder` turns that row into the
+`pending` order (keeps its order id, staff notes and a staff-entered total) instead of adding a
+second row. A restarted order reuses the customer's latest draft from the last 7 days. Outside the
+order steps, a text message from a customer with an open order (draft/pending/received/processing,
+last 30 days) is checked by the LLM for a change; real changes are patched and a dated
+"Customer update via chat: …" line is appended to notes. That also runs while the bot is silent
+(handover silence, manual takeover). Orders tab: ✏️ Edit order (all fields, any status),
+"💬 Fill from chat" (reads the conversation, fills the modal, nothing saved until Save), and
+"🔄 Sync from chats" (creates/refreshes drafts for leads already partway through an order).
+Drafts are left out of Revenue.
+**Don't:** let any of this change what the customer is sent. It runs after the reply, never throws,
+and the change check runs in `ctx.waitUntil`.
+**Tested:** `chat-order-draft.test.js`, `frontend/tests/ecom-chat-orders.spec.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)

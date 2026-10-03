@@ -60,6 +60,7 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | invoice_number_seq | Number (incrementing counter — last invoice number actually sent, e.g. `12` means the next one is `INV-0013`. Only written on a real send, never on a PDF preview, so a preview never burns a number.) |
 | waba_id | Single line (WhatsApp Business Account ID — for template list/create, separate from wa_phone_id) |
 | prospect_gsheet_url | Single line (last-used Prospects import sheet link, remembered across logins) |
+| gsheet_url / gsheet_cols / gsheet_last_sync_at / gsheet_last_sync_status / gsheet_sync_hash | Single line / Long text — Integrations → Google Sheets Sync (leads export). Auto-created by the Worker on first save; see "Google Sheets leads sync" below. |
 | authentik_email | Single line (email of the Authentik user allowed to log into this client's dashboard) |
 | chatwoot_user_id | Single line (Chatwoot user id created by the Channels module — used for the Shopify SSO login link) |
 | stripe_customer_id | Single line (created on first checkout) |
@@ -70,8 +71,9 @@ One table holding every client's config. Read with your **master** NocoDB token.
 | plan_message_limit | Number (optional, from the Price's `message_limit` metadata) |
 | wa_credits_balance | Number (running balance from WhatsApp-credit add-on purchases) |
 | voice_addon_active | Single line ("Yes"/"No") |
-| voice_reply_enabled | Single line ("Yes"/"No", default No/opt-in when blank) — Integrations → Voice-to-Voice Reply toggle. The only gate on the voice-to-voice reply feature — not tied to `voice_addon_active`/billing in any way. See "Voice-to-voice replies" below. |
-| voice_tts_provider | Single line (blank/`sarvam`/`ai4bharat`, default blank = Auto) — Settings → Voice → 🔧 TTS Provider (testing) dropdown. Overrides which TTS engine `engineTtsWithFallback` (worker.js) and `ttsWithFallback` (backend/recovery.js) use for this client: blank is normal production behavior (Sarvam primary, AI4Bharat standby on failure); `ai4bharat` forces the standby directly; `sarvam` skips the standby. A testing/debug knob, not a production feature — see "Voice-to-voice replies" below. |
+| sarvam_api_key | Single line, secret — optional client-level Sarvam credential in Settings → Voice. Never returned by `safeClient`; when blank, live voice replies use the Worker-level `SARVAM_API_KEY`. |
+| voice_reply_enabled | Legacy field, no longer used for live voice-to-voice replies. Incoming voice notes now automatically receive cache → Sarvam → text fallback. |
+| voice_tts_provider | Legacy/testing field retained for non-live paths only. It is no longer shown in client Voice settings or read by live voice-to-voice delivery. |
 | plan_cancel_at_period_end | Single line ("Yes"/"No" — customer canceled from the Portal but keeps access until `plan_renews_at`) |
 | company_address | Long text (billing address, pushed to the Stripe Customer for invoices) |
 | billing_email | Single line (**required before a Stripe Customer is ever created** — `ensureStripeCustomer` refuses to create one without it; both `handleBillingCheckoutSubscription` and `handleBillingCheckoutAddon` return a 400 telling the customer to set it first, rather than silently falling back to `authentik_email`, since the login address is sometimes a shared/ops account, not who should receive billing mail. Once a `stripe_customer_id` already exists this field can still be edited/updated freely — the "required" check only guards *creating* the Stripe account in the first place) |
@@ -387,7 +389,31 @@ no SSO into these the way there is for the primary account (`handleChannelsChatw
 this Worker's `CHATWOOT_PLATFORM_TOKEN` only reaches accounts it created itself — an externally
 owned account needs its own normal Chatwoot login.
 
-**Creating users directly (User Management → Create New User):** `POST /team/create-user`
+**Inviting teammates (User Management → ✉️ Invite Teammate — the primary way to add someone):**
+`POST /team/invite` (session-gated, takes `name`/`email`) creates a single-use Authentik
+**Invitation** (expires in 7 days) instead of an Authentik user. Email, username (= email) and name
+are fixed on the invitation, so the invitee only chooses a password. The Worker adds them to
+`team_emails`/`team_names` immediately, creates their Chatwoot agent if Chatwoot is connected, and
+emails `https://app.leadvyne.com/dashboard.html?invite=<id>` via Resend (link also shown to the
+admin to share directly). That link starts a normal PKCE login in the same tab via the invite flow,
+so they land in the dashboard as soon as they've set a password. If the email already has an
+Authentik login, they're just added to the team with no invite. Initial signup is unchanged.
+
+Setup (once): apply `authentik/leadvyne-team-access-blueprint.yaml` (creates the
+`leadvyne-team-invite` enrollment flow and the `leadvyne-magic-link` sign-in flow — test both on
+your instance first, see the file header), and give the `AUTHENTIK_API_TOKEN` service account
+`authentik_stages_invitation.add_invitation` + `authentik_flows.view_flow`. Until the invite flow
+exists, `/team/invite` returns 503 `INVITE_FLOW_MISSING` and the "Create User With a Password"
+form below still works. Optional Worker vars: `AUTHENTIK_INVITE_FLOW_SLUG`, `APP_BASE_URL`.
+
+**Emailed sign-in link (passwordless):** once the magic-link flow is applied and Authentik's email
+settings are configured, set `CONFIG.AUTHENTIK_MAGIC_LINK_FLOW = 'leadvyne-magic-link'` in
+`dashboard.html` to show "Email me a sign-in link instead" under the login button. Users enter
+their email, Authentik emails them a link, and it signs them in — still a normal Authentik login,
+so disabling a user in Authentik blocks it too. If the link is opened in a different tab,
+`handleAuthentikCallback` retries the authorize step once to finish the login there.
+
+**Creating users directly (User Management → Or Create User With a Password):** `POST /team/create-user`
 (session-gated, takes only `name`/`username`/`email` — no password field anymore) calls Authentik's
 own Core API — `POST /api/v3/core/users/` to create the account (`username`/`email`/`name`/
 `is_active`), then `POST /api/v3/core/users/{id}/set_password/` with a server-generated random
@@ -984,6 +1010,24 @@ the frontend.
 **Known gap**: `ecom.html` still embeds the master NocoDB token directly and is **not yet
 migrated** to this Worker. `dashboard.html`, `index.html`, `admin.html`, and now `broadcast.html`
 (see "Campaigns module" below) are fully migrated.
+
+## Google Sheets leads sync (Integrations → 📊 Google Sheets Sync)
+
+Runs entirely in the Worker — no n8n workflow needed (the old `leadvyne-gsheet-sync` webhook is
+no longer called). Save Config (`POST /gsheet/config`) creates the `gsheet_*` CLIENTS columns if
+missing, saves, and runs a first sync; Sync Now is `POST /gsheet/sync`; the `*/15 * * * *` cron
+re-syncs every client with a sheet configured (skipped when leads haven't changed).
+
+One-time setup:
+1. Google Cloud Console → enable the **Google Sheets API** → create a **service account** →
+   Keys → Add key → JSON.
+2. `wrangler secret put GOOGLE_SHEETS_SA_JSON` and paste the whole key JSON.
+3. Each client shares their sheet with the service account's `client_email` as **Editor** (the
+   dashboard shows that email under the Sync buttons).
+
+The sync writes a header row plus one row per lead (oldest first) into columns A..N of the tab
+the link points at (`#gid=…`, else the first tab), clearing only those columns first — columns to
+the right are left alone, so they can hold the client's own notes.
 
 ## Admin panel (admin.html)
 `admin.html` used to hold **three** master credentials in plaintext, extractable via view-source
@@ -2303,6 +2347,118 @@ request/response shape, so no frontend page needed to change for this migration.
    `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
    only applies what's new).
 
+## Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings)
+
+Calls and meetings with leads (intro calls, demos, consultations), booked on the client's own
+Cal.com. **Separate from the Appointment Booking module** and its "🗓️ Cal.com Sync" card above: it
+never reads or writes `appt_table_ids` tables, and it has its own webhook URL. It has no tab of its
+own. Everything, including the meetings list, is in the one card in Settings → Integrations.
+
+**Setup:** apply `cloudflare-worker/migrations/0104_calcom_meetings.sql`
+(`wrangler d1 migrations apply leadvyne-d1 --remote`). `WORKER_BASE_URL` must be set for tracked
+links; without it, links go straight to Cal.com and clicks aren't counted.
+
+**Enabling:** the module is off until the client saves at least one meeting link (name + https
+Cal.com URL, up to 6). Until then the card shows only the links step. After the first save:
+- **Connect Cal.com:** the card shows the webhook URL (`{WORKER_BASE}/calcom/meetings/{clientId}`)
+  and a secret, generated on the first save. The client adds these in Cal.com → Settings → Developer
+  → Webhooks and presses **Ping test**. The card then shows "✅ Connected — last event …"
+  (`meetings_config.last_event_at`).
+- **Send a meeting link:** search a lead, pick the meeting type, then **Send on WhatsApp** or
+  **Copy link**. `POST /meetings/send` creates a `meetings` row (`link_sent`) with a random token and
+  returns `{WORKER_BASE_URL}/m/<token>`. `GET /m/<token>` records the click (`clicked`) and
+  redirects to the Cal.com link, prefilled with `name`, `email` and `attendeePhoneNumber`, and tagged
+  with `metadata[lead_id]` and `metadata[mtg_id]`.
+- **Webhook** `POST /calcom/meetings/<clientId>` (`handleCalcomMeetingsWebhook`): same hex
+  `X-Cal-Signature-256` check as the Appointment Cal.com sync, but checked against
+  `meetings_config.webhook_secret`. A booking is matched to its row in this order: `metadata.mtg_id`,
+  then the pre-reschedule uid, then the booking uid, then the lead's latest open tracked link. The
+  lead itself comes from `metadata.lead_id`, then phone (last 9 digits), then email; a booking with
+  no matching row gets a new row.
+- **Event handling:**
+  - `BOOKING_CREATED` / `BOOKING_RESCHEDULED` → `scheduled`
+  - `BOOKING_REQUESTED` → `pending`
+  - `BOOKING_CANCELLED` / `BOOKING_REJECTED` → `cancelled`
+  - `MEETING_ENDED` → `completed`
+  - `BOOKING_NO_SHOW_UPDATED` → outcome `no_show`
+  - Any other event is only logged as the last event received.
+- **WhatsApp messages** (each can be switched off): a confirmation with the join link and
+  reschedule link on booking or reschedule, "pick another time?" on cancel, 24h and 1h reminders,
+  and one nudge 24–72h after an unbooked link (inside the Follow-up Engine quiet-hours window).
+  Each message is sent as plain text first. If Meta rejects it (outside the 24h window) and the
+  client set a template name, that template is sent instead, with 3 body variables: {{1}} name,
+  {{2}} date & time, {{3}} link.
+- **Cron** (`runMeetingsForAllClients`, every 15 minutes): sends reminders and nudges. Each row's
+  `*_at` column is claimed before sending, so a message is never sent twice. Meetings more than
+  30 minutes past their end time are marked `completed`.
+- **Outcomes:** "How did it go?" lists completed meetings that have no outcome yet. The choices are
+  Interested / Not interested / Follow-up / No-show (`POST /meetings/outcome`). Follow-up also
+  adds a normal task (via `manual_tasks`) due in 2 days.
+- **Stats** (last 90 days): links sent → clicked → booked → attended / no-show → interested,
+  meetings this week, and a per-rep table (`sent_by` = the signed-in rep's email).
+- **Bot:** "Let the bot share the meeting link" copies the links into `mtg_bot_links` on CLIENTS
+  (the column is created on demand). `buildKbProcessorText()` then adds a `## MEETING LINK` section
+  to the knowledge base. With the option off, the field is empty and nothing is added.
+
+## AI Models — bring your own key (Settings → Integrations → 🤖 AI Models)
+
+By default every client runs on the shared Gemini key (`GEMINI_API_KEY`). With this card a client
+can connect their own AI account, and their bot's text generation runs on it instead. **Nothing
+changes for a client until they save a key.** A client with no `ai_provider_config` row, or a
+disabled one, takes exactly the same code path as before.
+
+**Providers:**
+- **Claude (Anthropic):** `claude-opus-5-5` is the default and newest; also `claude-opus-5`,
+  `claude-sonnet-5`, `claude-haiku-4-5` and `claude-fable-5-1`.
+- **ChatGPT (OpenAI).**
+- **Google Gemini:** the client's own key, not the shared one.
+- **OpenRouter, Groq, DeepSeek, Mistral.**
+- **Custom:** any OpenAI-compatible `/chat/completions` endpoint, such as Together, Fireworks, Azure
+  OpenAI, xAI, or self-hosted vLLM/Ollama behind public https.
+
+**Load models** lists the models the key can use (`/models`).
+
+**Setup (once per deployment):**
+1. Apply `cloudflare-worker/migrations/0105_ai_provider_config.sql`
+   (`wrangler d1 migrations apply leadvyne-d1 --remote`).
+2. Set the encryption secret: `wrangler secret put AI_KEY_ENC_SECRET` (a long random string, e.g.
+   `openssl rand -base64 48`). Client keys are stored AES-GCM encrypted with it, and **changing it
+   later makes saved keys unreadable**. Affected clients silently go back to Leadvyne AI until they
+   re-enter their key. Until the secret is set, the card says the feature isn't enabled and saving
+   is refused.
+
+**What runs on the client's key:**
+- Bot replies (`engineCallLlm`)
+- Intent/sentiment classification
+- Reply translation
+- AI follow-ups
+- Flight-request extraction
+- Every `engineGeminiGenerateWithFallback` helper (dashboard AI assist, option extraction, spoken
+  replies)
+
+Voice-note transcription, image reading and the Financial Planner helpers stay on the shared Gemini
+key.
+
+**Safety:**
+- **Keys are write-only.** `GET /ai-provider/config` returns only the last 4 characters. A blank key
+  field on save/test reuses the stored key, but only if the provider and base URL are unchanged.
+- **Keys are checked before saving.** Save runs a real one-line test call first, so a bad key or
+  model never switches a live bot over.
+- **Custom base URLs are limited to public hosts.** They must be public `https://` hosts: no
+  credentials, localhost, `.local`/`.internal`, private IPv4 or IPv6 literals (`aiValidateBaseUrl`).
+- **Fallback to Leadvyne AI (default on).** If the client's provider errors, times out (25 s), or
+  Claude declines, that turn falls back to the shared Gemini path. With fallback off, the bot sends
+  "One moment 🙏" and the failure goes to ops.
+- **The card shows live status.** The last success and last error (`last_ok_at` / `last_error`) are
+  shown in the card, throttled to avoid a D1 write on every call.
+
+**Routes** (session-authenticated):
+- `GET /ai-provider/config`
+- `POST /ai-provider/config`
+- `POST /ai-provider/test`
+- `POST /ai-provider/models`
+- `POST /ai-provider/remove` (switches back to Leadvyne AI)
+
 ## Review Request module (`frontend/broadcast.html` — "⭐ Reviews" tab, `cloudflare-worker/worker.js`)
 Automated "ask for a review N days after a deal closes" — a dedicated module, not built on top of
 the generic Automations engine above: a client would otherwise have to hand-build a flow
@@ -2539,6 +2695,42 @@ logged to a new CLIENTS field, `broadcast_log` (Long text, JSON array of `{ts, t
 failed}`, capped to the most recent 50 — same capped-list pattern as `fulfilled_addon_events`).
 Read/written via the existing generic `/nocodb/*` passthrough, no dedicated Worker route needed for
 it. Add this column to the CLIENTS table before using the Tracking tab.
+
+## Monthly Marketing (Campaigns → 📅 Monthly Marketing)
+Sends one approved WhatsApp template a month to leads, chosen by **lead category**
+(`ServiceCategory`/`ProductCategory`) or **lead tag** (`Tags`, from the Leads panel). Each rule has
+an ordered list of templates, and each lead gets the first one it hasn't received yet.
+
+**Setup:** apply the migration once with `wrangler d1 migrations apply leadvyne-d1 --remote`
+(`migrations/0100_monthly_marketing.sql`), then `wrangler deploy`. No new cron, queue or secret is
+needed. Nothing is sent for any client until they save a rule with a frequency and at least one
+template and switch it on, so existing clients see no change.
+
+**Who gets a message** (`monthlyMktSkipReason` in `worker.js`):
+- `Score` is `Hot` or `Warm` ("medium" = Warm);
+- not won (`reportIsWonLead`, plus `Won`/`Converted`). Lost leads **are** included;
+- not opted out, and has a phone number;
+- if the lead already got a monthly message, they must have replied since (`LastCustomerMsgAt`);
+- category rules take priority over tag rules. A lead matching both still gets one message; if
+  every template in its category rule has been sent, the matching tag rule is used instead.
+
+**Duplicate guards:** partial unique indexes on `monthly_marketing_sends` allow at most one message
+per lead and per phone number per month, and never the same template twice to a lead or phone
+number. A row is reserved as `pending` *before* the Graph API call, so repeated ticks, retries and
+duplicate lead records can't cause a second send. Only an explicit Meta error marks a row `failed`,
+which frees it for a retry (up to 3 a month). A network error leaves it `pending`, because Meta may
+already have delivered it.
+
+**Sending:** runs on the existing `*/15` cron (`runMonthlyMarketingForAllClients`), on or after the
+rule's day of month (in the client's `bot_config.timezone`), inside the Follow-up Engine's send
+window. Each tick is capped at 60 sends shared across all clients, so large lists go out over
+several ticks. A fully scanned client is rescanned every 6 hours to pick up leads that qualify later
+in the month. Sends go straight through the Graph API (same request as the Follow-up Engine's
+template steps), with every `{{n}}` filled with the lead's name.
+
+**Routes (session-gated):** `GET/POST/DELETE /monthly-marketing/rules`,
+`GET /monthly-marketing/options` (categories and tags on the client's leads),
+`GET /monthly-marketing/summary?month=YYYY-MM` (this month's preview plus the send log).
 
 ## Task manager (frontend/dashboard.html — Tasks page)
 Reworked from three static, un-actionable read-only cards (Reminders Due Today / Hot Moments /
@@ -3714,6 +3906,62 @@ Ecom Conversation Engine (below) receives the raw Chatwoot webhook payload direc
 capture `ctwa_clid` the same way, if wired up; not done here since it's out of scope for the
 migration itself.
 
+## Hot Lead Alerts (Settings → 👥 User Management → 🔥 Hot Lead Alerts)
+
+WhatsApp message to the staff member who owns a lead the moment it turns hot, sent from the
+client's own WhatsApp Business number (`engineMaybeSendHotLeadAlert` in `cloudflare-worker/worker.js`).
+
+- **Staff numbers:** each user's WhatsApp number lives in `team_whatsapp` on CLIENTS
+  (`{"email":"919876543210"}`, the account owner included). Set from the Create New User form or
+  a user's profile (👤) → 📱 WhatsApp for alerts, via `POST /team/whatsapp` — the account owner
+  can set anyone's, a teammate only their own.
+- **Triggers** (each can be switched off): the lead's Score becomes `Hot` (booking intent), the
+  lead's first `HotMoment` (asks about price / availability / booking), or a new Facebook /
+  Instagram lead-form lead. Only transitions count, and a per-lead cooldown (default 12h)
+  stops repeats.
+- **Recipient:** the lead's Owner. The account owner gets it instead when the lead has no owner
+  or the owner has no number, and as a copy when "Also copy me" is ticked.
+- **Template:** staff rarely have an open 24h window with their own business number, so alerts
+  need an approved template. "✨ Create ready-made template" submits `hot_lead_alert_leadvyne`
+  (UTILITY, 4 variables: name, +phone, reason, lead link) to the client's WABA and selects it.
+  Without a template the alert goes as plain text, which only reaches someone who messaged the
+  number in the last 24h.
+- **Link:** `{{4}}` is `APP_BASE_URL?lead=<id>` — the dashboard opens that lead's detail panel
+  with the 📞 Call button (which starts the call timer and prompts for the outcome on return).
+- **Log:** D1 `hot_lead_alerts` (`migrations/0107_hot_alerts_lead_forms.sql`; also created
+  lazily). The last 20 show on the card.
+
+## Facebook & Instagram Lead Forms (Settings → Integrations → 📋 Lead Forms)
+
+Meta Lead Ads → lead created, routed to an owner, instant WhatsApp welcome, owner alerted
+(`processMetaLeadgenChange` in `cloudflare-worker/worker.js`).
+
+**One-time, per Meta app (platform side):**
+1. Worker secret `META_LEADGEN_VERIFY_TOKEN` — any random string (`wrangler secret put
+   META_LEADGEN_VERIFY_TOKEN`). Signatures are checked with the existing `META_APP_SECRET`, so
+   this must be the same Meta app.
+2. Meta app → Webhooks → **Page** → callback `<WORKER_BASE_URL>/meta/leadgen/webhook`, verify
+   token from step 1, subscribe to the **leadgen** field.
+3. The app needs `leads_retrieval`, `pages_manage_metadata`, `pages_show_list`,
+   `pages_read_engagement` (Advanced Access for other businesses' Pages). `ads_read` is optional:
+   with it, the campaign and ad names are saved on the lead too.
+
+**Per client (dashboard):** paste the Page ID and a Page access token generated for **this same
+app** (e.g. a System User token in the client's Business Settings with the app assigned) →
+**Connect Page**. The Worker checks the token can read the Page and subscribes the Page to the
+app's `leadgen` webhook. The token is stored in `meta_leadgen_page_token` (stripped by
+`safeClient`, rejected by the `/nocodb` passthrough); `meta_leadgen_page_id` is the webhook lookup
+key; everything else is in `meta_leadgen_config`.
+
+**What happens per lead:** the `leadgen_id` is claimed in D1 `meta_leadgen_events` (Meta's retries
+never double-send) → answers fetched from the Graph API → phone normalised with the card's default
+country code → lead created (or updated, keeping its name/stage/history) with `LeadSource`,
+`AdCampaign`, `AdName`, `LeadFormName`, `MetaLeadgenId` and the other answers in `QualAnswers` →
+normal lead routing picks an Owner → the welcome template goes out (skipped for opted-out leads)
+and is written to ConvHistory, so the bot has context when the customer replies → 🔥 alert to the
+owner. "✨ Create ready-made template" submits `lead_form_welcome_leadvyne` (`{{1}}` first name,
+`{{2}}` business name).
+
 ## Meta Ads ROI Report (`frontend/dashboard.html` — now the 📈 Reports page's Marketing tab)
 Ad spend against conversions and revenue this CRM already tracks, last 6 months. **Originally**
 built as its own view inside the Team page (a local tab toggle, `showTeamView()`); **since
@@ -4188,7 +4436,7 @@ sites calling `engineSendChatwootReply`/`engineSendChatwootImageReply` directly.
   `engineTtsWithFallback(env, text, langCode)` helper instead of `engineSarvamTts` directly: it
   tries Sarvam first, and only when that returns `null` (missing key, unsupported language,
   transient failure) does it try `engineAi4BharatTts` — a self-hosted AI4Bharat Indic Parler-TTS
-  model running on the Marketing Studio render pipeline (`render-pipeline/lib/ai4bharatTts.js`,
+  model running on the dedicated Coolify voice service (`render-pipeline/lib/ai4bharatTts.js`,
   `POST /synthesize-voice-reply`, gated behind that service's own `AI4BHARAT_TTS_ENABLED`). Reuses
   the render pipeline's existing `MARKETING_RENDER_WEBHOOK_URL`/`_SECRET` Worker secrets — no new
   secret to configure on the Worker. Same scope as this app's other AI4Bharat integration (the 10
@@ -5632,7 +5880,12 @@ grouping Leads by phone (what the base Churn & LTV view does) misses real repeat
 entirely for ecommerce clients. Rendered as a supplementary card beneath the main Churn & LTV table
 — genuine order-based LTV, not a proxy.
 
-## Marketing Studio module (`frontend/marketing-studio.html`, `feat_marketing_studio_enabled`)
+## Marketing Studio module — removed (historical reference)
+
+Marketing Studio was retired on 2026-09-06. Its frontend and public product controls were removed,
+all `/marketing/*` Worker routes return HTTP 410, and `render-pipeline/` is now a voice-only
+Coolify service for AI4Bharat/Piper/PCM conversion. The detailed notes below are retained only to
+explain existing D1 migration history; they do not describe an available product feature.
 A standalone short-form video repurposing tool — upload a long video, auto-transcribe it, edit
 captions, pick a caption style, render a vertical/square/landscape clip, send it out. Deliberately
 a **different kind of "marketing" module** from Campaigns/Email Marketing (`broadcast.html`/
@@ -8390,3 +8643,89 @@ npx wrangler deploy
 
 The deploy registers the Workflow named `leadvyne-project-task-lifecycle`. Configure
 `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`) as Worker secrets before enabling reminders.
+
+## Live Travel Agency
+
+`frontend/live-travel-agency.html` is an isolated, D1-backed flight operations module. The legacy
+`travel-agency.html` remains on its existing NocoDB tables and only links to the new page. Apply
+the D1 migration before opening Live Agency:
+
+```bash
+cd cloudflare-worker
+npx wrangler d1 migrations apply leadvyne-d1 --remote
+```
+
+Configure one platform encryption key as a Worker secret. This key encrypts/decrypts tenant-owned
+supplier credentials but is not itself a Riya, TripJack or SerpApi credential:
+
+```bash
+npx wrangler secret put LIVE_TRAVEL_CREDENTIALS_KEY
+```
+
+Each client enters its own API keys, supplier account identifiers and certified endpoint URLs from
+**Live Agency → Suppliers**. The Worker encrypts those values before writing them to that client's
+D1 row and never returns saved credentials to the browser. Blank credential fields preserve the
+saved value; **Clear credentials** removes them. Keep Riya and TripJack in sandbox until supplier
+UAT/certification passes. SerpApi Google Flights is always non-bookable comparison data; only a
+revalidated Riya or TripJack offer can become a booking. Never point staging at production
+credentials or the production D1 database.
+
+### Default currency & live exchange rates (`cloudflare-worker/live-travel-fx.js`)
+
+Each agency sets its currency in **Live Agency → 💱 Currency**: INR, AED, SAR, QAR, OMR, KWD, BHD,
+USD, EUR or GBP, plus an FX buffer % (default 1.5), a rounding rule and two switches (allow other
+display currencies; WhatsApp currency from the customer's country code). Migration
+`0108_live_travel_currency.sql` creates the settings and rate tables. The FX columns on offers,
+quotes and bookings are added at runtime by `ltEnsureSchema`.
+
+- **Pricing order:** supplier fare (its own currency) → converted at live rate + buffer → supplier
+  markup added *in the agency currency* (so a fixed markup of 50 is 50 AED for every supplier) →
+  rounded. Offers keep `supplier_currency`/`supplier_total`/`fx_rate` for staff and accounting.
+  A fare whose currency has no known rate is never guessed: it stays in its supplier currency,
+  is flagged `fx_status='unconverted'` and is listed last.
+- **Rates:** USD-based, **one platform-wide snapshot** (`live_travel_fx_rates`, a single row
+  with no client key) shared by every Live Agency client. Every path (search, revalidate,
+  quotes, booking drift check, payments, wallet, WhatsApp, Currency page) reads that same row
+  on each request. There is no per-instance memory cache, so all clients and all Worker
+  instances price with identical rates.
+- **No API wastage:** the provider is called by the `*/15` cron at most **once per 6-hour UTC
+  slot** (00:00, 06:00, 12:00, 18:00), so **at most 4 calls per day for the whole platform**.
+  Every call counts, successful or not. A failed slot isn't retried until the next slot, and
+  the last snapshot stays in use (flagged stale after 12h). The slot, the daily count and a
+  60-second lock are claimed atomically in D1 before calling, so concurrent instances can't
+  double-call. Agencies can't trigger a refresh; `GET /live-travel/fx-rates` is read-only.
+  Rates come from Open Exchange Rates if the optional `FX_API_KEY` secret is set
+  (`npx wrangler secret put FX_API_KEY`; 4/day ≈ 120/month, inside its free 1,000/month),
+  otherwise from ExchangeRate-API's keyless open endpoint. On a brand-new deployment the first
+  request seeds the snapshot through the same slot claim. If nothing was ever stored, only the
+  USD-pegged Gulf currencies (AED, SAR, QAR, OMR, BHD) convert.
+- **Rate lock:** quotes and bookings store the rate they were priced at. Creating a booking
+  returns `409 code:'fx_drift'` when the market has moved past the buffer since the quote. Staff
+  can re-quote, or confirm to book at the quoted price (`confirm_fx_drift:true`).
+- **Wallet / payments:** the wallet ledger is kept in the agency currency only. Entries in another
+  currency convert at the linked booking's locked rate, or else at today's rate. Payments in
+  another currency convert into the booking currency. The original amount is kept in the notes.
+- **WhatsApp:** fares are shown in the agency currency. The customer can name one in their search
+  ("in INR", "rupees") or reply with just a currency to re-price the listed options. When the
+  setting is on, the phone prefix (+91 INR, +971 AED, +966 SAR, +974 QAR, +968 OMR, +965 KWD,
+  +973 BHD) picks the currency. Converted fares note that POOMAS checkout charges in the
+  supplier currency.
+
+## Product photoshoot folder (`frontend/ecom.html` — Ecommerce products)
+
+Each product has an optional **Photoshoot Folder Link** (`photoshoot_folder_url`) — a Google Drive
+folder shared as "Anyone with the link can view". When a customer's message names the product
+(exact name / short label, or every word of it in any order), `engineMaybeSendProductPhotoshoot`
+(worker.js) sends **5 random images** from that folder after the turn's reply. This is additive:
+the existing product image/media bundle and its tier/window rules are unchanged.
+
+- Folder listing: Drive API when the optional `GOOGLE_DRIVE_API_KEY` secret is set, then Drive's
+  public embedded folder view, then the normal `drive/folders/<id>` page. Cached in KV for 10 min.
+- Each image is fetched as a real JPEG/PNG ≤5 MB (Drive thumbnail → lh3 CDN → original, verified
+  by magic bytes) and posted to Chatwoot as an image attachment, so WhatsApp shows it inline.
+  The shuffled folder is walked until 5 images deliver. An empty/private folder or zero delivered
+  images is reported via the ops alert (`engineMaybeSendProductPhotoshoot`).
+- A truncated WhatsApp button tap ("Royal Sofa Se...") also counts as naming the product.
+- Run `wrangler d1 migrations apply leadvyne-d1 --remote` for
+  `migrations/0099_ecom_product_photoshoot_folder.sql` (the D1 product mirror also self-adds the
+  column on first save if the migration hasn't run yet).

@@ -5,15 +5,9 @@
 // formant synthesizer) but isn't a drop-in replacement for Sarvam's quality either — documented
 // tradeoff, same as every other TTS option in this file.
 //
-// This is an EXPLICIT OPT-IN provider (cloudflare-worker/worker.js's engineTtsWithFallback,
-// CLIENTS.voice_tts_provider==='piper'), same treatment as gemini_live — never an automatic
-// fallback. Reason: language coverage is the real limitation. Only en_US-lessac-medium (Piper's
-// own canonical quickstart voice) is baked into the Docker image by default — see the Dockerfile
-// for how to add more voices. PIPER_VOICE_MAP below is intentionally small and overridable via the
-// PIPER_VOICE_MAP_JSON env var rather than guessing at Piper voice-model filenames for languages
-// this app targets (Malayalam/Tamil/Telugu/etc.) that were NOT independently confirmed to exist as
-// published Piper voices — an unconfirmed guess here would silently 404 at runtime, which is worse
-// than just being honest that only English is wired up out of the box.
+// Piper is the first live provider in the voice-to-voice rotation. The Docker image includes
+// verified English, Malayalam and Hindi voices; other languages simply return unsupported and
+// continue to warm AI4Bharat/Sarvam without ever attempting an incorrectly accented voice.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -26,7 +20,11 @@ const PIPER_VOICES_DIR = process.env.PIPER_VOICES_DIR || path.join(__dirname, '.
 // language code -> Piper voice model basename (without .onnx/.onnx.json extension). Extend via
 // PIPER_VOICE_MAP_JSON (a {"<lang>":"<voice_basename>"} JSON object env var) once you've downloaded
 // additional voice models into PIPER_VOICES_DIR — see Dockerfile / SETUP.md "Piper TTS".
-let PIPER_VOICE_MAP = { en: 'en_US-lessac-medium' };
+let PIPER_VOICE_MAP = {
+  en: 'en_US-lessac-medium',
+  ml: 'ml_IN-meera-medium',
+  hi: 'hi_IN-priyamvada-medium',
+};
 if (process.env.PIPER_VOICE_MAP_JSON) {
   try { PIPER_VOICE_MAP = { ...PIPER_VOICE_MAP, ...JSON.parse(process.env.PIPER_VOICE_MAP_JSON) }; }
   catch (e) { console.error('[piperTts] PIPER_VOICE_MAP_JSON is not valid JSON, ignoring:', e.message); }
@@ -37,15 +35,27 @@ function supportsLanguage(language) {
   return !!voice && fs.existsSync(path.join(PIPER_VOICES_DIR, voice + '.onnx'));
 }
 
-function runPiper(text, modelPath, outWavPath) {
+function runPiper(text, modelPath, outWavPath, timeoutOverrideMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(PIPER_BIN, ['--model', modelPath, '--output_file', outWavPath], { stdio: ['pipe', 'ignore', 'pipe'] });
     let stderr = '';
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const timeoutMs = Math.max(500, Number(timeoutOverrideMs || process.env.PIPER_TTS_TIMEOUT_MS || 2500));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(reject, new Error(`Piper synthesis exceeded ${timeoutMs}ms`));
+    }, timeoutMs);
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', reject);
+    child.on('error', error => finish(reject, error));
     child.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`piper exited ${code}: ${stderr.slice(-500)}`));
-      resolve();
+      if (code !== 0) return finish(reject, new Error(`piper exited ${code}: ${stderr.slice(-500)}`));
+      finish(resolve);
     });
     child.stdin.write(text);
     child.stdin.end();
@@ -55,7 +65,7 @@ function runPiper(text, modelPath, outWavPath) {
 // Returns a Buffer of 16kHz Ogg/Opus audio bytes (same contract as engineSarvamTts's
 // output_audio_codec:'opus'/speech_sample_rate:16000, and synthesizeWithAi4Bharat above) — the
 // Worker/backend/recovery.js never need to know which provider produced the audio.
-async function synthesizeWithPiper(text, language) {
+async function synthesizeWithPiper(text, language, { timeoutMs } = {}) {
   if (!text || !text.trim()) throw new Error('No text to synthesize.');
   const voice = PIPER_VOICE_MAP[(language || '').toLowerCase()];
   if (!voice) throw new Error(`No Piper voice configured for language: ${language}`);
@@ -67,7 +77,7 @@ async function synthesizeWithPiper(text, language) {
     const wavPath = path.join(workDir, 'out.wav');
     // Same 500-char cap as every other voice-reply provider in this file — a voice reply is one
     // short spoken sentence, never a long paragraph.
-    await runPiper(text.slice(0, 500), modelPath, wavPath);
+    await runPiper(text.slice(0, 500), modelPath, wavPath, timeoutMs);
     const oggPath = path.join(workDir, 'out.ogg');
     await run('ffmpeg', ['-y', '-i', wavPath, '-ac', '1', '-ar', '16000', '-c:a', 'libopus', oggPath]);
     return fs.readFileSync(oggPath);

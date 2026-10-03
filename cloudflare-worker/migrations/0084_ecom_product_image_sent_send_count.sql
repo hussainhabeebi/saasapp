@@ -1,0 +1,13 @@
+-- Progressive-disclosure tier tracking for Shopify products (worker.js
+-- engineClaimProductSend). Adds send_count so the same (lead, product) row
+-- can be updated in place as a customer asks about the same product multiple
+-- times within the 5-hour window, advancing through tier 1 (full bundle) →
+-- tier 2 (extra angle + description + Shopify link) → tier 3+ (extra angle +
+-- audio + Shopify link) instead of silently sending nothing after the first ask.
+--
+-- The existing unique index on (lead_id, product_id, sent_date) is kept
+-- unchanged — the new code never INSERT-conflicts against it because it either
+-- INSERTs for a genuinely new (lead, product) pair or UPDATEs the existing row
+-- in place (resetting or incrementing send_count), so the unique constraint is
+-- never triggered by the incremental-update path.
+ALTER TABLE ecom_product_image_sent ADD COLUMN send_count INTEGER NOT NULL DEFAULT 1;

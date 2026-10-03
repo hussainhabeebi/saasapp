@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>Leadvyne · Chats</title>
+<meta name="theme-color" content="#00a884">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+:root{--wa:#00a884;--wa-dark:#008069;--wa-soft:#d9fdd3;--paper:#efeae2;--ink:#111b21;--muted:#667781;--line:#e9edef;--header:#f0f2f5;--panel:#fff;--incoming:#fff;--danger:#ea0038}
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#d9dbd5}
+button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:none!important}svg{display:block}
+#app{position:relative;height:100dvh;max-width:1600px;margin:auto;display:grid;grid-template-columns:minmax(320px,420px) 1fr;background:#fff;box-shadow:0 0 28px rgba(0,0,0,.14);overflow:hidden}
+.sidebar{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;border-right:1px solid var(--line);background:var(--panel)}
+.side-top,.chat-top{height:60px;background:var(--header);display:flex;align-items:center;gap:10px;padding:10px 14px;flex:none}
+.brand-avatar,.avatar{width:40px;height:40px;border-radius:50%;background:#dfe5e7;display:flex;align-items:center;justify-content:center;font-weight:700;color:#54656f;flex:none;overflow:hidden}.avatar{width:49px;height:49px;font-size:17px}.brand-avatar{background:var(--wa);color:#fff}
+.side-title{font-size:18px;font-weight:600;flex:1}.icon-btn{width:40px;height:40px;border:0;border-radius:50%;background:transparent;color:#54656f;display:grid;place-items:center;font-size:19px;flex:none;padding:0}.icon-btn:hover{background:#e5e8ea}.icon-btn:disabled{opacity:.35;cursor:default}
+.embedded .dash-btn,.embedded .dash-item{display:none!important}.embedded #app{max-width:none;box-shadow:none}
+.dash-btn{border:0;border-radius:8px;background:var(--wa-dark);color:#fff;padding:9px 12px;font-size:13px;font-weight:650;white-space:nowrap}.dash-btn:hover{background:#006f5c}
+.search-wrap{padding:8px 12px;background:#fff;border-bottom:1px solid #f1f2f3}.searchbox{height:36px;border-radius:8px;background:var(--header);display:flex;align-items:center;gap:10px;padding:0 12px;color:#54656f}.searchbox input{border:0;outline:0;background:transparent;width:100%;font-size:14px;color:var(--ink)}
+.channel-row,.filter-row{display:flex;gap:7px;overflow-x:auto;padding:7px 12px 0;scrollbar-width:none;flex:none}.channel-row::-webkit-scrollbar,.filter-row::-webkit-scrollbar{display:none}.filter-row{padding-bottom:7px;border-bottom:1px solid var(--line)}
+.pill{border:1px solid #d1d7db;border-radius:18px;background:#fff;color:#54656f;padding:5px 11px;font-size:12px;white-space:nowrap}.pill.active{background:#e7fce9;color:#008069;border-color:#c6f0d2}.pill .n{margin-left:3px;font-size:11px}
+.list{flex:1 1 0;overflow-y:auto;overflow-x:hidden;min-height:0;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}.contact{display:flex;gap:12px;padding:0 12px;min-height:72px;align-items:center;cursor:pointer}.contact:hover{background:#f5f6f6}.contact.active{background:#f0f2f5}.contact .info{min-width:0;flex:1;border-bottom:1px solid #f0f2f5;padding:13px 0}.row1,.row2{display:flex;align-items:center;gap:7px}.row1{margin-bottom:4px}.name{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.time{font-size:12px;color:var(--muted);white-space:nowrap}.preview{font-size:13.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.preview .draft{color:#06cf9c}.unread .name{font-weight:650}.unread .time{color:var(--wa);font-weight:600}.badge{min-width:19px;height:19px;border-radius:12px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}.pin{font-size:12px;color:#8696a0}.handover{width:8px;height:8px;border-radius:50%;background:#e5484d;box-shadow:0 0 0 2px #fff;position:absolute;right:1px;top:1px}.avatar-wrap{position:relative;flex:none}
+.empty-list{padding:52px 20px;text-align:center;color:var(--muted)}
+.main{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--paper)}.empty-main{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);background:#f7f9fa;border-bottom:6px solid var(--wa)}.empty-main .box{max-width:430px;padding:30px}.empty-main .big{font-size:56px;margin-bottom:16px;opacity:.5}.empty-main h2{font-weight:400;color:#41525d;margin:0 0 8px}.empty-main p{line-height:1.55;font-size:14px}
+.chat-top{border-bottom:1px solid #ddd}.back{display:none}.chat-meta{min-width:0;flex:1;cursor:pointer}.chat-name{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-actions{display:flex;align-items:center;gap:2px;position:relative}.menu{position:absolute;right:4px;top:48px;z-index:20;background:#fff;box-shadow:0 4px 18px rgba(0,0,0,.18);border-radius:6px;min-width:220px;padding:7px 0}.menu button{display:block;width:100%;border:0;background:#fff;text-align:left;padding:11px 18px;color:var(--ink)}.menu button:hover{background:#f5f6f6}.menu .dash-item{color:#008069;font-weight:650;border-top:1px solid var(--line)}
+.thread{flex:1 1 0;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;padding:14px 7% 18px;background-color:var(--paper);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='%23888' stroke-opacity='.08' stroke-width='1'%3E%3Ccircle cx='22' cy='28' r='8'/%3E%3Cpath d='M65 16l15 16-21 5zM22 92q13-18 29 0q9 14-5 20q-17 6-24-20zM95 80h25v17H95z'/%3E%3C/g%3E%3C/svg%3E")}
+.thread.drop{outline:3px dashed var(--wa);outline-offset:-10px}
+.day{display:flex;justify-content:center;margin:9px 0 12px}.day span{background:#fff;padding:6px 12px;border-radius:7px;font-size:11px;color:#54656f;box-shadow:0 1px 1px rgba(0,0,0,.08)}
+.bubble-row{display:flex;align-items:center;gap:6px;margin:2px 0;transition:transform .15s}.bubble-row.out{justify-content:flex-end}.bubble-row.out .msg-actions{order:-1}
+.bubble{max-width:min(72%,680px);padding:6px 7px 5px 9px;border-radius:7.5px;box-shadow:0 1px .5px rgba(11,20,26,.13);font-size:14.2px;line-height:1.38;position:relative;white-space:pre-wrap;word-break:break-word}.bubble.in{background:var(--incoming)}.bubble.out{background:var(--wa-soft)}.bubble.flash{animation:flash 1.2s}@keyframes flash{0%,40%{box-shadow:0 0 0 3px #53bdeb}100%{box-shadow:0 1px .5px rgba(11,20,26,.13)}}
+.bubble a{color:#027eb5}.bubble code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:rgba(0,0,0,.05);padding:1px 4px;border-radius:4px}
+.bubble .media{display:block;width:330px;max-width:100%;height:auto;max-height:320px;border-radius:6px;margin:0 0 6px;object-fit:cover;cursor:zoom-in;background:#dfe5e7}.bubble video.media{cursor:default}
+.doc{display:flex;align-items:center;gap:10px;background:rgba(0,0,0,.04);padding:9px;border-radius:6px;margin-bottom:5px;color:inherit;text-decoration:none;min-width:200px}.doc .ext{width:34px;height:40px;border-radius:4px;background:#ff5b5b;color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;flex:none;text-transform:uppercase}.doc small{display:block;color:#667781}
+.meta{float:right;margin:5px 0 -2px 12px;display:inline-flex;align-items:center;gap:3px;font-size:10.5px;color:#667781;white-space:nowrap}.checks{color:#53bdeb}.tick-pending{color:#8696a0}.tick-failed{color:var(--danger);font-weight:700;cursor:pointer}
+.quote{border-left:3px solid var(--wa);background:rgba(0,0,0,.05);border-radius:5px;padding:5px 8px;margin-bottom:5px;color:#54656f;font-size:12px;line-height:1.25;white-space:normal;overflow:hidden;text-overflow:ellipsis}.quote b{display:block;color:var(--wa-dark);margin-bottom:2px}
+.msg-actions{display:flex;gap:2px;opacity:0;transition:opacity .12s}.bubble-row:hover .msg-actions,.msg-actions:focus-within{opacity:1}.msg-actions button{width:28px;height:28px;border:0;border-radius:50%;background:rgba(255,255,255,.9);color:#54656f;display:grid;place-items:center;padding:0;box-shadow:0 1px 2px rgba(0,0,0,.1)}
+.failed-row .bubble{opacity:.85}
+.bubble-row.group-start{margin-top:9px}
+.bubble.tail.in{border-top-left-radius:0}.bubble.tail.out{border-top-right-radius:0}
+.bubble.tail::before{content:"";position:absolute;top:0;width:8px;height:13px}
+.bubble.tail.in::before{left:-8px;background:var(--incoming);clip-path:polygon(0 0,100% 0,100% 100%)}
+.bubble.tail.out::before{right:-8px;background:var(--wa-soft);clip-path:polygon(0 0,100% 0,0 100%)}
+.bubble.media-only{padding:3px}.bubble.media-only .media{margin:0;max-height:360px;border-radius:6px}
+.bubble.media-only .meta{position:absolute;right:9px;bottom:7px;margin:0;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7)}.bubble.media-only .meta .checks{color:#fff}
+.transcript{font-size:12.5px;color:#54656f;font-style:italic;margin:0 0 4px;white-space:pre-wrap}
+.tpl-tag{font-size:11px;color:#667781;margin-bottom:3px}
+.tpl-btns{clear:both;margin:7px -7px -5px -9px}.tpl-btns div{padding:9px;text-align:center;color:#027eb5;font-size:14px;border-top:1px solid rgba(0,0,0,.08)}
+.window-bar{background:#fff8e1;color:#6b5a1e;font-size:12.5px;line-height:1.35;padding:8px 12px;display:flex;align-items:center;gap:10px;flex:none;border-top:1px solid #f1e6b8}.window-bar span{flex:1}.window-bar button{border:0;background:var(--wa);color:#fff;border-radius:16px;padding:6px 12px;font-size:12.5px;font-weight:600;white-space:nowrap}
+/* template picker */
+.tpl-ov{background:#fff}.tpl-ov .bar{background:var(--header);display:flex;align-items:center;gap:10px;padding:10px 14px;flex:none}
+.tpl-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(240px,340px) 1fr}
+.tpl-list{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}.tpl-items{flex:1;overflow:auto}
+.tpl-item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #f0f2f5;background:#fff;padding:12px 16px}.tpl-item:hover,.tpl-item.active{background:#f0f2f5}.tpl-item b{display:block;font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis}.tpl-item small{color:var(--muted);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tpl-detail{overflow:auto;background:var(--paper);padding:18px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.tpl-form{background:#fff;border-radius:10px;padding:14px;display:grid;gap:10px}.tpl-form label{font-size:12px;color:var(--muted);display:grid;gap:4px}.tpl-form input{width:100%;height:40px;border:1px solid #d1d7db;border-radius:8px;padding:0 12px;outline:0;font-size:14px}.tpl-form input:focus{border-color:var(--wa)}
+.tpl-preview{display:flex;justify-content:flex-end}.tpl-preview .bubble{max-width:min(100%,420px)}.tpl-hdr{font-weight:650;margin-bottom:4px}.tpl-foot{color:#667781;font-size:12.5px;margin-top:4px}.tpl-media-ph{height:130px;border-radius:6px;background:#dfe5e7;display:grid;place-items:center;color:#667781;margin-bottom:6px;font-size:13px}
+.tpl-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}.tpl-empty{padding:40px 20px;text-align:center;color:var(--muted)}
+@media(max-width:700px){.tpl-main{grid-template-columns:1fr}.tpl-main.picked .tpl-list{display:none}.tpl-main:not(.picked) .tpl-detail{display:none}}
+.note{max-width:78%;margin:10px auto;background:#fff5c4;border-radius:7px;padding:8px 10px;color:#665c32;font-size:12.5px;text-align:center}.note small{display:block;margin-top:3px;color:#8b7c45}
+/* voice / audio player */
+.vp{display:flex;align-items:center;gap:10px;min-width:240px;max-width:320px;padding:4px 2px 2px;white-space:normal}.vp-play{width:38px;height:38px;border:0;border-radius:50%;background:transparent;color:#54656f;display:grid;place-items:center;flex:none;padding:0}.vp-body{flex:1;min-width:0}.vp-bar{position:relative;height:18px;cursor:pointer;display:flex;align-items:center}.vp-bar::before{content:"";position:absolute;left:0;right:0;height:3px;border-radius:2px;background:#c7cdd1}.vp-bar i{position:absolute;left:0;height:3px;border-radius:2px;background:#53bdeb;width:0}.vp-bar b{position:absolute;left:0;width:12px;height:12px;border-radius:50%;background:#53bdeb;transform:translateX(-6px)}.vp-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#667781;margin-top:1px}.vp-speed{border:0;background:rgba(0,0,0,.08);border-radius:10px;font-size:11px;font-weight:650;color:#54656f;padding:1px 7px}.vp-mic{width:44px;height:44px;border-radius:50%;background:#dfe5e7;color:#fff;display:grid;place-items:center;flex:none;position:relative}.vp-mic.voice{background:#00a884}.vp-mic svg{width:22px;height:22px}
+/* composer */
+.reply-preview{background:var(--header);padding:7px 12px 0;display:flex;align-items:stretch;gap:8px;flex:none}.reply-card{flex:1;min-width:0;border-left:4px solid var(--wa);background:#fff;border-radius:6px;padding:6px 9px;font-size:12.5px;color:#667781}.reply-card b{display:block;color:var(--wa-dark);margin-bottom:2px}.reply-card div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composer-mode{background:var(--header);display:flex;gap:5px;padding:5px 12px 0;flex:none}.mode-btn{border:0;background:transparent;color:#667781;font-size:12px;padding:5px 9px;border-radius:13px}.mode-btn.active{background:#d9fdd3;color:#008069}.note-mode .mode-btn.active{background:#fff0b3;color:#7a6415}
+.composer{min-height:62px;background:var(--header);display:flex;align-items:flex-end;gap:6px;padding:9px 12px calc(9px + env(safe-area-inset-bottom));position:relative;flex:none}
+.input-wrap{flex:1;min-width:0;display:flex;align-items:flex-end;background:#fff;border-radius:22px;padding:0 4px}.note-mode .input-wrap{background:#fff8d6}
+.input-wrap .icon-btn{width:40px;height:42px;border-radius:50%}
+.composer textarea{flex:1;min-width:0;min-height:42px;max-height:140px;border:0;outline:0;resize:none;background:transparent;padding:11px 4px;font-size:15px;line-height:20px}
+.send{width:46px;height:46px;border-radius:50%;border:0;background:var(--wa);color:#fff;display:grid;place-items:center;flex:none;padding:0;touch-action:none;user-select:none;-webkit-user-select:none;transition:transform .12s}.send.holding{transform:scale(1.35);background:var(--wa-dark)}
+.rec-row{flex:1;min-width:0;height:46px;display:flex;align-items:center;gap:8px;background:#fff;border-radius:23px;padding:0 6px 0 4px}.rec-row .icon-btn{width:38px;height:38px}.rec-trash{color:#8696a0}.rec-dot{width:10px;height:10px;border-radius:50%;background:var(--danger);flex:none;animation:blink 1s infinite}.rec-row.paused .rec-dot{animation:none;opacity:.35}@keyframes blink{50%{opacity:.25}}
+.rec-time{font-variant-numeric:tabular-nums;font-size:15px;color:#3b4a54;min-width:42px}.rec-wave{flex:1;min-width:0;height:30px}.rec-hint{flex:1;text-align:center;color:#8696a0;font-size:13px;white-space:nowrap;overflow:hidden}
+.popover{position:absolute;bottom:calc(100% + 6px);z-index:30;background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.attach-menu{left:12px;padding:10px;display:grid;grid-template-columns:repeat(2,1fr);gap:4px;min-width:250px}.attach-menu button{border:0;background:transparent;border-radius:10px;padding:10px;display:flex;align-items:center;gap:10px;font-size:14px;color:var(--ink);text-align:left}.attach-menu button:hover{background:#f5f6f6}.attach-menu .dot{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;color:#fff;flex:none}
+.emoji-panel{left:12px;width:min(360px,calc(100vw - 24px));height:260px;overflow:auto;padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(38px,1fr));align-content:start}.emoji-panel button{border:0;background:transparent;font-size:24px;height:40px;border-radius:8px;padding:0}.emoji-panel button:hover{background:#f0f2f5}
+.to-bottom{position:absolute;right:18px;bottom:88px;z-index:15;width:42px;height:42px;border-radius:50%;border:0;background:#fff;color:#54656f;box-shadow:0 2px 8px rgba(0,0,0,.2);display:grid;place-items:center;padding:0}.to-bottom .n{position:absolute;top:-6px;right:-4px;min-width:20px;height:20px;border-radius:10px;background:var(--wa);color:#fff;font-size:11px;display:grid;place-items:center;padding:0 5px}
+/* overlays */
+.overlay{position:fixed;inset:0;z-index:80;display:flex;flex-direction:column}.lightbox{background:rgba(11,20,26,.94);color:#fff}.lightbox .bar,.preview .bar{display:flex;align-items:center;gap:10px;padding:10px 14px;flex:none}.lightbox .bar a,.lightbox .bar button{color:#fff}.lightbox .img-wrap{flex:1;min-height:0;display:grid;place-items:center;padding:10px}.lightbox img{max-width:100%;max-height:100%;object-fit:contain}
+.preview{background:#e9edef}.preview .bar{background:var(--header)}.preview .stage{flex:1;min-height:0;display:grid;place-items:center;padding:16px}.preview .stage img,.preview .stage video{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;box-shadow:0 2px 12px rgba(0,0,0,.12)}.preview .big-doc{background:#fff;border-radius:10px;padding:28px 34px;text-align:center;color:#54656f;max-width:90%}.preview .big-doc .ext{margin:0 auto 12px;width:54px;height:64px;font-size:13px}
+.preview .foot{background:var(--header);padding:10px 14px calc(10px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px;flex:none}.thumbs{display:flex;gap:8px;overflow-x:auto;justify-content:center}.thumb{position:relative;width:54px;height:54px;border-radius:6px;border:2px solid transparent;background:#fff;overflow:hidden;flex:none;display:grid;place-items:center;font-size:10px;color:#54656f;padding:0}.thumb.active{border-color:var(--wa)}.thumb img{width:100%;height:100%;object-fit:cover}.thumb .x{position:absolute;top:0;right:0;background:rgba(0,0,0,.55);color:#fff;width:16px;height:16px;font-size:11px;line-height:16px;border-radius:0 0 0 6px}
+.cap-row{display:flex;gap:8px;align-items:center}.cap-row input{flex:1;min-width:0;height:44px;border:0;border-radius:22px;padding:0 16px;outline:0;font-size:15px}
+.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);background:#111b21;color:#fff;padding:9px 14px;border-radius:6px;font-size:13px;z-index:90;box-shadow:0 4px 16px rgba(0,0,0,.2);max-width:90vw}
+.loading{position:fixed;inset:0;background:#fff;z-index:100;display:grid;place-items:center;color:#54656f}.spinner{width:28px;height:28px;border:3px solid #dfe5e7;border-top-color:var(--wa);border-radius:50%;animation:spin .8s linear infinite;margin:auto auto 10px}@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:900px){#app{grid-template-columns:350px 1fr}.thread{padding-left:4%;padding-right:4%}.bubble{max-width:80%}}
+@media(min-width:701px){.cam-btn{display:none!important}}
+@media(max-width:700px){body{background:#fff}#app{display:block;max-width:none}.sidebar,.main{position:absolute;inset:0;height:100dvh}.sidebar{z-index:2}.main{z-index:3;display:none}.main.open{display:flex}.sidebar.thread-open{display:none}.side-top,.chat-top{height:58px}.back{display:grid}.thread{padding:11px 10px 18px}.bubble{max-width:86%;font-size:14.5px}.chat-actions .desktop-only{display:none}.composer{min-height:58px;padding-left:6px;padding-right:6px;gap:5px}.avatar{width:46px;height:46px}.contact{min-height:70px}.filter-row{padding-bottom:8px}.msg-actions{display:none}.to-bottom{bottom:80px;right:12px}}
+@media(max-width:380px){.channel-row,.filter-row{padding-left:8px;padding-right:8px}.side-top{padding-left:10px;padding-right:8px}.contact{padding:0 9px}.bubble{max-width:90%}.dash-btn .t{display:none}.input-wrap .icon-btn{width:34px}}
+</style>
+</head>
+<body>
+<div id="loading" class="loading"><div><div class="spinner"></div><div id="loadingText">Opening Chats…</div></div></div>
+<div id="app" class="hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-top"><div class="brand-avatar">L</div><div class="side-title">Chats</div><button class="icon-btn" title="Refresh" onclick="loadLeads(true)">↻</button><button class="dash-btn" title="Back to Dashboard" onclick="goBack()">← <span class="t">Dashboard</span></button></div>
+    <div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div></div>
+    <div class="channel-row"><button class="pill active" data-channel="whatsapp" onclick="setChannel('whatsapp')">WhatsApp</button><button class="pill" data-channel="instagram" onclick="setChannel('instagram')">Instagram</button></div>
+    <div class="filter-row" id="filters"></div>
+    <div class="list" id="list"></div>
+  </aside>
+  <main class="main" id="main"><div class="empty-main"><div class="box"><div class="big">💬</div><h2>Leadvyne Chats</h2><p>Send messages, photos, documents and voice notes in a familiar WhatsApp-style workspace. Choose a conversation to start.</p></div></div></main>
+</div>
+<input type="file" id="fileInput" class="hidden">
+<div id="toast" class="toast hidden"></div>
+<script>
+'use strict';
+const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
+const LEADS_TABLE='mvg6rcw0ia5qqrx';
+const params=new URLSearchParams(location.search);
+const clientId=params.get('client')||'';
+const sessionToken=params.get('token')||'';
+// Embedded in the CRM (dashboard.html #pageChats iframe) rather than opened as its own tab: the
+// dashboard's own navigation replaces our "← Dashboard" button, and lead details open as the CRM's
+// lead card on top of the chat. See chats.js for the dashboard half of this postMessage channel.
+const embedded=params.get('embed')==='1'&&window.parent!==window;
+if(embedded)document.documentElement.classList.add('embedded');
+function toParent(type,data={}){if(!embedded)return;try{window.parent.postMessage({source:'lv-chats',type,...data},location.protocol==='file:'?'*':location.origin)}catch{}}
+let leads=[],histCache={},current=null,channel='whatsapp',filter='all',meEmail='',clientRecord={};
+// Composer state for the open conversation. The thread and composer are separate DOM regions so a
+// background refresh redraws messages without wiping a half-typed reply or a running recording.
+let composeMode='reply',replyTarget=null,unseen=0;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const headers=extra=>({'Authorization':'Bearer '+sessionToken,...extra});
+const convId=l=>l&&(l.ConversationID||l.conv_id||l.ConversationId||l.chatwoot_conv_id||'');
+const hist=l=>{const k=String(l?.Id||'');if(k&&histCache[k])return histCache[k];try{const p=JSON.parse(l?.ConvHistory||'[]');if(k)histCache[k]=p;return p}catch{return[]}};
+const initials=l=>{const s=(l.Name||l.Phone||'?').trim();return (s[0]||'?').toUpperCase()};
+const isOut=m=>['assistant','bot','agent'].includes(m?.role);
+const isIg=l=>(l?.Channel||'whatsapp')==='instagram';
+const svg=(d,s=24)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
+const IC={
+  mic:svg('<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15zm6.2-3.6a.9.9 0 0 0-1.8 0 4.4 4.4 0 0 1-8.8 0 .9.9 0 0 0-1.8 0 6.2 6.2 0 0 0 5.3 6.1V20H8.6a.9.9 0 0 0 0 1.8h6.8a.9.9 0 0 0 0-1.8h-2.5v-2.5a6.2 6.2 0 0 0 5.3-6.1z"/>'),
+  send:svg('<path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6v6.5l12.6 1.9-12.6 1.9z"/>'),
+  emoji:svg('<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.2" fill="currentColor"/><circle cx="15" cy="10" r="1.2" fill="currentColor"/><path d="M8 14.2a4.6 4.6 0 0 0 8 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'),
+  attach:svg('<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>'),
+  cam:svg('<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 8h3l1.6-2.2h6.8L17 8h3v11H4z"/><circle cx="12" cy="13.3" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/>'),
+  trash:svg('<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13M10 11v6M14 11v6"/>'),
+  pause:svg('<path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/>'),
+  play:svg('<path fill="currentColor" d="M7 4.5v15l12.5-7.5z"/>'),
+  reply:svg('<path fill="currentColor" d="M10 8.5V5l-7 6.5 7 6.5v-3.6c5 0 8.3 1.6 11 5.1-1-5-4-10-11-11z"/>',18),
+  copy:svg('<path fill="none" stroke="currentColor" stroke-width="1.8" d="M8 8h11v12H8zM5 16V4h11"/>',16),
+  phone:svg('<path fill="currentColor" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/>',21),
+  down:svg('<path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/>'),
+  close:svg('<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/>'),
+  doc:svg('<path fill="currentColor" d="M6 2h8l6 6v14H6zm8 1.5V9h5.5"/>',20),
+  image:svg('<path fill="currentColor" d="M4 4h16v16H4zm2 12h12l-4-5-3 3.5-2-2.5z"/>',20),
+  tpl:svg('<path fill="currentColor" d="M5 3h14v18H5zm3 4v1.8h8V7zm0 4v1.8h8V11zm0 4v1.8h5V15z"/>',20),
+  audio:svg('<path fill="currentColor" d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/>',20)
+};
+function toast(t){const e=$('toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.add('hidden'),2600)}
+function ago(v){if(!v)return'';const d=new Date(v),n=new Date(),ms=n-d;if(ms<60000)return'now';if(ms<3600000)return Math.floor(ms/60000)+'m';if(ms<86400000)return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});if(ms<604800000)return d.toLocaleDateString([],{weekday:'short'});return d.toLocaleDateString([],{day:'2-digit',month:'2-digit',year:'2-digit'})}
+function readKey(){return `lv_chat_read_${clientId}`}
+function readMap(){try{return JSON.parse(localStorage.getItem(readKey())||'{}')}catch{return{}}}
+function markRead(id){try{const m=readMap();m[id]=new Date().toISOString();localStorage.setItem(readKey(),JSON.stringify(m))}catch{}toParent('read')}
+function unread(l){if(!l.LastMsgAt)return false;const r=readMap()[l.Id];return !r||new Date(l.LastMsgAt)>new Date(r)}
+const draftKey=id=>`lv_chat_draft_${clientId}_${id}`;
+function getDraft(id){try{return localStorage.getItem(draftKey(id))||''}catch{return''}}
+function saveDraft(id,t){try{t?localStorage.setItem(draftKey(id),t):localStorage.removeItem(draftKey(id))}catch{}}
+async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:headers({...opts.headers})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
+async function boot(){
+ if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
+ try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+}
+// The 12s poll asks only for leads whose LastMsgAt moved since the newest one we hold (delta) and
+// merges them in, instead of re-downloading 200 full lead rows (each with its ConvHistory) every
+// time. First load, the Refresh button and every 5th tick (~1 min) still do a full reload, which
+// also picks up pin/resolve/owner changes made elsewhere. A delta that fails falls back to full.
+let leadsSince='';
+async function fetchLeads(extra){const me=encodeURIComponent(meEmail),ownerClause=!isStaff()?'':staffLocked()?`~and(Owner,like,${me})`:`~and((Owner,like,${me})~or(Owner,blank))`;const url=c=>`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records?where=(ClientId,eq,${encodeURIComponent(clientId)})${c}${extra}&limit=200&sort=-LastMsgAt`;let d;try{d=await apiJson(url(ownerClause))}catch(e){if(!ownerClause)throw e;d=await apiJson(url(''))}return d.list||[]}
+async function loadLeads(show=true,silent=false,delta=false){
+ try{let got=null;if(delta&&leadsSince){try{got=await fetchLeads(`~and(LastMsgAt,gte,${encodeURIComponent(leadsSince)})`)}catch{}}
+  if(got){const ids=new Set(got.map(l=>String(l.Id)));leads=[...got,...leads.filter(l=>!ids.has(String(l.Id)))]}else leads=await fetchLeads('');
+  leadsSince=leads.reduce((m,l)=>l.LastMsgAt&&String(l.LastMsgAt)>m?String(l.LastMsgAt):m,'');
+  if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt&&fresh.LastMsgAt!==current.LastMsgAt;current=fresh;if(newMsg){markRead(fresh.Id);await refreshMessages(fresh)}}}
+  renderContacts();if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
+}
+function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderContacts()}
+function setFilter(f){filter=f;renderContacts()}
+const isMine=l=>!!meEmail&&String(l.Owner||'').trim().toLowerCase()===meEmail;
+// Staff see only their own chats (see visibleToMe); the account owner and teammates with a
+// full-access role (Admin / General Manager in dashboard.html's ROLES) always see every chat.
+// loadLeads also narrows the query by Owner so the 200-row cap can't hide their chats (and falls
+// back to the unnarrowed query if that one fails, so the list is never blank over a filter error);
+// `like` is case-insensitive for older mixed-case Owner values, isMine keeps the match exact.
+const FULL_ACCESS_ROLES=['admin','general_manager'];
+function isStaff(){if(!meEmail||meEmail===String(clientRecord.authentik_email||'').trim().toLowerCase())return false;let perms={};try{perms=JSON.parse(clientRecord.team_permissions||'{}')||{}}catch{}return !FULL_ACCESS_ROLES.includes(perms[meEmail]?.role)}
+function staffLocked(){if(!isStaff())return false;try{return !!JSON.parse(clientRecord.lead_routing||'{}')?.enabled}catch{return false}}
+// A teammate never sees a chat assigned to someone else — whether Owner was set by Lead Routing or
+// by hand in the Leads panel. Unassigned chats: hidden when routing is on (every new lead gets an
+// owner), shown when it's off, matching the Leads tab's "mine + unassigned" default for staff.
+function visibleToMe(l){if(!isStaff())return true;const o=String(l.Owner||'').trim();return o?isMine(l):!staffLocked()}
+function baseLeads(){return leads.filter(l=>(l.ConvHistory&&l.ConvHistory!=='[]')&&(l.Channel||'whatsapp')===channel&&visibleToMe(l))}
+function renderFilters(base){const counts={all:base.length,unread:base.filter(unread).length,needs:base.filter(l=>l.Handover==='Yes').length,mine:base.filter(isMine).length,resolved:base.filter(l=>l.ConvResolved==='Yes').length};const items=[['all','All'],['unread','Unread'],['needs','Needs you'],['mine','Mine'],['resolved','Resolved']];$('filters').innerHTML=items.map(([k,n])=>`<button class="pill ${filter===k?'active':''}" onclick="setFilter('${k}')">${n}<span class="n">${counts[k]}</span></button>`).join('')}
+
+// ── Message content helpers ──────────────────────────────────────────────────────────────────
+const AUDIO_EXT=/\.(ogg|oga|opus|mp3|m4a|aac|wav|amr|weba)(\?|#|$)/i,IMG_EXT=/\.(jpe?g|png|gif|webp|bmp|heic|avif)(\?|#|$)/i,VID_EXT=/\.(mp4|mov|3gp|webm|mkv)(\?|#|$)/i;
+// Every media shape a message can carry (bot product photos, Chats uploads, Instagram
+// attachments, legacy ConvHistory entries) normalised to [{kind,url,name,size,type,duration}].
+function attachmentsOf(m){
+ const out=[];
+ const img=m.media_url||m.image_url||(m.media&&typeof m.media==='object'&&m.media.url);
+ if(img)out.push({...(m.media&&typeof m.media==='object'?m.media:{}),kind:(m.media?.type==='video'?'video':'image'),url:img});
+ if(m.attachment){
+  const a=typeof m.attachment==='object'?{...m.attachment}:{name:String(m.attachment)};
+  const t=String(a.type||''),probe=v=>a.name&&v.test(a.name)||a.url&&v.test(a.url);
+  if(!['voice','audio','image','video','template'].includes(a.kind))a.kind=t.startsWith('audio')||probe(AUDIO_EXT)?'audio':t.startsWith('image')||probe(IMG_EXT)?'image':t.startsWith('video')||probe(VID_EXT)?'video':'document';
+  if(!(a.kind==='image'&&a.url===img))out.push(a);
+ }
+ return out;
+}
+function kindLabel(a){return a.kind==='template'?'📋 '+(a.name||'Template'):a.kind==='voice'?'🎤 Voice message':a.kind==='audio'?'🎧 Audio':a.kind==='image'?'📷 Photo':a.kind==='video'?'🎥 Video':'📄 '+(a.name||'Document')}
+// What a bubble shows as its text. For a customer's photo or voice note the stored content is the
+// AI's reading of it (an image description / a transcript — the bot needs that as context), so the
+// bubble shows the customer's own caption instead, like WhatsApp; voice transcripts show small
+// under the player.
+function bodyOf(m,atts=attachmentsOf(m)){const ai=atts.find(a=>a.ai_text);return ai?String(ai.caption||''):String(m.content||'')}
+function transcriptOf(m,atts){const t=String(m.content||'').trim();return atts.some(a=>a.ai_text&&a.kind==='voice')&&t&&!t.startsWith('(SYSTEM NOTE')?t:''}
+function snippetOf(m){const t=bodyOf(m||{}).replace(/\s+/g,' ').trim();if(t)return t.slice(0,100);const a=attachmentsOf(m||{})[0];return a?kindLabel(a):'Message'}
+function fmtBytes(n){n=Number(n);if(!n)return typeof n==='string'?n:'';return n<1024?n+' B':n<1048576?Math.round(n/1024)+' KB':(n/1048576).toFixed(1)+' MB'}
+function fmtDur(s){s=Math.max(0,Math.round(Number(s)||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
+// WhatsApp formatting: *bold* _italic_ ~strike~ ```mono``` plus clickable links. Runs on escaped
+// text, so the only markup that can appear is what these replacements add.
+function fmtText(s){
+ let h=esc(s);
+ h=h.replace(/```([\s\S]+?)```/g,'<code>$1</code>');
+ h=h.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:;])/g,'$1<b>$2</b>');
+ h=h.replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/g,'$1<i>$2</i>');
+ h=h.replace(/(^|[\s(])~([^~\n]+)~(?=$|[\s).,!?:;])/g,'$1<s>$2</s>');
+ h=h.replace(/\bhttps?:\/\/[^\s<]*[^\s<.,!?;:)'"]/g,u=>`<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+ return h;
+}
+
+function renderContacts(){const base=baseLeads();renderFilters(base);const q=($('search').value||'').trim().toLowerCase();let list=base.filter(l=>{if(filter==='unread'&&!unread(l))return false;if(filter==='needs'&&l.Handover!=='Yes')return false;if(filter==='mine'&&!isMine(l))return false;if(filter==='resolved'&&l.ConvResolved!=='Yes')return false;if(q){let msg=false;try{msg=hist(l).some(m=>String(m.content||'').toLowerCase().includes(q))}catch{}return String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||msg}return true}).sort((a,b)=>((b.Pinned==='Yes')-(a.Pinned==='Yes'))||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||'')));
+ const totalUnread=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]'&&visibleToMe(l)&&unread(l)).length;document.title=(totalUnread?`(${totalUnread}) `:'')+'Leadvyne · Chats';
+ if(!list.length){$('list').innerHTML='<div class="empty-list">No conversations here.</div>';return}
+ $('list').innerHTML=list.map(l=>{const h=hist(l),last=h[h.length-1]||{},u=unread(l),active=current&&String(current.Id)===String(l.Id);const draft=active?'':getDraft(l.Id);let p=draft?`<span class="draft">Draft:</span> ${esc(draft.replace(/\s+/g,' ').slice(0,60))}`:esc(last.content||last.attachment||last.media_url?snippetOf(last).slice(0,70):(l.Phone||''));return `<div class="contact ${u?'unread':''} ${active?'active':''}" onclick="openConversation('${esc(l.Id)}')"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${l.Handover==='Yes'?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${!draft&&isOut(last)?'<span class="checks">✓✓ </span>':''}${p}</div>${u?'<span class="badge">1</span>':''}</div></div></div>`}).join('')}
+
+// ── Conversation shell ───────────────────────────────────────────────────────────────────────
+async function openConversation(id){
+ const lead=leads.find(l=>String(l.Id)===String(id));if(!lead)return;
+ if(rec)cancelRecording();
+ if(current&&$('msg'))saveDraft(current.Id,$('msg').value);
+ current=lead;replyTarget=null;unseen=0;composeMode='reply';markRead(lead.Id);toParent('thread',{leadId:lead.Id});
+ $('main').classList.add('open');$('sidebar').classList.add('thread-open');
+ buildShell();renderContacts();
+ const cached=!!histCache[String(id)];
+ if(cached)drawMessages(true);else $('thread').innerHTML='<div style="height:100%;display:grid;place-items:center"><div class="spinner"></div></div>';
+ await refreshMessages(lead,true);
+}
+async function refreshMessages(lead,stick=false){
+ const k=String(lead.Id);
+ // Keep this device's in-flight / failed sends across a server refresh — they aren't in D1 yet.
+ const keep=(histCache[k]||[]).filter(m=>m._status);
+ try{const data=await apiJson(`${WORKER}/chat/messages?lead_id=${encodeURIComponent(lead.Id)}`);histCache[k]=[...(data.messages||[]),...keep]}
+ catch(e){if(!histCache[k])histCache[k]=hist(lead)}
+ if(current&&String(current.Id)===k)drawMessages(stick);
+}
+function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function buildShell(){
+ const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}${l.Owner?' · '+esc(l.Owner):''}</div></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="searchThread(this.value)"></div></div>
+ <div class="thread" id="thread"></div>
+ <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
+ <div id="handoverBar" class="window-bar hidden"><span>🙋 A person is handling this chat — the bot won't reply.</span><button onclick="toggleHandover()">Hand back to bot</button></div>
+ <div id="windowBar" class="window-bar hidden"><span>⏱ The 24-hour reply window has closed. WhatsApp only delivers an approved template until the customer writes again.</span><button onclick="openTemplates()">Send template</button></div>
+ <div id="replyBox" class="reply-preview hidden"></div>
+ <div class="composer-mode" id="modeRow"><button class="mode-btn active" id="replyMode" onclick="setComposeMode('reply')">Reply</button><button class="mode-btn" id="noteMode" onclick="setComposeMode('note')">Internal note</button></div>
+ <div class="composer" id="composer">
+  <div class="popover emoji-panel hidden" id="emojiPanel"></div>
+  <div class="popover attach-menu hidden" id="attachMenu">
+   <button onclick="pickFiles('*/*')"><span class="dot" style="background:#7f66ff">${IC.doc}</span>Document</button>
+   <button onclick="pickFiles('image/*,video/*')"><span class="dot" style="background:#007bfc">${IC.image}</span>Photos &amp; videos</button>
+   <button onclick="pickFiles('image/*',true)"><span class="dot" style="background:#ff2e74">${IC.cam}</span>Camera</button>
+   <button onclick="pickFiles('audio/*')"><span class="dot" style="background:#ff7f23">${IC.audio}</span>Audio</button>
+   <button onclick="openTemplates()"><span class="dot" style="background:#02a698">${IC.tpl}</span>Template</button>
+  </div>
+  <div class="input-wrap" id="inputWrap">
+   <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
+   <textarea id="msg" rows="1" placeholder="Type a message" oninput="onType()" onkeydown="keySend(event)" onpaste="onPaste(event)"></textarea>
+   <button class="icon-btn" id="attachBtn" title="Attach" onclick="togglePanel('attachMenu')" ${ig?'disabled':''}>${IC.attach}</button>
+   <button class="icon-btn cam-btn" id="camBtn" title="Camera" onclick="pickFiles('image/*',true)" ${ig?'disabled':''}>${IC.cam}</button>
+  </div>
+  <div class="rec-row hidden" id="recRow">
+   <button class="icon-btn rec-trash" title="Delete recording" onclick="cancelRecording()">${IC.trash}</button>
+   <span class="rec-dot"></span><span class="rec-time" id="recTime">0:00</span>
+   <canvas class="rec-wave" id="recWave"></canvas>
+   <span class="rec-hint hidden" id="recHint">‹ Slide to cancel</span>
+   <button class="icon-btn hidden" id="recPlay" title="Play recording" onclick="previewRecording()">${IC.play}</button>
+   <button class="icon-btn" id="recPause" title="Pause" onclick="togglePauseRecording()">${IC.pause}</button>
+  </div>
+  <button class="send" id="actionBtn" title="Record voice message">${IC.mic}</button>
+ </div>`;
+ $('chatMenu').innerHTML=menuHtml();
+ const box=$('msg');box.value=getDraft(l.Id);grow(box);
+ wireActionButton();wireThread();updateAction();
+ $('emojiPanel').innerHTML=EMOJI.split(' ').map(e=>`<button type="button">${e}</button>`).join('');
+ $('emojiPanel').onclick=e=>{const b=e.target.closest('button');if(b)insertAtCursor(b.textContent)};
+ if(matchMedia('(min-width:701px)').matches)box.focus();
+}
+function fmtDay(ts){const d=new Date(ts||Date.now()),n=new Date();if(isNaN(d))return'';if(d.toDateString()===n.toDateString())return'TODAY';const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'YESTERDAY';return d.toLocaleDateString([],{day:'numeric',month:'short',year:'numeric'}).toUpperCase()}
+function fmtTime(ts){try{const d=new Date(ts);return ts&&!isNaN(d)?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):''}catch{return''}}
+function attHtml(a){
+ const url=esc(a.url||'');
+ if(a.kind==='image'&&a.url)return `<img class="media" src="${url}" alt="" loading="lazy" data-view="${url}">`;
+ if(a.kind==='video'&&a.url)return `<video class="media" src="${url}" controls preload="metadata" playsinline></video>`;
+ if((a.kind==='voice'||a.kind==='audio')&&a.url){const d=a.duration||durations.get(a.url);return `<div class="vp" data-src="${url}"><div class="vp-mic ${a.kind==='voice'?'voice':''}">${a.kind==='voice'?IC.mic:IC.audio}</div><button class="vp-play" type="button" title="Play">${IC.play}</button><div class="vp-body"><div class="vp-bar"><i></i><b></b></div><div class="vp-row"><span class="vp-time">${d?fmtDur(d):(a.kind==='voice'?'Voice':'Audio')}</span><button class="vp-speed" type="button">${playbackRate}×</button></div></div></div>`}
+ const name=a.name||(a.kind==='voice'?'Voice message':'Attachment'),ext=(String(a.name||'').split('.').pop()||'file').slice(0,4);
+ const inner=`<span class="ext">${esc(a.name&&a.name.includes('.')?ext:'file')}</span><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</div><small>${esc(fmtBytes(a.size))}</small></div>`;
+ return a.url?`<a class="doc" href="${url}" target="_blank" rel="noopener" download>${inner}</a>`:`<div class="doc">${inner}</div>`;
+}
+function drawMessages(stick=false){
+ const t=$('thread');if(!t||!current)return;
+ const nearBottom=t.scrollHeight-t.scrollTop-t.clientHeight<120,prevTop=t.scrollTop,prevCount=Number(t.dataset.count||0);
+ const h=hist(current);let lastDay='',body='',prevDir='';
+ h.forEach((m,i)=>{
+  const ts=m.ts||m.timestamp||m.created_at,day=ts?fmtDay(ts):lastDay;
+  if(day&&day!==lastDay){body+=`<div class="day"><span>${esc(day)}</span></div>`;lastDay=day;prevDir=''}
+  const out=isOut(m),atts=attachmentsOf(m),dir=out?'out':'in',tail=dir!==prevDir;prevDir=dir;
+  const quote=m.reply_to?`<div class="quote"><b>${esc(m.reply_to.who||'Reply')}</b>${esc(m.reply_to.snippet||'')}</div>`:'';
+  const tick=!out?'':m._status==='pending'?'<span class="tick-pending" title="Sending">🕓</span>':m._status==='failed'?`<span class="tick-failed" title="Not sent — tap to retry" data-retry="${i}">⚠ Retry</span>`:'<span class="checks">✓✓</span>';
+  const text=bodyOf(m,atts),tr=transcriptOf(m,atts),tpl=atts.find(a=>a.kind==='template'),shown=atts.filter(a=>a.kind!=='template');
+  const mediaOnly=!text&&!tr&&!quote&&!tpl&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
+  const tplHead=tpl?`<div class="tpl-tag">📋 Template · ${esc(tpl.name||'')}</div>`:'';
+  const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:'';
+  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
+ });
+ updateWindowBar();updateHandoverBar();
+ let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
+ t.innerHTML=body||'<div class="empty-list">No messages yet. Say hello 👋</div>';
+ t.dataset.count=h.length;
+ const q=$('threadSearchInput')?.value;if(q)searchThread(q);
+ hydratePlayers();
+ if(stick||nearBottom){scrollToBottom(false)}else{t.scrollTop=prevTop;if(h.length>prevCount){unseen+=h.length-prevCount;updateFab()}}
+}
+function scrollToBottom(smooth){const t=$('thread');if(!t)return;unseen=0;requestAnimationFrame(()=>{t.scrollTo({top:t.scrollHeight,behavior:smooth?'smooth':'auto'});updateFab()})}
+function updateFab(){const t=$('thread'),b=$('toBottom');if(!t||!b)return;const away=t.scrollHeight-t.scrollTop-t.clientHeight>200;if(!away)unseen=0;b.classList.toggle('hidden',!away);const n=b.querySelector('.n');n.textContent=unseen;n.classList.toggle('hidden',!unseen)}
+function wireThread(){
+ const t=$('thread');
+ t.addEventListener('scroll',updateFab,{passive:true});
+ t.addEventListener('click',e=>{
+  const img=e.target.closest('[data-view]');if(img)return viewImage(img.dataset.view);
+  const retry=e.target.closest('[data-retry]');if(retry){const m=hist(current)[Number(retry.dataset.retry)];if(m?._retry)m._retry();return}
+  const act=e.target.closest('[data-act]');if(act){const i=Number(act.closest('.bubble-row').dataset.i),m=hist(current)[i];if(!m)return;if(act.dataset.act==='reply')setReply(i);else{navigator.clipboard?.writeText(bodyOf(m));toast('Message copied')}return}
+  const play=e.target.closest('.vp-play');if(play)return togglePlay(play.closest('.vp'));
+  const speed=e.target.closest('.vp-speed');if(speed)return cycleSpeed();
+  const bar=e.target.closest('.vp-bar');if(bar)return seekPlayer(bar.closest('.vp'),e);
+ });
+ t.addEventListener('dblclick',e=>{const row=e.target.closest('.bubble-row');if(row&&!e.target.closest('.vp,a,video'))setReply(Number(row.dataset.i))});
+ // Swipe right on a message to reply, like WhatsApp on a phone.
+ let sw=null;
+ t.addEventListener('touchstart',e=>{const row=e.target.closest('.bubble-row');if(!row||e.target.closest('.vp-bar'))return;const p=e.touches[0];sw={row,x:p.clientX,y:p.clientY,dx:0,lock:null}},{passive:true});
+ t.addEventListener('touchmove',e=>{if(!sw)return;const p=e.touches[0],dx=p.clientX-sw.x,dy=p.clientY-sw.y;if(sw.lock===null&&(Math.abs(dx)>8||Math.abs(dy)>8))sw.lock=Math.abs(dx)>Math.abs(dy)&&dx>0;if(!sw.lock)return;sw.dx=Math.min(80,Math.max(0,dx));sw.row.style.transform=`translateX(${sw.dx}px)`},{passive:true});
+ t.addEventListener('touchend',()=>{if(!sw)return;const {row,dx}=sw;sw=null;row.style.transform='';if(dx>55){navigator.vibrate?.(15);setReply(Number(row.dataset.i))}});
+ // Drag & drop files straight into the conversation.
+ t.addEventListener('dragover',e=>{if(isIg(current)||!e.dataTransfer?.types?.includes('Files'))return;e.preventDefault();t.classList.add('drop')});
+ t.addEventListener('dragleave',()=>t.classList.remove('drop'));
+ t.addEventListener('drop',e=>{t.classList.remove('drop');if(isIg(current)||!e.dataTransfer?.files?.length)return;e.preventDefault();openPreview([...e.dataTransfer.files])});
+}
+function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force)}
+function toggleThreadSearch(){toggleMenu(false);const s=$('threadSearch');s.classList.toggle('hidden');if(s.classList.contains('hidden')){$('threadSearchInput').value='';searchThread('')}else $('threadSearchInput').focus()}
+function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open)el.classList.remove('hidden')}
+function closePopovers(){['emojiPanel','attachMenu'].forEach(id=>$(id)?.classList.add('hidden'))}
+
+// ── Composer ─────────────────────────────────────────────────────────────────────────────────
+function setComposeMode(m){composeMode=m;if(m==='note')clearReply();$('replyMode').classList.toggle('active',m==='reply');$('noteMode').classList.toggle('active',m==='note');$('composer').classList.toggle('note-mode',m==='note');$('modeRow').classList.toggle('note-mode',m==='note');$('msg').placeholder=m==='note'?'Add a private note (only your team sees this)':'Type a message';updateAction();$('msg').focus()}
+function grow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
+function onType(){const b=$('msg');grow(b);updateAction();clearTimeout(onType.t);onType.t=setTimeout(()=>current&&saveDraft(current.Id,b.value),400)}
+function keySend(e){if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:701px)').matches){e.preventDefault();sendMessage()}}
+function insertAtCursor(txt){const b=$('msg');const s=b.selectionStart??b.value.length,en=b.selectionEnd??b.value.length;b.value=b.value.slice(0,s)+txt+b.value.slice(en);b.selectionStart=b.selectionEnd=s+txt.length;b.focus();onType()}
+function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length&&!isIg(current)){e.preventDefault();openPreview(files)}}
+// Mic when the box is empty, paper plane when there's something to send — same as WhatsApp.
+// Internal notes and Instagram are text-only, so they always show send.
+function actionState(){if(rec)return'rec';if(composeMode==='note'||isIg(current)||($('msg')?.value||'').trim())return'send';return'mic'}
+function updateAction(){const b=$('actionBtn');if(!b)return;const s=actionState();if(b.dataset.state===s)return;b.dataset.state=s;b.innerHTML=s==='mic'?IC.mic:IC.send;b.title=s==='mic'?'Record voice message (hold, or tap to lock)':s==='rec'?'Send voice message':'Send';const cam=$('camBtn');if(cam)cam.classList.toggle('hidden',s!=='mic')}
+function setReply(i){if(!current)return;const m=hist(current)[i];if(!m)return;if(composeMode==='note')setComposeMode('reply');replyTarget={index:i,snippet:snippetOf(m),who:isOut(m)?'You':(current.Name||'Customer')};renderReply();$('msg')?.focus()}
+function clearReply(){replyTarget=null;renderReply()}
+function renderReply(){const box=$('replyBox');if(!box)return;if(!replyTarget){box.classList.add('hidden');box.innerHTML='';return}box.classList.remove('hidden');box.innerHTML=`<div class="reply-card"><b>${esc(replyTarget.who)}</b><div>${esc(replyTarget.snippet)}</div></div><button class="icon-btn" title="Cancel reply" onclick="clearReply()">${IC.close}</button>`}
+async function patchLead(lead,patch){await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({Id:lead.Id,...patch})});Object.assign(lead,patch);const i=leads.findIndex(x=>String(x.Id)===String(lead.Id));if(i>=0&&leads[i]!==lead)Object.assign(leads[i],patch)}
+// Optimistic send: the bubble appears at once with a clock, flips to ✓✓ when the worker confirms,
+// or to "⚠ Retry" on failure (tap to resend) — nothing typed or recorded is lost to a bad network.
+function pushLocal(lead,msg){msg.ts=new Date().toISOString();msg._status='pending';hist(lead).push(msg);const L=leads.find(x=>String(x.Id)===String(lead.Id));if(L)L.LastMsgAt=msg.ts;markRead(lead.Id);if(current&&String(current.Id)===String(lead.Id))drawMessages(true);renderContacts();return msg}
+function setMsgStatus(lead,msg,status){if(status)msg._status=status;else delete msg._status;if(current&&String(current.Id)===String(lead.Id))drawMessages(false)}
+const persistable=h=>JSON.stringify(h.filter(m=>!m._status),(k,v)=>k.startsWith('_')?undefined:v);
+async function sendMessage(){
+ if(!current)return;const box=$('msg'),text=(box.value||'').trim();if(!text)return;const lead=current;
+ if(composeMode==='note'){let n=[];try{n=JSON.parse(lead.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(lead,{NotesList:JSON.stringify(n)});box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}return}
+ if(!isIg(lead)&&!convId(lead)){toast('No linked WhatsApp conversation');return}
+ const quote=replyTarget?{who:replyTarget.who,snippet:replyTarget.snippet}:null;
+ box.value='';grow(box);saveDraft(lead.Id,'');clearReply();updateAction();closePopovers();
+ const msg=pushLocal(lead,{role:'assistant',content:text,...(quote?{reply_to:quote}:{})});
+ msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{
+   if(isIg(lead)){const out=quote?`*↩️ Replying to:* "${quote.snippet}"\n\n${text}`:text;await apiJson(WORKER+'/instagram/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,text:out})});setMsgStatus(lead,msg,null);await patchLead(lead,{ConvHistory:persistable(hist(lead)),LastMsgAt:msg.ts}).catch(()=>{})}
+   else{await apiJson(WORKER+'/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:convId(lead),lead_id:lead.Id,text,...(quote?{reply_to:quote}:{})})});setMsgStatus(lead,msg,null)}
+  }catch(e){setMsgStatus(lead,msg,'failed');toast('Not sent: '+e.message)}};
+ await msg._retry();
+}
+async function uploadFile(lead,file,{caption='',kind='',duration=0}={}){
+ const fd=new FormData();fd.append('conv_id',convId(lead));fd.append('lead_id',lead.Id);fd.append('caption',caption);if(kind)fd.append('kind',kind);if(duration)fd.append('duration',String(duration));fd.append('file',file,file.name);
+ const r=await fetch(WORKER+'/quote/send',{method:'POST',headers:headers(),body:fd});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Upload failed');return d;
+}
+function kindOfFile(f){const t=f.type||'';return t.startsWith('image')?'image':t.startsWith('video')?'video':t.startsWith('audio')?'audio':'document'}
+function sendFileMessage(lead,file,{caption='',kind,duration=0}={}){
+ kind=kind||kindOfFile(file);
+ const local=['image','video','audio','voice'].includes(kind)?URL.createObjectURL(file):'';
+ const msg=pushLocal(lead,{role:'assistant',content:caption,attachment:{kind,type:file.type,name:kind==='voice'?'Voice message':file.name,size:file.size,url:local,...(duration?{duration}:{})}});
+ msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{const d=await uploadFile(lead,file,{caption,kind:kind==='voice'?'voice':'',duration});const u=d?.data?.attachments?.[0]?.data_url;if(u&&!local)msg.attachment.url=u;setMsgStatus(lead,msg,null)}catch(e){setMsgStatus(lead,msg,'failed');toast('Not sent: '+e.message)}};
+ return msg._retry();
+}
+
+// ── Attachments: picker, preview with caption, send ──────────────────────────────────────────
+const MAX_FILE=40*1024*1024;
+let previewFiles=[],previewIdx=0;
+function pickFiles(accept,camera){closePopovers();if(!current||isIg(current))return;const inp=$('fileInput');inp.value='';inp.accept=accept||'';inp.multiple=!camera;if(camera)inp.setAttribute('capture','environment');else inp.removeAttribute('capture');inp.click()}
+$('fileInput').onchange=e=>{const f=[...(e.target.files||[])];e.target.value='';if(f.length)openPreview(f)};
+function openPreview(files){
+ if(!current)return;if(!convId(current)){toast('No linked WhatsApp conversation');return}
+ const big=files.filter(f=>f.size>MAX_FILE);if(big.length)toast(`${big.length} file(s) over 40 MB skipped`);
+ files=files.filter(f=>f.size<=MAX_FILE).slice(0,10);if(!files.length)return;
+ previewFiles.forEach(p=>p.url&&URL.revokeObjectURL(p.url));
+ previewFiles=files.map(f=>({file:f,kind:kindOfFile(f),url:/^(image|video|audio)\//.test(f.type)?URL.createObjectURL(f):''}));previewIdx=0;
+ let ov=$('previewOv');if(!ov){ov=document.createElement('div');ov.id='previewOv';ov.className='overlay preview';document.body.appendChild(ov)}
+ ov.classList.remove('hidden');drawPreview();setTimeout(()=>$('capInput')?.focus(),50);
+}
+function drawPreview(){
+ const ov=$('previewOv'),p=previewFiles[previewIdx];if(!p)return closePreview();
+ const ext=esc((p.file.name.split('.').pop()||'file').slice(0,4));
+ const stage=p.kind==='image'?`<img src="${p.url}" alt="">`:p.kind==='video'?`<video src="${p.url}" controls playsinline></video>`:p.kind==='audio'?`<div class="big-doc">${IC.audio}<div style="margin:8px 0">${esc(p.file.name)}</div><audio src="${p.url}" controls></audio></div>`:`<div class="big-doc"><div class="doc"><span class="ext">${ext}</span></div><div>${esc(p.file.name)}</div><small>${esc(fmtBytes(p.file.size))}</small></div>`;
+ const thumbs=previewFiles.length>1?`<div class="thumbs">${previewFiles.map((q,i)=>`<button class="thumb ${i===previewIdx?'active':''}" onclick="previewIdx=${i};drawPreview()">${q.kind==='image'?`<img src="${q.url}" alt="">`:esc((q.file.name.split('.').pop()||'').slice(0,4))}<span class="x" onclick="event.stopPropagation();removePreview(${i})">×</span></button>`).join('')}</div>`:'';
+ const cap=$('capInput')?.value||'';
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="closePreview()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send to <b>${esc(current.Name||current.Phone||'contact')}</b>${previewFiles.length>1?` · ${previewFiles.length} files`:''}</div></div><div class="stage">${stage}</div><div class="foot">${thumbs}<div class="cap-row"><input id="capInput" placeholder="Add a caption…" value="${esc(cap)}" onkeydown="if(event.key==='Enter'){event.preventDefault();sendPreview()}"><button class="send" title="Send" onclick="sendPreview()">${IC.send}</button></div></div>`;
+}
+function removePreview(i){const [p]=previewFiles.splice(i,1);if(p?.url)URL.revokeObjectURL(p.url);previewIdx=Math.min(previewIdx,previewFiles.length-1);previewFiles.length?drawPreview():closePreview()}
+function closePreview(revoke=true){const ov=$('previewOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}if(revoke)previewFiles.forEach(p=>p.url&&URL.revokeObjectURL(p.url));previewFiles=[]}
+async function sendPreview(){
+ const lead=current,caption=($('capInput')?.value||'').trim(),items=previewFiles.slice();closePreview(true);if(!lead)return;
+ for(let i=0;i<items.length;i++)await sendFileMessage(lead,items[i].file,{caption:i===0?caption:'',kind:items[i].kind});
+}
+function viewImage(src){let ov=$('lightbox');if(!ov){ov=document.createElement('div');ov.id='lightbox';ov.className='overlay lightbox';document.body.appendChild(ov);ov.addEventListener('click',e=>{if(e.target===ov||e.target.classList.contains('img-wrap'))ov.classList.add('hidden')})}ov.innerHTML=`<div class="bar"><div style="flex:1"></div><a class="icon-btn" href="${esc(src)}" target="_blank" rel="noopener" download title="Open original">⬇</a><button class="icon-btn" title="Close" onclick="$('lightbox').classList.add('hidden')">${IC.close}</button></div><div class="img-wrap"><img src="${esc(src)}" alt=""></div>`;ov.classList.remove('hidden')}
+
+// ── WhatsApp 24-hour window & approved templates ────────────────────────────────────────────
+// Outside 24h since the customer's last message WhatsApp only delivers approved templates, so the
+// composer shows a banner with a shortcut to the picker. Unknown timing counts as open (no banner).
+function lastCustomerAt(lead){let t=lead.LastCustomerMsgAt||'';const h=hist(lead);for(let i=h.length-1;i>=0;i--){if(isOut(h[i]))continue;const ts=h[i].ts||h[i].timestamp||h[i].created_at;if(ts&&(!t||new Date(ts)>new Date(t)))t=ts;break}return t}
+function windowOpen(lead){const t=lastCustomerAt(lead);return !t||isNaN(new Date(t))||Date.now()-new Date(t)<24*3600*1000}
+function updateHandoverBar(){const b=$('handoverBar');if(!b||!current)return;b.classList.toggle('hidden',!takenOver(current))}
+function updateWindowBar(){const b=$('windowBar');if(!b||!current)return;b.classList.toggle('hidden',isIg(current)||windowOpen(current))}
+const tplCache={};let tplList=[],tplSel=null;
+const tplComp=(t,type)=>(t?.components||[]).find(c=>String(c.type||'').toUpperCase()===type);
+const tplBody=t=>tplComp(t,'BODY')?.text||'';
+const tplVarNames=txt=>[...new Set((String(txt||'').match(/\{\{\s*\w+\s*\}\}/g)||[]).map(x=>x.replace(/[{}\s]/g,'')))];
+const tplButtons=t=>(tplComp(t,'BUTTONS')?.buttons||[]).map(b=>b.text).filter(Boolean);
+const tplFill=(txt,vals)=>String(txt||'').replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=>vals[k]||m);
+async function openTemplates(){
+ closePopovers();if(!current||isIg(current))return;
+ let ov=$('tplOv');if(!ov){ov=document.createElement('div');ov.id='tplOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ ov.classList.remove('hidden');tplSel=null;
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="tplBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send a template to <b>${esc(current.Name||current.Phone||'contact')}</b></div><button class="icon-btn" title="Reload templates" onclick="loadTemplateList(true)">↻</button></div><div class="tpl-main" id="tplMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="tplSearch" placeholder="Search templates" oninput="drawTemplateList()"></div></div><div class="tpl-items" id="tplItems"><div class="tpl-empty"><div class="spinner"></div>Loading approved templates…</div></div></div><div class="tpl-detail" id="tplDetail"><div class="tpl-empty">Choose a template to preview it.</div></div></div>`;
+ await loadTemplateList(false);
+}
+async function loadTemplateList(force){
+ const key=String(current?.InboxId||'');
+ try{if(force||!tplCache[key]){const d=await apiJson(WORKER+'/wa/templates'+(key?`?inbox_id=${encodeURIComponent(key)}`:''));tplCache[key]=(d.data||[]).filter(t=>String(t.status||'').toUpperCase()==='APPROVED').sort((a,b)=>String(a.name).localeCompare(String(b.name)))}tplList=tplCache[key];drawTemplateList()}
+ catch(e){const el=$('tplItems');if(el)el.innerHTML=`<div class="tpl-empty">Could not load templates.<br><small>${esc(e.message)}</small></div>`}
+}
+function drawTemplateList(){
+ const el=$('tplItems');if(!el)return;const q=($('tplSearch')?.value||'').trim().toLowerCase();
+ const list=tplList.filter(t=>!q||String(t.name).toLowerCase().includes(q)||tplBody(t).toLowerCase().includes(q));
+ el.innerHTML=list.length?list.map(t=>{const i=tplList.indexOf(t);return `<button class="tpl-item ${tplSel===t?'active':''}" onclick="pickTemplate(${i})"><b>${esc(t.name)}</b><small>${esc([t.language,String(t.category||'').toLowerCase()].filter(Boolean).join(' · '))}</small><small>${esc(tplBody(t).replace(/\s+/g,' ').slice(0,90))}</small></button>`}).join(''):`<div class="tpl-empty">${tplList.length?'No templates match.':'No approved templates yet. Create them in Campaigns → Templates (approval by Meta can take a few minutes).'}</div>`;
+}
+function pickTemplate(i){
+ tplSel=tplList[i];if(!tplSel)return;$('tplMain').classList.add('picked');drawTemplateList();
+ const t=tplSel,hdr=tplComp(t,'HEADER'),fmt=String(hdr?.format||'').toUpperCase(),vars=tplVarNames(tplBody(t)),hvars=fmt==='TEXT'?tplVarNames(hdr.text):[];
+ const field=(id,label,val='',ph='')=>`<label>${esc(label)}<input id="${id}" value="${esc(val)}" placeholder="${esc(ph)}" oninput="drawTemplatePreview()"></label>`;
+ // {{1}} is almost always the customer's name — prefill it, the rep can overwrite.
+ const fields=[...hvars.map(v=>field('tplH_'+v,`Header {{${v}}}`)),...(['IMAGE','VIDEO','DOCUMENT'].includes(fmt)?[field('tplMedia',`Header ${fmt.toLowerCase()} link (https://…)`,'','https://')]:[]),...vars.map((v,k)=>field('tplV_'+v,`{{${v}}}`,k===0?(current.Name||''):''))];
+ $('tplDetail').innerHTML=`<div class="tpl-form"><div><b>${esc(t.name)}</b> <small style="color:var(--muted)">${esc(t.language||'')} · ${esc(String(t.category||'').toLowerCase())}</small></div>${fields.join('')||'<small style="color:var(--muted)">This template has no variables.</small>'}</div><div class="tpl-preview" id="tplPreview"></div><div class="tpl-actions"><span id="tplErr" style="color:var(--danger);font-size:13px"></span><button class="send" title="Send template" onclick="sendTemplate()">${IC.send}</button></div>`;
+ drawTemplatePreview();
+}
+function tplValues(){const t=tplSel,o={body:{},head:{}};tplVarNames(tplBody(t)).forEach(v=>o.body[v]=($('tplV_'+v)?.value||'').trim());const h=tplComp(t,'HEADER');if(String(h?.format).toUpperCase()==='TEXT')tplVarNames(h.text).forEach(v=>o.head[v]=($('tplH_'+v)?.value||'').trim());o.media=($('tplMedia')?.value||'').trim();return o}
+function tplRendered(){const t=tplSel,v=tplValues(),h=tplComp(t,'HEADER'),fmt=String(h?.format||'').toUpperCase();return {head:fmt==='TEXT'?tplFill(h.text,v.head):'',fmt,body:tplFill(tplBody(t),v.body),foot:tplComp(t,'FOOTER')?.text||'',buttons:tplButtons(t),v}}
+function drawTemplatePreview(){
+ const el=$('tplPreview');if(!el||!tplSel)return;const r=tplRendered();
+ const media=['IMAGE','VIDEO','DOCUMENT'].includes(r.fmt)?(r.fmt==='IMAGE'&&/^https:\/\/.+/.test(r.v.media)?`<img class="media" src="${esc(r.v.media)}" alt="">`:`<div class="tpl-media-ph">${esc(r.fmt.toLowerCase())} header</div>`):'';
+ el.innerHTML=`<div class="bubble out tail">${media}${r.head?`<div class="tpl-hdr">${esc(r.head)}</div>`:''}${fmtText(r.body)}${r.foot?`<div class="tpl-foot">${esc(r.foot)}</div>`:''}<span class="meta">${esc(fmtTime(new Date().toISOString()))}</span>${r.buttons.length?`<div class="tpl-btns">${r.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:''}</div>`;
+}
+function tplBack(){const m=$('tplMain');if(m&&m.classList.contains('picked')&&matchMedia('(max-width:700px)').matches){m.classList.remove('picked');tplSel=null;drawTemplateList();return}closeTemplates()}
+function closeTemplates(){const ov=$('tplOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}tplSel=null}
+async function sendTemplate(){
+ const lead=current,t=tplSel;if(!lead||!t)return;
+ const r=tplRendered(),err=$('tplErr');
+ if([...Object.values(r.v.body),...Object.values(r.v.head)].some(x=>!x)){err.textContent='Fill in every variable.';return}
+ const mediaHeader=['IMAGE','VIDEO','DOCUMENT'].includes(r.fmt);
+ if(mediaHeader&&!/^https:\/\/\S+$/.test(r.v.media)){err.textContent='Add an https link for the header '+r.fmt.toLowerCase()+'.';return}
+ const phone=String(lead.Phone||'').replace(/[^0-9]/g,''),conv=convId(lead);
+ if(!conv&&!phone){err.textContent='This contact has no phone number.';return}
+ const content=[r.head?`*${r.head}*`:'',r.body,r.foot?`_${r.foot}_`:''].filter(Boolean).join('\n\n');
+ const lang=t.language||'en',names=Object.keys(r.v.body),named=names.some(n=>!/^\d+$/.test(n));
+ closeTemplates();
+ const msg=pushLocal(lead,{role:'assistant',content,attachment:{kind:'template',name:t.name,...(r.buttons.length?{buttons:r.buttons}:{})}});
+ msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{
+  // Chatwoot's template_params only carries positional body values, so named variables, header
+  // values and media headers go straight to Meta — the same fallback Leads → Send Template uses.
+  if(!conv||named||mediaHeader||Object.keys(r.v.head).length){
+   const components=[];
+   if(Object.keys(r.v.head).length)components.push({type:'header',parameters:Object.values(r.v.head).map(text=>({type:'text',text}))});
+   if(mediaHeader){const k=r.fmt.toLowerCase();components.push({type:'header',parameters:[{type:k,[k]:{link:r.v.media}}]})}
+   if(names.length)components.push({type:'body',parameters:names.map(n=>named?{type:'text',parameter_name:n,text:r.v.body[n]}:{type:'text',text:r.v.body[n]})});
+   await apiJson(WORKER+'/wa/send-template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone,template_name:t.name,language:lang,components,inbox_id:lead.InboxId||undefined,lead_id:lead.Id,content,buttons:r.buttons})});
+  }else{
+   const processed_params={};names.forEach(n=>processed_params[n]=r.v.body[n]);
+   await apiJson(WORKER+'/broadcast/send-template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:conv,content,template_name:t.name,category:t.category||'MARKETING',language:lang,processed_params,lead_id:lead.Id,buttons:r.buttons})});
+  }
+  setMsgStatus(lead,msg,null);
+ }catch(e){setMsgStatus(lead,msg,'failed');toast('Template not sent: '+e.message)}};
+ await msg._retry();
+}
+
+// ── Voice & audio playback ───────────────────────────────────────────────────────────────────
+// One shared <audio>: starting a note stops the previous one, and progress survives the thread
+// being redrawn by a background refresh because players are matched back up by src.
+const player=new Audio();player.preload='metadata';let playbackRate=1;const durations=new Map();
+function playersFor(src){return [...document.querySelectorAll('.vp')].filter(v=>v.dataset.src===src)}
+function paintPlayers(){const src=player.src&&player.dataset.src;document.querySelectorAll('.vp').forEach(v=>{const on=v.dataset.src===src;const playing=on&&!player.paused;v.querySelector('.vp-play').innerHTML=playing?IC.pause:IC.play;const d=(on&&isFinite(player.duration)&&player.duration)||durations.get(v.dataset.src)||0;const cur=on?player.currentTime:0;const pct=d?Math.min(100,cur/d*100):0;v.querySelector('.vp-bar i').style.width=pct+'%';v.querySelector('.vp-bar b').style.left=pct+'%';if(d)v.querySelector('.vp-time').textContent=fmtDur(on&&cur>0?cur:d)})}
+function hydratePlayers(){document.querySelectorAll('.vp').forEach(v=>{const src=v.dataset.src;if(durations.has(src))return;durations.set(src,0);const a=new Audio();a.preload='metadata';a.onloadedmetadata=()=>{if(isFinite(a.duration)){durations.set(src,a.duration);paintPlayers()}};a.src=src});paintPlayers()}
+function togglePlay(vp){const src=vp.dataset.src;if(player.dataset.src===src){player.paused?player.play().catch(()=>toast('Could not play this audio')):player.pause();return}player.pause();player.dataset.src=src;player.src=src;player.playbackRate=playbackRate;player.play().catch(()=>toast('Could not play this audio'));paintPlayers()}
+function cycleSpeed(){playbackRate=playbackRate===1?1.5:playbackRate===1.5?2:1;player.playbackRate=playbackRate;document.querySelectorAll('.vp-speed').forEach(b=>b.textContent=playbackRate+'×')}
+function seekPlayer(vp,e){if(player.dataset.src!==vp.dataset.src){togglePlay(vp);return}const r=vp.querySelector('.vp-bar').getBoundingClientRect();if(isFinite(player.duration))player.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*player.duration}
+['play','pause','timeupdate','ended','loadedmetadata'].forEach(ev=>player.addEventListener(ev,()=>{if(ev==='ended')player.currentTime=0;paintPlayers()}));
+
+// ── Voice recording ──────────────────────────────────────────────────────────────────────────
+// Hold the mic to record and release to send (slide left to cancel), or tap it to lock recording
+// hands-free and then pause / preview / delete / send. Browsers record webm (Chrome), mp4 (Safari)
+// or ogg/opus (Firefox); WhatsApp only takes ogg/opus, mp3, aac/m4a and amr, so anything that
+// isn't already ogg/opus is transcoded to mp3 in the browser before it goes to /quote/send.
+let rec=null,hold=null,suppressClick=false;
+const MAX_REC_MS=15*60*1000;
+function wireActionButton(){
+ const b=$('actionBtn');
+ b.onpointerdown=e=>{if(actionState()!=='mic'||e.button>0)return;e.preventDefault();hold={x:e.clientX,t:Date.now()};try{b.setPointerCapture(e.pointerId)}catch{}b.classList.add('holding');startRecording()};
+ b.onpointermove=e=>{if(!hold)return;const dx=hold.x-e.clientX;const hint=$('recHint');if(hint)hint.style.transform=`translateX(${-Math.max(0,dx)/2}px)`;if(dx>110){hold=null;b.classList.remove('holding');cancelRecording();toast('Recording cancelled')}};
+ const release=()=>{if(!hold)return;const held=Date.now()-hold.t;hold=null;b.classList.remove('holding');suppressClick=true;setTimeout(()=>suppressClick=false,400);if(held>600&&rec)finishRecording();else showRecHint(false)};
+ b.onpointerup=release;b.onpointercancel=release;
+ b.onclick=()=>{if(suppressClick){suppressClick=false;return}const s=actionState();if(s==='mic')startRecording();else if(s==='rec')finishRecording();else sendMessage()};
+ b.oncontextmenu=e=>e.preventDefault();
+}
+function showRecUI(on){$('inputWrap').classList.toggle('hidden',on);$('recRow').classList.toggle('hidden',!on);$('modeRow').classList.toggle('hidden',on);closePopovers();if(on){$('recRow').classList.remove('paused');$('recPause').innerHTML=IC.pause;$('recPause').title='Pause';$('recPlay').classList.add('hidden');showRecHint(!!hold)}updateAction()}
+function showRecHint(on){const h=$('recHint'),w=$('recWave');if(!h||!w)return;h.classList.toggle('hidden',!on);w.classList.toggle('hidden',on);$('recPause').classList.toggle('hidden',on);h.style.transform=''}
+function recElapsed(r=rec){return r?r.acc+(r.paused||!r.since?0:Date.now()-r.since):0}
+async function startRecording(){
+ if(rec||!current||isIg(current))return;
+ if(!convId(current)){toast('No linked WhatsApp conversation');hold=null;$('actionBtn')?.classList.remove('holding');return}
+ if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('Voice recording is not supported in this browser');hold=null;return}
+ const r=rec={lead:current,acc:0,since:0,paused:false,chunks:[],levels:[],cancelled:false};
+ showRecUI(true);
+ let stream;
+ try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})}
+ catch(e){if(rec===r){rec=null;showRecUI(false)}hold=null;$('actionBtn')?.classList.remove('holding');toast(e?.name==='NotAllowedError'?'Allow microphone access to record voice messages':'No microphone found');return}
+ if(r.cancelled||rec!==r){stream.getTracks().forEach(t=>t.stop());return}
+ const mime=['audio/ogg;codecs=opus','audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported?.(t))||'';
+ let mr;try{mr=new MediaRecorder(stream,mime?{mimeType:mime,audioBitsPerSecond:64000}:undefined)}catch{mr=new MediaRecorder(stream)}
+ mr.ondataavailable=e=>{if(e.data&&e.data.size)r.chunks.push(e.data)};
+ mr.start(250);
+ Object.assign(r,{stream,mr,mime:mr.mimeType||mime,since:Date.now()});
+ try{const AC=window.AudioContext||window.webkitAudioContext;r.ctx=new AC();r.analyser=r.ctx.createAnalyser();r.analyser.fftSize=512;r.ctx.createMediaStreamSource(stream).connect(r.analyser)}catch{}
+ navigator.vibrate?.(20);tickRec();
+}
+function tickRec(){
+ const r=rec;if(!r||!r.mr)return;
+ const ms=recElapsed(r);$('recTime').textContent=fmtDur(Math.floor(ms/1000));
+ if(ms>=MAX_REC_MS){toast('Maximum length reached');finishRecording();return}
+ if(!r.paused&&r.analyser&&Date.now()-(r.lastLvl||0)>90){r.lastLvl=Date.now();const a=new Uint8Array(r.analyser.fftSize);r.analyser.getByteTimeDomainData(a);let s=0;for(const v of a){const x=(v-128)/128;s+=x*x}r.levels.push(Math.min(1,Math.sqrt(s/a.length)*4));if(r.levels.length>400)r.levels.shift();drawWave(r.levels)}
+ r.raf=requestAnimationFrame(tickRec);
+}
+function drawWave(levels){const c=$('recWave');if(!c||c.classList.contains('hidden'))return;const dpr=window.devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;if(!w)return;if(c.width!==w*dpr){c.width=w*dpr;c.height=h*dpr}const g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);g.fillStyle='#8696a0';const step=4,n=Math.floor(w/step);const vis=levels.slice(-n);vis.forEach((v,i)=>{const bh=Math.max(2,v*h);g.fillRect(w-(vis.length-i)*step,(h-bh)/2,2.4,bh)})}
+function togglePauseRecording(){const r=rec;if(!r?.mr)return;if(r.paused){try{r.mr.resume()}catch{}r.paused=false;r.since=Date.now();previewAudio.pause();$('recRow').classList.remove('paused');$('recPause').innerHTML=IC.pause;$('recPause').title='Pause';$('recPlay').classList.add('hidden')}else{try{r.mr.pause();r.mr.requestData()}catch{}r.acc+=Date.now()-r.since;r.paused=true;$('recRow').classList.add('paused');$('recPause').innerHTML=IC.mic;$('recPause').title='Resume recording';$('recPlay').classList.remove('hidden')}}
+const previewAudio=new Audio();
+function previewRecording(){const r=rec;if(!r?.chunks.length)return;if(!previewAudio.paused){previewAudio.pause();$('recPlay').innerHTML=IC.play;return}if(previewAudio._url)URL.revokeObjectURL(previewAudio._url);previewAudio._url=URL.createObjectURL(new Blob(r.chunks,{type:r.mime||'audio/webm'}));previewAudio.src=previewAudio._url;previewAudio.onended=()=>{$('recPlay')&&($('recPlay').innerHTML=IC.play)};previewAudio.play().then(()=>{$('recPlay').innerHTML=IC.pause}).catch(()=>toast('Preview not available in this browser'))}
+function stopRecTracks(r){cancelAnimationFrame(r.raf);try{r.stream?.getTracks().forEach(t=>t.stop())}catch{}try{r.ctx?.close()}catch{}previewAudio.pause()}
+function cancelRecording(){const r=rec;if(!r)return;r.cancelled=true;rec=null;if(r.mr){r.mr.ondataavailable=null;try{if(r.mr.state!=='inactive')r.mr.stop()}catch{}}stopRecTracks(r);if($('recRow'))showRecUI(false)}
+async function finishRecording(){
+ const r=rec;if(!r)return;
+ if(!r.mr){cancelRecording();return}
+ const ms=recElapsed(r);
+ if(ms<1000){cancelRecording();toast('Hold to record, release to send');return}
+ rec=null;showRecUI(false);
+ await new Promise(res=>{r.mr.onstop=res;try{r.mr.state!=='inactive'?r.mr.stop():res()}catch{res()}setTimeout(res,1500)});
+ stopRecTracks(r);
+ const blob=new Blob(r.chunks,{type:(r.mime||'audio/webm').split(';')[0]});
+ const file=await encodeVoice(blob);
+ await sendFileMessage(r.lead,file,{kind:'voice',duration:Math.round(ms/1000)});
+}
+async function encodeVoice(blob){
+ const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+ if(/ogg/.test(blob.type))return new File([blob],`voice-${stamp}.ogg`,{type:'audio/ogg'});
+ try{return new File([await toMp3(blob)],`voice-${stamp}.mp3`,{type:'audio/mpeg'})}
+ catch(e){const ext=/mp4/.test(blob.type)?'m4a':'webm';return new File([blob],`voice-${stamp}.${ext}`,{type:blob.type||'audio/webm'})}
+}
+let lameLoading=null;
+function loadLame(){if(window.lamejs)return Promise.resolve();return lameLoading||(lameLoading=new Promise((res,rej)=>{const s=document.createElement('script');s.src='vendor/lamejs/lame.min.js';s.onload=res;s.onerror=()=>{lameLoading=null;rej(new Error('mp3 encoder unavailable'))};document.head.appendChild(s)}))}
+async function toMp3(blob){
+ await loadLame();
+ const AC=window.AudioContext||window.webkitAudioContext,ctx=new AC();
+ let buf;try{buf=await new Promise((res,rej)=>blob.arrayBuffer().then(ab=>{const p=ctx.decodeAudioData(ab,res,rej);if(p?.then)p.then(res,rej)},rej))}finally{try{ctx.close()}catch{}}
+ const data=buf.getChannelData(0),enc=new lamejs.Mp3Encoder(1,buf.sampleRate,64),parts=[],block=1152;
+ for(let i=0;i<data.length;i+=block){const n=Math.min(block,data.length-i),pcm=new Int16Array(n);for(let j=0;j<n;j++){const s=Math.max(-1,Math.min(1,data[i+j]));pcm[j]=s<0?s*0x8000:s*0x7fff}const b=enc.encodeBuffer(pcm);if(b.length)parts.push(new Int8Array(b))}
+ const end=enc.flush();if(end.length)parts.push(new Int8Array(end));
+ return new Blob(parts,{type:'audio/mpeg'});
+}
+
+// ── Header menu actions ──────────────────────────────────────────────────────────────────────
+async function togglePin(){const next=current.Pinned!=='Yes';try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
+// Manual takeover: the worker marks the lead handed over to this person (HandoverBy) so the bot
+// stays silent on it until someone hands it back — see handleChatHandover in worker.js.
+// A bot-triggered handover sets Handover='Yes' with no HandoverBy and the bot keeps replying
+// (unless the client turned on handover silence), so only a person's takeover counts here —
+// otherwise the bar claimed "the bot won't reply" and the menu offered only "Hand back".
+function takenOver(l){return !!l&&l.Handover==='Yes'&&!!String(l.HandoverBy||'').trim()}
+async function toggleHandover(){const lead=current,next=!takenOver(lead);try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
+async function toggleResolve(){const next=current.ConvResolved!=='Yes';try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
+function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
+function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
+function goBack(){if(embedded){toParent('home');return}if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
+function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySelectorAll('#thread .bubble').forEach(b=>{b.style.opacity=!q||b.textContent.toLowerCase().includes(q)?'1':'.22'})}
+
+// Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
+document.addEventListener('click',e=>{if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
+window.addEventListener('message',async e=>{
+ if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
+ const {channel:ch,leadId}=e.data;
+ if(ch&&ch!==channel)setChannel(ch);
+ if(!leadId)return;
+ // A live-message ping for the conversation already on screen just refreshes it — reopening
+ // would throw away the reply target and composer state.
+ if(current&&String(current.Id)===String(leadId))return refreshMessages(current);
+ if(!leads.some(l=>String(l.Id)===String(leadId)))await loadLeads(false,true);
+ const lead=leads.find(l=>String(l.Id)===String(leadId));
+ if(lead){if(isIg(lead)!==(channel==='instagram'))setChannel(isIg(lead)?'instagram':'whatsapp');openConversation(lead.Id)}
+});
+window.addEventListener('beforeunload',()=>{if(current&&$('msg'))saveDraft(current.Id,$('msg').value)});
+const EMOJI='😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😋 😜 🤪 🤗 🤔 🤐 😐 😏 😒 🙄 😬 😌 😔 😴 😷 🤒 🥳 😎 🤓 😕 😟 😮 😲 😳 🥺 😢 😭 😱 😤 😡 👍 👎 👌 ✌️ 🤞 🤝 👏 🙌 🙏 💪 👋 👉 👈 👆 👇 ☝️ ✋ ❤️ 🧡 💛 💚 💙 💜 🖤 💔 💯 ✅ ❌ ⚠️ ❓ ❗ 🔥 ⭐ 🌟 ✨ 🎉 🎊 🎁 🎂 💐 🌹 🌸 ☀️ 🌙 ⏰ 📅 📌 📍 📞 📱 💬 📷 🎥 🎤 📄 📎 💰 💵 💳 🛒 📦 🚚 🏠 🏢 🚗 ✈️ 🍽️ ☕ 🍰';
+boot();
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+</body>
+</html>

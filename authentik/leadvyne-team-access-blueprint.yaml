@@ -1,0 +1,192 @@
+# Leadvyne team access Blueprint: invite links and the emailed sign-in link
+#
+# Adds two Authentik flows, separate from leadvyne-blueprint.yaml so that file (Brand, OAuth2 app,
+# initial signup) is untouched:
+#
+#   1. leadvyne-team-invite: what a teammate's invite opens (User Management → Invite Teammate,
+#      POST /team/invite in cloudflare-worker/worker.js). The Worker creates an Authentik
+#      Invitation whose fixed_data carries email/username/name; this flow checks the invitation,
+#      asks only for a password, creates the user and logs them in. The email can't be changed
+#      by the invitee because it never appears as a prompt field.
+#   2. leadvyne-magic-link: passwordless sign-in. They enter their email, Authentik emails them a
+#      link, and the link logs them in. Turned on in the dashboard by setting
+#      CONFIG.AUTHENTIK_MAGIC_LINK_FLOW = 'leadvyne-magic-link' (frontend/dashboard.html).
+#
+# BEFORE RELYING ON IT:
+#   This was written without a live Authentik instance to validate against (see the same warning in
+#   leadvyne-blueprint.yaml). Apply it on staging (or apply, then test with a throwaway email) and
+#   check both flows end to end before turning the magic link on. If a stage fails to import on
+#   your Authentik version, build that flow once in Admin → Flows & Stages, then export it from
+#   Customization → Blueprints and replace the matching entries below.
+#
+# ALSO NEEDED:
+#   - Email delivery configured on Authentik (global email settings, e.g. Resend SMTP). The magic
+#     link flow sends through it; invite emails themselves are sent by the Worker via Resend.
+#   - The Worker's AUTHENTIK_API_TOKEN service account needs, on top of what it already has:
+#     authentik_stages_invitation.add_invitation and authentik_flows.view_flow.
+#   - Optional Worker vars: AUTHENTIK_INVITE_FLOW_SLUG (default leadvyne-team-invite) and
+#     APP_BASE_URL (default https://app.leadvyne.com), where invite links point.
+#
+# HOW TO APPLY: Admin UI → Customization → Blueprints → Create → paste, or
+#   `ak import_blueprint /path/to/this/file`. Re-applying updates in place.
+
+version: 1
+metadata:
+  name: Leadvyne team access
+  labels:
+    blueprints.goauthentik.io/description: "Leadvyne: teammate invite enrollment flow and passwordless emailed sign-in link"
+
+entries:
+  # ───────────────────────────── 1. Invite enrollment flow ─────────────────────────────
+  - model: authentik_flows.flow
+    id: invite-flow
+    identifiers:
+      slug: leadvyne-team-invite
+    attrs:
+      name: Leadvyne team invite
+      title: Join your team on Leadvyne
+      designation: enrollment
+      # Not require_unauthenticated: an admin testing the link in their own signed-in browser
+      # should still be able to complete it (user_login below switches the session to the invitee).
+      authentication: none
+
+  - model: authentik_stages_invitation.invitationstage
+    id: invite-check
+    identifiers:
+      name: leadvyne-team-invite-check
+    attrs:
+      # No invitation, no account: this flow must never act as open signup.
+      continue_flow_without_invitation: false
+
+  - model: authentik_stages_prompt.prompt
+    id: invite-field-password
+    identifiers:
+      name: leadvyne-team-invite-field-password
+    attrs:
+      field_key: password
+      label: Choose a password
+      type: password
+      required: true
+      placeholder: Password
+      placeholder_expression: false
+      order: 0
+
+  - model: authentik_stages_prompt.prompt
+    id: invite-field-password-repeat
+    identifiers:
+      name: leadvyne-team-invite-field-password-repeat
+    attrs:
+      field_key: password_repeat
+      label: Repeat password
+      type: password
+      required: true
+      placeholder: Password (repeat)
+      placeholder_expression: false
+      order: 1
+
+  - model: authentik_stages_prompt.promptstage
+    id: invite-prompt
+    identifiers:
+      name: leadvyne-team-invite-password
+    attrs:
+      # email, username and name come from the invitation's fixed_data, so they're not asked here.
+      fields:
+        - !KeyOf invite-field-password
+        - !KeyOf invite-field-password-repeat
+
+  - model: authentik_stages_user_write.userwritestage
+    id: invite-write
+    identifiers:
+      name: leadvyne-team-invite-write
+    attrs:
+      user_creation_mode: always_create
+      create_users_as_inactive: false
+
+  - model: authentik_stages_user_login.userloginstage
+    id: invite-login
+    identifiers:
+      name: leadvyne-team-invite-login
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf invite-flow
+      order: 10
+    attrs:
+      stage: !KeyOf invite-check
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf invite-flow
+      order: 20
+    attrs:
+      stage: !KeyOf invite-prompt
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf invite-flow
+      order: 30
+    attrs:
+      stage: !KeyOf invite-write
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf invite-flow
+      order: 40
+    attrs:
+      stage: !KeyOf invite-login
+
+  # ───────────────────────────── 2. Emailed sign-in link ─────────────────────────────
+  - model: authentik_flows.flow
+    id: magic-flow
+    identifiers:
+      slug: leadvyne-magic-link
+    attrs:
+      name: Leadvyne email sign-in link
+      title: Sign in to Leadvyne
+      designation: authentication
+      authentication: none
+
+  - model: authentik_stages_identification.identificationstage
+    id: magic-identify
+    identifiers:
+      name: leadvyne-magic-link-identify
+    attrs:
+      user_fields:
+        - email
+      password_stage: null
+      # Same response whether or not the email has an account, so the form can't be used to
+      # discover who has a login.
+      pretend_user_exists: true
+      show_matched_user: false
+
+  - model: authentik_stages_email.emailstage
+    id: magic-email
+    identifiers:
+      name: leadvyne-magic-link-email
+    attrs:
+      use_global_settings: true
+      subject: Your Leadvyne sign-in link
+      # Built-in template. Swap for a custom "here's your sign-in link" template if you mount one.
+      template: email/account_confirmation.html
+      activate_user_on_success: false
+
+  - model: authentik_stages_user_login.userloginstage
+    id: magic-login
+    identifiers:
+      name: leadvyne-magic-link-login
+
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf magic-flow
+      order: 10
+    attrs:
+      stage: !KeyOf magic-identify
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf magic-flow
+      order: 20
+    attrs:
+      stage: !KeyOf magic-email
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf magic-flow
+      order: 30
+    attrs:
+      stage: !KeyOf magic-login
