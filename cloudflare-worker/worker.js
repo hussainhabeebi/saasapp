@@ -19662,7 +19662,10 @@ async function handleSupportTicketsUpdate(request, env){
    7. Staff turns never trip the bot's loop detection.
    8. A short customer reply after staff switched language gets an answer in that language.
    9. Staff messages from Won chats become phrasing examples for the bot (daily sweep).
-  10. A brand-new lead gets the business's 360° video first, then the chat starts. */
+  10. A fresh lead gets the business's 360° video first, then the chat starts.
+  11. Different video per ad / source (v2_source_videos rules).
+  12. Reply-gap nudge: one check-in when a fresh lead goes quiet (15-minute cron).
+  13. Staff quality score (Reports → Team, GET /reports/staff-score). */
 export function engineV2On(c){
   return engineParseJsonField(c?.bot_config, {}).leadvyne_v2===true;
 }
@@ -19685,7 +19688,9 @@ export function engineAppendAgentReply(convHistory, body, ts){
   const n=engineNormText(text);
   const recent=history.filter(m=>m?.role==='assistant').slice(-6).map(m=>engineNormText(m.content));
   if(recent.some(r=>r===n || (n.length>=20 && r.includes(n)))) return null;
-  history.push({role:'assistant', by:engineIsTemplateMessage(body)?'template':'agent', content:text, ts});
+  const isTemplate=engineIsTemplateMessage(body);
+  const agent=!isTemplate && body?.sender?.name ? String(body.sender.name).slice(0,60) : '';
+  history.push({role:'assistant', by:isTemplate?'template':'agent', ...(agent?{agent}:{}), content:text, ts});
   return history;
 }
 function engineNormText(t){ return String(t||'').replace(/\s+/g,' ').trim().toLowerCase(); }
@@ -19838,26 +19843,175 @@ async function engineV2HandBackSummary(env, c, lead){
   return engineMergeFactsJson(lead['Customer Facts'], add);
 }
 
-// #10: welcome video. bot_config.v2_welcome_video_url (Google Drive share link, "Anyone with the
-// link") + optional v2_welcome_video_caption. Sent once per phone — a D1 claim covers Chatwoot
-// redeliveries and two first messages arriving together. Awaited, so it lands before the reply.
-export function engineV2WelcomeVideo(c){
+// #10/#11: welcome video, picked per ad/source. bot_config.v2_welcome_video_url (+ _caption) is the
+// default; bot_config.v2_source_videos=[{match, video_url, caption}] overrides it when `match`
+// (case-insensitive) appears in what we know about where the lead came from — the first message
+// (click-to-WhatsApp ads prefill it), any ad referral Chatwoot passes on, the website-widget
+// page, the Meta lead-form campaign/ad, or "inbox:<id>" for a specific WhatsApp number.
+export function engineV2WelcomeVideo(c, sourceText=''){
   const bc=engineParseJsonField(c?.bot_config, {});
+  const hay=String(sourceText||'').toLowerCase();
+  for(const r of (Array.isArray(bc.v2_source_videos)?bc.v2_source_videos:[])){
+    const m=String(r?.match||'').trim().toLowerCase(), url=String(r?.video_url||'').trim();
+    if(m && url && hay.includes(m)) return {url, caption:String(r.caption||'').trim().slice(0,1000), rule:r.match};
+  }
   const url=String(bc.v2_welcome_video_url||'').trim();
-  return url?{url, caption:String(bc.v2_welcome_video_caption||'').trim().slice(0,1000)}:null;
+  return url?{url, caption:String(bc.v2_welcome_video_caption||'').trim().slice(0,1000), rule:''}:null;
 }
-async function engineV2SendWelcomeVideo(env, c, clientId, phone, convId, name){
-  const v=engineV2WelcomeVideo(c);
-  if(!v || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return false;
+// Everything that says where a fresh lead came from, as one searchable string.
+export function engineV2SourceText(body, lead, firstText, inboxId){
+  const ref=body?.content_attributes?.referral||body?.additional_attributes?.referral||body?.message?.content_attributes?.referral||{};
+  const conv=body?.conversation?.additional_attributes||{};
+  return [firstText, ref.source_url, ref.source_id, ref.source_type, ref.headline, ref.body, ref.ctwa_clid?'ctwa':'',
+    conv.referer, conv.initiated_at?.referer, lead?.LeadSource, lead?.AdCampaign, lead?.AdName, lead?.LeadFormName,
+    inboxId?`inbox:${inboxId}`:''].filter(Boolean).join(' \n ');
+}
+// A lead that has never written to us before — brand new, or created by a lead form / import.
+export function engineV2IsFreshLead(state){
+  return !state?.leadId || !(state.history||[]).some(m=>m?.role==='user');
+}
+async function engineV2EnsureFreshTable(env){
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS v2_fresh_leads (client_id INTEGER, phone TEXT, at TEXT, video_sent INTEGER DEFAULT 0, video_rule TEXT, nudged_at TEXT, PRIMARY KEY(client_id, phone))').run();
+}
+// Claims this phone's first contact (once ever — D1 primary key, so a Chatwoot redelivery or two
+// first messages arriving together can't do it twice), then sends the video if one is set.
+// Awaited by the caller so the video lands before the bot's reply.
+async function engineV2OnFreshLead(env, c, clientId, phone, convId, name, sourceText){
   try{
-    await env.DB.prepare('CREATE TABLE IF NOT EXISTS welcome_video_sent (client_id INTEGER, phone TEXT, at TEXT, PRIMARY KEY(client_id, phone))').run();
-    const claim=await env.DB.prepare('INSERT OR IGNORE INTO welcome_video_sent (client_id, phone, at) VALUES (?,?,?)')
+    await engineV2EnsureFreshTable(env);
+    const claim=await env.DB.prepare('INSERT OR IGNORE INTO v2_fresh_leads (client_id, phone, at) VALUES (?,?,?)')
       .bind(Number(clientId), String(phone), new Date().toISOString()).run();
     if(!claim?.meta?.changes) return false;
   }catch(e){ return false; }
+  const v=engineV2WelcomeVideo(c, sourceText);
+  if(!v || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return false;
   const ok=await sendDriveMediaToChatwoot(c, convId, v.url, fillFlowTokens(v.caption, {Name:name||'', Phone:phone}), 'welcome-video.mp4').catch(()=>false);
-  if(!ok) await reportOpsError(env, 'Leadvyne v2 welcome video did not send — check the Drive link is public and under 16 MB', new Error('send failed'), {clientId}).catch(()=>{});
+  if(ok) await env.DB.prepare('UPDATE v2_fresh_leads SET video_sent=1, video_rule=? WHERE client_id=? AND phone=?').bind(v.rule||'', Number(clientId), String(phone)).run().catch(()=>{});
+  else await reportOpsError(env, 'Leadvyne v2 welcome video did not send — check the Drive link is public and under 16 MB', new Error('send failed'), {clientId}).catch(()=>{});
   return ok;
+}
+
+// #12: reply-gap nudge. bot_config.v2_nudge_enabled + v2_nudge_hours (default 2) + optional
+// v2_nudge_text ({name} works). One message to a fresh lead whose chat went quiet after our side
+// spoke last — only inside WhatsApp's 24-hour reply window, never during takeover/handover/opt-out,
+// never if staff wrote since the customer's last message. 15-minute cron.
+export function engineV2NudgeSettings(c){
+  const bc=engineParseJsonField(c?.bot_config, {});
+  if(bc.leadvyne_v2!==true || bc.v2_nudge_enabled!==true) return null;
+  const hours=Math.min(20, Math.max(0.5, Number(bc.v2_nudge_hours)||2));
+  return {hours, text:String(bc.v2_nudge_text||'').trim()};
+}
+export function engineV2NudgeDue(lead, hours, nowMs){
+  if(!lead || lead.OptOut==='Yes' || lead.Handover==='Yes' || !lead.ConversationID) return false;
+  if(['won','converted','lost'].includes(String(lead.Stage||''))) return false;
+  let h=[]; try{ h=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  const last=h[h.length-1];
+  if(!last || last.role!=='assistant' || engineIsStaffTurn(last)) return false;
+  const lastUser=[...h].reverse().find(m=>m.role==='user');
+  const custAt=Date.parse(lead.LastCustomerMsgAt||lastUser?.ts||'');
+  if(!Number.isFinite(custAt)) return false;
+  const quietMs=nowMs-Date.parse(last.ts||lead.LastMsgAt||'');
+  if(!(quietMs>=hours*3600e3)) return false;
+  if(nowMs-custAt>=23*3600e3) return false; // outside the free-reply window: no plain message
+  const agentAt=Date.parse(lead.LastAgentMsgAt||'');
+  if(Number.isFinite(agentAt) && agentAt>custAt) return false;
+  return true;
+}
+export function engineV2NudgeText(settings, lead, videoSent){
+  const t=settings.text || (videoSent
+    ? 'Hi {name}, did you get a chance to watch the video? 😊 Happy to answer any questions or help you with the next step.'
+    : 'Hi {name}, just checking in 😊 Do you have any questions? Happy to help with the next step.');
+  return fillFlowTokens(t, {...lead, Name:lead?.Name||''}).replace(/Hi there,/,'Hi,');
+}
+export async function runV2NudgesForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!engineV2NudgeSettings(c)) continue;
+      try{ await engineV2NudgeClient(env, c); }
+      catch(e){ await reportOpsError(env, 'engineV2NudgeClient', e, {clientId:c.Id}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+async function engineV2NudgeClient(env, c){
+  const st=engineV2NudgeSettings(c);
+  if(!c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  if(!followupWithinQuietHours(c)) return;
+  await engineV2EnsureFreshTable(env).catch(()=>{});
+  const now=Date.now();
+  const due=await env.DB.prepare('SELECT phone, video_sent FROM v2_fresh_leads WHERE client_id=? AND nudged_at IS NULL AND at>? AND at<? LIMIT 100')
+    .bind(Number(c.Id), new Date(now-24*3600e3).toISOString(), new Date(now-st.hours*3600e3).toISOString()).all().catch(()=>({results:[]}));
+  for(const row of (due.results||[])){
+    const lr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${c.Id})~and(Phone,eq,${encodeURIComponent(row.phone)})&limit=1`);
+    const lead=(await lr.json().catch(()=>({})))?.list?.[0];
+    if(!engineV2NudgeDue(lead, st.hours, now)) continue;
+    const claimAt=new Date().toISOString();
+    const cl=await env.DB.prepare('UPDATE v2_fresh_leads SET nudged_at=? WHERE client_id=? AND phone=? AND nudged_at IS NULL').bind(claimAt, Number(c.Id), row.phone).run().catch(()=>null);
+    if(!cl?.meta?.changes) continue;
+    let text=engineV2NudgeText(st, lead, !!row.video_sent);
+    if(lead.Language && lead.Language!=='en') text=await engineLocalizeReply(env, c, text, lead.Language).catch(()=>text);
+    await engineSendChatwootReply(env, c, c.Id, lead.ConversationID, text);
+    let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+    hist.push({role:'assistant', content:text, ts:claimAt});
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40)), LastMsgAt:claimAt}}).catch(()=>{});
+    await d1InsertLeadMessage(env, lead.Id, c.Id, {role:'assistant', content:text, ts:claimAt});
+  }
+}
+
+// #13: staff quality score — who answered each customer message first (a person or the bot), how
+// fast, and how often the chats each one worked on were won. Built from ConvHistory, so it covers
+// staff messages recorded since Leadvyne v2 was switched on.
+const ENGINE_WON_STAGES=new Set(['won','converted']);
+function engineMedian(a){ if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2?s[m]:(s[m-1]+s[m])/2; }
+export function engineStaffScore(leads, sinceMs){
+  const bucket=()=>({replies:0, delays:[], leads:new Set(), won:new Set()});
+  const bot=bucket(), staff=new Map();
+  for(const l of leads||[]){
+    let h=[]; try{ h=Array.isArray(l.ConvHistory)?l.ConvHistory:JSON.parse(l.ConvHistory||'[]'); }catch(e){}
+    const won=ENGINE_WON_STAGES.has(String(l.Stage||'').toLowerCase());
+    for(let i=0;i<h.length;i++){
+      const u=h[i];
+      if(u?.role!=='user') continue;
+      const uAt=Date.parse(u.ts||'');
+      if(!Number.isFinite(uAt) || uAt<sinceMs) continue;
+      const reply=h.slice(i+1).find(m=>m?.role==='assistant' && m.by!=='template');
+      if(!reply) continue;
+      // Customer messages sent in a row are answered once — count the reply against the first.
+      if(h[i-1]?.role==='user' && Date.parse(h[i-1].ts||'')>=sinceMs) continue;
+      const rAt=Date.parse(reply.ts||'');
+      const b=reply.by==='agent'
+        ?(staff.get(reply.agent||'Staff')||staff.set(reply.agent||'Staff', bucket()).get(reply.agent||'Staff'))
+        :bot;
+      b.replies++; if(Number.isFinite(rAt) && rAt>=uAt) b.delays.push((rAt-uAt)/1000);
+      b.leads.add(l.Id); if(won) b.won.add(l.Id);
+    }
+  }
+  const out=(name,b)=>({name, replies:b.replies, median_reply_sec:engineMedian(b.delays), leads:b.leads.size, won:b.won.size,
+    win_rate:b.leads.size?Math.round(b.won.size/b.leads.size*100):null});
+  return {bot:out('Bot', bot), staff:[...staff].map(([n,b])=>out(n,b)).sort((a,b)=>b.replies-a.replies)};
+}
+// GET /reports/staff-score?days=30
+async function handleStaffScore(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const days=Math.min(180, Math.max(1, Number(new URL(request.url).searchParams.get('days'))||30));
+  const since=Date.now()-days*864e5;
+  // Newest activity first; stop at the first lead last active before the window.
+  const leads=[];
+  for(let page=1;page<=5;page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${payload.cid})`)}&sort=-LastMsgAt&limit=200&offset=${(page-1)*200}&fields=Id,Stage,ConvHistory,LastMsgAt`);
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    const inWindow=rows.filter(l=>Date.parse(l.LastMsgAt||'')>=since);
+    leads.push(...inWindow);
+    if(rows.length<200 || inWindow.length<rows.length) break;
+  }
+  return json({days, leads_checked:leads.length, ...engineStaffScore(leads, since)});
 }
 
 // #9: daily sweep — staff messages from chats that reached Won become phrasing examples.
@@ -20209,8 +20363,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){}
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
-    // Leadvyne v2: a brand-new lead gets the business's 360° video first; the chat starts after it.
-    if(isNewLead && engineV2On(c)) state.welcomeVideoSent=await engineV2SendWelcomeVideo(env, c, clientId, phone, convId, name);
+    // Leadvyne v2: a fresh lead gets the business's 360° video first (picked by ad/source); the chat
+    // starts after it.
+    if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
+      state.welcomeVideoSent=await engineV2OnFreshLead(env, c, clientId, phone, convId, name, engineV2SourceText(body, state.lead, text, parsed.inboxId));
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 
@@ -33676,6 +33832,7 @@ export default {
       else if(url.pathname==='/chat/pin' && request.method==='POST'){ res=await handleChatPinLead(request, env); }
       else if(url.pathname==='/chat/resolve' && request.method==='POST'){ res=await handleChatResolveLead(request, env); }
       else if(url.pathname==='/chat/handover' && request.method==='POST'){ res=await handleChatHandover(request, env); }
+      else if(url.pathname==='/reports/staff-score' && request.method==='GET'){ res=await handleStaffScore(request, env); }
       else if(url.pathname==='/quote/send' && request.method==='POST'){ res=await handleQuoteSend(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='GET'){ res=await handleWaTemplatesGet(request, env); }
       else if(url.pathname==='/wa/templates' && request.method==='POST'){ res=await handleWaTemplatesCreate(request, env); }
@@ -34301,6 +34458,8 @@ export default {
       ctx.waitUntil(runStaffWinExamplesForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){
+      // Leadvyne v2 reply-gap nudge — see engineV2NudgeDue.
+      ctx.waitUntil(runV2NudgesForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Baby Care product summary follow-up (Ecom → Settings) — see babyCareSummaryDue.
       ctx.waitUntil(runBabyCareSummaryFollowupsForAllClients(env));
