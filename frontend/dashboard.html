@@ -3908,14 +3908,17 @@ const ROLES = {
                     <option value="Yes">On — learn from staff messages</option>
                   </select>
                 </div>
-                <button class="save-btn" id="saveLeadvyneV2">Save</button>
-                <span class="save-msg" id="saveLeadvyneV2Msg"></span>
               </div>
               <div style="margin-top:12px">
                 <label class="form-label">🎥 360° business video for new leads (v2)</label>
-                <div class="s-note">Google Drive link to an MP4 (shared as "Anyone with the link", under 16 MB). A brand-new lead gets this video first, then the bot's reply. Sent once per customer. Leave empty to skip. Caption can use {name}.</div>
+                <div class="s-note">Google Drive link to an MP4 (shared as "Anyone with the link", under 16 MB). A brand-new lead gets this video first, then the bot's reply. Sent once per customer, and again if they come back after the days set below. Leave empty to skip. Caption can use {name}.</div>
                 <input class="form-input" id="cfgV2WelcomeVideoUrl" placeholder="https://drive.google.com/file/d/…/view" style="margin-top:6px;max-width:520px">
                 <input class="form-input" id="cfgV2WelcomeVideoCaption" placeholder="Hi {name}! Take a 360° tour of our place 👇" style="margin-top:6px;max-width:520px">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:13px">
+                  <span>Send it again when a lead comes back after</span>
+                  <input class="form-input" id="cfgV2VideoReturnDays" type="number" min="0" max="365" step="1" placeholder="7" style="max-width:80px">
+                  <span>days of silence (0 = never)</span>
+                </div>
               </div>
               <div style="margin-top:12px">
                 <label class="form-label">🎯 Different video per ad or source (v2)</label>
@@ -3931,6 +3934,11 @@ const ROLES = {
                 </div>
                 <input class="form-input" id="cfgV2NudgeText" placeholder="Hi {name}, did you get a chance to watch the video? 😊 Happy to answer any questions." style="margin-top:6px;max-width:520px">
               </div>
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px">
+                <button class="save-btn" id="saveLeadvyneV2">Save Leadvyne v2 settings</button>
+                <span class="save-msg" id="saveLeadvyneV2Msg"></span>
+              </div>
+              <div class="s-note" id="v2StatusNote" style="margin-top:6px"></div>
             </div>
 
           </div>
@@ -12414,6 +12422,8 @@ function populateBotBehaviorPage(){
   $id('cfgV2NudgeEnabled').value=botConfig.v2_nudge_enabled===true?'Yes':'No';
   $id('cfgV2NudgeHours').value=botConfig.v2_nudge_hours||'';
   $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
+  $id('cfgV2VideoReturnDays').value=botConfig.v2_welcome_video_return_days??'';
+  renderV2StatusNote(botConfig);
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -12479,6 +12489,18 @@ $id('saveCrosssellSuggestionsEnabled').addEventListener('click',async()=>{
   if(off) botConfig.crosssell_suggestions_enabled=false; else delete botConfig.crosssell_suggestions_enabled;
   await saveField('saveCrosssellSuggestionsEnabled','saveCrosssellSuggestionsEnabledMsg',{bot_config:JSON.stringify(botConfig)});
 });
+// What is actually live after the last save, so "On" never looks on without being on.
+function renderV2StatusNote(bc){
+  const el=$id('v2StatusNote'); if(!el) return;
+  if(bc.leadvyne_v2!==true){ el.textContent='Currently: Leadvyne v2 is OFF — nothing below runs.'; return; }
+  const rd=bc.v2_welcome_video_return_days===0?0:(Number(bc.v2_welcome_video_return_days)||7);
+  const parts=['✅ Leadvyne v2 is ON'];
+  parts.push(bc.v2_welcome_video_url?`welcome video set${rd?` (again after ${rd} days away)`:''}`:'no welcome video');
+  const rules=Array.isArray(bc.v2_source_videos)?bc.v2_source_videos.length:0;
+  if(rules) parts.push(`${rules} source video rule${rules>1?'s':''}`);
+  parts.push(bc.v2_nudge_enabled===true?`nudge after ${bc.v2_nudge_hours||2}h`:'nudge off');
+  el.textContent='Currently: '+parts.join(' · ')+'. Changes reach the bot within a few seconds of saving.';
+}
 $id('saveLeadvyneV2').addEventListener('click',async()=>{
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   if($id('cfgLeadvyneV2').value==='Yes') botConfig.leadvyne_v2=true; else delete botConfig.leadvyne_v2;
@@ -12498,7 +12520,10 @@ $id('saveLeadvyneV2').addEventListener('click',async()=>{
   if(nh>0) botConfig.v2_nudge_hours=nh; else delete botConfig.v2_nudge_hours;
   const nt=$id('cfgV2NudgeText').value.trim();
   if(nt) botConfig.v2_nudge_text=nt; else delete botConfig.v2_nudge_text;
+  const rdRaw=$id('cfgV2VideoReturnDays').value.trim();
+  if(rdRaw==='') delete botConfig.v2_welcome_video_return_days; else botConfig.v2_welcome_video_return_days=Math.max(0,Math.min(365,Math.round(Number(rdRaw)||0)));
   await saveField('saveLeadvyneV2','saveLeadvyneV2Msg',{bot_config:JSON.stringify(botConfig)});
+  try{ renderV2StatusNote(JSON.parse(clientRecord.bot_config||'{}')); }catch(e){}
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
