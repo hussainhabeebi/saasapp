@@ -19815,7 +19815,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const media=engineInboundMediaFields(mediaType, mediaUrl, text, msgId);
       await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
         ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
-      await engineUpsertLead(env, 'PATCH', state.leadId, {LastMsgAt:now});
+      // ConvHistory too, so after "Hand back to bot" the bot sees both sides of what happened
+      // during the takeover (the staff side lands via engineAppendAgentReply).
+      const takeoverHist=text?[...(state.history||[]), {role:'user', content:text, ts:now}].slice(-40):null;
+      await engineUpsertLead(env, 'PATCH', state.leadId, {LastMsgAt:now, ...(takeoverHist?{ConvHistory:JSON.stringify(takeoverHist)}:{})});
       await engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, state.lead, ctx);
       await logEngineSkip(env, clientId, phone, convId, 'manual-takeover', `taken over by ${state.lead.HandoverBy}`);
       return json({ok:true, skipped:'manual-takeover'});
