@@ -3911,6 +3911,12 @@ const ROLES = {
                 <button class="save-btn" id="saveLeadvyneV2">Save</button>
                 <span class="save-msg" id="saveLeadvyneV2Msg"></span>
               </div>
+              <div style="margin-top:12px">
+                <label class="form-label">🎥 360° business video for new leads (v2)</label>
+                <div class="s-note">Google Drive link to an MP4 (shared as "Anyone with the link", under 16 MB). A brand-new lead gets this video first, then the bot's reply. Sent once per customer. Leave empty to skip. Caption can use {name}.</div>
+                <input class="form-input" id="cfgV2WelcomeVideoUrl" placeholder="https://drive.google.com/file/d/…/view" style="margin-top:6px;max-width:520px">
+                <input class="form-input" id="cfgV2WelcomeVideoCaption" placeholder="Hi {name}! Take a 360° tour of our place 👇" style="margin-top:6px;max-width:520px">
+              </div>
             </div>
 
           </div>
@@ -12388,6 +12394,8 @@ function populateBotBehaviorPage(){
   $id('cfgProactiveHandoverEnabled').value=botConfig.proactive_handover_enabled===true?'Yes':'No';
   $id('cfgCrosssellSuggestionsEnabled').value=botConfig.crosssell_suggestions_enabled===false?'No':'Yes';
   $id('cfgLeadvyneV2').value=botConfig.leadvyne_v2===true?'Yes':'No';
+  $id('cfgV2WelcomeVideoUrl').value=botConfig.v2_welcome_video_url||'';
+  $id('cfgV2WelcomeVideoCaption').value=botConfig.v2_welcome_video_caption||'';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -12456,6 +12464,10 @@ $id('saveCrosssellSuggestionsEnabled').addEventListener('click',async()=>{
 $id('saveLeadvyneV2').addEventListener('click',async()=>{
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   if($id('cfgLeadvyneV2').value==='Yes') botConfig.leadvyne_v2=true; else delete botConfig.leadvyne_v2;
+  const vUrl=$id('cfgV2WelcomeVideoUrl').value.trim(), vCap=$id('cfgV2WelcomeVideoCaption').value.trim();
+  if(vUrl && !/drive\.google\.com|docs\.google\.com/.test(vUrl)){ $id('saveLeadvyneV2Msg').textContent='Video must be a Google Drive link'; return; }
+  if(vUrl) botConfig.v2_welcome_video_url=vUrl; else delete botConfig.v2_welcome_video_url;
+  if(vCap) botConfig.v2_welcome_video_caption=vCap; else delete botConfig.v2_welcome_video_caption;
   await saveField('saveLeadvyneV2','saveLeadvyneV2Msg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));

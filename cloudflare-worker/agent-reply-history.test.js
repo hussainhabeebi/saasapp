@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   engineV2On, engineAppendAgentReply, engineHistoryLine, engineBuildFaqSystemPrompt, engineParseStaffNote,
   engineMergeStaffNotes, engineActiveStaffNotes, engineV2Block, engineScriptLang, engineV2FollowStaffLanguage,
-  engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock,
+  engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock, engineV2WelcomeVideo,
 } from './worker.js';
 
 const TS = '2026-10-04T10:00:00Z';
@@ -78,4 +78,11 @@ test('promise filter, takeover slice and won examples', () => {
   assert.deepEqual(engineTakeoverTurns(h, TS).map(m => m.content), ['b']);
   assert.deepEqual(engineTakeoverTurns(h, ''), []);
   assert.deepEqual(engineWinExampleTexts([{ role: 'assistant', by: 'agent', content: 'short' }, { role: 'assistant', by: 'agent', content: 'I can hold the villa for you until Friday evening.' }, { role: 'assistant', content: 'bot text that is long enough to count' }]), ['I can hold the villa for you until Friday evening.']);
+});
+
+test('welcome video config and the prompt note after it was sent', () => {
+  assert.equal(engineV2WelcomeVideo({ bot_config: '{"leadvyne_v2":true}' }), null);
+  assert.deepEqual(engineV2WelcomeVideo({ bot_config: JSON.stringify({ v2_welcome_video_url: ' https://drive.google.com/file/d/abc/view ', v2_welcome_video_caption: 'Hi {name}' }) }),
+    { url: 'https://drive.google.com/file/d/abc/view', caption: 'Hi {name}' });
+  assert.match(engineV2Block({ welcomeVideoSent: true }), /360° business video[\s\S]*Do not send or promise it again/);
 });

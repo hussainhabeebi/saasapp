@@ -8816,3 +8816,4 @@ Off by default (`bot_config.leadvyne_v2`); with it off nothing below runs. When 
 - Staff promises ("I'll call you at 5") are saved as Customer Facts (`Staff promised: …`).
 - Staff turns are excluded from loop detection; a short customer reply after staff wrote in Malayalam/Tamil/Hindi/Arabic etc. is answered in that language.
 - The daily 02:00 cron copies staff messages from Won/Converted chats into D1 `staff_win_examples` (created automatically); the latest 5 guide the bot's tone.
+- **360° welcome video:** set a Google Drive MP4 link (public, under 16 MB) and an optional caption (`{name}` works) under the toggle (`bot_config.v2_welcome_video_url` / `v2_welcome_video_caption`). A brand-new lead gets the video first, then the bot's reply. It is sent once per phone number (D1 `welcome_video_sent`, created automatically). A failed send is reported to ops and the chat continues normally.

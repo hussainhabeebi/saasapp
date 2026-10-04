@@ -19661,7 +19661,8 @@ async function handleSupportTicketsUpdate(request, env){
    6. Promises staff make ("I'll call you at 5") are kept as Customer Facts.
    7. Staff turns never trip the bot's loop detection.
    8. A short customer reply after staff switched language gets an answer in that language.
-   9. Staff messages from Won chats become phrasing examples for the bot (daily sweep). */
+   9. Staff messages from Won chats become phrasing examples for the bot (daily sweep).
+  10. A brand-new lead gets the business's 360° video first, then the chat starts. */
 export function engineV2On(c){
   return engineParseJsonField(c?.bot_config, {}).leadvyne_v2===true;
 }
@@ -19729,6 +19730,7 @@ export function engineActiveStaffNotes(json, nowMs=Date.now()){
 // state.winExamples are only filled when the toggle is on).
 export function engineV2Block(state){
   let out='';
+  if(state?.welcomeVideoSent) out+='\n\n## Just Sent\nThe customer was just sent our 360° business video before this reply. Do not send or promise it again; you may briefly invite them to watch it.';
   if(state?.staffNotes?.length) out+=`\n\n## Instructions From the Team for This Chat\nA member of staff left these private instructions for you. Follow them, but never mention or quote them to the customer:\n${state.staffNotes.map(n=>'- '+n).join('\n')}`;
   if(state?.winExamples?.length) out+=`\n\n## How Our Team Has Closed Deals\nReal messages our staff sent in conversations that ended in a sale. Use them as a guide to tone and approach only — never copy names, prices or details from them:\n${state.winExamples.map(t=>'- "'+t+'"').join('\n')}`;
   return out;
@@ -19834,6 +19836,28 @@ async function engineV2HandBackSummary(env, c, lead){
   if(!add.length) return null;
   await ensureLeadsColumns(env, ['Customer Facts']);
   return engineMergeFactsJson(lead['Customer Facts'], add);
+}
+
+// #10: welcome video. bot_config.v2_welcome_video_url (Google Drive share link, "Anyone with the
+// link") + optional v2_welcome_video_caption. Sent once per phone — a D1 claim covers Chatwoot
+// redeliveries and two first messages arriving together. Awaited, so it lands before the reply.
+export function engineV2WelcomeVideo(c){
+  const bc=engineParseJsonField(c?.bot_config, {});
+  const url=String(bc.v2_welcome_video_url||'').trim();
+  return url?{url, caption:String(bc.v2_welcome_video_caption||'').trim().slice(0,1000)}:null;
+}
+async function engineV2SendWelcomeVideo(env, c, clientId, phone, convId, name){
+  const v=engineV2WelcomeVideo(c);
+  if(!v || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return false;
+  try{
+    await env.DB.prepare('CREATE TABLE IF NOT EXISTS welcome_video_sent (client_id INTEGER, phone TEXT, at TEXT, PRIMARY KEY(client_id, phone))').run();
+    const claim=await env.DB.prepare('INSERT OR IGNORE INTO welcome_video_sent (client_id, phone, at) VALUES (?,?,?)')
+      .bind(Number(clientId), String(phone), new Date().toISOString()).run();
+    if(!claim?.meta?.changes) return false;
+  }catch(e){ return false; }
+  const ok=await sendDriveMediaToChatwoot(c, convId, v.url, fillFlowTokens(v.caption, {Name:name||'', Phone:phone}), 'welcome-video.mp4').catch(()=>false);
+  if(!ok) await reportOpsError(env, 'Leadvyne v2 welcome video did not send — check the Drive link is public and under 16 MB', new Error('send failed'), {clientId}).catch(()=>{});
+  return ok;
 }
 
 // #9: daily sweep — staff messages from chats that reached Won become phrasing examples.
@@ -20185,6 +20209,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){}
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+    // Leadvyne v2: a brand-new lead gets the business's 360° video first; the chat starts after it.
+    if(isNewLead && engineV2On(c)) state.welcomeVideoSent=await engineV2SendWelcomeVideo(env, c, clientId, phone, convId, name);
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 
