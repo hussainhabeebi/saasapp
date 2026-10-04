@@ -1379,6 +1379,82 @@ etc. — this app's actual client base), truncating the calendar's last day. Wor
 this module grows more date logic — Cloudflare Workers themselves have no such trap (there's no
 "local timezone" server-side, `Date` is always UTC there), but browser-side JS very much does.
 
+## Hospitality Pro (`cloudflare-worker/hospitality-pro.js` — 🏨 Hospitality → ⭐ Pro)
+An add-on on top of the Hospitality module that makes the WhatsApp bot *sell* stays, not just
+answer questions. **Off by default and invisible to every existing client**: it only does
+anything when a client has both `hospitality_enabled='Yes'` **and** `hospitality_pro_enabled='Yes'`
+(`hpEnabled(c)`). A blank or missing `hospitality_pro_enabled` column means off. It's plan-gated
+like the other modules (`PLAN_TIERS` Business Intelligence / Enterprise). Legacy clients with no
+`plan_tier` can turn it on themselves.
+
+**Enable:** apply the migration once (`wrangler d1 migrations apply leadvyne-d1 --remote`, which
+creates `migrations/0109_hospitality_pro.sql`'s `hosp_pro_*` tables). Then, per client, go to
+Settings → 🧩 Modules → 🏨 Hospitality → ↳ ⭐ Hospitality Pro → Enabled. The `hospitality_pro_enabled`
+CLIENTS column is created on first save, the same way as `hospitality_enabled`. Then configure it
+under 🏨 Hospitality → ⭐ Pro → ⚙️ Settings.
+
+**What it does on WhatsApp** (each feature can be toggled in Pro → Settings):
+1. **Instant quote + "🔒 Hold this room"**. A booking intent ("book", "availability", "quote", or a
+   price question that includes dates or a unit name) starts a short flow: dates → guests → room →
+   quote. It understands free text such as "12-14 Dec", "Dec 12 to 14", "12/12 - 14/12",
+   "tomorrow for 2 nights", "this weekend", "2 adults 1 kid" and "family of 5". Prices use the same
+   rule as the availability calendar: a per-date override, else the weekend rate on Sat/Sun nights,
+   else the base rate. "Hold" reserves the room for `hold_minutes` and sends the deposit link.
+   - With **Razorpay**, an automatic Payment Link is created. When paid,
+     `POST /hospitality/pro/razorpay/webhook` (HMAC-verified, event `payment_link.paid`) confirms it.
+   - With **Manual**, the client's UPI/bank text is shown. When the guest replies "PAID" or sends a
+     screenshot, the hold is marked *Says paid* and the team confirms it in Pro → Holds.
+2. **Virtual tour first, then price**. The room's photos (from 🏠 Units) and any tour links (Pro →
+   🎥 Tours: 360°, YouTube, reels) go out before the quote. With this on, the room picker shows no
+   prices.
+3. **Add-ons**. Pro → ✨ Add-ons are offered as tap-to-add extras, priced per booking, per night,
+   per guest or per guest per night.
+4. **Loyalty**. Returning guests are matched by phone (last 10 digits) against past stays in
+   `hospitality_bookings`. Silver (1+ stays), Gold (3+) and Platinum (5+) get their tier's discount
+   on the room rate, and the quote opens with "Welcome back".
+5. **Abandoned-inquiry recovery**. A guest who saw a quote but didn't hold gets up to N nudges after
+   `recovery_hours` idle hours, from the `*/15` cron (`hpRunForAllClients`). Every nudge re-checks
+   real availability first, and the only scarcity line it uses ("Only 2 stays are left") is a true
+   count. Nudges are never sent after 23h idle (WhatsApp's 24h window), in quiet hours, to OptOut
+   leads, to manually taken-over or `human_handover` leads, or once Pro is turned off. An expired
+   unpaid hold gets one "hold it again?" message.
+6. **Group & event enquiries**. Weddings, corporate offsites, college tours, any party of at least
+   `group_min_guests`, and any party too big for a single room go through a 4-question brief
+   (occasion, size, dates, needs). That brief is saved to Pro → 🎉 Groups and posted as a private
+   note in the chat.
+7. **Digital guest registration**. When a hold is confirmed (by staff or Razorpay), the guest gets
+   the confirmation and is asked for ID photos. Each photo's Chatwoot attachment URL is stored in
+   Pro → 📋 Check-in, where staff mark it Verified.
+
+**Isolation (why existing clients see no change):**
+- **Bot hook.** `handleEngineWebhook` makes one guarded call, `hpHandleTurn`, placed just before the
+  resort first-inquiry gate. It is skipped entirely unless `hpEnabled(c)` is true. When Pro doesn't
+  recognise the message, it returns `handled:false` and the turn continues down the existing
+  resort/hotel/houseboat path unchanged. If Pro throws, the error goes to `reportOpsError` and the
+  turn continues the same way. Only on a turn Pro actually answered (`hpTurnHandled`) are the
+  greeting showcase and `engineMaybeSendHospitalityMedia` skipped, so photos aren't sent twice.
+- **Never trapping a guest.** A side question in the middle of a flow ("is there a pool?") falls
+  through to the normal bot. Two misses in a row abandon the flow. "cancel" or "stop", asking for a
+  human, and opting out all release the lead immediately.
+- **Data.** Everything lives in new `hosp_pro_*` tables, including per-lead flow state in
+  `hosp_pro_state` rather than new NocoDB lead columns. Holds are their own table, not a new
+  `hospitality_bookings.status`, so the existing overlap check, calendar and stats are untouched. A
+  hold only becomes a normal `confirmed` booking when it's confirmed, and that step re-runs the
+  overlap check: a clash marks the hold `conflict` rather than creating a double booking. Holds by
+  other guests block a room for Pro quotes only, not for staff adding bookings by hand.
+- **Code.** `hospitality-pro.js` imports nothing from `worker.js`. Helpers are passed in as
+  `HP_DEPS`, so `hospitality-pro.test.js` exercises the whole flow against the real migrations on
+  node:sqlite. The dashboard side is `frontend/hospitality-pro.js`. Bump its `?v=` in
+  `dashboard.html` on changes, because `sw.js` serves scripts cache-first.
+
+**Routes** (session-gated, and 403 unless Pro is enabled): `GET /hospitality/pro/overview`,
+`GET/PATCH /hospitality/pro/settings` (the Razorpay secrets are write-only),
+`GET/POST/PATCH/DELETE /hospitality/pro/addons`, `GET/POST/DELETE /hospitality/pro/tours`,
+`GET /hospitality/pro/holds`, `POST /hospitality/pro/holds/confirm` (`{id, payment_ref}`),
+`POST /hospitality/pro/holds/release`, `GET /hospitality/pro/guests`,
+`GET/PATCH /hospitality/pro/registrations`, `GET/PATCH /hospitality/pro/groups`,
+`GET /hospitality/pro/recovery`. The one public route is the Razorpay webhook.
+
 ## B2B module (Smart Lists, trackable Documents/CPQ, brand classification, B2B analytics)
 A new industry (`b2b`) plus an independently-toggleable module, following the same pattern as
 Travel Agency/Recruitment/Appointments: **Settings → Modules → 🤝 B2B Suite** turns on a `🤝 B2B`

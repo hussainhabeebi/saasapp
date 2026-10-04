@@ -2021,6 +2021,8 @@ const ROLES = {
         <button class="hosp-tab" data-hosp="units">🏠 Units</button>
         <button class="hosp-tab" data-hosp="availability">📅 Availability</button>
         <button class="hosp-tab" data-hosp="bookings">📖 Bookings</button>
+        <!-- Hospitality Pro add-on (hospitality-pro.js) — only shown when hospitality_pro_enabled==='Yes'. -->
+        <button class="hosp-tab" data-hosp="pro" id="hospProTab" style="display:none">⭐ Pro</button>
       </div>
       <div class="page-pad" id="hospContent">
         <div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>
@@ -3499,6 +3501,13 @@ const ROLES = {
               </select>
               <button class="save-btn" id="saveHospitalityGreetingImages">Save</button>
               <span class="save-msg" id="saveHospitalityGreetingImagesMsg"></span>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 24px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b style="font-size:13px;font-weight:600">↳ ⭐ Hospitality Pro</b><div class="s-note" style="margin:2px 0 0">Lets the WhatsApp bot sell: instant quotes with “Hold this room” + deposit link, virtual tour before price, add-ons, loyalty discounts for repeat guests, abandoned-inquiry nudges, group/event enquiries and digital ID check-in. Off by default — the existing Hospitality bot is unchanged until you enable it.</div></div>
+              <select class="form-input" id="cfgHospitalityProEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveHospitalityProEnabled">Save</button>
+              <span class="save-msg" id="saveHospitalityProEnabledMsg"></span>
             </div>
 
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -19742,6 +19751,7 @@ function initHospitalitySettings(){
   _renderModuleBadge('hospitalityModuleStatusBadge',clientRecord.hospitality_enabled==='Yes');
   const styleSel=$id('cfgHospitalityStyle'); if(styleSel) styleSel.value=clientRecord.hospitality_style||'hotel';
   const greetSel=$id('cfgHospitalityGreetingImages'); if(greetSel) greetSel.value=clientRecord.hospitality_greeting_images||'on';
+  const proSel=$id('cfgHospitalityProEnabled'); if(proSel) proSel.value=clientRecord.hospitality_pro_enabled==='Yes'?'Yes':'No';
   updateHospitalityTabVisibility();
 }
 
@@ -19786,6 +19796,34 @@ $id('saveHospitalityGreetingImages').addEventListener('click',async()=>{
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+// hospitality_pro_enabled — Hospitality Pro add-on (cloudflare-worker/hospitality-pro.js); same
+// "create the CLIENTS column on first save" reasoning as ensureHospitalityEnabledColumn above. The
+// Worker only acts on it when hospitality_enabled is also 'Yes'.
+async function ensureHospitalityProEnabledColumn(){
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    const cols=(info.columns||[]).map(c=>c.title);
+    if(!cols.includes('hospitality_pro_enabled')) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'hospitality_pro_enabled',title:'hospitality_pro_enabled',uidt:'SingleLineText'}).catch(()=>{});
+  }catch(e){}
+}
+
+$id('saveHospitalityProEnabled').addEventListener('click',async()=>{
+  const btn=$id('saveHospitalityProEnabled'),msg=$id('saveHospitalityProEnabledMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  const val=$id('cfgHospitalityProEnabled').value;
+  try{
+    if(val==='Yes' && clientRecord.hospitality_enabled!=='Yes') throw new Error('Enable 🏨 Hospitality first');
+    await ensureHospitalityProEnabledColumn();
+    await patchClient({hospitality_pro_enabled:val});
+    clientRecord.hospitality_pro_enabled=val;
+    const proTab=$id('hospProTab');
+    if(proTab) proTab.style.display=val==='Yes'?'':'none';
+    if(val!=='Yes' && _hospPage==='pro') _hospPage='dashboard';
+    msg.textContent=val==='Yes'?'✓ Enabled — see 🏨 Hospitality → ⭐ Pro':'✓ Saved';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
 });
 
 // real_estate_enabled is a brand-new CLIENTS column, same "create it on first save" reasoning as
@@ -20425,6 +20463,9 @@ async function renderHospitality(){
   const el=$id('hospContent');
   const propTab=$id('hospPropertiesTab');
   if(propTab) propTab.style.display=_hospIsResort()?'':'none';
+  const proTab=$id('hospProTab');
+  if(proTab) proTab.style.display=clientRecord.hospitality_pro_enabled==='Yes'?'':'none';
+  if(_hospPage==='pro' && clientRecord.hospitality_pro_enabled!=='Yes') _hospPage='dashboard';
   if(!_hospLoaded){
     el.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>';
     await hospLoad();
@@ -20454,6 +20495,7 @@ function renderHospSubPage(page){
     case'units':renderHospUnits();break;
     case'availability':renderHospAvailability();break;
     case'bookings':renderHospBookings();break;
+    case'pro':if(typeof renderHospPro==='function') renderHospPro($id('hospContent'));break;
   }
 }
 document.addEventListener('click',e=>{
@@ -21069,6 +21111,7 @@ async function deleteHospBooking(id){
    file. ── */
 </script>
 <script src="chats.js"></script>
+<script src="hospitality-pro.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──

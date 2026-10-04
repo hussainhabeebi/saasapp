@@ -1,3 +1,4 @@
+import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -65,15 +66,15 @@ const EMAIL_SENDS_TABLE = 'mr5fvzaq97s6etq';
 const PLAN_TIERS = {
   basic:{ label:'Basic', max_users:1, max_channels:1, modules:[] },
   standard:{ label:'Standard', max_users:3, max_channels:2, modules:['appt_enabled','b2b_enabled'] },
-  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] },
-  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] }
+  business_intelligence:{ label:'Business Intelligence', max_users:8, max_channels:5, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','hospitality_pro_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] },
+  marketing_pro:{ label:'Enterprise', max_users:15, max_channels:10, modules:['appt_enabled','b2b_enabled','ta_enabled','recruit_enabled','hospitality_enabled','hospitality_pro_enabled','real_estate_enabled','matrimonial_enabled','ev_charging_enabled'] }
 };
 // Human labels for the module fields PLAN_TIERS.modules refers to — shared by /billing/plan-status
 // (so dashboard.html can render a modules grid without hardcoding this list twice) and the
 // passthrough's upgrade-required error message.
 const PLAN_GATED_MODULES = {
   ta_enabled:'Travel Agency', recruit_enabled:'Recruitment & Consultancy', appt_enabled:'Appointment Booking',
-  b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', real_estate_enabled:'Real Estate',
+  b2b_enabled:'B2B Suite', hospitality_enabled:'Hospitality', hospitality_pro_enabled:'Hospitality Pro', real_estate_enabled:'Real Estate',
   matrimonial_enabled:'Matrimonial Service', ev_charging_enabled:'EV Charging Stations'
 };
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
@@ -21881,6 +21882,32 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       if(orderHandledInline && routing.route==='human' && !['order_handoff','product_link_missing'].includes(routing.humanReason)) routing.route='ecom_faq';
     }
 
+    // Hospitality Pro (hospitality-pro.js, migrations/0109_hospitality_pro.sql) — instant quote →
+    // "Hold this room", tour-before-price, add-ons, loyalty, group enquiries, ID registration.
+    // hpEnabled(c) is false unless BOTH hospitality_enabled and hospitality_pro_enabled are 'Yes',
+    // so for every other client this whole block is skipped. When Pro doesn't recognise the
+    // message (or anything throws) it returns handled:false and the turn continues down the
+    // existing resort/hotel/houseboat path below exactly as before. hpTurnHandled also suppresses
+    // the post-turn greeting showcase + unit-photo auto-send further down, which would otherwise
+    // repeat the photos Pro just sent alongside its quote.
+    let hpTurnHandled=false;
+    if(!orderHandledInline && hpEnabled(c) && state.leadId){
+      try{
+        const hp=await hpHandleTurn(env, HP_DEPS, {c, clientId, convId, leadId:state.leadId, phone, name:state.name, userText, rawText:text,
+          mediaType, mediaUrl, lang:replyLang, selectedUnit:state.lead?.HospSelectedUnit||'',
+          optOut:!!routing.isOptOut, humanExplicit:routing.route==='human'&&routing.humanReason==='explicit'});
+        if(hp?.handled){
+          routing.reply=hp.reply||null;
+          if(hp.quickReplies) routing.quickReplies=hp.quickReplies;
+          // Same reasoning as the ecom order block's reset above: a non-explicit 'human' route
+          // (e.g. opt-in low_confidence) didn't actually hand over this turn — Pro answered — so
+          // don't let engineBuildLeadUpsertBody stamp human_handover onto the lead mid-booking.
+          if(routing.route==='human') routing.route='faq';
+          orderHandledInline=true; hpTurnHandled=true;
+        }
+      }catch(e){ await reportOpsError(env, 'hospitalityProTurn', e, {clientId, convId}); }
+    }
+
     // Resort first-inquiry gate — if this lead has never received resort media before, suppress
     // the LLM reply entirely this turn; the description + images + videos are sent later by
     // engineMaybeSendHospitalityMedia. Follow-up turns (lead already received media) skip this
@@ -22307,7 +22334,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
     // Resort greeting showcase: up to 3 images per property + property-picker buttons.
     // Fires only for brand-new leads (isNewLead). Returning customers follow the normal flow.
-    if(isNewLead && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
+    if(isNewLead && !hpTurnHandled && c.hospitality_enabled==='Yes' && c.hospitality_style==='resort' && convId && c.hospitality_greeting_images!=='off'){
       // Awaited (not fire-and-forget) — this fetch handler has no ctx.waitUntil, so a
       // background promise risks being killed before R2/image fetches and Chatwoot uploads finish.
       await hospitalitySendGreetingImages(env, c, clientId, convId, resolvedLeadId).catch(()=>{});
@@ -22356,7 +22383,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // time this lead's message mentions a unit by name, send its photos/video straight into the
     // chat, once per (lead, unit) ever (hospitality_media_sent) rather than re-sent on every
     // later message that happens to mention the same unit again.
-    await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit, selectedLocation:state.lead?.HospSelectedLocation});
+    if(!hpTurnHandled) await engineMaybeSendHospitalityMedia(env, c, clientId, convId, resolvedLeadId, userText, {selectedProperty:state.lead?.HospSelectedProperty, selectedUnit:state.lead?.HospSelectedUnit, selectedLocation:state.lead?.HospSelectedLocation});
     // Real Estate module (migrations/0031_real_estate.sql/0049_re_unit_media.sql) — same shape as
     // the hospitality call just above: the first time this lead's message names a project or
     // property type, send that unit's photos/video/PDF straight into the chat, once per (lead, unit)
@@ -29696,6 +29723,58 @@ async function hospitalitySendUnitMedia(env, c, clientId, convId, leadId, unit){
   return sentAny;
 }
 
+// ── Hospitality Pro glue (hospitality-pro.js) ──
+// Tour-before-price photo send for Pro quotes: same media + hospitality_media_sent bookkeeping as
+// hospitalitySendUnitMedia above, minus its resort "📅 Book / Check Availability" button — Pro's
+// own quote follows straight after, so that button would only duplicate it.
+async function hospitalityProSendUnitPhotos(env, c, clientId, convId, leadId, unit){
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId) return false;
+  const urls=[unit.image_url_1, unit.image_url_2, unit.image_url_3, unit.image_url_4, unit.image_url_5].filter(Boolean).slice(0,3);
+  if(!urls.length) return false;
+  if(unit.description && String(unit.description).trim()) await hospitalityChatwootText(c, convId, `*${unit.name}*\n\n${String(unit.description).trim()}`);
+  let sentAny=false;
+  for(let i=0;i<urls.length;i++){
+    const blob=await hospitalityFetchMediaBlob(env, urls[i], false);
+    if(!blob) continue;
+    const fd=new FormData();
+    fd.append('content', sentAny?'':`Here's a look at ${unit.name} 📸`);
+    fd.append('message_type','outgoing'); fd.append('private','false');
+    fd.append('attachments[]', blob, `photo${i+1}.jpg`);
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
+    if(r.ok) sentAny=true;
+  }
+  if(sentAny){
+    await env.DB.prepare(`INSERT OR IGNORE INTO hospitality_media_sent (client_id, lead_id, unit_id, sent_at) VALUES (?,?,?,?)`)
+      .bind(Number(clientId), leadId, unit.id, new Date().toISOString()).run();
+  }
+  return sentAny;
+}
+// Staff-only note on the Chatwoot conversation (hold created, deposit claimed, group brief…).
+async function hospitalityProPrivateNote(c, convId, text){
+  if(!text || !convId || !c?.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return;
+  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{'Content-Type':'application/json', api_access_token:c.chatwoot_token},
+    body:JSON.stringify({content:String(text), message_type:'outgoing', private:true})
+  }).catch(()=>{});
+}
+async function hospitalityProGetLead(env, leadId){
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(leadId)}`);
+  if(!r.ok) return null;
+  return await r.json().catch(()=>null);
+}
+// Everything hospitality-pro.js needs from this file — passed in rather than imported so that
+// module stays standalone (and unit-testable against node:sqlite without loading worker.js).
+const HP_DEPS={
+  json, requireSession, getClientById, reportOpsError,
+  sendText:engineSendChatwootReply,
+  sendButtons:engineSendChatwootQuickReply,
+  sendPrivateNote:hospitalityProPrivateNote,
+  sendUnitPhotos:hospitalityProSendUnitPhotos,
+  localize:engineLocalizeReply,
+  getLead:hospitalityProGetLead,
+  isTakeover:engineManualTakeoverActive,
+};
+
 // ── Resort properties CRUD (migrations/0066_resort_properties.sql) ──
 async function handleHospitalityPropertiesList(request, env){
   const payload=await requireSession(request, env);
@@ -33688,6 +33767,9 @@ export default {
       else if(url.pathname==='/hospitality/bookings' && request.method==='PATCH'){ res=await handleHospitalityBookingUpdate(request, env); }
       else if(url.pathname==='/hospitality/bookings' && request.method==='DELETE'){ res=await handleHospitalityBookingDelete(request, env); }
       else if(url.pathname==='/hospitality/stats' && request.method==='GET'){ res=await handleHospitalityStats(request, env); }
+      // Hospitality Pro (hospitality-pro.js) — every route is session-gated AND 403s unless the
+      // client has Pro enabled, except the Razorpay webhook, which is HMAC-verified instead.
+      else if(url.pathname.startsWith('/hospitality/pro/')){ res=await hpHandleRoute(request, env, HP_DEPS, url); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
       else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
@@ -33942,6 +34024,9 @@ export default {
       ctx.waitUntil(runVoiceSummariesForAllClients(env));
       // Live Agency exchange rates — one refresh per 6-hour UTC slot, max 4/day; see live-travel-fx.js.
       ctx.waitUntil(ltFxRefreshIfStale(env));
+      // Hospitality Pro — expire unpaid holds, abandoned-inquiry nudges; only touches clients that
+      // have Pro rows at all, and sends nothing unless Pro is still enabled. See hpRunForAllClients.
+      ctx.waitUntil(hpRunForAllClients(env, HP_DEPS));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));
