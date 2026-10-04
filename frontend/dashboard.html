@@ -3898,6 +3898,41 @@ const ROLES = {
               </div>
             </div>
 
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+              <label class="form-label">🧠 Leadvyne v2</label>
+              <div class="s-note">The bot learns from your team, not only from the customer. When on: messages your staff send (Chatwoot or Chats page) are part of the conversation the bot reads, so it continues from them instead of repeating or contradicting them · a private note starting <b>/bot</b> (e.g. <code>/bot offer 10% if they book today</code>, or <code>/bot clear</code>) is a hidden instruction for that chat · "Hand back to bot" saves what was agreed during the takeover · promises staff make ("I'll call you at 5") are remembered · if staff switch to Malayalam/Hindi/Arabic etc. the bot follows on short replies · messages from chats your team won guide the bot's tone. Off keeps today's behaviour exactly.</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                <div style="flex:1;min-width:200px;max-width:300px">
+                  <select class="form-input" id="cfgLeadvyneV2">
+                    <option value="No">Off — current behaviour</option>
+                    <option value="Yes">On — learn from staff messages</option>
+                  </select>
+                </div>
+                <button class="save-btn" id="saveLeadvyneV2">Save</button>
+                <span class="save-msg" id="saveLeadvyneV2Msg"></span>
+              </div>
+              <div style="margin-top:12px">
+                <label class="form-label">🎥 360° business video for new leads (v2)</label>
+                <div class="s-note">Google Drive link to an MP4 (shared as "Anyone with the link", under 16 MB). A brand-new lead gets this video first, then the bot's reply. Sent once per customer. Leave empty to skip. Caption can use {name}.</div>
+                <input class="form-input" id="cfgV2WelcomeVideoUrl" placeholder="https://drive.google.com/file/d/…/view" style="margin-top:6px;max-width:520px">
+                <input class="form-input" id="cfgV2WelcomeVideoCaption" placeholder="Hi {name}! Take a 360° tour of our place 👇" style="margin-top:6px;max-width:520px">
+              </div>
+              <div style="margin-top:12px">
+                <label class="form-label">🎯 Different video per ad or source (v2)</label>
+                <div class="s-note">One rule per line: <code>match | Google Drive link | caption</code>. If the match text appears in the lead's first message (click-to-WhatsApp ads pre-fill it), the ad details, the website page they chatted from, or their lead-form campaign/ad name, that video is sent instead of the one above. Use <code>inbox:12</code> to match a specific WhatsApp number. First matching line wins.</div>
+                <textarea class="form-input" id="cfgV2SourceVideos" rows="4" placeholder="villa offer | https://drive.google.com/file/d/…/view | Hi {name}, here's a tour of the villa 👇&#10;inbox:12 | https://drive.google.com/file/d/…/view | Welcome to our Kochi branch!" style="margin-top:6px;max-width:720px;font-family:var(--mono);font-size:12px"></textarea>
+              </div>
+              <div style="margin-top:12px">
+                <label class="form-label">⏰ Reply-gap nudge (v2)</label>
+                <div class="s-note">If a new lead goes quiet after our reply (or the video), send one friendly check-in after this many hours. Only once per lead, only inside WhatsApp's 24-hour window and your follow-up send hours, never when staff have taken over or replied. Message can use {name}; leave empty for the default. It is translated to the lead's language.</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
+                  <select class="form-input" id="cfgV2NudgeEnabled" style="max-width:200px"><option value="No">Off</option><option value="Yes">On</option></select>
+                  <input class="form-input" id="cfgV2NudgeHours" type="number" min="0.5" max="20" step="0.5" placeholder="2" style="max-width:110px" title="Hours of silence">
+                </div>
+                <input class="form-input" id="cfgV2NudgeText" placeholder="Hi {name}, did you get a chance to watch the video? 😊 Happy to answer any questions." style="margin-top:6px;max-width:520px">
+              </div>
+            </div>
+
           </div>
         </div>
 
@@ -12372,6 +12407,13 @@ function populateBotBehaviorPage(){
   $id('cfgObjectionHandlingEnabled').value=botConfig.objection_handling_enabled===false?'No':'Yes';
   $id('cfgProactiveHandoverEnabled').value=botConfig.proactive_handover_enabled===true?'Yes':'No';
   $id('cfgCrosssellSuggestionsEnabled').value=botConfig.crosssell_suggestions_enabled===false?'No':'Yes';
+  $id('cfgLeadvyneV2').value=botConfig.leadvyne_v2===true?'Yes':'No';
+  $id('cfgV2WelcomeVideoUrl').value=botConfig.v2_welcome_video_url||'';
+  $id('cfgV2WelcomeVideoCaption').value=botConfig.v2_welcome_video_caption||'';
+  $id('cfgV2SourceVideos').value=(Array.isArray(botConfig.v2_source_videos)?botConfig.v2_source_videos:[]).map(r=>[r.match,r.video_url,r.caption||''].join(' | ')).join('\n');
+  $id('cfgV2NudgeEnabled').value=botConfig.v2_nudge_enabled===true?'Yes':'No';
+  $id('cfgV2NudgeHours').value=botConfig.v2_nudge_hours||'';
+  $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -12436,6 +12478,27 @@ $id('saveCrosssellSuggestionsEnabled').addEventListener('click',async()=>{
   const off=$id('cfgCrosssellSuggestionsEnabled').value==='No';
   if(off) botConfig.crosssell_suggestions_enabled=false; else delete botConfig.crosssell_suggestions_enabled;
   await saveField('saveCrosssellSuggestionsEnabled','saveCrosssellSuggestionsEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveLeadvyneV2').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  if($id('cfgLeadvyneV2').value==='Yes') botConfig.leadvyne_v2=true; else delete botConfig.leadvyne_v2;
+  const vUrl=$id('cfgV2WelcomeVideoUrl').value.trim(), vCap=$id('cfgV2WelcomeVideoCaption').value.trim();
+  if(vUrl && !/drive\.google\.com|docs\.google\.com/.test(vUrl)){ $id('saveLeadvyneV2Msg').textContent='Video must be a Google Drive link'; return; }
+  if(vUrl) botConfig.v2_welcome_video_url=vUrl; else delete botConfig.v2_welcome_video_url;
+  if(vCap) botConfig.v2_welcome_video_caption=vCap; else delete botConfig.v2_welcome_video_caption;
+  const rules=[];
+  for(const line of $id('cfgV2SourceVideos').value.split('\n').map(l=>l.trim()).filter(Boolean)){
+    const [match,video_url,...cap]=line.split('|').map(x=>x.trim());
+    if(!match||!/drive\.google\.com|docs\.google\.com/.test(video_url||'')){ $id('saveLeadvyneV2Msg').textContent='Check this video rule: '+line.slice(0,60); return; }
+    rules.push({match, video_url, caption:cap.join('|').trim()});
+  }
+  if(rules.length) botConfig.v2_source_videos=rules; else delete botConfig.v2_source_videos;
+  if($id('cfgV2NudgeEnabled').value==='Yes') botConfig.v2_nudge_enabled=true; else delete botConfig.v2_nudge_enabled;
+  const nh=parseFloat($id('cfgV2NudgeHours').value);
+  if(nh>0) botConfig.v2_nudge_hours=nh; else delete botConfig.v2_nudge_hours;
+  const nt=$id('cfgV2NudgeText').value.trim();
+  if(nt) botConfig.v2_nudge_text=nt; else delete botConfig.v2_nudge_text;
+  await saveField('saveLeadvyneV2','saveLeadvyneV2Msg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));
 $id('saveDealCurrency').addEventListener('click',async()=>saveField('saveDealCurrency','saveDealCurrencyMsg',{deal_currency:$id('cfgDealCurrency').value.trim().toUpperCase()||'AED'}));
@@ -17343,9 +17406,25 @@ function renderReportsSales(){
 /* ── Team — same per-agent computation as the Team page's own agent table, targeting this page's
    own container ids (see Sales' comment above for why this is a second copy, not a shared-id
    refactor). */
+async function loadStaffScore(){
+  const box=$id('reportsStaffScore'); if(!box) return;
+  try{
+    const d=await fetch(`${CONFIG.WORKER_BASE}/reports/staff-score?days=30`,{headers:ncAuthHeaders()}).then(r=>r.json());
+    if(d.error) throw new Error(d.error);
+    const t=sec=>sec==null?'—':sec<90?Math.round(sec)+'s':sec<5400?Math.round(sec/60)+' min':(sec/3600).toFixed(1)+' h';
+    const rows=[d.bot,...(d.staff||[])].filter(r=>r&&r.replies);
+    box.innerHTML=rows.length?`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:var(--muted)"><th style="padding:6px">Who</th><th style="padding:6px">Replies</th><th style="padding:6px">Median reply time</th><th style="padding:6px">Chats</th><th style="padding:6px">Won</th><th style="padding:6px">Win rate</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--line)"><td style="padding:6px;font-weight:600">${r.name==='Bot'?'🤖 Bot':'🙋 '+esc(r.name)}</td><td style="padding:6px">${r.replies}</td><td style="padding:6px">${t(r.median_reply_sec)}</td><td style="padding:6px">${r.leads}</td><td style="padding:6px">${r.won}</td><td style="padding:6px">${r.win_rate==null?'—':r.win_rate+'%'}</td></tr>`).join('')}</tbody></table></div>`
+      :'<div style="color:var(--muted);font-size:13px">No replies recorded in the last 30 days yet.</div>';
+  }catch(e){ box.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load the staff score.</div>'; }
+}
 function renderReportsTeamReport(){
   const el=$id('reportsContent');
+  let _v2=false; try{ _v2=JSON.parse(clientRecord?.bot_config||'{}').leadvyne_v2===true; }catch(e){}
   el.innerHTML=`
+    ${_v2?`<div style="margin:0 0 14px"><div class="card-title" style="margin-bottom:0">🧠 Staff vs Bot (Leadvyne v2, last 30 days)</div><div class="s-note">Who answered each customer message first, how fast, and how many of the chats they worked on were won. Counts staff messages recorded since Leadvyne v2 was switched on.</div></div>
+    <div class="card" style="margin-bottom:14px"><div id="reportsStaffScore"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`:''}
     <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically.</div>
     <div id="reportsTeamStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
     <div class="card"><div id="reportsTeamTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
@@ -17357,6 +17436,7 @@ function renderReportsTeamReport(){
       <div class="s-head" style="margin-bottom:8px">📝 Recent Call Notes (Last 7 Days)</div>
       <div id="reportsCallNotes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
     </div>`;
+  if(_v2) loadStaffScore();
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
   const baseLeads=rptLeads();

@@ -8805,3 +8805,18 @@ the existing product image/media bundle and its tier/window rules are unchanged.
 - Run `wrangler d1 migrations apply leadvyne-d1 --remote` for
   `migrations/0099_ecom_product_photoshoot_folder.sql` (the D1 product mirror also self-adds the
   column on first save if the migration hasn't run yet).
+
+## Leadvyne v2 (Bot Behavior → 🧠 Leadvyne v2)
+
+Off by default (`bot_config.leadvyne_v2`); with it off nothing below runs. When on:
+
+- Staff messages sent from Chatwoot or the Chats page (and templates sent through Chatwoot) are added to `ConvHistory` (`by:'agent'` / `by:'template'`), labelled in the reply prompts, and shown in the Chats thread. They are processed ~8s after the webhook so the bot's own replies echoing back are recognised and skipped.
+- A Chatwoot **private note** starting `/bot` is a hidden instruction for that chat (LEADS `StaffNotes`, last 5, 14 days). `/bot clear` removes them.
+- **Hand back to bot** summarises the takeover into Customer Facts; customer messages during a takeover stay in `ConvHistory`.
+- Staff promises ("I'll call you at 5") are saved as Customer Facts (`Staff promised: …`).
+- Staff turns are excluded from loop detection; a short customer reply after staff wrote in Malayalam/Tamil/Hindi/Arabic etc. is answered in that language.
+- The daily 02:00 cron copies staff messages from Won/Converted chats into D1 `staff_win_examples` (created automatically); the latest 5 guide the bot's tone.
+- **360° welcome video:** set a Google Drive MP4 link (public, under 16 MB) and an optional caption (`{name}` works) under the toggle (`bot_config.v2_welcome_video_url` / `v2_welcome_video_caption`). A fresh lead — one who has never written to us, including lead-form leads — gets the video first, then the bot's reply. Each phone number is recorded once in D1 `v2_fresh_leads` (created automatically). A failed send is reported to ops and the chat continues normally.
+- **Video per ad or source:** `bot_config.v2_source_videos` = `[{match, video_url, caption}]`, edited as `match | link | caption` lines. `match` is looked for (case-insensitive) in the first message (click-to-WhatsApp ads pre-fill it), any ad referral Chatwoot passes on, the website-widget page, the lead-form `LeadSource`/`AdCampaign`/`AdName`/`LeadFormName`, and `inbox:<id>`. First match wins; otherwise the default video.
+- **Reply-gap nudge:** `v2_nudge_enabled`, `v2_nudge_hours` (default 2), `v2_nudge_text`. The 15-minute cron sends one check-in to a fresh lead whose chat has gone quiet after our side spoke last: only within 23h of the customer's last message, inside the follow-up send hours, never during handover/takeover/opt-out or after staff replied, translated to the lead's language. Marked in `v2_fresh_leads.nudged_at`.
+- **Staff quality score:** Reports → Team shows a Staff vs Bot table when v2 is on (`GET /reports/staff-score?days=30`): first responder to each customer message, median reply time, chats and win rate. It is built from `ConvHistory`, so it only counts staff messages recorded since v2 was switched on; staff names come from the Chatwoot sender (Chats-page sends show the Chatwoot token owner's name).
