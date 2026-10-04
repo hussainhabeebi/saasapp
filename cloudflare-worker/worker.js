@@ -11080,7 +11080,7 @@ export function ecomChatOrderItems(seed){
   return [`${seed.productName}${d.quantity&&d.quantity!=='1'?` × ${d.quantity}`:''}`, d.customisation, d.notes].filter(Boolean).join(' | ');
 }
 async function engineChatOrderTurn(env, c, seed, userText, history, lang){
-  const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':'You'}: ${m.content}`).join('\n');
+  const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':m.by==='agent'?'Staff (human agent)':'You'}: ${m.content}`).join('\n');
   const raw=await engineGeminiGenerateWithFallback(env, c, ecomChatOrderSystemPrompt(c, seed, lang),
     `Recent conversation:\n${recent}\n\nCustomer's latest message: ${userText}`, {temperature:0.4, maxOutputTokens:500, json:true}).catch(()=>null);
   return ecomApplyChatOrderTurn(seed, raw);
@@ -15510,7 +15510,7 @@ function engineFlowStagesBlock(c, currentStage){
 
 async function engineClassifyIntent(env, c, userText, activeHistory, currentStage){
   const low=userText.trim().toLowerCase();
-  const recent=(activeHistory||[]).slice(-4).map(m=>m.role+': '+m.content).join('\n');
+  const recent=(activeHistory||[]).slice(-4).map(engineHistoryLine).join('\n');
   const flow=engineParseJsonField(c.flow_json, {});
   const stageIds=Object.keys(flow.stages||{}).filter(k=>k!=='new');
   // Folds flow_json's stage progression into this same classification call as one more judgment
@@ -16697,7 +16697,7 @@ BUTTONS — mandatory after EVERY reply:
   } else if(hospSelectedLocation){
     sys+=`\n\n## Customer's Hospitality Interest\nThis customer is looking for options in *${hospSelectedLocation}*. Limit all property and room recommendations to options located in ${hospSelectedLocation}. Do not suggest properties from other destinations unless the customer explicitly asks.`;
   }
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(engineHistoryLine).join('\n')+(history.slice(-20).some(m=>m.by==='agent')?'\n'+ENGINE_AGENT_TURNS_NOTE.trim():'');
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
@@ -17288,7 +17288,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   }
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(m=>m.role+': '+m.content).join('\n');
+  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(engineHistoryLine).join('\n')+(history.slice(-20).some(m=>m.by==='agent')?'\n'+ENGINE_AGENT_TURNS_NOTE.trim():'');
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
@@ -19642,6 +19642,31 @@ async function handleSupportTicketsUpdate(request, env){
 // exact secret, a request is rejected before any client data is touched — same practical
 // unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
 // (both are exposed in various places already) no longer gets an attacker anywhere.
+// A human's outgoing Chatwoot message (Chatwoot UI or the Chats page) as a ConvHistory turn, or
+// null when there is nothing to add. The bot posts with the same Chatwoot token, so its own
+// replies can come back here too: anything matching one of the last few assistant turns is that
+// echo and is skipped. Attachments are skipped as well — the bot's photo/catalog captions are
+// not in ConvHistory and would otherwise read as staff messages.
+export function engineAppendAgentReply(convHistory, body, ts){
+  const text=String(body?.content||'').trim();
+  if(!text || (body?.attachments||[]).length) return null;
+  let history=[];
+  try{ history=Array.isArray(convHistory)?convHistory.slice():JSON.parse(convHistory||'[]'); }catch(e){}
+  if(!Array.isArray(history)) history=[];
+  const norm=t=>String(t||'').replace(/\s+/g,' ').trim().toLowerCase();
+  const n=norm(text);
+  const recent=history.filter(m=>m?.role==='assistant').slice(-6).map(m=>norm(m.content));
+  if(recent.some(r=>r===n || (n.length>=20 && r.includes(n)))) return null;
+  history.push({role:'assistant', by:'agent', content:text, ts});
+  return history;
+}
+// One "Recent Conversation" line for the reply prompts — a human agent's turn is labelled so the
+// model knows staff said it and continues from there.
+export function engineHistoryLine(m){
+  return (m?.by==='agent'?'human agent (staff)':m?.role)+': '+m?.content;
+}
+const ENGINE_AGENT_TURNS_NOTE=' Lines from "human agent (staff)" were typed by a member of the business team: treat them as said by your side, stay consistent with them (prices, promises, details), never repeat a question they already asked, and continue naturally from where they left off.';
+
 async function handleEngineWebhook(request, env, secret, ctx=null){
   const startMs=Date.now();
   // Global kill switch — a config-only flag (wrangler.toml [vars], requires a redeploy to flip,
@@ -19731,11 +19756,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         try{
           await ensureLeadsColumns(env, ['LastAgentMsgAt']);
           const convField='ConversationID'; // NocoDB field name for Chatwoot conv id
-          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id`);
+          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id,ConvHistory`);
           const ld=await leadsR.json().catch(()=>({}));
           const leadId=ld?.list?.[0]?.Id;
           if(leadId){
-            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:new Date().toISOString()}});
+            const now=new Date().toISOString();
+            const patch={Id:Number(leadId), LastAgentMsgAt:now};
+            // What the human typed goes into ConvHistory too, so the bot's next reply builds on
+            // it (no re-asking what staff already asked, no contradicting a price they quoted).
+            const hist=engineAppendAgentReply(ld.list[0].ConvHistory, body, now);
+            if(hist) patch.ConvHistory=JSON.stringify(hist.slice(-40));
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
             // Also reset the Durable Object cadence so it doesn't fire while the human is active
             try{
               const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${leadId}`));
