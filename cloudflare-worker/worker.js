@@ -1671,9 +1671,16 @@ async function handleChatHandover(request, env){
     // SlaAlerted 'Yes': someone is already on it, so no "waiting for a human" SLA alert.
     ?{Id:Number(lead_id), Handover:'Yes', HandoverBy:by, HandoverAt:new Date().toISOString(), SlaAlerted:'Yes'}
     :{Id:Number(lead_id), Handover:'No', HandoverBy:'', HandoverAt:'', SlaAlerted:'No'};
+  // Leadvyne v2: on hand-back, what was agreed during the takeover becomes Customer Facts.
+  if(!takeover && engineManualTakeoverActive(lead)){
+    try{
+      const c=await getClientById(env, payload.cid);
+      if(engineV2On(c)){ const facts=await engineV2HandBackSummary(env, c, lead); if(facts) patch['Customer Facts']=facts; }
+    }catch(e){}
+  }
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
-  const {Id, ...fields}=patch;
+  const {Id, 'Customer Facts':_facts, ...fields}=patch;
   return json({ok:true, lead:fields});
 }
 
@@ -11080,7 +11087,7 @@ export function ecomChatOrderItems(seed){
   return [`${seed.productName}${d.quantity&&d.quantity!=='1'?` × ${d.quantity}`:''}`, d.customisation, d.notes].filter(Boolean).join(' | ');
 }
 async function engineChatOrderTurn(env, c, seed, userText, history, lang){
-  const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':m.by==='agent'?'Staff (human agent)':'You'}: ${m.content}`).join('\n');
+  const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':engineIsStaffTurn(m)?'Staff (human agent)':'You'}: ${m.content}`).join('\n');
   const raw=await engineGeminiGenerateWithFallback(env, c, ecomChatOrderSystemPrompt(c, seed, lang),
     `Recent conversation:\n${recent}\n\nCustomer's latest message: ${userText}`, {temperature:0.4, maxOutputTokens:500, json:true}).catch(()=>null);
   return ecomApplyChatOrderTurn(seed, raw);
@@ -15331,12 +15338,12 @@ async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   // no safety net at all. engineTextSimilarity (0.7 threshold — high but not exact-match-only;
   // genuinely different replies about the same product/topic still share some vocabulary but don't
   // reach this) catches that case the same way exact equality already caught scripted-text repeats.
-  const botMsgs=history.filter(m=>m.role==='assistant').slice(-2).map(m=>m.content);
+  const botMsgs=history.filter(m=>m.role==='assistant' && !engineIsStaffTurn(m)).slice(-2).map(m=>m.content);
   // The same welcome sent for two greetings in a row ("Hi", then "Hy") is the bot answering
   // correctly, not stuck — see engineIsNonHandoverSmallTalk.
   const promptsForLastTwo=[];
   for(let i=history.length-1, lastUser=null, pending=[]; i>=0 && promptsForLastTwo.length<2; i--){
-    if(history[i].role==='assistant') pending.push(i);
+    if(history[i].role==='assistant'){ if(!engineIsStaffTurn(history[i])) pending.push(i); }
     else if(history[i].role==='user'){ lastUser=history[i].content; while(pending.length && promptsForLastTwo.length<2){ pending.shift(); promptsForLastTwo.push(lastUser); } }
   }
   const greetingEcho=promptsForLastTwo.length===2 && promptsForLastTwo.every(engineIsNonHandoverSmallTalk);
@@ -16697,7 +16704,7 @@ BUTTONS — mandatory after EVERY reply:
   } else if(hospSelectedLocation){
     sys+=`\n\n## Customer's Hospitality Interest\nThis customer is looking for options in *${hospSelectedLocation}*. Limit all property and room recommendations to options located in ${hospSelectedLocation}. Do not suggest properties from other destinations unless the customer explicitly asks.`;
   }
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(engineHistoryLine).join('\n')+(history.slice(-20).some(m=>m.by==='agent')?'\n'+ENGINE_AGENT_TURNS_NOTE.trim():'');
+  sys+=engineRecentConversationBlock(history);
   if(state.customerFacts?.length) sys+='\n\nUse What We Know About This Customer above the same way a rep who already knows this customer would — do not ask for something already listed there, and do not treat them like a stranger if it shows they have real history with you.';
 
   // Observed real failure: with no concrete data to answer from (e.g. an unconfigured product/
@@ -17288,7 +17295,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   }
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
-  if(history.length) sys+='\n\n## Recent Conversation\n'+history.slice(-20).map(engineHistoryLine).join('\n')+(history.slice(-20).some(m=>m.by==='agent')?'\n'+ENGINE_AGENT_TURNS_NOTE.trim():'');
+  sys+=engineRecentConversationBlock(history);
   sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
@@ -17424,7 +17431,7 @@ function engineSummaryBlock(state){
 // See engineMaybeExtractCustomerFacts — same "shared by every reply-generating prompt" pairing as
 // engineSummaryBlock above, placed right alongside it everywhere it's used.
 function engineCustomerFactsBlock(state){
-  return state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'';
+  return (state.customerFacts?.length?`\n\n## What We Know About This Customer\n${state.customerFacts.map(f=>'- '+f).join('\n')}`:'')+engineV2Block(state);
 }
 
 // ── Semantic memory (Tier 2 — SETUP.md "Semantic memory") ──────────────────────────────────────
@@ -19642,30 +19649,236 @@ async function handleSupportTicketsUpdate(request, env){
 // exact secret, a request is rejected before any client data is touched — same practical
 // unforgeability as a bearer token, since knowing a client's numeric id or chatwoot_account_id
 // (both are exposed in various places already) no longer gets an attacker anywhere.
-// A human's outgoing Chatwoot message (Chatwoot UI or the Chats page) as a ConvHistory turn, or
-// null when there is nothing to add. The bot posts with the same Chatwoot token, so its own
-// replies can come back here too: anything matching one of the last few assistant turns is that
-// echo and is skipped. Attachments are skipped as well — the bot's photo/catalog captions are
-// not in ConvHistory and would otherwise read as staff messages.
+/* ── Leadvyne v2 (Settings → Bot Behavior → 🧠 Leadvyne v2, bot_config.leadvyne_v2) ──
+   The bot learns from what the business team does in the chat, not only from the customer.
+   Everything here runs only when the toggle is on; with it off the engine behaves exactly as before.
+   1. Staff replies (Chatwoot UI / Chats page / templates sent through Chatwoot) join ConvHistory
+      and the reply prompts label them, so the next bot reply continues from them.
+   2. Staff text typed in Chatwoot also shows in the Chats thread.
+   3. "Hand back to bot" turns the takeover into Customer Facts.
+   4. Customer messages during a manual takeover stay in ConvHistory.
+   5. A private note starting "/bot " is a hidden instruction for the bot on that chat.
+   6. Promises staff make ("I'll call you at 5") are kept as Customer Facts.
+   7. Staff turns never trip the bot's loop detection.
+   8. A short customer reply after staff switched language gets an answer in that language.
+   9. Staff messages from Won chats become phrasing examples for the bot (daily sweep). */
+export function engineV2On(c){
+  return engineParseJsonField(c?.bot_config, {}).leadvyne_v2===true;
+}
+// Chatwoot stores a template's parameters on the message; such a message is the business's
+// automated send, not something a person typed.
+function engineIsTemplateMessage(body){
+  return !!(body?.additional_attributes?.template_params || body?.content_attributes?.template_params || body?.template_params);
+}
+// A human's outgoing Chatwoot message as a ConvHistory turn, or null when there is nothing to add.
+// The bot posts with the same Chatwoot token, so its own replies can come back here too: anything
+// matching one of the last few assistant turns is that echo and is skipped. Attachments and
+// interactive (quick-reply) messages are skipped as well — those are the bot's own sends.
 export function engineAppendAgentReply(convHistory, body, ts){
   const text=String(body?.content||'').trim();
   if(!text || (body?.attachments||[]).length) return null;
+  if(body?.content_type && body.content_type!=='text') return null;
   let history=[];
   try{ history=Array.isArray(convHistory)?convHistory.slice():JSON.parse(convHistory||'[]'); }catch(e){}
   if(!Array.isArray(history)) history=[];
-  const norm=t=>String(t||'').replace(/\s+/g,' ').trim().toLowerCase();
-  const n=norm(text);
-  const recent=history.filter(m=>m?.role==='assistant').slice(-6).map(m=>norm(m.content));
+  const n=engineNormText(text);
+  const recent=history.filter(m=>m?.role==='assistant').slice(-6).map(m=>engineNormText(m.content));
   if(recent.some(r=>r===n || (n.length>=20 && r.includes(n)))) return null;
-  history.push({role:'assistant', by:'agent', content:text, ts});
+  history.push({role:'assistant', by:engineIsTemplateMessage(body)?'template':'agent', content:text, ts});
   return history;
 }
-// One "Recent Conversation" line for the reply prompts — a human agent's turn is labelled so the
-// model knows staff said it and continues from there.
+function engineNormText(t){ return String(t||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+export function engineIsStaffTurn(m){ return m?.by==='agent' || m?.by==='template'; }
+// One "Recent Conversation" line for the reply prompts — staff and template turns are labelled so
+// the model knows who said them.
 export function engineHistoryLine(m){
-  return (m?.by==='agent'?'human agent (staff)':m?.role)+': '+m?.content;
+  const who=m?.by==='agent'?'human agent (staff)':m?.by==='template'?'business (automated template)':m?.role;
+  return who+': '+m?.content;
 }
-const ENGINE_AGENT_TURNS_NOTE=' Lines from "human agent (staff)" were typed by a member of the business team: treat them as said by your side, stay consistent with them (prices, promises, details), never repeat a question they already asked, and continue naturally from where they left off.';
+const ENGINE_AGENT_TURNS_NOTE='Lines from "human agent (staff)" were typed by a member of the business team and "business (automated template)" lines were sent automatically: treat both as said by your side, stay consistent with them (prices, promises, details), never repeat a question or message they already sent, and continue naturally from where they left off.';
+export function engineRecentConversationBlock(history){
+  const turns=(history||[]).slice(-20);
+  if(!turns.length) return '';
+  return '\n\n## Recent Conversation\n'+turns.map(engineHistoryLine).join('\n')+(turns.some(engineIsStaffTurn)?'\n'+ENGINE_AGENT_TURNS_NOTE:'');
+}
+
+// "/bot offer 10% if they book today" in a private note → a standing instruction for this chat;
+// "/bot clear" drops them all. Anything else in a private note stays internal.
+export function engineParseStaffNote(body){
+  if(!body?.private || (body.message_type!=='outgoing' && body.message_type!==1)) return null;
+  const m=String(body.content||'').trim().match(/^\/bot\b\s*([\s\S]*)$/i);
+  if(!m) return null;
+  const text=m[1].trim();
+  if(!text) return null;
+  return /^clear$/i.test(text)?{clear:true}:{text:text.slice(0,500)};
+}
+const ENGINE_STAFF_NOTE_DAYS=14, ENGINE_STAFF_NOTE_MAX=5;
+export function engineMergeStaffNotes(prevJson, note, nowIso){
+  if(note.clear) return [];
+  let notes=[]; try{ notes=JSON.parse(prevJson||'[]'); }catch(e){}
+  if(!Array.isArray(notes)) notes=[];
+  notes.push({text:note.text, at:nowIso});
+  return notes.slice(-ENGINE_STAFF_NOTE_MAX);
+}
+export function engineActiveStaffNotes(json, nowMs=Date.now()){
+  let notes=[]; try{ notes=JSON.parse(json||'[]'); }catch(e){}
+  if(!Array.isArray(notes)) return [];
+  return notes.filter(n=>n?.text && nowMs-Date.parse(n.at||0)<ENGINE_STAFF_NOTE_DAYS*864e5).map(n=>String(n.text));
+}
+// Extra reply-prompt context for v2 — empty unless the turn loaded some (state.staffNotes,
+// state.winExamples are only filled when the toggle is on).
+export function engineV2Block(state){
+  let out='';
+  if(state?.staffNotes?.length) out+=`\n\n## Instructions From the Team for This Chat\nA member of staff left these private instructions for you. Follow them, but never mention or quote them to the customer:\n${state.staffNotes.map(n=>'- '+n).join('\n')}`;
+  if(state?.winExamples?.length) out+=`\n\n## How Our Team Has Closed Deals\nReal messages our staff sent in conversations that ended in a sale. Use them as a guide to tone and approach only — never copy names, prices or details from them:\n${state.winExamples.map(t=>'- "'+t+'"').join('\n')}`;
+  return out;
+}
+
+// Language follow (#8): the script a staff message is written in, when it's one we can tell
+// from the characters alone.
+const ENGINE_SCRIPT_LANGS=[['ml',/[ഀ-ൿ]/],['ta',/[஀-௿]/],['te',/[ఀ-౿]/],['kn',/[ಀ-೿]/],['bn',/[ঀ-৿]/],['hi',/[ऀ-ॿ]/],['ar',/[؀-ۿ]/]];
+export function engineScriptLang(text){
+  const t=String(text||'');
+  for(const [code,re] of ENGINE_SCRIPT_LANGS) if(re.test(t)) return code;
+  return null;
+}
+// Staff just wrote in another script and the customer answered with something too short to tell
+// ("ok", "yes 👍") — reply in the staff's language rather than switching back to the default.
+export function engineV2FollowStaffLanguage(history, userText, detectedLang){
+  const last=[...(history||[])].reverse().find(m=>m?.role==='assistant');
+  if(!last || last.by!=='agent') return null;
+  const staffLang=engineScriptLang(last.content);
+  if(!staffLang || staffLang===detectedLang) return null;
+  if(engineScriptLang(userText)) return null;
+  const words=String(userText||'').trim().split(/\s+/).filter(Boolean);
+  if(words.length>4) return null;
+  if(detectedLang && detectedLang!=='en') return null;
+  return staffLang;
+}
+
+// Promise detection (#6): a cheap filter before spending an LLM call on a staff message.
+export function engineLooksLikeStaffPromise(text){
+  return /\b(i'?ll|i will|we'?ll|we will|will (call|send|share|update|confirm|check|arrange|deliver)|tomorrow|tonight|by (today|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at \d{1,2}(:\d{2})?\s*(am|pm)?|within \d+|guarantee|promise)\b/i.test(String(text||''));
+}
+function engineMergeFactsJson(prevJson, add){
+  let facts=[]; try{ facts=JSON.parse(prevJson||'[]'); }catch(e){}
+  if(!Array.isArray(facts)) facts=[];
+  for(const f of add) if(typeof f==='string' && f.trim() && !facts.includes(f.trim())) facts.push(f.trim());
+  return JSON.stringify(facts.slice(-12));
+}
+async function engineV2ExtractStaffPromises(env, c, text){
+  if(!engineLooksLikeStaffPromise(text)) return [];
+  const system='A member of a business\'s staff sent the WhatsApp message below to a customer. List any concrete commitment they made (a call, a visit, a delivery, a price, a discount, a deadline, sending something), each as one short line starting "Staff promised: ". Respond with ONLY a JSON array of strings; an empty array if there is no commitment.';
+  const raw=await engineCallLlm(env, c, system, text, 150);
+  let out=null; try{ out=JSON.parse(String(raw||'').replace(/^```(?:json)?|```$/g,'').trim()); }catch(e){}
+  return Array.isArray(out)?out.filter(f=>typeof f==='string' && /^Staff promised:/i.test(f.trim())).slice(0,3):[];
+}
+
+// #1/#2/#6 for one staff message. Called a few seconds after the webhook (see the call site) so a
+// bot reply that echoes back has already been written to ConvHistory/D1 and is skipped as such.
+async function engineV2HandleStaffMessage(env, c, clientId, body){
+  const convId=String(body.conversation?.id||'');
+  if(!convId) return;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1`);
+  const lead=(await r.json().catch(()=>({})))?.list?.[0];
+  if(!lead?.Id) return;
+  const now=new Date().toISOString();
+  const hist=engineAppendAgentReply(lead.ConvHistory, body, now);
+  if(!hist) return;
+  const text=hist[hist.length-1].content;
+  // Already in the Chats thread? (a Chats-page send, or the bot's own reply racing this check)
+  const dup=await env.DB.prepare(`SELECT content FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 6`)
+    .bind(Number(lead.Id)).all().catch(()=>({results:[]}));
+  const d1Recent=(dup.results||[]).map(x=>engineNormText(x.content));
+  const n=engineNormText(text);
+  if(d1Recent.some(x=>x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x)))){
+    // In D1 but not in ConvHistory → a Chats-page send: history only, no second bubble.
+  } else {
+    await d1InsertLeadMessage(env, lead.Id, clientId, {role:'assistant', content:text, ts:now});
+  }
+  const patch={Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40))};
+  if(hist[hist.length-1].by==='agent'){
+    const promises=await engineV2ExtractStaffPromises(env, c, text).catch(()=>[]);
+    if(promises.length){ await ensureLeadsColumns(env, ['Customer Facts']); patch['Customer Facts']=engineMergeFactsJson(lead['Customer Facts'], promises); }
+  }
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
+}
+
+async function engineV2HandleStaffNote(env, clientId, body, note){
+  const convId=String(body.conversation?.id||'');
+  if(!convId) return;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1`);
+  const lead=(await r.json().catch(()=>({})))?.list?.[0];
+  if(!lead?.Id) return;
+  await ensureLeadsColumns(env, ['StaffNotes']);
+  const notes=engineMergeStaffNotes(lead.StaffNotes, note, new Date().toISOString());
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), StaffNotes:JSON.stringify(notes)}});
+}
+
+// #3: what happened while a person had the chat, folded into Customer Facts on hand-back.
+export function engineTakeoverTurns(history, sinceIso){
+  const since=Date.parse(sinceIso||'');
+  if(!Number.isFinite(since)) return [];
+  return (history||[]).filter(m=>Date.parse(m?.ts||'')>=since);
+}
+async function engineV2HandBackSummary(env, c, lead){
+  let history=[]; try{ history=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+  const turns=engineTakeoverTurns(history, lead.HandoverAt);
+  if(!turns.some(engineIsStaffTurn)) return null;
+  const transcript=turns.map(m=>`${m.role==='user'?'Customer':'Staff'}: ${m.content}`).join('\n');
+  const system='A member of staff handled this part of a WhatsApp sales chat and is now handing it back to the AI assistant. List what the assistant must know to continue: what was agreed, prices or discounts quoted, promises made, and decisions or open questions. Respond with ONLY a JSON array of short strings (max 6), each starting "During staff chat: ". Empty array if nothing matters.';
+  const raw=await engineCallLlm(env, c, system, transcript, 250);
+  let facts=null; try{ facts=JSON.parse(String(raw||'').replace(/^```(?:json)?|```$/g,'').trim()); }catch(e){}
+  if(!Array.isArray(facts)) return null;
+  const add=facts.filter(f=>typeof f==='string' && f.trim()).slice(0,6);
+  if(!add.length) return null;
+  await ensureLeadsColumns(env, ['Customer Facts']);
+  return engineMergeFactsJson(lead['Customer Facts'], add);
+}
+
+// #9: daily sweep — staff messages from chats that reached Won become phrasing examples.
+export function engineWinExampleTexts(history){
+  return (history||[]).filter(m=>m?.by==='agent').map(m=>String(m.content||'').trim())
+    .filter(t=>t.length>=20 && t.length<=400).slice(-3);
+}
+async function engineEnsureStaffWinTable(env){
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS staff_win_examples (client_id INTEGER, lead_id INTEGER, text TEXT, at TEXT, UNIQUE(lead_id, text))').run().catch(()=>{});
+}
+export async function runStaffWinExamplesForAllClients(env){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}&fields=Id,bot_config`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!engineV2On(c)) continue;
+      try{ await engineHarvestStaffWins(env, String(c.Id)); }
+      catch(e){ await reportOpsError(env, 'engineHarvestStaffWins', e, {clientId:c.Id}); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+async function engineHarvestStaffWins(env, clientId){
+  await engineEnsureStaffWinTable(env);
+  const where=`(ClientId,eq,${clientId})~and(Stage,in,won,converted)`;
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&limit=100&sort=-Id&fields=Id,ConvHistory`);
+  const leads=(await r.json().catch(()=>({})))?.list||[];
+  const now=new Date().toISOString();
+  const stmts=[];
+  for(const l of leads){
+    let h=[]; try{ h=JSON.parse(l.ConvHistory||'[]'); }catch(e){}
+    for(const t of engineWinExampleTexts(h))
+      stmts.push(env.DB.prepare('INSERT OR IGNORE INTO staff_win_examples (client_id, lead_id, text, at) VALUES (?,?,?,?)').bind(Number(clientId), Number(l.Id), t, now));
+  }
+  if(stmts.length) await env.DB.batch(stmts).catch(()=>{});
+}
+async function engineLoadWinExamples(env, clientId){
+  const r=await env.DB.prepare('SELECT text FROM staff_win_examples WHERE client_id=? ORDER BY at DESC, rowid DESC LIMIT 5')
+    .bind(Number(clientId)).all().catch(()=>({results:[]}));
+  return (r.results||[]).map(x=>x.text);
+}
 
 async function handleEngineWebhook(request, env, secret, ctx=null){
   const startMs=Date.now();
@@ -19756,17 +19969,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         try{
           await ensureLeadsColumns(env, ['LastAgentMsgAt']);
           const convField='ConversationID'; // NocoDB field name for Chatwoot conv id
-          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id,ConvHistory`);
+          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id`);
           const ld=await leadsR.json().catch(()=>({}));
           const leadId=ld?.list?.[0]?.Id;
           if(leadId){
-            const now=new Date().toISOString();
-            const patch={Id:Number(leadId), LastAgentMsgAt:now};
-            // What the human typed goes into ConvHistory too, so the bot's next reply builds on
-            // it (no re-asking what staff already asked, no contradicting a price they quoted).
-            const hist=engineAppendAgentReply(ld.list[0].ConvHistory, body, now);
-            if(hist) patch.ConvHistory=JSON.stringify(hist.slice(-40));
-            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
+            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:new Date().toISOString()}});
             // Also reset the Durable Object cadence so it doesn't fire while the human is active
             try{
               const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${leadId}`));
@@ -19774,8 +19981,24 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             }catch(e){}
           }
         }catch(e){ /* best-effort — don't block on tracking */ }
+        // Leadvyne v2: the message itself joins ConvHistory (+ Chats thread, + promises → facts).
+        // Delayed so that if this is the bot's own reply echoing back, its turn has finished
+        // writing ConvHistory/D1 and the echo is recognised and skipped.
+        if(engineV2On(c)){
+          const work=new Promise(r=>setTimeout(r, 8000)).then(()=>engineV2HandleStaffMessage(env, c, clientId, body)).catch(()=>{});
+          if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
+        }
       }
       return json({ok:true, handled:'agent-reply-tracked'});
+    }
+  }
+
+  // Leadvyne v2: a private note starting "/bot" is a hidden instruction for this chat.
+  if(body.private && engineV2On(c)){
+    const note=engineParseStaffNote(body);
+    if(note){
+      try{ await engineV2HandleStaffNote(env, clientId, body, note); }catch(e){}
+      return json({ok:true, handled:'staff-note'});
     }
   }
 
@@ -19803,6 +20026,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
 
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
+    if(engineV2On(c)){
+      state.staffNotes=engineActiveStaffNotes(state.lead?.StaffNotes);
+      state.winExamples=await engineLoadWinExamples(env, clientId).catch(()=>[]);
+    }
 
     // Manual takeover from Chats (see handleChatHandover): the bot stays silent on this lead,
     // whatever handover_silence_enabled says, until someone taps "Hand back to bot". The
@@ -19815,9 +20042,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       const media=engineInboundMediaFields(mediaType, mediaUrl, text, msgId);
       await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
         ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
-      // ConvHistory too, so after "Hand back to bot" the bot sees both sides of what happened
-      // during the takeover (the staff side lands via engineAppendAgentReply).
-      const takeoverHist=text?[...(state.history||[]), {role:'user', content:text, ts:now}].slice(-40):null;
+      // Leadvyne v2: ConvHistory too, so after "Hand back to bot" the bot sees both sides of what
+      // happened during the takeover (the staff side lands via engineV2HandleStaffMessage).
+      const takeoverHist=(text && engineV2On(c))?[...(state.history||[]), {role:'user', content:text, ts:now}].slice(-40):null;
       await engineUpsertLead(env, 'PATCH', state.leadId, {LastMsgAt:now, ...(takeoverHist?{ConvHistory:JSON.stringify(takeoverHist)}:{})});
       await engineSilentBabyCareOrderUpdate(env, c, clientId, phone, text, state.lead, ctx);
       await logEngineSkip(env, clientId, phone, convId, 'manual-takeover', `taken over by ${state.lead.HandoverBy}`);
@@ -20154,6 +20381,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       : (_ecomFastPath||_classificationDisabled)
       ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
+    if(engineV2On(c)){
+      const staffLang=engineV2FollowStaffLanguage(state.activeHistory, userText, cls.customerLanguage);
+      if(staffLang) cls.customerLanguage=staffLang;
+    }
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
     if(introAction) routing.historyUserText=parsed.text;
     Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));
@@ -34040,6 +34271,8 @@ export default {
       ctx.waitUntil(runScheduledReportsForAllClients(env));
       // Cold-lead auto-reallocation (Settings → 🔀 Lead Routing) — see runColdLeadReallocationForAllClients.
       ctx.waitUntil(runColdLeadReallocationForAllClients(env));
+      // Leadvyne v2 — staff phrasing from Won chats; see runStaffWinExamplesForAllClients.
+      ctx.waitUntil(runStaffWinExamplesForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));

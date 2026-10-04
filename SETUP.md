@@ -8805,3 +8805,14 @@ the existing product image/media bundle and its tier/window rules are unchanged.
 - Run `wrangler d1 migrations apply leadvyne-d1 --remote` for
   `migrations/0099_ecom_product_photoshoot_folder.sql` (the D1 product mirror also self-adds the
   column on first save if the migration hasn't run yet).
+
+## Leadvyne v2 (Bot Behavior → 🧠 Leadvyne v2)
+
+Off by default (`bot_config.leadvyne_v2`); with it off nothing below runs. When on:
+
+- Staff messages sent from Chatwoot or the Chats page (and templates sent through Chatwoot) are added to `ConvHistory` (`by:'agent'` / `by:'template'`), labelled in the reply prompts, and shown in the Chats thread. They are processed ~8s after the webhook so the bot's own replies echoing back are recognised and skipped.
+- A Chatwoot **private note** starting `/bot` is a hidden instruction for that chat (LEADS `StaffNotes`, last 5, 14 days). `/bot clear` removes them.
+- **Hand back to bot** summarises the takeover into Customer Facts; customer messages during a takeover stay in `ConvHistory`.
+- Staff promises ("I'll call you at 5") are saved as Customer Facts (`Staff promised: …`).
+- Staff turns are excluded from loop detection; a short customer reply after staff wrote in Malayalam/Tamil/Hindi/Arabic etc. is answered in that language.
+- The daily 02:00 cron copies staff messages from Won/Converted chats into D1 `staff_win_examples` (created automatically); the latest 5 guide the bot's tone.
