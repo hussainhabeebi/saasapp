@@ -12816,7 +12816,26 @@ async function ncDelete(url,body){
 // the JSON into NocoDB directly, which is how both incidents actually got resolved). A normal,
 // already-existing-column save still returns on the first attempt with zero added latency — the
 // backoff only ever engages once a mismatch is actually detected.
+// bot_config is one shared per-client JSON blob (name_ml, manglish_words, toggles…) and every
+// writer builds it from the clientRecord loaded at page open. If that copy is stale (another tab,
+// a teammate, broadcast.html) a write of one key would silently drop keys saved elsewhere — e.g.
+// the client's Malayalam business name. So apply only the keys this save changed onto the
+// freshest server copy of *this* client's bot_config.
+async function mergeBotConfigFields(fields){
+  if(typeof fields.bot_config!=='string') return fields;
+  const parse=s=>{ try{ const o=JSON.parse(s||'{}'); return o&&typeof o==='object'&&!Array.isArray(o)?o:{}; }catch(e){ return {}; } };
+  const base=parse(clientRecord?.bot_config), next=parse(fields.bot_config);
+  let fresh;
+  try{ fresh=parse((await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`)).bot_config); }
+  catch(e){ return fields; }
+  for(const k of new Set([...Object.keys(base),...Object.keys(next)])){
+    if(!(k in next)) delete fresh[k];
+    else if(JSON.stringify(base[k])!==JSON.stringify(next[k])) fresh[k]=next[k];
+  }
+  return {...fields,bot_config:JSON.stringify(fresh)};
+}
 async function patchClient(fields){
+  fields=await mergeBotConfigFields(fields);
   const MAX_ATTEMPTS=3;
   let lastError=null;
   for(let attempt=1; attempt<=MAX_ATTEMPTS; attempt++){
