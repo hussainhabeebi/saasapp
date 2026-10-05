@@ -2423,12 +2423,13 @@ request/response shape, so no frontend page needed to change for this migration.
    `cloudflare-worker/migrations/` in order — running it again after adding a new migration file
    only applies what's new).
 
-## Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings)
+## Cal.com Meetings (Settings → 📅 Meetings)
 
 Calls and meetings with leads (intro calls, demos, consultations), booked on the client's own
 Cal.com. **Separate from the Appointment Booking module** and its "🗓️ Cal.com Sync" card above: it
-never reads or writes `appt_table_ids` tables, and it has its own webhook URL. It has no tab of its
-own. Everything, including the meetings list, is in the one card in Settings → Integrations.
+never reads or writes `appt_table_ids` tables, and it has its own webhook URL. It has its own
+Settings tab (`#pageMeetings`, also reachable with `?meetings`); Settings → Integrations only keeps a
+pointer card to it.
 
 **Setup:** apply `cloudflare-worker/migrations/0104_calcom_meetings.sql`
 (`wrangler d1 migrations apply leadvyne-d1 --remote`). `WORKER_BASE_URL` must be set for tracked
@@ -2470,6 +2471,27 @@ Cal.com URL, up to 6). Until then the card shows only the links step. After the 
 - **Outcomes:** "How did it go?" lists completed meetings that have no outcome yet. The choices are
   Interested / Not interested / Follow-up / No-show (`POST /meetings/outcome`). Follow-up also
   adds a normal task (via `manual_tasks`) due in 2 days.
+- **Lead sync** (`lead_sync`, on by default; `mtgSyncLead`): on a real change only (`mtgLeadEvent`
+  — a re-delivered webhook does nothing), the lead gets one meeting tag (`Meeting Booked` /
+  `Meeting Cancelled` / `Meeting: Interested` / `Meeting: Not Interested` / `Meeting: Follow-up` /
+  `Meeting No-show`, replacing the previous one), a timeline note in `NotesList` (author
+  `meetings`, so cold reallocation doesn't count it as the owner's), and on booking `Score=Hot`
+  plus a move to the first of `meeting_booked` / `demo_booked` / `consultation_booked` /
+  `appt_booked` that the client's `flow_json` defines (never out of a won/lost/terminal stage).
+  Outcomes set the matching tag and note too. With `create_lead` (on by default) a booking from
+  someone who isn't a lead yet creates one (`LeadSource: Cal.com Meeting`, normal owner routing).
+- **Team WhatsApp alert** (`staff_alert`, on by default; `mtgNotifyStaff`): on booked / requested /
+  rescheduled / cancelled, WhatsApps the rep who sent the link, then the lead's owner (numbers from
+  `team_whatsapp`, User Mgmt). The account owner gets it when neither has a number, or always with
+  `staff_alert_owner`. Plain text first; outside the 24h window it falls back to the Hot Lead
+  Alert template if one is set. The message links to `?lead=<id>`.
+- **Meetings list:** `GET /meetings/list` also returns `all` (every row in the last 90 days, with
+  Cal.com `reschedule_url` / `cancel_url` for open bookings). The tab filters it (Upcoming, Today,
+  How did it go?, Links not booked, Past, Cancelled, All), groups by day, searches, and shows a
+  per-meeting timeline (link sent → opened → booked → confirmation → reminders → outcome) and a
+  private note (`POST /meetings/note`, stored in `outcome_note`).
+- **Lead detail panel:** a 📅 Meetings section (`GET /meetings/lead?lead_id=`) lists the lead's
+  meetings and has a one-tap "Send meeting link". Hidden while the module is off.
 - **Stats** (last 90 days): links sent → clicked → booked → attended / no-show → interested,
   meetings this week, and a per-rep table (`sent_by` = the signed-in rep's email).
 - **Bot:** "Let the bot share the meeting link" copies the links into `mtg_bot_links` on CLIENTS

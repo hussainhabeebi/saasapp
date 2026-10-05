@@ -650,6 +650,39 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 /* settings */
 .settings-section{margin-bottom:26px}
 .s-head{font-family:var(--disp);font-size:15px;font-weight:700;margin-bottom:4px}
+/* Settings → 📅 Meetings (mtg*) — translucent tints so the pills read in light and night mode */
+.mtg-pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted);vertical-align:middle;white-space:nowrap}
+.mtg-pill.on,.mtg-pill.scheduled{background:rgba(16,185,129,.14);border-color:rgba(16,185,129,.35);color:#059669}
+.mtg-pill.pending,.mtg-pill.follow_up{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#b45309}
+.mtg-pill.cancelled,.mtg-pill.no_show,.mtg-pill.not_interested{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.35);color:#dc2626}
+.mtg-pill.interested{background:rgba(13,156,147,.14);border-color:rgba(13,156,147,.4);color:#0d9488}
+.mtg-pill.link_sent,.mtg-pill.clicked{background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.35);color:#6366f1}
+.mtg-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px}
+.mtg-kpi{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:12px 14px}
+.mtg-kpi b{display:block;font-family:var(--disp);font-size:22px;line-height:1.15}
+.mtg-kpi span{font-size:12px;color:var(--muted)}
+.mtg-kpi small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.mtg-chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;margin-bottom:8px;scrollbar-width:none}
+.mtg-chip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:5px 11px;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
+.mtg-chip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.mtg-day{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:14px 0 4px}
+.mtg-row{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;font-size:13px}
+.mtg-row.soon{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.mtg-row-top{display:flex;gap:10px;align-items:flex-start}
+.mtg-av{flex:none;width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-weight:700}
+.mtg-row-main{flex:1;min-width:0}
+.mtg-name{font-weight:700;color:var(--ink);background:none;border:0;padding:0;font:inherit;font-weight:700;cursor:pointer;text-align:left}
+.mtg-name:hover{text-decoration:underline}
+.mtg-sub{color:var(--muted);font-size:12px;margin-top:1px;overflow-wrap:anywhere}
+.mtg-when{font-size:12px;color:var(--ink);margin-top:3px}
+.mtg-when em{font-style:normal;color:var(--accent);font-weight:600}
+.mtg-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.mtg-actions a,.mtg-actions button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:4px 9px;font-size:12px;text-decoration:none;cursor:pointer;font-family:inherit}
+.mtg-actions a.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.mtg-detail{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.mtg-tl{list-style:none;margin:0 0 8px;padding:0;font-size:12px;color:var(--muted)}
+.mtg-tl li{padding:2px 0}
+.mtg-tl li b{color:var(--ink);font-weight:600}
 .s-note{font-size:12.5px;color:var(--muted);margin-bottom:12px;line-height:1.6}
 .save-btn{background:linear-gradient(135deg,var(--accent),#2DD4BF);color:#fff;border:none;border-radius:var(--r-sm);padding:10px 22px;font-family:var(--disp);font-weight:600;font-size:13px;cursor:pointer;transition:opacity .15s}
 .save-btn:hover{opacity:.88}
@@ -1847,6 +1880,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -2200,6 +2234,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -2675,6 +2710,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -2833,11 +2869,135 @@ const ROLES = {
 
     <!-- INTEGRATIONS (Bulk Marketing module: WhatsApp/Meta status, Resend email, Google Sheets,
          and the automated health check for all of the above) -->
+    <!-- MEETINGS (Settings → 📅 Meetings) — Cal.com meetings with leads: intro calls, demos,
+         consultations. Separate from the Appointment Booking module and its Cal.com Sync: its own D1
+         tables (migrations/0104_calcom_meetings.sql) and webhook (/calcom/meetings/<clientId>,
+         handleCalcomMeetingsWebhook in worker.js). Switched on the moment the client saves at least
+         one Cal.com meeting link — until then only the setup card is shown. See mtgInit(). -->
+    <div class="page s-page hidden" id="pageMeetings">
+      <nav class="s-nav">
+        <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
+        <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
+        <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn active" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
+        <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
+        <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
+        <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
+        <button class="ssnav-btn" data-subpage="logs" onclick="navigate('logs')"><span class="ssnav-icon">🪵</span><span class="ssnav-label">Logs</span></button>
+        <button class="ssnav-btn" data-subpage="botbehavior" onclick="navigate('botbehavior')"><span class="ssnav-icon">🤖</span><span class="ssnav-label">Bot Behavior</span></button>
+        <button class="ssnav-btn" data-subpage="knowledgebase" onclick="navigate('knowledgebase')"><span class="ssnav-icon">📚</span><span class="ssnav-label">Knowledge Base</span></button>
+      </nav>
+      <div class="page-pad s-content" id="mtgCard">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+          <div>
+            <div class="card-title" style="margin-bottom:2px">📅 Meetings <span id="mtgStatusBadge" class="mtg-pill">Off</span></div>
+            <div style="font-size:13px;color:var(--muted)">Calls and demos with leads, booked on your Cal.com. Bookings land on the lead, your team gets a WhatsApp alert, and the lead gets confirmations and reminders.</div>
+          </div>
+          <button class="btn-ghost" type="button" id="mtgRefreshBtn" style="display:none" onclick="mtgLoadMeetings()">↻ Refresh</button>
+        </div>
+        <div id="mtgLoadMsg" class="s-note" style="display:none"></div>
+
+        <div id="mtgLive" style="display:none">
+          <!-- At a glance -->
+          <div id="mtgKpis" class="mtg-kpis"></div>
+
+          <!-- Send a meeting link -->
+          <div class="card" style="margin-bottom:14px">
+            <div class="s-head" style="margin-bottom:8px">📨 Send a meeting link</div>
+            <div style="position:relative;margin-bottom:8px">
+              <input class="form-input" id="mtgLeadSearch" type="text" placeholder="Search lead by name or phone…" autocomplete="off" oninput="mtgRenderLeadResults()">
+              <div id="mtgLeadResults" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:20;background:var(--card,#fff);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.08);max-height:240px;overflow:auto"></div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+              <select class="form-input" id="mtgSendLink" style="flex:1;min-width:160px"></select>
+              <button class="save-btn" type="button" id="mtgSendBtn" onclick="mtgSendLink(true)">Send on WhatsApp</button>
+              <button class="btn-ghost" type="button" onclick="mtgSendLink(false)">📋 Copy link</button>
+            </div>
+            <div id="mtgSendMsg" class="s-note" style="margin:0"></div>
+          </div>
+
+          <!-- Meetings list -->
+          <div class="card" style="margin-bottom:14px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+              <div class="s-head" style="margin:0;flex:1">🗂️ Meetings</div>
+              <input class="form-input" id="mtgSearch" type="search" placeholder="Search name, phone, rep…" style="max-width:220px" oninput="mtgRenderLists()">
+            </div>
+            <div id="mtgFilters" class="mtg-chips"></div>
+            <div id="mtgLists"></div>
+          </div>
+
+          <!-- Funnel + reps -->
+          <div class="card" style="margin-bottom:14px">
+            <div class="s-head" style="margin-bottom:8px">📈 Funnel <span style="font-weight:500;color:var(--muted);font-size:12px">· last 90 days</span></div>
+            <div id="mtgStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:12px"></div>
+            <div id="mtgReps"></div>
+          </div>
+        </div>
+
+        <!-- Setup & automation — open by default until the module is on -->
+        <details class="card" id="mtgSetupCard" style="margin-bottom:14px">
+          <summary class="s-head" style="cursor:pointer;margin:0">⚙️ Setup &amp; automation</summary>
+          <div id="mtgConfigBody" style="margin-top:12px">
+            <label class="form-label">1. Your Cal.com meeting links</label>
+            <div class="s-note" style="margin-bottom:6px">One per meeting type, e.g. "15-min intro" → https://cal.com/yourname/intro</div>
+            <div id="mtgLinksList"></div>
+            <button class="btn-ghost" type="button" onclick="mtgAddLinkRow()" style="margin:2px 0 14px">+ Add meeting type</button>
+
+            <div id="mtgSetupMore" style="display:none">
+              <label class="form-label">2. Connect Cal.com (bookings sync back here)</label>
+              <div class="s-note" style="margin-bottom:6px">In Cal.com: <b>Settings → Developer → Webhooks → New</b>. Paste the URL and secret below, tick <b>Booking Created, Rescheduled, Cancelled, Rejected, Requested, Meeting Ended</b> and <b>No-show updated</b>, then press <b>Ping test</b>.</div>
+              <label class="form-label" style="font-weight:500">Webhook URL</label>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <input class="form-input" id="mtgWebhookUrl" type="text" readonly style="font-family:var(--mono);font-size:12px" onclick="this.select()">
+                <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookUrl')">📋 Copy</button>
+              </div>
+              <label class="form-label" style="font-weight:500">Webhook secret</label>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <input class="form-input" id="mtgWebhookSecret" type="text" placeholder="Generated on first save — or type your own" style="font-family:var(--mono);font-size:12px">
+                <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookSecret')">📋 Copy</button>
+              </div>
+              <div id="mtgConnStatus" class="s-note" style="margin-bottom:14px"></div>
+
+              <label class="form-label">3. When a meeting is booked</label>
+              <div style="display:grid;gap:6px;margin-bottom:6px;font-size:13px">
+                <label><input type="checkbox" id="mtgOptLeadSync"> Update the lead — "Meeting Booked" tag, a timeline note, mark Hot, and move to your booking stage if you have one</label>
+                <label><input type="checkbox" id="mtgOptCreateLead"> Create a new lead when someone who isn't a lead yet books</label>
+                <label><input type="checkbox" id="mtgOptStaffAlert"> WhatsApp the rep who sent the link (or the lead's owner) when a meeting is booked, moved or cancelled</label>
+                <label><input type="checkbox" id="mtgOptStaffOwner"> Always send me (the account owner) a copy too</label>
+              </div>
+              <div class="s-note" style="margin-bottom:14px">Team alerts go to the WhatsApp numbers in <a href="#" onclick="navigate('usermanagement');return false">User Mgmt</a>. Outside WhatsApp's 24h window they use your <b>Hot Lead Alert</b> template (Integrations → Hot Lead Alerts).</div>
+
+              <label class="form-label">4. WhatsApp messages to the lead</label>
+              <div style="display:grid;gap:6px;margin-bottom:8px;font-size:13px">
+                <label><input type="checkbox" id="mtgOptConfirm"> Confirmation when a meeting is booked or rescheduled (with the join link)</label>
+                <label><input type="checkbox" id="mtgOptRemind24"> Reminder 24 hours before</label>
+                <label><input type="checkbox" id="mtgOptRemind1"> Reminder 1 hour before</label>
+                <label><input type="checkbox" id="mtgOptCancel"> "Want to pick another time?" when a meeting is cancelled</label>
+                <label><input type="checkbox" id="mtgOptNudge"> One nudge if a lead got a link but didn't book within 24 hours</label>
+                <label><input type="checkbox" id="mtgOptBotShare"> Let the bot share the meeting link when a lead asks for a call or demo</label>
+              </div>
+              <div class="s-note" style="margin-bottom:6px">Optional: WhatsApp only allows plain messages within 24h of the lead's last message. For reminders outside that window, add an approved template with 3 variables — {{1}} name, {{2}} date &amp; time, {{3}} link.</div>
+              <div style="display:flex;gap:8px;margin-bottom:12px">
+                <input class="form-input" id="mtgTplName" type="text" placeholder="Template name (optional)" style="flex:2">
+                <input class="form-input" id="mtgTplLang" type="text" placeholder="en" style="flex:1">
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="mtgSaveBtn" type="button" onclick="mtgSaveConfig()">Save</button>
+              <span class="save-msg" id="mtgSaveMsg"></span>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
     <div class="page s-page hidden" id="pageIntegrations">
       <nav class="s-nav">
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3025,77 +3185,12 @@ const ROLES = {
           </div>
         </div>
 
-        <!-- Cal.com Meetings — calls/meetings with leads (intro calls, demos, consultations). A separate
-             module from the Appointment Booking module and its Cal.com Sync card above: its own D1
-             tables (migrations/0104_calcom_meetings.sql), its own webhook URL
-             (/calcom/meetings/<clientId>, handleCalcomMeetingsWebhook in worker.js). Switched on the
-             moment the client saves at least one Cal.com meeting link — until then only the links
-             step is shown. Lives entirely in this card (no separate tab) — see mtgInit(). -->
-        <div class="card" style="margin-bottom:14px" id="mtgCard">
+        <!-- Cal.com Meetings moved to its own Settings tab (Settings → 📅 Meetings, #pageMeetings). -->
+        <div class="card" style="margin-bottom:14px">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">📞 Cal.com Meetings <span id="mtgStatusBadge" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;background:var(--bg);border:1px solid var(--line);color:var(--muted)">Off</span></div>
-            <div class="s-note">For calls and meetings with leads — intro calls, demos, consultations. Separate from Appointments. Add your Cal.com meeting link to switch this on: reps can send tracked links to leads, bookings come back here, and leads get WhatsApp confirmations and reminders.</div>
-            <div id="mtgLoadMsg" class="s-note" style="display:none"></div>
-
-            <div id="mtgConfigBody">
-              <label class="form-label">1. Your Cal.com meeting links</label>
-              <div class="s-note" style="margin-bottom:6px">One per meeting type, e.g. "15-min intro" → https://cal.com/yourname/intro</div>
-              <div id="mtgLinksList"></div>
-              <button class="btn-ghost" type="button" onclick="mtgAddLinkRow()" style="margin:2px 0 14px">+ Add meeting type</button>
-
-              <div id="mtgSetupMore" style="display:none">
-                <label class="form-label">2. Connect Cal.com (bookings sync back here)</label>
-                <div class="s-note" style="margin-bottom:6px">In Cal.com: <b>Settings → Developer → Webhooks → New</b>. Paste the URL and secret below, tick <b>Booking Created, Rescheduled, Cancelled, Rejected, Requested, Meeting Ended</b> and <b>No-show updated</b>, then press <b>Ping test</b>.</div>
-                <label class="form-label" style="font-weight:500">Webhook URL</label>
-                <div style="display:flex;gap:8px;margin-bottom:8px">
-                  <input class="form-input" id="mtgWebhookUrl" type="text" readonly style="font-family:var(--mono);font-size:12px" onclick="this.select()">
-                  <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookUrl')">📋 Copy</button>
-                </div>
-                <label class="form-label" style="font-weight:500">Webhook secret</label>
-                <div style="display:flex;gap:8px;margin-bottom:6px">
-                  <input class="form-input" id="mtgWebhookSecret" type="text" placeholder="Generated on first save — or type your own" style="font-family:var(--mono);font-size:12px">
-                  <button class="btn-ghost" type="button" onclick="mtgCopy('mtgWebhookSecret')">📋 Copy</button>
-                </div>
-                <div id="mtgConnStatus" class="s-note" style="margin-bottom:14px"></div>
-
-                <label class="form-label">3. WhatsApp messages to the lead</label>
-                <div style="display:grid;gap:6px;margin-bottom:8px;font-size:13px">
-                  <label><input type="checkbox" id="mtgOptConfirm"> Confirmation when a meeting is booked or rescheduled (with the join link)</label>
-                  <label><input type="checkbox" id="mtgOptRemind24"> Reminder 24 hours before</label>
-                  <label><input type="checkbox" id="mtgOptRemind1"> Reminder 1 hour before</label>
-                  <label><input type="checkbox" id="mtgOptCancel"> "Want to pick another time?" when a meeting is cancelled</label>
-                  <label><input type="checkbox" id="mtgOptNudge"> One nudge if a lead got a link but didn't book within 24 hours</label>
-                  <label><input type="checkbox" id="mtgOptBotShare"> Let the bot share the meeting link when a lead asks for a call or demo</label>
-                </div>
-                <div class="s-note" style="margin-bottom:6px">Optional: WhatsApp only allows plain messages within 24h of the lead's last message. For reminders outside that window, add an approved template with 3 variables — {{1}} name, {{2}} date &amp; time, {{3}} link.</div>
-                <div style="display:flex;gap:8px;margin-bottom:12px">
-                  <input class="form-input" id="mtgTplName" type="text" placeholder="Template name (optional)" style="flex:2">
-                  <input class="form-input" id="mtgTplLang" type="text" placeholder="en" style="flex:1">
-                </div>
-              </div>
-
-              <div style="display:flex;align-items:center;gap:10px">
-                <button class="save-btn" id="mtgSaveBtn" type="button" onclick="mtgSaveConfig()">Save</button>
-                <span class="save-msg" id="mtgSaveMsg"></span>
-              </div>
-            </div>
-
-            <div id="mtgLive" style="display:none;margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
-              <label class="form-label">📨 Send a meeting link</label>
-              <div style="position:relative;margin-bottom:8px">
-                <input class="form-input" id="mtgLeadSearch" type="text" placeholder="Search lead by name or phone…" autocomplete="off" oninput="mtgRenderLeadResults()">
-                <div id="mtgLeadResults" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:20;background:var(--card,#fff);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.08);max-height:240px;overflow:auto"></div>
-              </div>
-              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-                <select class="form-input" id="mtgSendLink" style="flex:1;min-width:160px"></select>
-                <button class="save-btn" type="button" id="mtgSendBtn" onclick="mtgSendLink(true)">Send on WhatsApp</button>
-                <button class="btn-ghost" type="button" onclick="mtgSendLink(false)">📋 Copy link</button>
-              </div>
-              <div id="mtgSendMsg" class="s-note" style="margin-bottom:14px"></div>
-
-              <div id="mtgStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;margin-bottom:14px"></div>
-              <div id="mtgLists"></div>
-            </div>
+            <div class="s-head">📞 Cal.com Meetings</div>
+            <div class="s-note" style="margin-bottom:8px">Meeting links, Cal.com sync, reminders and the meetings list now have their own tab.</div>
+            <button class="btn-ghost" type="button" onclick="navigate('meetings')">Open Settings → 📅 Meetings</button>
           </div>
         </div>
 
@@ -3351,6 +3446,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3427,6 +3523,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3608,6 +3705,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3691,6 +3789,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3725,6 +3824,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -3945,6 +4045,7 @@ const ROLES = {
         <button class="ssnav-btn" data-subpage="settings" onclick="navigate('settings')"><span class="ssnav-icon">⚙️</span><span class="ssnav-label">General</span></button>
         <button class="ssnav-btn" data-subpage="channels" onclick="navigate('channels')"><span class="ssnav-icon">🔌</span><span class="ssnav-label">Channels</span></button>
         <button class="ssnav-btn" data-subpage="integrations" onclick="navigate('integrations')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Integrations</span></button>
+        <button class="ssnav-btn" data-subpage="meetings" onclick="navigate('meetings')"><span class="ssnav-icon">📅</span><span class="ssnav-label">Meetings</span></button>
         <button class="ssnav-btn" data-subpage="voice" onclick="navigate('voice')"><span class="ssnav-icon">🎙️</span><span class="ssnav-label">Voice</span></button>
         <button class="ssnav-btn" data-subpage="modules" onclick="navigate('modules')"><span class="ssnav-icon">🧩</span><span class="ssnav-label">Modules</span></button>
         <button class="ssnav-btn" data-subpage="usermanagement" onclick="navigate('usermanagement')"><span class="ssnav-icon">👥</span><span class="ssnav-label">User Mgmt</span></button>
@@ -4404,6 +4505,8 @@ const ROLES = {
       <textarea class="form-input" id="noteInput" rows="2" placeholder="Add a note…" style="flex:1"></textarea>
       <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="addNote()">Add</button>
     </div>
+    <!-- meetings (Settings → 📅 Meetings) — filled by renderDetailMeetings(), hidden while the module is off -->
+    <div id="detailMeetings" style="display:none"></div>
     <!-- call log -->
     <div class="sec-hd">📞 Call Log</div>
     <div id="detailCalls"></div>
@@ -5514,13 +5617,13 @@ document.addEventListener('click',closeProfileMenu);
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeProfileMenu(); });
 
 /* ── NAVIGATION ── */
-const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','knowledgebase']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
+const SETTINGS_GROUP=['settings','channels','integrations','meetings','voice','modules','usermanagement','logs','botbehavior','knowledgebase']; // shown as one "Settings" tab with an internal sub-nav — billing promoted to its own top-level tab
 // Quotation no longer has its own nav entry — it's opened from a specific lead on the Human
 // Deals page (openQuoteFor()) instead, so it highlights that tab rather than nothing at all.
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','billing'];
+const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','meetings','voice','modules','usermanagement','logs','botbehavior','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.ssnav-btn').forEach(b=>{
@@ -5583,6 +5686,7 @@ function navigate(page){
   if(page==='chats') openChatsTab();
   if(page==='channels') channelsInit();
   if(page==='integrations') integrationsInit();
+  if(page==='meetings') mtgInit();
   if(page==='voice') voiceInit();
   if(page==='billing') billingInit();
 }
@@ -5680,6 +5784,7 @@ function showApp(){
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')||shopifyParam||instagramParam) landingPage='integrations';
+  else if(params.has('meetings')) landingPage='meetings';
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
   navigate(landingPage);
@@ -8824,6 +8929,7 @@ function openDetail(id){
 
   // calls
   renderDetailCalls(lead);
+  renderDetailMeetings(lead);
 
   // conversation — older leads arrive without their transcript (see hydrateConvHistory), so
   // fetch just this one if it isn't in memory yet and redraw the parts that read it.
@@ -13100,7 +13206,6 @@ function integrationsInit(){
   }
   loadGsheetStatus();
   flowvyneInit();
-  mtgInit();
   leadgenInit();
   aiInit();
 }
@@ -13206,13 +13311,16 @@ async function aiRemove(){
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
 }
 
-/* ── CAL.COM MEETINGS (Integrations → 📞 Cal.com Meetings card) ──
-   Separate from the Appointment module. Config + meetings live in the Worker's D1
-   (/meetings/* routes, worker.js "Cal.com Meetings"); the only CLIENTS field touched is
+/* ── MEETINGS (Settings → 📅 Meetings, #pageMeetings) ──
+   Cal.com meetings with leads. Separate from the Appointment module. Config + meetings live in the
+   Worker's D1 (/meetings/* routes, worker.js "Cal.com Meetings"); the Worker also tags/notes the
+   lead and WhatsApps the rep on each booking. The only CLIENTS field touched here is
    mtg_bot_links, read by buildKbProcessorText() when "Let the bot share the meeting link" is on. */
-let _mtgConfig=null, _mtgLeadPick=null;
+let _mtgConfig=null, _mtgLeadPick=null, _mtgData=null, _mtgFilter='upcoming';
+const _mtgOpen=new Set();
 const MTG_OUTCOME_LABELS={interested:'👍 Interested', not_interested:'👎 Not interested', follow_up:'🔁 Follow-up', no_show:'🚫 No-show'};
 const MTG_STATUS_LABELS={link_sent:'Link sent', clicked:'Clicked', pending:'Awaiting confirmation', scheduled:'Scheduled', cancelled:'Cancelled', completed:'Completed'};
+const MTG_FILTERS=[['upcoming','Upcoming'],['today','Today'],['needs_outcome','How did it go?'],['links','Links not booked'],['past','Past'],['cancelled','Cancelled'],['all','All']];
 
 async function mtgApi(path, opts={}){
   const r=await fetch(`${CONFIG.WORKER_BASE}${path}`, {...opts, headers:ncAuthHeaders(opts.body?{'Content-Type':'application/json'}:{})});
@@ -13227,7 +13335,7 @@ async function mtgInit(){
   try{
     _mtgConfig=(await mtgApi('/meetings/config')).config;
   }catch(e){
-    msg.style.display='block'; msg.textContent='Could not load Cal.com Meetings: '+e.message;
+    msg.style.display='block'; msg.textContent='Could not load Meetings: '+e.message;
     return;
   }
   mtgRenderConfig();
@@ -13241,9 +13349,12 @@ function mtgRenderConfig(){
   const on=!!cfg.enabled;
   const badge=$id('mtgStatusBadge');
   badge.textContent=on?'On':'Off';
-  badge.style.background=on?'#d1fae5':'var(--bg)'; badge.style.color=on?'#065f46':'var(--muted)';
+  badge.classList.toggle('on', on);
   $id('mtgSetupMore').style.display=on?'block':'none';
   $id('mtgLive').style.display=on?'block':'none';
+  $id('mtgRefreshBtn').style.display=on?'':'none';
+  // Setup is the whole page until the module is on; afterwards it folds away under the list.
+  $id('mtgSetupCard').open=!on || !cfg.last_event_at;
   $id('mtgWebhookUrl').value=`${CONFIG.WORKER_BASE}/calcom/meetings/${clientId}`;
   $id('mtgWebhookSecret').value=cfg.webhook_secret||'';
   const s=cfg.settings||{};
@@ -13253,6 +13364,10 @@ function mtgRenderConfig(){
   $id('mtgOptCancel').checked=s.cancel_followup!==false;
   $id('mtgOptNudge').checked=s.nudge!==false;
   $id('mtgOptBotShare').checked=!!s.bot_share;
+  $id('mtgOptLeadSync').checked=s.lead_sync!==false;
+  $id('mtgOptCreateLead').checked=s.create_lead!==false;
+  $id('mtgOptStaffAlert').checked=s.staff_alert!==false;
+  $id('mtgOptStaffOwner').checked=!!s.staff_alert_owner;
   $id('mtgTplName').value=s.template_name||'';
   $id('mtgTplLang').value=s.template_lang||'en';
   const conn=$id('mtgConnStatus');
@@ -13284,6 +13399,8 @@ async function mtgSaveConfig(){
   const settings={
     confirm:$id('mtgOptConfirm').checked, remind24:$id('mtgOptRemind24').checked, remind1:$id('mtgOptRemind1').checked,
     cancel_followup:$id('mtgOptCancel').checked, nudge:$id('mtgOptNudge').checked, bot_share:$id('mtgOptBotShare').checked,
+    lead_sync:$id('mtgOptLeadSync').checked, create_lead:$id('mtgOptCreateLead').checked,
+    staff_alert:$id('mtgOptStaffAlert').checked, staff_alert_owner:$id('mtgOptStaffOwner').checked,
     template_name:$id('mtgTplName').value.trim(), template_lang:$id('mtgTplLang').value.trim()||'en',
   };
   btn.disabled=true; msg.textContent='Saving…'; msg.className='save-msg';
@@ -13327,6 +13444,43 @@ function mtgWhen(iso){
   const d=new Date(iso||'');
   return Number.isFinite(d.getTime())?d.toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}):'';
 }
+function mtgTime(iso){
+  const d=new Date(iso||'');
+  return Number.isFinite(d.getTime())?d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}):'';
+}
+// "in 25 min" / "in 3h 10m" / "in 2 days" / "now" / "ended 1h ago"
+function mtgUntil(startIso, endIso){
+  const s=Date.parse(startIso||''), e=Date.parse(endIso||'')||s;
+  if(!Number.isFinite(s)) return '';
+  const now=Date.now();
+  if(now>=s && now<=e) return 'happening now';
+  const diff=s-now;
+  if(diff<0) return '';
+  const m=Math.round(diff/60000);
+  if(m<60) return `in ${m} min`;
+  const h=Math.floor(m/60);
+  if(h<24) return `in ${h}h${m%60?` ${m%60}m`:''}`;
+  const d=Math.round(h/24);
+  return `in ${d} day${d===1?'':'s'}`;
+}
+function mtgDuration(m){
+  const mins=Math.round((Date.parse(m.end_at||'')-Date.parse(m.start_at||''))/60000);
+  return Number.isFinite(mins)&&mins>0?(mins<60?`${mins} min`:`${Math.floor(mins/60)}h${mins%60?` ${mins%60}m`:''}`):'';
+}
+function mtgDayLabel(iso){
+  const d=new Date(iso||'');
+  if(!Number.isFinite(d.getTime())) return 'No date yet';
+  const day=x=>new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff=Math.round((day(d)-day(new Date()))/86400e3);
+  if(diff===0) return 'Today';
+  if(diff===1) return 'Tomorrow';
+  if(diff===-1) return 'Yesterday';
+  return d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'short'});
+}
+function mtgRepName(email){
+  if(!email) return '';
+  return (typeof getTeamMembers==='function'?getTeamMembers():[]).find(m=>sameEmail(m.email,email))?.name||email;
+}
 
 function mtgRenderLeadResults(){
   const box=$id('mtgLeadResults');
@@ -13350,8 +13504,7 @@ async function mtgSendLink(viaWhatsApp){
   if(!_mtgLeadPick){ msg.textContent='Pick a lead from the search results first.'; return; }
   const btn=$id('mtgSendBtn'); btn.disabled=true; msg.textContent=viaWhatsApp?'Sending…':'Creating link…';
   try{
-    const d=await mtgApi('/meetings/send', {method:'POST', body:JSON.stringify({lead_id:_mtgLeadPick.Id, link_index:Number($id('mtgSendLink').value)||0, send:viaWhatsApp, sent_by:myEmail||''})});
-    if(!viaWhatsApp||!d.whatsapp_sent) navigator.clipboard?.writeText(d.url).catch(()=>{});
+    const d=await mtgSendLinkFor(_mtgLeadPick.Id, Number($id('mtgSendLink').value)||0, viaWhatsApp);
     if(viaWhatsApp&&d.whatsapp_sent) msg.innerHTML=`✅ Sent to ${esc(_mtgLeadPick.Name||'lead')} on WhatsApp.`;
     else if(viaWhatsApp) msg.innerHTML=`⚠️ WhatsApp didn't send (${esc(d.whatsapp_error||'unknown error')}). The link was copied — paste it in the chat: <span style="font-family:var(--mono)">${esc(d.url)}</span>`;
     else msg.innerHTML=`✓ Link copied: <span style="font-family:var(--mono)">${esc(d.url)}</span>`;
@@ -13359,55 +13512,182 @@ async function mtgSendLink(viaWhatsApp){
   }catch(e){ msg.textContent='Error: '+e.message; }
   finally{ btn.disabled=false; }
 }
+// Shared by the Meetings tab and the lead detail panel. Copies the link whenever WhatsApp didn't send.
+async function mtgSendLinkFor(leadId, linkIndex, viaWhatsApp){
+  const d=await mtgApi('/meetings/send', {method:'POST', body:JSON.stringify({lead_id:leadId, link_index:linkIndex, send:viaWhatsApp, sent_by:myEmail||''})});
+  if(!viaWhatsApp||!d.whatsapp_sent) navigator.clipboard?.writeText(d.url).catch(()=>{});
+  return d;
+}
 
 async function mtgLoadMeetings(){
   const lists=$id('mtgLists');
   try{
     const d=await mtgApi('/meetings/list');
+    // Older Workers have no `all` — rebuild it from the three lists.
+    if(!Array.isArray(d.all)){
+      const seen=new Set();
+      d.all=[...(d.upcoming||[]),...(d.needs_outcome||[]),...(d.recent||[])].filter(m=>!seen.has(m.id)&&seen.add(m.id));
+    }
+    _mtgData=d;
+    mtgRenderKpis(d);
     mtgRenderStats(d.stats||{});
-    const row=(m, withOutcome)=>{
-      const who=m.lead_name||m.email||m.phone||'Unknown';
-      const when=m.start_at?mtgWhen(m.start_at):(m.sent_at?'Link sent '+mtgAgo(m.sent_at):'');
-      const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(MTG_STATUS_LABELS[m.status]||m.status);
-      const join=m.join_url?` · <a href="${esc(m.join_url)}" target="_blank" rel="noopener">Join</a>`:'';
-      const outcomeBtns=withOutcome?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${Object.entries(MTG_OUTCOME_LABELS).map(([k,v])=>`<button class="btn-ghost" type="button" style="padding:4px 8px;font-size:11px" onclick="mtgSetOutcome(${m.id},'${k}')">${v}</button>`).join('')}</div>`:'';
-      return `<div style="padding:9px 0;border-bottom:1px solid var(--line);font-size:13px">
-        <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(who)}</b><span style="color:var(--muted);font-size:12px;white-space:nowrap">${esc(status||'')}</span></div>
-        <div style="color:var(--muted);font-size:12px">${esc(m.title||m.link_name||'Meeting')}${when?' · '+esc(when):''}${join}${m.sent_by?' · by '+esc(m.sent_by):''}</div>${outcomeBtns}</div>`;
-    };
-    const section=(title, items, withOutcome, empty)=>`<div style="margin-bottom:16px"><div class="form-label" style="margin-bottom:2px">${title} <span style="color:var(--muted);font-weight:500">(${items.length})</span></div>${items.length?items.map(m=>row(m, withOutcome)).join(''):`<div class="s-note" style="margin:4px 0 0">${empty}</div>`}</div>`;
-    lists.innerHTML=
-      section('🗓️ Upcoming meetings', d.upcoming||[], false, 'No upcoming meetings.')+
-      section('📝 How did it go?', d.needs_outcome||[], true, 'Nothing waiting for an outcome.')+
-      section('🕘 Recent activity', d.recent||[], false, 'No activity yet — send your first meeting link above.')+
-      mtgRepsTable(d.stats?.reps||{});
+    $id('mtgReps').innerHTML=mtgRepsTable(d.stats?.reps||{});
+    // Land on whatever needs the rep first.
+    if(_mtgFilter==='upcoming' && !mtgFiltered('upcoming').length && mtgFiltered('needs_outcome').length) _mtgFilter='needs_outcome';
+    mtgRenderLists();
   }catch(e){ lists.innerHTML=`<div class="s-note">Could not load meetings: ${esc(e.message)}</div>`; }
+}
+function mtgFiltered(filter){
+  const all=_mtgData?.all||[];
+  const now=Date.now(), start=m=>Date.parse(m.start_at||'')||0;
+  const isOpen=m=>['scheduled','pending'].includes(m.status);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const tomorrow=today.getTime()+86400e3;
+  switch(filter){
+    case 'upcoming': return all.filter(m=>isOpen(m) && start(m)>=now-3600e3).sort((a,b)=>start(a)-start(b));
+    case 'today': return all.filter(m=>m.start_at && start(m)>=today.getTime() && start(m)<tomorrow && m.status!=='cancelled').sort((a,b)=>start(a)-start(b));
+    case 'needs_outcome': return all.filter(m=>m.status==='completed' && !m.outcome).sort((a,b)=>start(b)-start(a));
+    case 'links': return all.filter(m=>['link_sent','clicked'].includes(m.status)).sort((a,b)=>Date.parse(b.sent_at||'')-Date.parse(a.sent_at||''));
+    case 'past': return all.filter(m=>m.status==='completed' || (isOpen(m) && m.start_at && start(m)<now-3600e3)).sort((a,b)=>start(b)-start(a));
+    case 'cancelled': return all.filter(m=>m.status==='cancelled').sort((a,b)=>start(b)-start(a));
+  }
+  return all.slice().sort((a,b)=>(start(b)||Date.parse(b.created_at||''))-(start(a)||Date.parse(a.created_at||'')));
+}
+function mtgSetFilter(f){ _mtgFilter=f; mtgRenderLists(); }
+function mtgRenderLists(){
+  if(!_mtgData) return;
+  $id('mtgFilters').innerHTML=MTG_FILTERS.map(([k,label])=>{
+    const n=mtgFiltered(k).length;
+    return `<button type="button" class="mtg-chip${_mtgFilter===k?' active':''}" onclick="mtgSetFilter('${k}')">${label}${k==='all'?'':` <span style="opacity:.75">${n}</span>`}</button>`;
+  }).join('');
+  const q=($id('mtgSearch')?.value||'').trim().toLowerCase();
+  const qd=q.replace(/\D/g,'');
+  let items=mtgFiltered(_mtgFilter);
+  if(q) items=items.filter(m=>[m.lead_name,m.email,m.title,m.link_name,m.sent_by,mtgRepName(m.sent_by)].some(v=>String(v||'').toLowerCase().includes(q))||(qd.length>=3&&String(m.phone||'').includes(qd)));
+  const empty={upcoming:'No upcoming meetings. Send a meeting link above to get one booked.', today:'Nothing on the calendar today.', needs_outcome:'Nothing waiting for an outcome. 🎉',
+    links:'Every link sent has been booked.', past:'No past meetings yet.', cancelled:'No cancelled meetings.', all:'No activity yet — send your first meeting link above.'}[_mtgFilter];
+  if(!items.length){ $id('mtgLists').innerHTML=`<div class="s-note" style="margin:6px 0">${q?'No meetings match your search.':empty}</div>`; return; }
+  const byDay=['upcoming','today','past','cancelled','needs_outcome'].includes(_mtgFilter);
+  let html='', lastDay=null;
+  for(const m of items){
+    if(byDay){
+      const day=mtgDayLabel(m.start_at);
+      if(day!==lastDay){ html+=`<div class="mtg-day">${esc(day)}</div>`; lastDay=day; }
+    }
+    html+=mtgRow(m);
+  }
+  $id('mtgLists').innerHTML=html;
+}
+function mtgRow(m){
+  const who=m.lead_name||m.email||(m.phone?'+'+m.phone:'')||'Unknown';
+  const phone=String(m.phone||'').replace(/\D/g,'');
+  const statusKey=m.outcome||m.status;
+  const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(MTG_STATUS_LABELS[m.status]||m.status);
+  const dur=mtgDuration(m);
+  const until=['scheduled','pending'].includes(m.status)?mtgUntil(m.start_at, m.end_at):'';
+  const soon=until && (until==='happening now' || /^in \d+ min$/.test(until));
+  const when=m.start_at?`🕘 ${esc(mtgWhen(m.start_at))}${until?` · <em>${esc(until)}</em>`:''}`:(m.sent_at?`📨 Link sent ${esc(mtgAgo(m.sent_at))}${m.clicked_at?' · opened '+esc(mtgAgo(m.clicked_at)):' · not opened yet'}`:'');
+  const sub=[m.title||m.link_name||'Meeting', dur, phone?'+'+phone:'', m.sent_by?'by '+mtgRepName(m.sent_by):''].filter(Boolean).map(esc).join(' · ');
+  const actions=[
+    m.join_url&&['scheduled','pending'].includes(m.status)?`<a class="primary" href="${esc(m.join_url)}" target="_blank" rel="noopener">Join</a>`:'',
+    phone?`<a href="https://wa.me/${phone}" target="_blank" rel="noopener">💬 WhatsApp</a>`:'',
+    phone?`<a href="tel:+${phone}">📞 Call</a>`:'',
+    m.lead_id?`<button type="button" onclick="mtgOpenLead(${Number(m.lead_id)})">👤 Lead</button>`:'',
+    `<button type="button" onclick="mtgToggle(${Number(m.id)})">${_mtgOpen.has(m.id)?'▴ Less':'▾ Details'}</button>`,
+  ].filter(Boolean).join('');
+  const outcomeBtns=m.status==='completed'&&!m.outcome?`<div class="mtg-actions">${Object.entries(MTG_OUTCOME_LABELS).map(([k,v])=>`<button class="btn-ghost" type="button" onclick="mtgSetOutcome(${Number(m.id)},'${k}')">${v}</button>`).join('')}</div>`:'';
+  return `<div class="mtg-row${soon?' soon':''}" id="mtgRow${Number(m.id)}">
+    <div class="mtg-row-top">
+      <div class="mtg-av">${esc((who.trim()[0]||'?').toUpperCase())}</div>
+      <div class="mtg-row-main">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          ${m.lead_id?`<button type="button" class="mtg-name" onclick="mtgOpenLead(${Number(m.lead_id)})">${esc(who)}</button>`:`<b>${esc(who)}</b>`}
+          <span class="mtg-pill ${esc(statusKey||'')}">${esc(status||'')}</span>
+        </div>
+        <div class="mtg-sub">${sub}</div>
+        ${when?`<div class="mtg-when">${when}</div>`:''}
+        ${m.outcome_note&&!_mtgOpen.has(m.id)?`<div class="mtg-sub" style="margin-top:4px">📝 ${esc(m.outcome_note)}</div>`:''}
+        <div class="mtg-actions">${actions}</div>
+        ${outcomeBtns}
+        ${_mtgOpen.has(m.id)?mtgDetail(m):''}
+      </div>
+    </div>
+  </div>`;
+}
+function mtgDetail(m){
+  const step=(label, iso)=>iso?`<li>✓ <b>${label}</b> · ${esc(mtgWhen(iso))}</li>`:'';
+  const tl=[
+    step('Link sent', m.sent_at), step('Link opened', m.clicked_at), step('Booked', m.booked_at),
+    step('Confirmation sent', m.confirm_at), step('24h reminder sent', m.remind24_at), step('1h reminder sent', m.remind1_at),
+    step('Nudge sent', m.nudge_at), m.outcome?step('Outcome: '+MTG_OUTCOME_LABELS[m.outcome], m.outcome_at):'',
+  ].join('');
+  const links=[
+    m.reschedule_url?`<a href="${esc(m.reschedule_url)}" target="_blank" rel="noopener">🔁 Reschedule</a>`:'',
+    m.cancel_url?`<a href="${esc(m.cancel_url)}" target="_blank" rel="noopener">✖ Cancel in Cal.com</a>`:'',
+    m.email?`<a href="mailto:${esc(m.email)}">✉️ ${esc(m.email)}</a>`:'',
+  ].filter(Boolean).join('');
+  const changeOutcome=m.status==='completed'&&m.outcome?`<div class="mtg-sub" style="margin:6px 0 2px">Change outcome:</div><div class="mtg-actions" style="margin-top:0">${Object.entries(MTG_OUTCOME_LABELS).filter(([k])=>k!==m.outcome).map(([k,v])=>`<button type="button" onclick="mtgSetOutcome(${Number(m.id)},'${k}')">${v}</button>`).join('')}</div>`:'';
+  return `<div class="mtg-detail">
+    <ul class="mtg-tl">${tl||'<li>No activity recorded yet.</li>'}</ul>
+    ${links?`<div class="mtg-actions" style="margin:0 0 8px">${links}</div>`:''}
+    <label class="form-label" style="font-weight:500;margin-bottom:4px">Meeting notes (prep, what was discussed)</label>
+    <textarea class="form-input" id="mtgNote${Number(m.id)}" rows="2" placeholder="Only your team sees this">${esc(m.outcome_note||'')}</textarea>
+    <div class="mtg-actions"><button type="button" onclick="mtgSaveNote(${Number(m.id)})">💾 Save note</button></div>
+    ${changeOutcome}
+  </div>`;
+}
+function mtgToggle(id){ _mtgOpen.has(id)?_mtgOpen.delete(id):_mtgOpen.add(id); mtgRenderLists(); }
+function mtgOpenLead(id){
+  const lead=(allLeads||[]).find(l=>Number(l.Id)===Number(id));
+  if(!lead){ showToast('That lead isn\'t loaded yet — open it from Leads','err'); return; }
+  openDetail(lead.Id);
+}
+async function mtgSaveNote(id){
+  const note=$id('mtgNote'+id)?.value.trim()||'';
+  try{
+    await mtgApi('/meetings/note', {method:'POST', body:JSON.stringify({id, note})});
+    const m=(_mtgData?.all||[]).find(x=>x.id===id); if(m) m.outcome_note=note;
+    showToast('✓ Note saved');
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
+function mtgRenderKpis(d){
+  const all=d.all||[], s=d.stats||{};
+  const today=mtgFiltered('today').filter(m=>['scheduled','pending'].includes(m.status));
+  const next=mtgFiltered('upcoming')[0];
+  const attended=(s.attended||0), shows=attended+(s.no_show||0);
+  const tiles=[
+    ['Today', today.length, today.length?`next ${mtgTime(today.find(m=>Date.parse(m.start_at)>=Date.now()-3600e3)?.start_at||today[0].start_at)}`:'free day'],
+    ['Next 7 days', s.this_week||0, next?`next: ${(next.lead_name||'lead').split(' ')[0]} ${mtgUntil(next.start_at, next.end_at)}`:''],
+    ['How did it go?', mtgFiltered('needs_outcome').length, 'need an outcome'],
+    ['Show rate', shows?Math.round(attended/shows*100)+'%':'—', `${attended} of ${shows} showed up`],
+    ['Booked', s.booked||0, s.sent?`${Math.round((s.booked||0)/s.sent*100)}% of links`:'last 90 days'],
+    ['Interested', s.converted||0, attended?`${Math.round((s.converted||0)/attended*100)}% of attended`:'after the call'],
+  ];
+  $id('mtgKpis').innerHTML=tiles.map(([k,v,sub])=>`<div class="mtg-kpi"><span>${esc(k)}</span><b>${esc(String(v))}</b>${sub?`<small>${esc(sub)}</small>`:''}</div>`).join('');
 }
 function mtgRenderStats(s){
   const pct=(a,b)=>b?Math.round(a/b*100)+'%':'—';
-  const tiles=[['Links sent',s.sent||0],['Clicked',s.clicked||0,pct(s.clicked,s.sent)],['Booked',s.booked||0,pct(s.booked,s.sent)],['Attended',s.attended||0],['No-shows',s.no_show||0],['Interested',s.converted||0],['This week',s.this_week||0]];
-  $id('mtgStats').innerHTML=tiles.map(([k,v,sub])=>`<div style="background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px"><div style="font-size:18px;font-weight:700">${v}</div><div style="font-size:11px;color:var(--muted)">${k}${sub?` · ${sub}`:''}</div></div>`).join('')+
-    `<div style="grid-column:1/-1;font-size:11px;color:var(--muted)">Last 90 days</div>`;
+  const tiles=[['Links sent',s.sent||0],['Clicked',s.clicked||0,pct(s.clicked,s.sent)],['Booked',s.booked||0,pct(s.booked,s.sent)],['Attended',s.attended||0],['No-shows',s.no_show||0],['Interested',s.converted||0],['Cancelled',s.cancelled||0]];
+  $id('mtgStats').innerHTML=tiles.map(([k,v,sub])=>`<div style="background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px"><div style="font-size:18px;font-weight:700">${v}</div><div style="font-size:11px;color:var(--muted)">${k}${sub?` · ${sub}`:''}</div></div>`).join('');
 }
 function mtgRepsTable(reps){
   const rows=Object.entries(reps);
   if(!rows.length) return '';
-  const name=email=>(getTeamMembers?.()||[]).find(m=>sameEmail(m.email,email))?.name||email;
   return `<div class="form-label" style="margin-bottom:4px">👥 By rep</div><div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse">
-    <tr style="color:var(--muted);text-align:left"><th style="padding:4px">Rep</th><th>Sent</th><th>Booked</th><th>Attended</th><th>No-show</th></tr>
-    ${rows.map(([e,r])=>`<tr style="border-top:1px solid var(--line)"><td style="padding:4px">${esc(name(e))}</td><td>${r.sent}</td><td>${r.booked}</td><td>${r.attended}</td><td>${r.no_show}</td></tr>`).join('')}</table></div>`;
+    <tr style="color:var(--muted);text-align:left"><th style="padding:4px">Rep</th><th>Sent</th><th>Booked</th><th>Attended</th><th>No-show</th><th>Book rate</th></tr>
+    ${rows.map(([e,r])=>`<tr style="border-top:1px solid var(--line)"><td style="padding:4px">${esc(mtgRepName(e))}</td><td>${r.sent}</td><td>${r.booked}</td><td>${r.attended}</td><td>${r.no_show}</td><td>${r.sent?Math.round(r.booked/r.sent*100)+'%':'—'}</td></tr>`).join('')}</table></div>`;
 }
 async function mtgSetOutcome(id, outcome){
   try{
-    await mtgApi('/meetings/outcome', {method:'POST', body:JSON.stringify({id, outcome})});
+    const note=$id('mtgNote'+id)?.value.trim()||'';
+    await mtgApi('/meetings/outcome', {method:'POST', body:JSON.stringify(note?{id, outcome, note}:{id, outcome})});
     if(outcome==='follow_up'){
       // Same task shape the Tasks page itself writes — lands in the normal task list.
-      const d=await mtgApi('/meetings/list');
-      const m=[...(d.recent||[]),...(d.upcoming||[]),...(d.needs_outcome||[])].find(x=>x.id===id);
+      const m=(_mtgData?.all||[]).find(x=>x.id===id);
       const due=new Date(Date.now()+2*86400e3).toISOString().slice(0,10);
       const state=getTasksState();
       state.items.push({id:'t_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), title:`Follow up after meeting — ${m?.lead_name||'lead'}`,
-        notes:`${m?.title||m?.link_name||'Meeting'}${m?.start_at?' on '+mtgWhen(m.start_at):''}`, due_date:due, due_time:'',
+        notes:`${m?.title||m?.link_name||'Meeting'}${m?.start_at?' on '+mtgWhen(m.start_at):''}${note?'\n'+note:''}`, due_date:due, due_time:'',
         lead_id:m?.lead_id||null, lead_name:m?.lead_name||'', assignee_email:m?.sent_by||myEmail||'', category:'', project_id:'', status:'open', created_at:new Date().toISOString()});
       await saveTasksState(state);
       showToast('✓ Follow-up task added');
@@ -13419,6 +13699,44 @@ document.addEventListener('click',e=>{
   const box=$id('mtgLeadResults');
   if(box && box.style.display==='block' && !e.target.closest('#mtgLeadResults') && e.target.id!=='mtgLeadSearch') box.style.display='none';
 });
+
+// Lead detail panel → 📅 Meetings: this lead's meetings, and a one-tap "send meeting link".
+async function renderDetailMeetings(lead){
+  const box=$id('detailMeetings');
+  if(!box) return;
+  box.innerHTML='';
+  box.style.display='none';
+  let d;
+  try{ d=await mtgApi(`/meetings/lead?lead_id=${encodeURIComponent(lead.Id)}`); }catch(e){ return; }
+  if(currentLead!==lead || !d.enabled) return;
+  const items=(d.meetings||[]).filter(m=>m.start_at||m.sent_at);
+  const opts=(d.links||[]).map((l,i)=>`<option value="${i}">${esc(l.name)}</option>`).join('');
+  box.innerHTML=`<div class="sec-hd">📅 Meetings</div>
+    ${items.length?items.slice(0,6).map(m=>{
+      const status=m.outcome?MTG_OUTCOME_LABELS[m.outcome]:(MTG_STATUS_LABELS[m.status]||m.status);
+      const until=['scheduled','pending'].includes(m.status)?mtgUntil(m.start_at, m.end_at):'';
+      return `<div class="mtg-row" style="padding:8px 10px">
+        <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(m.title||m.link_name||'Meeting')}</b><span class="mtg-pill ${esc(m.outcome||m.status)}">${esc(status)}</span></div>
+        <div class="mtg-sub">${m.start_at?esc(mtgWhen(m.start_at))+(until?` · <em style="font-style:normal;color:var(--accent)">${esc(until)}</em>`:''):'Link sent '+esc(mtgAgo(m.sent_at))}${m.sent_by?' · by '+esc(mtgRepName(m.sent_by)):''}</div>
+        ${m.outcome_note?`<div class="mtg-sub">📝 ${esc(m.outcome_note)}</div>`:''}
+        ${m.join_url&&['scheduled','pending'].includes(m.status)?`<div class="mtg-actions"><a class="primary" href="${esc(m.join_url)}" target="_blank" rel="noopener">Join</a>${m.reschedule_url?`<a href="${esc(m.reschedule_url)}" target="_blank" rel="noopener">🔁 Reschedule</a>`:''}</div>`:''}
+      </div>`;}).join(''):'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No meetings yet.</div>'}
+    ${opts?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <select class="form-input" id="detailMtgLink" style="flex:1;min-width:140px">${opts}</select>
+      <button class="btn btn-secondary btn-sm" type="button" onclick="detailSendMeetingLink(true)">📅 Send meeting link</button>
+      <button class="btn btn-secondary btn-sm" type="button" onclick="detailSendMeetingLink(false)">📋 Copy</button>
+    </div>`:''}`;
+  box.style.display='block';
+}
+async function detailSendMeetingLink(viaWhatsApp){
+  const lead=currentLead;
+  if(!lead) return;
+  try{
+    const d=await mtgSendLinkFor(lead.Id, Number($id('detailMtgLink')?.value)||0, viaWhatsApp);
+    showToast(viaWhatsApp&&d.whatsapp_sent?'✓ Meeting link sent on WhatsApp':(viaWhatsApp?`WhatsApp didn't send — link copied`:'✓ Link copied'), viaWhatsApp&&!d.whatsapp_sent?'err':'ok');
+    renderDetailMeetings(lead);
+  }catch(e){ showToast('Error: '+e.message,'err'); }
+}
 
 async function flowvyneInit(){
   const badge=$id('flowvyneStatusBadge');

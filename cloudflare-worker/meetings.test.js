@@ -18,6 +18,10 @@ import {
   handleCalcomMeetingsWebhook,
   handleMeetingLinkRedirect,
   runMeetingsForAllClients,
+  mtgLeadTags,
+  mtgLeadEvent,
+  mtgStaffRecipients,
+  mtgStaffAlertText,
 } from './worker.js';
 
 function d1(db){
@@ -212,5 +216,132 @@ describe('webhook + cron end to end', ()=>{
     assert.equal(row(4).status, 'completed');
     await runMeetingsForAllClients(env, now);
     assert.equal(graphCalls.length, 3);
+  });
+});
+
+describe('lead + team helpers', ()=>{
+  test('mtgLeadTags swaps only the meeting tag', ()=>{
+    assert.equal(mtgLeadTags('VIP, Meeting Booked', 'Meeting No-show'), 'VIP, Meeting No-show');
+    assert.equal(mtgLeadTags('', 'Meeting Booked'), 'Meeting Booked');
+    assert.equal(mtgLeadTags('meeting booked,Hot', 'Meeting: Interested'), 'Hot, Meeting: Interested');
+  });
+  test('mtgLeadEvent fires once per real change', ()=>{
+    assert.equal(mtgLeadEvent('BOOKING_CREATED', 'scheduled', 'link_sent'), 'booked');
+    assert.equal(mtgLeadEvent('BOOKING_CREATED', 'scheduled', null), 'booked');
+    assert.equal(mtgLeadEvent('BOOKING_CREATED', 'scheduled', 'scheduled'), null);   // re-delivery
+    assert.equal(mtgLeadEvent('BOOKING_CREATED', 'scheduled', 'pending'), 'booked');  // confirmed
+    assert.equal(mtgLeadEvent('BOOKING_REQUESTED', 'pending', 'clicked'), 'pending');
+    assert.equal(mtgLeadEvent('BOOKING_RESCHEDULED', 'scheduled', 'scheduled', 'a', 'b'), 'rescheduled');
+    assert.equal(mtgLeadEvent('BOOKING_RESCHEDULED', 'scheduled', 'scheduled', 'b', 'b'), null);
+    assert.equal(mtgLeadEvent('BOOKING_CANCELLED', 'cancelled', 'scheduled'), 'cancelled');
+    assert.equal(mtgLeadEvent('BOOKING_CANCELLED', 'cancelled', 'cancelled'), null);
+  });
+  test('mtgStaffRecipients: rep, then owner, account owner as fallback or copy', ()=>{
+    const c={authentik_email:'boss@x.com', team_whatsapp:JSON.stringify({'rep@x.com':'919000000001', 'own@x.com':'919000000002', 'boss@x.com':'919000000003'})};
+    const s={staff_alert_owner:false};
+    assert.deepEqual(mtgStaffRecipients(c, {sent_by:'rep@x.com'}, {Owner:'own@x.com'}, s).map(r=>r.email), ['rep@x.com', 'own@x.com']);
+    assert.deepEqual(mtgStaffRecipients(c, {sent_by:'nobody@x.com'}, null, s).map(r=>r.email), ['boss@x.com']);
+    assert.deepEqual(mtgStaffRecipients(c, {sent_by:'rep@x.com'}, null, {staff_alert_owner:true}).map(r=>r.email), ['rep@x.com', 'boss@x.com']);
+  });
+  test('mtgStaffAlertText', ()=>{
+    const t=mtgStaffAlertText('booked', {lead_name:'Jomy', phone:'919876543210', title:'15 min meeting', start_at:'2026-10-05T03:30:00Z', join_url:'https://meet.x/a'}, 'Asia/Kolkata', 'https://app/d?lead=1');
+    assert.match(t, /Meeting booked/);
+    assert.match(t, /Jomy \(\+919876543210\)/);
+    assert.match(t, /15 min meeting · Mon, Oct 5, 9:00 AM/);
+    assert.match(t, /Join: https:\/\/meet\.x\/a/);
+    assert.match(t, /Open lead: https:\/\/app\/d\?lead=1/);
+  });
+});
+
+describe('booking → lead + team WhatsApp', ()=>{
+  let db, env, graphCalls, nocoWrites, origFetch, leads;
+  const SECRET='s3cret';
+  const client={Id:7, wa_phone_id:'123', waba_id:'456', wa_token:'tok', authentik_email:'boss@x.com',
+    team_whatsapp:JSON.stringify({'rep@x.com':'919000000001', 'boss@x.com':'919000000003'}),
+    flow_json:JSON.stringify({stages:{new:{}, demo_booked:{}}}),
+    bot_config:JSON.stringify({followup_quiet_hours_enabled:false, timezone:'Asia/Kolkata'})};
+  const hook=async body=>{
+    const raw=JSON.stringify(body);
+    const sig=createHmac('sha256', SECRET).update(raw).digest('hex');
+    const res=await handleCalcomMeetingsWebhook(new Request('https://w.test/calcom/meetings/7', {method:'POST', body:raw, headers:{'X-Cal-Signature-256':sig}}), env, '7');
+    return res.json();
+  };
+  beforeEach(()=>{
+    db=freshDb(); graphCalls=[]; nocoWrites=[];
+    leads={42:{Id:42, ClientId:7, Name:'Asha K', Phone:'919876543210', Tags:'VIP', Stage:'new', Score:'Warm', Owner:'rep@x.com', NotesList:'[]'}};
+    env={DB:d1(db), NOCODB_BASE:'https://noco.test', NOCODB_TOKEN:'x', WORKER_BASE_URL:'https://w.test', APP_BASE_URL:'https://app.test/d.html'};
+    const now=new Date().toISOString();
+    db.prepare(`INSERT INTO meetings_config (client_id, links_json, webhook_secret, settings_json, created_at, updated_at) VALUES (7,?,?,?,?,?)`)
+      .run(JSON.stringify([{name:'Intro call', url:'https://cal.com/acme/intro'}]), SECRET, JSON.stringify({...SETTINGS, confirm:false}), now, now);
+    origFetch=globalThis.fetch;
+    globalThis.fetch=async (url, init={})=>{
+      const u=String(url), method=init.method||'GET';
+      if(u.startsWith('https://graph.facebook.com/')){ graphCalls.push(JSON.parse(init.body)); return new Response(JSON.stringify({messages:[{id:'wamid'}]})); }
+      if(u.startsWith('https://noco.test/')){
+        if(method!=='GET'){
+          const body=JSON.parse(init.body);
+          nocoWrites.push({method, url:u, body});
+          if(method==='POST' && u.includes('/records')) return new Response(JSON.stringify({Id:99}));
+          return new Response(JSON.stringify({}));
+        }
+        if(u.includes('/records/7')) return new Response(JSON.stringify(client));
+        const m=u.match(/\/records\/(\d+)/);
+        if(m) return leads[m[1]]?new Response(JSON.stringify(leads[m[1]])):new Response('{}', {status:404});
+        if(u.includes('/meta/')) return new Response(JSON.stringify({columns:[{title:'LeadSource', column_name:'LeadSource'}]}));
+        return new Response(JSON.stringify({list:u.includes('876543210')?[leads[42]]:[]}));
+      }
+      return new Response('{}');
+    };
+  });
+  afterEach(()=>{ globalThis.fetch=origFetch; db.close(); });
+  const leadPatches=()=>nocoWrites.filter(w=>w.method==='PATCH' && /tables\/[^/]+\/records$/.test(w.url) && w.body.Id===42);
+
+  test('a booking tags the lead, adds a note, makes it Hot, moves the stage and WhatsApps the rep', async ()=>{
+    const start=new Date(Date.now()+86400e3).toISOString();
+    const res=await hook({triggerEvent:'BOOKING_CREATED', payload:{uid:'u1', eventTitle:'15 min meeting', startTime:start, endTime:start, attendees:[{name:'Asha', phoneNumber:'+91 98765 43210'}], metadata:{videoCallUrl:'https://meet.google.com/abc'}}});
+    assert.equal(res.lead_id, 42);
+    assert.equal(res.staff_notified, 1);
+    const patch=leadPatches()[0].body;
+    assert.equal(patch.Tags, 'VIP, Meeting Booked');
+    assert.equal(patch.Score, 'Hot');
+    assert.equal(patch.Stage, 'demo_booked');
+    const notes=JSON.parse(patch.NotesList);
+    assert.match(notes[0].text, /Meeting booked: 15 min meeting/);
+    assert.equal(notes[0].author, 'meetings');
+    assert.equal(graphCalls.length, 1);
+    assert.equal(graphCalls[0].to, '919000000001');
+    assert.match(graphCalls[0].text.body, /Meeting booked\nAsha K \(\+919876543210\)/);
+    assert.match(graphCalls[0].text.body, /Open lead: https:\/\/app\.test\/d\.html\?lead=42/);
+
+    // Cal.com re-delivers the same event: no second note or alert.
+    await hook({triggerEvent:'BOOKING_CREATED', payload:{uid:'u1', startTime:start}});
+    assert.equal(leadPatches().length, 1);
+    assert.equal(graphCalls.length, 1);
+
+    await hook({triggerEvent:'BOOKING_CANCELLED', payload:{uid:'u1', startTime:start}});
+    assert.equal(leadPatches()[1].body.Tags, 'VIP, Meeting Cancelled');
+    assert.match(graphCalls.at(-1).text.body, /Meeting cancelled/);
+  });
+
+  test('a booking from someone who is not a lead creates one', async ()=>{
+    const start=new Date(Date.now()+86400e3).toISOString();
+    const res=await hook({triggerEvent:'BOOKING_CREATED', payload:{uid:'u7', eventTitle:'Demo', startTime:start, attendees:[{name:'New Person', email:'np@x.com', phoneNumber:'+971 50 123 4567'}]}});
+    const created=nocoWrites.find(w=>w.method==='POST' && /tables\/[^/]+\/records$/.test(w.url));
+    assert.ok(created, 'lead created');
+    assert.equal(created.body.Phone, '971501234567');
+    assert.equal(created.body.Tags, 'Meeting Booked');
+    assert.equal(created.body.LeadSource, 'Cal.com Meeting');
+    assert.equal(res.lead_id, 99);
+    assert.equal(db.prepare(`SELECT lead_id FROM meetings WHERE id=?`).get(res.id).lead_id, 99);
+    // No rep on the meeting → the account owner hears about it.
+    assert.equal(graphCalls[0].to, '919000000003');
+  });
+
+  test('lead sync and team alerts can be switched off', async ()=>{
+    db.prepare(`UPDATE meetings_config SET settings_json=?`).run(JSON.stringify({...SETTINGS, confirm:false, lead_sync:false, staff_alert:false}));
+    const start=new Date(Date.now()+86400e3).toISOString();
+    await hook({triggerEvent:'BOOKING_CREATED', payload:{uid:'u1', startTime:start, attendees:[{phoneNumber:'+91 98765 43210'}]}});
+    assert.equal(leadPatches().length, 0);
+    assert.equal(graphCalls.length, 0);
   });
 });

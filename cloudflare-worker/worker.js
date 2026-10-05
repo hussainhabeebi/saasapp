@@ -13027,7 +13027,7 @@ async function handleCalcomWebhook(request, env, clientId){
   return json({ok:true});
 }
 
-/* ── Cal.com Meetings (Settings → Integrations → 📞 Cal.com Meetings) ──
+/* ── Cal.com Meetings (Settings → 📅 Meetings) ──
    A separate module from the Appointment Booking module's own Cal.com Sync above
    (handleCalcomWebhook → appt_table_ids.bookings) — it never reads or writes those tables. This one
    is for calls/meetings with leads (intro calls, demos, consultations): reps send a tracked,
@@ -13037,7 +13037,18 @@ async function handleCalcomWebhook(request, env, clientId){
    "Cal.com Meetings". */
 const MTG_OUTCOMES=new Set(['interested','not_interested','follow_up','no_show']);
 const MTG_MAX_LINKS=6;
-const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false, template_name:'', template_lang:'en'};
+// staff_alert: WhatsApp the rep (sent_by / lead owner) when a meeting is booked, moved or cancelled;
+// staff_alert_owner: always copy the account owner too. lead_sync: tag + note + stage on the lead;
+// create_lead: a booking from someone who isn't a lead yet creates one.
+const MTG_DEFAULT_SETTINGS={confirm:true, remind24:true, remind1:true, nudge:true, cancel_followup:true, bot_share:false,
+  staff_alert:true, staff_alert_owner:false, lead_sync:true, create_lead:true, template_name:'', template_lang:'en'};
+const MTG_BOOL_SETTINGS=['confirm','remind24','remind1','nudge','cancel_followup','bot_share','staff_alert','staff_alert_owner','lead_sync','create_lead'];
+// Lead tags this module owns — only one is on a lead at a time, the latest meeting state.
+const MTG_LEAD_TAGS={booked:'Meeting Booked', cancelled:'Meeting Cancelled', interested:'Meeting: Interested',
+  not_interested:'Meeting: Not Interested', follow_up:'Meeting: Follow-up', no_show:'Meeting No-show'};
+const MTG_NOTE_AUTHOR='meetings';
+// Booking stages a lead is moved to — only one the client has defined in their own flow_json.
+const MTG_BOOKING_STAGES=['meeting_booked','demo_booked','consultation_booked','appt_booked'];
 const MTG_MAX_SENDS_PER_TICK=150;
 const MTG_NUDGE_AFTER_MS=24*3600e3, MTG_NUDGE_UNTIL_MS=72*3600e3;
 
@@ -13055,7 +13066,7 @@ export function mtgNormalizeLinks(list){
 export function mtgNormalizeSettings(s){
   const src=s&&typeof s==='object'?s:{};
   const out={...MTG_DEFAULT_SETTINGS};
-  for(const k of ['confirm','remind24','remind1','nudge','cancel_followup','bot_share']) if(k in src) out[k]=!!src[k];
+  for(const k of MTG_BOOL_SETTINGS) if(k in src) out[k]=!!src[k];
   out.template_name=String(src.template_name||'').trim().replace(/[^a-z0-9_]/gi,'').slice(0,100);
   out.template_lang=String(src.template_lang||'en').trim().replace(/[^a-z_]/gi,'').slice(0,10)||'en';
   return out;
@@ -13259,6 +13270,16 @@ async function mtgFindLead(env, clientId, {leadId, phone, email}){
   return null;
 }
 
+// The lead/team-facing event a webhook represents, or null when nothing actually changed.
+export function mtgLeadEvent(trigger, status, prevStatus, prevStart, newStart){
+  const open=['scheduled','pending'];
+  if(trigger==='BOOKING_RESCHEDULED') return prevStart && prevStart===newStart && prevStatus==='scheduled' ? null : (open.includes(prevStatus)?'rescheduled':'booked');
+  if(status==='scheduled' && prevStatus!=='scheduled') return 'booked';
+  if(status==='pending' && !open.includes(prevStatus)) return 'pending';
+  if(status==='cancelled' && open.includes(prevStatus)) return 'cancelled';
+  return null;
+}
+
 // Finds the meeting row a webhook event belongs to: the tracked link's own id (metadata), then the
 // pre-reschedule uid, then the booking's uid, then the lead's latest still-open tracked link.
 async function mtgFindRow(env, clientId, p, leadId){
@@ -13278,6 +13299,140 @@ async function mtgUpdate(env, id, fields){
   if(!keys.length) return;
   await env.DB.prepare(`UPDATE meetings SET ${keys.map(k=>`${k}=?`).join(', ')}, updated_at=? WHERE id=?`)
     .bind(...keys.map(k=>fields[k]), new Date().toISOString(), Number(id)).run();
+}
+
+// Replaces whichever meeting tag the lead has with `tag`, keeping every other tag.
+export function mtgLeadTags(tags, tag){
+  const owned=new Set(Object.values(MTG_LEAD_TAGS).map(t=>t.toLowerCase()));
+  const kept=String(tags||'').split(',').map(t=>t.trim()).filter(t=>t && !owned.has(t.toLowerCase()));
+  return (tag?[...kept, tag]:kept).join(', ');
+}
+export function mtgLeadNote(event, row, tz){
+  const title=row.title||row.link_name||'Meeting';
+  const when=mtgFormatWhen(row.start_at, tz);
+  switch(event){
+    case 'booked': return `📅 Meeting booked: ${title}${when?' — '+when:''}${row.join_url?`\nJoin: ${row.join_url}`:''}`;
+    case 'pending': return `⏳ Meeting requested (awaiting your confirmation in Cal.com): ${title}${when?' — '+when:''}`;
+    case 'rescheduled': return `🔁 Meeting moved: ${title}${when?' → '+when:''}`;
+    case 'cancelled': return `❌ Meeting cancelled: ${title}${when?' ('+when+')':''}`;
+  }
+  if(MTG_OUTCOMES.has(event)){
+    const label={interested:'Interested', not_interested:'Not interested', follow_up:'Follow-up', no_show:'No-show'}[event];
+    return `📝 Meeting outcome: ${label} — ${title}${row.outcome_note?`\n${row.outcome_note}`:''}`;
+  }
+  return '';
+}
+
+// Ties a meeting to its lead: creates the lead for a booking from someone who isn't one yet, then
+// sets the meeting tag, adds a timeline note, makes a fresh booking Hot and moves the lead to a
+// booking stage (only one defined in the client's own flow_json, and never out of won/lost).
+// Never throws — a failed lead update must not fail the Cal.com webhook. Returns the lead or null.
+export async function mtgSyncLead(env, c, clientId, row, event, settings, lead=null){
+  try{
+    if(!settings?.lead_sync) return lead;
+    const tz=monthlyMktClientTimezone(c);
+    const nowIso=new Date().toISOString();
+    if(!lead && row.lead_id){
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(row.lead_id)}`);
+      const l=r.ok?await r.json().catch(()=>null):null;
+      if(l && String(l.ClientId)===String(clientId)) lead=l;
+    }
+    const tag=['booked','pending','rescheduled'].includes(event)?MTG_LEAD_TAGS.booked:MTG_LEAD_TAGS[event];
+    const note={text:mtgLeadNote(event, row, tz), date:new Date().toLocaleString('en-US', {timeZone:tz}), ts:nowIso, author:MTG_NOTE_AUTHOR};
+    if(!lead){
+      if(!['booked','pending'].includes(event) || !settings.create_lead) return null;
+      const phone=mtgDigits(row.phone);
+      if(phone.length<8 && !/@/.test(row.email||'')) return null;
+      const body={ClientId:String(clientId), Name:row.lead_name||'', Phone:phone.length>=8?phone:'', Email:row.email||'',
+        Stage:'new', Date:nowIso, Score:'Hot', Channel:'whatsapp', LeadSource:'Cal.com Meeting', Tags:tag, NotesList:JSON.stringify([note])};
+      await ensureLeadsColumns(env, ['LeadSource']).catch(()=>{});
+      try{ await engineResolveLeadOwner(env, c, clientId, body, {phone}, true); }catch(e){}
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body});
+      const created=r.ok?await r.json().catch(()=>null):null;
+      if(!created?.Id) return null;
+      return {...body, Id:created.Id};
+    }
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    if(note.text) notes.unshift(note);
+    const patch={Id:Number(lead.Id), Tags:mtgLeadTags(lead.Tags, tag), NotesList:JSON.stringify(notes)};
+    if(event==='booked' || event==='pending'){
+      if(lead.Score!=='Hot') patch.Score='Hot';
+      let flow={}; try{ flow=JSON.parse(c?.flow_json||'{}'); }catch(e){}
+      const target=MTG_BOOKING_STAGES.find(s=>Object.keys(flow.stages||{}).includes(s));
+      if(target && lead.Stage!==target && !PIPELINE_TERMINAL_STAGES.has(lead.Stage)) patch.Stage=target;
+    }
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
+    return {...lead, ...patch};
+  }catch(e){
+    console.error('[meetings] lead sync failed', clientId, row?.id, e.message);
+    return lead;
+  }
+}
+
+// Who hears about a booking: the rep who sent the link, then the lead's owner; the account owner
+// when neither has a WhatsApp number on file, or when "always notify me" is on. Deduped by phone.
+export function mtgStaffRecipients(c, row, lead, settings){
+  const phones=parseTeamWhatsapp(c);
+  const out=[];
+  const add=email=>{
+    const e=String(email||'').trim().toLowerCase(), p=phones[e];
+    if(e && p && !out.some(r=>r.phone===p)) out.push({email:e, phone:p});
+  };
+  add(row.sent_by);
+  add(lead?.Owner);
+  if(!out.length || settings.staff_alert_owner) add(c?.authentik_email);
+  return out;
+}
+export function mtgStaffAlertText(event, row, tz, link){
+  const who=row.lead_name||row.email||'A lead';
+  const phone=mtgDigits(row.phone);
+  const title=row.title||row.link_name||'Meeting';
+  const when=mtgFormatWhen(row.start_at, tz);
+  const head={booked:'📅 Meeting booked', pending:'⏳ Meeting request — confirm it in Cal.com', rescheduled:'🔁 Meeting rescheduled', cancelled:'❌ Meeting cancelled'}[event]||'📅 Meeting update';
+  return `${head}\n${who}${phone?` (+${phone})`:''}\n${title}${when?' · '+when:''}${row.join_url&&event!=='cancelled'?`\nJoin: ${row.join_url}`:''}${link?`\nOpen lead: ${link}`:''}`;
+}
+// Plain text first (works if the rep messaged the business number in the last 24h); otherwise the
+// hot-lead alert template, if the client set one up in Integrations → Hot Lead Alerts.
+async function mtgNotifyStaff(env, c, clientId, row, lead, event, settings){
+  try{
+    if(!settings?.staff_alert) return [];
+    const recipients=mtgStaffRecipients(c, row, lead, settings);
+    if(!recipients.length) return [];
+    const creds=await resolveOrDetectMetaCredentials(env, c, clientId, {}).catch(()=>null);
+    if(!creds?.wa_phone_id || !creds?.wa_token) return [];
+    const tz=monthlyMktClientTimezone(c);
+    const leadId=lead?.Id||row.lead_id;
+    const link=leadId?hotLeadAlertLink(env, leadId):'';
+    const text=mtgStaffAlertText(event, row, tz, link);
+    const tplCfg=hotLeadAlertSettings(c);
+    const when=mtgFormatWhen(row.start_at, tz);
+    const reason={booked:'booked a meeting', pending:'requested a meeting', rescheduled:'moved their meeting', cancelled:'cancelled their meeting'}[event]||'has a meeting update';
+    const params=[hotAlertParam(row.lead_name||'Lead', 60), mtgDigits(row.phone)?'+'+mtgDigits(row.phone):'-',
+      hotAlertParam(`${reason}: ${row.title||row.link_name||'meeting'}${when?' on '+when:''}`), hotAlertParam(link||appDashboardBase(env), 300)];
+    const results=[];
+    const postText=async to=>{
+      const r=await fetch(`https://graph.facebook.com/v18.0/${creds.wa_phone_id}/messages`, {
+        method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+        body:JSON.stringify({messaging_product:'whatsapp', to, type:'text', text:{body:text}})
+      });
+      const data=await r.json().catch(()=>({}));
+      return r.ok?{ok:true}:{ok:false, detail:data?.error?.message||'HTTP '+r.status};
+    };
+    for(const rcpt of recipients){
+      let res=await postText(rcpt.phone).catch(e=>({ok:false, detail:e.message}));
+      if(!res.ok && tplCfg.template_name){
+        const t=await hotAlertSendOne(creds, tplCfg, rcpt.phone, params).catch(e=>({ok:false, detail:e.message}));
+        res=t.ok?{ok:true, via:'template'}:{ok:false, detail:`${res.detail} / template: ${t.detail}`};
+      }
+      if(!res.ok) console.error('[meetings] staff alert to', rcpt.email, 'failed:', res.detail);
+      results.push({...rcpt, ...res});
+    }
+    return results;
+  }catch(e){
+    console.error('[meetings] staff alert failed', clientId, row?.id, e.message);
+    return [];
+  }
 }
 
 // POST /calcom/meetings/<clientId> — the client's own Cal.com webhook (Settings → Developer →
@@ -13305,13 +13460,16 @@ export async function handleCalcomMeetingsWebhook(request, env, clientId){
   if(!row?.lead_id && !noShowEvent) lead=await mtgFindLead(env, clientId, {leadId:p.leadId, phone:p.phone, email:p.email});
   if(!row && lead) row=await mtgFindRow(env, clientId, {...p, mtgId:null, oldUid:'', uid:''}, lead.Id);
   if(noShowEvent){
-    if(row && p.noShow) await mtgUpdate(env, row.id, {status:'completed', outcome:'no_show', outcome_at:nowIso});
+    if(row && p.noShow && row.outcome!=='no_show'){
+      await mtgUpdate(env, row.id, {status:'completed', outcome:'no_show', outcome_at:nowIso});
+      await mtgSyncLead(env, c, clientId, row, 'no_show', cfg.settings);
+    }
     return json({ok:true});
   }
   if(!row && !['scheduled','pending'].includes(status)) return json({ok:true, skipped:'unknown-booking'});
   if(status==='completed' && row?.status==='cancelled') return json({ok:true, skipped:'cancelled'});
 
-  const prevStatus=row?.status||null;
+  const prevStatus=row?.status||null, prevStart=row?.start_at||null;
   const fields={status, calcom_uid:p.uid};
   if(p.title) fields.title=p.title;
   if(p.start) fields.start_at=p.start;
@@ -13342,7 +13500,16 @@ export async function handleCalcomMeetingsWebhook(request, env, clientId){
     sent=await mtgSendKind(env, c, clientId, cfg, row, kind);
     if(sent.ok && kind==='confirm') await mtgUpdate(env, row.id, {confirm_at:nowIso});
   }
-  return json({ok:true, id:row.id, status, notified:kind?!!sent?.ok:undefined});
+
+  // Lead + team side — only on a real change, so Cal.com re-delivering an event is a no-op.
+  const event=mtgLeadEvent(p.trigger, status, prevStatus, prevStart, row.start_at);
+  let staff;
+  if(event){
+    const synced=await mtgSyncLead(env, c, clientId, row, event, s, lead);
+    if(synced?.Id && !row.lead_id){ await mtgUpdate(env, row.id, {lead_id:Number(synced.Id)}); row.lead_id=Number(synced.Id); }
+    staff=await mtgNotifyStaff(env, c, clientId, row, synced, event, s);
+  }
+  return json({ok:true, id:row.id, status, notified:kind?!!sent?.ok:undefined, lead_id:row.lead_id||undefined, staff_notified:staff?staff.filter(r=>r.ok).length:undefined});
 }
 
 // GET /m/<token> — public click-tracking redirect to the prefilled Cal.com link.
@@ -13394,18 +13561,56 @@ async function handleMeetingsList(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const since=new Date(Date.now()-90*86400e3).toISOString();
+  const cfg=await mtgGetConfig(env, payload.cid);
   let rows=[];
   try{
-    rows=(await env.DB.prepare(`SELECT id, lead_id, lead_name, phone, email, link_name, sent_by, sent_at, clicked_at, title, status, start_at, end_at, join_url, booked_at, outcome, outcome_note, created_at, updated_at FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 500`)
+    rows=(await env.DB.prepare(`SELECT ${MTG_LIST_COLUMNS} FROM meetings WHERE client_id=? AND (created_at>=? OR start_at>=?) ORDER BY id DESC LIMIT 500`)
       .bind(Number(payload.cid), since, since).all())?.results||[];
   }catch(e){ return json({error:'Meetings storage is not set up yet (D1 migration 0104).'}, 503); }
+  rows=rows.map(r=>mtgRowOut(r, cfg));
   const now=Date.now();
   const startMs=r=>Date.parse(r.start_at||'')||0;
   const upcoming=rows.filter(r=>['scheduled','pending'].includes(r.status) && startMs(r)>=now-3600e3).sort((a,b)=>startMs(a)-startMs(b));
   const needs_outcome=rows.filter(r=>r.status==='completed' && !r.outcome).sort((a,b)=>startMs(b)-startMs(a));
   const shown=new Set([...upcoming, ...needs_outcome].map(r=>r.id));
   const recent=rows.filter(r=>!shown.has(r.id)).slice(0, 40);
-  return json({upcoming, needs_outcome, recent, stats:mtgSummarize(rows)});
+  // `all` backs the tab's search and filters; the three lists above stay for older dashboards.
+  return json({upcoming, needs_outcome, recent, all:rows, stats:mtgSummarize(rows)});
+}
+const MTG_LIST_COLUMNS='id, lead_id, lead_name, phone, email, link_name, link_url, sent_by, sent_at, clicked_at, calcom_uid, title, status, start_at, end_at, join_url, booked_at, confirm_at, remind24_at, remind1_at, nudge_at, outcome, outcome_note, outcome_at, created_at, updated_at';
+// Adds the Cal.com reschedule / cancel pages for a booked meeting, and drops the raw link_url.
+function mtgRowOut(r, cfg){
+  const {link_url, ...rest}=r;
+  const resched=mtgRescheduleUrl(r, cfg);
+  let cancel='';
+  if(r.calcom_uid){ try{ cancel=`${new URL(link_url||cfg?.links?.[0]?.url||'').origin}/booking/${encodeURIComponent(r.calcom_uid)}?cancel=true`; }catch(e){} }
+  const open=['scheduled','pending'].includes(r.status);
+  return {...rest, reschedule_url:open?resched:'', cancel_url:open?cancel:''};
+}
+// GET /meetings/lead?lead_id= — every meeting for one lead (the lead detail panel).
+async function handleMeetingsForLead(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const leadId=Number(new URL(request.url).searchParams.get('lead_id'));
+  if(!leadId) return json({error:'lead_id is required.'}, 400);
+  const cfg=await mtgGetConfig(env, payload.cid);
+  if(!cfg?.exists) return json({enabled:false, meetings:[]});
+  let rows=[];
+  try{
+    rows=(await env.DB.prepare(`SELECT ${MTG_LIST_COLUMNS} FROM meetings WHERE client_id=? AND lead_id=? ORDER BY COALESCE(start_at, created_at) DESC LIMIT 50`)
+      .bind(Number(payload.cid), leadId).all())?.results||[];
+  }catch(e){ return json({enabled:false, meetings:[]}); }
+  return json({enabled:cfg.links.length>0, links:cfg.links.map(l=>({name:l.name})), meetings:rows.map(r=>mtgRowOut(r, cfg))});
+}
+// POST /meetings/note {id, note} — the rep's private note on a meeting (prep or what was said).
+async function handleMeetingsNote(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const res=await env.DB.prepare(`UPDATE meetings SET outcome_note=?, updated_at=? WHERE id=? AND client_id=?`)
+    .bind(String(body.note||'').slice(0,1000)||null, new Date().toISOString(), Number(body.id), Number(payload.cid)).run();
+  if(!res?.meta?.changes) return json({error:'Meeting not found.'}, 404);
+  return json({ok:true});
 }
 // POST /meetings/send {lead_id, link_index, send, sent_by} — creates a tracked link for a lead and,
 // when `send` is set, sends it on WhatsApp. The link is returned either way so the rep can copy it.
@@ -13440,10 +13645,17 @@ async function handleMeetingsOutcome(request, env){
   const outcome=String(body.outcome||'');
   if(!MTG_OUTCOMES.has(outcome)) return json({error:'Unknown outcome.'}, 400);
   const nowIso=new Date().toISOString();
-  const res=await env.DB.prepare(`UPDATE meetings SET status='completed', outcome=?, outcome_note=?, outcome_at=?, updated_at=? WHERE id=? AND client_id=?`)
-    .bind(outcome, String(body.note||'').slice(0,500)||null, nowIso, nowIso, Number(body.id), Number(payload.cid)).run();
+  // A blank note keeps whatever the rep already wrote on the meeting.
+  const res=await env.DB.prepare(`UPDATE meetings SET status='completed', outcome=?, outcome_note=COALESCE(?, outcome_note), outcome_at=?, updated_at=? WHERE id=? AND client_id=?`)
+    .bind(outcome, String(body.note||'').slice(0,1000)||null, nowIso, nowIso, Number(body.id), Number(payload.cid)).run();
   if(!res?.meta?.changes) return json({error:'Meeting not found.'}, 404);
-  return json({ok:true});
+  const row=await env.DB.prepare(`SELECT * FROM meetings WHERE id=?`).bind(Number(body.id)).first();
+  if(row?.lead_id){
+    const cfg=await mtgGetConfig(env, payload.cid);
+    const c=await getClientById(env, payload.cid);
+    if(c && cfg) await mtgSyncLead(env, c, payload.cid, row, outcome, cfg.settings);
+  }
+  return json({ok:true, lead_id:row?.lead_id||null});
 }
 
 // 15-minute cron: reminders for scheduled meetings, marks meetings past their end time as
@@ -33981,6 +34193,8 @@ export default {
       else if(url.pathname==='/meetings/list' && request.method==='GET'){ res=await handleMeetingsList(request, env); }
       else if(url.pathname==='/meetings/send' && request.method==='POST'){ res=await handleMeetingsSend(request, env); }
       else if(url.pathname==='/meetings/outcome' && request.method==='POST'){ res=await handleMeetingsOutcome(request, env); }
+      else if(url.pathname==='/meetings/lead' && request.method==='GET'){ res=await handleMeetingsForLead(request, env); }
+      else if(url.pathname==='/meetings/note' && request.method==='POST'){ res=await handleMeetingsNote(request, env); }
       else if(url.pathname==='/ecom/order-lookup' && request.method==='GET'){ res=await handleEcomOrderLookup(request, env); }
       else if(url.pathname==='/ecom/enable-order-tracking' && request.method==='POST'){ res=await handleEcomEnableOrderTracking(request, env); }
       else if(url.pathname==='/hooks/chatwoot-message' && request.method==='POST'){ res=await handleChatwootMessageHook(request, env); }
