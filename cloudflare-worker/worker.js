@@ -19662,7 +19662,8 @@ async function handleSupportTicketsUpdate(request, env){
    7. Staff turns never trip the bot's loop detection.
    8. A short customer reply after staff switched language gets an answer in that language.
    9. Staff messages from Won chats become phrasing examples for the bot (daily sweep).
-  10. A fresh lead gets the business's 360° video first, then the chat starts.
+  10. A fresh lead (or one returning after v2_welcome_video_return_days, default 7) gets the
+      business's 360° video first, then the chat starts.
   11. Different video per ad / source (v2_source_videos rules).
   12. Reply-gap nudge: one check-in when a fresh lead goes quiet (15-minute cron).
   13. Staff quality score (Reports → Team, GET /reports/staff-score). */
@@ -19870,17 +19871,36 @@ export function engineV2SourceText(body, lead, firstText, inboxId){
 export function engineV2IsFreshLead(state){
   return !state?.leadId || !(state.history||[]).some(m=>m?.role==='user');
 }
+// A known lead writing again after `days` of silence from them (bot_config.v2_welcome_video_return_days,
+// default 7; 0 turns it off) — they get the video again, as if new.
+export function engineV2ReturnDays(c){
+  const v=engineParseJsonField(c?.bot_config, {}).v2_welcome_video_return_days;
+  if(v===0 || v==='0') return 0;
+  const n=Number(v);
+  return Number.isFinite(n) && n>0 ? Math.min(365, n) : 7;
+}
+export function engineV2IsReturningLead(state, days, nowMs=Date.now()){
+  if(!days || !state?.leadId) return false;
+  const last=Date.parse(state.lastCustomerMsgAt||state.lastMsgAt||'');
+  return Number.isFinite(last) && nowMs-last>=days*864e5;
+}
 async function engineV2EnsureFreshTable(env){
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS v2_fresh_leads (client_id INTEGER, phone TEXT, at TEXT, video_sent INTEGER DEFAULT 0, video_rule TEXT, nudged_at TEXT, PRIMARY KEY(client_id, phone))').run();
 }
 // Claims this phone's first contact (once ever — D1 primary key, so a Chatwoot redelivery or two
 // first messages arriving together can't do it twice), then sends the video if one is set.
 // Awaited by the caller so the video lands before the bot's reply.
-async function engineV2OnFreshLead(env, c, clientId, phone, convId, name, sourceText){
+// A returning lead re-claims the row only when its last claim is older than the return window, so
+// the video (and the one reply-gap nudge) can come round again once per window.
+async function engineV2OnFreshLead(env, c, clientId, phone, convId, name, sourceText, returnDays=0){
   try{
     await engineV2EnsureFreshTable(env);
-    const claim=await env.DB.prepare('INSERT OR IGNORE INTO v2_fresh_leads (client_id, phone, at) VALUES (?,?,?)')
-      .bind(Number(clientId), String(phone), new Date().toISOString()).run();
+    const now=new Date();
+    const cutoff=new Date(now.getTime()-(returnDays||36500)*864e5).toISOString();
+    const claim=await env.DB.prepare(`INSERT INTO v2_fresh_leads (client_id, phone, at) VALUES (?,?,?)
+      ON CONFLICT(client_id, phone) DO UPDATE SET at=excluded.at, video_sent=0, video_rule=NULL, nudged_at=NULL
+      WHERE v2_fresh_leads.at<?`)
+      .bind(Number(clientId), String(phone), now.toISOString(), returnDays?cutoff:'0000').run();
     if(!claim?.meta?.changes) return false;
   }catch(e){ return false; }
   const v=engineV2WelcomeVideo(c, sourceText);
@@ -20365,8 +20385,13 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
     // Leadvyne v2: a fresh lead gets the business's 360° video first (picked by ad/source); the chat
     // starts after it.
-    if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
-      state.welcomeVideoSent=await engineV2OnFreshLead(env, c, clientId, phone, convId, name, engineV2SourceText(body, state.lead, text, parsed.inboxId));
+    // Also a known lead coming back after N days (default 7) of silence.
+    if(engineV2On(c)){
+      const fresh=engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId});
+      const returnDays=engineV2ReturnDays(c);
+      if(fresh || engineV2IsReturningLead(state, returnDays))
+        state.welcomeVideoSent=await engineV2OnFreshLead(env, c, clientId, phone, convId, name, engineV2SourceText(body, state.lead, text, parsed.inboxId), fresh?0:returnDays);
+    }
     // Fire-and-forget: covers the slow classify/routing/LLM work below, not worth blocking on.
     engineSendChatwootTyping(env, c, convId, true);
 

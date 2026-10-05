@@ -5,7 +5,7 @@ import {
   engineV2On, engineAppendAgentReply, engineHistoryLine, engineBuildFaqSystemPrompt, engineParseStaffNote,
   engineMergeStaffNotes, engineActiveStaffNotes, engineV2Block, engineScriptLang, engineV2FollowStaffLanguage,
   engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock, engineV2WelcomeVideo,
-  engineV2SourceText, engineV2IsFreshLead, engineV2NudgeSettings, engineV2NudgeDue, engineV2NudgeText, engineStaffScore,
+  engineV2SourceText, engineV2IsFreshLead, engineV2NudgeSettings, engineV2NudgeDue, engineV2NudgeText, engineStaffScore, engineV2ReturnDays, engineV2IsReturningLead,
 } from './worker.js';
 
 const TS = '2026-10-04T10:00:00Z';
@@ -135,4 +135,17 @@ test('staff quality score: first responder, reply time, win rate', () => {
   const s = engineStaffScore(leads, Date.parse('2026-10-01T00:00:00Z'));
   assert.deepEqual(s.bot, { name: 'Bot', replies: 1, median_reply_sec: 0, leads: 1, won: 1, win_rate: 100 });
   assert.deepEqual(s.staff, [{ name: 'Asha', replies: 2, median_reply_sec: 300, leads: 2, won: 1, win_rate: 50 }]);
+});
+
+test('video again for a lead returning after the set days (default 7, 0 = never)', () => {
+  assert.equal(engineV2ReturnDays({ bot_config: '{}' }), 7);
+  assert.equal(engineV2ReturnDays({ bot_config: '{"v2_welcome_video_return_days":0}' }), 0);
+  assert.equal(engineV2ReturnDays({ bot_config: '{"v2_welcome_video_return_days":14}' }), 14);
+  const NOW = Date.parse('2026-10-20T10:00:00Z');
+  const ago = d => new Date(NOW - d * 864e5).toISOString();
+  assert.equal(engineV2IsReturningLead({ leadId: 1, lastCustomerMsgAt: ago(8) }, 7, NOW), true);
+  assert.equal(engineV2IsReturningLead({ leadId: 1, lastCustomerMsgAt: ago(3) }, 7, NOW), false);
+  assert.equal(engineV2IsReturningLead({ leadId: 1, lastCustomerMsgAt: ago(30) }, 0, NOW), false);
+  assert.equal(engineV2IsReturningLead({ leadId: 1, lastMsgAt: ago(10) }, 7, NOW), true, 'falls back to LastMsgAt');
+  assert.equal(engineV2IsReturningLead({ leadId: null, lastCustomerMsgAt: ago(30) }, 7, NOW), false);
 });
