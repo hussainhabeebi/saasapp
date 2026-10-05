@@ -15282,7 +15282,83 @@ const ENGINE_LANGS='english|hindi|malayalam|tamil|arabic|urdu|kannada|telugu|man
 const ENGINE_LANG_PREF_RE=new RegExp(`^(?:(?:only|just|please|pls|plz|in|speak|talk|reply|chat|can\\s+you\\s+(?:speak|talk|reply|chat)(?:\\s+in)?|do\\s+you\\s+(?:speak|know|understand))\\s+)*(?:${ENGINE_LANGS})(?:\\s*(?:\\/|,|or|and|&)\\s*(?:${ENGINE_LANGS}))*(?:\\s+(?:only|please|pls|plz|language|ok|is\\s+fine|preferred))*[\\s!.?]*$`,'i');
 export function engineIsNonHandoverSmallTalk(text){
   const t=String(text||'').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').trim();
-  return !!t && (ENGINE_GREETING_RE.test(t) || ENGINE_LANG_PREF_RE.test(t));
+  return !!t && (ENGINE_GREETING_RE.test(t) || ENGINE_LANG_PREF_RE.test(t) || engineIsLanguageRequestOnly(t));
+}
+// Explicit language-switch requests ("Mujhe Hindi bolo", "speak in English", "Malayalathil
+// parayu", "हिंदी में बात करो"). Real observed failure (Sep 2026): a customer chatting in
+// Malayalam typed "Mujhe Hindi bolo" — the classifier tagged the romanized-Hindi message as the
+// conversation's language (ml), the prompt said "Respond ONLY in ml. Never switch languages", and
+// the bot answered "Sorry, I only speak Malayalam". A request found here becomes the lead's
+// PreferredLanguage, which every later reply follows until the customer asks for another one.
+// Language names as customers type them — English, romanized and native script → ISO 639-1.
+const ENGINE_LANG_NAME_PATTERNS={
+  en:'english|inglish|angrezi|angreji|इंग्लिश|अंग्रेज़ी|अंग्रेजी|ഇംഗ്ലീഷ്',
+  hi:'hindi|हिंदी|हिन्दी|ഹിന്ദി',
+  ml:'malayala[a-z]*|manglish|മലയാള[\\p{L}\\p{M}]*',
+  ta:'tamil|தமிழ்|തമിഴ്',
+  te:'telugu|తెలుగు',
+  kn:'kannada|ಕನ್ನಡ',
+  ar:'arabic|عربي|العربية',
+  ur:'urdu|اردو',
+  bn:'bengali|bangla|বাংলা',
+  mr:'marathi|मराठी',
+  gu:'gujarati|ગુજરાતી',
+  pa:'punjabi|ਪੰਜਾਬੀ'
+};
+// Words that turn a bare language mention into a request to use it. Kept to verbs of speaking/
+// writing (and their Hinglish/Manglish/native forms) so "Do you have the Hindi book?" or "Tell
+// me about the Tamil course" never switch the conversation.
+const ENGINE_LANG_REQ_BEFORE='(?:speak|talk|reply|respond|answer|chat|write|text|explain|communicate|continue|switch|change|shift|move|prefer|understand|please|pls|plz)';
+const ENGINE_LANG_REQ_AFTER='(?:please|pls|plz|only|language|lang|mein|me|mai|m|il|thil|ൽ|में|में|ലും|bolo|boliye|bolie|bol|baat|bat|batao|bataiye|batayiye|bataye|likho|likhiye|samjhao|samjhaiye|karo|kariye|kijiye|aati|aata|chahiye|parayu|parayoo|parayamo|parayo|para|paranju|samsarikku|samsarikkamo|samsarikkoo|mathi|madhi|ariyamo|ariyam|ezhuthu|cheyyu|पर|बोल[\\p{L}\\p{M}]*|बात|बता[\\p{L}\\p{M}]*|लिख[\\p{L}\\p{M}]*|समझा[\\p{L}\\p{M}]*|जवाब|പറ[\\p{L}\\p{M}]*|സംസാരി[\\p{L}\\p{M}]*|മതി|എഴുത[\\p{L}\\p{M}]*|பேசு[\\p{L}\\p{M}]*)';
+const ENGINE_LANG_NEG='(?:not|no|dont|don\'t|never|stop|without|nahi|nahin|nai|mat|venda|vendaa|veenda|വേണ്ട|नहीं|मत)';
+const _engineLangB='(?<![\\p{L}\\p{M}\\p{N}])', _engineLangE='(?![\\p{L}\\p{M}])';
+function _engineLangRes(code){
+  const L=`(?:${ENGINE_LANG_NAME_PATTERNS[code]})`;
+  return {
+    whole:new RegExp(`^(?:(?:please|pls|plz|only|just|in|reply|speak|talk|chat)\\s+)*${L}(?:\\s+(?:only|please|pls|plz|language|lang|ok|is\\s+fine|preferred))*[\\s!.?]*$`,'iu'),
+    before:new RegExp(`${_engineLangB}${ENGINE_LANG_REQ_BEFORE}(?:\\s+(?:to|with|in|into|using|me|us|only|just|you|can|the|language|lang|kar|karo|ke|ki))*\\s+(?:in\\s+|only\\s+)?${L}${_engineLangE}`,'iu'),
+    after:new RegExp(`${_engineLangB}${L}${_engineLangE}\\s*(?:\\s+(?:me|mein|mai|m|में|ലും|language|lang|only|bhasha|ഭാഷ|ഭാഷയിൽ))*\\s*${ENGINE_LANG_REQ_AFTER}${_engineLangE}`,'iu'),
+    neg:new RegExp(`(?:${_engineLangB}${ENGINE_LANG_NEG}(?:\\s+\\S+){0,2}\\s+${L}${_engineLangE})|(?:${_engineLangB}${L}${_engineLangE}(?:\\s+(?:me|mein|mai|में|il|thil|language|lang))?\\s+${ENGINE_LANG_NEG}${_engineLangE})`,'iu'),
+    any:new RegExp(`${_engineLangB}${L}${_engineLangE}`,'giu')
+  };
+}
+const ENGINE_LANG_RES=Object.fromEntries(Object.keys(ENGINE_LANG_NAME_PATTERNS).map(k=>[k,_engineLangRes(k)]));
+export function engineDetectLanguageRequest(text){
+  const t=String(text||'').normalize('NFC').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').replace(/[’]/g,"'").replace(/\s+/g,' ').trim();
+  if(!t || t.split(' ').length>15) return null;
+  let best=null, bestAt=-1;
+  for(const [code,re] of Object.entries(ENGINE_LANG_RES)){
+    if(!(re.whole.test(t)||re.before.test(t)||re.after.test(t))) continue;
+    if(re.neg.test(t)) continue;
+    // Several languages asked for ("not Malayalam, Hindi please") — the last one mentioned wins.
+    let at=-1; for(const m of t.matchAll(re.any)) at=m.index;
+    if(at>bestAt){ best=code; bestAt=at; }
+  }
+  return best;
+}
+// The message is only a language request — nothing else to answer ("Mujhe Hindi bolo", "Speak in
+// English please"), as opposed to "Hindi me batao price", which also asks a real question.
+const ENGINE_LANG_REQ_FILLER=new RegExp(`^(?:${ENGINE_LANG_REQ_BEFORE}|${ENGINE_LANG_REQ_AFTER}|${ENGINE_LANG_NEG}|${Object.values(ENGINE_LANG_NAME_PATTERNS).join('|')}|to|with|in|into|using|me|us|you|can|could|will|would|i|we|ok|okay|sir|madam|mam|bhai|chetta|chechi|ji|mujhe|mujhko|mujhse|hume|humein|hamein|humse|aap|ap|ningal|enikku|ennodu|kar|ke|ki|ka|hai|ho|na|do|does|ആണ്|हैं|है|आप|करो|करें|कीजिए|कीजिये|मुझे|मुझसे|से|നിങ്ങൾ|എന്നോട്|എനിക്ക്)$`,'iu');
+export function engineIsLanguageRequestOnly(text){
+  if(!engineDetectLanguageRequest(text)) return false;
+  const words=String(text||'').normalize('NFC').toLowerCase().replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu,'').replace(/[’]/g,"'").replace(/[^\p{L}\p{M}\p{N}'\s]/gu,' ').split(/\s+/).filter(Boolean);
+  return words.every(w=>ENGINE_LANG_REQ_FILLER.test(w));
+}
+// Which language this turn's reply goes out in. An explicit request this turn wins, then a
+// message written in a clearly different native script (the customer switched on their own),
+// then the lead's saved preference, then the classifier's per-message guess, then the client default.
+export function engineResolveReplyLanguage({requested, preferred, userText, detected, fallback}){
+  if(requested) return requested;
+  const script=engineScriptLang(userText);
+  if(preferred && script && script!==preferred) return script;
+  return preferred||detected||fallback||'en';
+}
+// The prompt line that pins the reply language. Names the language in full (models follow
+// "Hindi" more reliably than "hi") and never lets the model tell a customer it can only speak one.
+export function engineReplyLanguageRule(lang){
+  const code=String(lang||'en').toLowerCase();
+  const name=ENGINE_LANG_NAMES[code]||({ur:'Urdu'})[code]||lang;
+  return `Respond ONLY in ${name}. Do not drift into another language on your own — but if the customer's latest message explicitly asks you to talk in a different language, reply in that language instead. Never tell the customer you can only speak one language.`;
 }
 // A first message that carries a real ask (price, photos, size, delivery, location, "do you…")
 // must be answered, not met with a canned intro. Real observed failure (Couplo, Sep 2026): a
@@ -15526,7 +15602,7 @@ async function engineClassifyIntent(env, c, userText, activeHistory, currentStag
   // reliability trade-off the rest of this classifier already lives with: a judgment call, not a
   // deterministic lookup, validated against the real configured stage ids below before use.
   const stageInstruction=stageIds.length?', next_stage (see Sales stages below — whichever listed stage id best reflects where this conversation stands after the latest message; usually unchanged unless it has clearly progressed toward or past the next one; must be exactly one of the listed ids, quoted exactly as given)':'';
-  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
+  const systemText=`You are a classifier for a WhatsApp sales conversation. Given the latest customer message and recent conversation, return ONLY compact JSON (no prose, no markdown, no code fences) with keys: intent (one of DELAY, BOOKING, AFFIRMATIVE, WATCHED, FORM_DONE, QUESTION, WANTS_HUMAN, SHORT_NEUTRAL), sentiment (one of Positive, Neutral, Negative, Frustrated), objection (one of none, price, competitor, timing, trust), confidence (number 0 to 1), win_probability (integer 0 to 100 — your best estimate of the odds this lead closes, based on their tone, urgency, and how the conversation is going), language (ISO 639-1 two-letter code of the language the LATEST message itself is written in, e.g. "en", "ml", "hi", "ar", "ta" — your best guess even for a short message; romanized Hindi/Hinglish such as "mujhe price batao" is "hi" and romanized Malayalam/Manglish such as "ethra aanu vila" is "ml" even though they are typed in English letters; if the customer explicitly asks you to talk in a particular language, return that language; if genuinely unreadable/ambiguous, use the language of the recent conversation instead), product_interest (the specific brand, product, or category this customer has mentioned or clearly implied interest in so far across the conversation, in a few words — e.g. "Nike Air Max", "kids' shoes", "2BHK apartment", "iPhone 15" — empty string "" if nothing specific has come up yet), product_category (the broad category or industry segment this customer's interest falls into — 1-3 title-case words that group similar leads for campaign targeting, e.g. "Footwear", "Skincare", "2BHK Apartments", "Web Design", "Consultation Package"; use the same category string consistently across leads with similar interests so campaign filters work cleanly; empty string "" if nothing specific yet)${stageInstruction}.${engineFlowStagesBlock(c, currentStage)}`;
   const userPrompt=`Recent conversation:\n${recent}\n\nLatest message: ${userText}`;
 
   // Both attempts below used to swallow every failure via a bare `catch(e){}` — with aiResult left
@@ -16836,7 +16912,7 @@ BUTTONS — mandatory after EVERY reply:
   sys+='\n\nIf — and only if — your reply itself asks the customer to choose between 2 and 10 clear, short, named options (e.g. "glowing skin, anti-ageing, or something else?", or a menu of a few named categories/products), add ONE final line after your reply, in exactly this format and nothing else on that line: OPTIONS: option one | option two | option three — keep the literal English word "OPTIONS:" even when the rest of your reply is in another language, and write each option itself in ENGLISH too, even when the rest of your reply is in the customer\'s own language (e.g. reply in Malayalam, but OPTIONS: Mattress | Wooden bed | Something else) — keep each option under 24 characters. Leave this line out entirely for any reply that is not itself offering a choice between a few named options — that is most replies.';
 
   if(industry==='ecommerce'){
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+' You are an ecommerce assistant — answer questions about products, orders, pricing, and delivery using the data above.';
     // Observed real failure, paired with the routing change above: a product listed sizes "S, M,
     // L, XL" (one row, no per-size stock breakdown in this data model — the size field just lists
     // every size that product comes in), and the assistant still told the customer "we don't have
@@ -16876,16 +16952,16 @@ BUTTONS — mandatory after EVERY reply:
     // nothing to answer with.
     sys+=' If you already asked the customer to pick a specific product/model in your immediately preceding message (check Recent Conversation above) and their reply does not name one — a vague non-answer like "any", "only 1", "you choose", "whatever", or similar — do NOT ask the same or a similar clarifying question again. Instead pick ONE real product from the Product Catalog above that best fits what has been discussed (their most in-stock or most-mentioned match if nothing else distinguishes them), state its real name, price, and key details, and invite them to confirm or ask for something else. Whenever you do ask the customer to choose between products, name only real products that are literally listed in the Product Catalog above — never a made-up name, and never a bare "which one?" with no options actually named.';
   } else if(industry==='travel'){
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+' You are a travel assistant — answer questions about packages, Umrah groups, itineraries, and car rentals using the data above. A short reply like "the 30 min one" or "that package" with no name almost always refers to whichever specific package/service you most recently described in the Recent Conversation above — resolve it to that one rather than asking a fresh, unscoped question. If specific details are not available, politely say you will connect them with an advisor.';
   } else if(industry==='saas_digital_marketing'){
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+' You are a SaaS/product assistant — answer questions about plans, trials, demos, pricing tiers, and how this product compares to competitors using the data above. Trial length, plan pricing, and renewal dates are only real if they appear in the data above for THIS specific customer — never invent a trial length or price you were not given. If a customer asks how you compare to a named competitor and no battlecard above covers it, say honestly that you\'ll find out rather than guessing a comparison. If specific details are not available, politely say you will connect them with the team.';
   } else if(industry==='ev_charging'){
     sys+='\n\nEV CHARGING — SOURCE RULE: Your answers must come from the business prompt and verified product data shown above — not from your general training knowledge. Do not use facts, prices, specs, or policy details that are not explicitly written there. If a customer asks something not covered, say honestly that you will check and confirm. Never fill gaps with guesses or generic EV industry knowledge.';
     sys+='\n\nAnswer every question simply and directly, like a knowledgeable friend — not a manual. Use everything the customer has already shared in this conversation; never ask for something they already told you, and never repeat a question you already asked. Keep replies concise and natural.';
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+'';
   } else {
     sys+="\n\nIf the lead has clearly stated a pain point or goal earlier in the conversation, proactively include ONE brief, relevant insight, tip, or comparison tied to that stated problem in your answer — do not just answer what was literally asked. Keep it natural and only do this once per conversation (check Recent Conversation above so you do not repeat an insight already given).";
-    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
+    sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+' For any question not answerable from your knowledge, politely say you will connect them with an advisor.';
   }
 
   // Folds flow_json's configured stages into this same reply as guidance instead of a separate
@@ -17236,7 +17312,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   const routing={
     route:turn.route||'industry_flow',next:turn.next,reply:turn.text||turn.reply,quickReplies:null,preserveCrmStage:turn.preserveCrmStage===true,
     qualAnswers:turn.qualAnswers||state.qualAnswers||{},intentData:turn.intentData||{},intent:turn.intent||'FLOW_ENTRY',
-    sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang
+    sentiment:'Neutral',objectionCategory:'none',customerLanguage:turn.lang,preferredLanguage:turn.preferredLang||null
   };
   const replyText=turn.text||turn.reply||'';
   const replyLang=turn.lang||turn.customerLanguage||c.language||'en';
@@ -17250,7 +17326,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   routing.quickReplies=Array.isArray(sentOptions)?sentOptions:null;
   const built=engineBuildLeadUpsertBody(c,clientId,state,routing,userText,messageId,isNewLead);
   await engineResolveLeadOwner(env,c,clientId,built.body,state,isNewLead);
-  await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
+  await ensureLeadsColumns(env,['LastCustomerMsgAt',...(routing.preferredLanguage?['PreferredLanguage']:[])]).catch(()=>{});
   built.body.LastCustomerMsgAt=new Date(startMs).toISOString();
   const resolvedLeadId=await engineUpsertLead(env,built.method,built.leadId,built.body);
   if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env,c,clientId,resolvedLeadId,state.lead,built.body,{inboxId:state.inboxId});
@@ -17296,7 +17372,7 @@ function engineBuildObjectionSystemPrompt(c, state, objectionCategory, replyLang
   sys+=engineSummaryBlock(state);
   sys+=engineCustomerFactsBlock(state);
   sys+=engineRecentConversationBlock(history);
-  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. Respond ONLY in '+lang+'. Never switch languages. Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
+  sys+='\n\nCurrent stage: '+(state.stage||'new')+'. '+engineReplyLanguageRule(lang)+' Default length (follow this unless the persona/instructions above specify a different reply length): keep it to 2-4 sentences. Respond with ONLY the plain WhatsApp message text a customer would read — never code, pseudocode, a function/tool call, or JSON; you have no tools to call, so never narrate or simulate one.';
   // See engineBuildFaqSystemPrompt's matching comment.
   const stagesBlock=engineFlowStagesBlock(c, state.stage);
   if(stagesBlock) sys+=stagesBlock+'\n\nDefault stage progression (follow this unless the persona/instructions above specify a different pacing or approach to moving through stages): after addressing the objection, if the conversation is naturally ready for it, work toward the current stage\'s point in your own words — do not quote it verbatim, and do not repeat something already substantially covered (check Recent Conversation above).';
@@ -19268,6 +19344,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     Channel:state.channel||'whatsapp'
   };
   if(state.inboxId) body.InboxId=String(state.inboxId);
+  // Sticky language the customer explicitly asked for (engineDetectLanguageRequest) — later turns
+  // read it back as state.lead.PreferredLanguage. Callers ensure the column exists first.
+  if(routing.preferredLanguage) body.PreferredLanguage=routing.preferredLanguage;
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -20401,6 +20480,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // "Mujhe Hindi bolo" / "speak in English" — switches this reply and, saved as the lead's
+    // PreferredLanguage, every later one. Greetings/intros below follow it (or the script the
+    // customer actually wrote in) instead of always going out in CLIENTS.language.
+    const _langRequest=introAction?null:engineDetectLanguageRequest(userText);
+    const _greetLang=_langRequest||engineScriptLang(userText)||state.lead?.PreferredLanguage||c.language||'en';
 
     // ── Flowvyne scripted flows ──────────────────────────────────────────────
     // Runs before AI classification. Flowvyne's own tenant allowlist decides
@@ -20474,9 +20558,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // gets that answered first — see engineIsSpecificFirstQuestion; the intro rides after it.
     const _specificFirstAsk=mediaType==='text'&&engineIsSpecificFirstQuestion(userText);
     const configuredGreetingTurn=(engineShouldUseConfiguredFlowIntro(c,userText,mediaType)||((_introCheck)&&(isNewLead||isRevisit)&&!_specificFirstAsk))
-      ?await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
+      ?await engineBuildFirstGreetingTurn(env,c,state,userText,_greetLang,state.name||state.lead?.Name,true)
       :null;
     if(configuredGreetingTurn){
+      if(_langRequest) configuredGreetingTurn.preferredLang=_langRequest;
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,configuredGreetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro_saved',sent:c.bot_reply_disabled!=='Yes',cached:true});
     }
@@ -20519,9 +20604,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       &&_ecomStylesWithProductGreeting.has(botConfig.ecom_communication_style||'')
       &&!/^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening|night|noon))[!.,? ]*$/i.test(userText.trim());
     const greetingTurn=(isNewLead||isRevisit)&&mediaType==='text'&&!_ecomNewWithProduct&&!_specificFirstAsk
-      ? await engineBuildFirstGreetingTurn(env,c,state,userText,c.language||'en',state.name||state.lead?.Name,true)
+      ? await engineBuildFirstGreetingTurn(env,c,state,userText,_greetLang,state.name||state.lead?.Name,true)
       : null;
     if(greetingTurn){
+      if(_langRequest) greetingTurn.preferredLang=_langRequest;
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,greetingTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'intro',sent:c.bot_reply_disabled!=='Yes',cached:!engineParseJsonField(c.flow_json,{}).intro?.text});
     }
@@ -20533,9 +20619,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // If the LLM call inside it fails, it returns the plain question which is still better than
     // "I'll connect you with our team shortly." on a first contact.
     if(isNewLead && !engineIndustryFlowEnabled(c) && mediaType==='text' && !_specificFirstAsk){
-      const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',c.language||'en');
+      const _noFlowIntro=await engineBuildFirstTouchIntro(env,c,'How can I help you today?',_greetLang);
       if(_noFlowIntro && _noFlowIntro.trim()){
-        const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:c.language||'en',buttons:[],mediaUrl:''};
+        const _noFlowTurn={text:_noFlowIntro.trim(),route:'faq',next:state.stage||'new',lang:_greetLang,buttons:[],mediaUrl:'',preferredLang:_langRequest||null};
         await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,_noFlowTurn,startMs,mediaType,ctx);
         return json({ok:true,route:'new_lead_intro',sent:c.bot_reply_disabled!=='Yes'});
       }
@@ -20561,13 +20647,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const cls=introAction
       ? {intent:introAction.intent,intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:introAction.customerLanguage,nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : (_ecomFastPath||_classificationDisabled)
-      ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
+      ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:engineScriptLang(userText)||state.lead?.Language||c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
       : await engineClassifyIntent(env, c, userText, state.activeHistory, state.stage);
     if(engineV2On(c)){
       const staffLang=engineV2FollowStaffLanguage(state.activeHistory, userText, cls.customerLanguage);
       if(staffLang) cls.customerLanguage=staffLang;
     }
+    cls.customerLanguage=engineResolveReplyLanguage({requested:_langRequest, preferred:state.lead?.PreferredLanguage, userText, detected:cls.customerLanguage, fallback:c.language||'en'});
     const routing=engineRouteFlow(c, state, userText, cls, mediaType);
+    if(_langRequest) routing.preferredLanguage=_langRequest;
     if(introAction) routing.historyUserText=parsed.text;
     Object.assign(routing, engineInboundMediaFields(mediaType, mediaUrl, parsed.text, body.id||body.message?.id));
     // A generic ad CTA/business-information request must be answered from the client's prompt,
@@ -22715,6 +22803,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
 
     if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
+    if(routing.preferredLanguage) await ensureLeadsColumns(env,['PreferredLanguage']).catch(()=>{});
     // Baby Care: keep the Orders tab in step with the chat (draft orders + customer changes).
     // After the reply has gone out and never throws, so it can't change what the customer sees.
     if(c.industry==='ecommerce' && botConfig.ecom_communication_style==='baby_care')
@@ -23011,7 +23100,10 @@ export async function processInstagramWebhookBody(env, body){
       const cls=_igBotConfig.classification_enabled===false
         ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
         : await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
+      const _igLangRequest=engineDetectLanguageRequest(userText);
+      cls.customerLanguage=engineResolveReplyLanguage({requested:_igLangRequest, preferred:state.lead?.PreferredLanguage, userText, detected:cls.customerLanguage, fallback:c.language||'en'});
       const routing=engineRouteFlow(c,state,userText,cls,parsed.mediaType);
+      if(_igLangRequest){ routing.preferredLanguage=_igLangRequest; await ensureLeadsColumns(env,['PreferredLanguage']).catch(()=>{}); }
       Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
       if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
       const replyLang=routing.customerLanguage||c.language||'en';

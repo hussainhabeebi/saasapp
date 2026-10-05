@@ -629,6 +629,25 @@ Drafts are left out of Revenue.
 and the change check runs in `ctx.waitUntil`.
 **Tested:** `chat-order-draft.test.js`, `frontend/tests/ecom-chat-orders.spec.js`.
 
+### 37 — [backend] Bot refused to switch language ("Sorry, I only speak Malayalam")
+**Area:** `engineDetectLanguageRequest`, `engineIsLanguageRequestOnly`, `engineResolveReplyLanguage`,
+`engineReplyLanguageRule`, `engineClassifyIntent` prompt, `engineBuildLeadUpsertBody`,
+`handleEngineWebhook` + Instagram webhook (`cloudflare-worker/worker.js`); new Leads column `PreferredLanguage`
+**Broke:** A customer chatting in Malayalam typed "Mujhe Hindi bolo". The classifier tagged the
+romanized-Hindi message as the conversation's language (`ml`), every reply prompt ended "Respond ONLY
+in ml. Never switch languages", and the bot answered that it only speaks Malayalam. Nothing stored the
+request, so even a correct detection would have reverted on the next message.
+**Fix:** Explicit requests ("Mujhe Hindi bolo", "speak in English", "Malayalathil parayu", "हिंदी में
+बात करो", "Malayalam venda, Hindi mathi") are recognised deterministically and saved on the lead as
+`PreferredLanguage`. Reply language per turn: this turn's request → a message in a clearly different
+native script → saved preference → classifier guess → `CLIENTS.language`. Greetings/intros follow it
+too. The prompt now names the language ("Hindi", not "hi"), allows switching on an explicit ask, and
+forbids "I only speak one language". The classifier is told romanized Hindi is `hi` and Manglish is `ml`.
+A message that is only a language request counts as small talk (no anti-loop handover).
+**Don't:** treat a language name alone as a request — "Do you have the Hindi book?" and "Tell me about
+the Tamil course" must not switch the conversation; only verbs of speaking/writing do.
+**Tested:** `cloudflare-worker/language-request.test.js`.
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
