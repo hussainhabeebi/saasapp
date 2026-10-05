@@ -3311,6 +3311,13 @@ async function saveFollowupQuietHours(){
   const msg=$id('fuQuietHoursMsg');
   msg.textContent='Saving…';
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  // Re-read this client's latest bot_config first so keys saved from the dashboard since this
+  // page loaded (e.g. the Malayalam business name, name_ml) aren't overwritten by a stale copy.
+  try{
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    const parsed=JSON.parse(fresh?.bot_config||'{}');
+    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed)) botConfig=parsed;
+  }catch(e){}
   botConfig.followup_quiet_hours_enabled=$id('fuQuietHoursEnabled').checked;
   botConfig.followup_window_start_hour=Math.max(0,Math.min(23,parseInt($id('fuQuietHoursStart').value)||0));
   botConfig.followup_window_end_hour=Math.max(0,Math.min(23,parseInt($id('fuQuietHoursEnd').value)||0));
