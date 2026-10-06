@@ -122,3 +122,61 @@ test('CSV export picks up the report tables', async ({ page }) => {
   const file = await download;
   expect(file.suggestedFilename()).toMatch(/^report-calls-/);
 });
+
+// Home → 🏆 Weekly Arena. Seeds calls at fixed offsets from the current week's start (Sunday) so
+// the test doesn't depend on which weekday it runs.
+async function bootArena(page, { me = OWNER } = {}) {
+  await boot(page, { me });
+  await page.evaluate(({ OWNER, STAFF }) => {
+    const MANU = 'manu@example.com';
+    // @ts-ignore
+    clientRecord.team_emails = `${STAFF},${MANU}`;
+    // @ts-ignore
+    clientRecord.team_names = JSON.stringify({ [STAFF]: 'Rita', [MANU]: 'Manu' });
+    const wk = window.csWeekStart(0).getTime(), lastWk = window.csWeekStart(-1).getTime();
+    const at = (base, mins) => new Date(base + mins * 60000).toISOString();
+    const calls = (by, base, n, outcome = 'Answered') => Array.from({ length: n }, (_, i) => ({ outcome, at: at(base, 10 + i), by }));
+    let id = 100;
+    const lead = (owner, base, callList, extra = {}) => ({ Id: id++, Name: 'L' + id, Phone: '91900000' + id, Owner: owner, Stage: 'new',
+      Date: at(base, 0), CallLog: JSON.stringify(callList.slice().reverse()), ...extra });
+    // @ts-ignore
+    allLeads = [
+      // This week: Manu 4 answered (60), Rita 1 conversion + 1 answered (65 + 15 = 80 w/o Hot), Boss 2 no-answers (6)
+      lead(MANU, wk, calls(MANU, wk, 4)),
+      lead(STAFF, wk, calls(STAFF, wk, 1), { Stage: 'won', ClosedAt: at(wk, 60) }),
+      lead(OWNER, wk, calls(OWNER, wk, 2, 'No Answer')),
+      // Last week: Manu converted → last week's champion
+      lead(MANU, lastWk, calls(MANU, lastWk, 1), { Stage: 'won', ClosedAt: at(lastWk, 60) }),
+    ];
+  }, { OWNER, STAFF });
+  await page.evaluate(() => window.renderHome());
+}
+
+test('Home arena: podium, champion, my gap to the next person, badges', async ({ page }) => {
+  await bootArena(page);
+  const arena = page.locator('#homeArena');
+  await expect(arena).toBeVisible();
+  await expect(arena.locator('.cs-champ')).toContainText("Last week's champion: Manu");
+  // Podium order: Rita 65 (50 + 15) > Manu 60 > Boss 6
+  await expect(arena.locator('.cs-pod-1')).toContainText('Rita');
+  await expect(arena.locator('.cs-pod-1')).toContainText('65 pts');
+  await expect(arena.locator('.cs-pod-2')).toContainText('Manu');
+  await expect(arena.locator('.cs-pod-3')).toContainText('Boss (you)');
+  await expect(arena.locator('.cs-me-row')).toContainText("You're #3 of 3");
+  await expect(arena.locator('.cs-me-row')).toContainText('55 pts to pass Manu');
+  await expect(arena.locator('.cs-pod-1 .cs-badge[title^="Closer"]')).toHaveCount(1);
+  await expect(arena.locator('.cs-pod-2 .cs-badge[title^="Call Machine"]')).toHaveCount(1);
+  await expect(arena.locator('.cs-legend', { hasText: 'Closer' })).toContainText('Rita');
+});
+
+test('Home arena: a solo account sees its own weekly points, no podium', async ({ page }) => {
+  await bootArena(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.team_emails = '';
+    window.renderHome();
+  });
+  const arena = page.locator('#homeArena');
+  await expect(arena.locator('.cs-podium')).toHaveCount(0);
+  await expect(arena.locator('.cs-solo')).toContainText('6 pts this week');
+});
