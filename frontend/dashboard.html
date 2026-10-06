@@ -558,6 +558,7 @@ tr:hover td{background:#FAFCFB}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 @media(max-width:767px){.lead-ref-list{display:none}}
 .lead-more-btn{min-width:30px;font-weight:700;letter-spacing:1px}
+.lead-spam-btn{min-width:30px;padding-left:6px;padding-right:6px}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
 .li-date{font-size:10px;color:var(--muted);font-family:var(--mono)}
@@ -6629,14 +6630,39 @@ async function markLeadWon(leadId, ev){
     fetch(`${CONFIG.WORKER_BASE}/erpnext/customers/ensure`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:lead.Name, phone:lead.Phone, email:lead.Email})}).catch(()=>{});
   }
 }
+// No confirm dialog — the lead disappears at once and an Undo toast restores every field the
+// Spam outcome touched (Stage, OptOut, handover fields) if it was a mis-tap.
+const SPAM_UNDO_KEYS=['Stage','Handover','HandoverAt','SlaAlerted','HandoverOutcome','OptOut','HandoverResponseMinutes'];
 async function markLeadSpam(leadId, ev){
   ev?.stopPropagation();
-  if(!confirm('Mark as spam? The bot will stop replying to this lead going forward (same as an opt-out).')) return;
+  const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
+  const before={Id:leadId}; SPAM_UNDO_KEYS.forEach(k=>{ before[k]=lead[k]??null; });
   await claimLeadIfUnowned(leadId,'Marked Spam');
   try{
     await applyHumanDealOutcome(leadId, 'Spam');
-    if(_leadsTableView) renderLeadsTable(); else renderLeadsList();
-  }catch(e){ showToast('Failed to save: '+e.message,'err'); }
+    renderLeadsCurrentView();
+  }catch(e){ showToast('Failed to save: '+e.message,'err'); return; }
+  showUndoToast('🚫 Marked as spam', async ()=>{
+    try{
+      await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,before);
+      Object.assign(lead, before);
+      renderLeadsCurrentView();
+      showToast('↩️ Spam undone','ok');
+    }catch(e){ showToast('Undo failed: '+e.message,'err'); }
+  });
+}
+function showUndoToast(msg, onUndo){
+  let t=$id('_undoToast');
+  if(!t){
+    t=document.createElement('div'); t.id='_undoToast';
+    t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#0F1F1A;color:#fff;padding:8px 8px 8px 18px;border-radius:10px;font-size:13px;font-weight:600;z-index:10000;display:flex;align-items:center;gap:12px';
+    document.body.appendChild(t);
+  }
+  clearTimeout(t._timer);
+  t.innerHTML=`<span>${esc(msg)}</span><button style="background:transparent;border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:7px;padding:4px 10px;font-weight:700;cursor:pointer">Undo</button>`;
+  t.style.display='flex';
+  t.querySelector('button').onclick=()=>{ clearTimeout(t._timer); t.style.display='none'; onUndo(); };
+  t._timer=setTimeout(()=>{ t.style.display='none'; },6000);
 }
 
 // ── COACH PANEL — reads the engine's own Sentiment/LastObjectionCategory signals plus this
@@ -6824,7 +6850,27 @@ function leadCallDoneBadge(l){
   if(!calls.length) return '';
   const n=calls.length;
   const ORDINALS={1:'1st',2:'2nd',3:'3rd',4:'4th',5:'5th'};
-  return `<span class="tag" style="background:#DCFCE7;color:#166534;font-weight:600" title="${n} call(s) logged">📞 ${ORDINALS[n]||n+'th'} call done</span>`;
+  const last=leadLastCallIso(l);
+  return `<span class="tag" style="background:#DCFCE7;color:#166534;font-weight:600" title="${n} call(s) logged">📞 ${ORDINALS[n]||n+'th'} call done${last?' · '+timeAgo(last):''}</span>`;
+}
+// When the most recent logged call happened (ISO), or '' if never called / unknown. New entries
+// carry `at`; older ones only have a locale `date` string, parsed best-effort.
+function leadLastCallIso(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  const c=calls[0]; if(!c) return '';
+  if(c.at) return c.at;
+  const t=Date.parse(c.date||'');
+  return isFinite(t)?new Date(t).toISOString():'';
+}
+// Call queue tier: 0 = never called, 1 = called but its reminder has come due since, 2 = called
+// and nothing due yet. Called leads sink below fresh ones instead of jumping back to the top.
+function leadCallTier(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  if(!calls.length) return 0;
+  const rem=(l.ReminderDate||'').slice(0,16);
+  const last=leadLastCallIso(l).slice(0,16);
+  if(rem && rem<=new Date().toISOString().slice(0,16) && (!last || last<rem)) return 1;
+  return 2;
 }
 
 // "Needs Action Today" priority — never negative-ranks a closed-out lead (won/lost/opted-out
@@ -6887,12 +6933,24 @@ function applyLeadsViewFilter(leads){
   const srcf=$id('leadSourceFilter')?.value||'';
   if(srcf) out=out.filter(l=>(l.Source||'')===srcf);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
+  // Spam is hidden unless the stage filter explicitly asks for Lost (where Spam lands)
+  else out=out.filter(l=>l.HandoverOutcome!=='Spam');
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
 }
+// Call-based order: never-called leads first, then called leads whose follow-up is due, then the
+// rest of the called leads oldest-call-first — so logging a call moves a lead down, not back up.
 function sortLeadsForView(list){
-  if(_leadsActiveView==='needs_action') return [...list].sort((a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a));
-  return [...list].sort((a,b)=>new Date(b.Date||0)-new Date(a.Date||0));
+  const byView=_leadsActiveView==='needs_action'
+    ? (a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a)
+    : (a,b)=>new Date(b.Date||0)-new Date(a.Date||0);
+  return list.map(l=>({l,tier:leadCallTier(l),last:leadLastCallIso(l)}))
+    .sort((a,b)=>{
+      if(a.tier!==b.tier) return a.tier-b.tier;
+      if(a.tier===2 && a.last!==b.last) return a.last<b.last?-1:1;
+      return byView(a.l,b.l);
+    })
+    .map(x=>x.l);
 }
 function onLeadsFilterChange(){ _leadsPage=1; renderLeadsCurrentView(); }
 function renderLeadsCurrentView(){
@@ -9194,7 +9252,7 @@ async function saveCall(){
   if(!dur&&currentLead){ const elapsed=callTimerElapsed(currentLead.Id); if(elapsed>0) dur=elapsed; }
   const outcome=$id('callOutcome').value;
   const leadId=currentLead.Id;
-  calls.unshift({outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),by:myEmail});
+  calls.unshift({outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
   renderDetailCalls(currentLead);
   await patchDetailField('CallLog',currentLead.CallLog);
@@ -9251,11 +9309,11 @@ function callBtnHTML(l, label){
 // one tap away still, but no longer the first thing a telecaller's thumb lands on. Reuses the call
 // dropdown's styling/close-all behaviour; positioned fixed because .li-actions scrolls sideways and
 // would clip an absolutely positioned menu.
+// Spam sits next to it as a single small icon — one tap, no confirm, with an Undo toast instead.
 function leadMoreMenuHTML(l){
-  return `<button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
+  return `<button class="btn btn-secondary btn-sm lead-spam-btn" title="Mark as spam" aria-label="Mark as spam" onclick="markLeadSpam(${l.Id},event)">🚫</button><button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
     <div class="call-channel-drop" id="lmd-${l.Id}" style="position:fixed">
       <button onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadWon(${l.Id},event)">✅ Mark Won</button>
-      <button style="color:#DC2626" onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadSpam(${l.Id},event)">🚫 Mark Spam</button>
     </div>`;
 }
 function toggleLeadMoreMenu(id, btn, force){
@@ -9377,7 +9435,7 @@ async function saveInlineOutcome(leadId, outcome, durationMins){
   currentLead=l;
   await claimLeadIfUnowned(leadId,'Call outcome');
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome,duration:durationMins||'',notes:'',date:new Date().toLocaleString(),by:myEmail});
+  calls.unshift({outcome,duration:durationMins||'',notes:'',date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   l.CallLog=JSON.stringify(calls);
   if(currentLead===l) renderDetailCalls(l);
   await patchDetailField('CallLog',l.CallLog);
@@ -9566,7 +9624,7 @@ async function pdLogOutcome(outcome){
   const durationMins=_pdCallStart?Math.round((Date.now()-_pdCallStart)/60000):0;
   const notes=($id('pdNoteInput')?.value||'').trim();
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),by:myEmail});
+  calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   l.CallLog=JSON.stringify(calls);
   const memIdx=allLeads.findIndex(x=>x.Id===l.Id);
   if(memIdx>=0) allLeads[memIdx].CallLog=l.CallLog;
