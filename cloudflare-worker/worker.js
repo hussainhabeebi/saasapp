@@ -11446,6 +11446,159 @@ export function ecomFormatProductPrice(price, currency){
   return cur.length===1?`${cur}${amount}`:`${cur} ${amount}`;
 }
 
+/* ── Baby Care: baby's age → age-appropriate products ────────────────────────────────────
+   Couplo (Oct 2026): every customer was offered the newborn sets, even a mother of a 9-month-old
+   who needed T-shirts. The baby's age is read from what the customer wrote ("23 days old",
+   "6 maasam aayi", "1 vayassu", "newborn"), remembered per phone, and every product picker for a
+   Baby Care client then shows only products whose age group (Ecom → Products → Age Group, else the
+   name/size, e.g. "0-3 Months", "6M-1Y", "Newborn") covers that age. Products with no readable age
+   stay visible; when nothing would be left, the full list is shown rather than an empty picker. */
+const BABY_NUM_WORDS={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,
+  onnu:1,randu:2,moonu:3,naalu:4,anju:5,aaru:6,ezhu:7,ettu:8,ombathu:9,pathu:10};
+const BABY_UNIT_DAY='(?:days?|dys?|divasam\\w*|dhivasam\\w*|ദിവസ\\S*|din)';
+const BABY_UNIT_WEEK='(?:weeks?|wks?|aazhcha\\w*|azhcha\\w*|ആഴ്ച\\S*|hafte|hafta)';
+const BABY_UNIT_MONTH='(?:months?|mnths?|mths?|mons?|mos?|m|maasam\\w*|masam\\w*|maasa\\w*|മാസ\\S*|mahine|mahina)';
+const BABY_UNIT_YEAR='(?:years?|yrs?|yr|y|vayass?\\w*|vayas\\w*|വയസ്\\S*|saal|sal)';
+const BABY_NUM='(\\d+(?:\\.\\d+)?|'+Object.keys(BABY_NUM_WORDS).join('|')+'|half)(\\s*(?:and\\s*(?:a\\s*)?half|\\.5|½|arai|ara))?';
+const BABY_NOT_AGE_RE=/\b(?:deliver\w*|shipping|ship|courier|dispatch\w*|return\w*|refund\w*|exchange\w*|replace\w*|warranty|guarantee|within|ethum|kittum\w*|reach\w*|offer|sale|ago|back|before|munp\w*)\b/i;
+const BABY_NEWBORN_RE=/\bnew\s*-?\s*born\b|\bnew\s*baby\b|\bjust\s+born\b|\bnb\b|\bnavajaath\w*|നവജാത|\bpregnan\w*|\bexpecting\b|\bdue\s+date\b|\bgarbh\w*|ഗർഭ/i;
+function babyNum(raw, half){
+  const w=String(raw||'').toLowerCase();
+  const n=w==='half'?0.5:(BABY_NUM_WORDS[w]!=null?BABY_NUM_WORDS[w]:Number(w));
+  return Number.isFinite(n)?n+(half?0.5:0):null;
+}
+// Baby's age in months from one customer message, or null. A range ("3-6 months") gives its middle.
+export function babyAgeMonthsFromText(text){
+  const t=String(text||'').toLowerCase().replace(/\s+/g,' ').trim();
+  if(!t || /^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(String(text).trim())) return null;
+  const units=[[BABY_UNIT_YEAR,12],[BABY_UNIT_MONTH,1],[BABY_UNIT_WEEK,1/4.345],[BABY_UNIT_DAY,1/30.4]];
+  const range=new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:-|–|to)\\s*(\\d+(?:\\.\\d+)?)\\s*(${BABY_UNIT_YEAR}|${BABY_UNIT_MONTH})(?![\\p{L}])`,'iu').exec(t);
+  if(range && !BABY_NOT_AGE_RE.test(t)){
+    const perUnit=new RegExp(`^${BABY_UNIT_YEAR}$`,'iu').test(range[3])?12:1;
+    return Math.round(((Number(range[1])+Number(range[2]))/2)*perUnit*10)/10;
+  }
+  // Delivery/return wording ("3 days delivery?", "2 years back") makes a bare duration ambiguous:
+  // days/weeks are then ignored and months/years still need an age word next to them.
+  const notAge=BABY_NOT_AGE_RE.test(t);
+  const ageWord=/\b(?:old|baby|babies|age|aged|kid|kunj\w*|mol|mon|boy|girl|son|daughter|prayam\w*|aayi|ayi|aanu|born|ka|ki)\b|ആയി|പ്രായ/i.test(t);
+  let total=0, found=false;
+  for(const [unit,perUnit] of units){
+    if(notAge && perUnit<1) continue;
+    const re=new RegExp(`(?<![\\p{L}\\d.])${BABY_NUM}\\s*-?\\s*(${unit})(?![\\p{L}])`,'giu');
+    let m; while((m=re.exec(t))){
+      const n=babyNum(m[1], m[2]);
+      if(n==null) continue;
+      // A bare "m"/"y" after a number is only an age next to an age word ("6m baby", "1y old").
+      if(/^(?:m|y)$/i.test(m[3]) && !ageWord) continue;
+      total+=n*perUnit; found=true;
+    }
+  }
+  if(found && (!notAge || ageWord)) return total<=96 ? Math.round(total*10)/10 : null;
+  if(BABY_NEWBORN_RE.test(t)) return 0;
+  return null;
+}
+// Newest age the customer gave across this turn and the recent conversation (user turns only).
+export function babyAgeMonthsFromConversation(userText, history){
+  const own=babyAgeMonthsFromText(userText);
+  if(own!=null) return own;
+  const msgs=(history||[]).filter(m=>m&&m.role==='user').map(m=>m.content);
+  for(let i=msgs.length-1;i>=0;i--){ const a=babyAgeMonthsFromText(msgs[i]); if(a!=null) return a; }
+  return null;
+}
+// Age range in months a product suits, from its age group / name / size text, or null when unknown.
+export function babyProductAgeRangeMonths(product={}){
+  const sources=[product.age_group, [product.name, product.short_label, product.category].filter(Boolean).join(' '), product.size];
+  for(const src of sources){
+    const r=babyAgeRangeFromLabel(src);
+    if(r) return r;
+  }
+  return null;
+}
+export function babyAgeRangeFromLabel(label){
+  const t=String(label||'').toLowerCase().replace(/\s+/g,' ').trim();
+  if(!t) return null;
+  const U='(m|mo|mos|mon|mons|mnths?|mths?|months?|y|yr|yrs|years?)';
+  const per=u=>/^y/.test(u||'')?12:1;
+  let lo=Infinity, hi=-Infinity, any=false;
+  const add=(a,b)=>{ lo=Math.min(lo,a); hi=Math.max(hi,b); any=true; };
+  let rest=t;
+  // "0-3 months", "6m-1y", "1 to 2 years", "6-12M"
+  rest=rest.replace(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*${U}?\\s*(?:-|–|to)\\s*(\\d+(?:\\.\\d+)?)\\s*${U}(?![a-z])`,'g'),(_,a,ua,b,ub)=>{
+    add(Number(a)*per(ua||ub), Number(b)*per(ub)); return ' ';
+  });
+  // "6M+", "above 6 months", "2 years & above"
+  rest=rest.replace(new RegExp(`(?:above|over|from|\\babove)\\s*(\\d+(?:\\.\\d+)?)\\s*${U}(?![a-z])|(\\d+(?:\\.\\d+)?)\\s*${U}\\s*(?:\\+|&\\s*above|and\\s*above|plus|onwards)`,'g'),(_,a,ua,b,ub)=>{
+    add(Number(a??b)*per(ua??ub), 96); return ' ';
+  });
+  // "upto 6 months", "under 1 year"
+  rest=rest.replace(new RegExp(`(?:up\\s*to|upto|under|below|till)\\s*(\\d+(?:\\.\\d+)?)\\s*${U}(?![a-z])`,'g'),(_,a,ua)=>{
+    add(0, Number(a)*per(ua)); return ' ';
+  });
+  // A single size like "6M" / "12 months" / "2Y" (clothing size = up to that age).
+  rest.replace(new RegExp(`(?<![a-z\\d.])(\\d+(?:\\.\\d+)?)\\s*${U}(?![a-z])`,'g'),(_,a,ua)=>{
+    const n=Number(a)*per(ua);
+    if(/^y/.test(ua)) add(Math.max(0,n-12), n+11); else add(Math.max(0,n-3), n);
+    return ' ';
+  });
+  if(/\bnew\s*-?\s*born\b|\bnb\b|\bnavajaath/.test(t)) add(0,3);
+  if(!any){
+    if(/\binfants?\b/.test(t)) add(0,12);
+    else if(/\btoddlers?\b/.test(t)) add(12,48);
+  }
+  return any && hi>=lo ? {min:lo, max:hi} : null;
+}
+// Products that suit a baby of `ageMonths`: matching age-tagged products first, then products with
+// no readable age. Never returns an empty list for a non-empty input.
+export function ecomFilterProductsByBabyAge(products, ageMonths){
+  const list=products||[];
+  if(ageMonths==null || !Number.isFinite(Number(ageMonths)) || !list.length) return list;
+  const age=Number(ageMonths);
+  const fits=[], unknown=[];
+  for(const p of list){
+    const r=babyProductAgeRangeMonths(p);
+    if(!r) unknown.push(p);
+    else if(age>=r.min-0.25 && age<=r.max+0.5) fits.push(p);
+  }
+  const out=[...fits,...unknown];
+  return out.length?out:list;
+}
+// Categories that still have at least one product left after the age filter (category order kept).
+export function ecomCategoriesWithProducts(categories, products){
+  const keep=new Set((products||[]).map(p=>ecomNormalizeCatalogueText(p?.category)).filter(Boolean));
+  const out=(categories||[]).filter(cat=>keep.has(ecomNormalizeCatalogueText(cat)));
+  return out.length?out:(categories||[]);
+}
+export function babyAgeLabel(months){
+  const m=Number(months);
+  if(!Number.isFinite(m)) return '';
+  if(m<1) return `${Math.max(1,Math.round(m*30.4))} days`;
+  if(m<24) return `${Math.round(m*10)/10} months`;
+  return `${Math.round(m/12*10)/10} years`;
+}
+// Remembered per customer so a later "show products" still gets the right range; the stored age
+// is aged forward by the time elapsed since the customer told us.
+const BABY_AGE_KV_TTL=60*60*24*365;
+async function babyCareResolveAgeMonths(env, clientId, phone, userText, history){
+  try{ return await babyCareResolveAgeMonthsInner(env, clientId, phone, userText, history); }
+  catch(e){ return babyAgeMonthsFromConversation(userText, history); }
+}
+async function babyCareResolveAgeMonthsInner(env, clientId, phone, userText, history){
+  const key=`baby_age:${clientId}:${String(phone||'').replace(/^\+/,'')}`;
+  const said=babyAgeMonthsFromConversation(userText, history);
+  if(said!=null){
+    if(env.KV) await env.KV.put(key, JSON.stringify({m:said, at:Date.now()}), {expirationTtl:BABY_AGE_KV_TTL}).catch(()=>{});
+    return said;
+  }
+  if(!env.KV) return null;
+  const saved=await env.KV.get(key).catch(()=>null);
+  if(!saved) return null;
+  try{
+    const {m,at}=JSON.parse(saved);
+    if(!Number.isFinite(Number(m))) return null;
+    return Math.round((Number(m)+Math.max(0,(Date.now()-Number(at||Date.now()))/(30.4*864e5)))*10)/10;
+  }catch(e){ return null; }
+}
+
 // Baby care product card: verbatim name + description from the saved Ecom row, with the stored
 // price on its own labelled line. Multi-line descriptions become bullets; nothing is generated.
 export function ecomBabyCareProductCard(product={}){
@@ -16561,6 +16714,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     }catch(e){}
   }
   if(contextBlock) sys+=contextBlock;
+  if(industry==='ecommerce' && state.babyAgeMonths!=null){
+    sys+=`\n\nBABY AGE: The customer's baby is about ${babyAgeLabel(state.babyAgeMonths)} old. Suggest only products whose age group, size or description suits this age (e.g. T-shirts and everyday wear from 6 months, not newborn-only items like swaddles or mittens). Never offer a product meant for a different age unless the customer asks for it by name.`;
+  }
   if(isResort){
     const hasResortData=contextBlock && contextBlock.includes('VERIFIED RESORT DATA');
     if(hasResortData){
@@ -20630,6 +20786,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const _bcGlobalEnabled=botConfig.baby_care_flow_enabled!==false; // default true
     const _bcCustomerEnabled=_bcCustomer!=null?(_bcCustomer.enabled!==false):_bcGlobalEnabled;
     const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care'&&_bcCustomerEnabled;
+    // Baby Care: the baby's age (said now, earlier in the chat, or remembered) narrows every product
+    // picker below to age-appropriate products — a 9-month-old gets T-shirts, not newborn sets.
+    if(isBabyCareEcom) state.babyAgeMonths=await babyCareResolveAgeMonths(env, clientId, phone, userText, state.activeHistory);
+    const babyAgeProducts=products=>isBabyCareEcom?ecomFilterProductsByBabyAge(products, state.babyAgeMonths):products;
+    const babyAgeCategories=(categories, products)=>isBabyCareEcom&&state.babyAgeMonths!=null?ecomCategoriesWithProducts(categories, babyAgeProducts(products)):categories;
     const isMedicalCentreEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='medical_centre';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
@@ -20894,7 +21055,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             ]);
           } else {
             const [_cats,_prods]=await Promise.all([ecomListCategories(env,clientId),ecomListActiveProducts(env,clientId)]);
-            const _catalogItems=ecomAvailableCatalogueItems(_cats,_prods);
+            const _catalogItems=ecomAvailableCatalogueItems(babyAgeCategories(_cats,_prods),babyAgeProducts(_prods));
             if(_catalogItems.length){
               sentText=await engineLocalizeReply(env,c,
                 '🛍️ *Our Baby Collection*\n\nChoose a category or product to explore — we\'ll share details and photos! 📸',replyLang);
@@ -21810,7 +21971,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // One self-contained verified catalogue response: active categories plus broad-matched
         // active products. The same exact rows are included in the message body and interactive
         // picker, so a provider-side button failure can never leave only a dead-end instruction.
-        const categories=await ecomListCategories(env, clientId);
+        const categories=babyAgeCategories(await ecomListCategories(env, clientId), activeProducts);
         if(isFashionEcom){
           // Fashion: broad match routes to the category picker with images — keeps the
           // deterministic Categories → Products → Order flow intact instead of a mixed text list.
@@ -21840,7 +22001,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
             orderHandledInline=true;
           }
         }else{
-          const productChoices=broadMatches.length?broadMatches:activeProducts;
+          const productChoices=babyAgeProducts(broadMatches.length?broadMatches:activeProducts);
           const items=ecomAvailableCatalogueItems(categories,productChoices);
           if(items.length){
             const intro=await engineLocalizeReply(env, c, 'Please choose an available category or matching product:', replyLang);
@@ -22197,7 +22358,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // photo — a customer asking "which type of shirt" shouldn't be shown one arbitrary shirt
           // as if it were the answer; fall back to the first matching product's photo only when the
           // category itself has no photo configured.
-          let categoryProducts=await ecomFindProductsByCategory(env, clientId, detection.category);
+          let categoryProducts=babyAgeProducts(await ecomFindProductsByCategory(env, clientId, detection.category));
           if(categoryProducts.length){
             // One deterministic step only: category -> exact products. Never insert AI-created
             // brand, material, size, spring type, colour or variant questions between them.
@@ -22611,7 +22772,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           // Electronics: show product-only buttons — no category clutter mixed in.
           faqQuickReplies=isElectronicsEcom
             ? ecomProductChoiceItems(products)
-            : ecomAvailableCatalogueItems(categories,products);
+            : ecomAvailableCatalogueItems(babyAgeCategories(categories,products),babyAgeProducts(products));
           // Baby care: if the merchant hasn't configured a product catalog, the catalogue call
           // above returns nothing. Fall back to action buttons. Mid-flow questions get a
           // "Continue Order" button so the customer can pick up exactly where they left off.
