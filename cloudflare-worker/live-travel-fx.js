@@ -236,7 +236,7 @@ function ltFxFromRow(row,now=new Date()){
    calls the provider — except on a brand-new deployment with no snapshot at all, where it makes
    the current slot's (single, capped) attempt so the first search isn't stuck on peg-only rates. */
 export async function ltFxRates(env,opts={}){
-  const current=ltFxFromRow(await ltFxReadRow(env));
+  const current=ltFxFromRow(await ltFxReadRow(env),opts.now||new Date());
   if(current.fetched_at||opts.allowFetch===false)return current;
   return (await ltFxRefresh(env,opts)).rates;
 }
