@@ -133,7 +133,8 @@ describe('Live Agency platform-wide rate snapshot (max 4 provider calls/day)', (
     const tick=t=>ltFxRefreshIfStale(env,{now:at(t),fetchImpl:ok({INR:88,AED:3.6725})});
     for(const t of ['00:00:00','00:15:00','05:45:00','06:00:00','06:15:00','11:59:00','12:00:00','17:30:00','18:00:00','23:45:00'])await tick(t);
     assert.equal(calls,4,'one refresh in each of 00:00, 06:00, 12:00 and 18:00 slots');
-    const r=await ltFxRates(env);
+    // Same UTC day as the ticks above — "today" must not depend on when the suite runs.
+    const r=await ltFxRates(env,{now:at('23:50:00')});
     assert.equal(r.refreshes_today,4);
     // Next UTC day the count starts again.
     const next=await ltFxRefreshIfStale(env,{now:new Date('2026-10-03T00:05:00Z'),fetchImpl:ok({INR:87})});
