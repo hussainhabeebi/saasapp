@@ -585,6 +585,32 @@ tr:hover td{background:#FAFCFB}
 .cs-targets th,.cs-targets td{padding:6px 8px;font-size:13px}
 .cs-targets input{width:90px;padding:6px 8px}
 .cs-click{cursor:pointer}
+/* Home → Weekly Arena */
+.cs-arena-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}
+.cs-champ{background:linear-gradient(90deg,#FEF3C7,#FFFBEB);color:#78350F;border:1px solid #FDE68A;border-radius:10px;padding:8px 12px;font-size:13px;margin-bottom:14px}
+.cs-podium{display:grid;grid-template-columns:1fr 1.15fr 1fr;gap:10px;align-items:end;margin:0 auto 12px;max-width:560px}
+.cs-pod{text-align:center;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:0}
+.cs-pod-medal{font-size:22px;line-height:1}
+.cs-pod-av{width:44px;height:44px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;margin:4px 0}
+.cs-pod-1 .cs-pod-av{width:54px;height:54px;font-size:18px;background:linear-gradient(135deg,#F59E0B,#FBBF24);box-shadow:0 0 0 3px #FDE68A}
+.cs-pod-name{font-weight:700;font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-pod-pts{font-weight:800;font-size:16px;color:var(--accent-ink)}
+.cs-pod-sub{font-size:11px;color:var(--muted)}
+.cs-pod-step{width:100%;margin-top:6px;border-radius:8px 8px 0 0;background:var(--line);color:var(--muted);font-weight:800;display:flex;align-items:center;justify-content:center}
+.cs-pod-1 .cs-pod-step{height:46px;background:#FDE68A;color:#92400E}
+.cs-pod-2 .cs-pod-step{height:32px;background:#E5E7EB}
+.cs-pod-3 .cs-pod-step{height:22px;background:#FED7AA;color:#9A3412}
+.cs-pod.me .cs-pod-name{color:var(--accent-ink)}
+.cs-badge{display:inline-block;font-size:14px;margin:0 1px;cursor:help}
+.cs-me-row{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;background:rgba(13,156,147,.08);border-radius:10px;padding:8px 12px;margin-bottom:10px}
+.cs-rest .agent-row.cs-me{background:rgba(13,156,147,.08)}
+.cs-legend-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.cs-legend{font-size:11.5px;padding:3px 9px;border-radius:20px;background:var(--bg);border:1px solid var(--line)}
+.cs-legend.off{opacity:.45}
+.cs-hall{font-size:12px;color:var(--muted);margin-top:10px}
+.cs-hall small{opacity:.7}
+.cs-solo .cs-me-pts{font-size:28px;font-weight:800;color:var(--accent-ink)}
+.cs-solo .cs-me-pts span{font-size:13px;font-weight:500;color:var(--muted)}
 @media(max-width:600px){.cs-next{flex-direction:column;align-items:stretch}.cs-oc-name{flex-basis:80px}}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
@@ -1444,6 +1470,9 @@ const ROLES = {
 
         <!-- Getting Started checklist (new/incomplete accounts only) -->
         <div id="onboardingChecklist" style="display:none;margin-bottom:18px"></div>
+
+        <!-- 🏆 Weekly Arena — staff weekly points, podium, champion, badges (call-score.js) -->
+        <div id="homeArena" style="display:none;margin-bottom:18px"></div>
 
         <!-- Morning Briefing Card -->
         <div id="bizBriefingCard" style="display:none" class="biz-briefing">
@@ -6053,6 +6082,7 @@ function renderHome(){
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
   try{renderOnboardingChecklist();}catch(e){}
+  try{window.csRenderHomeArena?.();}catch(e){}
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
@@ -21326,7 +21356,7 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
-<script src="call-score.js?v=1"></script>
+<script src="call-score.js?v=2"></script>
 <script>
 
 /* ── PWA install prompt ──
