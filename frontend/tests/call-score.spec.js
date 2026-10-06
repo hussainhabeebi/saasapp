@@ -152,24 +152,46 @@ async function bootArena(page, { me = OWNER } = {}) {
   await page.evaluate(() => window.renderHome());
 }
 
-test('Home arena: podium, champion, my gap to the next person, badges', async ({ page }) => {
+test('Home arena: hero, quests, champion, league list, badges', async ({ page }) => {
   await bootArena(page);
   const arena = page.locator('#homeArena');
   await expect(arena).toBeVisible();
-  await expect(arena.locator('.cs-champ')).toContainText("Last week's champion: Manu");
-  // Podium order: Rita 65 (50 + 15) > Manu 60 > Boss 6
-  await expect(arena.locator('.cs-pod-1')).toContainText('Rita');
-  await expect(arena.locator('.cs-pod-1')).toContainText('65 pts');
-  await expect(arena.locator('.cs-pod-2')).toContainText('Manu');
-  await expect(arena.locator('.cs-pod-3')).toContainText('Boss (you)');
-  await expect(arena.locator('.cs-me-row')).toContainText("You're #3 of 3");
-  await expect(arena.locator('.cs-me-row')).toContainText('55 pts to pass Manu');
-  await expect(arena.locator('.cs-pod-1 .cs-badge[title^="Closer"]')).toHaveCount(1);
-  await expect(arena.locator('.cs-pod-2 .cs-badge[title^="Call Machine"]')).toHaveCount(1);
-  await expect(arena.locator('.cs-legend', { hasText: 'Closer' })).toContainText('Rita');
+  // Boss: 6 pts, Rookie tier, #3 of 3 scorers; Manu (60) is 55 pts ahead → within reach, so the chase message shows
+  await expect(arena.locator('.csa-pts')).toContainText('6');
+  await expect(arena.locator('.csa-ring-in')).toContainText('#3');
+  await expect(arena.locator('.csa-tier-chip')).toContainText('Rookie');
+  await expect(arena.locator('.csa-motive')).toContainText('Only 55 pts behind Manu');
+  await expect(arena.locator('.csa-quest').first()).toContainText('Calls');
+  await expect(arena.locator('.csa-champ')).toContainText('Manu');
+  await expect(arena.locator('.csa-champ')).toContainText('1 converted');
+  const rows = arena.locator('.csa-row');
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0)).toContainText('Rita');
+  await expect(rows.nth(0)).toContainText('65');
+  await expect(rows.nth(1)).toContainText('Manu');
+  await expect(rows.nth(2)).toHaveClass(/me/);
+  await expect(arena.locator('.csa-badge', { hasText: 'Closer' })).toContainText('Rita');
+  await expect(arena.locator('.csa-badge', { hasText: 'Call Machine' })).toContainText('Manu');
 });
 
-test('Home arena: a solo account sees its own weekly points, no podium', async ({ page }) => {
+test('Home arena: zero-point teammates are grouped, emails become names, big gaps show a tier goal', async ({ page }) => {
+  await bootArena(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.team_emails += ',sona.k@aiingo.com';
+    // Rita and Manu each convert 2 more leads → too big a gap for Boss to chase
+    const wk = window.csWeekStart(0).getTime();
+    for (let i = 0; i < 4; i++) allLeads.push({ Id: 900 + i, Name: 'W' + i, Phone: '9190000009' + i, Owner: i % 2 ? 'manu@example.com' : 'rep@example.com', Stage: 'won', Date: new Date(wk).toISOString(), ClosedAt: new Date(wk + 3600e3).toISOString() });
+    window.renderHome();
+  });
+  const arena = page.locator('#homeArena');
+  await expect(arena.locator('.csa-idle')).toContainText('1 teammate yet to score');
+  await expect(arena.locator('.csa-idle .csa-av')).toHaveText('SK');
+  await expect(arena).not.toContainText('sona.k@aiingo.com');
+  await expect(arena.locator('.csa-motive')).toContainText('to 🥉 Bronze');
+});
+
+test('Home arena: a solo account sees its own progress and an invite, no league', async ({ page }) => {
   await bootArena(page);
   await page.evaluate(() => {
     // @ts-ignore
@@ -177,6 +199,7 @@ test('Home arena: a solo account sees its own weekly points, no podium', async (
     window.renderHome();
   });
   const arena = page.locator('#homeArena');
-  await expect(arena.locator('.cs-podium')).toHaveCount(0);
-  await expect(arena.locator('.cs-solo')).toContainText('6 pts this week');
+  await expect(arena.locator('.csa-row')).toHaveCount(0);
+  await expect(arena.locator('.csa-pts')).toContainText('6');
+  await expect(arena).toContainText('Add teammates');
 });
