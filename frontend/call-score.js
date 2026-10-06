@@ -392,11 +392,31 @@ function csWeekBadges(board){
   }
   return out;
 }
-function csInitials(name){ return String(name||'?').split(/[\s@.]+/).filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')||'?'; }
+function csInitials(name){ return String(name||'?').split(/[\s@._-]+/).filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join('')||'?'; }
+// Friendly display name: a team member with no name set shows as their email — turn
+// "sona.k@aiingo.com" into "Sona K" instead of a truncated address.
+function csName(m){
+  const n=String(m?.name||'').trim();
+  if(!n.includes('@')) return n||'Teammate';
+  return n.split('@')[0].split(/[._-]+/).filter(Boolean).map(w=>w[0].toUpperCase()+w.slice(1)).join(' ')||n;
+}
 function csEndsIn(){
   const ms=csWeekStart(1).getTime()-Date.now(); const d=Math.floor(ms/86400000), h=Math.floor(ms%86400000/3600000);
   return d?`${d}d ${h}h`:`${h}h ${Math.floor(ms%3600000/60000)}m`;
 }
+// Weekly tiers — a reachable personal goal even when the leader is far ahead.
+const CS_TIERS=[{min:0,icon:'🌱',name:'Rookie'},{min:50,icon:'🥉',name:'Bronze'},{min:150,icon:'🥈',name:'Silver'},{min:300,icon:'🥇',name:'Gold'},{min:500,icon:'💎',name:'Diamond'}];
+function csTier(pts){
+  let i=0; while(i+1<CS_TIERS.length && pts>=CS_TIERS[i+1].min) i++;
+  const cur=CS_TIERS[i], next=CS_TIERS[i+1]||null;
+  const pct=next?Math.round((pts-cur.min)/(next.min-cur.min)*100):100;
+  return {cur, next, pct, toNext:next?next.min-pts:0};
+}
+const CS_AV_COLORS=['#0D9C93','#6366F1','#EC4899','#F59E0B','#10B981','#3B82F6','#8B5CF6','#EF4444'];
+function csAvColor(key){ let h=0; for(const c of String(key)) h=(h*31+c.charCodeAt(0))>>>0; return CS_AV_COLORS[h%CS_AV_COLORS.length]; }
+function csAvatar(m,size){ return `<span class="csa-av" style="background:${csAvColor(csEmailKey(m.email))}${size?`;width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}">${esc(csInitials(csName(m)))}</span>`; }
+function csCallsFor(pts){ return Math.max(1,Math.ceil(pts/CS_PTS.answered)); }
+
 function csRenderHomeArena(){
   const el=$id('homeArena'); if(!el) return;
   _csCache=null;
@@ -407,52 +427,80 @@ function csRenderHomeArena(){
   const solo=members.length<2;
   const last=csWeekWinner(-1);
   const hall=[-1,-2,-3,-4].map(o=>({o, w:csWeekWinner(o)})).filter(x=>x.w);
-  const badgeChips=list=>(list||[]).map(b=>`<span class="cs-badge" title="${esc(b.name)} — ${esc(b.why)}">${b.icon}</span>`).join('');
   const isMe=r=>sameEmail(r.m.email,myEmail);
+  const myPts=me?.s.pts||0, tier=csTier(myPts), today=me?.s.today||csTodaySummary(myEmail);
+  const scorers=board.filter(r=>r.s.pts>0), idle=board.filter(r=>r.s.pts<=0);
+  const myRank=me&&myPts>0?scorers.indexOf(me)+1:null;
 
-  let html=`<div class="section-card cs-arena">
-    <div class="cs-arena-head">
-      <div><div class="section-title" style="margin-bottom:2px">🏆 Weekly Arena</div><div class="s-note">Points from calls &amp; conversions · week ends in <b>${csEndsIn()}</b></div></div>
-      <button class="btn-ghost" style="font-size:12px" onclick="navigate('reports');setTimeout(()=>renderReportsSubPage('calls'),0)">Full report →</button>
-    </div>`;
-  if(last && !solo) html+=`<div class="cs-champ">👑 Last week's champion: <b>${esc(last.m.name)}</b> · ${last.s.pts} pts · ${last.s.won} converted${isMe(last)?' — that\'s you! 🎉':''}</div>`;
-
-  if(solo){
-    html+=`<div class="cs-solo"><div class="cs-me-pts">${me?.s.pts||0}<span> pts this week</span></div>
-      <div class="s-note">📞 ${me?.s.calls||0} calls · ✅ ${me?.s.won||0} converted · 🔥 ${me?.s.streak||0}-day streak</div>
-      ${badgeChips(badges[csEmailKey(myEmail)])?`<div style="margin-top:6px">${badgeChips(badges[csEmailKey(myEmail)])}</div>`:''}
-      <div class="s-note" style="margin-top:8px">Add teammates in Settings → User Management to compete for the weekly crown.</div></div>`;
-  }else{
-    // Podium — 2nd, 1st, 3rd
-    const top=board.slice(0,3);
-    const slot=(r,place)=>r?`<div class="cs-pod cs-pod-${place}${isMe(r)?' me':''}">
-        <div class="cs-pod-medal">${['🥇','🥈','🥉'][place-1]}</div>
-        <div class="cs-pod-av">${esc(csInitials(r.m.name))}</div>
-        <div class="cs-pod-name">${esc(r.m.name)}${isMe(r)?' (you)':''}</div>
-        <div class="cs-pod-pts">${r.s.pts} pts</div>
-        <div class="cs-pod-sub">✅ ${r.s.won} · 📞 ${r.s.calls}</div>
-        <div>${badgeChips(badges[csEmailKey(r.m.email)])}</div>
-        <div class="cs-pod-step">${place}</div>
-      </div>`:'<div class="cs-pod cs-pod-empty"></div>';
-    html+=`<div class="cs-podium">${slot(top[1],2)}${slot(top[0],1)}${slot(top[2],3)}</div>`;
-
-    if(me){
-      const above=meIdx>0?board[meIdx-1]:null;
-      const msg=meIdx===0
-        ? (me.s.pts>0?(board[1]?`You're leading by <b>${me.s.pts-board[1].s.pts} pts</b> — keep it up!`:'You\'re leading!'):'Nobody has scored yet — first call takes the lead!')
-        : `You're <b>#${meIdx+1}</b> of ${board.length} · <b>${above.s.pts-me.s.pts+1} pts</b> to pass ${esc(above.m.name)} (≈ ${Math.ceil((above.s.pts-me.s.pts+1)/CS_PTS.answered)} answered calls or ${Math.ceil((above.s.pts-me.s.pts+1)/CS_PTS.won)} conversion${Math.ceil((above.s.pts-me.s.pts+1)/CS_PTS.won)>1?'s':''})`;
-      html+=`<div class="cs-me-row"><span>⭐ <b>${me.s.pts}</b> pts this week</span><span>🔥 ${me.s.streak}-day streak</span><span>${msg}</span></div>`;
-    }
-    // Full ranking for the owner; staff see the podium + their own line
-    const rest=owner?board.slice(3):[];
-    if(rest.length) html+=`<div class="cs-rest">${rest.map((r,i)=>`<div class="agent-row${isMe(r)?' cs-me':''}"><div class="agent-rank">#${i+4}</div><div class="agent-name">${esc(r.m.name)} ${badgeChips(badges[csEmailKey(r.m.email)])}</div><div class="agent-count">${r.s.pts} pts</div></div>`).join('')}</div>`;
+  // Motivation line — always a reachable next step, never a discouraging giant gap.
+  let motive;
+  if(!myPts) motive=`Your first answered call is <b>+${CS_PTS.answered} pts</b> and puts you on the board 🚀`;
+  else if(myRank===1) motive=scorers[1]?`You're on top — <b>${myPts-scorers[1].s.pts} pts</b> ahead of ${esc(csName(scorers[1].m))}. Keep it going! 🔥`:`You're leading the team this week 🔥`;
+  else{
+    const above=scorers[myRank-2], gap=above.s.pts-myPts+1;
+    motive=gap<=2*CS_PTS.won
+      ? `Only <b>${gap} pts</b> behind ${esc(csName(above.m))} — about ${csCallsFor(gap)} answered call${csCallsFor(gap)>1?'s':''} to overtake 💪`
+      : tier.next?`<b>${tier.toNext} pts</b> to ${tier.next.icon} ${tier.next.name} — about ${csCallsFor(tier.toNext)} answered calls 💪`:`Diamond tier — you're a legend this week 💎`;
   }
+  // Rank ring = progress inside the current tier
+  const R=34, C=2*Math.PI*R, dash=C*tier.pct/100;
+  const ring=`<svg class="csa-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="${R}" class="csa-ring-bg"/><circle cx="40" cy="40" r="${R}" class="csa-ring-fg" stroke-dasharray="${dash} ${C}" transform="rotate(-90 40 40)"/></svg>
+    <div class="csa-ring-in">${myRank?`<b>#${myRank}</b><span>of ${board.length}</span>`:`<b>${tier.cur.icon}</b><span>${tier.cur.name}</span>`}</div>`;
 
-  // Badges legend — who holds each this week
-  const holders=CS_BADGES.map(b=>{ const who=board.find(r=>(badges[csEmailKey(r.m.email)]||[]).includes(b)); return `<span class="cs-legend${who?'':' off'}" title="${esc(b.why)}">${b.icon} ${esc(b.name)}${who&&!solo?`: <b>${esc(who.m.name)}</b>`:''}</span>`; }).join('');
-  html+=`<div class="cs-legend-row">${holders}</div>`;
-  if(hall.length>1 && !solo) html+=`<div class="cs-hall">🏛 Hall of Fame: ${hall.map(x=>`<span title="Week of ${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}">${esc(x.w.m.name)} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small></span>`).join(' · ')}</div>`;
-  html+=`</div>`;
+  let html=`<div class="csa">
+  <div class="csa-hero">
+    <div class="csa-top">
+      <span class="csa-title">🏆 Weekly Arena</span>
+      <span class="csa-pill">⏳ ${csEndsIn()} left</span>
+      <a class="csa-link" href="#" onclick="navigate('reports');setTimeout(()=>renderReportsSubPage('calls'),0);return false">Report →</a>
+    </div>
+    <div class="csa-me">
+      <div class="csa-ring-wrap">${ring}</div>
+      <div class="csa-me-main">
+        <div class="csa-pts">${myPts}<small> pts this week</small></div>
+        <div class="csa-tier"><span class="csa-tier-chip">${tier.cur.icon} ${tier.cur.name}</span>${tier.next?`<span class="csa-tier-next">${tier.toNext} to ${tier.next.icon} ${tier.next.name}</span>`:''}</div>
+        <div class="csa-bar"><span style="width:${tier.pct}%"></span></div>
+      </div>
+    </div>
+    <div class="csa-motive">${motive}</div>
+  </div>
+  <div class="csa-body">`;
+
+  // Today's quests
+  const q=(icon,label,n,t,extra)=>{ const done=t>0&&n>=t; return `<div class="csa-quest${done?' done':''}"><div class="csa-q-top"><span>${icon} ${label}</span><b>${done?'✓':`${n}/${t}`}</b></div><div class="csa-qbar"><span style="width:${t?Math.min(100,Math.round(n/t*100)):0}%"></span></div>${extra?`<div class="csa-q-sub">${extra}</div>`:''}</div>`; };
+  html+=`<div class="csa-q"><div class="csa-sec-title">Today's quests</div><div class="csa-quests">
+    ${q('📞','Calls',today.calls,today.target.calls,today.calls>=today.target.calls?'Target hit! 🎉':`+${CS_PTS.answered} pts per answered call`)}
+    ${q('✅','Conversions',today.won,today.target.won,`+${CS_PTS.won} pts each`)}
+    <div class="csa-quest streak${today.streak?' done':''}"><div class="csa-q-top"><span>🔥 Streak</span><b>${today.streak?today.streak+'d':'—'}</b></div><div class="csa-q-sub">${today.streak?`Hit ${today.target.calls} calls today to keep it`:`Hit ${today.target.calls} calls today to start one`}</div></div>
+  </div></div><div class="csa-board">`;
+
+  if(!solo){
+    if(last) html+=`<div class="csa-champ">${csAvatar(last.m,30)}<div><div class="csa-champ-lbl">👑 Last week's champion${isMe(last)?' — you! 🎉':''}</div><b>${esc(csName(last.m))}</b> · ${last.s.pts} pts · ${last.s.won?`${last.s.won} converted`:`${last.s.calls} calls`}</div></div>`;
+
+    // League table — scorers only; staff see top 3 + their own row
+    const leader=scorers[0]?.s.pts||1;
+    const row=(r,i)=>{ const b=badges[csEmailKey(r.m.email)]||[]; return `<div class="csa-row${isMe(r)?' me':''}${i<3?' top'+(i+1):''}">
+        <span class="csa-rank">${['🥇','🥈','🥉'][i]||i+1}</span>
+        ${csAvatar(r.m)}
+        <div class="csa-row-main"><div class="csa-row-name"><span class="csa-nm">${esc(csName(r.m))}</span>${isMe(r)?'<em>you</em>':''}${b.map(x=>`<span class="csa-mini" title="${esc(x.name)} — ${esc(x.why)}">${x.icon}</span>`).join('')}</div>
+          <div class="csa-row-bar"><span style="width:${Math.max(4,Math.round(r.s.pts/leader*100))}%"></span></div>
+          <div class="csa-row-sub">📞 ${r.s.calls} calls${r.s.won?` · ✅ ${r.s.won} converted`:''}</div></div>
+        <span class="csa-row-pts">${r.s.pts}<small>pts</small></span></div>`; };
+    let shown=scorers.map((r,i)=>({r,i}));
+    if(!owner) shown=shown.filter(x=>x.i<3||isMe(x.r));
+    html+=`<div class="csa-sec-title">Leaderboard</div><div class="csa-list">`;
+    html+=shown.length?shown.map((x,k)=>(k&&x.i-shown[k-1].i>1?'<div class="csa-gap">⋯</div>':'')+row(x.r,x.i)).join(''):`<div class="csa-empty">Nobody has scored yet this week — the first answered call takes the lead! 🚀</div>`;
+    if(idle.length) html+=`<div class="csa-idle"><span class="csa-stack">${idle.slice(0,5).map(r=>csAvatar(r.m,26)).join('')}</span><span>${idle.length} ${idle.length===1?'teammate':'teammates'} yet to score${idle.some(isMe)?' — including you. First call gets you on the board!':''}</span></div>`;
+    html+=`</div>`;
+  }else{
+    html+=`<div class="csa-empty">Add teammates in Settings → User Management to compete for the weekly crown 👑</div>`;
+  }
+  html+=`</div><div class="csa-bd">`;
+
+  // Badges up for grabs
+  html+=`<div class="csa-sec-title">Weekly badges</div><div class="csa-badges">${CS_BADGES.map(b=>{ const who=board.find(r=>(badges[csEmailKey(r.m.email)]||[]).includes(b)); return `<div class="csa-badge${who?'':' off'}${who&&isMe(who)?' mine':''}" title="${esc(b.why)}"><span class="csa-b-icon">${b.icon}</span><span class="csa-b-name">${esc(b.name)}</span><span class="csa-b-who">${who?(solo||isMe(who)?'Yours!':esc(csName(who.m))):'Up for grabs'}</span></div>`; }).join('')}</div>`;
+  if(hall.length>1 && !solo) html+=`<div class="csa-hall">🏛 Hall of Fame · ${hall.map(x=>`<span>${esc(csName(x.w.m))} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small></span>`).join(' · ')}</div>`;
+  html+=`</div></div></div>`;
   el.innerHTML=html;
   el.style.display='';
 }
