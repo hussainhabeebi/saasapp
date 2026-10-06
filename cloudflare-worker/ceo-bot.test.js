@@ -253,7 +253,9 @@ describe('scheduled playbooks', ()=>{
     deps=fakeDeps({...CLIENT, ceo_bot_enabled:'No'});
     assert.deepEqual(await ceoRunForClient(env, deps, CID, at('09:05')), {skipped:'disabled'});
   });
-  test('standup asked, answer logged — "Done the banner…" is an answer, not a command', async()=>{
+  test('standup asked, answer logged — "Done the banner…" is an answer, not a command', async(t)=>{
+    // The webhook reads the real clock; pin it to the same IST day as the standup run.
+    t.mock.method(Date, 'now', ()=>at('10:15'));
     seed({playbooks:{standup:true, brief:false, reminders:false, escalation:false}});
     openWindow(Object.values(PHONES), at('10:05'));
     await ceoRunForClient(env, deps, CID, at('10:05'));

@@ -7082,17 +7082,19 @@ function applyLeadsViewFilter(leads){
   if(_leadsFilter.tag) out=out.filter(l=>parseTags(l.Tags).some(t=>t.toLowerCase()===_leadsFilter.tag.toLowerCase()));
   return out;
 }
-// Call-based order: never-called leads first, then called leads whose follow-up is due, then the
-// rest of the called leads oldest-call-first — so logging a call moves a lead down, not back up.
+// Call-based order, the same on every tab: never-called leads first (newest lead first), then
+// called leads whose follow-up is due (most overdue first), then the rest of the called leads
+// oldest-call-first — so logging a call moves a lead down, not back up. Closed (won/converted/
+// lost) leads go last.
+const LEADS_ORDER_CLOSED=new Set(['won','converted','lost']);
 function sortLeadsForView(list){
-  const byView=_leadsActiveView==='needs_action'
-    ? (a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a)
-    : (a,b)=>new Date(b.Date||0)-new Date(a.Date||0);
-  return list.map(l=>({l,tier:leadCallTier(l),last:leadLastCallIso(l)}))
+  const tierOf=l=>LEADS_ORDER_CLOSED.has(l.Stage)?3:leadCallTier(l);
+  return list.map(l=>({l,tier:tierOf(l),last:leadLastCallIso(l),due:(l.ReminderDate||'').slice(0,16)}))
     .sort((a,b)=>{
       if(a.tier!==b.tier) return a.tier-b.tier;
+      if(a.tier===1 && a.due!==b.due) return a.due<b.due?-1:1;
       if(a.tier===2 && a.last!==b.last) return a.last<b.last?-1:1;
-      return byView(a.l,b.l);
+      return new Date(b.l.Date||0)-new Date(a.l.Date||0);
     })
     .map(x=>x.l);
 }

@@ -102,13 +102,15 @@ test('called leads move down: never-called first, then follow-up due, then oldes
       { Id: 3, Name: 'FreshOld', Stage: 'new', Date: iso(7200000) },
       { Id: 4, Name: 'FreshNew', Stage: 'new', Date: iso(0) },
       { Id: 5, Name: 'CallbackDue', Stage: 'new', Date: iso(0), CallLog: log(3 * 3600000), ReminderDate: iso(3600000).slice(0, 16) },
+      { Id: 6, Name: 'CallbackOverdue', Stage: 'new', Date: iso(0), CallLog: log(9 * 3600000), ReminderDate: iso(5 * 3600000).slice(0, 16) },
+      { Id: 7, Name: 'ClosedWon', Stage: 'won', Date: iso(0) },
     ];
     // @ts-ignore
     _leadsActiveView = 'all';
     window.renderLeadsList();
     return [...document.querySelectorAll('#leadsList .li-name')].map((e) => e.textContent.trim());
   });
-  expect(order).toEqual(['FreshNew', 'FreshOld', 'CallbackDue', 'CalledYesterday', 'JustCalled']);
+  expect(order).toEqual(['FreshNew', 'FreshOld', 'CallbackOverdue', 'CallbackDue', 'CalledYesterday', 'JustCalled', 'ClosedWon']);
   await expect(page.locator('#leadsList')).toContainText('1st call done · 1m ago');
 });
 
