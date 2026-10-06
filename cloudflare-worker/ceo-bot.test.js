@@ -259,7 +259,11 @@ describe('scheduled playbooks', ()=>{
     await ceoRunForClient(env, deps, CID, at('10:05'));
     assert.match(textOf(sentTo(PHONES[RAHUL])[0]), /Quick standup/);
     assert.equal(sentTo(PHONES[OWNER]).length, 0, 'owner is not asked for a standup');
-    await inbound(PHONES[RAHUL], {text:'Done the banner draft. Today pricing copy. Blocked on API keys'});
+    // The webhook dates the answer from the real clock (Date.now()) — pin it to the fixture's day,
+    // otherwise this only passes while it's still TODAY in IST.
+    const realNow=Date.now; Date.now=()=>at('10:30');
+    try{ await inbound(PHONES[RAHUL], {text:'Done the banner draft. Today pricing copy. Blocked on API keys'}); }
+    finally{ Date.now=realNow; }
     const s=db.prepare(`SELECT * FROM ceo_bot_standups WHERE member_email=?`).get(RAHUL);
     assert.match(s.answer, /banner draft/); assert.ok(s.answered_at);
     assert.equal(db.prepare(`SELECT status FROM pm_tasks WHERE id=10`).get().status, 'todo');
