@@ -437,6 +437,8 @@ tbody tr:hover{background:var(--bg);cursor:pointer}
       <div class="skt-stats" id="sktStats"></div>
       <div class="skt-board" id="sktBoard"></div>
     </div>
+    <!-- CEO Bot add-on (ceo-bot.js) — its tab is only added for the account owner when enabled. -->
+    <div id="viewCeo" style="display:none"></div>
   </div>
 </div>
 
@@ -826,6 +828,7 @@ async function boot(){
     renderView();
     handleGcalReturnParam();
     handleNewTaskParam();
+    window.ceoInit?.(); // CEO Bot add-on — adds its tab only for the owner of an enabled account
   }catch(e){
     document.body.innerHTML=`<div class="empty-state" style="padding:80px 20px"><div class="empty-icon">🔒</div>${esc(e.message||'Session expired')} — reopen Projects from your Leadvyne dashboard.</div>`;
   }
@@ -947,10 +950,12 @@ function setView(v){
   $id('viewSprints').style.display=v==='sprints'?'':'none';
   $id('viewCalendar').style.display=v==='calendar'?'':'none';
   $id('viewSupport').style.display=v==='support'?'':'none';
+  $id('viewCeo').style.display=v==='ceo'?'':'none';
+  $id('statsRow').style.display=v==='ceo'?'none':'';
   // The item-type filter (All/Tasks/Bugs) only means something for the flat views — Sprints/
   // Calendar have their own scoping already, so hide it there rather than leave a control that
   // silently does nothing.
-  $id('itemTypeFilter').closest('.filterbar').style.display=(v==='sprints'||v==='calendar'||v==='support')?'none':'';
+  $id('itemTypeFilter').closest('.filterbar').style.display=(v==='sprints'||v==='calendar'||v==='support'||v==='ceo')?'none':'';
   renderView();
 }
 function renderView(){
@@ -959,6 +964,7 @@ function renderView(){
   else if(currentView==='sprints') renderSprints();
   else if(currentView==='calendar') renderCalendar();
   else if(currentView==='support') renderSupport();
+  else if(currentView==='ceo') window.ceoRender?.();
   else renderTimeline();
 }
 
@@ -1948,5 +1954,6 @@ function renderCalendar(){
 
 boot();
 </script>
+<script src="ceo-bot.js?v=1"></script>
 </body>
 </html>
