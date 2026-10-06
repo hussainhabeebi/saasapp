@@ -203,3 +203,46 @@ test('Home arena: a solo account sees its own progress and an invite, no league'
   await expect(arena.locator('.csa-pts')).toContainText('6');
   await expect(arena).toContainText('Add teammates');
 });
+
+test('tasks & projects earn points: on-time/priority bonus, project finish, duplicates counted once, overdue penalty', async ({ page }) => {
+  await bootArena(page);
+  const r = await page.evaluate(() => {
+    const MANU = 'manu@example.com', OWNER = 'boss@example.com';
+    const wk = window.csWeekStart(0).getTime();
+    const iso = (ms) => new Date(ms).toISOString();
+    const day = (ms) => window.csDayKey(ms);
+    const tomorrow = day(Date.now() + 86400e3), longAgo = '2020-01-01';
+    // Projects tool (D1): project 7 has two tasks, both done by Manu → finished
+    // @ts-ignore — top-level `let` in call-score.js, not a window property
+    _csWork = {
+      at: Date.now(),
+      projects: [{ id: 7, name: 'Website revamp', status: 'active' }],
+      tasks: [
+        { id: 1, project_id: 7, title: 'Design', assignee_email: MANU, status: 'done', done_at: iso(wk + 3600e3), due_date: tomorrow, priority: 'high' },
+        { id: 2, project_id: 7, title: 'Build', assignee_email: MANU, status: 'done', done_at: iso(wk + 7200e3), due_date: '', priority: 'medium' },
+        // same task as the dashboard one below (copied into Projects on create) — not done here
+        { id: 3, project_id: 0, title: 'Send quote', assignee_email: OWNER, status: 'todo', due_date: '', priority: 'medium' },
+        // overdue, still open
+        { id: 4, project_id: 0, title: 'Old chore', assignee_email: OWNER, status: 'todo', due_date: longAgo, priority: 'low' },
+      ],
+    };
+    // Dashboard Tasks list: the done copy of "Send quote"
+    // @ts-ignore
+    clientRecord.manual_tasks = JSON.stringify({ items: [{ id: 'a', title: 'Send quote', assignee_email: OWNER, status: 'done', completed_at: iso(wk + 3600e3) }] });
+    // @ts-ignore
+    _csCache = null;
+    const range = window.csWeekRange(0);
+    const manu = window.csUserStats(MANU, range), boss = window.csUserStats(OWNER, range);
+    return { manuTasks: manu.tasks, manuProjects: manu.projects, manuOnTime: manu.tasksOnTime, bossTasks: boss.tasks,
+      manuTaskPts: window.csEvents().filter((e) => e.by === MANU && (e.kind === 'task' || e.kind === 'project')).reduce((s, e) => s + e.pts, 0),
+      bossOverdue: window.csTodaySummary(OWNER).overdue };
+  });
+  // Design: 10 + 5 on time + 5 high = 20; Build: 10; project finished: +30
+  expect(r).toEqual({ manuTasks: 2, manuProjects: 1, manuOnTime: 1, bossTasks: 1, manuTaskPts: 60, bossOverdue: 1 });
+
+  await page.evaluate(() => window.renderHome());
+  const arena = page.locator('#homeArena');
+  await expect(arena.locator('.csa-quest.warn')).toContainText('1 overdue');
+  await expect(arena.locator('.csa-row', { hasText: 'Manu' })).toContainText('🛠️ 2 tasks');
+  await expect(arena.locator('.csa-row', { hasText: 'Manu' })).toContainText('🚀 1 project');
+});

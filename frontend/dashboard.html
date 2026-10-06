@@ -612,8 +612,9 @@ tr:hover td{background:#FAFCFB}
 .csa-motive b{color:#FDE68A}
 .csa-body{padding:6px 16px 16px}
 .csa-sec-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 8px}
-.csa-quests{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.csa-quests{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .csa-quest{border:1px solid var(--line);border-radius:14px;padding:10px 11px;background:var(--bg)}
+.csa-quest.warn{border-color:#FCA5A5;background:linear-gradient(180deg,rgba(239,68,68,.07),transparent)}
 .csa-quest.done{border-color:#86EFAC;background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)}
 .csa-q-top{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:600;gap:6px}
 .csa-q-top b{font-size:13px}
@@ -665,7 +666,7 @@ tr:hover td{background:#FAFCFB}
   .csa-board .csa-champ{margin-top:14px}
   .csa-badges{flex-wrap:wrap}
 }
-@media(max-width:480px){.csa-quests{grid-template-columns:1fr 1fr}.csa-quest.streak{grid-column:1/-1}.csa-pts{font-size:30px}}
+@media(max-width:480px){.csa-pts{font-size:30px}}
 @media(max-width:600px){.cs-next{flex-direction:column;align-items:stretch}.cs-oc-name{flex-basis:80px}}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
@@ -16227,6 +16228,7 @@ async function moveTaskStatus(id,newStatus){
   try{ await saveTasksState(state); }catch(e){ alert('Could not save: '+e.message); return; }
   syncTaskToGoogleCalendar(id);
   renderTasks();
+  if(newStatus==='done' && prevStatus!=='done') window.csAfterTask?.(t);
 }
 
 function promptNewProject(){
@@ -21426,7 +21428,7 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
-<script src="call-score.js?v=3"></script>
+<script src="call-score.js?v=4"></script>
 <script>
 
 /* ── PWA install prompt ──

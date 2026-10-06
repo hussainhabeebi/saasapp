@@ -13,7 +13,9 @@
 
 // Points — weighted toward calls that connect and leads that convert, so logging empty calls
 // can't outscore actually closing.
-const CS_PTS={call:3, answered:15, fast:15, callback:10, won:50, wonHot:25, wonBig:25, hotMissed:-10};
+const CS_PTS={call:3, answered:15, fast:15, callback:10, won:50, wonHot:25, wonBig:25, hotMissed:-10,
+  task:10, taskOnTime:5, taskPriority:5, project:30, taskOverdue:-5};
+const CS_OVERDUE_CAP=5; // at most 5 overdue tasks count against today's score
 const CS_DEFAULT_TARGETS={calls:30, won:3};
 const CS_FAST_MS=5*60000;           // first call within 5 min of the lead arriving
 const CS_CALLBACK_MS=3*3600000;     // a "Callback Requested" followed up within 3h counts as on time
@@ -39,9 +41,49 @@ function csTargetsFor(email){
 }
 
 /* ── Event stream: every point-earning action, attributed to one user ── */
+/* ── Tasks & projects ──
+   Two task stores exist: Projects (D1 pm_tasks / pm_projects, read via GET /pm/tasks and
+   /pm/projects) and the dashboard's own Tasks list (clientRecord.manual_tasks). New dashboard
+   tasks are also copied into pm_tasks, so the same task can appear in both — merged by
+   title + assignee, keeping whichever copy is done. */
+let _csWork={tasks:[], projects:[], at:0};
+let _csWorkTimer=null;
+async function csLoadWork(force){
+  if(typeof CONFIG==='undefined' || !CONFIG.WORKER_BASE || typeof ncAuthHeaders!=='function') return;
+  if(!force && Date.now()-_csWork.at<60000) return;
+  _csWork.at=Date.now();
+  const get=u=>fetch(CONFIG.WORKER_BASE+u,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():{list:[]}).catch(()=>({list:[]}));
+  const [t,p]=await Promise.all([get('/pm/tasks'), get('/pm/projects')]);
+  _csWork={tasks:Array.isArray(t.list)?t.list:[], projects:Array.isArray(p.list)?p.list:[], at:Date.now()};
+  _csCache=null;
+  try{ if($id('homeArena')?.style.display!=='none') csRenderHomeArena(); }catch(e){}
+  try{ if(typeof renderLeadsMomentumStrip==='function') renderLeadsMomentumStrip(); }catch(e){}
+}
+function csTasks(){
+  const out=new Map();
+  const add=(t,src)=>{
+    const key=String(t.title||'').trim().toLowerCase()+'|'+csEmailKey(t.by);
+    const prev=out.get(key);
+    if(!prev || (t.done && !prev.done)) out.set(key,{...t,src});
+  };
+  for(const t of _csWork.tasks) add({id:'pm'+t.id, title:t.title, by:t.assignee_email, done:t.status==='done', doneMs:t.done_at?Date.parse(t.done_at):NaN,
+    due:t.due_date||'', priority:t.priority||'', projectId:Number(t.project_id)||0},'pm');
+  let manual=[]; try{ manual=getTasksState().items||[]; }catch(e){}
+  for(const t of manual) add({id:'mt'+t.id, title:t.title, by:t.assignee_email, done:t.status==='done', doneMs:t.completed_at?Date.parse(t.completed_at):NaN,
+    due:t.due_date||'', priority:t.priority||'', projectId:0},'manual');
+  return [...out.values()].filter(t=>t.by);
+}
+function csTaskPts(t){
+  return CS_PTS.task+(t.due && csDayKey(t.doneMs)<=String(t.due).slice(0,10)?CS_PTS.taskOnTime:0)+(/high|urgent/i.test(t.priority)?CS_PTS.taskPriority:0);
+}
+function csOverdueTasks(email){
+  const today=csToday();
+  return csTasks().filter(t=>!t.done && t.due && String(t.due).slice(0,10)<today && (!email||sameEmail(t.by,email)));
+}
+
 let _csCache=null;
 function csEvents(){
-  const sig=allLeads.length+'|'+allLeads.reduce((s,l)=>s+(l.CallLog||'').length+(l.Stage||'').length+(l.ClosedAt||'').length,0);
+  const sig=allLeads.length+'|'+allLeads.reduce((s,l)=>s+(l.CallLog||'').length+(l.Stage||'').length+(l.ClosedAt||'').length,0)+'|'+_csWork.at+'|'+(clientRecord?.manual_tasks||'').length;
   if(_csCache && _csCache.sig===sig) return _csCache.events;
   const events=[];
   const wonValues=allLeads.filter(l=>isWonLead(l)&&Number(l.DealValue)>0).map(l=>Number(l.DealValue)).sort((a,b)=>a-b);
@@ -67,6 +109,25 @@ function csEvents(){
       }
     }
   }
+  // Tasks done: +10, +5 when done by the due date, +5 for high/urgent priority
+  const tasks=csTasks();
+  for(const t of tasks){
+    if(!t.done || !isFinite(t.doneMs)) continue;
+    const ontime=!!(t.due && csDayKey(t.doneMs)<=String(t.due).slice(0,10));
+    events.push({by:csEmailKey(t.by), ms:t.doneMs, kind:'task', pts:csTaskPts(t), ontime, taskId:t.id});
+  }
+  // Project finished (all of its 2+ tasks done, or marked completed): +30 to everyone who
+  // completed a task in it, dated when its last task was done
+  const byProject={};
+  for(const t of tasks) if(t.projectId) (byProject[t.projectId]||(byProject[t.projectId]=[])).push(t);
+  for(const pr of _csWork.projects){
+    const list=byProject[Number(pr.id)]||[];
+    const done=list.filter(t=>t.done && isFinite(t.doneMs));
+    if(list.length<2 || !done.length) continue;
+    if(pr.status!=='completed' && done.length<list.length) continue;
+    const ms=Math.max(...done.map(t=>t.doneMs));
+    for(const by of new Set(done.map(t=>csEmailKey(t.by)))) events.push({by, ms, kind:'project', pts:CS_PTS.project, projectId:Number(pr.id), projectName:pr.name||''});
+  }
   _csCache={sig, events};
   return events;
 }
@@ -91,10 +152,12 @@ function csDaily(email){
   for(const e of csEvents()){
     if(e.by!==me) continue;
     const d=csDayKey(e.ms);
-    const r=byDay[d]||(byDay[d]={calls:0, answered:0, won:0, pts:0});
+    const r=byDay[d]||(byDay[d]={calls:0, answered:0, won:0, tasks:0, projects:0, pts:0});
     if(e.kind==='call'||e.kind==='answered') r.calls++;
     if(e.kind==='answered') r.answered++;
     if(e.kind==='won') r.won++;
+    if(e.kind==='task') r.tasks++;
+    if(e.kind==='project') r.projects++;
     r.pts+=e.pts;
   }
   return byDay;
@@ -121,9 +184,9 @@ function csStreak(email){
   return streak;
 }
 function csTodaySummary(email){
-  const t=csDaily(email)[csToday()]||{calls:0, answered:0, won:0, pts:0};
-  const missed=csHotMissed(email).length;
-  return {...t, pts:t.pts+missed*CS_PTS.hotMissed, missed, target:csTargetsFor(email), streak:csStreak(email)};
+  const t=csDaily(email)[csToday()]||{calls:0, answered:0, won:0, tasks:0, projects:0, pts:0};
+  const missed=csHotMissed(email).length, overdue=csOverdueTasks(email).length;
+  return {...t, pts:t.pts+missed*CS_PTS.hotMissed+Math.min(overdue,CS_OVERDUE_CAP)*CS_PTS.taskOverdue, missed, overdue, target:csTargetsFor(email), streak:csStreak(email)};
 }
 
 /* ── Leads page: one-line personal strip + "Attend Next" card (one Call button) ── */
@@ -145,7 +208,7 @@ function csLeadsTopHtml(){
     <span title="Calls logged today vs your daily target">📞 <strong>${s.calls}</strong>/${s.target.calls} calls${callsDone?' ✓':''} ${bar(s.calls,s.target.calls)}</span>
     <span title="Leads you converted today vs your daily target">✅ <strong>${s.won}</strong>/${s.target.won} converted${wonDone?' ✓':''}</span>
     <span title="Days in a row you hit your call target">🔥 <strong>${s.streak}</strong>-day streak</span>
-    <span title="Points today: answered call +${CS_PTS.answered}, call +${CS_PTS.call}, first call in 5 min +${CS_PTS.fast}, callback on time +${CS_PTS.callback}, converted +${CS_PTS.won}${s.missed?`, ${s.missed} Hot lead(s) uncalled 24h+ ${CS_PTS.hotMissed} each`:''}">⭐ <strong>${s.pts}</strong> pts</span>
+    <span title="Points today: answered call +${CS_PTS.answered}, call +${CS_PTS.call}, first call in 5 min +${CS_PTS.fast}, callback on time +${CS_PTS.callback}, converted +${CS_PTS.won}, task done +${CS_PTS.task}${s.overdue?`, ${s.overdue} overdue task(s) ${CS_PTS.taskOverdue} each`:''}${s.missed?`, ${s.missed} Hot lead(s) uncalled 24h+ ${CS_PTS.hotMissed} each`:''}">⭐ <strong>${s.pts}</strong> pts</span>
   </div>`;
   const l=csAttendNextLead();
   if(!l) return strip;
@@ -216,6 +279,7 @@ function csUserStats(email, range){
   const answered=callEvs.filter(e=>e.kind==='answered');
   const durations=answered.map(e=>e.duration).filter(n=>n>0);
   const won=evs.filter(e=>e.kind==='won');
+  const taskEvs=evs.filter(e=>e.kind==='task');
   const leadsCalled=new Set(callEvs.map(e=>e.leadId));
   // Speed to first call: lead arrival → this user's call, for leads where theirs was the first call
   const speeds=callEvs.filter(e=>e.ordinal===1).map(e=>{ const l=allLeads.find(x=>x.Id===e.leadId); const t=l?.Date?Date.parse(l.Date):NaN; return isFinite(t)?(e.ms-t)/60000:null; }).filter(v=>v!=null&&v>=0);
@@ -238,6 +302,7 @@ function csUserStats(email, range){
   const daysMet=work.filter(d=>(daily[d]?.calls||0)>=target.calls).length;
   return {calls:callEvs.length, answered:answered.length, avgTalk:durations.length?Math.round(durations.reduce((s,n)=>s+n,0)/durations.length):null,
     won:won.length, wonValue:won.reduce((s,e)=>s+(e.value||0),0), leadsCalled:leadsCalled.size, speed:csMedian(speeds), speedN:speeds.length, cbDue, cbOnTime,
+    tasks:taskEvs.length, tasksOnTime:taskEvs.filter(e=>e.ontime).length, projects:evs.filter(e=>e.kind==='project').length,
     pts:evs.reduce((s,e)=>s+e.pts,0), outcomes, workDays:work.length, daysMet, target, streak:csStreak(email), today:csTodaySummary(email)};
 }
 function csFunnel(email, range){
@@ -267,9 +332,9 @@ function renderReportsCalls(){
     <div class="stat"><div class="stat-lbl">Conversion (of leads called)</div><div class="stat-val">${csPct(tot.won,tot.leadsCalled)}</div></div>
     <div class="stat"><div class="stat-lbl">Points</div><div class="stat-val">${tot.pts}</div></div>
   </div>`;
-  html+=head('🏅 Scorecard','Connected = calls marked Answered. Conversion = leads converted ÷ leads called. Speed = median minutes from a lead arriving to its first call. Callback on time = followed up within 3h.');
-  html+=`<div class="card"><div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:1100px">
-    <thead><tr><th>Agent</th><th>Today</th><th>Calls</th><th>Connected</th><th>Avg talk</th><th>Converted</th><th>Conversion</th><th>1st-call speed</th><th>Callbacks on time</th><th>Points</th><th>Streak</th><th>Target hit-rate</th></tr></thead>
+  html+=head('🏅 Scorecard','Connected = calls marked Answered. Conversion = leads converted ÷ leads called. Speed = median minutes from a lead arriving to its first call. Callback on time = followed up within 3h. Tasks come from Projects and the Tasks list (+10 each, +5 on time, +5 high priority; +30 when a project you worked on is finished).');
+  html+=`<div class="card"><div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:1180px">
+    <thead><tr><th>Agent</th><th>Today</th><th>Calls</th><th>Connected</th><th>Avg talk</th><th>Converted</th><th>Conversion</th><th>1st-call speed</th><th>Callbacks on time</th><th>Tasks done</th><th>Points</th><th>Streak</th><th>Target hit-rate</th></tr></thead>
     <tbody>${rows.map(({m,s})=>`<tr>
       <td>${csWho(m)}</td>
       <td style="white-space:nowrap">📞 ${s.today.calls}/${s.today.target.calls}<br>✅ ${s.today.won}/${s.today.target.won}</td>
@@ -277,6 +342,7 @@ function renderReportsCalls(){
       <td><b>${s.won}</b></td><td>${csPct(s.won,s.leadsCalled)}</td>
       <td>${s.speed==null?'—':s.speed<60?Math.round(s.speed)+' min':(s.speed/60).toFixed(1)+' h'}</td>
       <td>${s.cbDue?`${csPct(s.cbOnTime,s.cbDue)} <span style="color:var(--muted);font-size:11px">(${s.cbOnTime}/${s.cbDue})</span>`:'—'}</td>
+      <td>${s.tasks?`${s.tasks} <span style="color:var(--muted);font-size:11px">(${s.tasksOnTime} on time${s.projects?` · ${s.projects} project${s.projects>1?'s':''}`:''})</span>`:'—'}</td>
       <td><b>${s.pts}</b></td><td>🔥 ${s.streak}</td>
       <td>${s.workDays?`${csPct(s.daysMet,s.workDays)} <span style="color:var(--muted);font-size:11px">(${s.daysMet}/${s.workDays} days)</span>`:'—'}</td>
     </tr>`).join('')}</tbody></table></div></div>`;
@@ -381,6 +447,7 @@ const CS_BADGES=[
   {id:'machine',  icon:'📞', name:'Call Machine', why:'Most calls',                     val:s=>s.calls,                                ok:s=>s.calls>0},
   {id:'sharp',    icon:'🎯', name:'Sharpshooter', why:'Best connect rate (10+ calls)',  val:s=>s.answered/Math.max(1,s.calls),         ok:s=>s.calls>=10},
   {id:'speed',    icon:'⚡', name:'Speedster',    why:'Fastest first call (3+ leads)',  val:s=>-s.speed,                               ok:s=>s.speed!=null&&s.speedN>=3},
+  {id:'tasks',    icon:'🛠️', name:'Task Master',  why:'Most tasks done (3+)',           val:s=>s.tasks*10+s.tasksOnTime,               ok:s=>s.tasks>=3},
   {id:'reliable', icon:'🔁', name:'Reliable',     why:'Most callbacks on time (3+)',    val:s=>s.cbOnTime/Math.max(1,s.cbDue)*1000+s.cbOnTime, ok:s=>s.cbDue>=3&&s.cbOnTime>0},
 ];
 function csWeekBadges(board){
@@ -420,6 +487,9 @@ function csCallsFor(pts){ return Math.max(1,Math.ceil(pts/CS_PTS.answered)); }
 function csRenderHomeArena(){
   const el=$id('homeArena'); if(!el) return;
   _csCache=null;
+  // Tasks/projects load in the background, after the page's own critical requests (leads) —
+  // the arena re-renders itself when they arrive.
+  if(!_csWorkTimer && Date.now()-_csWork.at>=60000) _csWorkTimer=setTimeout(()=>{ _csWorkTimer=null; csLoadWork(); },1500);
   const members=getTeamMembers();
   if(!members.length||!myEmail){ el.style.display='none'; return; }
   const board=csWeekBoard(0), badges=csWeekBadges(board), owner=isAccountOwner();
@@ -471,6 +541,7 @@ function csRenderHomeArena(){
   html+=`<div class="csa-q"><div class="csa-sec-title">Today's quests</div><div class="csa-quests">
     ${q('📞','Calls',today.calls,today.target.calls,today.calls>=today.target.calls?'Target hit! 🎉':`+${CS_PTS.answered} pts per answered call`)}
     ${q('✅','Conversions',today.won,today.target.won,`+${CS_PTS.won} pts each`)}
+    <div class="csa-quest${today.tasks&&!today.overdue?' done':''}${today.overdue?' warn':''}"><div class="csa-q-top"><span>🛠️ Tasks</span><b>${today.tasks} done</b></div><div class="csa-q-sub">${today.overdue?`⚠️ ${today.overdue} overdue (${CS_PTS.taskOverdue} each) — clear them`:`+${CS_PTS.task} each, +${CS_PTS.taskOnTime} on time`}</div></div>
     <div class="csa-quest streak${today.streak?' done':''}"><div class="csa-q-top"><span>🔥 Streak</span><b>${today.streak?today.streak+'d':'—'}</b></div><div class="csa-q-sub">${today.streak?`Hit ${today.target.calls} calls today to keep it`:`Hit ${today.target.calls} calls today to start one`}</div></div>
   </div></div><div class="csa-board">`;
 
@@ -484,7 +555,7 @@ function csRenderHomeArena(){
         ${csAvatar(r.m)}
         <div class="csa-row-main"><div class="csa-row-name"><span class="csa-nm">${esc(csName(r.m))}</span>${isMe(r)?'<em>you</em>':''}${b.map(x=>`<span class="csa-mini" title="${esc(x.name)} — ${esc(x.why)}">${x.icon}</span>`).join('')}</div>
           <div class="csa-row-bar"><span style="width:${Math.max(4,Math.round(r.s.pts/leader*100))}%"></span></div>
-          <div class="csa-row-sub">📞 ${r.s.calls} calls${r.s.won?` · ✅ ${r.s.won} converted`:''}</div></div>
+          <div class="csa-row-sub">${[r.s.calls?`📞 ${r.s.calls} call${r.s.calls>1?'s':''}`:'', r.s.won?`✅ ${r.s.won} converted`:'', r.s.tasks?`🛠️ ${r.s.tasks} task${r.s.tasks>1?'s':''}`:'', r.s.projects?`🚀 ${r.s.projects} project${r.s.projects>1?'s':''}`:''].filter(Boolean).join(' · ')}</div></div>
         <span class="csa-row-pts">${r.s.pts}<small>pts</small></span></div>`; };
     let shown=scorers.map((r,i)=>({r,i}));
     if(!owner) shown=shown.filter(x=>x.i<3||isMe(x.r));
@@ -503,4 +574,12 @@ function csRenderHomeArena(){
   html+=`</div></div></div>`;
   el.innerHTML=html;
   el.style.display='';
+}
+
+// Called by dashboard.html moveTaskStatus after a task is marked done.
+function csAfterTask(t){
+  _csCache=null;
+  if(!t || t.status!=='done' || !myEmail || !sameEmail(t.assignee_email,myEmail)) return;
+  const pts=csTaskPts({due:t.due_date||'', priority:t.priority||'', doneMs:Date.now()});
+  showToast(`🛠️ Task done! +${pts} pts`,'ok');
 }
