@@ -17438,12 +17438,37 @@ async function loadStaffScore(){
       :'<div style="color:var(--muted);font-size:13px">No replies recorded in the last 30 days yet.</div>';
   }catch(e){ box.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load the staff score.</div>'; }
 }
+// CEO Bot add-on (cloudflare-worker/ceo-bot.js) — staff task scorecard from the Projects module,
+// shown here only for the account owner of a client the super-admin enabled CEO Bot for.
+async function loadCeoTeamScore(){
+  const box=$id('reportsCeoScore'); if(!box) return;
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ceo/team-report?days=30`,{headers:ncAuthHeaders()});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const t=d.totals||{};
+    const pct=v=>v==null?'—':v+'%';
+    box.innerHTML=`<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-bottom:10px">
+        <span>✅ <b>${t.done||0}</b> done</span><span>⏱️ <b>${pct(t.on_time_pct)}</b> on time</span>
+        <span style="${t.overdue?'color:var(--red)':''}">🔴 <b>${t.overdue||0}</b> overdue</span><span>🚧 <b>${t.blocked||0}</b> blocked</span><span>📋 <b>${t.open||0}</b> open</span></div>
+      <div style="overflow-x:auto"><table class="leads-tbl" style="width:100%;min-width:760px">
+      <thead><tr><th>Member</th><th>Score</th><th>Done</th><th>On time</th><th>Open</th><th>Overdue</th><th>Blocked</th><th>Standups</th><th>Bot updates</th><th>Hours</th></tr></thead>
+      <tbody>${(d.members||[]).map(m=>`<tr><td><b>${esc(m.name)}</b></td><td><b>${m.score==null?'—':m.score}</b></td><td>${m.done}</td><td>${pct(m.on_time_pct)}</td><td>${m.open}</td>
+        <td${m.overdue?' style="color:var(--red);font-weight:700"':''}>${m.overdue}</td><td>${m.blocked}</td><td>${m.standups_asked?m.standups_answered+'/'+m.standups_asked:'—'}</td><td>${m.bot_updates}</td><td>${m.hours}</td></tr>`).join('')}</tbody></table></div>`;
+  }catch(e){ box.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load the CEO Bot scorecard.</div>'; }
+}
+function openCeoBot(){
+  window.open(`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&view=ceo`, '_blank');
+}
 function renderReportsTeamReport(){
   const el=$id('reportsContent');
   let _v2=false; try{ _v2=JSON.parse(clientRecord?.bot_config||'{}').leadvyne_v2===true; }catch(e){}
+  const _ceo=clientRecord?.ceo_bot_enabled==='Yes' && isAccountOwner();
   el.innerHTML=`
     ${_v2?`<div style="margin:0 0 14px"><div class="card-title" style="margin-bottom:0">🧠 Staff vs Bot (Leadvyne v2, last 30 days)</div><div class="s-note">Who answered each customer message first, how fast, and how many of the chats they worked on were won. Counts staff messages recorded since Leadvyne v2 was switched on.</div></div>
     <div class="card" style="margin-bottom:14px"><div id="reportsStaffScore"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`:''}
+    ${_ceo?`<div style="margin:0 0 14px;display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap"><div style="flex:1;min-width:220px"><div class="card-title" style="margin-bottom:0">🤖 CEO Bot — Staff task scorecard (last 30 days)</div><div class="s-note">From the Projects module: tasks done, on-time rate, overdue, standups and updates staff sent to the CEO Bot. Visible to you only.</div></div><button class="btn btn-ghost" onclick="openCeoBot()">Open CEO Bot →</button></div>
+    <div class="card" style="margin-bottom:14px"><div id="reportsCeoScore"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>`:''}
     <div class="s-note" style="margin-bottom:14px">Every user in Settings → User Management is an agent here automatically.</div>
     <div id="reportsTeamStats" style="display:grid;gap:12px;grid-template-columns:repeat(4,1fr);margin-bottom:14px"></div>
     <div class="card"><div id="reportsTeamTable"><div style="color:var(--muted);font-size:13px">Loading…</div></div></div>
@@ -17456,6 +17481,7 @@ function renderReportsTeamReport(){
       <div id="reportsCallNotes"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
     </div>`;
   if(_v2) loadStaffScore();
+  if(_ceo) loadCeoTeamScore();
 
   const statsEl=$id('reportsTeamStats'), tableEl=$id('reportsTeamTable');
   const baseLeads=rptLeads();

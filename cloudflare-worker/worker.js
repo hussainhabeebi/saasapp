@@ -1,4 +1,5 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
+import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -80,7 +81,8 @@ const PLAN_GATED_MODULES = {
 // Never writable by a client's own session — plan_tier is billing-controlled (admin or a future
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
 // passthrough that saves every other Settings field. See handleNocodbPassthrough.
-const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled'];
+// ceo_bot_enabled — CEO Bot add-on (ceo-bot.js); switched on per client by the super-admin only.
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled'];
 // Returns null for an empty/unset/unrecognized tier — callers treat null as "unlimited", which is
 // what makes every pre-existing client (and any typo'd/future tier name) fail open, not closed.
 function getPlanLimits(planTier){
@@ -30222,6 +30224,55 @@ const HP_DEPS={
   isTakeover:engineManualTakeoverActive,
 };
 
+// ── CEO Bot glue (ceo-bot.js) ──
+// Everything ceo-bot.js needs from this file. Its WhatsApp traffic goes straight to the Graph API
+// on the client's separate CEO number — never through Chatwoot or the lead engine.
+async function ceoBotWaSend(creds, body){
+  const r=await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(creds.wa_phone_id)}/messages`, {
+    method:'POST', headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)
+  });
+  const d=await r.json().catch(()=>({}));
+  return r.ok?{ok:true, id:d?.messages?.[0]?.id||''}:{ok:false, error:d?.error?.message||'HTTP '+r.status};
+}
+async function ceoBotWaLookup(creds){
+  const r=await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(creds.wa_phone_id)}?fields=display_phone_number,verified_name`, {headers:{Authorization:`Bearer ${creds.wa_token}`}});
+  const d=await r.json().catch(()=>({}));
+  return r.ok?{ok:true, display_phone:d?.display_phone_number||''}:{ok:false, error:d?.error?.message||'HTTP '+r.status};
+}
+async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
+  await pmEnsureSchema(env);
+  await pmEnsureAutomationSchema(env);
+  const row=await pmTaskRow(env, cid, taskId);
+  if(!row) return; // Inbox task (no project) — nothing for the project automation queue to do.
+  // Same events handlePmCreate / handlePmUpdate fire for a Projects-page create or edit.
+  const event=prevStatus===''?'created':row.status!==prevStatus?'status_changed':'';
+  await pmQueueTaskLifecycle(env, row, {event, prevStatus});
+}
+const CEO_DEPS={
+  json, requireSession, getClientById, reportOpsError, parseTeamWhatsapp,
+  normalizePhone:(raw, c)=>normalizeStaffWhatsapp(raw, hotLeadAlertDefaultCc(c)),
+  ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
+  encrypt:async(env, plain)=>{ if(!env.AI_KEY_ENC_SECRET) throw new Error('AI_KEY_ENC_SECRET is not configured'); return aiEncryptSecret(env, plain); },
+  decrypt:async(env, stored)=>env.AI_KEY_ENC_SECRET?aiDecryptSecret(env, stored):null,
+  verifySignature:verifyWebhookSignature,
+  metaAppSecret:env=>env.META_APP_SECRET||'',
+  onTaskChanged:ceoBotTaskChanged,
+  waSend:ceoBotWaSend, waLookup:ceoBotWaLookup,
+  webhookBase:env=>env.WORKER_BASE_URL||'',
+};
+// POST /admin/ceo-bot {client_id, enabled:'Yes'|'No'} — super-admin only. ceo_bot_enabled is in
+// PLAN_MANAGED_FIELDS, so this is the only way it can be switched on.
+async function handleAdminCeoBotToggle(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id, enabled}=await request.json().catch(()=>({}));
+  const cid=Number(client_id);
+  if(!cid) return json({error:'client_id required'}, 400);
+  const val=enabled==='Yes'?'Yes':'No';
+  await ensureClientColumns(env, ['ceo_bot_enabled']);
+  await patchClientFields(env, cid, {ceo_bot_enabled:val});
+  return json({ok:true, ceo_bot_enabled:val});
+}
+
 // ── Resort properties CRUD (migrations/0066_resort_properties.sql) ──
 async function handleHospitalityPropertiesList(request, env){
   const payload=await requireSession(request, env);
@@ -34092,6 +34143,7 @@ export default {
       else if(url.pathname==='/admin/backfill-engine-webhooks' && request.method==='POST'){ res=await handleAdminBackfillEngineWebhooks(request, env); }
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
+      else if(url.pathname==='/admin/ceo-bot' && request.method==='POST'){ res=await handleAdminCeoBotToggle(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
       else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }
@@ -34218,6 +34270,9 @@ export default {
       // Hospitality Pro (hospitality-pro.js) — every route is session-gated AND 403s unless the
       // client has Pro enabled, except the Razorpay webhook, which is HMAC-verified instead.
       else if(url.pathname.startsWith('/hospitality/pro/')){ res=await hpHandleRoute(request, env, HP_DEPS, url); }
+      // CEO Bot (ceo-bot.js) — session-gated, owner-only and 403 unless ceo_bot_enabled, except its
+      // own WhatsApp webhook (/ceo/wa/webhook/<key>), which is Meta-signature-verified instead.
+      else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
       else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
@@ -34479,6 +34534,9 @@ export default {
       // Hospitality Pro — expire unpaid holds, abandoned-inquiry nudges; only touches clients that
       // have Pro rows at all, and sends nothing unless Pro is still enabled. See hpRunForAllClients.
       ctx.waitUntil(hpRunForAllClients(env, HP_DEPS));
+      // CEO Bot — briefs, staff reminders, standups, escalations, wrap, weekly report; only clients
+      // with a connected CEO number, and nothing unless ceo_bot_enabled + active. See ceo-bot.js.
+      ctx.waitUntil(ceoRunForAllClients(env, CEO_DEPS));
     }
     else if(event.cron==='0 9 * * 1'){ ctx.waitUntil(runWeeklyOwnerDigest(env)); ctx.waitUntil(runWeeklyCustomerValueUpdate(env)); }
     else ctx.waitUntil(sweepAbandonedShopifyCheckouts(env));

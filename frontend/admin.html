@@ -457,6 +457,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
         <small style="color:var(--muted);display:block;margin-top:4px">Only admin can enable this. When disabled, no AI tokens are consumed.</small>
       </div>
 
+      <div class="modal-form-group">
+        <label>🤖 CEO Bot (Projects add-on)</label>
+        <select id="e-ceo-bot-enabled">
+          <option value="No">Disabled (default)</option>
+          <option value="Yes">Enabled</option>
+        </select>
+        <small style="color:var(--muted);display:block;margin-top:4px">Only admin can enable this. Adds the 🤖 CEO Bot tab to the client's Projects page (account owner only) — staff-task manager on its own WhatsApp number.</small>
+      </div>
+
       <div id="save-status"></div>
     </div>
     <div class="edit-modal-footer">
@@ -718,6 +727,7 @@ function renderCard(c) {
   const planChip = c.plan_tier && PLAN_TIER_LABELS[c.plan_tier]
     ? `<span class="chip plan-chip">${escHtml(PLAN_TIER_LABELS[c.plan_tier])}</span>`
     : `<span class="chip plan-chip legacy">Legacy — unlimited</span>`;
+  const ceoChip = c.ceo_bot_enabled === 'Yes' ? '<span class="chip">🤖 CEO Bot</span>' : '';
   const toggleBtn = active
     ? `<button class="btn-toggle suspend" data-id="${c.Id}" data-action="suspend">Suspend</button>`
     : `<button class="btn-toggle activate" data-id="${c.Id}" data-action="activate">Activate</button>`;
@@ -731,6 +741,7 @@ function renderCard(c) {
       <div class="status-row">
         ${statusBadge}
         ${planChip}
+        ${ceoChip}
         ${langChip}
         ${modelChip}
       </div>
@@ -835,6 +846,7 @@ function openEditModal(clientId) {
   document.getElementById('e-followup-hours').value = c.followup_hours || '';
   document.getElementById('e-followup-messages').value = c.followup_messages || '';
   document.getElementById('e-ai-assistant-enabled').value = c.ai_assistant_enabled === 'Yes' ? 'Yes' : 'No';
+  document.getElementById('e-ceo-bot-enabled').value = c.ceo_bot_enabled === 'Yes' ? 'Yes' : 'No';
 
   const status = document.getElementById('save-status');
   status.style.display = 'none';
@@ -875,6 +887,20 @@ document.getElementById('btn-save-modal').addEventListener('click', async () => 
 
   try {
     await apiPatch(`${cfg.base}/api/v2/tables/${cfg.clients}/records`, cfg.token, patch);
+    // CEO Bot flag goes through its own admin route (creates the column on first use) and only
+    // when it actually changed, so saving any other field never touches it.
+    const ceoVal = document.getElementById('e-ceo-bot-enabled').value;
+    const ceoPrev = (allClients.find(c => c.Id == editingId) || {}).ceo_bot_enabled === 'Yes' ? 'Yes' : 'No';
+    if (ceoVal !== ceoPrev) {
+      const res = await fetch(`${CONFIG.WORKER_BASE}/admin/ceo-bot`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + adminSessionToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: editingId, enabled: ceoVal }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error('CEO Bot: ' + (data.error || `HTTP ${res.status}`));
+      patch.ceo_bot_enabled = ceoVal;
+    }
     // Update local state
     const idx = allClients.findIndex(c => c.Id == editingId);
     if (idx !== -1) Object.assign(allClients[idx], patch);
