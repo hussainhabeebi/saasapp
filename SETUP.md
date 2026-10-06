@@ -8820,3 +8820,54 @@ Off by default (`bot_config.leadvyne_v2`); with it off nothing below runs. When 
 - **Video per ad or source:** `bot_config.v2_source_videos` = `[{match, video_url, caption}]`, edited as `match | link | caption` lines. `match` is looked for (case-insensitive) in the first message (click-to-WhatsApp ads pre-fill it), any ad referral Chatwoot passes on, the website-widget page, the lead-form `LeadSource`/`AdCampaign`/`AdName`/`LeadFormName`, and `inbox:<id>`. First match wins; otherwise the default video.
 - **Reply-gap nudge:** `v2_nudge_enabled`, `v2_nudge_hours` (default 2), `v2_nudge_text`. The 15-minute cron sends one check-in to a fresh lead whose chat has gone quiet after our side spoke last: only within 23h of the customer's last message, inside the follow-up send hours, never during handover/takeover/opt-out or after staff replied, translated to the lead's language. Marked in `v2_fresh_leads.nudged_at`.
 - **Staff quality score:** Reports → Team shows a Staff vs Bot table when v2 is on (`GET /reports/staff-score?days=30`): first responder to each customer message, median reply time, chats and win rate. It is built from `ConvHistory`, so it only counts staff messages recorded since v2 was switched on; staff names come from the Chatwoot sender (Chats-page sends show the Chatwoot token owner's name).
+
+## CEO Bot (`cloudflare-worker/ceo-bot.js` — Projects → 🤖 CEO Bot)
+An add-on on top of the Projects module: an AI operations manager for **staff tasks only**, on its
+own WhatsApp number. It never reads or replies to leads, never goes through Chatwoot or the lead
+engine, and never messages customers.
+
+**Who gets it**
+- Super-admin enables it per client in `admin.html` → client → 🤖 CEO Bot (`POST /admin/ceo-bot`,
+  creates the `ceo_bot_enabled` CLIENTS column on first use). It is in `PLAN_MANAGED_FIELDS`, so a
+  client session can't switch it on through the NocoDB passthrough.
+- Only the account owner (`authentik_email`) sees the tab or can call any `/ceo/*` route (403 for
+  staff, 403 when the flag is off). `GET /ceo/status` is the only route any session can read.
+- Staff never see the console or the chat log — only their own WhatsApp thread with the bot.
+
+**Setup (owner, Projects → 🤖 CEO Bot → Settings)**
+1. Add a separate number to the Meta WhatsApp Business account; paste its Phone number ID + a
+   permanent token (optionally the app secret if it's on the client's own Meta app). The leads
+   number is refused. Tokens are AES-GCM encrypted (`AI_KEY_ENC_SECRET`, same as AI provider keys).
+2. In Meta → WhatsApp → Configuration set the callback URL + verify token shown there
+   (`/ceo/wa/webhook/<hook_key>`), subscribe to `messages`. Requests are verified with the app
+   secret saved in step 1, else the platform `META_APP_SECRET`.
+3. Staff numbers default to User Management's WhatsApp (`team_whatsapp`); override per person.
+4. Optional: an approved Utility template whose body is just `{{1}}` — used when someone hasn't
+   messaged the CEO number in 24 hours (otherwise that send is logged as skipped).
+5. Apply `migrations/0110_ceo_bot.sql` (`wrangler d1 migrations apply leadvyne-d1 --remote`).
+
+**What it does** (each playbook can be turned on/off; runs on the existing `*/15` cron, client-local
+time via `tz_offset_min`, skips quiet hours and non-work days, once-only via `ceo_bot_runs`)
+- ☀️ Morning brief to the owner (open/due/overdue/blocked, workload, unassigned) + 📋 each staff
+  member's due/overdue list.
+- ⏰ Overdue nudges to staff with Done / Need more time / Blocked buttons (an hour after the brief,
+  once a day), then 🚨 owner escalation once per task per due date.
+- 🗣️ Optional daily standup; answers are stored and a mentioned blocker alerts the owner.
+- 🌙 Day wrap and 📊 weekly report with team scorecard; 👏 recognition for 3+ tasks, none overdue.
+- Staff replies: `DONE 12`, `BLOCKED 12 reason`, `DELAY 12 friday`, `PROGRESS 12 note` (free text
+  falls back to AI). Deadline extensions go to the owner for approval unless switched off.
+- Owner (WhatsApp or the web console): ask anything about the team's tasks, or instruct ("move #12
+  to Friday", "assign #8 to Priya"). Keywords: BRIEF, WRAP, REPORT, APPROVE n, REJECT n, PAUSE, RESUME.
+- Autonomy: Observe (reports only) / Suggest (every change waits for approval, default) / Auto-safe
+  (status/date/priority + staff messages run; reassign & new tasks wait) / Full.
+- Task changes write only `pm_tasks` (status, due date, priority, assignee, new task with
+  `ai_created=1`) and go through `pmQueueTaskLifecycle`, exactly like a Projects-page edit.
+- Monthly AI call cap (`ceo_bot_usage`); deterministic messages (brief/wrap/report) use no AI.
+
+**Team reports** — `GET /ceo/team-report?days=N` scorecard per member: done, on-time %, open,
+overdue, blocked, standups answered, updates sent to the bot, nudges, hours logged, and a score
+(40% on-time + 40% completion + 20% standups, over whatever has data). Shown in Projects → CEO Bot →
+Team report and, for the owner, in Dashboard → Reports → Team (above the agents table).
+
+Tests: `cloudflare-worker/ceo-bot.test.js` (node:sqlite against the real migrations) and
+`frontend/tests/ceo-bot.spec.js`.
