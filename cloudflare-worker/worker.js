@@ -23712,27 +23712,7 @@ async function handleApptPublicBook(request, env){
     let svc=null;
     if(body.service_id) svc=await env.DB.prepare(`SELECT id,name FROM healthcare_services WHERE id=? AND client_id=?`).bind(Number(body.service_id),Number(clientId)).first().catch(()=>null);
     advanceLeadBookingAndTask(env, c, clientId, phone, name, svc?{Id:svc.id,name:svc.name}:null, {date,time}).catch(()=>null);
-    // Send WhatsApp confirmation via the patient's existing Chatwoot conversation (looked up by phone)
-    if(c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token){
-      (async()=>{
-        try{
-          const srch=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(phone)}&include_contacts=true`,{headers:{api_access_token:c.chatwoot_token}});
-          const srchData=srch.ok?await srch.json().catch(()=>null):null;
-          const contact=(srchData?.payload||[])[0]||null;
-          if(!contact) return;
-          const convR=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,{headers:{api_access_token:c.chatwoot_token}});
-          const convData=convR.ok?await convR.json().catch(()=>null):null;
-          const convId=((convData?.payload||[])[0])?.id||null;
-          if(!convId) return;
-          const svcLine=row?.service_name?`\n🩺 *Service:* ${row.service_name}`:'';
-          const drLine=row?.doctor_name?`\n👨‍⚕️ *Doctor:* ${row.doctor_name}`:'';
-          const dateLine=date?`\n📅 *Date:* ${date}`:'';
-          const timeLine=time?`\n⏰ *Time:* ${time}`:'';
-          const confirmMsg=`Hi ${name||'there'}! ✅ Your appointment has been requested.${svcLine}${drLine}${dateLine}${timeLine}\n\nWe will confirm your appointment shortly. Thank you!`;
-          await sendFlowWhatsappDm(c, convId, confirmMsg);
-        }catch(e){}
-      })();
-    }
+    // The confirmation (details + location map) is sent by the appointment Workflow queued above.
     return json({ok:true});
   }
 
@@ -23759,6 +23739,13 @@ async function handleApptPublicBook(request, env){
     const d=await r.json().catch(()=>({}));
     const row=d?.list?.[0];
     if(row) await ncFetch(env, `api/v2/tables/${bookingsTable}/records`, {method:'PATCH', body:{Id:row.Id, notes:`Booked via the public booking page — awaiting confirmation.\n\nCustomer notes: ${notes}`}}).catch(()=>{});
+  }
+
+  const convId=await apptFindConversation(env,c,clientId,phone);
+  if(convId){
+    const text=apptConfirmationText({businessName:c.client_name,patientName:name,serviceName:service?.name,date,time,confirmed:false});
+    await engineSendChatwootReply(env,c,clientId,convId,text).catch(()=>null);
+    await apptSendLocation(env,c,clientId,convId,phone);
   }
 
   return json({ok:true, lead_id, stage_advanced});
@@ -32041,7 +32028,54 @@ async function hcSendMetaAppointmentTemplate(c,row,templateName,language,kind){
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data?.error?.message||`WhatsApp template HTTP ${r.status}`);
 }
-function hcAppointmentMessage(row,kind){
+// "2026-10-07" → "Wed, 7 Oct 2026"; "14:30" → "2:30 PM". Unparseable values pass through as-is.
+export function apptFormatDate(date){
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date||''));
+  if(!m) return String(date||'');
+  const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));
+  return `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()]}, ${+m[3]} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2]-1]} ${m[1]}`;
+}
+export function apptFormatTime(time){
+  const m=/^(\d{1,2}):(\d{2})/.exec(String(time||''));
+  if(!m) return String(time||'');
+  const h=+m[1];
+  return `${h%12||12}:${m[2]} ${h<12?'AM':'PM'}`;
+}
+// Full appointment-details message sent to the customer right after a booking. The clinic's
+// location goes out separately as a Google Maps "Get Directions" button (apptSendLocation).
+export function apptConfirmationText({businessName,patientName,serviceName,doctorName,date,time,confirmed}){
+  const lines=[`Hi ${patientName||'there'}! ✅ Your appointment has been ${confirmed?'confirmed':'received'}${businessName?' at *'+businessName+'*':''}.`,''];
+  lines.push('*Appointment details*');
+  if(serviceName) lines.push(`🩺 *Service:* ${serviceName}`);
+  if(doctorName) lines.push(`👨‍⚕️ *Doctor:* ${doctorName}`);
+  if(date) lines.push(`📅 *Date:* ${apptFormatDate(date)}`);
+  if(time) lines.push(`⏰ *Time:* ${apptFormatTime(time)}`);
+  if(patientName) lines.push(`👤 *Name:* ${patientName}`);
+  lines.push('');
+  lines.push(confirmed?'Please arrive 10 minutes early. Reply RESCHEDULE or CANCEL if needed.':'We will confirm your appointment shortly. Reply RESCHEDULE or CANCEL if needed.');
+  return lines.join('\n');
+}
+// The customer's WhatsApp conversation: the CRM lead's ConversationID first, then a Chatwoot
+// contact search by phone (tolerates format differences like a missing country-code "+").
+async function apptFindConversation(env,c,clientId,phone){
+  const fromLead=await saasFindLeadConversationByPhone(env,clientId,phone).catch(()=>null);
+  if(fromLead||!phone||!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return fromLead;
+  try{
+    const h={headers:{api_access_token:c.chatwoot_token}};
+    const sr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/search?q=${encodeURIComponent(String(phone).replace(/^\+/,''))}&include_contacts=true`,h);
+    const contact=((sr.ok?await sr.json().catch(()=>null):null)?.payload||[])[0];
+    if(!contact) return null;
+    const cr=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/contacts/${contact.id}/conversations`,h);
+    return ((cr.ok?await cr.json().catch(()=>null):null)?.payload||[])[0]?.id||null;
+  }catch(e){ return null; }
+}
+// Best-effort: a failed location send must never fail (and so re-send) the confirmation itself.
+async function apptSendLocation(env,c,clientId,convId,phone){
+  if(!String(c?.google_maps_url||'').trim()||!convId) return;
+  await engineSendGoogleMapsButton(env,c,clientId,convId,phone,null).catch(()=>{});
+}
+function hcAppointmentMessage(row,kind,c){
+  if(kind==='confirmation') return apptConfirmationText({businessName:c?.client_name,patientName:row.patient_name,serviceName:row.service_name,doctorName:row.doctor_name,date:row.appointment_date,time:row.start_time,confirmed:row.status==='confirmed'});
   const when=`${row.appointment_date} at ${row.start_time}`;
   const detail=[row.service_name,row.doctor_name&&`with ${row.doctor_name}`].filter(Boolean).join(' ');
   if(kind==='cancellation') return `Your appointment${detail?' for '+detail:''} on ${when} has been cancelled. Contact the clinic if you would like another slot.`;
@@ -32063,12 +32097,13 @@ async function hcSendAppointmentNotification(env,job){
     const c=await getClientById(env,job.client_id); if(!c) throw new Error('Healthcare client not found');
     const settings=await hcAutomationSettings(env,job.client_id);
     const templateName=job.kind==='confirmation'||job.kind==='cancellation'?settings.confirmation_template_name:settings.reminder_template_name;
+    const convId=await apptFindConversation(env,c,job.client_id,row.patient_phone);
     if(templateName) await hcSendMetaAppointmentTemplate(c,row,templateName,settings.template_language,job.kind);
     else{
-      const convId=await saasFindLeadConversationByPhone(env,job.client_id,row.patient_phone);
       if(!convId) throw new Error('No Chatwoot conversation and no approved WhatsApp template configured');
-      if(!await engineSendChatwootReply(env,c,job.client_id,convId,hcAppointmentMessage(row,job.kind))) throw new Error('Chatwoot did not accept the appointment message');
+      if(!await engineSendChatwootReply(env,c,job.client_id,convId,hcAppointmentMessage(row,job.kind,c))) throw new Error('Chatwoot did not accept the appointment message');
     }
+    if(job.kind==='confirmation') await apptSendLocation(env,c,job.client_id,convId,row.patient_phone);
     await env.DB.prepare(`UPDATE healthcare_appointment_notifications SET status='sent',sent_at=? WHERE client_id=? AND appointment_id=? AND appointment_version=? AND kind=?`)
       .bind(new Date().toISOString(),Number(job.client_id),Number(job.appointment_id),String(job.appointment_version),String(job.kind)).run();
     await hcUpsertAutomationState(env,row,{reminder_status:`${job.kind}_sent`,last_error:''});
