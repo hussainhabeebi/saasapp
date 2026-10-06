@@ -15474,6 +15474,120 @@ export async function runColdLeadReallocationForAllClients(env, now=new Date()){
   }
 }
 
+/* ── HOT-LEAD AUTO-REASSIGN ────────────────────────────────────────────────────────────────────
+   Settings → 🔀 Lead Routing → "Reassign uncalled Hot leads". A Hot lead whose owner hasn't logged
+   a single call on it within `minutes` of getting it moves to the next teammate (same pool rules
+   as cold-lead reallocation), checked by the 15-minute cron. Only leads created after the option
+   was switched on are considered, so turning it on never reshuffles an existing backlog. Shares
+   lead_owner_tracking with the cold sweep (owner_since / previous_owners), so a lead never goes
+   back to someone who already had it; at most HOT_REALLOC_MAX_HOPS moves per lead. Stored as
+   lead_routing.hotRealloc = {enabled, minutes, enabledAt}. ── */
+const HOT_REALLOC_MAX_HOPS=2;
+export function hotReallocSettings(routing){
+  const r=routing?.hotRealloc||{};
+  const minutes=Math.round(Number(r.minutes));
+  return {enabled:r.enabled===true, minutes:minutes>=10&&minutes<=240?minutes:20, enabledAt:r.enabledAt||''};
+}
+// Latest logged call (ms) on a lead, or 0. Entries carry an ISO `at`; older ones only a locale date.
+export function hotReallocLastCallMs(callLogRaw){
+  let calls=[]; try{ calls=JSON.parse(callLogRaw||'[]'); }catch(e){}
+  if(!Array.isArray(calls)) return 0;
+  let last=0;
+  for(const c of calls){ const t=Date.parse(c?.at||c?.date||''); if(Number.isFinite(t) && t>last) last=t; }
+  return last;
+}
+export function hotReallocDecide({lead, track, cfg, nowMs}){
+  if(String(lead.Score||'')!=='Hot') return 'none';
+  const created=Date.parse(lead.CreatedAt||lead.Date||'');
+  const enabledAtMs=Date.parse(cfg.enabledAt)||Infinity;
+  if(!Number.isFinite(created) || created<enabledAtMs) return 'none';
+  if((Number(track.realloc_count)||0)>=HOT_REALLOC_MAX_HOPS) return 'none';
+  const since=Date.parse(track.owner_since)||nowMs;
+  if(hotReallocLastCallMs(lead.CallLog)>=since) return 'none';
+  return nowMs-since>=cfg.minutes*60000 ? 'move' : 'none';
+}
+export async function hotReallocProcessClient(env, c, now=new Date()){
+  const routing=engineGetLeadRouting(c);
+  const cfg=hotReallocSettings(routing);
+  if(!cfg.enabled || !env.DB) return {moved:0};
+  const clientId=Number(c.Id);
+  const staff=engineRoutableStaffEmails(c);
+  const inPool=Object.entries(routing.rules||{}).filter(([e,r])=>r?.inPool && staff.has(String(e).trim().toLowerCase())).map(([e])=>String(e).trim().toLowerCase());
+  const pool=inPool.length>=2?inPool:[...staff];
+  if(pool.length<2) return {moved:0};
+
+  const nowMs=now.getTime(), nowIso=now.toISOString();
+  const enabledAtMs=Date.parse(cfg.enabledAt)||Infinity;
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(Score,eq,Hot)~and(OptOut,neq,Yes)~and(Handover,neq,Yes)`);
+  let leads=[];
+  for(let page=1; page<=5; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=-Id&limit=200&offset=${(page-1)*200}&fields=Id,Name,Phone,Owner,Stage,Score,CallLog,NotesList,Date,CreatedAt`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    leads=leads.concat(list);
+    if(list.length<200) break;
+  }
+  const {results}=await env.DB.prepare(`SELECT * FROM lead_owner_tracking WHERE client_id=?`).bind(clientId).all();
+  const byLead=new Map((results||[]).map(t=>[Number(t.lead_id), t]));
+  let moved=0;
+
+  for(const lead of leads){
+    if(String(lead.Score||'')!=='Hot') continue;
+    const owner=String(lead.Owner||'').trim().toLowerCase();
+    if(!owner || !staff.has(owner) || PIPELINE_TERMINAL_STAGES.has(lead.Stage||'')) continue;
+    const created=Date.parse(lead.CreatedAt||lead.Date||'');
+    if(!Number.isFinite(created) || created<enabledAtMs) continue;
+    const leadId=Number(lead.Id);
+    let track=byLead.get(leadId);
+    if(!track || track.owner!==owner){
+      // First sighting (clock starts when the lead arrived) or a manual reassignment (clock starts now)
+      let prev=[]; try{ prev=JSON.parse(track?.previous_owners||'[]'); }catch(e){}
+      if(track && track.owner && !prev.includes(track.owner)) prev.push(track.owner);
+      const since=!track && created<=nowMs?new Date(created).toISOString():nowIso;
+      track={owner, owner_since:since, previous_owners:JSON.stringify(prev), realloc_count:Number(track?.realloc_count)||0};
+      await env.DB.prepare(`INSERT INTO lead_owner_tracking (client_id, lead_id, owner, owner_since, previous_owners, realloc_count, warned_at, last_realloc_at, updated_at) VALUES (?,?,?,?,?,?,NULL,NULL,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET owner=excluded.owner, owner_since=excluded.owner_since, previous_owners=excluded.previous_owners, warned_at=NULL, updated_at=excluded.updated_at`)
+        .bind(clientId, leadId, owner, since, track.previous_owners, track.realloc_count, nowIso).run();
+    }
+    if(hotReallocDecide({lead, track, cfg, nowMs})!=='move') continue;
+
+    let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
+    const next=coldReallocPickNext(pool, owner, prev);
+    if(!next) continue;
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`⚡ Auto-reassigned from ${owner} to ${next}: Hot lead not called within ${cfg.minutes} minutes.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
+    if(!pr.ok){ console.error('[hot-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
+    prev.push(owner);
+    await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
+      .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
+    const leadName=lead.Name||lead.Phone||`Lead #${leadId}`;
+    // Live alert in the new owner's open dashboard (dashboard.html onLiveReassignEvent), plus email
+    await engineBroadcastUpdate(env, clientId, {type:'lead_reassigned', lead_id:leadId, lead_name:leadName, to:next, from:owner, at:nowIso});
+    await coldReallocEmail(env, next, `🔥 Hot lead reassigned to you: ${leadName}`,
+      `<p>The Hot lead <strong>${esc(leadName)}</strong> was not called within ${cfg.minutes} minutes, so it has been reassigned to you. Call them now — open Leads to see the chat.</p>`);
+    moved++;
+  }
+  return {moved};
+}
+export async function runHotLeadReassignForAllClients(env, now=new Date()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!hotReallocSettings(engineGetLeadRouting(c)).enabled) continue;
+      try{ await hotReallocProcessClient(env, c, now); }
+      catch(e){ console.error('[hot-realloc] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
 function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
   if(body.private) return null;
@@ -34856,6 +34970,8 @@ export default {
     else if(event.cron==='*/15 * * * *'){
       // Leadvyne v2 reply-gap nudge — see engineV2NudgeDue.
       ctx.waitUntil(runV2NudgesForAllClients(env));
+      // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.
+      ctx.waitUntil(runHotLeadReassignForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Baby Care product summary follow-up (Ecom → Settings) — see babyCareSummaryDue.
       ctx.waitUntil(runBabyCareSummaryFollowupsForAllClients(env));

@@ -585,88 +585,92 @@ tr:hover td{background:#FAFCFB}
 .cs-targets th,.cs-targets td{padding:6px 8px;font-size:13px}
 .cs-targets input{width:90px;padding:6px 8px}
 .cs-click{cursor:pointer}
-/* Home → Weekly Arena (call-score.js csRenderHomeArena) */
+/* Home → Weekly Arena (call-score.js csRenderHomeArena) — kept deliberately simple:
+   hero, team goal, one "today" row, a short leaderboard; badges/rules behind "more". */
 .csa{border-radius:20px;overflow:hidden;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow)}
-.csa-hero{background:radial-gradient(120% 140% at 100% 0%,#14B8A6 0%,rgba(20,184,166,0) 55%),linear-gradient(135deg,#0B1F33 0%,#123B4A 60%,#0D6E68 100%);color:#fff;padding:16px 18px 18px}
-.csa-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.csa-title{font-weight:800;font-size:16px;letter-spacing:-.01em;margin-right:auto}
-.csa-pill{font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.14);backdrop-filter:blur(4px)}
+.csa-hero{background:radial-gradient(120% 140% at 100% 0%,#14B8A6 0%,rgba(20,184,166,0) 55%),linear-gradient(135deg,#0B1F33 0%,#123B4A 60%,#0D6E68 100%);color:#fff;padding:14px 16px 16px}
+.csa-top{display:flex;align-items:center;gap:8px}
+.csa-title{font-weight:800;font-size:15px;margin-right:auto}
+.csa-pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.14)}
 .csa-link{font-size:12px;font-weight:600;color:#99F6E4;text-decoration:none}
-.csa-me{display:flex;align-items:center;gap:16px;margin-top:14px}
-.csa-ring-wrap{position:relative;width:84px;height:84px;flex-shrink:0}
-.csa-ring{width:84px;height:84px}
+.csa-power{margin-top:10px;font-size:12.5px;padding:6px 10px;border-radius:10px;background:linear-gradient(90deg,#F59E0B,#FBBF24);color:#451A03;font-weight:600;animation:csaPulse 2s ease-in-out infinite}
+@keyframes csaPulse{50%{filter:brightness(1.1)}}
+.csa-me{display:flex;align-items:center;gap:14px;margin-top:12px}
+.csa-ring-wrap{position:relative;width:76px;height:76px;flex-shrink:0}
+.csa-ring{width:76px;height:76px}
 .csa-ring-bg{fill:none;stroke:rgba(255,255,255,.15);stroke-width:7}
 .csa-ring-fg{fill:none;stroke:#FBBF24;stroke-width:7;stroke-linecap:round;transition:stroke-dasharray .6s ease}
 .csa-ring-in{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1}
-.csa-ring-in b{font-size:22px;font-weight:800}
-.csa-ring-in span{font-size:10.5px;opacity:.75}
-.csa-me-main{flex:1;min-width:0}
-.csa-pts{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1}
-.csa-pts small{font-size:13px;font-weight:500;opacity:.75;letter-spacing:0}
-.csa-tier{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 6px;font-size:12px}
-.csa-tier-chip{background:rgba(251,191,36,.18);color:#FDE68A;font-weight:700;padding:3px 9px;border-radius:999px}
-.csa-tier-next{opacity:.8}
-.csa-bar{height:7px;border-radius:99px;background:rgba(255,255,255,.15);overflow:hidden}
+.csa-ring-in b{font-size:20px;font-weight:800}
+.csa-ring-in span{font-size:10px;opacity:.75}
+.csa-me-main{flex:1;min-width:0;max-width:440px}
+.csa-pts{font-size:32px;font-weight:800;letter-spacing:-.02em;line-height:1}
+.csa-pts small{font-size:13px;font-weight:500;opacity:.75}
+.csa-line{font-size:13px;margin:5px 0 7px}
+.csa-line b{color:#FDE68A}
+.csa-bar{height:6px;border-radius:99px;background:rgba(255,255,255,.15);overflow:hidden}
 .csa-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#FBBF24,#F59E0B)}
-.csa-motive{margin-top:14px;font-size:13.5px;line-height:1.45;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:9px 12px}
-.csa-motive b{color:#FDE68A}
-.csa-body{padding:6px 16px 16px}
-.csa-sec-title{font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 8px}
-.csa-quests{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.csa-quest{border:1px solid var(--line);border-radius:14px;padding:10px 11px;background:var(--bg)}
-.csa-quest.warn{border-color:#FCA5A5;background:linear-gradient(180deg,rgba(239,68,68,.07),transparent)}
-.csa-quest.done{border-color:#86EFAC;background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)}
-.csa-q-top{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:600;gap:6px}
-.csa-q-top b{font-size:13px}
-.csa-quest.done .csa-q-top b{color:#059669}
-.csa-qbar{height:5px;border-radius:99px;background:var(--line);margin:7px 0 5px;overflow:hidden}
+.csa-sub{font-size:11px;opacity:.75;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.csa-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:10px}
+.csa-goal{border:1px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--bg)}
+.csa-goal.done{border-color:#86EFAC;background:linear-gradient(180deg,rgba(16,185,129,.08),transparent)}
+.csa-goal-top{display:flex;justify-content:space-between;font-size:13px;font-weight:600}
+.csa-qbar{height:6px;border-radius:99px;background:var(--line);margin:7px 0 4px;overflow:hidden}
 .csa-qbar span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#2DD4BF);border-radius:99px}
-.csa-q-sub{font-size:10.5px;color:var(--muted);line-height:1.3;margin-top:4px}
-.csa-champ{display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 12px;border-radius:14px;background:linear-gradient(90deg,#FEF3C7,#FFFBEB);border:1px solid #FDE68A;color:#78350F;font-size:13px}
-.csa-champ-lbl{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;opacity:.8}
-.csa-av{width:34px;height:34px;border-radius:50%;color:#fff;font-weight:800;font-size:13px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 0 0 2px var(--card)}
-.csa-list{display:flex;flex-direction:column;gap:6px}
-.csa-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:14px;border:1px solid var(--line);background:var(--card)}
-.csa-row.top1{background:linear-gradient(90deg,rgba(251,191,36,.14),transparent 70%);border-color:#FDE68A}
-.csa-row.me{border-color:var(--accent);box-shadow:0 0 0 2px rgba(13,156,147,.15)}
-.csa-rank{width:24px;text-align:center;font-weight:800;font-size:15px;color:var(--muted);flex-shrink:0}
+.csa-q-sub{font-size:11px;color:var(--muted)}
+.csa-setgoal{font-size:12px;color:var(--accent-ink);text-decoration:none;font-weight:600}
+.csa-today{display:flex;gap:6px;flex-wrap:wrap}
+.csa-chip{font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--bg)}
+.csa-chip.done{border-color:#86EFAC;color:#047857;background:rgba(16,185,129,.08)}
+.csa-chip.warn{border-color:#FCA5A5;color:#B91C1C;background:rgba(239,68,68,.07)}
+.csa-list{display:flex;flex-direction:column;gap:5px}
+.csa-champ-line{font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:5px 10px;align-self:flex-start}
+.csa-av{width:30px;height:30px;border-radius:50%;color:#fff;font-weight:800;font-size:12px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 0 0 2px var(--card)}
+.csa-row{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:12px;border:1px solid var(--line)}
+.csa-row.top1{background:linear-gradient(90deg,rgba(251,191,36,.12),transparent 70%);border-color:#FDE68A}
+.csa-row.me{border-color:var(--accent);box-shadow:0 0 0 2px rgba(13,156,147,.12)}
+.csa-rank{width:22px;text-align:center;font-weight:800;font-size:14px;color:var(--muted);flex-shrink:0}
 .csa-row-main{flex:1;min-width:0}
-.csa-row-name{display:flex;align-items:center;gap:4px;font-weight:700;font-size:13.5px;min-width:0}
+.csa-row-name{display:flex;align-items:center;gap:4px;font-weight:700;font-size:13px;min-width:0}
 .csa-nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .csa-row-name em{flex-shrink:0;font-style:normal;font-size:10px;font-weight:800;color:#fff;background:var(--accent);padding:1px 6px;border-radius:99px}
-.csa-mini{flex-shrink:0}
-.csa-mini{font-size:12px}
-.csa-row-bar{height:4px;border-radius:99px;background:var(--line);margin:5px 0 3px;overflow:hidden}
+.csa-mini{flex-shrink:0;font-size:12px}
+.csa-row-bar{height:4px;border-radius:99px;background:var(--line);margin-top:5px;overflow:hidden}
 .csa-row-bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#2DD4BF)}
 .csa-row.top1 .csa-row-bar span{background:linear-gradient(90deg,#F59E0B,#FBBF24)}
-.csa-row-sub{font-size:11px;color:var(--muted)}
-.csa-row-pts{font-weight:800;font-size:17px;text-align:right;flex-shrink:0}
-.csa-row-pts small{font-size:10px;font-weight:600;color:var(--muted);margin-left:2px}
+.csa-row-pts{font-weight:800;font-size:16px;flex-shrink:0}
 .csa-gap{text-align:center;color:var(--muted);font-size:12px;line-height:1}
-.csa-idle{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted);padding:6px 4px 0}
+.csa-idle{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);padding:2px 4px 0}
 .csa-stack{display:inline-flex}
-.csa-stack .csa-av{margin-left:-8px}
+.csa-stack .csa-av{margin-left:-7px;font-size:9px}
 .csa-stack .csa-av:first-child{margin-left:0}
-.csa-empty{font-size:13px;color:var(--muted);padding:10px 12px;border:1px dashed var(--line);border-radius:14px;text-align:center;margin-top:12px}
-.csa-badges{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
-.csa-badges::-webkit-scrollbar{display:none}
-.csa-badge{flex:0 0 auto;min-width:96px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 8px;border-radius:14px;border:1px solid var(--line);background:var(--bg);text-align:center}
+.csa-empty{font-size:13px;color:var(--muted);padding:10px 12px;border:1px dashed var(--line);border-radius:14px;text-align:center}
+.csa-more summary{font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;list-style:none}
+.csa-more summary::before{content:'▸ '}
+.csa-more[open] summary::before{content:'▾ '}
+.csa-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.csa-badge{flex:0 0 auto;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:9px 8px;border-radius:12px;border:1px solid var(--line);background:var(--bg);text-align:center}
 .csa-badge.mine{border-color:var(--accent);background:linear-gradient(180deg,rgba(13,156,147,.1),transparent)}
 .csa-badge.off{opacity:.55}
-.csa-b-icon{font-size:22px}
-.csa-b-name{font-size:11.5px;font-weight:700}
-.csa-b-who{font-size:10.5px;color:var(--muted);max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.csa-badge.off .csa-b-who{font-style:italic}
-.csa-hall{font-size:11.5px;color:var(--muted);margin-top:12px}
+.csa-b-icon{font-size:20px}
+.csa-b-name{font-size:11px;font-weight:700}
+.csa-b-who{font-size:10.5px;color:var(--muted);max-width:96px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.csa-rules{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5}
+.csa-hall{font-size:11.5px;color:var(--muted);margin-top:6px}
 .csa-hall small{opacity:.7}
-.csa-me-main{max-width:440px}
-@media(min-width:900px){
-  .csa-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);grid-template-areas:"q board" "bd board";column-gap:22px;align-items:start}
-  .csa-q{grid-area:q}.csa-board{grid-area:board}.csa-bd{grid-area:bd}
-  .csa-board .csa-champ{margin-top:14px}
-  .csa-badges{flex-wrap:wrap}
-}
-@media(max-width:480px){.csa-pts{font-size:30px}}
+@media(min-width:900px){.csa{max-width:760px}}
+/* 🔔 New-lead alert banner (call-score.js csNewLeadAlert) */
+.cs-alert{position:fixed;left:50%;top:12px;transform:translate(-50%,-140%);z-index:10001;display:flex;align-items:center;gap:10px;width:min(560px,calc(100vw - 24px));padding:10px 12px;border-radius:16px;background:#0B1F33;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.28);transition:transform .3s ease}
+.cs-alert.show{transform:translate(-50%,0)}
+.cs-alert-main{flex:1;min-width:0;cursor:pointer}
+.cs-alert-title{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs-alert-sub{font-size:11.5px;opacity:.8;margin-top:2px}
+.cs-alert-sub a{color:#99F6E4}
+.cs-alert-timer{font-weight:800;font-variant-numeric:tabular-nums;color:#FDE68A;font-size:15px}
+.cs-alert-call{background:#10B981!important;color:#fff!important;font-weight:700}
+.cs-alert-x{background:none;border:none;color:#fff;opacity:.6;font-size:15px;cursor:pointer;padding:4px}
+.cs-cfg-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;margin-top:10px}
+.cs-cfg-row select,.cs-cfg-row input[type=number]{width:auto;padding:5px 8px}
 @media(max-width:600px){.cs-next{flex-direction:column;align-items:stretch}.cs-oc-name{flex-basis:80px}}
 .li-sub{font-size:11.5px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .li-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
@@ -6022,6 +6026,7 @@ function connectLiveUpdates(){
     // touches allLeads/loadAll, purely a presence overlay on whatever's already rendered.
     else if(msg?.type==='viewing') onLiveViewingEvent(msg);
     else if(msg?.type==='new_lead') onLiveNewLeadEvent(msg);
+    else if(msg?.type==='lead_reassigned') onLiveReassignEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -6084,7 +6089,19 @@ function notifyNewMessage(msg){
 async function onLiveNewLeadEvent(msg){
   await loadAll(true, true);
   pollNotifications();
+  // Alert the lead's owner (or everyone while it's still unassigned) — not every teammate for
+  // every lead, which trains people to ignore the chime.
+  const lead=allLeads.find(l=>l.Id===msg.lead_id);
+  if(lead?.Owner && myEmail && !sameEmail(lead.Owner,myEmail)) return;
   notifyNewLead(msg);
+  window.csNewLeadAlert?.(lead||{Id:msg.lead_id, Name:msg.lead_name, Date:msg.at}, 'new');
+}
+// Hot-lead auto-reassign (worker.js hotReallocProcessClient) — only the new owner is alerted.
+async function onLiveReassignEvent(msg){
+  await loadAll(true, true);
+  if(!myEmail || !sameEmail(msg.to,myEmail)) return;
+  notifyNewLead({...msg, reassigned:true});
+  window.csNewLeadAlert?.(allLeads.find(l=>l.Id===msg.lead_id)||{Id:msg.lead_id, Name:msg.lead_name}, 'reassigned');
 }
 function notifyNewLead(msg){
   // Distinct two-tone chime (660 Hz → 880 Hz) so agents can tell a new enquiry apart from a
@@ -6105,11 +6122,11 @@ function notifyNewLead(msg){
   // as requestChatNotifyPermission; never auto-prompted on load).
   if('Notification' in window && Notification.permission==='granted'){
     try{
-      const n=new Notification(`🏨 New Enquiry: ${msg.lead_name||'New Lead'}`, {
-        body:'A new lead just arrived — tap to view in Leadvyne',
+      const n=new Notification(msg.reassigned?`🔥 Hot lead for you: ${msg.lead_name||'New Lead'}`:`🔔 New lead: ${msg.lead_name||'New Lead'}`, {
+        body:msg.reassigned?'Reassigned to you — call them now':'Call within 5 minutes for 2× points — tap to open',
         tag:'lv-new-lead-'+msg.lead_id
       });
-      n.onclick=()=>{ window.focus(); navigate('leads'); };
+      n.onclick=()=>{ window.focus(); navigate('leads'); if(msg.lead_id) openDetail(msg.lead_id); };
     }catch(e){}
   }
 }
@@ -10849,6 +10866,8 @@ function renderLeadRoutingSettings(){
   const catchall=rt.catchall||'';
   const coldRaw=rt.coldRealloc||{};
   const cold={enabled:coldRaw.enabled===true, days:Number(coldRaw.days)||7, maxHops:Number(coldRaw.maxHops)||3};
+  const hotRaw=rt.hotRealloc||{};
+  const hot={enabled:hotRaw.enabled===true, minutes:Number(hotRaw.minutes)||20};
   const industry=clientRecord?.industry||'general';
   const isHosp=industry==='hospitality';
   const isTravel=industry==='travel';
@@ -10910,6 +10929,14 @@ function renderLeadRoutingSettings(){
 
       <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
+          <input type="checkbox" id="lrHotEnabled" ${hot.enabled?' checked':''}> ⚡ Reassign uncalled Hot leads
+        </label>
+        <div class="s-note" style="margin-bottom:8px">A <strong>Hot</strong> lead whose owner hasn't logged a call on it within the set time moves to the next teammate (same pool as below), who gets an instant alert and an email. Only leads that arrive after you switch this on; at most 2 moves per lead, never back to someone who had it. Checked every 15 minutes.</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">After <select class="form-input" id="lrHotMinutes" style="width:auto;padding:4px 8px">${[15,20,30,45,60].map(m=>`<option value="${m}"${hot.minutes===m?' selected':''}>${m}</option>`).join('')}</select> minutes without a call</label>
+      </div>
+
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
           <input type="checkbox" id="lrColdEnabled" ${cold.enabled?' checked':''}> 🔁 Auto-reallocate cold leads
         </label>
         <div class="s-note" style="margin-bottom:8px">A <strong>Cold</strong> lead whose owner adds no note on it for the set number of days moves to the next teammate (Round-Robin "In pool" members, or everyone if fewer than two are ticked). The owner gets an email 2 days before, and a lead never returns to someone who already had it. Checked once a day.</div>
@@ -10959,7 +10986,14 @@ async function saveLeadRouting(){
       maxHops:clampInt($id('lrColdHops')?.value,1,20,3),
       enabledAt:coldEnabled?(prevCold.enabled&&prevCold.enabledAt?prevCold.enabledAt:new Date().toISOString()):''
     };
-    const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc};
+    const prevHot=existing.hotRealloc||{};
+    const hotEnabled=$id('lrHotEnabled')?.checked||false;
+    const hotRealloc={
+      enabled:hotEnabled,
+      minutes:clampInt($id('lrHotMinutes')?.value,10,240,20),
+      enabledAt:hotEnabled?(prevHot.enabled&&prevHot.enabledAt?prevHot.enabledAt:new Date().toISOString()):''
+    };
+    const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc, hotRealloc};
     if(msg){msg.textContent='Saving…';msg.className='save-msg';}
     await patchClient({lead_routing:JSON.stringify(newRouting)});
     if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}
@@ -21428,7 +21462,7 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
-<script src="call-score.js?v=4"></script>
+<script src="call-score.js?v=5"></script>
 <script>
 
 /* ── PWA install prompt ──

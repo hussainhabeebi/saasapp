@@ -35,6 +35,31 @@ function csTargetsConfig(){
   const t=bc.call_targets||{};
   return {default:{...CS_DEFAULT_TARGETS, ...(t.default||{})}, users:t.users||{}};
 }
+// ⚡ Power hour — a daily slot (browser local time) where every call earns double points.
+function csPowerHour(){
+  let bc={}; try{ bc=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
+  const p=bc.power_hour||{};
+  const h=v=>{ const n=Math.round(Number(v)); return n>=0&&n<=23?n:null; };
+  const start=h(p.start)??11, end=h(p.end)??12;
+  // On by default (11am–12pm); only counts calls from when it took effect, so switching it on never
+  // re-scores past weeks or changes an old champion.
+  return {enabled:p.enabled!==false, start, end:end>start?end:start+1, since:Date.parse(p.since||'')||CS_POWER_DEFAULT_SINCE};
+}
+const CS_POWER_DEFAULT_SINCE=Date.parse('2026-10-07T00:00:00');
+function csInPowerHour(ms){ const ph=csPowerHour(); if(!ph.enabled || ms<ph.since) return false; const h=new Date(ms).getHours(); return h>=ph.start && h<ph.end; }
+function csPowerState(){
+  const ph=csPowerHour(); if(!ph.enabled) return null;
+  const d=new Date(), mins=d.getHours()*60+d.getMinutes();
+  if(mins>=ph.start*60 && mins<ph.end*60) return {active:true, minsLeft:ph.end*60-mins, ph};
+  if(mins<ph.start*60) return {active:false, startsIn:ph.start*60-mins, ph};
+  return {active:false, ph};
+}
+const csHour=h=>`${((h+11)%12)+1}${h<12?'am':'pm'}`;
+// 🤝 Weekly team goal — conversions the whole team aims for together (0 / unset = off).
+function csTeamGoal(){
+  let bc={}; try{ bc=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
+  const n=Math.round(Number(bc.team_goal?.won)); return n>0?n:0;
+}
 function csTargetsFor(email){
   const cfg=csTargetsConfig();
   return {...cfg.default, ...(cfg.users[csEmailKey(email)]||{})};
@@ -95,7 +120,11 @@ function csEvents(){
       const ms=csCallMs(c); if(ms==null||!c.by) return;
       const answered=c.outcome==='Answered';
       events.push({by:csEmailKey(c.by), ms, kind:answered?'answered':'call', pts:answered?CS_PTS.answered:CS_PTS.call, leadId:l.Id, outcome:c.outcome||'', duration:Number(c.duration)||0, ordinal:i+1});
-      if(i===0 && isFinite(leadMs) && ms-leadMs>=0 && ms-leadMs<=CS_FAST_MS) events.push({by:csEmailKey(c.by), ms, kind:'fast', pts:CS_PTS.fast, leadId:l.Id});
+      const base=answered?CS_PTS.answered:CS_PTS.call;
+      // First call within 5 min of the lead arriving: double points (the bonus equals the call's own points)
+      if(i===0 && isFinite(leadMs) && ms-leadMs>=0 && ms-leadMs<=CS_FAST_MS) events.push({by:csEmailKey(c.by), ms, kind:'fast', pts:base, leadId:l.Id});
+      // ⚡ Power hour: every call counts double
+      if(csInPowerHour(ms)) events.push({by:csEmailKey(c.by), ms, kind:'power', pts:base, leadId:l.Id});
       const prev=calls[i-1], prevMs=prev?csCallMs(prev):null;
       if(prev && /callback/i.test(prev.outcome||'') && prevMs!=null && ms-prevMs<=CS_CALLBACK_MS) events.push({by:csEmailKey(c.by), ms, kind:'callback', pts:CS_PTS.callback, leadId:l.Id});
     });
@@ -143,7 +172,8 @@ function csHotMissed(email){
 function csLeadPotential(l){
   let won=CS_PTS.won+(l.Score==='Hot'?CS_PTS.wonHot:0);
   const fresh=!csCalls(l).length && l.Date && Date.now()-Date.parse(l.Date)<=CS_FAST_MS;
-  return {won, callNow:CS_PTS.answered+(fresh?CS_PTS.fast:0)};
+  const mult=(fresh?2:1)+(csPowerState()?.active?1:0);
+  return {won, callNow:CS_PTS.answered*mult, fresh};
 }
 
 /* ── Per-user daily rollup ── */
@@ -208,7 +238,7 @@ function csLeadsTopHtml(){
     <span title="Calls logged today vs your daily target">📞 <strong>${s.calls}</strong>/${s.target.calls} calls${callsDone?' ✓':''} ${bar(s.calls,s.target.calls)}</span>
     <span title="Leads you converted today vs your daily target">✅ <strong>${s.won}</strong>/${s.target.won} converted${wonDone?' ✓':''}</span>
     <span title="Days in a row you hit your call target">🔥 <strong>${s.streak}</strong>-day streak</span>
-    <span title="Points today: answered call +${CS_PTS.answered}, call +${CS_PTS.call}, first call in 5 min +${CS_PTS.fast}, callback on time +${CS_PTS.callback}, converted +${CS_PTS.won}, task done +${CS_PTS.task}${s.overdue?`, ${s.overdue} overdue task(s) ${CS_PTS.taskOverdue} each`:''}${s.missed?`, ${s.missed} Hot lead(s) uncalled 24h+ ${CS_PTS.hotMissed} each`:''}">⭐ <strong>${s.pts}</strong> pts</span>
+    <span title="Points today: answered call +${CS_PTS.answered}, call +${CS_PTS.call}, first call in 5 min 2×, power hour 2×, callback on time +${CS_PTS.callback}, converted +${CS_PTS.won}, task done +${CS_PTS.task}${s.overdue?`, ${s.overdue} overdue task(s) ${CS_PTS.taskOverdue} each`:''}${s.missed?`, ${s.missed} Hot lead(s) uncalled 24h+ ${CS_PTS.hotMissed} each`:''}">⭐ <strong>${s.pts}</strong> pts</span>
   </div>`;
   const l=csAttendNextLead();
   if(!l) return strip;
@@ -229,6 +259,55 @@ function csLeadsTopHtml(){
   </div>`;
 }
 
+/* ── Personal bests ── */
+function csWeekKey(ms){ const d=new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay()); return csDayKey(d.getTime()); }
+function csBests(email){
+  const me=csEmailKey(email), today=csToday(), thisWeek=csWeekKey(Date.now());
+  const daily=csDaily(email), weeks={};
+  for(const e of csEvents()) if(e.by===me){ const k=csWeekKey(e.ms); weeks[k]=(weeks[k]||0)+e.pts; }
+  const days=Object.entries(daily).filter(([d])=>d!==today);
+  return {
+    dayCalls:Math.max(0,...days.map(([,r])=>r.calls)),
+    weekPts:Math.max(0,...Object.entries(weeks).filter(([w])=>w!==thisWeek).map(([,p])=>p)),
+    todayCalls:daily[today]?.calls||0, weekPts_now:weeks[thisWeek]||0,
+  };
+}
+// One celebration per record per day/week per browser (sessionStorage), never on a first-ever day.
+function csCheckRecords(){
+  if(!myEmail) return null;
+  const b=csBests(myEmail);
+  const flag=(k)=>{ try{ if(sessionStorage.getItem(k)) return false; sessionStorage.setItem(k,'1'); }catch(e){} return true; };
+  if(b.dayCalls>=5 && b.todayCalls>b.dayCalls && flag('cs_pb_day_'+csToday())) return `🏅 New record! ${b.todayCalls} calls in a day — your best ever 🎉`;
+  if(b.weekPts>=50 && b.weekPts_now>b.weekPts && flag('cs_pb_week_'+csWeekKey(Date.now()))) return `🏅 New record week! ${b.weekPts_now} pts — beat your best of ${b.weekPts} 🎉`;
+  return null;
+}
+
+/* ── 🔔 New-lead alert: banner with a 5-minute "double points" countdown and one Call button ── */
+let _csAlertTimer=null;
+function csNewLeadAlert(lead, reason){
+  if(!lead || typeof document==='undefined') return;
+  let el=$id('csLeadAlert');
+  if(!el){ el=document.createElement('div'); el.id='csLeadAlert'; el.className='cs-alert'; document.body.appendChild(el); }
+  clearInterval(_csAlertTimer);
+  const arrived=reason==='reassigned'?Date.now()-CS_FAST_MS:(Date.parse(lead.Date||'')||Date.now());
+  const askPerm=('Notification' in window) && Notification.permission==='default';
+  const paint=()=>{
+    const left=CS_FAST_MS-(Date.now()-arrived);
+    const timer=left>0?`<span class="cs-alert-timer">⏱ ${Math.floor(left/60000)}:${String(Math.floor(left%60000/1000)).padStart(2,'0')}</span>`:'';
+    el.innerHTML=`<div class="cs-alert-main" onclick="openDetail(${lead.Id})">
+        <div class="cs-alert-title">${reason==='reassigned'?'🔥 Hot lead reassigned to you':'🔔 New lead'} · <b>${esc(lead.Name||lead.Phone||'New enquiry')}</b></div>
+        <div class="cs-alert-sub">${left>0?`Call within the timer for <b>2× points</b>`:'Call now while they’re interested'}${askPerm?` · <a href="#" onclick="event.stopPropagation();Notification.requestPermission();this.remove();return false">Turn on alerts</a>`:''}</div>
+      </div>
+      ${timer}
+      ${lead.Phone?`<a class="btn btn-sm cs-alert-call" href="tel:+${String(lead.Phone).replace(/[^0-9]/g,'')}" onclick="startCallTimer?.(${lead.Id})">📞 Call</a>`:''}
+      <button class="cs-alert-x" aria-label="Dismiss" onclick="csDismissLeadAlert()">✕</button>`;
+    if(left<=-10*60000) csDismissLeadAlert();
+  };
+  paint(); el.classList.add('show');
+  _csAlertTimer=setInterval(paint,1000);
+}
+function csDismissLeadAlert(){ clearInterval(_csAlertTimer); $id('csLeadAlert')?.classList.remove('show'); }
+
 /* ── Celebration toasts after a call / a conversion ── */
 function csAfterCall(leadId){
   _csCache=null;
@@ -237,15 +316,20 @@ function csAfterCall(leadId){
   const mine=csEvents().filter(e=>e.leadId===leadId && e.by===csEmailKey(myEmail) && Date.now()-e.ms<120000 && e.kind!=='won');
   const pts=mine.reduce((s,e)=>s+e.pts,0);
   const s=csTodaySummary(myEmail);
-  if(s.calls===s.target.calls) showToast(`🎯 Daily call target hit! +${pts} pts · 🔥 ${s.streak}-day streak`,'ok');
-  else if(pts) showToast(`+${pts} pts · 📞 ${s.calls}/${s.target.calls} calls today`,'ok');
+  const record=csCheckRecords();
+  const boost=mine.some(e=>e.kind==='fast')?' ⚡ 2× fast call':mine.some(e=>e.kind==='power')?' ⚡ power hour 2×':'';
+  if(record) showToast(record,'ok');
+  else if(s.calls===s.target.calls) showToast(`🎯 Daily call target hit! +${pts} pts · 🔥 ${s.streak}-day streak`,'ok');
+  else if(pts) showToast(`+${pts} pts${boost} · 📞 ${s.calls}/${s.target.calls} calls today`,'ok');
+  if($id('csLeadAlert')?.classList.contains('show') && $id('csLeadAlert').innerHTML.includes(`openDetail(${leadId})`)) csDismissLeadAlert();
   if(typeof renderLeadsMomentumStrip==='function') renderLeadsMomentumStrip();
 }
 function csAfterWon(leadId){
   _csCache=null;
   const ev=csEvents().find(e=>e.leadId===leadId && e.kind==='won');
   const s=myEmail?csTodaySummary(myEmail):null;
-  showToast(`🎉 Converted! +${ev?.pts||CS_PTS.won} pts${s?` · ✅ ${s.won}/${s.target.won} today`:''}`,'ok');
+  const goal=csTeamGoal(), teamWon=goal?csWeekBoard(0).reduce((n,r)=>n+r.s.won,0):0;
+  showToast(csCheckRecords()||(goal&&teamWon===goal?`🤝 Team goal reached — ${goal} conversions this week! 🎉`:`🎉 Converted! +${ev?.pts||CS_PTS.won} pts${s?` · ✅ ${s.won}/${s.target.won} today`:''}${goal?` · 🤝 team ${teamWon}/${goal}`:''}`),'ok');
   if(typeof renderLeadsMomentumStrip==='function') renderLeadsMomentumStrip();
 }
 
@@ -400,11 +484,16 @@ function renderReportsCalls(){
   // 7. Targets (owner only)
   if(owner){
     const cfg=csTargetsConfig();
-    html+=head('🎯 Daily targets','Calls and conversions each person should hit per day. Blank = team default.');
+    html+=head('🎯 Targets, power hour & team goal','Calls and conversions each person should hit per day (blank = team default), the daily power hour, and the shared weekly team goal.');
     html+=`<div class="card"><div style="overflow-x:auto"><table class="cs-targets" style="width:100%;min-width:420px"><thead><tr><th style="text-align:left">Who</th><th>📞 Calls / day</th><th>✅ Converted / day</th></tr></thead><tbody>
       <tr><td><b>Team default</b></td><td><input type="number" min="0" class="form-input" id="csTgtDefCalls" value="${cfg.default.calls}"></td><td><input type="number" min="0" class="form-input" id="csTgtDefWon" value="${cfg.default.won}"></td></tr>
       ${getTeamMembers().map(m=>{ const u=cfg.users[csEmailKey(m.email)]||{}; return `<tr data-email="${esc(csEmailKey(m.email))}"><td>${esc(m.name)}</td><td><input type="number" min="0" class="form-input cs-tgt-calls" placeholder="${cfg.default.calls}" value="${u.calls??''}"></td><td><input type="number" min="0" class="form-input cs-tgt-won" placeholder="${cfg.default.won}" value="${u.won??''}"></td></tr>`; }).join('')}
-    </tbody></table></div><div style="margin-top:10px;display:flex;gap:10px;align-items:center"><button class="btn btn-primary btn-sm" onclick="csSaveTargets(this)">Save targets</button><span class="save-msg" id="csTgtMsg"></span></div></div>`;
+    </tbody></table></div>
+    ${(()=>{ const ph=csPowerHour(), opts=sel=>Array.from({length:24},(_,h)=>`<option value="${h}"${h===sel?' selected':''}>${csHour(h)}</option>`).join(''); return `<div class="cs-cfg-row">
+      <label><input type="checkbox" id="csPhOn"${ph.enabled?' checked':''}> ⚡ Power hour — every call earns 2× points from</label>
+      <select class="form-input" id="csPhStart">${opts(ph.start)}</select> to <select class="form-input" id="csPhEnd">${opts(ph.end)}</select></div>
+      <div class="cs-cfg-row"><label>🤝 Weekly team goal</label><input type="number" min="0" class="form-input" id="csTeamGoal" value="${csTeamGoal()||''}" placeholder="off"> conversions (whole team, shown on Home)</div>`; })()}
+    <div style="margin-top:10px;display:flex;gap:10px;align-items:center"><button class="btn btn-primary btn-sm" onclick="csSaveTargets(this)">Save targets</button><span class="save-msg" id="csTgtMsg"></span></div></div>`;
   }
   el.innerHTML=html;
 }
@@ -419,6 +508,12 @@ async function csSaveTargets(btn){
   });
   let bc={}; try{ bc=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
   bc.call_targets={default:def, users};
+  if($id('csPhOn')){
+    const prev=bc.power_hour||{}, on=$id('csPhOn').checked, start=Number($id('csPhStart').value), end=Number($id('csPhEnd').value);
+    const same=prev.enabled!==false && prev.start===start && prev.end===end;
+    bc.power_hour={enabled:on, start, end, since:on&&same&&prev.since?prev.since:new Date().toISOString()};
+  }
+  if($id('csTeamGoal')) bc.team_goal={won:num($id('csTeamGoal').value)||0};
   const msg=$id('csTgtMsg'); btn.disabled=true; msg.textContent=''; msg.className='save-msg';
   try{
     await patchClient({bot_config:JSON.stringify(bc)}); // refreshes clientRecord on success
@@ -493,26 +588,24 @@ function csRenderHomeArena(){
   const members=getTeamMembers();
   if(!members.length||!myEmail){ el.style.display='none'; return; }
   const board=csWeekBoard(0), badges=csWeekBadges(board), owner=isAccountOwner();
-  const meIdx=board.findIndex(r=>sameEmail(r.m.email,myEmail)), me=board[meIdx];
+  const me=board.find(r=>sameEmail(r.m.email,myEmail));
   const solo=members.length<2;
   const last=csWeekWinner(-1);
-  const hall=[-1,-2,-3,-4].map(o=>({o, w:csWeekWinner(o)})).filter(x=>x.w);
   const isMe=r=>sameEmail(r.m.email,myEmail);
   const myPts=me?.s.pts||0, tier=csTier(myPts), today=me?.s.today||csTodaySummary(myEmail);
   const scorers=board.filter(r=>r.s.pts>0), idle=board.filter(r=>r.s.pts<=0);
   const myRank=me&&myPts>0?scorers.indexOf(me)+1:null;
+  const best=csBests(myEmail), power=csPowerState(), goal=csTeamGoal();
 
-  // Motivation line — always a reachable next step, never a discouraging giant gap.
+  // One clear next step — never a discouraging giant gap
   let motive;
-  if(!myPts) motive=`Your first answered call is <b>+${CS_PTS.answered} pts</b> and puts you on the board 🚀`;
-  else if(myRank===1) motive=scorers[1]?`You're on top — <b>${myPts-scorers[1].s.pts} pts</b> ahead of ${esc(csName(scorers[1].m))}. Keep it going! 🔥`:`You're leading the team this week 🔥`;
+  if(!myPts) motive=`First answered call = <b>+${CS_PTS.answered} pts</b> 🚀`;
+  else if(myRank===1) motive=scorers[1]?`Leading by <b>${myPts-scorers[1].s.pts} pts</b> 🔥`:`You're leading 🔥`;
   else{
     const above=scorers[myRank-2], gap=above.s.pts-myPts+1;
-    motive=gap<=2*CS_PTS.won
-      ? `Only <b>${gap} pts</b> behind ${esc(csName(above.m))} — about ${csCallsFor(gap)} answered call${csCallsFor(gap)>1?'s':''} to overtake 💪`
-      : tier.next?`<b>${tier.toNext} pts</b> to ${tier.next.icon} ${tier.next.name} — about ${csCallsFor(tier.toNext)} answered calls 💪`:`Diamond tier — you're a legend this week 💎`;
+    motive=gap<=2*CS_PTS.won?`<b>${gap} pts</b> to pass ${esc(csName(above.m))} 💪`
+      : tier.next?`<b>${tier.toNext} pts</b> to ${tier.next.icon} ${tier.next.name} 💪`:`Diamond tier 💎`;
   }
-  // Rank ring = progress inside the current tier
   const R=34, C=2*Math.PI*R, dash=C*tier.pct/100;
   const ring=`<svg class="csa-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="${R}" class="csa-ring-bg"/><circle cx="40" cy="40" r="${R}" class="csa-ring-fg" stroke-dasharray="${dash} ${C}" transform="rotate(-90 40 40)"/></svg>
     <div class="csa-ring-in">${myRank?`<b>#${myRank}</b><span>of ${board.length}</span>`:`<b>${tier.cur.icon}</b><span>${tier.cur.name}</span>`}</div>`;
@@ -521,57 +614,66 @@ function csRenderHomeArena(){
   <div class="csa-hero">
     <div class="csa-top">
       <span class="csa-title">🏆 Weekly Arena</span>
-      <span class="csa-pill">⏳ ${csEndsIn()} left</span>
+      <span class="csa-pill">⏳ ${csEndsIn()}</span>
       <a class="csa-link" href="#" onclick="navigate('reports');setTimeout(()=>renderReportsSubPage('calls'),0);return false">Report →</a>
     </div>
+    ${power?.active?`<div class="csa-power">⚡ Power hour — <b>2× points</b> for ${power.minsLeft} min</div>`:''}
     <div class="csa-me">
       <div class="csa-ring-wrap">${ring}</div>
       <div class="csa-me-main">
-        <div class="csa-pts">${myPts}<small> pts this week</small></div>
-        <div class="csa-tier"><span class="csa-tier-chip">${tier.cur.icon} ${tier.cur.name}</span>${tier.next?`<span class="csa-tier-next">${tier.toNext} to ${tier.next.icon} ${tier.next.name}</span>`:''}</div>
+        <div class="csa-pts">${myPts}<small> pts</small></div>
+        <div class="csa-line">${motive}</div>
         <div class="csa-bar"><span style="width:${tier.pct}%"></span></div>
+        <div class="csa-sub">${tier.cur.icon} ${tier.cur.name}${tier.next?` · ${tier.toNext} to ${tier.next.icon}`:''}${today.streak?` · 🔥 ${today.streak}d`:''}${best.dayCalls?` · 🏅 best ${best.dayCalls} calls/day`:''}</div>
       </div>
     </div>
-    <div class="csa-motive">${motive}</div>
   </div>
   <div class="csa-body">`;
 
-  // Today's quests
-  const q=(icon,label,n,t,extra)=>{ const done=t>0&&n>=t; return `<div class="csa-quest${done?' done':''}"><div class="csa-q-top"><span>${icon} ${label}</span><b>${done?'✓':`${n}/${t}`}</b></div><div class="csa-qbar"><span style="width:${t?Math.min(100,Math.round(n/t*100)):0}%"></span></div>${extra?`<div class="csa-q-sub">${extra}</div>`:''}</div>`; };
-  html+=`<div class="csa-q"><div class="csa-sec-title">Today's quests</div><div class="csa-quests">
-    ${q('📞','Calls',today.calls,today.target.calls,today.calls>=today.target.calls?'Target hit! 🎉':`+${CS_PTS.answered} pts per answered call`)}
-    ${q('✅','Conversions',today.won,today.target.won,`+${CS_PTS.won} pts each`)}
-    <div class="csa-quest${today.tasks&&!today.overdue?' done':''}${today.overdue?' warn':''}"><div class="csa-q-top"><span>🛠️ Tasks</span><b>${today.tasks} done</b></div><div class="csa-q-sub">${today.overdue?`⚠️ ${today.overdue} overdue (${CS_PTS.taskOverdue} each) — clear them`:`+${CS_PTS.task} each, +${CS_PTS.taskOnTime} on time`}</div></div>
-    <div class="csa-quest streak${today.streak?' done':''}"><div class="csa-q-top"><span>🔥 Streak</span><b>${today.streak?today.streak+'d':'—'}</b></div><div class="csa-q-sub">${today.streak?`Hit ${today.target.calls} calls today to keep it`:`Hit ${today.target.calls} calls today to start one`}</div></div>
-  </div></div><div class="csa-board">`;
+  // Team goal (shared)
+  if(goal && !solo){
+    const teamWon=board.reduce((n,r)=>n+r.s.won,0), pct=Math.min(100,Math.round(teamWon/goal*100));
+    html+=`<div class="csa-goal${teamWon>=goal?' done':''}"><div class="csa-goal-top"><span>🤝 Team goal</span><b>${teamWon}/${goal} conversions</b></div><div class="csa-qbar"><span style="width:${pct}%"></span></div>${teamWon>=goal?'<div class="csa-q-sub">Goal reached — amazing teamwork! 🎉</div>':`<div class="csa-q-sub">${goal-teamWon} to go together</div>`}</div>`;
+  }else if(owner && !solo){
+    html+=`<a class="csa-setgoal" href="#" onclick="navigate('reports');setTimeout(()=>renderReportsSubPage('calls'),0);return false">🤝 Set a weekly team goal →</a>`;
+  }
+
+  // Today — one compact row
+  const chip=(icon,txt,state)=>`<span class="csa-chip${state?' '+state:''}">${icon} ${txt}</span>`;
+  html+=`<div class="csa-today">
+    ${chip('📞',`${today.calls}/${today.target.calls}`,today.calls>=today.target.calls?'done':'')}
+    ${chip('✅',`${today.won}/${today.target.won}`,today.won>=today.target.won?'done':'')}
+    ${chip('🛠️',today.overdue?`${today.overdue} overdue`:`${today.tasks} done`,today.overdue?'warn':(today.tasks?'done':''))}
+    ${!power?.active&&power?.startsIn?chip('⚡',`2× at ${csHour(power.ph.start)}`,''):''}
+  </div>`;
 
   if(!solo){
-    if(last) html+=`<div class="csa-champ">${csAvatar(last.m,30)}<div><div class="csa-champ-lbl">👑 Last week's champion${isMe(last)?' — you! 🎉':''}</div><b>${esc(csName(last.m))}</b> · ${last.s.pts} pts · ${last.s.won?`${last.s.won} converted`:`${last.s.calls} calls`}</div></div>`;
-
-    // League table — scorers only; staff see top 3 + their own row
+    // Leaderboard — top 3 + me (owner sees everyone who scored)
     const leader=scorers[0]?.s.pts||1;
-    const row=(r,i)=>{ const b=badges[csEmailKey(r.m.email)]||[]; return `<div class="csa-row${isMe(r)?' me':''}${i<3?' top'+(i+1):''}">
-        <span class="csa-rank">${['🥇','🥈','🥉'][i]||i+1}</span>
-        ${csAvatar(r.m)}
-        <div class="csa-row-main"><div class="csa-row-name"><span class="csa-nm">${esc(csName(r.m))}</span>${isMe(r)?'<em>you</em>':''}${b.map(x=>`<span class="csa-mini" title="${esc(x.name)} — ${esc(x.why)}">${x.icon}</span>`).join('')}</div>
-          <div class="csa-row-bar"><span style="width:${Math.max(4,Math.round(r.s.pts/leader*100))}%"></span></div>
-          <div class="csa-row-sub">${[r.s.calls?`📞 ${r.s.calls} call${r.s.calls>1?'s':''}`:'', r.s.won?`✅ ${r.s.won} converted`:'', r.s.tasks?`🛠️ ${r.s.tasks} task${r.s.tasks>1?'s':''}`:'', r.s.projects?`🚀 ${r.s.projects} project${r.s.projects>1?'s':''}`:''].filter(Boolean).join(' · ')}</div></div>
-        <span class="csa-row-pts">${r.s.pts}<small>pts</small></span></div>`; };
     let shown=scorers.map((r,i)=>({r,i}));
     if(!owner) shown=shown.filter(x=>x.i<3||isMe(x.r));
-    html+=`<div class="csa-sec-title">Leaderboard</div><div class="csa-list">`;
-    html+=shown.length?shown.map((x,k)=>(k&&x.i-shown[k-1].i>1?'<div class="csa-gap">⋯</div>':'')+row(x.r,x.i)).join(''):`<div class="csa-empty">Nobody has scored yet this week — the first answered call takes the lead! 🚀</div>`;
-    if(idle.length) html+=`<div class="csa-idle"><span class="csa-stack">${idle.slice(0,5).map(r=>csAvatar(r.m,26)).join('')}</span><span>${idle.length} ${idle.length===1?'teammate':'teammates'} yet to score${idle.some(isMe)?' — including you. First call gets you on the board!':''}</span></div>`;
+    const row=(r,i)=>`<div class="csa-row${isMe(r)?' me':''}${i===0?' top1':''}">
+        <span class="csa-rank">${['🥇','🥈','🥉'][i]||i+1}</span>
+        ${csAvatar(r.m,30)}
+        <div class="csa-row-main"><div class="csa-row-name"><span class="csa-nm">${esc(csName(r.m))}</span>${isMe(r)?'<em>you</em>':''}${(badges[csEmailKey(r.m.email)]||[]).map(x=>`<span class="csa-mini" title="${esc(x.name)}">${x.icon}</span>`).join('')}</div>
+          <div class="csa-row-bar"><span style="width:${Math.max(4,Math.round(r.s.pts/leader*100))}%"></span></div></div>
+        <span class="csa-row-pts">${r.s.pts}</span></div>`;
+    html+=`<div class="csa-list">${last?`<div class="csa-champ-line">👑 Last week: <b>${esc(csName(last.m))}</b>${isMe(last)?' (you!)':''}</div>`:''}`;
+    html+=shown.length?shown.map((x,k)=>(k&&x.i-shown[k-1].i>1?'<div class="csa-gap">⋯</div>':'')+row(x.r,x.i)).join(''):`<div class="csa-empty">No points yet this week — first call takes the lead 🚀</div>`;
+    if(idle.length) html+=`<div class="csa-idle"><span class="csa-stack">${idle.slice(0,5).map(r=>csAvatar(r.m,22)).join('')}</span><span>${idle.length} yet to score</span></div>`;
     html+=`</div>`;
   }else{
-    html+=`<div class="csa-empty">Add teammates in Settings → User Management to compete for the weekly crown 👑</div>`;
+    html+=`<div class="csa-empty">Add teammates in Settings → User Management to compete 👑</div>`;
   }
-  html+=`</div><div class="csa-bd">`;
 
-  // Badges up for grabs
-  html+=`<div class="csa-sec-title">Weekly badges</div><div class="csa-badges">${CS_BADGES.map(b=>{ const who=board.find(r=>(badges[csEmailKey(r.m.email)]||[]).includes(b)); return `<div class="csa-badge${who?'':' off'}${who&&isMe(who)?' mine':''}" title="${esc(b.why)}"><span class="csa-b-icon">${b.icon}</span><span class="csa-b-name">${esc(b.name)}</span><span class="csa-b-who">${who?(solo||isMe(who)?'Yours!':esc(csName(who.m))):'Up for grabs'}</span></div>`; }).join('')}</div>`;
-  if(hall.length>1 && !solo) html+=`<div class="csa-hall">🏛 Hall of Fame · ${hall.map(x=>`<span>${esc(csName(x.w.m))} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small></span>`).join(' · ')}</div>`;
-  html+=`</div></div></div>`;
+  // Badges, hall of fame and how points work — tucked away
+  const hall=solo?[]:[-1,-2,-3,-4].map(o=>({o, w:csWeekWinner(o)})).filter(x=>x.w);
+  html+=`<details class="csa-more"><summary>Badges &amp; how points work</summary>
+    <div class="csa-badges">${CS_BADGES.map(b=>{ const who=board.find(r=>(badges[csEmailKey(r.m.email)]||[]).includes(b)); return `<div class="csa-badge${who?'':' off'}${who&&isMe(who)?' mine':''}" title="${esc(b.why)}"><span class="csa-b-icon">${b.icon}</span><span class="csa-b-name">${esc(b.name)}</span><span class="csa-b-who">${who?(solo||isMe(who)?'Yours!':esc(csName(who.m))):'Up for grabs'}</span></div>`; }).join('')}</div>
+    <div class="csa-rules">📞 Call +${CS_PTS.call} · answered +${CS_PTS.answered} · first call in 5 min <b>2×</b>${power?` · ⚡ ${csHour(power.ph.start)}–${csHour(power.ph.end)} <b>2×</b>`:''} · ✅ converted +${CS_PTS.won} · 🛠️ task +${CS_PTS.task} (+${CS_PTS.taskOnTime} on time) · 🚀 project +${CS_PTS.project}</div>
+    ${hall.length>1?`<div class="csa-hall">🏛 ${hall.map(x=>`${esc(csName(x.w.m))} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small>`).join(' · ')}</div>`:''}
+  </details>`;
+  html+=`</div></div>`;
   el.innerHTML=html;
   el.style.display='';
 }
