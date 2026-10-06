@@ -11575,28 +11575,155 @@ export function babyAgeLabel(months){
   if(m<24) return `${Math.round(m*10)/10} months`;
   return `${Math.round(m/12*10)/10} years`;
 }
-// Remembered per customer so a later "show products" still gets the right range; the stored age
-// is aged forward by the time elapsed since the customer told us.
-const BABY_AGE_KV_TTL=60*60*24*365;
-async function babyCareResolveAgeMonths(env, clientId, phone, userText, history){
-  try{ return await babyCareResolveAgeMonthsInner(env, clientId, phone, userText, history); }
-  catch(e){ return babyAgeMonthsFromConversation(userText, history); }
+/* Baby profile — everything a baby-shop assistant would keep in mind from the chat: age, boy/girl,
+   the baby's name (for name-printed sets), the occasion, budget and what they're looking for. Read
+   deterministically from the customer's own messages (newest mention wins), remembered per phone,
+   used to narrow/order product pickers, given to the AI reply, and shown to staff on the lead
+   card (QualAnswers). */
+const BABY_GIRL_RE=/\b(?:girls?|baby\s*girl|daughters?|mol|molu|molde|molkk?u|penn?kutt\w*|ladki|beti|bachi)\b|പെൺ|മോൾ/i;
+const BABY_BOY_RE=/\b(?:boys?|baby\s*boy|sons?|mon|monu|monte|monu?kk?u|aann?kutt\w*|ladka|beta|bacha)\b|ആൺ|മോൻ/i;
+export function babyGenderFromText(text){
+  const t=String(text||'');
+  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t.trim())) return null;
+  if(/\btwins?\b/i.test(t)) return null;
+  const girl=BABY_GIRL_RE.test(t), boy=BABY_BOY_RE.test(t);
+  return girl&&!boy?'Girl':boy&&!girl?'Boy':null;
 }
-async function babyCareResolveAgeMonthsInner(env, clientId, phone, userText, history){
-  const key=`baby_age:${clientId}:${String(phone||'').replace(/^\+/,'')}`;
-  const said=babyAgeMonthsFromConversation(userText, history);
-  if(said!=null){
-    if(env.KV) await env.KV.put(key, JSON.stringify({m:said, at:Date.now()}), {expirationTtl:BABY_AGE_KV_TTL}).catch(()=>{});
-    return said;
+const BABY_OCCASIONS=[
+  ['First birthday',/\b(?:first|1st)\s*b(?:irth)?\s*day\b|\bonnam\s*pirann?aal\w*/i],
+  ['Birthday',/\bb(?:irth)?\s*day\b|\bpirann?aal\w*|ജന്മദിന|പിറന്നാൾ/i],
+  ['Naming ceremony',/\bnaming\b|\bnoolukett\w*|\bnool\s*kett\w*|\bn[a]+makaran\w*|\b28\s*kett\w*|\birupatt?h?ett\w*/i],
+  ['Baptism',/\bbaptism\b|\bmamm?odees\w*|\bchristening\b/i],
+  ['Hospital bag',/\bhospital\s*bag\b|\bdelivery\s*bag\b|\blabou?r\s*bag\b/i],
+  ['Festival',/\b(?:onam|vishu|christmas|xmas|eid|perunnal\w*|ramzan|ramadan|diwali|deepavali|new\s*year)\b/i],
+  ['Photoshoot',/\bphoto\s*shoot\b|\bphotoshoot\b/i],
+  ['Gift',/\bgift\w*|\bpresent(?:ation)?\b|\bsammanam\b|സമ്മാന/i],
+  ['Function / party',/\b(?:wedding|kalyanam|party|function)\b/i],
+];
+export function babyOccasionFromText(text){
+  const t=String(text||'');
+  for(const [label,re] of BABY_OCCASIONS) if(re.test(t)) return label;
+  return null;
+}
+// Highest price the customer wants to pay, or null. "under 800", "budget 1000", "₹500 il thazhe".
+export function babyBudgetFromText(text){
+  const t=String(text||'').toLowerCase().replace(/,(?=\d{2,3}\b)/g,'');
+  const amt='(?:rs\\.?|₹|inr)?\\s*(\\d{3,6})\\s*(?:rs\\.?|rupees?|\\/-)?';
+  let m=new RegExp(`\\b(?:under|below|within|up\\s*to|upto|less\\s+than|max(?:imum)?|budget(?:\\s+is|\\s+of)?|around|approx\\w*)\\s*:?\\s*${amt}`).exec(t);
+  if(!m) m=new RegExp(`${amt}\\s*(?:il|inu|nu|ku|ke)?\\s*(?:thazhe|thaazhe|ullil|kuravu|undar|ke\\s+andar|tak|budget)`).exec(t);
+  if(!m) return null;
+  const n=Number(m[1]);
+  return n>=100 && n<=100000 ? n : null;
+}
+const BABY_PRODUCT_TYPES=[
+  ['T-shirt',/\bt\s*-?\s*shirts?\b|\btshirts?\b|\btees?\b/i],
+  ['Frock / dress',/\bfrocks?\b|\bdress(?:es)?\b|\bgowns?\b|\bskirts?\b/i],
+  ['Romper / onesie',/\brompers?\b|\bonesies?\b|\bbody\s*suits?\b|\bjump\s*suits?\b|\bsleep\s*suits?\b/i],
+  ['Night suit',/\bnight\s*(?:suits?|dress|wear)\b|\bpyjamas?\b|\bpajamas?\b/i],
+  ['Swaddle / wrap',/\bswaddles?\b|\bwraps?\b/i],
+  ['Jhabla / vest',/\bjh?ablas?\b|\bvests?\b|\bbanians?\b/i],
+  ['Shorts / pants',/\bshorts\b|\bpants\b|\bleggings?\b|\btrousers?\b/i],
+  ['Mittens / booties / caps',/\bmittens?\b|\bbooties\b|\bsocks?\b|\bcaps?\b|\bhats?\b/i],
+  ['Blanket / towel',/\bblankets?\b|\btowels?\b|\bbed\s*sets?\b|\bnapkins?\b|\bnappies?\b|\bdiapers?\b/i],
+  ['Bib',/\bbibs?\b/i],
+  ['Name printed set',/\bname\s*print\w*|\bprinted\s*name\b|\bpersonali[sz]ed\b|\bcustomi[sz]ed\b/i],
+];
+export function babyProductTypesFromText(text){
+  const t=String(text||'');
+  if(/^(?:BABY_|CHAT_|FASHION_|ELEC_|MED_)/i.test(t.trim())) return [];
+  return BABY_PRODUCT_TYPES.filter(([,re])=>re.test(t)).map(([label])=>label);
+}
+const BABY_NAME_STOP=new Set(['is','the','a','my','to','be','not','yet','print','printed','same','please','pls','and','for','baby','name','peru']);
+export function babyNameFromText(text){
+  const t=String(text||'');
+  const m=/\b(?:baby'?s?|kunj\w*|mol\w*|mon\w*|child'?s?|her|his|son'?s?|daughter'?s?)\s+(?:name|peru|per)\s*(?:is|:|-|=)?\s*([A-Za-z][A-Za-z.'-]{1,19})/i.exec(t)
+    || /\bname\s+(?:to\s+print|for\s+(?:the\s+)?print\w*)\s*(?:is|:|-)?\s*([A-Za-z][A-Za-z.'-]{1,19})/i.exec(t)
+    || /\bprint\s+(?:the\s+name\s+)?([A-Z][a-z][A-Za-z'-]{0,18})\b/.exec(t);
+  if(!m) return null;
+  const n=m[1].replace(/[.'-]+$/,'');
+  if(BABY_NAME_STOP.has(n.toLowerCase())) return null;
+  return n.charAt(0).toUpperCase()+n.slice(1);
+}
+// Newest mention of each detail across this turn and the recent conversation (customer turns only).
+export function babyProfileFromConversation(userText, history){
+  const msgs=[...(history||[]).filter(m=>m&&m.role==='user').map(m=>m.content), userText].filter(Boolean);
+  const profile={};
+  const take=(key, fn)=>{ for(let i=msgs.length-1;i>=0;i--){ const v=fn(msgs[i]); if(v!=null && !(Array.isArray(v)&&!v.length)){ profile[key]=v; return; } } };
+  take('ageMonths', babyAgeMonthsFromText);
+  take('gender', babyGenderFromText);
+  take('babyName', babyNameFromText);
+  take('occasion', babyOccasionFromText);
+  take('budget', babyBudgetFromText);
+  take('lookingFor', babyProductTypesFromText);
+  return profile;
+}
+function babyProductText(p){
+  return [p.name, p.short_label, p.category, p.style, p.age_group, p.description].filter(Boolean).join(' ');
+}
+export function babyProductGender(product={}){
+  const t=babyProductText(product);
+  if(/\bunisex\b|\bboys?\s*(?:&|and|\/|or)\s*girls?\b|\bgirls?\s*(?:&|and|\/|or)\s*boys?\b/i.test(t)) return null;
+  const girl=/\bgirls?\b|\bfrocks?\b|\bskirts?\b|\bgowns?\b|\bprincess\b/i.test(t), boy=/\bboys?\b/i.test(t);
+  return girl&&!boy?'Girl':boy&&!girl?'Boy':null;
+}
+// Products that suit the baby: age range, boy/girl and budget narrow the list (each step is skipped
+// when it would leave nothing), then what they asked for ("T-shirt") is moved to the front.
+export function ecomFilterProductsForBabyProfile(products, profile={}){
+  let list=ecomFilterProductsByBabyAge(products, profile.ageMonths);
+  const narrow=keep=>{ const out=list.filter(keep); if(out.length) list=out; };
+  if(profile.gender) narrow(p=>{ const g=babyProductGender(p); return !g || g===profile.gender; });
+  if(profile.budget){
+    narrow(p=>{ const price=Number(String(p.price??'').replace(/[,\s]/g,'')); return !(price>0) || price<=profile.budget*1.1; });
   }
-  if(!env.KV) return null;
-  const saved=await env.KV.get(key).catch(()=>null);
-  if(!saved) return null;
+  const wanted=(profile.lookingFor||[]).map(label=>BABY_PRODUCT_TYPES.find(([l])=>l===label)?.[1]).filter(Boolean);
+  if(wanted.length){
+    const hit=p=>wanted.some(re=>re.test(babyProductText(p)));
+    list=[...list.filter(hit), ...list.filter(p=>!hit(p))];
+  }
+  return list;
+}
+// The profile as lead-card rows (QualAnswers) for staff.
+export function babyProfileQualAnswers(profile={}){
+  const out={};
+  if(profile.ageMonths!=null) out['Baby Age']=profile.ageMonths===0?'Newborn':babyAgeLabel(profile.ageMonths);
+  if(profile.gender) out['Baby']=profile.gender;
+  if(profile.babyName) out['Baby Name']=profile.babyName;
+  if(profile.occasion) out['Occasion']=profile.occasion;
+  if(profile.budget) out['Budget']=`Up to ₹${Number(profile.budget).toLocaleString('en-IN')}`;
+  if(profile.lookingFor?.length) out['Looking For']=profile.lookingFor.join(', ');
+  return out;
+}
+// The profile for the AI reply prompt; '' when nothing is known yet.
+export function babyProfilePromptBlock(profile, {askedAge=false}={}){
+  if(!profile) return '';
+  const rows=Object.entries(babyProfileQualAnswers(profile)).map(([k,v])=>`- ${k}: ${v}`);
+  const ask=profile.ageMonths==null && !askedAge
+    ? ' The baby\'s age is not known yet: when you suggest products, ask once, warmly, how old the baby is (and whether it\'s a boy or girl) so you can show the right sizes.'
+    : '';
+  if(!rows.length) return `\n\nBABY PROFILE:${ask}`;
+  return `\n\nBABY PROFILE (what the customer already told us — never ask for these again):\n${rows.join('\n')}\nSuggest only products that suit this baby: the right age group/size (e.g. T-shirts and everyday wear from 6 months, not newborn-only items like swaddles or mittens), ${profile.gender?`items for a ${profile.gender.toLowerCase()} or unisex, `:''}${profile.budget?`within the budget, `:''}and fitting the occasion if one is given. Never offer a product meant for a different age unless the customer asks for it by name.${ask}`;
+}
+// Remembered per customer so a later "show products" still knows the baby; a stored age is aged
+// forward by the time elapsed since the customer told us. Fresh details override stored ones.
+const BABY_PROFILE_KV_TTL=60*60*24*365;
+async function babyCareResolveProfile(env, clientId, phone, userText, history){
+  const said=babyProfileFromConversation(userText, history);
   try{
-    const {m,at}=JSON.parse(saved);
-    if(!Number.isFinite(Number(m))) return null;
-    return Math.round((Number(m)+Math.max(0,(Date.now()-Number(at||Date.now()))/(30.4*864e5)))*10)/10;
-  }catch(e){ return null; }
+    if(!env.KV) return said;
+    const key=`baby_profile:${clientId}:${String(phone||'').replace(/^\+/,'')}`;
+    let saved={}; try{ saved=JSON.parse(await env.KV.get(key)||'{}')||{}; }catch(e){}
+    const now=Date.now();
+    const ageAt=said.ageMonths!=null?now:Number(saved.ageAt||now);
+    const merged={...saved.profile, ...said};
+    const stored={...merged};
+    if(said.ageMonths==null && Number.isFinite(Number(merged.ageMonths))){
+      merged.ageMonths=Math.round((Number(merged.ageMonths)+Math.max(0,(now-ageAt)/(30.4*864e5)))*10)/10;
+    }
+    if(JSON.stringify(stored)!==JSON.stringify(saved.profile||{}) || said.ageMonths!=null){
+      await env.KV.put(key, JSON.stringify({profile:stored, ageAt}), {expirationTtl:BABY_PROFILE_KV_TTL}).catch(()=>{});
+    }
+    return merged;
+  }catch(e){ return said; }
 }
 
 // Baby care product card: verbatim name + description from the saved Ecom row, with the stored
@@ -16714,8 +16841,9 @@ export function engineBuildFaqSystemPrompt(c, state, contextBlock, industry, rep
     }catch(e){}
   }
   if(contextBlock) sys+=contextBlock;
-  if(industry==='ecommerce' && state.babyAgeMonths!=null){
-    sys+=`\n\nBABY AGE: The customer's baby is about ${babyAgeLabel(state.babyAgeMonths)} old. Suggest only products whose age group, size or description suits this age (e.g. T-shirts and everyday wear from 6 months, not newborn-only items like swaddles or mittens). Never offer a product meant for a different age unless the customer asks for it by name.`;
+  if(industry==='ecommerce' && state.babyProfile){
+    const askedAge=history.some(m=>m?.role==='assistant' && /how old|baby'?s age|age of (?:the|your) baby|months old|prayam|പ്രായം|വയസ്സ്|എത്ര മാസ/i.test(String(m.content||'')));
+    sys+=babyProfilePromptBlock(state.babyProfile, {askedAge});
   }
   if(isResort){
     const hasResortData=contextBlock && contextBlock.includes('VERIFIED RESORT DATA');
@@ -20788,9 +20916,10 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     const isBabyCareEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='baby_care'&&_bcCustomerEnabled;
     // Baby Care: the baby's age (said now, earlier in the chat, or remembered) narrows every product
     // picker below to age-appropriate products — a 9-month-old gets T-shirts, not newborn sets.
-    if(isBabyCareEcom) state.babyAgeMonths=await babyCareResolveAgeMonths(env, clientId, phone, userText, state.activeHistory);
-    const babyAgeProducts=products=>isBabyCareEcom?ecomFilterProductsByBabyAge(products, state.babyAgeMonths):products;
-    const babyAgeCategories=(categories, products)=>isBabyCareEcom&&state.babyAgeMonths!=null?ecomCategoriesWithProducts(categories, babyAgeProducts(products)):categories;
+    // Boy/girl and budget narrow it the same way; what they asked for ("T-shirt") goes first.
+    if(isBabyCareEcom) state.babyProfile=await babyCareResolveProfile(env, clientId, phone, userText, state.activeHistory);
+    const babyAgeProducts=products=>isBabyCareEcom?ecomFilterProductsForBabyProfile(products, state.babyProfile):products;
+    const babyAgeCategories=(categories, products)=>isBabyCareEcom?ecomCategoriesWithProducts(categories, babyAgeProducts(products)):categories;
     const isMedicalCentreEcom=c.industry==='ecommerce'&&botConfig.ecom_communication_style==='medical_centre';
     const liveTicketingTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
 
@@ -22898,6 +23027,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     await ensureLeadsColumns(env, ['LastCustomerMsgAt']).catch(()=>{});
     if(leadBody.InboxId) await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
     leadBody.LastCustomerMsgAt=new Date(startMs).toISOString();
+    // Baby Care: the baby profile (age, boy/girl, name, occasion, budget, looking for) on the lead card.
+    const babyQa=isBabyCareEcom?babyProfileQualAnswers(state.babyProfile):{};
+    if(Object.keys(babyQa).length){
+      let qa={}; try{ qa=JSON.parse(leadBody.QualAnswers||state.lead?.QualAnswers||'{}')||{}; }catch(e){}
+      leadBody.QualAnswers=JSON.stringify({...qa, ...babyQa});
+    }
     const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
     if(newSummary) leadBody.ConvSummary=newSummary;
     const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);

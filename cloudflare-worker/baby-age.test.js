@@ -2,7 +2,9 @@
 // The baby's age is read from the chat and product pickers keep only age-appropriate products.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { babyAgeMonthsFromText, babyAgeMonthsFromConversation, babyAgeRangeFromLabel, ecomFilterProductsByBabyAge, ecomCategoriesWithProducts, engineBuildFaqSystemPrompt } from './worker.js';
+import { babyAgeMonthsFromText, babyAgeMonthsFromConversation, babyAgeRangeFromLabel, ecomFilterProductsByBabyAge, ecomCategoriesWithProducts, engineBuildFaqSystemPrompt,
+  babyGenderFromText, babyOccasionFromText, babyBudgetFromText, babyProductTypesFromText, babyNameFromText, babyProfileFromConversation,
+  ecomFilterProductsForBabyProfile, babyProfileQualAnswers } from './worker.js';
 
 test('reads the baby age from English, Manglish, Malayalam and Hindi', () => {
   const cases = {
@@ -51,9 +53,55 @@ test('a newborn gets newborn sets; unknown age or no match keeps the full list',
   assert.deepEqual(ecomFilterProductsByBabyAge([products[0]], 9).map(p => p.name), ['Newborn Swaddle Set']);
 });
 
-test('the reply prompt tells the AI the baby age', () => {
-  const sys = engineBuildFaqSystemPrompt({ main_prompt: 'Shop' }, { activeHistory: [], babyAgeMonths: 9 }, '', 'ecommerce', 'en', false, 'QUESTION');
-  assert.match(sys, /BABY AGE: The customer's baby is about 9 months old/);
+test('reads boy/girl, occasion, budget, product type and baby name', () => {
+  assert.equal(babyGenderFromText('ente mol 6 maasam'), 'Girl');
+  assert.equal(babyGenderFromText('for my son'), 'Boy');
+  assert.equal(babyGenderFromText('aankuttikku'), 'Boy');
+  assert.equal(babyGenderFromText('twins, boy and girl'), null);
+  assert.equal(babyOccasionFromText('1st birthday dress venam'), 'First birthday');
+  assert.equal(babyOccasionFromText('noolukettu function'), 'Naming ceremony');
+  assert.equal(babyOccasionFromText('gift for my niece'), 'Gift');
+  assert.equal(babyBudgetFromText('under 800'), 800);
+  assert.equal(babyBudgetFromText('budget ₹1,500'), 1500);
+  assert.equal(babyBudgetFromText('500 il thazhe undo'), 500);
+  assert.equal(babyBudgetFromText('6 months'), null);
+  assert.deepEqual(babyProductTypesFromText('tshirt and shorts venam'), ['T-shirt', 'Shorts / pants']);
+  assert.equal(babyNameFromText("baby's name is ayra"), 'Ayra');
+  assert.equal(babyNameFromText('kunjinte peru Ivaan'), 'Ivaan');
+  assert.equal(babyNameFromText('name is not decided'), null);
+});
+
+test('builds the profile from the whole chat and puts it on the lead card', () => {
+  const history = [{ role: 'user', content: 'Hi, ente mol 9 maasam aayi' }, { role: 'assistant', content: 'Nice!' }, { role: 'user', content: 'first birthday-kku t-shirt venam, under 700' }];
+  const profile = babyProfileFromConversation("baby's name is Ayra", history);
+  assert.deepEqual(profile, { ageMonths: 9, gender: 'Girl', babyName: 'Ayra', occasion: 'First birthday', budget: 700, lookingFor: ['T-shirt'] });
+  assert.deepEqual(babyProfileQualAnswers(profile), { 'Baby Age': '9 months', Baby: 'Girl', 'Baby Name': 'Ayra', Occasion: 'First birthday', Budget: 'Up to ₹700', 'Looking For': 'T-shirt' });
+  assert.equal(babyProfileQualAnswers({ ageMonths: 0 })['Baby Age'], 'Newborn');
+});
+
+test('profile filter: age, boy/girl, budget, then what they asked for first', () => {
+  const catalogue = [
+    { name: 'Newborn Swaddle Set', age_group: '0-3 Months', price: 600 },
+    { name: 'Boys Polo T-Shirt', age_group: '6-24 months', price: 450 },
+    { name: 'Party Frock', age_group: '6-24 months', price: 1200 },
+    { name: 'Cotton Frock', age_group: '6-24 months', price: 550 },
+    { name: 'Unisex T-Shirt', age_group: '6-24 months', price: 400 },
+  ];
+  const names = ecomFilterProductsForBabyProfile(catalogue, { ageMonths: 9, gender: 'Girl', budget: 700, lookingFor: ['T-shirt'] }).map(p => p.name);
+  assert.deepEqual(names, ['Unisex T-Shirt', 'Cotton Frock']);
+  // A filter that would leave nothing is skipped instead of showing an empty picker.
+  assert.deepEqual(ecomFilterProductsForBabyProfile(catalogue, { ageMonths: 9, budget: 100 }).length, 4);
+});
+
+test('the reply prompt carries the baby profile', () => {
+  const sys = engineBuildFaqSystemPrompt({ main_prompt: 'Shop' }, { activeHistory: [], babyProfile: { ageMonths: 9, gender: 'Girl' } }, '', 'ecommerce', 'en', false, 'QUESTION');
+  assert.match(sys, /BABY PROFILE/);
+  assert.match(sys, /- Baby Age: 9 months/);
+  assert.match(sys, /- Baby: Girl/);
+  const unknown = engineBuildFaqSystemPrompt({ main_prompt: 'Shop' }, { activeHistory: [], babyProfile: {} }, '', 'ecommerce', 'en', false, 'QUESTION');
+  assert.match(unknown, /ask once, warmly, how old the baby is/);
+  const asked = engineBuildFaqSystemPrompt({ main_prompt: 'Shop' }, { activeHistory: [{ role: 'assistant', content: 'How old is your baby?' }], babyProfile: {} }, '', 'ecommerce', 'en', false, 'QUESTION');
+  assert.doesNotMatch(asked, /ask once/);
   const none = engineBuildFaqSystemPrompt({ main_prompt: 'Shop' }, { activeHistory: [] }, '', 'ecommerce', 'en', false, 'QUESTION');
-  assert.doesNotMatch(none, /BABY AGE/);
+  assert.doesNotMatch(none, /BABY PROFILE/);
 });
