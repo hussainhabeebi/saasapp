@@ -23584,6 +23584,16 @@ async function handleEcomPublicStores(request, env){
 const APPT_PUBLIC_CLIENT_FIELDS=['Id','client_name','client_slug','healthcare_enabled'];
 const APPT_PUBLIC_SERVICE_FIELDS=['Id','name','duration_minutes','price','currency','description'];
 
+// The WhatsApp bot hands out book.html links to every client whose industry is healthcare
+// (hcHandleWhatsappBookingLink), so the public page must treat those clients as healthcare too —
+// not only ones with the healthcare_enabled flag — otherwise the link it just sent 404s.
+function apptPublicIsHealthcare(c){
+  return String(c?.healthcare_enabled||'').trim().toLowerCase()==='yes' || c?.industry==='healthcare';
+}
+function apptPublicIsEnabled(c){
+  return apptPublicIsHealthcare(c) || String(c?.appt_enabled||'').trim().toLowerCase()==='yes';
+}
+
 async function apptPublicResolveClient(env, url){
   const clientId=String(url.searchParams.get('client')||url.searchParams.get('client_id')||'');
   if(clientId) return getClientById(env, clientId);
@@ -23597,17 +23607,17 @@ async function handleApptPublicClient(request, env){
   const c=await apptPublicResolveClient(env, url);
   if(!c) return json({error:'Booking page not found'}, 404);
   // Healthcare clients use D1; non-healthcare clients require appt_enabled
-  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
-  return json(ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS));
+  if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
+  return json({...ecomPublicPick(c, APPT_PUBLIC_CLIENT_FIELDS), healthcare_enabled:apptPublicIsHealthcare(c)?'Yes':'No'});
 }
 
 async function handleApptPublicServices(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
   if(!c) return json({error:'Booking page not found'}, 404);
-  if(c.healthcare_enabled!=='Yes' && c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
   // Healthcare: serve active services from D1, optionally filtered by doctor_id
-  if(c.healthcare_enabled==='Yes'){
+  if(apptPublicIsHealthcare(c)){
     await hcEnsureOperationsSchema(env);
     const doctorId=Number(url.searchParams.get('doctor_id')||0);
     let svcs;
@@ -23641,7 +23651,7 @@ async function handleApptPublicServices(request, env){
 async function handleApptPublicDoctors(request, env){
   const url=new URL(request.url);
   const c=await apptPublicResolveClient(env, url);
-  if(!c || c.healthcare_enabled!=='Yes') return json({list:[]});
+  if(!c || !apptPublicIsHealthcare(c)) return json({list:[]});
   await hcEnsureOperationsSchema(env);
   const serviceId=Number(url.searchParams.get('service_id')||0);
   let rows;
@@ -23687,7 +23697,7 @@ async function handleApptPublicBook(request, env){
   const notes=String(body.notes||'').trim().slice(0,500);
 
   // Healthcare path: write to D1 healthcare_appointments + sync to Google Calendar + CRM lead
-  if(c.healthcare_enabled==='Yes'){
+  if(apptPublicIsHealthcare(c)){
     await hcEnsureOperationsSchema(env);
     const now=new Date().toISOString();
     const ins=await env.DB.prepare(
@@ -23727,7 +23737,7 @@ async function handleApptPublicBook(request, env){
   }
 
   // Non-healthcare (NocoDB) path
-  if(c.appt_enabled!=='Yes') return json({error:'Booking page not found'}, 404);
+  if(!apptPublicIsEnabled(c)) return json({error:'Booking page not found'}, 404);
   const bookingsTable=apptResolveTable(c, 'bookings');
   if(!bookingsTable) return json({error:'Appointment booking is not set up for this business yet.'}, 400);
 

@@ -83,7 +83,8 @@ textarea{resize:none;min-height:64px;line-height:1.5}
 <script>
 const WORKER_BASE = 'https://leadvyne-api-proxy.leadvyne.workers.dev';
 const params = new URLSearchParams(location.search);
-const clientId = params.get('client') || params.get('client_id') || '';
+let clientId = params.get('client') || params.get('client_id') || '';
+const clientSlug = params.get('slug') || '';
 const urlDoctorId = params.get('doctor_id') || '';
 const urlServiceId = params.get('service_id') || '';
 
@@ -288,15 +289,28 @@ async function submitBooking(){
 }
 
 async function load(){
-  if(!clientId){ getEl('errMsg').style.display='block'; return; }
+  if(!clientId && !clientSlug){ getEl('errMsg').style.display='block'; return; }
+  // One retry on a network error / 429 / 5xx so a momentary blip doesn't show the error page
+  const fetchRetry = async (u) => {
+    try{ const r = await fetch(u); if(r.ok || (r.status < 500 && r.status !== 429)) return r; }catch(e){}
+    await new Promise(res => setTimeout(res, 1200));
+    return fetch(u);
+  };
   try{
+    // ?slug= links: resolve the numeric client id first, everything below keys off it
+    if(!clientId){
+      const r = await fetchRetry(`${WORKER_BASE}/appt/public/client?slug=${encodeURIComponent(clientSlug)}`);
+      if(!r.ok) throw new Error('not found');
+      clientId = String((await r.json()).Id || '');
+      if(!clientId) throw new Error('not found');
+    }
     // Fetch client info, services, and doctors all at once
     const svcQs = `client=${encodeURIComponent(clientId)}${urlServiceId?'&service_id='+encodeURIComponent(urlServiceId):''}`;
     const docQs = `client=${encodeURIComponent(clientId)}${urlServiceId?'&service_id='+encodeURIComponent(urlServiceId):''}${urlDoctorId?'&doctor_id='+encodeURIComponent(urlDoctorId):''}`;
     const [clientRes, servicesRes, doctorsRes] = await Promise.all([
-      fetch(`${WORKER_BASE}/appt/public/client?client=${encodeURIComponent(clientId)}`),
-      fetch(`${WORKER_BASE}/appt/public/services?${svcQs}`),
-      fetch(`${WORKER_BASE}/appt/public/doctors?${docQs}`),
+      fetchRetry(`${WORKER_BASE}/appt/public/client?client=${encodeURIComponent(clientId)}`),
+      fetchRetry(`${WORKER_BASE}/appt/public/services?${svcQs}`),
+      fetchRetry(`${WORKER_BASE}/appt/public/doctors?${docQs}`),
     ]);
     if(!clientRes.ok) throw new Error('not found');
     bizInfo = await clientRes.json();
