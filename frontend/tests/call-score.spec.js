@@ -24,7 +24,7 @@ async function boot(page, { me = OWNER } = {}) {
     myEmail = me;
     // @ts-ignore
     clientRecord = { authentik_email: OWNER, client_name: 'Boss', team_emails: STAFF, team_names: JSON.stringify({ [STAFF]: 'Rita' }),
-      bot_config: JSON.stringify({ call_targets: { default: { calls: 2, won: 1 }, users: {} } }) };
+      bot_config: JSON.stringify({ call_targets: { default: { calls: 2, won: 1 }, users: {} }, power_hour: { enabled: false } }) };
     // @ts-ignore
     allLeads = [
       // Rita: two calls today (target 2 → hit), one conversion
@@ -159,11 +159,13 @@ test('Home arena: hero, quests, champion, league list, badges', async ({ page })
   // Boss: 6 pts, Rookie tier, #3 of 3 scorers; Manu (60) is 55 pts ahead → within reach, so the chase message shows
   await expect(arena.locator('.csa-pts')).toContainText('6');
   await expect(arena.locator('.csa-ring-in')).toContainText('#3');
-  await expect(arena.locator('.csa-tier-chip')).toContainText('Rookie');
-  await expect(arena.locator('.csa-motive')).toContainText('Only 55 pts behind Manu');
-  await expect(arena.locator('.csa-quest').first()).toContainText('Calls');
-  await expect(arena.locator('.csa-champ')).toContainText('Manu');
-  await expect(arena.locator('.csa-champ')).toContainText('1 converted');
+  await expect(arena.locator('.csa-sub')).toContainText('Rookie');
+  await expect(arena.locator('.csa-line')).toContainText('55 pts to pass Manu');
+  await expect(arena.locator('.csa-today .csa-chip')).toHaveCount(3);
+  await expect(arena.locator('.csa-champ-line')).toContainText('Manu');
+  // badges & rules are tucked behind "more"
+  await expect(arena.locator('.csa-badges')).toBeHidden();
+  await arena.locator('.csa-more summary').click();
   const rows = arena.locator('.csa-row');
   await expect(rows).toHaveCount(3);
   await expect(rows.nth(0)).toContainText('Rita');
@@ -185,10 +187,10 @@ test('Home arena: zero-point teammates are grouped, emails become names, big gap
     window.renderHome();
   });
   const arena = page.locator('#homeArena');
-  await expect(arena.locator('.csa-idle')).toContainText('1 teammate yet to score');
+  await expect(arena.locator('.csa-idle')).toContainText('1 yet to score');
   await expect(arena.locator('.csa-idle .csa-av')).toHaveText('SK');
   await expect(arena).not.toContainText('sona.k@aiingo.com');
-  await expect(arena.locator('.csa-motive')).toContainText('to 🥉 Bronze');
+  await expect(arena.locator('.csa-line')).toContainText('to 🥉 Bronze');
 });
 
 test('Home arena: a solo account sees its own progress and an invite, no league', async ({ page }) => {
@@ -202,4 +204,100 @@ test('Home arena: a solo account sees its own progress and an invite, no league'
   await expect(arena.locator('.csa-row')).toHaveCount(0);
   await expect(arena.locator('.csa-pts')).toContainText('6');
   await expect(arena).toContainText('Add teammates');
+});
+
+test('tasks & projects earn points: on-time/priority bonus, project finish, duplicates counted once, overdue penalty', async ({ page }) => {
+  await bootArena(page);
+  const r = await page.evaluate(() => {
+    const MANU = 'manu@example.com', OWNER = 'boss@example.com';
+    const wk = window.csWeekStart(0).getTime();
+    const iso = (ms) => new Date(ms).toISOString();
+    const day = (ms) => window.csDayKey(ms);
+    const tomorrow = day(Date.now() + 86400e3), longAgo = '2020-01-01';
+    // Projects tool (D1): project 7 has two tasks, both done by Manu → finished
+    // @ts-ignore — top-level `let` in call-score.js, not a window property
+    _csWork = {
+      at: Date.now(),
+      projects: [{ id: 7, name: 'Website revamp', status: 'active' }],
+      tasks: [
+        { id: 1, project_id: 7, title: 'Design', assignee_email: MANU, status: 'done', done_at: iso(wk + 3600e3), due_date: tomorrow, priority: 'high' },
+        { id: 2, project_id: 7, title: 'Build', assignee_email: MANU, status: 'done', done_at: iso(wk + 7200e3), due_date: '', priority: 'medium' },
+        // same task as the dashboard one below (copied into Projects on create) — not done here
+        { id: 3, project_id: 0, title: 'Send quote', assignee_email: OWNER, status: 'todo', due_date: '', priority: 'medium' },
+        // overdue, still open
+        { id: 4, project_id: 0, title: 'Old chore', assignee_email: OWNER, status: 'todo', due_date: longAgo, priority: 'low' },
+      ],
+    };
+    // Dashboard Tasks list: the done copy of "Send quote"
+    // @ts-ignore
+    clientRecord.manual_tasks = JSON.stringify({ items: [{ id: 'a', title: 'Send quote', assignee_email: OWNER, status: 'done', completed_at: iso(wk + 3600e3) }] });
+    // @ts-ignore
+    _csCache = null;
+    const range = window.csWeekRange(0);
+    const manu = window.csUserStats(MANU, range), boss = window.csUserStats(OWNER, range);
+    return { manuTasks: manu.tasks, manuProjects: manu.projects, manuOnTime: manu.tasksOnTime, bossTasks: boss.tasks,
+      manuTaskPts: window.csEvents().filter((e) => e.by === MANU && (e.kind === 'task' || e.kind === 'project')).reduce((s, e) => s + e.pts, 0),
+      bossOverdue: window.csTodaySummary(OWNER).overdue };
+  });
+  // Design: 10 + 5 on time + 5 high = 20; Build: 10; project finished: +30
+  expect(r).toEqual({ manuTasks: 2, manuProjects: 1, manuOnTime: 1, bossTasks: 1, manuTaskPts: 60, bossOverdue: 1 });
+
+  await page.evaluate(() => window.renderHome());
+  const arena = page.locator('#homeArena');
+  await expect(arena.locator('.csa-chip.warn')).toContainText('1 overdue');
+});
+
+test('first call within 5 minutes and power-hour calls earn double', async ({ page }) => {
+  await boot(page);
+  const r = await page.evaluate(() => {
+    const now = Date.now(), h = new Date().getHours();
+    // power hour = the current hour, effective since yesterday
+    // @ts-ignore
+    clientRecord.bot_config = JSON.stringify({ power_hour: { enabled: true, start: h, end: h + 1, since: new Date(now - 86400e3).toISOString() } });
+    // @ts-ignore
+    allLeads = [{ Id: 50, Name: 'Fast', Phone: '91900', Owner: 'rep@example.com', Stage: 'new', Date: new Date(now - 60e3).toISOString(),
+      CallLog: JSON.stringify([{ outcome: 'Answered', at: new Date(now - 10e3).toISOString(), by: 'rep@example.com' }]) }];
+    // @ts-ignore
+    _csCache = null;
+    const evs = window.csEvents().filter((e) => e.leadId === 50);
+    return { kinds: evs.map((e) => e.kind).sort(), pts: evs.reduce((s, e) => s + e.pts, 0), active: window.csPowerState().active };
+  });
+  expect(r).toEqual({ kinds: ['answered', 'fast', 'power'], pts: 45, active: true });
+  await page.evaluate(() => window.renderHome());
+  await expect(page.locator('#homeArena .csa-power')).toContainText('2× points');
+});
+
+test('weekly team goal bar and personal-best celebration', async ({ page }) => {
+  await bootArena(page);
+  const msg = await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.bot_config = JSON.stringify({ power_hour: { enabled: false }, team_goal: { won: 5 } });
+    const now = Date.now(), lastWeek = now - 8 * 86400e3, me = 'boss@example.com';
+    const calls = (base, n) => Array.from({ length: n }, (_, i) => ({ outcome: 'No Answer', at: new Date(base + i * 60e3).toISOString(), by: me }));
+    // best day so far: 6 calls last week; today: 7 calls → new record
+    // @ts-ignore
+    allLeads.push({ Id: 700, Name: 'PB1', Phone: '1', Owner: me, Stage: 'new', Date: new Date(lastWeek).toISOString(), CallLog: JSON.stringify(calls(lastWeek, 6).reverse()) });
+    // @ts-ignore
+    allLeads.push({ Id: 701, Name: 'PB2', Phone: '2', Owner: me, Stage: 'new', Date: new Date(now - 3600e3).toISOString(), CallLog: JSON.stringify(calls(now - 8 * 60e3, 7).reverse()) });
+    // @ts-ignore
+    _csCache = null;
+    window.renderHome();
+    return window.csCheckRecords();
+  });
+  expect(msg).toContain('New record! 7 calls in a day');
+  await expect(page.locator('#homeArena .csa-goal')).toContainText('1/5 conversions');
+  await expect(page.locator('#homeArena .csa-sub')).toContainText('best 6 calls/day');
+});
+
+test('new-lead alert: banner with 5-minute 2× countdown, Call button, dismiss', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => window.csNewLeadAlert({ Id: 3, Name: 'Fresh Hot', Phone: '919000000003', Date: new Date(Date.now() - 60e3).toISOString() }, 'new'));
+  const alert = page.locator('#csLeadAlert');
+  await expect(alert).toHaveClass(/show/);
+  await expect(alert).toContainText('Fresh Hot');
+  await expect(alert).toContainText('2× points');
+  await expect(alert.locator('.cs-alert-timer')).toHaveText(/⏱ [34]:\d\d/);
+  await expect(alert.locator('a.cs-alert-call')).toHaveAttribute('href', 'tel:+919000000003');
+  await alert.locator('.cs-alert-x').click();
+  await expect(alert).not.toHaveClass(/show/);
 });
