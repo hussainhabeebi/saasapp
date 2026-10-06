@@ -669,7 +669,8 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .call-channel-drop.open{display:block}
 .call-channel-drop a,.call-channel-drop button{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;font-size:12px;background:none;border:none;cursor:pointer;color:var(--ink);text-decoration:none;white-space:nowrap;font-family:inherit}
 .call-channel-drop a:hover,.call-channel-drop button:hover{background:var(--hover)}
-.outcome-chips{display:flex;gap:5px;flex-wrap:wrap;padding:4px 0 2px}
+.outcome-chips{display:flex;gap:5px;flex-wrap:wrap;padding:6px 0 2px}
+.outcome-chips::before{content:'How did the call go?';flex-basis:100%;font-size:11px;font-weight:600;color:var(--muted)}
 .outcome-chip{padding:4px 9px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1.5px solid transparent;transition:all .12s;white-space:nowrap}
 .outcome-chip:hover{transform:scale(1.06);opacity:.9}
 .call-timer-badge{font-size:10px;font-family:var(--mono);background:#1E3A5F;color:#fff;border-radius:6px;padding:1px 6px;margin-left:3px;vertical-align:middle}
@@ -804,6 +805,17 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .leads-view-tabs .lv-tab .lv-x:hover{opacity:1}
 .li-actions{display:flex;gap:6px;flex-wrap:nowrap;margin-top:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px}
 .li-actions::-webkit-scrollbar{display:none}
+.li-actions{align-items:center}
+.call-channel-drop .lmd-phone{display:none}
+/* Phones: one clean row — Call, Spam, ⋯ (snooze / follow-up / template move into ⋯) */
+@media(max-width:600px){
+  .lead-item{align-items:flex-start;gap:10px;padding:12px}
+  .li-avatar{width:34px;height:34px;font-size:13px}
+  .li-actions{overflow:visible}
+  .li-actions .li-sec{display:none}
+  .call-channel-drop .lmd-phone{display:flex}
+  .li-actions .call-main{min-width:64px;justify-content:center}
+}
 .momentum-link{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .momentum-link:hover{opacity:.8}
 .task-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -7331,9 +7343,9 @@ function renderLeadsList(){
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           ${callBtnHTML(l,leadCallCount(l))}
-          <button class="btn btn-secondary btn-sm" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
-          <button class="btn btn-secondary btn-sm" title="Follow-up task" onclick="openFollowupForLead(${l.Id})">📅</button>
-          <button class="btn btn-secondary btn-sm" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+          <button class="btn btn-secondary btn-sm li-sec" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
+          <button class="btn btn-secondary btn-sm li-sec" title="Follow-up task" onclick="openFollowupForLead(${l.Id})">📅</button>
+          <button class="btn btn-secondary btn-sm li-sec" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
           ${leadMoreMenuHTML(l)}
         </div>`:''}
         ${reconnect?`<div class="li-actions" onclick="event.stopPropagation()"><button class="btn btn-sm" style="background:#0D9C93;color:#fff" onclick="reactivateLead(${l.Id},event)">♻️ Reactivate</button></div>`:''}
@@ -9374,6 +9386,9 @@ function leadMoreMenuHTML(l){
   return `<button class="btn btn-secondary btn-sm lead-spam-btn" title="Mark as spam" aria-label="Mark as spam" onclick="markLeadSpam(${l.Id},event)">🚫</button><button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
     <div class="call-channel-drop" id="lmd-${l.Id}" style="position:fixed">
       <button onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadWon(${l.Id},event)">✅ Mark Won</button>
+      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);snoozeReminderLead(${l.Id})">⏰ Snooze reminder</button>
+      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);openFollowupForLead(${l.Id})">📅 Follow-up task</button>
+      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);openSendTemplateModal([${l.Id}])">📣 WhatsApp template</button>
     </div>`;
 }
 function toggleLeadMoreMenu(id, btn, force){
@@ -9486,7 +9501,7 @@ function showInlineOutcomeChips(leadId){
   logBtn.textContent='📝 Full Log';
   logBtn.onclick=(e)=>{e.stopPropagation();chips.remove();openCallLog(leadId);};
   chips.appendChild(logBtn);
-  target.appendChild(chips);
+  if(target.classList.contains('li-actions')) target.after(chips); else target.appendChild(chips);
 }
 
 async function saveInlineOutcome(leadId, outcome, durationMins){

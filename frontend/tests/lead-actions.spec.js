@@ -111,3 +111,39 @@ test('called leads move down: never-called first, then follow-up due, then oldes
   expect(order).toEqual(['FreshNew', 'FreshOld', 'CallbackDue', 'CalledYesterday', 'JustCalled']);
   await expect(page.locator('#leadsList')).toContainText('1st call done · 1m ago');
 });
+
+test('phone: row shows only Call, Spam and ⋯; snooze/follow-up/template live in ⋯; outcomes go below the row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await renderLeads(page);
+  const actions = page.locator('#leadsList .li-actions').first();
+  await expect(actions.locator('.li-sec')).toHaveCount(3);
+  for (const b of await actions.locator('.li-sec').all()) await expect(b).toBeHidden();
+  await expect(actions.locator('.call-main')).toBeVisible();
+  await expect(actions.locator('.lead-spam-btn')).toBeVisible();
+
+  // the whole row fits — nothing clipped off the right edge
+  const box = await actions.boundingBox();
+  const more = await actions.locator('.lead-more-btn').boundingBox();
+  expect(more.x + more.width).toBeLessThanOrEqual(box.x + box.width + 1);
+
+  await actions.locator('.lead-more-btn').click();
+  await expect(page.getByRole('button', { name: '⏰ Snooze reminder' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '📣 WhatsApp template' })).toBeVisible();
+  await page.mouse.click(5, 5);
+
+  await page.evaluate(() => window.showInlineOutcomeChips(15787));
+  const chips = page.locator('#leadsList .outcome-chips');
+  await expect(chips).toBeVisible();
+  await expect(actions.locator('.outcome-chips')).toHaveCount(0); // not squeezed inside the action row
+  const btnH = (await actions.locator('.call-main').boundingBox()).height;
+  expect(btnH).toBeLessThan(50); // buttons keep their normal height
+});
+
+test('desktop: ⋯ menu does not repeat the row buttons', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await renderLeads(page);
+  const actions = page.locator('#leadsList .li-actions').first();
+  await expect(actions.locator('.li-sec').first()).toBeVisible();
+  await actions.locator('.lead-more-btn').click();
+  await expect(page.getByRole('button', { name: '⏰ Snooze reminder' })).toBeHidden();
+});
