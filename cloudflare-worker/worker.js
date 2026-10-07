@@ -16541,8 +16541,15 @@ async function ltEnsureChatCheckoutSchema(env){
     expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id, phone)
   )`).run();
 }
+function ltOfferStops(o){
+  const leg=Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
+  return Number(leg.stops||0);
+}
+// Direct flights always come first, then cheapest. ltSaveChatOffers stores this same order, so
+// "Book Option 1" always books the flight shown as Option 1.
 export function ltBookableChatOffers(offers){
-  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort((a,b)=>Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0)
+    .sort((a,b)=>(ltOfferStops(a)===0?0:1)-(ltOfferStops(b)===0?0:1)||Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
 }
 async function ltSaveChatOffers(env,clientId,phone,offers){
   if(!phone)return;
@@ -16622,19 +16629,22 @@ export function ltFormatChatOffers(offers){
   const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
   const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
   const cabin=String(top[0].cabin||'economy').replace('_',' ');
-  const lines=[`✈️ *${top.length} Live Flight Option${top.length===1?'':'s'}*\n${firstLeg.origin||'—'} → ${firstLeg.destination||'—'}${dateLabel?` · ${dateLabel} · ${cabin}`:''}`];
+  const count=top.length===1?'a flight':`${top.length} flights`;
+  const hasDirect=top.some(o=>ltOfferStops(o)===0),hasConnecting=top.some(o=>ltOfferStops(o)>0);
+  const lines=[`✈️ I found ${count} from ${firstLeg.origin||'—'} to ${firstLeg.destination||'—'}${dateLabel?` on ${dateLabel}`:''} (${cabin}).${hasDirect&&hasConnecting?' Direct flights are listed first.':''}`];
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
-    const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'Not provided';
+    const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'duration not provided';
     const time=v=>v?new Date(v).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
     const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
+    const stops=Number(leg.stops||0),stopsText=stops===0?'Direct':`${stops} stop${stops===1?'':'s'}`;
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
-    let line=`*${i+1}. ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' · '+o.flight_numbers:''}*\n→ ${depart} → ${arrive} · ${Number(leg.stops||0)===0?'Direct':Number(leg.stops)+' stop(s)'} · ${durationText}\n→ Bags: Cabin ${cabinBag} · Check-in ${checkedBag}\n→ *${ltFxFormat(o.total_amount,o.currency)}*`;
-    if(o.seats_left!=null)line+=` · ${o.seats_left} seats left`;
+    let line=`*Option ${i+1}: ${o.airline_name||o.airline_code||'Flight'}${o.flight_numbers?' '+o.flight_numbers:''}* (${stopsText})\nDeparts ${depart}, arrives ${arrive} · ${durationText}\nBaggage: Cabin ${cabinBag} · Check-in ${checkedBag}\nFare: *${ltFxFormat(o.total_amount,o.currency)}*`;
+    if(o.seats_left!=null)line+=Number(o.seats_left)===1?' · only 1 seat left':` · ${o.seats_left} seats left`;
     lines.push(line);
   });
-  lines.push(`Select a flight below.\n_Fares may change until checkout._${ltChatFxNote(top)}`);
+  lines.push(`Tap the option you'd like to book below.\n_Fares may change until checkout._${ltChatFxNote(top)}`);
   return lines.join('\n\n');
 }
 // Converted chat fares are estimates: POOMAS charges in its own currency at checkout.
