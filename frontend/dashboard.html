@@ -1411,6 +1411,10 @@ const MODULE_PERMISSIONS = [
 // with a sensible starting point (still editable before saving), and separately drives which Home
 // page sections show (see applyRoleHomeView()) and whether the Leads page defaults to "Mine".
 // modules:null means unrestricted, same convention as a fully-checked custom selection.
+// Modules every teammate can open whatever their role or saved module list: Leads, and Human
+// Deals — the queue of customers waiting on a person, which anyone on the team may need to pick up.
+// (Human Deals still hides for the whole account when Settings → Human Handover is off.)
+const ALWAYS_ON_MODULES=new Set(['leads','humandeals']);
 const ROLES = {
   admin:              { label:'👑 Admin',             modules:null,
                         homeHide:[], leadsDefaultMine:false,
@@ -1424,11 +1428,11 @@ const ROLES = {
                         homeHide:[], leadsDefaultMine:false,
                         heroSubline:'Your pipeline & team performance today',
                         homeActionsHide:['email','projects'], quickActionsHide:['email','settings'] },
-  marketing_manager:  { label:'📢 Marketing Manager', modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
+  marketing_manager:  { label:'📢 Marketing Manager', modules:['home','humandeals','chats','leads','tasks','reports','knowledgebase','broadcast'],
                         homeHide:['homeAgentCard'], leadsDefaultMine:false,
                         heroSubline:'Campaigns, funnels & lead sources today',
                         homeActionsHide:['pipeline','projects'], quickActionsHide:['pipeline','settings'] },
-  telecaller:         { label:'📞 Tele Caller',       modules:['home','chats','leads','tasks'],
+  telecaller:         { label:'📞 Tele Caller',       modules:['home','humandeals','chats','leads','tasks'],
                         homeHide:['homeAgentCard','homeChartCard','homeFunnelCard'], leadsDefaultMine:true,
                         heroSubline:'Your leads & tasks for today',
                         homeActionsHide:['pipeline','campaigns','email','projects'], quickActionsHide:['pipeline','campaigns','email','settings'] },
@@ -6216,6 +6220,9 @@ function renderHome(){
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
+  // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
+  // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
+  try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
   try{updateChatBadge();}catch(e){}
 
   const ind=getIndustry();
@@ -11246,7 +11253,7 @@ function applyUserModulePermissions(){
   if(!mine||!Array.isArray(mine.modules)) return; // no restriction saved = full access
   const allowed=new Set(mine.modules);
   MODULE_PERMISSIONS.forEach(m=>{
-    if(m.key==='leads') return; // Leads is always visible regardless of role or industry
+    if(ALWAYS_ON_MODULES.has(m.key)) return; // visible regardless of role or industry
     if(allowed.has(m.key)) return;
     document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
   });
@@ -11346,9 +11353,9 @@ function renderUserProfileModal(email){
 
   const enabledModuleKeys=getEnabledModuleKeys();
   const moduleRows=MODULE_PERMISSIONS.filter(m=>enabledModuleKeys.includes(m.key)).map(m=>{
-    const alwaysOn=m.key==='leads'; // Leads is always accessible — cannot be revoked
+    const alwaysOn=ALWAYS_ON_MODULES.has(m.key); // always accessible — cannot be revoked
     const checked=alwaysOn || owner || modules===null || modules.includes(m.key);
-    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit&&!alwaysOn?'':'opacity:.75'}" ${alwaysOn?'title="Leads access cannot be removed"':''}>
+    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit&&!alwaysOn?'':'opacity:.75'}" ${alwaysOn?'title="Every teammate has this — it cannot be removed"':''}>
       <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit&&!alwaysOn?'':'disabled'}> ${m.label}
     </label>`;
   }).join('');
