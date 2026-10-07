@@ -14642,6 +14642,21 @@ export async function engineResolveLeadOwner(env, c, clientId, leadBody, state, 
   await engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead);
   if(leadBody.Owner && leadBody.Owner!==before) await engineSyncChatwootAssignee(c, state?.convId, leadBody.Owner);
 }
+// Next round-robin slot (0-based, ever increasing) from D1 lead_rr_counter, or null when D1 is
+// unavailable so the caller falls back to the NocoDB rrIndex. A client's first row starts from its
+// existing rrIndex so turning this on doesn't restart the rotation at the first rep.
+async function engineNextRoundRobinSlot(env, clientId, routing){
+  if(!env?.DB) return null;
+  try{
+    const seed=Number(routing?.rrIndex)||0;
+    const row=await env.DB.prepare(
+      `INSERT INTO lead_rr_counter (client_id, n, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(client_id) DO UPDATE SET n=n+1, updated_at=excluded.updated_at RETURNING n`
+    ).bind(Number(clientId), seed+1, new Date().toISOString()).first();
+    const n=Number(row?.n);
+    return Number.isFinite(n)&&n>0 ? n-1 : null;
+  }catch(e){ return null; }
+}
 async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead){
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
@@ -14713,6 +14728,10 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   if(modes.includes('roundrobin')){
     const pool=Object.entries(rules).filter(([,r])=>r.inPool).map(([e])=>e).sort();
     if(pool.length){
+      // Atomic D1 counter first: the NocoDB read-then-write below lets two leads arriving in the
+      // same second read the same rrIndex and land on the same rep.
+      const slot=await engineNextRoundRobinSlot(env, clientId, routing);
+      if(slot!==null){ leadBody.Owner=pool[slot%pool.length]; return; }
       // `c` can be a KV-cached copy from before the previous lead advanced rrIndex, which would
       // hand consecutive leads to the same rep — read the live pointer straight from NocoDB.
       let live=routing;

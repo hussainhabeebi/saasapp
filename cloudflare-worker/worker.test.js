@@ -1357,6 +1357,38 @@ describe('engineResolveLeadOwner round-robin', () => {
     } finally { restore(); }
   });
 
+  test('uses the atomic D1 counter so concurrent leads never share a slot', async () => {
+    let n = null;
+    const DB = { prepare: () => ({ bind: (...v) => ({ async first() {
+      await Promise.resolve(); // yield, so the calls below genuinely interleave
+      n = n === null ? v[1] : n + 1; return { n };
+    } }) }) };
+    const c = client({ enabled: true, modes: ['roundrobin'], rrIndex: 1, rules: {
+      'alice@biz.com': { inPool: true }, 'bob@biz.com': { inPool: true },
+    } });
+    const restore = mockNocodb(c);
+    try {
+      const bodies = [{}, {}, {}, {}];
+      await Promise.all(bodies.map((b, i) => engineResolveLeadOwner({ ...env, DB }, c, 1, b, { phone: '8' + i }, true)));
+      // Seeded from rrIndex 1 → bob first, then strict alternation even though all four ran at once.
+      assert.deepEqual(bodies.map(b => b.Owner), ['bob@biz.com', 'alice@biz.com', 'bob@biz.com', 'alice@biz.com']);
+    } finally { restore(); }
+  });
+
+  test('falls back to the NocoDB pointer when the D1 table is missing', async () => {
+    const DB = { prepare: () => ({ bind: () => ({ async first() { throw new Error('no such table: lead_rr_counter'); } }) }) };
+    const c = client({ enabled: true, modes: ['roundrobin'], rules: {
+      'alice@biz.com': { inPool: true }, 'bob@biz.com': { inPool: true },
+    } });
+    const restore = mockNocodb(c);
+    try {
+      const a = {}, b = {};
+      await engineResolveLeadOwner({ ...env, DB }, c, 1, a, { phone: '1' }, true);
+      await engineResolveLeadOwner({ ...env, DB }, c, 1, b, { phone: '2' }, true);
+      assert.deepEqual([a.Owner, b.Owner], ['alice@biz.com', 'bob@biz.com']);
+    } finally { restore(); }
+  });
+
   test('ignores an owner catch-all and legacy non-email agent names', async () => {
     const restore = mockNocodb({});
     try {

@@ -5735,14 +5735,14 @@ function navigate(page){
   if(page==='quotation') quoteInit();
   if(page==='leads'){
     if(!_leadsOwnerScopeInitialized){
-      _leadsOwnerScope=isAccountOwner()?'all':'mine_and_unassigned';
+      _leadsOwnerScope=seesAllLeads()?'all':'mine_and_unassigned';
       _leadsOwnerScopeInitialized=true;
     }
-    // When routing is active, non-owners are locked to their assigned leads — hide the toggle.
-    if(getLeadRouting().enabled&&!isAccountOwner()){
-      _leadsOwnerScope='mine_and_unassigned';
-      const sb=$id('leadsScopeBtn'); if(sb) sb.style.display='none';
-    }
+    // Staff are always scoped by leadVisibleToMe — the Mine/All toggle and owner filters would only
+    // be noise (or, before, a way to see other people's leads), so only full-access users get them.
+    const full=seesAllLeads();
+    ['leadsScopeBtn','leadOwnerFilter'].forEach(id=>{ const el=$id(id); if(el) el.style.display=full?'':'none'; });
+    const mineLbl=$id('leadMineOnly')?.closest('label'); if(mineLbl) mineLbl.style.display=full?'':'none';
     renderLeadsOwnerScopeBtn();
     setLeadsViewMode(_leadsViewMode);
   }
@@ -6153,6 +6153,7 @@ async function onLiveNewLeadEvent(msg){
   // every lead, which trains people to ignore the chime.
   const lead=allLeads.find(l=>l.Id===msg.lead_id);
   if(lead?.Owner && myEmail && !sameEmail(lead.Owner,myEmail)) return;
+  if(lead && !leadVisibleToMe(lead)) return; // routing on: unassigned isn't on staff's list, so no chime
   notifyNewLead(msg);
   window.csNewLeadAlert?.(lead||{Id:msg.lead_id, Name:msg.lead_name, Date:msg.at}, 'new');
 }
@@ -7120,7 +7121,8 @@ function isReactivationCandidate(l){
 
 function applyLeadsViewFilter(leads){
   let out=leads;
-  if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||sameEmail(l.Owner,myEmail));
+  if(!seesAllLeads()) out=out.filter(leadVisibilityFilter());
+  else if(_leadsOwnerScope==='mine_and_unassigned') out=out.filter(l=>!l.Owner||sameEmail(l.Owner,myEmail));
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
   else if(_leadsActiveView==='unmatched') out=out.filter(l=>!l.Owner);
@@ -7139,7 +7141,7 @@ function applyLeadsViewFilter(leads){
     });
   }
   const of=$id('leadOwnerFilter')?.value||'';
-  const mineOnly=$id('leadMineOnly')?.checked;
+  const mineOnly=seesAllLeads()&&$id('leadMineOnly')?.checked;
   if(mineOnly) out=out.filter(l=>myEmail&&sameEmail(l.Owner,myEmail));
   else if(of) out=out.filter(l=>sameEmail(l.Owner,of));
   const sf=$id('leadScoreFilter')?.value||'';
@@ -7210,8 +7212,9 @@ function clearLeadsAdvFilters(){
 // reset the advanced filters and let the view's own base rule do the filtering.
 function renderLeadsViewTabs(){
   const wrap=$id('leadsViewTabs'); if(!wrap) return;
-  const needsActionCount=allLeads.filter(l=>leadNeedsActionScore(l)>0).length;
-  const reconnectCount=allLeads.filter(isReactivationCandidate).length;
+  const mine=allLeads.filter(leadVisibilityFilter()); // tab counts match what this user can open
+  const needsActionCount=mine.filter(l=>leadNeedsActionScore(l)>0).length;
+  const reconnectCount=mine.filter(isReactivationCandidate).length;
   const saved=getLeadSavedViews();
   const tab=(id,label,count)=>`<button class="lv-tab${_leadsActiveView===id?' active':''}" onclick="selectLeadsView('${id}')">${label}${count!==undefined?` (${count})`:''}</button>`;
   // Unmatched tab — only for account owner when routing is on and round-robin is not catching everything
@@ -10085,6 +10088,14 @@ async function claimLeadIfUnowned(leadId, activity){
   const lead=allLeads.find(l=>l.Id===leadId);
   if(!lead||lead.Owner) return;
   try{
+    // allLeads can be up to a poll old — re-read Owner first so two teammates acting on the same
+    // unassigned lead don't both "claim" it (the second used to silently overwrite the first).
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${leadId}?fields=Id,Owner`).catch(()=>null);
+    if(fresh?.Owner){
+      lead.Owner=fresh.Owner;
+      if(!sameEmail(fresh.Owner,myEmail)) showToast(`This lead was just picked up by ${fresh.Owner}`,'err');
+      return;
+    }
     const hist=await freshConvHistory(lead);
     hist.push({role:'system',content:`Assigned to ${myEmail} — first activity: ${activity||'action'}`,ts:new Date().toISOString()});
     const convJson=JSON.stringify(hist.slice(-40));
@@ -11088,6 +11099,22 @@ function getTeamPermissions(){
 function getLeadRouting(){
   try{ return JSON.parse(clientRecord.lead_routing||'{}'); }catch(e){ return {}; }
 }
+// Who sees every lead on the Leads tab: the account owner and the Admin / General Manager roles —
+// same set as chats.html FULL_ACCESS_ROLES, so the Leads tab and Chats never disagree.
+const LEADS_FULL_ACCESS_ROLES=['admin','general_manager'];
+function seesAllLeads(){ return isAccountOwner()||LEADS_FULL_ACCESS_ROLES.includes(myRole()); }
+// One lead, one staff member: a teammate never sees a lead owned by someone else, whatever the
+// routing setting or the Mine/All toggle. Unassigned leads: hidden while Lead Routing is on (every
+// new lead gets an owner, so an unassigned one is the owner's to place), shown while it's off so the
+// team can pick them up — the first action claims it (claimLeadIfUnowned) and it leaves everyone
+// else's list. (Previously staff saw "mine + unassigned", so every unassigned lead showed to all.)
+// Build the predicate once per render — the role/routing JSON is parsed here, not once per lead.
+function leadVisibilityFilter(){
+  if(seesAllLeads()) return ()=>true;
+  const routed=!!getLeadRouting().enabled;
+  return l=>l?.Owner ? sameEmail(l.Owner,myEmail) : !routed;
+}
+function leadVisibleToMe(l){ return leadVisibilityFilter()(l); }
 
 /* ── LEAD ROUTING SETTINGS ────────────────────────────────────────────────────────────────────────
    Owner-only. Stored as clientRecord.lead_routing (JSON). Routing priority (when enabled):

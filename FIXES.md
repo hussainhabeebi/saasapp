@@ -629,6 +629,26 @@ Drafts are left out of Revenue.
 and the change check runs in `ctx.waitUntil`.
 **Tested:** `chat-order-draft.test.js`, `frontend/tests/ecom-chat-orders.spec.js`.
 
+### 37 — [frontend + backend] Leads: one lead, one staff member
+**Area:** `seesAllLeads`/`leadVisibleToMe`/`applyLeadsViewFilter`/`claimLeadIfUnowned`
+(`frontend/dashboard.html`); `engineNextRoundRobinSlot`/`engineAssignLeadOwner`
+(`cloudflare-worker/worker.js`), migration `0111_lead_rr_counter.sql`
+**Broke:** The same leads showed in several staff members' lists. Staff were scoped to "mine +
+unassigned", so every unassigned lead showed to the whole team even with Lead Routing on. With
+routing off, staff could also flip the Mine/All toggle and see everyone's leads. Two teammates
+acting on the same unassigned lead both "claimed" it, and the second overwrote the first. And two
+leads arriving together could read the same round-robin `rrIndex` and go to the same rep.
+**Fix:** A teammate never sees a lead owned by someone else. Unassigned leads show to staff only
+while routing is off, same rule as Chats (fix #27). The account owner and Admin/General Manager
+roles see everything. Staff no longer get the Mine/All toggle, owner filter or Mine checkbox, and
+the tab counts only count leads they can open. The claim re-reads Owner from NocoDB first and backs
+off if someone else got there. Round-robin takes its slot from one atomic D1 UPSERT…RETURNING.
+Until the migration is applied, it falls back to the old NocoDB pointer.
+**Don't revert:** Going back to "mine + unassigned" for staff shows every unassigned lead to every
+teammate again.
+**Tested:** `frontend/tests/leads-staff-scope.spec.js`; `worker.test.js` "engineResolveLeadOwner
+round-robin".
+
 ---
 
 ## Data contracts (frontend ⇄ backend)
