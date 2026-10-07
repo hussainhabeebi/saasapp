@@ -90,6 +90,7 @@ import {
   safeClient,
   ltChatFlightIntent,
   ltTravelAgencyPromptBlock,
+  engineMarkdownToWhatsApp,
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
   ltBookableChatOffers,
@@ -298,6 +299,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.doesNotMatch(off,/We DO offer flight tickets/);
     assert.match(on,/We DO offer flight tickets/);
     assert.match(on,/Never say flight tickets are not offered/);
+  });
+  test('converts LLM markdown to WhatsApp formatting',()=>{
+    assert.equal(engineMarkdownToWhatsApp('Options:\n*   **1 Month UAE Visit Visa:** AED 375\n- **2 Months:** AED 499'),
+      'Options:\n• *1 Month UAE Visit Visa:* AED 375\n• *2 Months:* AED 499');
+    assert.equal(engineMarkdownToWhatsApp('## Visa Prices'),'*Visa Prices*');
+    assert.equal(engineMarkdownToWhatsApp('*Dubai* *Kochi* stay as is'),'*Dubai* *Kochi* stay as is');
   });
   test('recognizes compact route requests',()=>{
     // Compact hyphenated IATA routes (no spaces around dash)

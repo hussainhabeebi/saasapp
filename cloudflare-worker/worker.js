@@ -18156,7 +18156,24 @@ async function engineLocalizeReply(env, c, text, targetLang){
 // Settings → Logs a business owner actually checks, so "Replied" read as confirmed delivery when
 // it only ever meant "didn't crash." logEngineSkip here (reason 'send-failed'/'send-skipped-no-
 // setup') makes an actual delivery failure show up in that same table instead.
+// The LLM writes Markdown ("**bold**", "*   item", "## Heading"), which WhatsApp shows as raw
+// asterisks — it bolds with a single *. Converts to WhatsApp formatting; used for travel agency
+// clients' bot replies (engineSendChatwootReply / engineSendChatwootQuickReply).
+export function engineMarkdownToWhatsApp(text){
+  if(typeof text!=='string'||!text) return text;
+  return text
+    .replace(/^[ \t]*[*-][ \t]+/gm,'• ')
+    .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm,'*$1*')
+    .replace(/\*\*(.+?)\*\*/g,'*$1*')
+    .replace(/__(.+?)__/g,'*$1*');
+}
+
+function engineFormatBotText(c, text){
+  return ltLiveAgencyEnabled(c)?engineMarkdownToWhatsApp(text):text;
+}
+
 export async function engineSendChatwootReply(env, c, clientId, convId, text){
+  if(typeof text==='string') text=engineFormatBotText(c, text);
   const trimmed=(typeof text==='string'?text:(text==null?'':String(text))).trim();
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed){
     if(convId && trimmed) await logEngineSkip(env, clientId, null, convId, 'send-skipped-no-setup', 'Chatwoot base/account/token missing for this client');
@@ -18289,6 +18306,7 @@ export function engineTruncateButtonTitle(title, cap){
 // instead of guessing, so what's stored is always exactly what was sent (or null when nothing
 // tappable actually went out, so a failed send doesn't get misrecorded as one that succeeded).
 async function engineSendChatwootQuickReply(env, c, clientId, convId, text, items){
+  if(typeof text==='string') text=engineFormatBotText(c, text);
   const raw=(items||[]).filter(it=>it && (it.title||it.value));
   const isList=raw.length>3;
   const titleCap=isList?24:20;
