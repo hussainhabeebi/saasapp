@@ -658,7 +658,18 @@ tr:hover td{background:#FAFCFB}
 .csa-rules{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5}
 .csa-hall{font-size:11.5px;color:var(--muted);margin-top:6px}
 .csa-hall small{opacity:.7}
-@media(min-width:900px){.csa{max-width:760px}}
+/* Desktop: use the full width — summary panel on the left, team goal / today / leaderboard on the right */
+@media(min-width:900px){
+  .csa{display:grid;grid-template-columns:minmax(300px,360px) minmax(0,1fr)}
+  .csa-hero{padding:18px 20px 20px;display:flex;flex-direction:column}
+  .csa-me{margin-top:18px}
+  .csa-ring-wrap,.csa-ring{width:84px;height:84px}
+  .csa-body{padding:16px 20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 20px;align-content:start}
+  .csa-body>.csa-goal,.csa-body>.csa-setgoal{grid-column:1}
+  .csa-body>.csa-today{grid-column:2;align-self:center;justify-content:flex-end}
+  .csa-body>.csa-list,.csa-body>.csa-empty,.csa-body>.csa-more{grid-column:1/-1}
+  .csa-body>.csa-today:first-child{grid-column:1/-1;justify-content:flex-start}
+}
 /* 🔔 New-lead alert banner (call-score.js csNewLeadAlert) */
 .cs-alert{position:fixed;left:50%;top:12px;transform:translate(-50%,-140%);z-index:10001;display:flex;align-items:center;gap:10px;width:min(560px,calc(100vw - 24px));padding:10px 12px;border-radius:16px;background:#0B1F33;color:#fff;box-shadow:0 12px 32px rgba(0,0,0,.28);transition:transform .3s ease}
 .cs-alert.show{transform:translate(-50%,0)}
