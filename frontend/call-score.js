@@ -56,6 +56,8 @@ function csPowerState(){
   if(mins<ph.start*60) return {active:false, startsIn:ph.start*60-mins, ph};
   return {active:false, ph};
 }
+// Leads won in a given week by anyone — the team goal counts every win, owned or not.
+function csTeamWon(offset){ const r=csWeekRange(offset||0); return csEvents().filter(e=>e.kind==='won' && e.ms>=r.from && e.ms<=r.to).length; }
 const csHour=h=>`${((h+11)%12)+1}${h<12?'am':'pm'}`;
 // 🤝 Weekly team goal — conversions the whole team aims for together (0 / unset = off).
 function csTeamGoal(){
@@ -130,13 +132,18 @@ function csEvents(){
       const prev=calls[i-1], prevMs=prev?csCallMs(prev):null;
       if(prev && /callback/i.test(prev.outcome||'') && prevMs!=null && ms-prevMs<=CS_CALLBACK_MS) events.push({by:csEmailKey(c.by), ms, kind:'callback', pts:CS_PTS.callback, leadId:l.Id});
     });
-    if(isWonLead(l) && l.Owner && l.ClosedAt){
-      const ms=Date.parse(l.ClosedAt);
-      if(isFinite(ms)){
+    // Every lead marked Won counts. Credit goes to its Owner, else whoever last called it (an
+    // unowned win with no caller still counts toward the team goal, by:''). Dated by ClosedAt,
+    // falling back to its last call (closest to when it was won) / last update / arrival when ClosedAt is blank (a leads table
+    // without that column, or a lead won by the bot or before the column existed).
+    if(isWonLead(l)){
+      const lastCall=calls[calls.length-1];
+      const ms=[l.ClosedAt, lastCall&&(lastCall.at||lastCall.date), l.UpdatedAt, l.Date].map(v=>Date.parse(v||'')).find(isFinite);
+      if(ms!==undefined){
         let pts=CS_PTS.won;
         if(l.Score==='Hot') pts+=CS_PTS.wonHot;
         if(medianWon>0 && Number(l.DealValue)>=medianWon) pts+=CS_PTS.wonBig;
-        events.push({by:csEmailKey(l.Owner), ms, kind:'won', pts, leadId:l.Id, value:Number(l.DealValue)||0});
+        events.push({by:csEmailKey(l.Owner||lastCall?.by||''), ms, kind:'won', pts, leadId:l.Id, value:Number(l.DealValue)||0});
       }
     }
   }
@@ -330,7 +337,7 @@ function csAfterWon(leadId){
   _csCache=null;
   const ev=csEvents().find(e=>e.leadId===leadId && e.kind==='won');
   const s=myEmail?csTodaySummary(myEmail):null;
-  const goal=csTeamGoal(), teamWon=goal?csWeekBoard(0).reduce((n,r)=>n+r.s.won,0):0;
+  const goal=csTeamGoal(), teamWon=goal?csTeamWon(0):0;
   showToast(csCheckRecords()||(goal&&teamWon===goal?`🤝 Team goal reached — ${goal} conversions this week! 🎉`:`🎉 Converted! +${ev?.pts||CS_PTS.won} pts${s?` · ✅ ${s.won}/${s.target.won} today`:''}${goal?` · 🤝 team ${teamWon}/${goal}`:''}`),'ok');
   if(typeof renderLeadsMomentumStrip==='function') renderLeadsMomentumStrip();
 }
@@ -634,7 +641,7 @@ function csRenderHomeArena(){
 
   // Team goal (shared)
   if(goal && !solo){
-    const teamWon=board.reduce((n,r)=>n+r.s.won,0), pct=Math.min(100,Math.round(teamWon/goal*100));
+    const teamWon=csTeamWon(0), pct=Math.min(100,Math.round(teamWon/goal*100));
     html+=`<div class="csa-goal${teamWon>=goal?' done':''}"><div class="csa-goal-top"><span>🤝 Team goal</span><b>${teamWon}/${goal} conversions</b></div><div class="csa-qbar"><span style="width:${pct}%"></span></div>${teamWon>=goal?'<div class="csa-q-sub">Goal reached — amazing teamwork! 🎉</div>':`<div class="csa-q-sub">${goal-teamWon} to go together</div>`}</div>`;
   }else if(owner && !solo){
     html+=`<a class="csa-setgoal" href="#" onclick="navigate('reports');setTimeout(()=>renderReportsSubPage('calls'),0);return false">🤝 Set a weekly team goal →</a>`;

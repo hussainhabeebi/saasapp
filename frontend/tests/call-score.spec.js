@@ -301,3 +301,26 @@ test('new-lead alert: banner with 5-minute 2× countdown, Call button, dismiss',
   await alert.locator('.cs-alert-x').click();
   await expect(alert).not.toHaveClass(/show/);
 });
+
+test('a lead marked Won counts even without ClosedAt or an owner (team goal + Closer)', async ({ page }) => {
+  await bootArena(page);
+  const r = await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.bot_config = JSON.stringify({ power_hour: { enabled: false }, team_goal: { won: 5 } });
+    const now = Date.now(), at = (ms) => new Date(ms).toISOString();
+    // won, no ClosedAt column value, owned by Manu → dated by its last call, credited to Manu
+    // @ts-ignore
+    allLeads.push({ Id: 800, Name: 'W1', Phone: '1', Owner: 'manu@example.com', Stage: 'won', Date: at(now - 3600e3),
+      CallLog: JSON.stringify([{ outcome: 'Answered', at: at(now - 600e3), by: 'manu@example.com' }]) });
+    // won, no owner, no calls → still counts for the team, dated by UpdatedAt
+    // @ts-ignore
+    allLeads.push({ Id: 801, Name: 'W2', Phone: '2', Stage: 'won', Date: at(now - 3600e3), UpdatedAt: at(now - 300e3) });
+    // @ts-ignore
+    _csCache = null;
+    window.renderHome();
+    return { manuWon: window.csUserStats('manu@example.com', window.csWeekRange(0)).won, team: window.csTeamWon(0) };
+  });
+  // Rita's existing win + the two above
+  expect(r).toEqual({ manuWon: 1, team: 3 });
+  await expect(page.locator('#homeArena .csa-goal')).toContainText('3/5 conversions');
+});

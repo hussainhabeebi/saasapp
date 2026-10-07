@@ -13296,12 +13296,17 @@ function reportPipelineStageChange(leadId, stage){
     body:JSON.stringify({lead_id:leadId, stage})
   }).catch(()=>{});
 }
+// The ClosedAt column is created on first use (same as ensureLeadsField's other callers) — without
+// it the patch below silently did nothing and a lead marked Won had no close date, so the Weekly
+// Arena, team goal and Revenue Forecast never saw the win.
+let _closedAtFieldReady=null;
 function stampClosedAt(leadId){
   const idx=allLeads.findIndex(x=>x.Id===leadId);
   if(idx>=0 && allLeads[idx].ClosedAt) return;
   const iso=new Date().toISOString();
   if(idx>=0) allLeads[idx].ClosedAt=iso;
-  ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,ClosedAt:iso}).catch(()=>{});
+  _closedAtFieldReady=_closedAtFieldReady||ensureLeadsField('ClosedAt');
+  _closedAtFieldReady.then(()=>ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:leadId,ClosedAt:iso})).catch(()=>{});
 }
 async function ncDelete(url,body){
   const r=await fetch(url,{method:'DELETE',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
@@ -21743,7 +21748,7 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
-<script src="call-score.js?v=5"></script>
+<script src="call-score.js?v=6"></script>
 <script>
 
 /* ── PWA install prompt ──
