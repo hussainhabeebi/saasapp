@@ -149,3 +149,36 @@ test('phone width: no horizontal scroll, sheet fits', async ({ page }) => {
   expect(box.width).toBeLessThanOrEqual(375);
   expect(await page.evaluate(() => document.getElementById('powerDialer').scrollWidth)).toBeLessThanOrEqual(375);
 });
+
+test('pre-call brief: what they asked, answers, last call, opener — hidden once logging', async ({ page }) => {
+  const pd = await openDialer(page, { convHistory: JSON.stringify([
+    { role: 'user', content: 'Do you have 2BHK flats in Kakkanad?' },
+    { role: 'assistant', content: 'Yes! What is your budget?' },
+    { role: 'user', content: 'Around 60 lakh' },
+  ]) });
+  await page.evaluate(() => {
+    allLeads[0].QualAnswers = JSON.stringify({ Name: 'Rahul', Budget: '60L', Timeline: '3 months' });
+    allLeads[0].CallLog = JSON.stringify([{ outcome: 'Callback Requested', at: new Date().toISOString(), notes: 'Call after 5pm' }]);
+    allLeads[0].LastObjectionCategory = 'price';
+    pdRenderCurrent();
+  });
+  const brief = pd.locator('#pdBrief');
+  await expect(brief).toBeVisible();
+  await expect(brief).toContainText('“Around 60 lakh”');
+  await expect(brief).toContainText('Budget: 60L · Timeline: 3 months');
+  await expect(brief).not.toContainText('Name: Rahul');
+  await expect(brief).toContainText('Callback Requested');
+  await expect(brief).toContainText('Call after 5pm');
+  await expect(brief).toContainText('price');
+  await expect(brief.locator('.pd-open')).toContainText('Hi Rahul, calling back as promised');
+  await page.evaluate(() => pdSetState('outcome'));
+  await expect(brief).toBeHidden();
+});
+
+test('pre-call brief: a brand-new lead still gets a first-call line and an opener', async ({ page }) => {
+  const pd = await openDialer(page);
+  const brief = pd.locator('#pdBrief');
+  await expect(brief.locator('li')).toHaveCount(2);
+  await expect(brief).toContainText('First call');
+  await expect(brief.locator('.pd-open')).toContainText('Hi Rahul, thanks for reaching out');
+});
