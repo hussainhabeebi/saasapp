@@ -763,6 +763,13 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .pd-pref{text-transform:none;color:var(--pd-accent)}
 .pd-pref::before{content:"·";color:var(--pd-muted);margin-right:8px}
 .pd-view{display:none;margin-top:28px}
+/* Pre-call brief — up to five plain lines read off the lead (idle + live only) */
+.pd-brief{margin:22px 0 0;padding:12px 14px;border:1px solid var(--pd-line);border-radius:12px;text-align:left;font-size:13px;line-height:1.45;list-style:none}
+.pd-brief li{display:flex;gap:10px;padding:3px 0}
+.pd-brief b{flex:0 0 64px;font-weight:500;color:var(--pd-muted)}
+.pd-brief span{flex:1;min-width:0;overflow-wrap:anywhere}
+.pd-brief .pd-open span{color:var(--pd-accent)}
+#powerDialer[data-state="outcome"] .pd-brief,.pd-brief:empty{display:none}
 #powerDialer[data-state="idle"] .pd-view-idle,#powerDialer[data-state="live"] .pd-view-live,#powerDialer[data-state="outcome"] .pd-view-outcome{display:block}
 .pd-view-notes{margin-top:24px}
 .pd-view-notes+.pd-view{margin-top:12px}
@@ -9833,6 +9840,40 @@ function leadPrefersWhatsApp(l){
   return calls[0]?.outcome==='Moved to WhatsApp'; // saveCall()/pdLogOutcome unshift, so [0] is newest
 }
 
+/* ── Pre-call brief: what they asked the bot, their answers, the last call, a watch-out and an
+   opening line. Plain rules over fields the lead already has — no AI round-trip before dialing. ── */
+const _PD_QA_SKIP=/^(name|full ?name|phone|mobile|whatsapp|email)$/i;
+function pdBriefLines(l){
+  const first=String(l.Name||'').trim().split(/\s+/)[0]||'there';
+  const cut=(t,n)=>{ t=String(t||'').replace(/\s+/g,' ').trim(); return t.length>n?t.slice(0,n-1)+'…':t; };
+  let hist=[]; try{ hist=JSON.parse(l.ConvHistory||'[]'); }catch(e){}
+  const asked=Array.isArray(hist)?[...hist].reverse().find(m=>m&&m.role==='user'&&typeof m.content==='string'&&m.content.trim()):null;
+  let qa={}; try{ qa=JSON.parse(l.QualAnswers||'{}')||{}; }catch(e){}
+  const answers=Object.entries(qa).filter(([k,v])=>v!=null&&String(v).trim()&&!_PD_QA_SKIP.test(k.trim())).slice(0,3)
+    .map(([k,v])=>`${k}: ${cut(v,30)}`).join(' · ');
+  let calls=[]; try{ calls=JSON.parse(l.CallLog||'[]'); }catch(e){}
+  const last=Array.isArray(calls)?calls[0]:null; // newest first
+  const lastTxt=last?[last.outcome,last.at?timeAgo(last.at):last.date,last.notes?`“${cut(last.notes,50)}”`:''].filter(Boolean).join(' · '):'';
+  const topic=l.InterestedProduct||l.ServiceCategory||l.Destination||'';
+  let opener;
+  if(last?.outcome==='Callback Requested') opener=`Hi ${first}, calling back as promised — is now a good time?`;
+  else if(last&&last.outcome!=='Answered'&&last.outcome!=='Moved to WhatsApp') opener=`Hi ${first}, I tried you earlier — do you have two minutes now?`;
+  else if(topic) opener=`Hi ${first}, you asked us about ${cut(topic,40)} — I'm calling to help with that.`;
+  else if(asked) opener=`Hi ${first}, thanks for messaging us on WhatsApp — I'm calling to help with your question.`;
+  else opener=`Hi ${first}, thanks for reaching out — is this a good time to talk?`;
+  return [
+    asked&&['Asked',`“${cut(asked.content,90)}”`],
+    answers&&['Answers',answers],
+    ['Last call',lastTxt||'First call'],
+    l.LastObjectionCategory&&['Watch for',cut(l.LastObjectionCategory,40)],
+    ['Open with',opener,'pd-open'],
+  ].filter(Boolean);
+}
+function pdRenderBrief(l){
+  const el=$id('pdBrief'); if(!el) return;
+  el.innerHTML=pdBriefLines(l).map(([k,v,cls])=>`<li${cls?` class="${cls}"`:''}><b>${esc(k)}</b><span>${esc(v)}</span></li>`).join('');
+}
+
 function pdRenderCurrent(restoring){
   if(!_pdQueue.length){exitPowerDialer();showToast('Queue done!','ok');return;}
   const l=_pdQueue[Math.min(_pdIdx,_pdQueue.length-1)];
@@ -9842,6 +9883,9 @@ function pdRenderCurrent(restoring){
   $id('pdPhone').textContent=l.Phone||'—';
   $id('pdStage').textContent=l.Stage||'new';
   $id('pdPref').hidden=!leadPrefersWhatsApp(l);
+  pdRenderBrief(l);
+  // Slim leads load ConvHistory lazily — fill in "Asked" once it lands, if still on this lead.
+  if(!('ConvHistory' in l)) ensureLeadConvHistory(l).then(()=>{ if(_pdQueue[_pdIdx]===l) pdRenderBrief(l); });
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   // Use a data-phone attribute + onclick to avoid Android <a href=tel:> quirks
   const btn=$id('pdCallBtn');
@@ -21952,6 +21996,7 @@ function showUpdateBanner(){
     <div class="pd-name" id="pdName">—</div>
     <div class="pd-phone" id="pdPhone">—</div>
     <div class="pd-meta"><span id="pdStage">—</span><span class="pd-pref" id="pdPref" hidden>Prefers WhatsApp</span></div>
+    <ul class="pd-brief" id="pdBrief" aria-label="Pre-call brief"></ul>
 
     <div class="pd-view pd-view-idle">
       <a id="pdCallBtn" class="pd-primary" href="#" onclick="pdStartCall(event)">Call</a>
