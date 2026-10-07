@@ -25,6 +25,8 @@ function csDayKey(ms){ const d=new Date(ms); return d.getFullYear()+'-'+String(d
 function csToday(){ return csDayKey(Date.now()); }
 function csCallMs(c){ const t=Date.parse(c.at||c.date||''); return isFinite(t)?t:null; }
 function csCalls(l){ let c=[]; try{ c=JSON.parse(l.CallLog||'[]'); }catch(e){} return Array.isArray(c)?c.slice().reverse():[]; } // oldest first
+// A call that ended with "Continue on WhatsApp" (Power Dial) was a real conversation — it scores as answered.
+function csConnected(c){ return c.outcome==='Answered'||c.outcome==='Moved to WhatsApp'; }
 function csIsSpam(l){ return l.HandoverOutcome==='Spam'; }
 function csIsOpen(l){ return !isWonLead(l) && !isLostLead(l) && l.OptOut!=='Yes' && !csIsSpam(l); }
 function csEmailKey(e){ return String(e||'').trim().toLowerCase(); }
@@ -118,7 +120,7 @@ function csEvents(){
     const leadMs=l.Date?Date.parse(l.Date):NaN;
     calls.forEach((c,i)=>{
       const ms=csCallMs(c); if(ms==null||!c.by) return;
-      const answered=c.outcome==='Answered';
+      const answered=csConnected(c);
       events.push({by:csEmailKey(c.by), ms, kind:answered?'answered':'call', pts:answered?CS_PTS.answered:CS_PTS.call, leadId:l.Id, outcome:c.outcome||'', duration:Number(c.duration)||0, ordinal:i+1});
       const base=answered?CS_PTS.answered:CS_PTS.call;
       // First call within 5 min of the lead arriving: double points (the bonus equals the call's own points)
@@ -392,7 +394,7 @@ function csUserStats(email, range){
 function csFunnel(email, range){
   const owned=allLeads.filter(l=>sameEmail(l.Owner,email) && !csIsSpam(l) && l.Date && Date.parse(l.Date)>=range.from && Date.parse(l.Date)<=range.to);
   const called=owned.filter(l=>csCalls(l).length);
-  const connected=called.filter(l=>csCalls(l).some(c=>c.outcome==='Answered'));
+  const connected=called.filter(l=>csCalls(l).some(csConnected));
   const interested=connected.filter(l=>isWonLead(l) || l.Score==='Hot' || l.Score==='Warm' || (!isLostLead(l) && l.Stage && l.Stage!=='new'));
   const converted=owned.filter(isWonLead);
   return [['Assigned',owned.length],['Called',called.length],['Connected',connected.length],['Interested',interested.length],['Converted',converted.length]];

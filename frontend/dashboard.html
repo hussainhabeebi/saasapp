@@ -735,15 +735,60 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .outcome-chip:hover{transform:scale(1.06);opacity:.9}
 .call-timer-badge{font-size:10px;font-family:var(--mono);background:#1E3A5F;color:#fff;border-radius:6px;padding:1px 6px;margin-left:3px;vertical-align:middle}
 /* power dialer overlay */
-#powerDialer{position:fixed;inset:0;z-index:5000;background:#0F2C4C;color:#fff;display:none;flex-direction:column;align-items:center;justify-content:center;padding:16px}
-.pd-card{background:#1E3A5F;border-radius:20px;padding:28px 36px;text-align:center;width:min(480px,100%)}
-.pd-name{font-size:26px;font-weight:700;margin-bottom:4px}
-.pd-phone{font-size:17px;font-family:var(--mono);margin-bottom:4px;opacity:.8}
-.pd-stage{font-size:13px;opacity:.55;margin-bottom:20px}
-.pd-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
-.pd-close{position:absolute;top:16px;right:16px;background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px}
-.pd-progress{position:absolute;top:16px;left:16px;font-size:13px;opacity:.55}
-.pd-timer{font-size:38px;font-family:var(--mono);font-weight:700;margin-bottom:6px;color:#4ADE80;display:none}
+/* Power Dial v3 — one primary action per state (data-state: idle → live → outcome), text over icons */
+#powerDialer{--pd-bg:#0B1220;--pd-fg:#F8FAFC;--pd-muted:#94A3B8;--pd-line:rgba(255,255,255,.09);--pd-hover:rgba(255,255,255,.05);--pd-accent:#4ADE80;
+  position:fixed;inset:0;z-index:5000;background:var(--pd-bg);color:var(--pd-fg);display:none;flex-direction:column;align-items:center;justify-content:center;padding:72px 16px 32px;font-family:var(--body);overflow-y:auto}
+.pd-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:4px;padding:14px 16px}
+.pd-progress{font-size:13px;color:var(--pd-muted);margin-right:auto;font-variant-numeric:tabular-nums}
+.pd-bar{position:absolute;top:0;left:0;right:0;height:2px;background:var(--pd-line)}
+.pd-bar span{display:block;height:100%;width:0;background:var(--pd-fg);transition:width .3s ease}
+.pd-card{width:min(420px,100%);text-align:center}
+.pd-timer{font-size:15px;font-family:var(--mono);color:var(--pd-accent);margin-bottom:14px;font-variant-numeric:tabular-nums;visibility:hidden}
+#powerDialer:not([data-state="idle"]) .pd-timer{visibility:visible}
+#powerDialer[data-state="outcome"] .pd-timer{color:var(--pd-muted)}
+.pd-name{font-family:var(--disp);font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.15;word-break:break-word}
+.pd-phone{font-size:15px;font-family:var(--mono);color:var(--pd-muted);margin-top:6px}
+.pd-meta{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--pd-muted);text-transform:capitalize}
+.pd-pref{text-transform:none;color:var(--pd-accent)}
+.pd-pref::before{content:"·";color:var(--pd-muted);margin-right:8px}
+.pd-view{display:none;margin-top:28px}
+#powerDialer[data-state="idle"] .pd-view-idle,#powerDialer[data-state="live"] .pd-view-live,#powerDialer[data-state="outcome"] .pd-view-outcome{display:block}
+.pd-view-notes{margin-top:24px}
+.pd-view-notes+.pd-view{margin-top:12px}
+.pd-primary{display:flex;align-items:center;justify-content:center;width:100%;box-sizing:border-box;min-height:52px;border:none;border-radius:999px;background:var(--pd-fg);color:var(--pd-bg);font:600 16px var(--body);text-decoration:none;cursor:pointer;transition:transform .1s ease,opacity .15s}
+.pd-primary:active{transform:scale(.98)}
+.pd-primary:disabled{opacity:.5;cursor:default}
+.pd-link{background:none;border:none;color:var(--pd-muted);font:500 14px var(--body);padding:10px 12px;border-radius:8px;cursor:pointer}
+.pd-link:hover{color:var(--pd-fg);background:var(--pd-hover)}
+.pd-secondary{display:flex;justify-content:center;gap:8px;margin-top:12px}
+.pd-notes{width:100%;box-sizing:border-box;background:transparent;border:1px solid var(--pd-line);border-radius:12px;color:var(--pd-fg);font:14px/1.5 var(--body);padding:12px 14px;resize:vertical}
+.pd-notes:focus{outline:none;border-color:rgba(255,255,255,.28)}
+.pd-notes::placeholder{color:var(--pd-muted)}
+.pd-q{font-size:13px;color:var(--pd-muted);text-align:left;margin-bottom:8px}
+.pd-list{border:1px solid var(--pd-line);border-radius:14px;overflow:hidden;text-align:left}
+.pd-row{display:flex;align-items:center;width:100%;min-height:50px;padding:0 16px;background:none;border:none;border-top:1px solid var(--pd-line);color:var(--pd-fg);font:500 15px var(--body);cursor:pointer;text-align:left}
+.pd-row:first-child{border-top:none}
+.pd-row:hover,.pd-row:focus-visible{background:var(--pd-hover);outline:none}
+.pd-row span{flex:1}
+.pd-row kbd{font:12px var(--mono);color:var(--pd-muted);border:1px solid var(--pd-line);border-radius:5px;padding:1px 6px}
+.pd-row-wa{border-top-width:6px;border-top-color:rgba(255,255,255,.04);color:var(--pd-accent)}
+.pd-row-wa::after{content:"›";font-size:20px;color:var(--pd-muted);margin-left:10px}
+@media (hover:none){.pd-row kbd{display:none}}
+.pd-scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .2s}
+.pd-sheet{position:fixed;left:50%;bottom:0;width:min(520px,100%);box-sizing:border-box;transform:translate(-50%,100%);background:#131C2E;border-radius:20px 20px 0 0;padding:10px 20px calc(20px + env(safe-area-inset-bottom));transition:transform .25s cubic-bezier(.2,.8,.2,1),visibility 0s .25s;visibility:hidden;text-align:left}
+#powerDialer.pd-sheet-open .pd-scrim{opacity:1;pointer-events:auto}
+#powerDialer.pd-sheet-open .pd-sheet{transform:translate(-50%,0);visibility:visible;transition-delay:0s}
+.pd-grab{width:36px;height:4px;border-radius:2px;background:var(--pd-line);margin:0 auto 14px}
+.pd-sheet-title{font:600 17px var(--body);margin-bottom:12px}
+.pd-sheet .pd-notes{margin-bottom:10px}
+.pd-note{font-size:13px;line-height:1.5;color:var(--pd-muted);margin-bottom:14px}
+.pd-note:empty{display:none}
+.pd-note.err{color:#FCA5A5}
+.pd-sheet .pd-link{display:block;margin:6px auto 0}
+#powerDialer [hidden]{display:none!important}
+#pdResume{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:4999;background:#0B1220;color:#F8FAFC;border:none;border-radius:999px;padding:12px 20px;font:500 14px var(--body);box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer}
+#pdResume[hidden]{display:none}
+#pdResume b{font-weight:600;margin-left:6px}
 
 /* note item */
 .note-item{background:#FFFDF0;border-left:3px solid var(--yellow);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:11px 13px;margin-bottom:8px;font-size:13px;line-height:1.6}
@@ -9648,12 +9693,12 @@ function callNotesTemplate(stage){
   return t[s]||'';
 }
 
-/* ── POWER DIALER ─────────────────────────────────────────────────────────── */
-
-let _pdQueue=[], _pdIdx=0, _pdTimerInterval=null, _pdCallStart=null;
-
-/* ── POWER DIALER ─────────────────────────────────────────────────────────── */
-// Full sessionStorage persistence so the dialer survives Android tab-kill/resume.
+/* ── POWER DIALER (v3) ────────────────────────────────────────────────────── */
+// One card, one primary action per state: idle (Call) → live (End & log) → outcome (pick one).
+// "Continue on WhatsApp" is an outcome too: it logs the call as "Moved to WhatsApp" and hands the
+// lead over to WhatsApp from a bottom sheet. Full sessionStorage persistence so the dialer
+// survives Android tab-kill/resume.
+let _pdQueue=[], _pdIdx=0, _pdTimerInterval=null, _pdCallStart=null, _pdCallEnd=null, _pdWaMode='';
 const _PD_SS = 'lv_pd_state';
 
 function _pdSaveState(){
@@ -9662,7 +9707,8 @@ function _pdSaveState(){
     sessionStorage.setItem(_PD_SS, JSON.stringify({
       queueIds: _pdQueue.map(l=>l.Id),
       idx: _pdIdx,
-      callStart: _pdCallStart||null
+      callStart: _pdCallStart||null,
+      callEnd: _pdCallEnd||null
     }));
   }catch(e){}
 }
@@ -9683,6 +9729,7 @@ function pdTryRestore(){
     _pdQueue=queue;
     _pdIdx=Math.min(s.idx||0,queue.length-1);
     _pdCallStart=s.callStart||null;
+    _pdCallEnd=s.callEnd||null;
     openPowerDialer(true); // true = restoring, don't reset timer/notes
   }catch(e){}
 }
@@ -9693,64 +9740,96 @@ function buildPowerDialerQueue(leadIds){
   ids.forEach(id=>{const l=allLeads.find(x=>x.Id===id);if(l)_pdQueue.push(l);});
   if(!_pdQueue.length){showToast('No callback leads found','err');return;}
   _pdIdx=0;
-  _pdCallStart=null;
+  _pdCallStart=null; _pdCallEnd=null;
   openPowerDialer();
 }
 
 function openPowerDialer(restoring){
   const pd=$id('powerDialer'); if(!pd) return;
   pd.style.display='flex';
+  const pill=$id('pdResume'); if(pill) pill.hidden=true;
   pdRenderCurrent(restoring);
 }
 
 function exitPowerDialer(){
-  const pd=$id('powerDialer'); if(pd) pd.style.display='none';
-  if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
-  _pdCallStart=null;
+  const pd=$id('powerDialer'); if(pd){ pd.style.display='none'; pd.classList.remove('pd-sheet-open'); }
+  const pill=$id('pdResume'); if(pill) pill.hidden=true;
+  _pdStopTimer();
+  _pdCallStart=null; _pdCallEnd=null;
   _pdClearState();
 }
 
+// Hide the dialer without losing the queue (e.g. to work a chat) — a small pill brings it back.
+function pdMinimize(){
+  const pd=$id('powerDialer'); if(!pd||!_pdQueue.length||_pdIdx>=_pdQueue.length) return;
+  pd.style.display='none'; pd.classList.remove('pd-sheet-open');
+  const pill=$id('pdResume');
+  if(pill){ $id('pdResumeCount').textContent=`${_pdIdx+1} of ${_pdQueue.length}`; pill.hidden=false; }
+}
+
+function pdResume(){ openPowerDialer(true); }
+
+function pdIsOpen(){ return $id('powerDialer')?.style.display==='flex'; }
+
+function pdSetState(state){
+  const pd=$id('powerDialer'); if(!pd) return;
+  pd.dataset.state=state;
+  if(state==='outcome'&&_pdCallStart&&!_pdCallEnd){ _pdCallEnd=Date.now(); _pdSaveState(); }
+  if(state==='live') _pdStartTimer(); else _pdStopTimer();
+  _pdPaintTimer();
+}
+
+function _pdPaintTimer(){
+  const t=$id('pdTimer'); if(!t) return;
+  t.textContent=_pdCallStart?fmtSecs(Math.floor(((_pdCallEnd||Date.now())-_pdCallStart)/1000)):'0:00';
+}
+
 function _pdStartTimer(){
-  const timer=$id('pdTimer');
-  if(timer){
-    timer.style.display='block';
-    timer.textContent=fmtSecs(Math.floor((Date.now()-(_pdCallStart||Date.now()))/1000));
-  }
-  if(_pdTimerInterval) clearInterval(_pdTimerInterval);
-  _pdTimerInterval=setInterval(()=>{
-    const t=$id('pdTimer'); if(!t) return;
-    t.textContent=fmtSecs(Math.floor((Date.now()-_pdCallStart)/1000));
-  },1000);
+  _pdStopTimer();
+  _pdPaintTimer();
+  _pdTimerInterval=setInterval(_pdPaintTimer,1000);
+}
+
+function _pdStopTimer(){
+  if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
+}
+
+// The lead's latest logged call ended with a WhatsApp hand-off → they'd rather chat than talk.
+function leadPrefersWhatsApp(l){
+  let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
+  return calls[0]?.outcome==='Moved to WhatsApp'; // saveCall()/pdLogOutcome unshift, so [0] is newest
 }
 
 function pdRenderCurrent(restoring){
   if(!_pdQueue.length){exitPowerDialer();showToast('Queue done!','ok');return;}
   const l=_pdQueue[Math.min(_pdIdx,_pdQueue.length-1)];
-  $id('pdProgress').textContent=`${_pdIdx+1} / ${_pdQueue.length}`;
+  $id('pdProgress').textContent=`${_pdIdx+1} of ${_pdQueue.length}`;
+  $id('pdBar').style.width=`${(_pdIdx+1)/_pdQueue.length*100}%`;
   $id('pdName').textContent=l.Name||'Unknown';
   $id('pdPhone').textContent=l.Phone||'—';
   $id('pdStage').textContent=l.Stage||'new';
+  $id('pdPref').hidden=!leadPrefersWhatsApp(l);
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   // Use a data-phone attribute + onclick to avoid Android <a href=tel:> quirks
   const btn=$id('pdCallBtn');
   if(btn){ btn.dataset.phone=phone; btn.href=`tel:+${phone}`; }
+  $id('powerDialer').classList.remove('pd-sheet-open');
   if(!restoring){
     // Only reset notes and timer when moving to a new lead
-    const tpl=callNotesTemplate(l.Stage||'');
-    $id('pdNoteInput').value=tpl||'';
-    const timer=$id('pdTimer'); if(timer){timer.style.display='none';timer.textContent='0:00';}
-    if(_pdTimerInterval){clearInterval(_pdTimerInterval);_pdTimerInterval=null;}
-    _pdCallStart=null;
-  } else if(_pdCallStart){
-    // Resuming after Android kill — restart the timer display
-    _pdStartTimer();
+    $id('pdNoteInput').value=callNotesTemplate(l.Stage||'')||'';
+    _pdCallStart=null; _pdCallEnd=null;
+    pdSetState('idle');
+  } else {
+    // Resuming (Android kill / minimized): an unfinished call means the agent is back from the
+    // phone app, so go straight to the outcome question.
+    pdSetState(_pdCallStart?'outcome':'idle');
   }
 }
 
 function pdStartCall(e){
-  _pdCallStart=Date.now();
+  _pdCallStart=Date.now(); _pdCallEnd=null;
   _pdSaveState(); // full queue + idx + callStart persisted for Android tab-kill recovery
-  _pdStartTimer();
+  pdSetState('live');
   // Use window.location for the tel: call to avoid <a> quirks on some Android builds
   const btn=$id('pdCallBtn');
   const phone=btn?.dataset.phone||btn?.href?.replace('tel:+','');
@@ -9761,26 +9840,30 @@ function pdStartCall(e){
   }
 }
 
-async function pdLogOutcome(outcome){
-  if(_pdIdx>=_pdQueue.length) return;
+function pdEndCall(){ pdSetState('outcome'); }
+
+// Logs the outcome on the current lead and (by default) moves on. Returns false if the save failed.
+async function pdLogOutcome(outcome,{advance=true,toast=true}={}){
+  if(_pdIdx>=_pdQueue.length) return false;
   const l=_pdQueue[_pdIdx];
   // Restore callStart from sessionStorage if memory was lost during Android tab kill
   if(!_pdCallStart){
     try{
       const s=JSON.parse(sessionStorage.getItem(_PD_SS)||'{}');
-      if(s.callStart) _pdCallStart=s.callStart;
+      if(s.callStart){ _pdCallStart=s.callStart; _pdCallEnd=s.callEnd||null; }
     }catch(e){}
   }
-  const durationMins=_pdCallStart?Math.round((Date.now()-_pdCallStart)/60000):0;
+  const durationMins=_pdCallStart?Math.round(((_pdCallEnd||Date.now())-_pdCallStart)/60000):0;
   const notes=($id('pdNoteInput')?.value||'').trim();
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
   calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
-  l.CallLog=JSON.stringify(calls);
-  const memIdx=allLeads.findIndex(x=>x.Id===l.Id);
-  if(memIdx>=0) allLeads[memIdx].CallLog=l.CallLog;
+  const callLog=JSON.stringify(calls);
   try{
-    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,CallLog:l.CallLog});
-  }catch(e){showToast('Save failed — check connection','err');return;}
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,CallLog:callLog});
+  }catch(e){showToast('Save failed — check connection','err');return false;}
+  l.CallLog=callLog;
+  const memIdx=allLeads.findIndex(x=>x.Id===l.Id);
+  if(memIdx>=0) allLeads[memIdx].CallLog=callLog;
   window.csAfterCall?.(l.Id);
   if(outcome==='No Answer'){const prev=currentLead;currentLead=l;autoWaFollowUp(l.Id);currentLead=prev;}
   if(outcome==='Callback Requested'){
@@ -9789,28 +9872,151 @@ async function pdLogOutcome(outcome){
     if(memIdx>=0) allLeads[memIdx].ReminderDate=cb;
     ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,ReminderDate:cb});
   }
-  showToast(`📞 ${outcome} — ${l.Name||'Lead'}`,'ok');
-  pdNext();
+  if(toast) showToast(`${outcome} · ${l.Name||'Lead'}`,'ok');
+  if(advance) pdNext();
+  return true;
 }
 
 function pdNext(){
   _pdIdx++;
+  _pdCallStart=null; _pdCallEnd=null;
   _pdSaveState(); // keep sessionStorage in sync as we advance
-  if(_pdIdx>=_pdQueue.length){exitPowerDialer();showToast('✅ Queue complete!','ok');renderLeadsCurrentView();return;}
-  pdRenderCurrent();
+  if(_pdIdx>=_pdQueue.length){exitPowerDialer();showToast('Queue complete','ok');renderLeadsCurrentView();return;}
+  if(pdIsOpen()) pdRenderCurrent();
+  else { const c=$id('pdResumeCount'); if(c) c.textContent=`${_pdIdx+1} of ${_pdQueue.length}`; }
 }
 
 function pdPrev(){
-  if(_pdIdx>0){_pdIdx--;_pdSaveState();pdRenderCurrent();}
+  if(_pdIdx>0){_pdIdx--;_pdCallStart=null;_pdCallEnd=null;_pdSaveState();pdRenderCurrent();}
 }
+
+/* ── POWER DIALER: WhatsApp hand-off ── */
+// Three ways out, picked from what the account can actually do:
+//  'send'     — WhatsApp Business API connected and the lead messaged within 24h → free text from the business number
+//  'template' — API connected but outside Meta's 24h window → only an approved template can go out; open the chat to pick one
+//  'app'      — no Business API → open the agent's WhatsApp with the message pre-filled (wa.me)
+function _pdWaConnected(){ return !!(clientRecord?.wa_phone_id&&clientRecord?.wa_token_connected); }
+
+function pdOpenWaSheet(){
+  if(_pdIdx>=_pdQueue.length) return;
+  const l=_pdQueue[_pdIdx];
+  const first=(l.Name||'').trim().split(/\s+/)[0]||'there';
+  _pdWaMode=!_pdWaConnected()?'app':leadWaWindowOpen(l)?'send':'template';
+  $id('pdSheetTitle').textContent=`Message ${l.Name?first:(l.Phone||'lead')}`;
+  $id('pdWaText').value=`Hi ${first}, thanks for your time on the call just now. As discussed, continuing here on WhatsApp.`;
+  const note=$id('pdWaNote'); note.className='pd-note';
+  note.textContent=_pdWaMode==='template'
+    ?`${first==='there'?'This lead':first} hasn't messaged in the last 24 hours, so WhatsApp only allows an approved template from your business number.`
+    :'';
+  $id('pdWaText').hidden=_pdWaMode==='template';
+  $id('pdWaPrimary').textContent={send:'Send',template:'Choose a template',app:'Open WhatsApp'}[_pdWaMode];
+  $id('pdWaPrimary').disabled=false;
+  const sec=$id('pdWaSecondary');
+  sec.hidden=_pdWaMode==='app';
+  sec.textContent=_pdWaMode==='template'?'Send from my WhatsApp app instead':'Open chat instead';
+  // Freeze the call timer: choosing WhatsApp means the call is over.
+  if(_pdCallStart&&!_pdCallEnd) pdSetState('outcome');
+  $id('powerDialer').classList.add('pd-sheet-open');
+  if(_pdWaMode!=='template') setTimeout(()=>{
+    if(!$id('powerDialer').classList.contains('pd-sheet-open')) return; // closed before the slide-in finished
+    const t=$id('pdWaText'); t.focus(); t.setSelectionRange(t.value.length,t.value.length);
+  },260);
+}
+
+function pdCloseWaSheet(){
+  $id('powerDialer')?.classList.remove('pd-sheet-open');
+  if($id('pdSheet')?.contains(document.activeElement)) document.activeElement.blur(); // so 1–4 / W work again
+}
+
+function pdWaPrimary(){
+  if(_pdWaMode==='send') return pdWaSend();
+  if(_pdWaMode==='template') return pdWaOpenChat();
+  return pdWaOpenApp();
+}
+
+function pdWaSecondary(){
+  if(_pdWaMode==='template') return pdWaOpenApp();
+  return pdWaOpenChat();
+}
+
+async function pdWaSend(){
+  const l=_pdQueue[_pdIdx]; if(!l) return;
+  const text=$id('pdWaText').value.trim();
+  const note=$id('pdWaNote'), btn=$id('pdWaPrimary');
+  if(!text){ note.textContent='Write a message first'; note.className='pd-note err'; return; }
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/wa/send`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({phone,text,inbox_id:l.InboxId||undefined})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+  }catch(e){
+    btn.disabled=false; btn.textContent='Send';
+    note.textContent='Not sent: '+e.message; note.className='pd-note err';
+    return;
+  }
+  // Same thread record as the lead page's WhatsApp reply box (sendWaReply), so the chat history shows it.
+  try{
+    const hist=await freshConvHistory(l);
+    hist.push({role:'assistant',content:text,ts:new Date().toISOString(),direction:'out'});
+    const conv=JSON.stringify(hist);
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,ConvHistory:conv});
+    l.ConvHistory=conv;
+  }catch(e){ console.warn('pd: ConvHistory update failed',e); }
+  if(await pdLogOutcome('Moved to WhatsApp',{toast:false})) showToast(`Sent to ${l.Name||'lead'} on WhatsApp`,'ok');
+}
+
+// Log the hand-off, keep the queue (minimized), and open this lead's conversation in Chats.
+async function pdWaOpenChat(){
+  const l=_pdQueue[_pdIdx]; if(!l) return;
+  if(!await pdLogOutcome('Moved to WhatsApp',{toast:false})) return;
+  pdMinimize();
+  navigate('chats');
+  setChatChannel('whatsapp');
+  chatSelectLead(l.Id);
+}
+
+// No Business API (or the agent prefers it): their own WhatsApp, message pre-filled.
+function pdWaOpenApp(){
+  const l=_pdQueue[_pdIdx]; if(!l) return;
+  const phone=(l.Phone||'').replace(/[^0-9]/g,'');
+  const text=$id('pdWaText').value.trim();
+  // Opened synchronously from the click so popup blockers allow it.
+  window.open(`https://wa.me/${phone}${text?'?text='+encodeURIComponent(text):''}`,'_blank','noopener');
+  pdLogOutcome('Moved to WhatsApp');
+}
+
+// Keyboard: Enter = the state's primary action, 1–4 = outcomes, W = WhatsApp, ←/→ = previous/skip.
+document.addEventListener('keydown',(e)=>{
+  if(!pdIsOpen()||e.altKey||((e.metaKey||e.ctrlKey)&&e.key!=='Enter')) return;
+  const pd=$id('powerDialer');
+  if(pd.classList.contains('pd-sheet-open')){
+    if(e.key==='Escape'){ e.preventDefault(); pdCloseWaSheet(); }
+    else if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); pdWaPrimary(); }
+    return;
+  }
+  if(/^(TEXTAREA|INPUT|SELECT)$/.test(e.target?.tagName||'')){
+    if(e.key==='Escape') e.target.blur();
+    return;
+  }
+  const state=pd.dataset.state, k=e.key.toLowerCase();
+  const OUT={'1':'Answered','2':'No Answer','3':'Voicemail','4':'Callback Requested'};
+  if(state==='idle'){
+    if(k==='enter'){ e.preventDefault(); pdStartCall(); }
+    else if(k==='arrowright') pdNext();
+    else if(k==='arrowleft') pdPrev();
+  }else if(state==='live'){
+    if(k==='enter'){ e.preventDefault(); pdEndCall(); }
+  }else if(state==='outcome'){
+    if(OUT[k]){ e.preventDefault(); pdLogOutcome(OUT[k]); }
+    else if(k==='w'){ e.preventDefault(); pdOpenWaSheet(); }
+  }
+});
 
 // BFCache restore (Android Chrome restores tab from memory without a full reload)
 window.addEventListener('pageshow',(e)=>{
   if(!e.persisted) return;
-  const pd=$id('powerDialer');
-  if(pd&&pd.style.display==='flex'&&_pdCallStart&&!_pdTimerInterval){
-    _pdStartTimer();
-  }
+  if(pdIsOpen()&&_pdCallStart) pdSetState('outcome');
 });
 
 /* ── PAGE VISIBILITY: MOBILE AUTO-RETURN ─────────────────────────────────── */
@@ -9818,17 +10024,16 @@ window.addEventListener('pageshow',(e)=>{
 // for any lead that had startCallTimer() called but not yet logged.
 document.addEventListener('visibilitychange',()=>{
   if(document.hidden) return;
-  // If power dialer is open, restore its timer (in case it was paused) and leave it alone
-  const pd=$id('powerDialer');
-  if(pd&&pd.style.display==='flex'){
-    if(_pdCallStart&&!_pdTimerInterval) _pdStartTimer();
-    else if(!_pdCallStart){
-      // Try to recover callStart from sessionStorage (tab was not killed but timer was lost)
+  // Power dialer open: coming back to the browser mid-call means the phone call is over —
+  // jump straight to "How did it go?" (recovering callStart if memory was lost).
+  if(pdIsOpen()){
+    if(!_pdCallStart){
       try{
         const s=JSON.parse(sessionStorage.getItem(_PD_SS)||'{}');
-        if(s.callStart){_pdCallStart=s.callStart;_pdStartTimer();}
+        if(s.callStart){ _pdCallStart=s.callStart; _pdCallEnd=s.callEnd||null; }
       }catch(e){}
     }
+    if(_pdCallStart&&$id('powerDialer').dataset.state!=='outcome') pdSetState('outcome');
     return; // don't show inline chips or navigate while dialer is open
   }
   // reload in-progress from sessionStorage (handles app-kill/resume)
@@ -19193,11 +19398,15 @@ function renderWaReply(lead){
   const bar=$id('waReplyBar');
   if(!bar)return;
   if(!clientRecord?.wa_phone_id||!clientRecord?.wa_token_connected){bar.style.display='none';return;}
+  bar.style.display=leadWaWindowOpen(lead)?'flex':'none';
+}
+
+// Meta only allows free-form WhatsApp messages within 24h of the lead's last inbound message.
+function leadWaWindowOpen(lead){
   let hist=[];try{hist=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
   const lastInbound=hist.filter(m=>m.role==='user'||m.direction==='in').slice(-1)[0];
   const ts=lastInbound?.ts||lead.LastMsgAt||lead.UpdatedAt||'';
-  const within24h=ts&&(Date.now()-new Date(ts).getTime())<24*3600*1000;
-  bar.style.display=within24h?'flex':'none';
+  return !!ts&&(Date.now()-new Date(ts).getTime())<24*3600*1000;
 }
 
 async function sendWaReply(){
@@ -21655,30 +21864,59 @@ function showUpdateBanner(){
 })();
 </script>
 
-<!-- POWER DIALER OVERLAY -->
-<div id="powerDialer">
-  <button class="pd-close" onclick="exitPowerDialer()">✕ Exit</button>
-  <div class="pd-progress" id="pdProgress"></div>
+<!-- POWER DIALER OVERLAY — v3: one card, three states (idle → live → outcome), WhatsApp hand-off sheet -->
+<div id="powerDialer" data-state="idle" role="dialog" aria-modal="true" aria-label="Power Dial">
+  <div class="pd-bar"><span id="pdBar"></span></div>
+  <div class="pd-top">
+    <span class="pd-progress" id="pdProgress"></span>
+    <button class="pd-link" onclick="pdMinimize()">Minimize</button>
+    <button class="pd-link" onclick="exitPowerDialer()">Exit</button>
+  </div>
   <div class="pd-card">
     <div class="pd-timer" id="pdTimer">0:00</div>
     <div class="pd-name" id="pdName">—</div>
     <div class="pd-phone" id="pdPhone">—</div>
-    <div class="pd-stage" id="pdStage">—</div>
-    <div class="pd-actions">
-      <a id="pdCallBtn" class="btn btn-sm" style="background:#4ADE80;color:#0F2C4C;font-size:15px;padding:11px 22px;font-weight:700" href="#" onclick="pdStartCall(event)">📞 Call</a>
-      <button class="btn btn-sm" style="background:#059669;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Answered')">✅ Answered</button>
-      <button class="btn btn-sm" style="background:#D97706;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('No Answer')">📵 No Ans</button>
-      <button class="btn btn-sm" style="background:#6B7280;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Voicemail')">📬 VM</button>
-      <button class="btn btn-sm" style="background:#7C3AED;color:#fff;font-size:13px;padding:9px 18px" onclick="pdLogOutcome('Callback Requested')">🔁 CB</button>
+    <div class="pd-meta"><span id="pdStage">—</span><span class="pd-pref" id="pdPref" hidden>Prefers WhatsApp</span></div>
+
+    <div class="pd-view pd-view-idle">
+      <a id="pdCallBtn" class="pd-primary" href="#" onclick="pdStartCall(event)">Call</a>
+      <div class="pd-secondary">
+        <button class="pd-link" onclick="pdPrev()">Previous</button>
+        <button class="pd-link" onclick="pdSetState('outcome')">Log outcome</button>
+        <button class="pd-link" onclick="pdNext()">Skip</button>
+      </div>
     </div>
-    <div style="margin-top:14px">
-      <textarea id="pdNoteInput" class="form-input" rows="2" placeholder="Quick notes (optional)…" style="font-size:12px;width:100%;box-sizing:border-box"></textarea>
+
+    <div class="pd-view pd-view-live pd-view-outcome pd-view-notes">
+      <textarea id="pdNoteInput" class="pd-notes" rows="2" placeholder="Notes"></textarea>
+    </div>
+
+    <div class="pd-view pd-view-live">
+      <button class="pd-primary" onclick="pdEndCall()">End &amp; log call</button>
+    </div>
+
+    <div class="pd-view pd-view-outcome">
+      <div class="pd-q">How did it go?</div>
+      <div class="pd-list">
+        <button class="pd-row" onclick="pdLogOutcome('Answered')"><span>Answered</span><kbd>1</kbd></button>
+        <button class="pd-row" onclick="pdLogOutcome('No Answer')"><span>No answer</span><kbd>2</kbd></button>
+        <button class="pd-row" onclick="pdLogOutcome('Voicemail')"><span>Voicemail</span><kbd>3</kbd></button>
+        <button class="pd-row" onclick="pdLogOutcome('Callback Requested')"><span>Call back later</span><kbd>4</kbd></button>
+        <button class="pd-row pd-row-wa" onclick="pdOpenWaSheet()"><span>Continue on WhatsApp</span><kbd>W</kbd></button>
+      </div>
     </div>
   </div>
-  <div style="margin-top:16px;display:flex;gap:10px">
-    <button class="btn btn-secondary btn-sm" onclick="pdPrev()">← Prev</button>
-    <button class="btn btn-secondary btn-sm" onclick="pdNext()">Next →</button>
+
+  <div class="pd-scrim" onclick="pdCloseWaSheet()"></div>
+  <div class="pd-sheet" id="pdSheet" role="dialog" aria-label="Continue on WhatsApp">
+    <div class="pd-grab"></div>
+    <div class="pd-sheet-title" id="pdSheetTitle">Message</div>
+    <textarea id="pdWaText" class="pd-notes" rows="4"></textarea>
+    <div class="pd-note" id="pdWaNote"></div>
+    <button class="pd-primary" id="pdWaPrimary" onclick="pdWaPrimary()">Send</button>
+    <button class="pd-link" id="pdWaSecondary" onclick="pdWaSecondary()">Open chat instead</button>
   </div>
 </div>
+<button id="pdResume" hidden onclick="pdResume()">Power Dial · <span id="pdResumeCount"></span><b>Resume</b></button>
 </body>
 </html>
