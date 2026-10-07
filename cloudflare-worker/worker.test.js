@@ -345,13 +345,25 @@ describe('Live Travel ticketing in chat',()=>{
 
   test('formats only verified offer fields and checkout links for chat',()=>{
     const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
-    assert.match(text,/✈️ \*1 Live Flight Option\*/);
-    assert.match(text,/DXB → CCJ · 22 Sept 2026 · economy/);
-    assert.match(text,/\*1\. Example Air · EA101\*/);
-    assert.match(text,/→ Bags: Cabin 7 KG · Check-in 15 KG/);
-    assert.match(text,/→ \*AED 425\.50\* · 3 seats left/);
+    assert.match(text,/✈️ I found a flight from DXB to CCJ on 22 Sept 2026 \(economy\)\./);
+    assert.match(text,/\*Option 1: Example Air EA101\* \(Direct\)/);
+    assert.match(text,/Departs 09:40, arrives 15:15 · 4h 35m/);
+    assert.match(text,/Baggage: Cabin 7 KG · Check-in 15 KG/);
+    assert.match(text,/Fare: \*AED 425\.50\* · 3 seats left/);
     assert.doesNotMatch(text,/📍|📅|💺|🕒|🧳|💰|1️⃣|👇/);
     assert.doesNotMatch(text,/Route:|Departure:|Arrival:|Cabin baggage:/);
+  });
+
+  test('lists direct flights before cheaper connecting flights',()=>{
+    const leg=stops=>[{origin:'CCJ',destination:'DXB',departureTime:'2026-10-15T07:00:00Z',arrivalTime:'2026-10-15T10:00:00Z',duration:230,stops}];
+    const indigo={airline_name:'IndiGo',flight_numbers:'153',currency:'INR',total_amount:22447,seats_left:5,bookable:true,supplier_offer_id:'a',itinerary:leg(1)};
+    const flynas={airline_name:'Flynas',flight_numbers:'328',currency:'INR',total_amount:22860,seats_left:5,bookable:true,supplier_offer_id:'b',itinerary:leg(1)};
+    const aix={airline_name:'AI Express',flight_numbers:'345',currency:'INR',total_amount:22944,seats_left:1,bookable:true,supplier_offer_id:'c',itinerary:leg(0)};
+    assert.deepEqual(ltBookableChatOffers([indigo,flynas,aix]),[aix,indigo,flynas]);
+    const text=ltFormatChatOffers([indigo,flynas,aix]);
+    assert.match(text,/I found 3 flights from CCJ to DXB on 15 Oct 2026 \(economy\)\. Direct flights are listed first\./);
+    assert.match(text,/\*Option 1: AI Express 345\* \(Direct\)[\s\S]*only 1 seat left/);
+    assert.match(text,/\*Option 2: IndiGo 153\* \(1 stop\)/);
   });
 
   test('displayed options use only the validated fare list',()=>{
