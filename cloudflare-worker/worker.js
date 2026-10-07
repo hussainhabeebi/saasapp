@@ -16456,7 +16456,11 @@ export function ltChatFlightIntent(text){
     const o=ltAirportCodeFromText(_cityParts[0]),d=ltAirportCodeFromText(_cityParts.slice(1).join(' '));
     return !!(o&&d&&o!==d);
   })();
-  return (explicitFlight&&shopping)||travelTicket||((compactIataRoute||knownCityRoute)&&hasTravelDetail)||(knownCityRoute&&(explicitFlight||travelTicket));
+  // "Visa with flight ticket", "air ticket pls" — naming a flight ticket is itself a ticket
+  // request, even with no shopping verb. Without this the turn fell to the generic LLM, which
+  // told customers of agencies with live ticketing connected that tickets aren't offered.
+  const flightTicket=/\b(?:flight|air|plane)\s*tickets?\b/.test(value);
+  return (explicitFlight&&shopping)||travelTicket||flightTicket||((compactIataRoute||knownCityRoute)&&hasTravelDetail)||(knownCityRoute&&(explicitFlight||travelTicket));
 }
 
 export function ltNormalizeChatFlightRequest(raw={},defaultCurrency='AED'){
@@ -16773,6 +16777,22 @@ export function ltLiveAgencyEnabled(c={}){
   return industry==='travel'||industry==='travel_agency'||industry==='live_travel'||industry.includes('travel')||String(c.ta_enabled||'').toLowerCase()==='yes';
 }
 
+async function ltLiveTicketsConnected(env,clientId){
+  try{
+    const row=await env.DB.prepare(`SELECT 1 AS ok FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
+    return !!row;
+  }catch{return false;}
+}
+
+// Travel-agency prompt rules for every AI-written reply. With the live ticketing API connected the
+// bot must never say tickets aren't offered; either way it asks for the destination (plus date)
+// rather than answering a travel enquiry without knowing where the customer is going.
+export function ltTravelAgencyPromptBlock(liveTicketsConnected){
+  let block='\n\n## Travel Agency Rules\nWhen a customer asks about travel, a trip, a visa, a package or tickets and has not said where they are going, ask which destination they are travelling to and their travel date. Ask only for what is still missing.';
+  if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.';
+  return block;
+}
+
 async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],phone=''){
   const liveAgencyEnabled=ltLiveAgencyEnabled(c);
   if(!liveAgencyEnabled)return null;
@@ -16794,6 +16814,10 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   if(input.missing.length){
     await ltSaveChatSearchDraft(env,clientId,phone,input);
     const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
+    // Fresh request with no route yet → lead with the offer and ask the destination first,
+    // instead of echoing back only defaulted passenger/cabin values as "details received".
+    if(!draft&&!input.origin&&!input.destination&&!input.departure_date)
+      return {handled:true,reply:`Yes, we offer flight tickets ✈️\n\nWhich destination are you travelling to? Please also share your departure city and travel date.\n\nExample: Dubai to Kochi on 20 Oct, 1 adult, economy.`};
     return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`};
   }
   await ltSaveChatSearchDraft(env,clientId,phone,input);
@@ -22940,6 +22964,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // nothing for those kinds anyway; scoping it here avoids the wasted Vectorize round-trip.
       state.memoryChunks=await engineMemoryRetrieve(env, clientId, state.leadId, userText, {kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
       let sysPrompt=engineBuildFaqSystemPrompt(c, state, contextBlock, c.industry||'general', replyLang, isNewLead, routing.intent);
+      if(ltLiveAgencyEnabled(c)) sysPrompt+=ltTravelAgencyPromptBlock(await ltLiveTicketsConnected(env, clientId));
       if(routing.businessInfoOnly) sysPrompt+='\n\nBUSINESS INFORMATION REQUEST: Answer the customer directly using facts explicitly provided in the main business prompt. Do not treat vague words such as "this" as one specific product. Do not invent any business or product fact, and do not create product/category options.';
       // Link check scoped to ecom_faq — buildOrderLink(c, clientId) mirrors engineBuildEcomContext's
       // own catalogOrderLink exactly (same pure function, same args), the one real link this
