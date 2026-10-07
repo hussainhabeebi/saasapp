@@ -89,6 +89,8 @@ import {
   matchMetaPhoneNumber,
   safeClient,
   ltChatFlightIntent,
+  ltTravelAgencyPromptBlock,
+  engineMarkdownToWhatsApp,
   ltNormalizeChatFlightRequest,
   ltFormatChatOffers,
   ltBookableChatOffers,
@@ -288,6 +290,23 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltChatFlightIntent('What is my flight status for PNR ABC123?'),false);
     assert.equal(ltChatFlightIntent('Please update my support ticket'),false);
     assert.equal(ltChatFlightIntent('Tell me about your Umrah package'),false);
+    assert.equal(ltChatFlightIntent('Visa with flight ticket'),true);
+    assert.equal(ltChatFlightIntent('air ticket pls'),true);
+  });
+  test('travel agency prompt asks destination and only claims tickets when the API is connected',()=>{
+    const off=ltTravelAgencyPromptBlock(false),on=ltTravelAgencyPromptBlock(true);
+    assert.match(off,/destination/);
+    assert.doesNotMatch(off,/We DO offer flight tickets/);
+    assert.match(on,/We DO offer flight tickets/);
+    assert.match(on,/Never say flight tickets are not offered/);
+  });
+  test('converts LLM markdown to WhatsApp formatting',()=>{
+    assert.equal(engineMarkdownToWhatsApp('Options:\n*   **1 Month UAE Visit Visa:** AED 375\n- **2 Months:** AED 499'),
+      'Options:\n• *1 Month UAE Visit Visa:* AED 375\n• *2 Months:* AED 499');
+    assert.equal(engineMarkdownToWhatsApp('## Visa Prices'),'*Visa Prices*');
+    assert.equal(engineMarkdownToWhatsApp('*Dubai* *Kochi* stay as is'),'*Dubai* *Kochi* stay as is');
+  });
+  test('recognizes compact route requests',()=>{
     // Compact hyphenated IATA routes (no spaces around dash)
     assert.equal(ltChatFlightIntent('COK-DXB ON 15 SEP'),true);
     assert.equal(ltChatFlightIntent('DXB-COK 20 sep 1 adult'),true);
