@@ -1411,6 +1411,10 @@ const MODULE_PERMISSIONS = [
 // with a sensible starting point (still editable before saving), and separately drives which Home
 // page sections show (see applyRoleHomeView()) and whether the Leads page defaults to "Mine".
 // modules:null means unrestricted, same convention as a fully-checked custom selection.
+// Modules every teammate can open whatever their role or saved module list: Leads, and Human
+// Deals — the queue of customers waiting on a person, which anyone on the team may need to pick up.
+// (Human Deals still hides for the whole account when Settings → Human Handover is off.)
+const ALWAYS_ON_MODULES=new Set(['leads','humandeals']);
 const ROLES = {
   admin:              { label:'👑 Admin',             modules:null,
                         homeHide:[], leadsDefaultMine:false,
@@ -1424,11 +1428,11 @@ const ROLES = {
                         homeHide:[], leadsDefaultMine:false,
                         heroSubline:'Your pipeline & team performance today',
                         homeActionsHide:['email','projects'], quickActionsHide:['email','settings'] },
-  marketing_manager:  { label:'📢 Marketing Manager', modules:['home','chats','leads','tasks','reports','knowledgebase','broadcast'],
+  marketing_manager:  { label:'📢 Marketing Manager', modules:['home','humandeals','chats','leads','tasks','reports','knowledgebase','broadcast'],
                         homeHide:['homeAgentCard'], leadsDefaultMine:false,
                         heroSubline:'Campaigns, funnels & lead sources today',
                         homeActionsHide:['pipeline','projects'], quickActionsHide:['pipeline','settings'] },
-  telecaller:         { label:'📞 Tele Caller',       modules:['home','chats','leads','tasks'],
+  telecaller:         { label:'📞 Tele Caller',       modules:['home','humandeals','chats','leads','tasks'],
                         homeHide:['homeAgentCard','homeChartCard','homeFunnelCard'], leadsDefaultMine:true,
                         heroSubline:'Your leads & tasks for today',
                         homeActionsHide:['pipeline','campaigns','email','projects'], quickActionsHide:['pipeline','campaigns','email','settings'] },
@@ -6216,6 +6220,9 @@ function renderHome(){
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
+  // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
+  // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
+  try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
   try{updateChatBadge();}catch(e){}
 
   const ind=getIndustry();
@@ -6721,6 +6728,15 @@ function closeHdRemoveModal(){ _hdActiveLeadId=null; closeModal('modalHdRemove')
 // resolved dynamically below to Stage 2, not looked up here — see applyHumanDealOutcome. 'Spam'
 // lands on the same terminal 'lost' stage as a real Lost outcome — the distinction that matters
 // (never replying again) comes from the OptOut flag set below, not a separate Stage value.
+// Where a lead re-enters the bot's flow after a person is done with it (Human Deals "Release back
+// to bot", Reactivate): Stage 2 when the flow has 3+ stages, else Stage 1, else 'new' — never the
+// flow's LAST stage. The engine hands any positive reply on the last stage straight to a human
+// (isFinalStage in worker.js's dispatch), so with a 2-stage flow a released lead's next "ok" or
+// "thanks" put it right back in Human Deals instead of staying with the bot.
+function botReentryStage(){
+  const ids=Object.keys(getFlow().stages||{}).filter(k=>k!=='new'&&k!=='human_handover');
+  return (ids.length>2?ids[1]:ids[0])||'new';
+}
 const HD_OUTCOME_STAGE={'Resolved-Won':'won','Released':'stage_2','Lost':'lost','No-response':'new','Spam':'lost'};
 async function applyHumanDealOutcome(leadId, outcome){
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
@@ -6730,13 +6746,15 @@ async function applyHumanDealOutcome(leadId, outcome){
   // engaged this lead, so dropping it back to "new" made the AI treat the next reply as a
   // brand-new lead's opening message instead of picking up the actual conversation, which is
   // what led to it giving a generic canned reply instead of directly/exactly answering whatever
-  // the customer had just asked. Stage 2 anchors it back into the real, already-configured flow
-  // instead. Falls back to Stage 1, then 'new', for a client that hasn't configured two stages.
-  if(outcome==='Released'){
-    const stageIds=Object.keys(getFlow().stages||{}).filter(k=>k!=='new');
-    nextStage=stageIds[1]||stageIds[0]||'new';
-  }
+  // the customer had just asked. botReentryStage anchors it back into the real, already-configured
+  // flow instead (and never on its last stage — see that function).
+  if(outcome==='Released') nextStage=botReentryStage();
   const patch={Id:leadId, Stage:nextStage, Handover:'No', HandoverAt:'', SlaAlerted:'No', HandoverOutcome:outcome};
+  // A Chats "Take over" leaves HandoverBy set; if it survived here, the bot's next own handover
+  // (Handover='Yes') would read as a manual takeover (engineManualTakeoverActive) and silence the
+  // bot on this lead for good. Only sent when the column exists — NocoDB returns it (even null)
+  // on every record once ensureLeadsColumns has added it.
+  if('HandoverBy' in lead) patch.HandoverBy='';
   // Speed to Lead (SETUP.md "Leads page: AI Analyst — Speed to Lead") — HandoverAt is about to be
   // wiped by the patch above the moment this resolves, so the elapsed wait has to be captured HERE,
   // the one place that still has it, or it's lost forever. A lead that was never actually waiting
@@ -7397,7 +7415,7 @@ async function bulkDeleteLeads(){
 }
 
 // Reconnect / reactivation — reopens the lead into the active pipeline (same re-entry logic as
-// Human Deals' "Released" outcome: Stage 2 of the flow if configured, else Stage 1, else 'new'),
+// Human Deals' "Released" outcome — botReentryStage: never the flow's last stage),
 // clears the "cold" tag, and routes the Stage change through reportLeadQualityChange so the
 // Advanced Pipeline follow-up cadence resets and queues a fresh Day-1 task automatically — the
 // exact same mechanism a manual Stage change anywhere else in the app already triggers.
@@ -7406,8 +7424,7 @@ async function reactivateLead(leadId,ev){
   const lead=allLeads.find(l=>l.Id===leadId); if(!lead) return;
   if(!confirm('Reactivate this lead? It moves back into your active pipeline and the bot responds again.')) return;
   const before={Stage:lead.Stage};
-  const stageIds=Object.keys(getFlow().stages||{}).filter(k=>k!=='new');
-  const nextStage=stageIds[1]||stageIds[0]||'new';
+  const nextStage=botReentryStage();
   const tags=parseTags(lead.Tags).filter(t=>t.toLowerCase()!=='cold');
   const patch={Id:leadId, Stage:nextStage, OptOut:'No', Tags:tags.join(', '),
     'Follow up 1':'No', 'Follow up 2':'No', 'Follow up 3':'No', 'Follow up 4':'No', 'Follow up 5':'No'};
@@ -11236,7 +11253,7 @@ function applyUserModulePermissions(){
   if(!mine||!Array.isArray(mine.modules)) return; // no restriction saved = full access
   const allowed=new Set(mine.modules);
   MODULE_PERMISSIONS.forEach(m=>{
-    if(m.key==='leads') return; // Leads is always visible regardless of role or industry
+    if(ALWAYS_ON_MODULES.has(m.key)) return; // visible regardless of role or industry
     if(allowed.has(m.key)) return;
     document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
   });
@@ -11336,9 +11353,9 @@ function renderUserProfileModal(email){
 
   const enabledModuleKeys=getEnabledModuleKeys();
   const moduleRows=MODULE_PERMISSIONS.filter(m=>enabledModuleKeys.includes(m.key)).map(m=>{
-    const alwaysOn=m.key==='leads'; // Leads is always accessible — cannot be revoked
+    const alwaysOn=ALWAYS_ON_MODULES.has(m.key); // always accessible — cannot be revoked
     const checked=alwaysOn || owner || modules===null || modules.includes(m.key);
-    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit&&!alwaysOn?'':'opacity:.75'}" ${alwaysOn?'title="Leads access cannot be removed"':''}>
+    return `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;${canEdit&&!alwaysOn?'':'opacity:.75'}" ${alwaysOn?'title="Every teammate has this — it cannot be removed"':''}>
       <input type="checkbox" class="upModuleChk" value="${m.key}" ${checked?'checked':''} ${canEdit&&!alwaysOn?'':'disabled'}> ${m.label}
     </label>`;
   }).join('');
