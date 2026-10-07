@@ -1,6 +1,7 @@
 // Leads tab staff scope (dashboard.html leadVisibleToMe / applyLeadsViewFilter / claimLeadIfUnowned):
 // one lead belongs to one staff member — a teammate never sees a lead owned by someone else, and
-// unassigned leads only show to staff while Lead Routing is off. Same hermetic file:// setup as
+// unassigned leads only show to staff while Lead Routing is off. Everyone but the account owner
+// opens on "My leads"; the toggle widens it ("Show all"). Same hermetic file:// setup as
 // leads-progressive-load.spec.js.
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
@@ -44,30 +45,47 @@ async function setup(page, { me, routing = {}, role, serverOwner = '' }) {
 const display = (page, sel) => page.evaluate((s) => document.querySelector(s).style.display, sel);
 // @ts-ignore
 const visibleIds = (page) => page.evaluate(() => applyLeadsViewFilter(allLeads).map((l) => l.Id));
+// @ts-ignore
+const toggle = (page) => page.evaluate(() => toggleLeadsOwnerScope());
 
 test('routing on: staff see only their own leads — never a teammate\'s, never unassigned', async ({ page }) => {
   await setup(page, { me: 'bob@biz.com', routing: { enabled: true } });
   expect(await visibleIds(page)).toEqual([2]);
+  // Nothing more they could see, so no toggle — and forcing "all" still adds nothing.
   expect(await display(page, '#leadsScopeBtn')).toBe('none');
+  // @ts-ignore
+  await page.evaluate(() => { _leadsOwnerScope = 'all'; });
+  expect(await visibleIds(page)).toEqual([2]);
   expect(await display(page, '#leadOwnerFilter')).toBe('none');
 });
 
-test('routing off: staff see their own leads plus unassigned, still never a teammate\'s', async ({ page }) => {
+test('routing off: staff open on My leads; Show all adds unassigned, never a teammate\'s', async ({ page }) => {
   await setup(page, { me: 'bob@biz.com', routing: { enabled: false } });
+  expect(await visibleIds(page)).toEqual([2]);
+  expect(await display(page, '#leadsScopeBtn')).toBe('');
+  await toggle(page);
   expect(await visibleIds(page)).toEqual([2, 3]);
-  // The old Mine/All toggle let staff flip to every lead — it's gone, and flipping the state does nothing.
-  // @ts-ignore
-  await page.evaluate(() => { _leadsOwnerScope = 'all'; });
-  expect(await visibleIds(page)).toEqual([2, 3]);
+  await expect(page.locator('#leadsScopeBtn')).toHaveText('👥 Mine + unassigned');
 });
 
-test('account owner and Admin/General Manager roles see every lead', async ({ page }) => {
+test('account owner opens on every lead', async ({ page }) => {
   await setup(page, { me: 'owner@biz.com', routing: { enabled: true } });
   expect(await visibleIds(page)).toEqual([1, 2, 3]);
   expect(await display(page, '#leadsScopeBtn')).toBe('');
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
-  await setup(page, { me: 'gm@biz.com', role: 'general_manager', routing: { enabled: true } });
+});
+
+test('Admin/General Manager open on My leads and Show all reaches every lead', async ({ page }) => {
+  await setup(page, { me: 'alice@biz.com', role: 'general_manager', routing: { enabled: true } });
+  expect(await visibleIds(page)).toEqual([1]);
+  await toggle(page);
   expect(await visibleIds(page)).toEqual([1, 2, 3]);
+});
+
+test('an empty My leads list offers Show all right in the empty state', async ({ page }) => {
+  await setup(page, { me: 'gm@biz.com', role: 'general_manager', routing: { enabled: true } });
+  // @ts-ignore
+  await page.evaluate(() => renderLeadsList());
+  await expect(page.locator('#leadsList button', { hasText: 'Show all leads' })).toHaveCount(1);
 });
 
 test('claiming an unassigned lead someone else just took does not overwrite their claim', async ({ page }) => {
@@ -77,6 +95,8 @@ test('claiming an unassigned lead someone else just took does not overwrite thei
   expect(patches).toEqual([]);
   // @ts-ignore
   expect(await page.evaluate(() => allLeads.find((l) => l.Id === 3).Owner)).toBe('alice@biz.com');
+  expect(await visibleIds(page)).toEqual([2]);
+  await toggle(page); // even with Show all, it's Alice's now
   expect(await visibleIds(page)).toEqual([2]);
 });
 
