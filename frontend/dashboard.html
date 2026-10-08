@@ -4128,6 +4128,11 @@ const ROLES = {
                 </div>
                 <input class="form-input" id="cfgV2NudgeText" placeholder="Hi {name}, did you get a chance to watch the video? 😊 Happy to answer any questions." style="margin-top:6px;max-width:520px">
               </div>
+              <div style="margin-top:12px">
+                <label class="form-label">🛡️ Follow-up guard (v2)</label>
+                <div class="s-note">Keeps automatic follow-ups (the reply-gap nudge above and the recovery check-ins) in step with the chat: if the customer hasn't answered our last question, the follow-up gently asks it again instead of jumping ahead to a demo or a meeting time · follow-ups stay in the language the chat is in · recovery check-ins only go out in your follow-up send hours, never at night. Off keeps today's behaviour.</div>
+                <select class="form-input" id="cfgV2FollowupGuard" style="max-width:200px;margin-top:6px"><option value="No">Off</option><option value="Yes">On</option></select>
+              </div>
             </div>
 
           </div>
@@ -12959,6 +12964,7 @@ function populateBotBehaviorPage(){
   $id('cfgV2NudgeEnabled').value=botConfig.v2_nudge_enabled===true?'Yes':'No';
   $id('cfgV2NudgeHours').value=botConfig.v2_nudge_hours||'';
   $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
+  $id('cfgV2FollowupGuard').value=botConfig.v2_followup_guard===true?'Yes':'No';
 }
 $id('cfgChatStyle').addEventListener('change',function(){
   $id('pfFollowupButtonsCard').style.display=this.value==='prompt_first'?'block':'none';
@@ -13043,6 +13049,7 @@ $id('saveLeadvyneV2').addEventListener('click',async()=>{
   if(nh>0) botConfig.v2_nudge_hours=nh; else delete botConfig.v2_nudge_hours;
   const nt=$id('cfgV2NudgeText').value.trim();
   if(nt) botConfig.v2_nudge_text=nt; else delete botConfig.v2_nudge_text;
+  if($id('cfgV2FollowupGuard').value==='Yes') botConfig.v2_followup_guard=true; else delete botConfig.v2_followup_guard;
   await saveField('saveLeadvyneV2','saveLeadvyneV2Msg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveSlaSlack').addEventListener('click',async()=>saveField('saveSlaSlack','saveSlaSlackMsg',{slack_webhook_url:$id('cfgSlackWebhook').value.trim(),sla_minutes:parseInt($id('cfgSlaMinutes').value)||15}));

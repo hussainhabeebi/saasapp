@@ -6,6 +6,7 @@ import {
   engineMergeStaffNotes, engineActiveStaffNotes, engineV2Block, engineScriptLang, engineV2FollowStaffLanguage,
   engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock, engineV2WelcomeVideo,
   engineV2SourceText, engineV2IsFreshLead, engineV2NudgeSettings, engineV2NudgeDue, engineV2NudgeText, engineStaffScore,
+  engineV2FollowupGuardOn, engineChatLanguage, engineOpenQuestion, engineV2GuardedNudgeText,
 } from './worker.js';
 
 const TS = '2026-10-04T10:00:00Z';
@@ -135,4 +136,29 @@ test('staff quality score: first responder, reply time, win rate', () => {
   const s = engineStaffScore(leads, Date.parse('2026-10-01T00:00:00Z'));
   assert.deepEqual(s.bot, { name: 'Bot', replies: 1, median_reply_sec: 0, leads: 1, won: 1, win_rate: 100 });
   assert.deepEqual(s.staff, [{ name: 'Asha', replies: 2, median_reply_sec: 300, leads: 2, won: 1, win_rate: 50 }]);
+});
+
+// Follow-up guard (bot_config.v2_followup_guard): re-ask the open question, keep the chat's language.
+test('follow-up guard is only on with Leadvyne v2 and the switch both on', () => {
+  assert.equal(engineV2FollowupGuardOn({ bot_config: '{"leadvyne_v2":true,"v2_followup_guard":true}' }), true);
+  assert.equal(engineV2FollowupGuardOn({ bot_config: '{"v2_followup_guard":true}' }), false);
+  assert.equal(engineV2FollowupGuardOn({ bot_config: '{"leadvyne_v2":true}' }), false);
+  assert.equal(engineV2FollowupGuardOn({}), false);
+});
+
+test('follow-up guard: the open question is re-asked, not answered for the customer', () => {
+  const asked = 'Hello Thoyib! We offer AI solutions for travel agencies. Are you looking for a ready-to-use lead/WhatsApp system, or a custom AI solution for your business?';
+  const hist = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: asked }];
+  const q = engineOpenQuestion(hist);
+  assert.equal(q, 'Are you looking for a ready-to-use lead/WhatsApp system, or a custom AI solution for your business?');
+  assert.equal(engineV2GuardedNudgeText({ Name: 'Thoyib K' }, q), `Hi Thoyib, just checking 😊 ${q}`);
+  assert.equal(engineV2GuardedNudgeText({}, 'Free tomorrow?'), 'Hi, just checking 😊 Free tomorrow?');
+  assert.equal(engineOpenQuestion([{ role: 'assistant', content: 'Here is our brochure.' }]), '', 'no question asked');
+  assert.equal(engineOpenQuestion([{ role: 'assistant', content: 'Free?' }, { role: 'user', content: 'ok' }]), '', 'customer replied');
+});
+
+test('follow-up guard: language comes from the chat, not lead.Language', () => {
+  assert.equal(engineChatLanguage([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'Hello! Ready-to-use or custom?' }], 'ml'), 'en');
+  assert.equal(engineChatLanguage([{ role: 'assistant', content: 'നാളെ ഈവനിംഗ് ഫ്രീയാണോ?' }, { role: 'assistant', content: '👍' }], 'en'), 'ml');
+  assert.equal(engineChatLanguage([{ role: 'user', content: 'hello' }], 'ml'), 'ml', 'no message from us yet: fallback');
 });
