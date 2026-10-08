@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import fetch from 'node-fetch';
 import crypto from 'node:crypto';
+import { followupGuardOn, withinSendWindow, chatLanguage, guardPromptRules } from './followup-guard.js';
 
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Standalone recovery/win-back engine. Runs entirely separately from the n8n
@@ -205,11 +206,12 @@ function decide(lead, client) {
 }
 
 // ── AI PERSONALIZATION (best-effort, falls back to raw template on any failure) ─
-async function personalize(baseMsg, lead, client) {
+async function personalize(baseMsg, lead, client, guardLang) {
   if (!client.openrouter_key || !lead.ConvHistory) return baseMsg;
   try {
     let history = [];
     try { history = JSON.parse(lead.ConvHistory); } catch { /* ignore malformed history */ }
+    const guardRules = guardLang === undefined ? '' : guardPromptRules(guardLang);
     const lastMsgs = history.slice(-6).map((m) => `${m.role}: ${m.content}`).join('\n');
 
     const controller = new AbortController();
@@ -224,7 +226,7 @@ async function personalize(baseMsg, lead, client) {
         messages: [
           {
             role: 'system',
-            content: 'You are a helpful sales assistant. Rewrite the given template into a SHORT, warm WhatsApp re-engagement message (1-2 sentences), personalised to the conversation context. Keep the same intent/urgency level as the template. Return ONLY the message text, no quotes.',
+            content: 'You are a helpful sales assistant. Rewrite the given template into a SHORT, warm WhatsApp re-engagement message (1-2 sentences), personalised to the conversation context. Keep the same intent/urgency level as the template.' + guardRules + ' Return ONLY the message text, no quotes.',
           },
           { role: 'user', content: `Template: ${baseMsg}\nRecent conversation:\n${lastMsgs || '(no history)'}` },
         ],
@@ -403,6 +405,11 @@ async function processClient(client) {
   const leads = await fetchLeads(tableId, NOCODB_TOKEN);
   console.log(`  ${leads.length} candidate leads`);
 
+  // Follow-up guard (Leadvyne v2): nothing goes out outside the send window — due leads simply
+  // wait for a later run, since nothing is marked sent.
+  const guard = followupGuardOn(client);
+  if (guard && !withinSendWindow(client)) { console.log(`  [skip] outside follow-up send window`); return; }
+
   let sent = 0;
   for (const lead of leads) {
     let plan;
@@ -424,8 +431,11 @@ async function processClient(client) {
         await sendTemplateMessage(client, convId, plan.templateName, lead.Name);
         sentText = `[template:${plan.templateName}]`;
       } else {
-        sentText = await personalize(plan.message, lead, client);
-        const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText, lead.Language));
+        let history = [];
+        if (guard) { try { history = JSON.parse(lead.ConvHistory || '[]'); } catch { /* ignore malformed history */ } }
+        const lang = guard ? chatLanguage(history, lead.Language) : lead.Language;
+        sentText = await personalize(plan.message, lead, client, guard ? lang : undefined);
+        const sentViaVoice = truthy(client.voice_followup_enabled) && (await sendVoiceMessage(client, convId, sentText, lang));
         if (!sentViaVoice) await sendPlainMessage(client, convId, sentText);
       }
 

@@ -20394,6 +20394,37 @@ export function engineV2NudgeText(settings, lead, videoSent){
     : 'Hi {name}, just checking in 😊 Do you have any questions? Happy to help with the next step.');
   return fillFlowTokens(t, {...lead, Name:lead?.Name||''}).replace(/Hi there,/,'Hi,');
 }
+// Follow-up guard (bot_config.v2_followup_guard, Leadvyne v2 only). When on, automatic follow-ups
+// (this nudge, and backend/recovery.js's ladder) never answer for the customer: an unanswered
+// question from us is gently asked again instead of jumping to the next step. They also stay in
+// the language the chat is actually in (the script of our last message), not lead.Language.
+// recovery.js additionally keeps to the send window, which this nudge already does.
+export function engineV2FollowupGuardOn(c){
+  const bc=engineParseJsonField(c?.bot_config, {});
+  return bc.leadvyne_v2===true && bc.v2_followup_guard===true;
+}
+// The language the customer is reading: our side's most recent message, else the fallback.
+export function engineChatLanguage(hist, fallback){
+  for(let i=(hist||[]).length-1;i>=0;i--){
+    const m=hist[i];
+    if(m?.role!=='assistant' || typeof m.content!=='string') continue;
+    const lang=engineScriptLang(m.content)||(/[A-Za-z]/.test(m.content)?'en':'');
+    if(lang) return lang;
+  }
+  return fallback||'';
+}
+// The question our last message asked, if the chat ended on it (the customer hasn't replied).
+export function engineOpenQuestion(hist){
+  const last=(hist||[])[(hist||[]).length-1];
+  if(last?.role!=='assistant' || typeof last.content!=='string') return '';
+  const parts=last.content.split(/(?<=[.!?])\s+|\n+/).map(x=>x.trim()).filter(Boolean);
+  const q=[...parts].reverse().find(x=>x.includes('?'));
+  return q?q.slice(0,300):'';
+}
+export function engineV2GuardedNudgeText(lead, question){
+  const name=String(lead?.Name||'').trim().split(/\s+/)[0];
+  return `${name?`Hi ${name}`:'Hi'}, just checking 😊 ${question}`;
+}
 export async function runV2NudgesForAllClients(env){
   let page=1;
   while(true){
@@ -20425,10 +20456,13 @@ async function engineV2NudgeClient(env, c){
     const claimAt=new Date().toISOString();
     const cl=await env.DB.prepare('UPDATE v2_fresh_leads SET nudged_at=? WHERE client_id=? AND phone=? AND nudged_at IS NULL').bind(claimAt, Number(c.Id), row.phone).run().catch(()=>null);
     if(!cl?.meta?.changes) continue;
-    let text=engineV2NudgeText(st, lead, !!row.video_sent);
-    if(lead.Language && lead.Language!=='en') text=await engineLocalizeReply(env, c, text, lead.Language).catch(()=>text);
-    await engineSendChatwootReply(env, c, c.Id, lead.ConversationID, text);
     let hist=[]; try{ hist=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+    const guard=engineV2FollowupGuardOn(c);
+    const question=guard?engineOpenQuestion(hist):'';
+    let text=question?engineV2GuardedNudgeText(lead, question):engineV2NudgeText(st, lead, !!row.video_sent);
+    const lang=guard?engineChatLanguage(hist, lead.Language):lead.Language;
+    if(lang && lang!=='en') text=await engineLocalizeReply(env, c, text, lang).catch(()=>text);
+    await engineSendChatwootReply(env, c, c.Id, lead.ConversationID, text);
     hist.push({role:'assistant', content:text, ts:claimAt});
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ConvHistory:JSON.stringify(hist.slice(-40)), LastMsgAt:claimAt}}).catch(()=>{});
     await d1InsertLeadMessage(env, lead.Id, c.Id, {role:'assistant', content:text, ts:claimAt});
