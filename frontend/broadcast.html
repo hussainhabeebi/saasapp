@@ -644,6 +644,21 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
           <option value="Warm">Warm</option>
           <option value="Cold">Cold</option>
         </select>
+        <select id="metaAddedFilter" onchange="metaAddedFilterChanged()" title="When the lead was added to the CRM">
+          <option value="">Added: any time</option>
+          <option value="today">Added today</option>
+          <option value="2d">Added last 2 days</option>
+          <option value="week">Added this week</option>
+          <option value="7d">Added last 7 days</option>
+          <option value="30d">Added last 1 month</option>
+          <option value="90d">Added last 90 days</option>
+          <option value="custom">Custom range…</option>
+        </select>
+        <span id="metaAddedRange" style="display:none;gap:6px;align-items:center">
+          <input type="date" id="metaAddedFrom" onchange="filterMetaLeads()" title="Added from">
+          <span style="font-size:12px;color:var(--muted)">to</span>
+          <input type="date" id="metaAddedTo" onchange="filterMetaLeads()" title="Added to">
+        </span>
         <button class="btn btn-sec btn-sm" onclick="selectAllMeta()">Select all</button>
         <button class="btn btn-ghost btn-sm" onclick="selectNoneMeta()">Clear</button>
       </div>
@@ -2567,6 +2582,35 @@ function selectNoneDm(){ dmSelectedIds.clear(); renderDmLeads(); }
 function updateDmSelBar(){ const n=dmSelectedIds.size; $id('dmSelBar').classList.toggle('hidden',n===0); $id('dmSelCount').textContent=n+' selected'; }
 
 // ── META LEADS ──
+// Lead "Date" is when it was added to the CRM. A bare YYYY-MM-DD is read as local midnight
+// (new Date() would treat it as UTC and shift the day for non-UTC users).
+function leadAddedMs(l){
+  const d=String(l.Date||'');
+  const m=d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const t=m?new Date(+m[1],+m[2]-1,+m[3]).getTime():new Date(d).getTime();
+  return isNaN(t)?null:t;
+}
+// "Added" preset → [fromMs, toMs) window, or null for any time.
+function addedWindow(preset,fromStr,toStr){
+  const now=new Date(), day0=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(), DAY=864e5;
+  if(preset==='today') return [day0,Infinity];
+  if(preset==='2d') return [day0-DAY,Infinity];
+  if(preset==='week'){ const dow=(now.getDay()+6)%7; return [day0-dow*DAY,Infinity]; } // Monday start
+  if(preset==='7d') return [day0-6*DAY,Infinity];
+  if(preset==='30d') return [day0-29*DAY,Infinity];
+  if(preset==='90d') return [day0-89*DAY,Infinity];
+  if(preset==='custom'){
+    const p=s=>{ const m=String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?new Date(+m[1],+m[2]-1,+m[3]).getTime():null; };
+    const f=p(fromStr), t=p(toStr);
+    if(f==null&&t==null) return null;
+    return [f??-Infinity, t==null?Infinity:t+DAY];
+  }
+  return null;
+}
+function metaAddedFilterChanged(){
+  $id('metaAddedRange').style.display=$id('metaAddedFilter').value==='custom'?'inline-flex':'none';
+  filterMetaLeads();
+}
 function filterMetaLeads(){
   const q=($id('metaLeadSearch').value||'').toLowerCase();
   const stage=$id('metaStageFilter').value;
@@ -2581,7 +2625,9 @@ function filterMetaLeads(){
   const reSource=$id('metaReSourceFilter')?.value||'';
   const reInvestor=$id('metaReInvestorFilter')?.value||'';
   const refFilter=parseLeadRefFilter($id('metaLeadRefFilter')?.value);
+  const added=addedWindow($id('metaAddedFilter')?.value,$id('metaAddedFrom')?.value,$id('metaAddedTo')?.value);
   metaFilteredLeads=allLeads.filter(l=>{
+    if(added){ const t=leadAddedMs(l); if(t==null||t<added[0]||t>=added[1]) return false; }
     if(refFilter&&!leadRefMatches(refFilter,l)) return false;
     if(stage&&l.Stage!==stage) return false;
     if(brand&&l.Brand!==brand) return false;
