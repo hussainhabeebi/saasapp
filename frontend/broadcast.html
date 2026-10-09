@@ -141,7 +141,18 @@ textarea{resize:vertical;min-height:90px;line-height:1.6}
 #dmProgressWrap,#tplProgressWrap{display:none;margin-top:16px}
 .progress-bar-bg{background:var(--line);border-radius:6px;height:8px;overflow:hidden;margin:8px 0}
 .progress-bar-fill{background:linear-gradient(90deg,var(--accent),#0CB870);height:100%;border-radius:6px;transition:width .3s}
-.log-box{background:var(--bg);border-radius:var(--r-sm);padding:12px;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px}
+.btn .spin{width:14px;height:14px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:btnSpin .7s linear infinite;flex:none}
+.btn.sending{opacity:1!important;cursor:progress!important}
+@keyframes btnSpin{to{transform:rotate(360deg)}}
+.progress-bar-fill.live{min-width:14px;background-image:linear-gradient(45deg,rgba(255,255,255,.28) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.28) 50%,rgba(255,255,255,.28) 75%,transparent 75%),linear-gradient(90deg,var(--accent),#0CB870);background-size:16px 16px,100% 100%;animation:barStripe .8s linear infinite}
+@keyframes barStripe{to{background-position:16px 0,0 0}}
+.send-stats{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.send-stat{flex:1;min-width:64px;border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;text-align:center}
+.send-stat b{display:block;font-size:18px;color:var(--ink)}
+.send-stat span{font-size:11px;color:var(--muted)}
+.send-done{border-color:var(--accent);background:var(--accent-soft)}
+@media (prefers-reduced-motion:reduce){.btn .spin,.progress-bar-fill.live{animation:none}}
+.log-box{white-space:pre-wrap;background:var(--bg);border-radius:var(--r-sm);padding:12px;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px}
 
 /* AUTOMATIONS & FLOW */
 .flow-tbl-name{font-weight:600}
@@ -671,7 +682,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
         <table class="tbl">
           <thead><tr>
             <th><input type="checkbox" class="chk" id="metaChkAll" onchange="toggleAllMeta(this)"></th>
-            <th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Last seen</th>
+            <th>Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Added</th><th>Last seen</th>
           </tr></thead>
           <tbody id="metaLeadsTbody"></tbody>
         </table>
@@ -689,13 +700,16 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <div class="msg info">ℹ️ Leads with no WhatsApp conversation yet (e.g. imported from a Google Sheet) are sent to directly via your connected WhatsApp Business API instead of failing — connect it in Settings → Channels if you haven't already.</div>
       <div style="display:flex;gap:12px;margin-top:14px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" id="tplSendBtn" onclick="sendTemplateBroadcast()">📣 Send to selected leads</button>
+        <button class="btn btn-ghost btn-sm" id="tplStopBtn" onclick="stopTemplateBroadcast()" style="display:none">⏹ Stop</button>
         <span id="tplSendStatus" style="font-size:13px;color:var(--muted)"></span>
       </div>
+      <div id="tplAudienceSummary" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
       <div id="tplProgressWrap">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
           <span id="tplProgLabel">Sending…</span><span id="tplProgPct">0%</span>
         </div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="tplProgBar" style="width:0%"></div></div>
+        <div class="send-stats" id="tplSendStats"></div>
         <div class="log-box" id="tplLogBox"></div>
       </div>
     </div>
@@ -1760,6 +1774,7 @@ let clientId=null, clientRecord=null, allLeads=[];
 let sessionToken = localStorage.getItem('lv_session') || '';
 let dmFilteredLeads=[], dmSelectedIds=new Set();
 let metaFilteredLeads=[], metaSelectedIds=new Set();
+let _tplSending=false, _tplStop=false;
 let followupLeads=[];
 let allTemplates=[], selectedTemplate=null;
 let imgFile=null;
@@ -2659,6 +2674,7 @@ function renderMetaLeads(){
       <td style="font-family:var(--mono);font-size:12px">${esc(l.Phone||'—')}</td>
       <td><span class="badge gray" style="font-size:10px">${esc(l.Stage||'new')}</span></td>
       <td><span style="font-size:12px;font-weight:700;color:${scoreColor}">${esc(l.Score||'—')}</span></td>
+      <td style="font-size:12px;color:var(--muted);white-space:nowrap">${l.Date?timeSince(l.Date):'—'}</td>
       <td style="font-size:12px;color:var(--muted)">${ago}</td>
     </tr>`;
   }).join('');
@@ -2670,7 +2686,34 @@ function toggleMetaLead(el){ const id=el.dataset.id; if(el.checked)metaSelectedI
 function toggleAllMeta(el){ metaFilteredLeads.forEach(l=>{ if(el.checked)metaSelectedIds.add(String(l.Id));else metaSelectedIds.delete(String(l.Id)); }); renderMetaLeads(); }
 function selectAllMeta(){ metaFilteredLeads.forEach(l=>metaSelectedIds.add(String(l.Id))); renderMetaLeads(); }
 function selectNoneMeta(){ metaSelectedIds.clear(); renderMetaLeads(); }
-function updateMetaSelBar(){ const n=metaSelectedIds.size; $id('metaSelBar').classList.toggle('hidden',n===0); $id('metaSelCount').textContent=n+' selected'; }
+function updateMetaSelBar(){
+  const n=metaSelectedIds.size; $id('metaSelBar').classList.toggle('hidden',n===0); $id('metaSelCount').textContent=n+' selected';
+  if(_tplSending) return;
+  const btn=$id('tplSendBtn');
+  if(btn) btn.textContent=n?`📣 Send to ${n} lead${n!==1?'s':''}`:'📣 Send to selected leads';
+  const sum=$id('tplAudienceSummary'); if(!sum) return;
+  if(!n){ sum.textContent=''; return; }
+  const a=tplAudience(allLeads.filter(l=>metaSelectedIds.has(String(l.Id))));
+  const bits=[`${a.unique.length} unique number${a.unique.length!==1?'s':''}`];
+  if(a.dupes.length) bits.push(`${a.dupes.length} duplicate number${a.dupes.length!==1?'s':''} will be skipped`);
+  if(a.noConv) bits.push(`${a.noConv} without a WhatsApp chat yet (sent via WhatsApp API)`);
+  if(a.noPhone) bits.push(`${a.noPhone} with no phone`);
+  const secs=Math.ceil(a.unique.length*0.9);
+  bits.push(`about ${secs<90?secs+'s':Math.ceil(secs/60)+' min'} to send`);
+  sum.textContent='👥 '+bits.join(' · ');
+}
+// Same phone on two lead rows (re-imports, duplicates) would otherwise get the template twice.
+function tplAudience(leads){
+  const seen=new Set(), unique=[], dupes=[]; let noConv=0, noPhone=0;
+  leads.forEach(l=>{
+    const key=String(l.Phone||'').replace(/\D/g,'').slice(-10);
+    if(key&&seen.has(key)){ dupes.push(l); return; }
+    if(key) seen.add(key); else noPhone++;
+    if(!leadConvId(l)) noConv++;
+    unique.push(l);
+  });
+  return {unique,dupes,noConv,noPhone};
+}
 
 // ── IMAGE / VIDEO HANDLING ──
 function handleImgFile(file){
@@ -2718,7 +2761,7 @@ async function sendDm(){
   const btn=$id('dmSendBtn');
   btn.disabled=true;
   $id('dmSendStatus').textContent='';
-  $id('dmProgressWrap').style.display='';
+  $id('dmProgressWrap').style.display='block';
   $id('dmLogBox').innerHTML='';
   setProgress('dm',0,leads.length);
 
@@ -2900,25 +2943,57 @@ function updateCreatePreview(){
 }
 
 // ── SEND TEMPLATE BROADCAST ──
+function _tplBeforeUnload(e){ e.preventDefault(); e.returnValue=''; }
+function stopTemplateBroadcast(){
+  _tplStop=true;
+  const b=$id('tplStopBtn'); if(b){ b.disabled=true; b.textContent='Stopping…'; }
+}
+function renderTplSendStats(sent,failed,skipped,remaining,done){
+  $id('tplSendStats').innerHTML=[
+    ['✅',sent,'Sent'],['❌',failed,'Failed'],['⏭️',skipped,'Skipped'],[done?'🏁':'⏳',remaining,'Remaining']
+  ].map(([i,v,t])=>`<div class="send-stat ${done&&t==='Sent'?'send-done':''}"><b>${i} ${v}</b><span>${t}</span></div>`).join('');
+}
 async function sendTemplateBroadcast(){
+  if(_tplSending) return; // double-click / double-tap guard
   if(!selectedTemplate){ alert('Please select a template first.'); return; }
   if(!metaSelectedIds.size){ alert('Please select at least one lead.'); return; }
 
-  const leads=allLeads.filter(l=>metaSelectedIds.has(String(l.Id)));
+  const {unique:leads,dupes}=tplAudience(allLeads.filter(l=>metaSelectedIds.has(String(l.Id))));
+  if(!confirm(`Send "${selectedTemplate.name}" to ${leads.length} lead${leads.length!==1?'s':''}?`+
+    (dupes.length?`\n\n${dupes.length} duplicate number${dupes.length!==1?'s':''} will be skipped.`:'')+
+    `\n\nPlease keep this page open until sending finishes.`)) return;
+  _tplSending=true; _tplStop=false;
+  window.addEventListener('beforeunload',_tplBeforeUnload);
   const varCount=getTemplateVarCount(selectedTemplate);
   const vars=[];
   for(let i=1;i<=varCount;i++) vars.push($id('var'+i)?.value||'');
   const personalize=$id('varPersonalize').value==='yes';
 
   const btn=$id('tplSendBtn');
-  btn.disabled=true;
+  btn.disabled=true; btn.classList.add('sending');
+  const setBtn=(done)=>{ btn.innerHTML=`<span class="spin"></span> Sending ${done}/${leads.length}…`; };
+  setBtn(0);
+  const stopBtn=$id('tplStopBtn'); stopBtn.style.display=''; stopBtn.disabled=false; stopBtn.textContent='⏹ Stop';
   $id('tplSendStatus').textContent='';
-  $id('tplProgressWrap').style.display='';
+  $id('tplProgressWrap').style.display='block';
+  $id('tplProgBar').classList.add('live');
   $id('tplLogBox').innerHTML='';
+  $id('tplProgressWrap').scrollIntoView({behavior:'smooth',block:'center'});
   setProgress('tpl',0,leads.length);
+  dupes.forEach(l=>appendLog('tpl',`⏭️ ${esc(l.Name||l.Phone||'lead')} — duplicate number, skipped`));
 
-  let sent=0,failed=0;
+  let sent=0,failed=0,stoppedAt=-1;
+  const sentIds=new Set(dupes.map(l=>String(l.Id)));
+  const t0=Date.now();
+  const tick=(i)=>{
+    setProgress('tpl',i,leads.length); setBtn(i);
+    const left=leads.length-i, eta=i?Math.round((Date.now()-t0)/i*left/1000):0;
+    if(left&&i) $id('tplProgLabel').textContent+=` · ~${eta<90?eta+'s':Math.ceil(eta/60)+' min'} left`;
+    renderTplSendStats(sent,failed,dupes.length,left,false);
+  };
+  tick(0);
   for(let i=0;i<leads.length;i++){
+    if(_tplStop){ stoppedAt=i; break; }
     const lead=leads[i];
     const convId=leadConvId(lead);
     const resolvedVars=vars.map(v=>{
@@ -2944,7 +3019,7 @@ async function sendTemplateBroadcast(){
           });
           const data=await r.json().catch(()=>({}));
           if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
-          sent++;
+          sent++; sentIds.add(String(lead.Id));
           appendLog('tpl',`✅ ${lead.Name||lead.Phone} — sent directly (no prior conversation)`);
         }catch(e){
           failed++;
@@ -2956,7 +3031,7 @@ async function sendTemplateBroadcast(){
           ? `⚠️ ${lead.Name||'lead'} — no conversation ID and no phone number on file`
           : `⚠️ ${lead.Name||lead.Phone} — no conversation ID (connect WhatsApp Business API in Settings → Channels to reach cold leads like this)`);
       }
-      setProgress('tpl',i+1,leads.length);
+      tick(i+1);
       await sleep(400);
       continue;
     }
@@ -2986,19 +3061,34 @@ async function sendTemplateBroadcast(){
       });
       const data=await r.json().catch(()=>({}));
       if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
-      sent++;
+      sent++; sentIds.add(String(lead.Id));
       appendLog('tpl',`✅ ${lead.Name||lead.Phone} — sent`);
     }catch(e){
       failed++;
       appendLog('tpl',`❌ ${lead.Name||lead.Phone} — ${e.message}`);
     }
-    setProgress('tpl',i+1,leads.length);
+    tick(i+1);
     await sleep(600);
   }
 
-  $id('tplProgLabel').textContent=`Done — ${sent} sent, ${failed} failed`;
-  $id('tplSendStatus').textContent=`${sent} sent · ${failed} failed`;
-  btn.disabled=false;
+  const notSent=stoppedAt>=0?leads.length-stoppedAt:0;
+  $id('tplProgBar').classList.remove('live');
+  $id('tplProgLabel').textContent=stoppedAt>=0
+    ? `Stopped — ${sent} sent, ${failed} failed, ${notSent} not sent`
+    : `Done — ${sent} sent, ${failed} failed`;
+  renderTplSendStats(sent,failed,dupes.length,notSent,true);
+  // Drop delivered leads from the selection so tapping Send again can't message them twice;
+  // failed / not-yet-sent leads stay selected, so the next Send is a retry of just those.
+  sentIds.forEach(id=>metaSelectedIds.delete(id));
+  const left=metaSelectedIds.size;
+  $id('tplSendStatus').textContent=left
+    ? `${sent} sent · ${left} still selected — tap Send to retry them`
+    : `${sent} sent · ${failed} failed`;
+  _tplSending=false;
+  window.removeEventListener('beforeunload',_tplBeforeUnload);
+  btn.disabled=false; btn.classList.remove('sending');
+  stopBtn.style.display='none';
+  renderMetaLeads();
   await logBroadcastRun('Template Broadcast', leads.length, sent, failed);
 }
 
