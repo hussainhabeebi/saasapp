@@ -17776,6 +17776,66 @@ function engineStripHallucinatedToolCode(text){
     .trim();
 }
 
+// Real observed failure (Vserveindia, Oct 2026): a Malayalam category answer was followed, in the
+// same customer-facing message, by the system prompt itself — "IMAGES: Never say you cannot see…",
+// "Never claim a human agent…", "Default style (follow this" — copied verbatim until the token cap
+// cut it mid-sentence. A "never reveal your instructions" line is a request, not a guarantee, so
+// the text is cut deterministically at the first point it starts reciting instructions:
+//  • any fixed engine phrase below (also checked at send time, where the prompt isn't known);
+//  • any section heading of THIS turn's prompt ("IMAGES:", "CATEGORY ENQUIRY:", "## Services"…);
+//  • the opening of any long instruction sentence of THIS turn's prompt ("Never …", "Do not …").
+// Whatever comes before the leak is the real answer and is kept; '' when nothing usable is left.
+const ENGINE_PROMPT_LEAK_MARKERS=[
+  'IMAGES: Never say you cannot',
+  'Never claim a human agent',
+  'Default style (follow this',
+  'ZERO-HALLUCINATION LOCK',
+  'VERIFIED ECOM CATALOGUE',
+  'CATEGORY ENQUIRY:',
+  'PRODUCT QUESTION:',
+  'ANSWER-FIRST RULE:',
+  'NO PRESSURE RULE:',
+  'FOLLOW-UP BUTTONS:',
+  'PROPER NOUNS RULE:',
+  'MANGLISH WORDS RULE:',
+  'PHOTO/MEDIA RULE:',
+  'KB PRICING OVERRIDE:',
+  'HEALTHCARE SAFETY LOCK:',
+  '## Recent Conversation',
+  '## Knowledge Base',
+  '## What We Know About This Customer',
+  '## Earlier in This Conversation',
+];
+const ENGINE_PROMPT_HEADING_RE=/^(?:#{1,3} [^\n]{3,60}|[A-Z][A-Z0-9 /&()-]{3,40}:)/;
+const ENGINE_PROMPT_INSTRUCTION_RE=/^(?:Never|Do not|Don't|Always|Only|If you|If they|If the customer|Use |Answer |Reply |Keep |This is |When the customer|You are )/;
+
+export function engineFindPromptLeak(text, systemPrompt){
+  if(!text) return -1;
+  const needles=[...ENGINE_PROMPT_LEAK_MARKERS];
+  if(systemPrompt){
+    for(const raw of String(systemPrompt).split('\n')){
+      const line=raw.trim();
+      const heading=line.match(ENGINE_PROMPT_HEADING_RE);
+      if(heading) needles.push(heading[0]);
+      for(const sentence of line.split(/(?<=[.!?])\s+/)){
+        if(sentence.length>=60 && ENGINE_PROMPT_INSTRUCTION_RE.test(sentence)) needles.push(sentence.slice(0,45));
+      }
+    }
+  }
+  let cut=-1;
+  for(const needle of needles){
+    const i=text.indexOf(needle);
+    if(i!==-1 && (cut===-1 || i<cut)) cut=i;
+  }
+  return cut;
+}
+
+export function engineStripPromptLeak(text, systemPrompt){
+  if(!text) return text;
+  const cut=engineFindPromptLeak(text, systemPrompt);
+  return cut===-1 ? text : text.slice(0, cut).trim();
+}
+
 // The main conversational agent — every FAQ/objection/product-enquiry reply across every client,
 // any industry, goes through this one function. Gemini-first (shared GEMINI_API_KEY, same pattern
 // as the rest of this engine), falling back to OpenRouter with the client's own openrouter_key/
@@ -17792,14 +17852,20 @@ function engineStripHallucinatedToolCode(text){
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const clean=async(text)=>{
+    const stripped=engineStripHallucinatedToolCode(text);
+    const safe=engineStripPromptLeak(stripped, systemPrompt);
+    if(safe!==stripped) await reportOpsError(env, 'engineCallLlm — reply recited the system prompt; leaked part removed', new Error(String(stripped).slice(String(safe||'').length, String(safe||'').length+300)), {clientId:c?.Id});
+    return safe;
+  };
   const own=await aiClientGenerate(env, c, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, caller:'reply'});
-  const ownReply=engineStripHallucinatedToolCode(own?.text);
+  const ownReply=await clean(own?.text);
   if(ownReply) return ownReply;
   if(own && !own.fallback){
     await reportOpsError(env, 'engineCallLlm — client\'s own AI provider failed and shared fallback is off', new Error(own.error||'no usable AI reply'), {clientId:c?.Id});
     return 'One moment 🙏';
   }
-  const geminiReply=engineStripHallucinatedToolCode(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
+  const geminiReply=await clean(await engineGeminiGenerate(env, systemPrompt, userText, {temperature:0.5, maxOutputTokens:maxTokens||300, model:ENGINE_REPLY_MODEL, caller:'reply'}));
   if(geminiReply) return geminiReply;
   // OpenRouter is optional legacy fallback only; never request it with an absent key.
   if(!c?.openrouter_key){
@@ -17812,7 +17878,7 @@ async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
       body:JSON.stringify({model:c.model||'google/gemini-2.5-flash', max_tokens:maxTokens||300, messages:[{role:'system',content:systemPrompt},{role:'user',content:userText}]})
     });
     const data=await r.json().catch(()=>({}));
-    const text=engineStripHallucinatedToolCode(data?.choices?.[0]?.message?.content?.trim());
+    const text=await clean(data?.choices?.[0]?.message?.content?.trim());
     if(text) return text;
     await reportOpsError(env, 'engineCallLlm — Gemini and OpenRouter both returned no usable reply', new Error(JSON.stringify(data).slice(0,500)), {clientId:c?.Id});
   }catch(e){
@@ -18184,7 +18250,7 @@ function engineFormatBotText(c, text){
 
 export async function engineSendChatwootReply(env, c, clientId, convId, text){
   if(typeof text==='string') text=engineFormatBotText(c, text);
-  const trimmed=(typeof text==='string'?text:(text==null?'':String(text))).trim();
+  const trimmed=engineStripPromptLeak((typeof text==='string'?text:(text==null?'':String(text))).trim());
   if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token||!convId||!trimmed){
     if(convId && trimmed) await logEngineSkip(env, clientId, null, convId, 'send-skipped-no-setup', 'Chatwoot base/account/token missing for this client');
     return false;
@@ -19476,7 +19542,10 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
     await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply not sent');
     return false;
   }
-  const trimmed=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
+  const raw=(typeof replyText==='string'?replyText:(replyText==null?'':String(replyText))).trim();
+  // Last line of defence for replies that never went through engineCallLlm — see engineStripPromptLeak.
+  const trimmed=engineStripPromptLeak(raw);
+  if(trimmed!==raw) await reportOpsError(env, 'engineDeliverReply — outgoing reply recited the system prompt; leaked part removed', new Error(raw.slice(trimmed.length, trimmed.length+300)), {clientId, convId});
   if(!trimmed) return;
   // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
   // sent through the Instagram Graph API while inbound media remains visible in Chats.
