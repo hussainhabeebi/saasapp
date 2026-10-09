@@ -4666,16 +4666,10 @@ const ROLES = {
   <span class="modal-drag"></span>
   <div class="modal-hd"><span class="modal-title">Log Call</span><button class="icon-btn" onclick="closeModal('modalCall')">✕</button></div>
   <div class="modal-body">
-    <div class="form-group"><label class="form-label">Direction</label>
-      <select class="form-input" id="callDirection">
-        <option value="out">📤 Outgoing — we called the customer</option>
-        <option value="in">📥 Incoming — the customer called us</option>
-      </select>
-    </div>
     <div class="form-group"><label class="form-label">Outcome</label>
       <select class="form-input" id="callOutcome">
         <option value="Answered">✅ Answered</option>
-        <option value="No Answer">📵 No Answer / Missed</option>
+        <option value="No Answer">📵 No Answer</option>
         <option value="Voicemail">📬 Voicemail</option>
         <option value="Callback Requested">🔁 Callback Requested</option>
       </select>
@@ -9459,7 +9453,7 @@ function renderDetailCalls(lead){
   $id('detailCalls').innerHTML=(badge?`<div style="margin-bottom:8px">${badge}</div>`:'')+(calls.length
     ?calls.map(c=>{
         const by=c.by?(getTeamMembers().find(m=>m.email===c.by)?.name||c.by):'';
-        return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':/callback/i.test(c.outcome||'')?'🔁':'📬'}</div><div class="call-body">${c.dir==='in'?'📥 Incoming · ':''}<b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}</div></div></div>`;
+        return `<div class="call-item"><div class="call-icon">${c.outcome==='Answered'?'✅':c.outcome==='No Answer'?'📵':/callback/i.test(c.outcome||'')?'🔁':'📬'}</div><div class="call-body"><b>${esc(c.outcome)}</b>${c.duration?' · '+c.duration+' min':''}<div class="call-meta">${esc(c.notes||'')} ${c.date||''}${by?' · '+esc(by):''}</div></div></div>`;
       }).join('')
     :'<div style="color:var(--muted);font-size:13px;margin-bottom:8px">No calls logged.</div>');
 }
@@ -9495,15 +9489,12 @@ async function saveCall(){
   if(!dur&&currentLead){ const elapsed=callTimerElapsed(currentLead.Id); if(elapsed>0) dur=elapsed; }
   const outcome=$id('callOutcome').value;
   const leadId=currentLead.Id;
-  // dir: 'in' = the customer called us, 'out' = we called them. Entries saved before this field
-  // existed have no dir and count as outgoing — every Call button dials out.
-  const dir=$id('callDirection')?.value==='in'?'in':'out';
-  calls.unshift({outcome,dir,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
+  calls.unshift({outcome,duration:dur,notes:$id('callNotes').value,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   currentLead.CallLog=JSON.stringify(calls);
   renderDetailCalls(currentLead);
   await patchDetailField('CallLog',currentLead.CallLog);
   closeModal('modalCall');
-  $id('callDuration').value=''; $id('callNotes').value=''; if($id('callDirection')) $id('callDirection').value='out';
+  $id('callDuration').value=''; $id('callNotes').value='';
   // post-call automation
   if(outcome==='No Answer') { autoWaFollowUp(leadId); }
   if(outcome==='Callback Requested') { scheduleCallback(leadId); }
@@ -9685,7 +9676,7 @@ async function saveInlineOutcome(leadId, outcome, durationMins){
   currentLead=l;
   await claimLeadIfUnowned(leadId,'Call outcome');
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome,dir:'out',duration:durationMins||'',notes:'',date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
+  calls.unshift({outcome,duration:durationMins||'',notes:'',date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   l.CallLog=JSON.stringify(calls);
   if(currentLead===l) renderDetailCalls(l);
   await patchDetailField('CallLog',l.CallLog);
@@ -9948,7 +9939,7 @@ async function pdLogOutcome(outcome,{advance=true,toast=true}={}){
   const durationMins=_pdCallStart?Math.round(((_pdCallEnd||Date.now())-_pdCallStart)/60000):0;
   const notes=($id('pdNoteInput')?.value||'').trim();
   let calls=[]; try{calls=JSON.parse(l.CallLog||'[]');}catch(e){}
-  calls.unshift({outcome,dir:'out',duration:durationMins,notes,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
+  calls.unshift({outcome,duration:durationMins,notes,date:new Date().toLocaleString(),at:new Date().toISOString(),by:myEmail});
   const callLog=JSON.stringify(calls);
   try{
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:l.Id,CallLog:callLog});
@@ -17862,14 +17853,13 @@ document.addEventListener('click', e=>{
   if(t&&t.dataset.reports) renderReportsSubPage(t.dataset.reports);
 });
 
-/* ── Leads & Calls — one screen answering "how many leads came in, how many customers called us,
-   and how many of those calls did we answer". Leads and calls are two separate sets of numbers
-   (a lead is a CRM record; a call is one CallLog entry) and are never added together — even in the
-   day-by-day table they sit in their own column groups. Incoming = CallLog entries with dir:'in'
-   (the Log Call modal's Direction field); older entries without dir were all dialled out from a
-   Call button, so they count as outgoing. Answered uses csConnected (call-score.js), the same rule
-   as Reports → Calls & Conversions; everything else (No Answer, Voicemail, Callback) is missed.
-   Date + member filters apply: leads by arrival date/Owner, calls by call time/who logged it. */
+/* ── Leads & Calls — one screen answering "how many leads came in, how many customers did the
+   telecallers call, and how many of those calls were answered". Leads and calls are two separate
+   sets of numbers (a lead is a CRM record; a call is one CallLog entry a telecaller logged) and are
+   never added together — even in the day-by-day table they sit in their own columns. Answered uses
+   csConnected (call-score.js), the same rule as Reports → Calls & Conversions; everything else
+   (No Answer, Voicemail, Callback) is missed/unanswered. Date + member filters apply: leads by
+   arrival date/Owner, calls by call time/who made the call. */
 function renderReportsLeadsCalls(){
   const el=$id('reportsContent');
   const range=csRange();
@@ -17884,23 +17874,29 @@ function renderReportsLeadsCalls(){
   const sod=new Date(); sod.setHours(0,0,0,0);
   const todayLeads=mine.filter(l=>{ const ms=leadMs(l); return ms!=null&&ms>=sod.getTime(); }).length;
 
-  // ── Calls — every CallLog entry across all leads, filtered by time + who logged it
+  // ── Calls — every CallLog entry across all leads, filtered by time + who made it
   const calls=[];
   allLeads.forEach(l=>csCalls(l).forEach(c=>{
     const ms=csCallMs(c);
     if(!unbounded&&!inRange(ms)) return;
     if(member&&!sameEmail(c.by,member)) return;
-    calls.push({leadId:l.Id, ms, dir:c.dir==='in'?'in':'out', answered:csConnected(c)});
+    calls.push({leadId:l.Id, ms, by:csEmailKey(c.by), answered:csConnected(c)});
   }));
-  const incoming=calls.filter(c=>c.dir==='in'), outgoing=calls.filter(c=>c.dir==='out');
-  const inAnswered=incoming.filter(c=>c.answered).length;
-  const inMissed=incoming.length-inAnswered;
-  const callers=new Set(incoming.map(c=>c.leadId)).size;
-  const outAnswered=outgoing.filter(c=>c.answered).length;
+  const answered=calls.filter(c=>c.answered).length;
+  const missed=calls.length-answered;
+  const customers=new Set(calls.map(c=>c.leadId)).size;
+  const customersAnswered=new Set(calls.filter(c=>c.answered).map(c=>c.leadId)).size;
 
   const stat=(lbl,val,cls='')=>`<div class="stat${cls?' '+cls:''}"><div class="stat-lbl">${lbl}</div><div class="stat-val">${val}</div></div>`;
   const grid='display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))';
   const periodLbl={all:'All Time',today:'Today',week:'This Week',month:'This Month',year:'This Year',custom:'Custom Range'}[_rptFilters.period]||'';
+
+  // ── Per telecaller
+  const members=getTeamMembers().filter(m=>!member||sameEmail(m.email,member));
+  const perAgent=members.map(m=>{
+    const k=csEmailKey(m.email), own=calls.filter(c=>c.by===k), ans=own.filter(c=>c.answered).length;
+    return {m, total:own.length, ans, miss:own.length-ans, customers:new Set(own.map(c=>c.leadId)).size};
+  }).sort((a,b)=>b.total-a.total);
 
   // ── Day-by-day: newest first, up to 31 days. All Time shows the last 7 days.
   const days=[];
@@ -17909,13 +17905,13 @@ function renderReportsLeadsCalls(){
   const firstDay=csDayKey(startMs);
   for(const d=new Date(end); csDayKey(d.getTime())>=firstDay && days.length<31; d.setDate(d.getDate()-1)) days.push(csDayKey(d.getTime()));
   const byDay={};
-  days.forEach(k=>byDay[k]={leads:0,inc:0,ans:0,miss:0,callers:new Set()});
+  days.forEach(k=>byDay[k]={leads:0,calls:0,ans:0,miss:0,customers:new Set()});
   mine.forEach(l=>{ const ms=leadMs(l); if(ms==null) return; const r=byDay[csDayKey(ms)]; if(r) r.leads++; });
-  incoming.forEach(c=>{ const r=c.ms!=null&&byDay[csDayKey(c.ms)]; if(!r) return; r.inc++; if(c.answered) r.ans++; else r.miss++; r.callers.add(c.leadId); });
+  calls.forEach(c=>{ const r=c.ms!=null&&byDay[csDayKey(c.ms)]; if(!r) return; r.calls++; if(c.answered) r.ans++; else r.miss++; r.customers.add(c.leadId); });
   const fmtDay=k=>new Date(k+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'});
 
   el.innerHTML=`
-    <div class="s-note" style="margin-bottom:12px">Leads and calls side by side, kept as separate numbers — a lead is a contact that came in, a call is one logged phone call. Incoming calls are the ones logged with Direction “📥 Incoming” in Log Call. Period: <b>${esc(periodLbl)}</b>.</div>
+    <div class="s-note" style="margin-bottom:12px">Leads and calls side by side, kept as separate numbers — a lead is a contact that came in, a call is one phone call a telecaller made and logged. Period: <b>${esc(periodLbl)}</b>.</div>
     <div class="lc-split" style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:14px">
       <div class="card" id="lcLeads">
         <div class="card-title">🧲 Leads Statistics</div>
@@ -17928,21 +17924,29 @@ function renderReportsLeadsCalls(){
       <div class="card" id="lcCalls">
         <div class="card-title">📞 Calls Statistics</div>
         <div style="${grid}">
-          ${stat('Total Incoming Calls',incoming.length)}
-          ${stat('Answered Calls',inAnswered,'accent')}
-          ${stat('Missed / Unanswered Calls',inMissed)}
-          ${stat('Customers Who Called',callers)}
+          ${stat('Total Calls Made',calls.length)}
+          ${stat('Answered Calls',answered,'accent')}
+          ${stat('Missed / Unanswered Calls',missed)}
+          ${stat('Customers Called',customers)}
         </div>
-        <div class="s-note" style="margin-top:8px">Answer rate: <b>${csPct(inAnswered,incoming.length)}</b>. Customers Who Called counts each customer once, however many times they rang. Outgoing calls made by the team in this period: <b>${outgoing.length}</b> (${outAnswered} answered) — not included above.</div>
+        <div class="s-note" style="margin-top:8px">Answer rate: <b>${csPct(answered,calls.length)}</b>. Customers Called counts each customer once, however many times they were called — <b>${customersAnswered}</b> of them answered at least once. Missed = No Answer, Voicemail or Callback Requested.</div>
       </div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title">👤 Calls by Telecaller</div>
+      ${perAgent.length?`<div style="overflow-x:auto">
+      <table class="leads-tbl" id="lcAgents" style="width:100%;min-width:560px">
+        <thead><tr><th>Telecaller</th><th>Calls Made</th><th>Answered</th><th>Missed</th><th>Answer Rate</th><th>Customers Called</th></tr></thead>
+        <tbody>${perAgent.map(r=>`<tr><td>${csWho(r.m)}</td><td><b>${r.total}</b></td><td>${r.ans}</td><td>${r.miss?`<span style="color:var(--red)">${r.miss}</span>`:0}</td><td>${csPct(r.ans,r.total)}</td><td>${r.customers}</td></tr>`).join('')}</tbody>
+      </table></div>`:'<div style="color:var(--muted);font-size:13px">No team members yet — add one in Settings → User Management.</div>'}
     </div>
     <div class="card">
       <div class="card-title">🧭 Combined Overview — day by day</div>
-      <div class="s-note" style="margin-bottom:8px">${unbounded?'Last 7 days.':'Each day in the selected period (most recent 31 days).'} Leads and incoming calls are counted separately.</div>
+      <div class="s-note" style="margin-bottom:8px">${unbounded?'Last 7 days.':'Each day in the selected period (most recent 31 days).'} Leads and calls are counted separately.</div>
       <div style="overflow-x:auto">
-      <table class="leads-tbl" style="width:100%;min-width:620px">
-        <thead><tr><th>Date</th><th>New Leads</th><th>Incoming Calls</th><th>Answered</th><th>Missed</th><th>Customers Who Called</th></tr></thead>
-        <tbody>${days.map(k=>{ const r=byDay[k]; return `<tr><td>${esc(fmtDay(k))}</td><td><b>${r.leads}</b></td><td>${r.inc}</td><td>${r.ans}</td><td>${r.miss?`<span style="color:var(--red)">${r.miss}</span>`:0}</td><td>${r.callers.size}</td></tr>`; }).join('')}</tbody>
+      <table class="leads-tbl" id="lcDays" style="width:100%;min-width:620px">
+        <thead><tr><th>Date</th><th>New Leads</th><th>Calls Made</th><th>Answered</th><th>Missed</th><th>Customers Called</th></tr></thead>
+        <tbody>${days.map(k=>{ const r=byDay[k]; return `<tr><td>${esc(fmtDay(k))}</td><td><b>${r.leads}</b></td><td>${r.calls}</td><td>${r.ans}</td><td>${r.miss?`<span style="color:var(--red)">${r.miss}</span>`:0}</td><td>${r.customers.size}</td></tr>`; }).join('')}</tbody>
       </table>
       </div>
     </div>`;
