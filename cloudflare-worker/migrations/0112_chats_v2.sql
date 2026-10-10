@@ -52,8 +52,7 @@ CREATE TABLE IF NOT EXISTS chat_sync_state (
   reconciled_at TEXT
 );
 
-ALTER TABLE lead_messages ADD COLUMN sender_type TEXT NOT NULL DEFAULT '';
-ALTER TABLE lead_messages ADD COLUMN sender_email TEXT NOT NULL DEFAULT '';
-ALTER TABLE lead_messages ADD COLUMN sender_name TEXT NOT NULL DEFAULT '';
-ALTER TABLE lead_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
-ALTER TABLE lead_messages ADD COLUMN meta TEXT NOT NULL DEFAULT '{}';
+-- lead_messages also gets sender_type, sender_email, sender_name, kind and meta columns. Those are
+-- added only by the Worker (chats-v2.js CHATS_V2_MESSAGE_COLUMNS), never here: SQLite has no
+-- ADD COLUMN IF NOT EXISTS, so an ALTER in this file would fail on any database the Worker had
+-- already upgraded and block every later migration.
