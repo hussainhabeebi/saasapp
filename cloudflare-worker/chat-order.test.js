@@ -3,7 +3,7 @@
 // these pin the guard rails the code enforces around it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ecomChatOrderSeed, ecomApplyChatOrderTurn, ecomChatOrderItems, ecomChatOrderSystemPrompt } from './worker.js';
+import { ecomChatOrderSeed, ecomApplyChatOrderTurn, ecomChatOrderItems, ecomChatOrderSystemPrompt, ecomChatOrderExtras } from './worker.js';
 
 const product = { name: 'Affordable Full Romper Set', sku: 'AFR1', price: 999, currency: 'INR',
   description: "Full Romper + Cap. Baby's name printed. Bows optional: ₹60 per bow." };
@@ -45,4 +45,20 @@ test('unusable model output returns null; off_topic passes through', () => {
   assert.equal(ecomApplyChatOrderTurn(seed, 'not json'), null);
   assert.equal(ecomApplyChatOrderTurn(seed, turn({ reply: '', status: 'collecting' })), null);
   assert.equal(ecomApplyChatOrderTurn(seed, turn({ reply: '', status: 'off_topic' })).status, 'off_topic');
+});
+
+test('details mentioned in passing land in the order: size/colour in items, the rest in their own fields', () => {
+  const sys = ecomChatOrderSystemPrompt({}, ecomChatOrderSeed(product), 'en');
+  for (const k of ['size', 'colour', 'landmark', 'customer_email', 'alternate_phone', 'payment_method', 'delivery_date', 'gift_message'])
+    assert.match(sys, new RegExp(`"${k}":""`), k);
+  const r = ecomApplyChatOrderTurn(ecomChatOrderSeed(product), turn({ reply: 'Noted 😊', status: 'collecting',
+    details: { size: '0-3 months', colour: 'Pink', customisation: 'Name: Ayra', delivery_address: 'Kochi 682001', landmark: 'near St. Mary\'s church',
+      customer_email: 'murshid@example.com', payment_method: 'COD', delivery_date: 'before 10th', gift_message: 'Happy 1st month!' } }));
+  assert.equal(ecomChatOrderItems(r.seed), 'Affordable Full Romper Set | Size: 0-3 months | Colour: Pink | Name: Ayra');
+  assert.deepEqual(ecomChatOrderExtras(r.seed.details), {
+    delivery_address: "Kochi 682001 — Landmark: near St. Mary's church",
+    customer_email: 'murshid@example.com', payment_method: 'COD',
+    notes: 'Wanted by: before 10th\nGift message: Happy 1st month!\nPayment: COD' });
+  // a non-email in the email slot is dropped, nothing given → nothing written
+  assert.deepEqual(ecomChatOrderExtras({ customer_email: 'call me' }), {});
 });

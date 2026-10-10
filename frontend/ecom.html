@@ -10,6 +10,8 @@
 <meta name="theme-color" content="#0D9C93">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -102,6 +104,10 @@ select.badge:focus{outline:2px solid var(--accent);outline-offset:1px}
 .search-input:focus{outline:none;border-color:var(--accent);background:#fff}
 tbody tr:hover{background:var(--bg)}
 .row-actions{display:flex;gap:6px}
+.order-bulk{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;background:var(--accent-soft);border:1px solid var(--ls);border-radius:10px;font-size:13px;color:var(--accent-ink)}
+.order-bulk .save-btn{padding:7px 12px;font-size:12px}
+.order-bulk .bulk-count{font-weight:600;margin-right:auto}
+.ord-check{width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}
 .icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
 .icon-btn:hover{background:var(--bg)}
 .icon-btn.danger:hover{background:#FEE2E2;color:#991B1B;border-color:#FCA5A5}
@@ -332,15 +338,22 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     </div>
     <div class="s-hint" style="margin:-4px 0 12px"><strong>Draft</strong> = the customer started ordering in WhatsApp but hasn't confirmed yet. It fills in as they answer and becomes Pending when they confirm. Use ✏️ to add or correct details — or "Fill from chat" to read them from the conversation.</div>
     <span class="save-msg" id="ordersSyncMsg"></span>
+    <div class="order-bulk" id="orderBulkBar">
+      <span class="bulk-count" id="orderBulkCount">Export all shown orders</span>
+      <button class="save-btn sec" onclick="exportOrders('orders')" title="One page per order — customer, delivery address, items, total">📄 Order PDFs</button>
+      <button class="save-btn sec" onclick="exportOrders('packing')" title="One packing list per order — items with quantity and a tick box, ship-to address">📦 Packing lists</button>
+      <button class="save-btn sec" onclick="exportOrders('summary')" title="All the orders in one table">🧾 Summary PDF</button>
+      <button class="save-btn sec" onclick="exportOrders('csv')" title="Spreadsheet of the orders">⬇ CSV</button>
+    </div>
     <div class="tbl-wrap">
       <table>
         <thead>
           <tr>
-            <th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th>Actions</th>
+            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
-          <tr class="loading-row"><td colspan="7"><span class="spinner"></span>Loading…</td></tr>
+          <tr class="loading-row"><td colspan="8"><span class="spinner"></span>Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1041,6 +1054,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <div class="s-sec"><span class="s-lbl">Customer Email</span><input class="s-input" id="omCustomerEmail" type="email"></div>
       <div class="s-sec"><span class="s-lbl">Total</span><input class="s-input" id="omTotal" type="number" step="0.01"></div>
       <div class="s-sec"><span class="s-lbl">Currency</span><input class="s-input" id="omCurrency" type="text" placeholder="INR"></div>
+      <div class="s-sec"><span class="s-lbl">Payment Method</span><input class="s-input" id="omPayment" type="text" placeholder="e.g. COD, UPI"></div>
       <div class="s-sec">
         <span class="s-lbl">Status</span>
         <select class="s-input" id="omStatus">
@@ -1147,6 +1161,7 @@ let allTestimonials = [];
 let tmSelectedProductIds = new Set();
 const ORDER_STATUS_OPTIONS = ['draft','pending','received','processing','shipped','delivered','cancelled'];
 let editingOrderId = null;
+let selectedOrderIds = new Set();
 
 const WA_TEMPLATE_KINDS = [
   { key:'received',  label:'Order Received Template' },
@@ -2343,26 +2358,33 @@ async function deleteTestimonialById(id) {
 async function loadOrders() {
   const tbody = document.getElementById('ordersTbody');
   if (!ecomTableIds.orders) {
-    tbody.innerHTML = '<tr><td colspan="7" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
     return;
   }
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders?client_id=${encodeURIComponent(clientId)}&sort=-order_date&limit=200`);
     const data = await r.json();
-    if (!r.ok) { tbody.innerHTML = `<tr><td colspan="7" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
+    if (!r.ok) { tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
     allOrders = data.list || [];
+    const ids = new Set(allOrders.map(o => o.Id));
+    selectedOrderIds.forEach(id => { if (!ids.has(id)) selectedOrderIds.delete(id); });
     renderOrdersTable();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="loading-row">Error: ${e.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${esc(e.message)}</td></tr>`;
   }
+}
+
+function filteredOrders() {
+  const q = (document.getElementById('orderSearch')?.value || '').trim().toLowerCase();
+  return q
+    ? allOrders.filter(o => [o.customer_name, o.customer_phone, o.items, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
+    : allOrders;
 }
 
 function renderOrdersTable() {
   const tbody = document.getElementById('ordersTbody');
-  const q = (document.getElementById('orderSearch')?.value || '').trim().toLowerCase();
-  const list = q
-    ? allOrders.filter(o => [o.customer_name, o.customer_phone, o.items, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
-    : allOrders;
+  const list = filteredOrders();
+  renderOrderBulkBar();
 
   const pending  = allOrders.filter(o => o.status === 'pending').length;
   const shipped  = allOrders.filter(o => o.status === 'shipped').length;
@@ -2374,7 +2396,7 @@ function renderOrdersTable() {
   document.getElementById('statRevenue').textContent = revenue.toLocaleString();
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
     return;
   }
   const statusClass = s => ({draft:'draft',shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
@@ -2383,13 +2405,14 @@ function renderOrdersTable() {
     const opts = ORDER_STATUS_OPTIONS.includes(o.status) ? ORDER_STATUS_OPTIONS : [...ORDER_STATUS_OPTIONS, o.status].filter(Boolean);
     return `
     <tr>
+      <td><input type="checkbox" class="ord-check" ${selectedOrderIds.has(o.Id)?'checked':''} onchange="toggleOrderSelected(${o.Id}, this.checked)" title="Select for export"></td>
       <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
       <td>${esc(o.customer_name||'—')}${o.customer_phone ? `<div style="font-size:11px;color:var(--muted)">${esc(o.customer_phone)}</div>` : ''}</td>
       <td>${esc(o.order_date||'—')}</td>
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
-      <td><div class="row-actions"><button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
+      <td><div class="row-actions"><button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn" onclick="exportOrders('orders', [${o.Id}])" title="Download order PDF">📄</button><button class="icon-btn" onclick="exportOrders('packing', [${o.Id}])" title="Download packing list">📦</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`;
   }).join('');
 }
@@ -2400,7 +2423,7 @@ function openAddOrderModal() {
   editingOrderId = null;
   document.getElementById('orderModalTitle').textContent = 'Add Order';
   document.getElementById('omFromChatBtn').style.display = 'none';
-  ['omOrderId','omCustomerName','omCustomerPhone','omCustomerEmail','omTotal','omItems','omAddress','omNotes'].forEach(id => document.getElementById(id).value = '');
+  ['omOrderId','omCustomerName','omCustomerPhone','omCustomerEmail','omTotal','omPayment','omItems','omAddress','omNotes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('omCurrency').value = 'INR';
   document.getElementById('omStatus').value = 'received';
   document.getElementById('omOrderDate').value = new Date().toISOString().slice(0,10);
@@ -2419,7 +2442,7 @@ function openEditOrderModal(id) {
   set('omOrderId', o.order_id); set('omOrderDate', (o.order_date||'').slice(0,10));
   set('omCustomerName', o.customer_name); set('omCustomerPhone', o.customer_phone);
   set('omCustomerEmail', o.customer_email); set('omTotal', o.total || '');
-  set('omCurrency', o.currency || 'INR'); set('omItems', o.items);
+  set('omCurrency', o.currency || 'INR'); set('omPayment', o.payment_method); set('omItems', o.items);
   set('omAddress', o.delivery_address); set('omNotes', o.notes);
   const st = document.getElementById('omStatus');
   if (o.status && ![...st.options].some(x => x.value === o.status)) st.add(new Option(o.status, o.status));
@@ -2445,6 +2468,7 @@ async function fillOrderFromChat(btn) {
     const filled = [];
     const fill = (el, v, label) => { if (v && document.getElementById(el).value.trim() !== v) { document.getElementById(el).value = v; filled.push(label); } };
     fill('omItems', s.items, 'items'); fill('omCustomerName', s.customer_name, 'name'); fill('omAddress', s.delivery_address, 'address');
+    fill('omCustomerEmail', s.customer_email, 'email'); fill('omPayment', s.payment_method, 'payment');
     if (s.notes) {
       const n = document.getElementById('omNotes');
       if (!n.value.includes(s.notes)) { n.value = [n.value.trim(), 'From chat: ' + s.notes].filter(Boolean).join('\n'); filled.push('notes'); }
@@ -2493,6 +2517,10 @@ async function submitAddOrder() {
     delivery_address: document.getElementById('omAddress').value.trim(),
     notes: document.getElementById('omNotes').value.trim()
   };
+  // Only sent when there's something to say, so a table without the column still saves.
+  const payment = document.getElementById('omPayment').value.trim();
+  const prevPayment = editingOrderId ? (allOrders.find(x => x.Id === editingOrderId)?.payment_method || '') : '';
+  if (payment || prevPayment) body.payment_method = payment;
   showMsg('orderModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
@@ -2542,6 +2570,244 @@ async function deleteOrder(id, label) {
   } catch(e) {
     alert('Error deleting order: ' + e.message);
   }
+}
+
+// ── ORDER EXPORT (PDF / packing list / CSV) ────────
+// Tick orders to export just those; with nothing ticked the buttons export every order the search
+// currently shows. 📄 / 📦 on a row export that one order. Same jsPDF + autotable as the dashboard's
+// quote/invoice PDFs.
+function toggleOrderSelected(id, on) {
+  if (on) selectedOrderIds.add(id); else selectedOrderIds.delete(id);
+  renderOrderBulkBar();
+}
+
+function toggleAllOrders(on) {
+  filteredOrders().forEach(o => { if (on) selectedOrderIds.add(o.Id); else selectedOrderIds.delete(o.Id); });
+  renderOrdersTable();
+}
+
+function renderOrderBulkBar() {
+  const shown = filteredOrders();
+  const n = selectedOrderIds.size;
+  const shownSel = shown.filter(o => selectedOrderIds.has(o.Id)).length;
+  document.getElementById('orderBulkCount').textContent = n
+    ? `${n} order${n===1?'':'s'} selected`
+    : `Export all ${shown.length} shown order${shown.length===1?'':'s'}`;
+  const all = document.getElementById('orderSelectAll');
+  all.checked = !!shown.length && shownSel === shown.length;
+  all.indeterminate = shownSel > 0 && shownSel < shown.length;
+}
+
+// "2x Wireless Mouse, 1x Desk Lamp" / "Romper Set × 2 | Name: Ayra" / one item per line →
+// [{name, qty, details}]. "|" parts after the product are its customisation.
+function orderItemLines(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  return raw.split(/\n|;|,(?=\s*\d+\s*[x×]\s)/i).map(x => x.trim()).filter(Boolean).map(line => {
+    const [head = '', ...rest] = line.split('|').map(x => x.trim()).filter(Boolean);
+    let name = head, qty = 1, m;
+    if ((m = head.match(/^(\d+)\s*[x×]\s+(.+)$/i))) { qty = +m[1]; name = m[2]; }
+    else if ((m = head.match(/^(.+?)\s*[x×]\s*(\d+)$/i))) { name = m[1]; qty = +m[2]; }
+    return { name, qty: qty || 1, details: rest.join(' · ') };
+  });
+}
+
+// jsPDF's built-in fonts only cover Latin-1 — swap the common symbols rather than print garbage.
+function pdfText(v) {
+  return String(v == null ? '' : v)
+    .replace(/₹/g, 'Rs.').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-')
+    .replace(/…/g, '...').replace(/•/g, '-')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}️‍]/gu, '')
+    .replace(/[^\x00-\xFF]/g, '?');
+}
+
+function orderStatusLabel(s) { return s === 'draft' ? 'Draft (in chat)' : (s ? s.charAt(0).toUpperCase() + s.slice(1) : '—'); }
+function orderMoney(o) { return `${o.currency || 'INR'} ${Number(o.total || 0).toLocaleString()}`; }
+function orderRef(o) { return String(o.order_id || o.Id || ''); }
+function orderFileRef(o) { return orderRef(o).replace(/[^A-Za-z0-9_-]+/g, '-') || 'order'; }
+
+function pdfFooter(doc, label) {
+  const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
+  doc.text(pdfText(label), 40, pageH - 20);
+  doc.text(`Page ${doc.internal.getNumberOfPages()}`, pageW - 40, pageH - 20, { align: 'right' });
+  doc.setTextColor(0);
+}
+
+// Store name + document title on the left/right, order # / date / status under the title.
+function pdfOrderHeader(doc, o, title) {
+  const pageW = doc.internal.pageSize.getWidth();
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17);
+  doc.text(pdfText(clientRecord?.client_name || 'Order'), 40, 52, { maxWidth: pageW - 260 });
+  doc.setFontSize(18); doc.setTextColor(124, 58, 237);
+  doc.text(title, pageW - 40, 52, { align: 'right' });
+  doc.setTextColor(0); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  const meta = [`Order #${orderRef(o)}`, `Date: ${o.order_date ? String(o.order_date).slice(0, 10) : '-'}`, `Status: ${orderStatusLabel(o.status)}`];
+  if (o.payment_method) meta.push(`Payment: ${o.payment_method}`);
+  meta.forEach((t, i) => doc.text(pdfText(t), pageW - 40, 70 + i * 14, { align: 'right' }));
+  const y = 70 + meta.length * 14 + 6;
+  doc.setDrawColor(228, 224, 245); doc.line(40, y, pageW - 40, y);
+  return y + 20;
+}
+
+function pdfLabeledBlock(doc, x, y, w, label, lines) {
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(91, 82, 128);
+  doc.text(label.toUpperCase(), x, y);
+  doc.setTextColor(0); doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
+  let yy = y + 16;
+  lines.filter(Boolean).forEach((t, i) => {
+    if (i === 0) doc.setFont('helvetica', 'bold'); else doc.setFont('helvetica', 'normal');
+    const wrapped = doc.splitTextToSize(pdfText(t), w);
+    doc.text(wrapped, x, yy);
+    yy += wrapped.length * 14;
+  });
+  return yy;
+}
+
+function pdfNotes(doc, y, notes) {
+  const n = String(notes || '').trim();
+  if (!n) return y;
+  const pageW = doc.internal.pageSize.getWidth();
+  const wrapped = doc.splitTextToSize(pdfText(n), pageW - 80);
+  if (y + 30 + wrapped.length * 12 > doc.internal.pageSize.getHeight() - 40) { doc.addPage(); y = 50; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(91, 82, 128);
+  doc.text('NOTES', 40, y);
+  doc.setTextColor(0); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  doc.text(wrapped, 40, y + 14);
+  return y + 14 + wrapped.length * 12 + 10;
+}
+
+function pdfOrderPage(doc, o) {
+  const pageW = doc.internal.pageSize.getWidth(), colW = (pageW - 100) / 2;
+  let y = pdfOrderHeader(doc, o, 'ORDER');
+  const yL = pdfLabeledBlock(doc, 40, y, colW, 'Customer', [o.customer_name || '-', o.customer_phone, o.customer_email]);
+  const yR = pdfLabeledBlock(doc, 60 + colW, y, colW, 'Deliver to', [o.customer_name || '-', o.delivery_address || 'No address yet']);
+  const items = orderItemLines(o.items);
+  doc.autoTable({
+    startY: Math.max(yL, yR) + 10,
+    margin: { left: 40, right: 40, bottom: 40 },
+    head: [['#', 'Item', 'Details', 'Qty']],
+    body: items.length ? items.map((it, i) => [String(i + 1), pdfText(it.name), pdfText(it.details || '-'), String(it.qty)]) : [['1', pdfText(o.items || '-'), '-', '1']],
+    theme: 'grid',
+    headStyles: { fillColor: [124, 58, 237] },
+    styles: { fontSize: 10, cellPadding: 6 },
+    columnStyles: { 0: { cellWidth: 26 }, 3: { cellWidth: 44, halign: 'center' } },
+  });
+  y = ((doc.lastAutoTable && doc.lastAutoTable.finalY) || y) + 22;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+  doc.text(pdfText(`Total: ${orderMoney(o)}`), pageW - 40, y, { align: 'right' });
+  y = pdfNotes(doc, y + 26, o.notes);
+  pdfFooter(doc, `Order #${orderRef(o)} - generated ${new Date().toLocaleString()}`);
+}
+
+// What the packer needs: who it ships to, every item with its quantity and customisation, a tick
+// box per line and sign-off lines. No prices.
+function pdfPackingPage(doc, o) {
+  const pageW = doc.internal.pageSize.getWidth();
+  let y = pdfOrderHeader(doc, o, 'PACKING LIST');
+  const addrLines = doc.splitTextToSize(pdfText(o.delivery_address || 'No address yet'), pageW - 110);
+  const boxH = 60 + addrLines.length * 14;
+  doc.setDrawColor(124, 58, 237); doc.setLineWidth(1.2); doc.roundedRect(40, y - 6, pageW - 80, boxH, 6, 6);
+  doc.setLineWidth(0.5);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(91, 82, 128);
+  doc.text('SHIP TO', 54, y + 10);
+  doc.setTextColor(0); doc.setFontSize(14);
+  doc.text(pdfText(o.customer_name || '-'), 54, y + 28);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
+  doc.text(addrLines, 54, y + 44);
+  doc.text(pdfText([o.customer_phone, o.customer_email].filter(Boolean).join('   ')), 54, y + 44 + addrLines.length * 14);
+  y += boxH + 14;
+  const items = orderItemLines(o.items);
+  const rows = items.length ? items : [{ name: o.items || '-', qty: 1, details: '' }];
+  doc.autoTable({
+    startY: y,
+    margin: { left: 40, right: 40, bottom: 40 },
+    head: [['Qty', 'Item', 'Customisation / details', 'Packed']],
+    body: rows.map(it => [String(it.qty), pdfText(it.name), pdfText(it.details || '-'), '']),
+    theme: 'grid',
+    headStyles: { fillColor: [124, 58, 237] },
+    styles: { fontSize: 11, cellPadding: 7, valign: 'middle' },
+    columnStyles: { 0: { cellWidth: 40, halign: 'center', fontStyle: 'bold', fontSize: 13 }, 3: { cellWidth: 52 } },
+    didDrawCell: d => {
+      if (d.section === 'body' && d.column.index === 3) {
+        const s = 12;
+        doc.setDrawColor(60); doc.rect(d.cell.x + (d.cell.width - s) / 2, d.cell.y + (d.cell.height - s) / 2, s, s);
+      }
+    },
+  });
+  y = ((doc.lastAutoTable && doc.lastAutoTable.finalY) || y) + 18;
+  const totalQty = rows.reduce((s, it) => s + (it.qty || 1), 0);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+  doc.text(`Total pieces: ${totalQty}`, pageW - 40, y, { align: 'right' });
+  y = pdfNotes(doc, y + 22, o.notes);
+  if (y + 40 > doc.internal.pageSize.getHeight() - 40) { doc.addPage(); y = 60; }
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setDrawColor(150);
+  const third = (pageW - 80) / 3;
+  ['Packed by', 'Checked by', 'Date'].forEach((l, i) => {
+    const x = 40 + i * third;
+    doc.line(x, y + 24, x + third - 20, y + 24);
+    doc.text(l, x, y + 38);
+  });
+  pdfFooter(doc, `Packing list - Order #${orderRef(o)}`);
+}
+
+function pdfOrdersSummary(doc, list) {
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text(pdfText(`${clientRecord?.client_name || 'Store'} - Orders`), 40, 44);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`${list.length} order${list.length===1?'':'s'} - generated ${new Date().toLocaleString()}`, 40, 62);
+  doc.setTextColor(0);
+  doc.autoTable({
+    startY: 76,
+    margin: { left: 40, right: 40, bottom: 36 },
+    head: [['Order #', 'Date', 'Customer', 'Phone', 'Items', 'Total', 'Status', 'Payment', 'Delivery address']],
+    body: list.map(o => [orderRef(o), String(o.order_date || '').slice(0, 10), o.customer_name || '-', o.customer_phone || '-', o.items || '-',
+      orderMoney(o), orderStatusLabel(o.status), o.payment_method || '-', o.delivery_address || '-'].map(pdfText)),
+    theme: 'grid',
+    headStyles: { fillColor: [124, 58, 237] },
+    styles: { fontSize: 8, cellPadding: 4 },
+    columnStyles: { 4: { cellWidth: 150 }, 8: { cellWidth: 150 } },
+    didDrawPage: () => pdfFooter(doc, 'Orders summary'),
+  });
+}
+
+function ordersCsv(list) {
+  const cols = ['order_id', 'order_date', 'status', 'customer_name', 'customer_phone', 'customer_email', 'items', 'total', 'currency', 'payment_method', 'delivery_address', 'notes'];
+  // Leading = + - @ would run as a formula in Excel/Sheets — prefix a quote (phones keep their +).
+  const cell = v => {
+    let s = v == null ? '' : String(v);
+    if (/^[=@]|^[+-](?!\d[\d\s]*$)/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return '﻿' + [cols.join(','), ...list.map(o => cols.map(c => cell(c === 'order_id' ? orderRef(o) : o[c])).join(','))].join('\r\n');
+}
+
+function exportOrders(kind, ids) {
+  const list = ids ? allOrders.filter(o => ids.includes(o.Id))
+    : selectedOrderIds.size ? allOrders.filter(o => selectedOrderIds.has(o.Id)) : filteredOrders();
+  if (!list.length) { showMsg('ordersSyncMsg', 'No orders to export', 4000); return; }
+  const single = list.length === 1 && ids;
+  const today = new Date().toISOString().slice(0, 10);
+  if (kind === 'csv') {
+    const url = URL.createObjectURL(new Blob([ordersCsv(list)], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `orders-${today}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return;
+  }
+  if (!window.jspdf?.jsPDF) { alert('PDF library not loaded — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: kind === 'summary' ? 'landscape' : 'portrait' });
+  if (kind === 'summary') {
+    pdfOrdersSummary(doc, list);
+    doc.save(`orders-summary-${today}.pdf`);
+    return;
+  }
+  const draw = kind === 'packing' ? pdfPackingPage : pdfOrderPage;
+  list.forEach((o, i) => { if (i) doc.addPage(); draw(doc, o); });
+  const base = kind === 'packing' ? 'packing-list' : 'order';
+  doc.save(single ? `${base}-${orderFileRef(list[0])}.pdf` : `${base}s-${today}.pdf`);
 }
 
 // ── COLUMN MAPPING (Orders sheet sync only — Products now uses direct CSV
