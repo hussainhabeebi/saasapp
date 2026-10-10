@@ -1,5 +1,6 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
+import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,toWhatsApp} from './chats-v2.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -180,6 +181,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
   {test:(p,m)=>p==='/public/chat/message'&&m==='POST', bucket:'public-chat-msg', limit:30, windowSec:60},
   {test:(p,m)=>p==='/public/chat/config'&&m==='GET', bucket:'public-chat-cfg', limit:60, windowSec:60},
+  // Chats v2 AI assist (rewrite / suggest / translate / summarise) spends the client's AI quota.
+  {test:(p,m)=>p==='/chats/v2/ai'&&m==='POST', bucket:'chats-ai', limit:60, windowSec:60},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -1453,6 +1456,13 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // chatwoot_inbox_id (required by engineSyncChatwootWebhook) or a legacy webhook_url can become
   // available/stale slightly out of order relative to other Settings saves. No-ops quickly if
   // already correct, so this is safe to run on every save rather than sniffing for one field.
+  // Chats v2: an edit to a lead from the dashboard (Owner, Tags, Name…) shows in the chat list now.
+  if(r.ok && method==='PATCH' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body){
+    try{
+      const patches=[].concat(JSON.parse(body)).filter(x=>x&&x.Id).slice(0,100);
+      for(const pt of patches) await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate});
+    }catch(e){}
+  }
   if(r.ok && method==='PATCH' && upstreamPath.startsWith(`api/v2/tables/${CLIENTS_TABLE}/records`) && body){
     try{
       await kvDelClient(env,payload.cid);
@@ -1466,13 +1476,44 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
 // Insert one message row into lead_messages (D1). INSERT OR IGNORE on the unique
 // (lead_id, ts, role) index so webhook replays and dual-writes are idempotent.
-function leadMessageStmt(env, leadId, clientId, msg){
+// v2: when the Chats v2 schema is in place (chats-v2.js chatsV2Ready) the row also records who
+// sent it (customer / bot / agent + the agent's email and name) and its kind, for sender
+// attribution in the thread and the chat list's preview.
+function leadMessageNormalize(msg){
   if(!msg?.role) return null;
   // Photos travel as `media` ({type,url}) through the engine (inbound customer photos, product
   // photos the bot sends); the D1 row only has an attachment column, so fold media into it.
   if((!msg.attachment||!Object.keys(msg.attachment).length)&&msg.media?.url){
     const {type, ...rest}=msg.media;
     msg={...msg, attachment:{...rest, kind:type==='video'?'video':'image'}};
+  }
+  return msg;
+}
+function leadMessageStmt(env, leadId, clientId, msg, v2=false){
+  msg=leadMessageNormalize(msg);
+  if(!msg) return null;
+  if(v2){
+    const kind=msg.kind==='note'||msg.kind==='event'?msg.kind
+      :msg.attachment?.kind==='template'?'template'
+      :msg.attachment&&Object.keys(msg.attachment).length?String(msg.attachment.kind==='voice'?'audio':msg.attachment.kind||'document')
+      :'text';
+    return env.DB.prepare(
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts,sender_type,sender_email,sender_name,kind,meta)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      Number(leadId), Number(clientId),
+      msg.role,
+      msg.content||'',
+      (msg.attachment&&Object.keys(msg.attachment).length)?JSON.stringify(msg.attachment):'{}',
+      (msg.reply_to&&Object.keys(msg.reply_to).length)?JSON.stringify(msg.reply_to):'{}',
+      msg.ts||new Date().toISOString(),
+      String(msg.sender_type||(msg.role==='user'?'customer':'')),
+      String(msg.sender_email||'').slice(0,140),
+      String(msg.sender_name||'').slice(0,80),
+      kind.slice(0,20),
+      // Quick-reply buttons the bot offered with this message, shown under the bubble in Chats.
+      Array.isArray(msg.options)&&msg.options.length?JSON.stringify({options:msg.options.map(o=>String(o?.title||o?.text||o||'').slice(0,40)).filter(Boolean).slice(0,10)}):'{}'
+    );
   }
   return env.DB.prepare(
     `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts)
@@ -1487,17 +1528,39 @@ function leadMessageStmt(env, leadId, clientId, msg){
   );
 }
 export async function d1InsertLeadMessage(env, leadId, clientId, msg){
-  try{ await leadMessageStmt(env, leadId, clientId, msg)?.run(); }catch(e){}
+  let v2=false;
+  try{ v2=await chatsV2Ready(env); }catch(e){}
+  let res=null;
+  try{ res=await leadMessageStmt(env, leadId, clientId, msg, v2)?.run(); }
+  catch(e){ if(v2){ try{ await leadMessageStmt(env, leadId, clientId, msg, false)?.run(); }catch(e2){} } }
+  // Chats v2 list row + live delta — only when a row actually landed (not a replayed duplicate).
+  if(v2&&res?.meta?.changes){
+    try{ await chatsV2AfterInsert(env, leadId, clientId, {...leadMessageNormalize(msg), ts:msg.ts||new Date().toISOString()}, res.meta.last_row_id, {broadcast:engineBroadcastUpdate}); }catch(e){}
+  }
 }
 // Many rows in one D1 round trip (env.DB.batch) instead of one INSERT per message. If a batch
 // fails it falls back to row-by-row, so one bad row can't drop the rest.
-export async function d1InsertLeadMessages(env, leadId, clientId, msgs){
-  const stmts=[];
-  for(const m of msgs||[]){ try{ const st=leadMessageStmt(env, leadId, clientId, m); if(st) stmts.push(st); }catch(e){} }
+// `seed`: copying existing history in (ConvHistory → D1) rather than recording new messages, so the
+// Chats v2 list row isn't reopened or marked unread by it.
+export async function d1InsertLeadMessages(env, leadId, clientId, msgs, {seed=false}={}){
+  let v2=false;
+  try{ v2=await chatsV2Ready(env); }catch(e){}
+  const stmts=[], kept=[];
+  for(const m of msgs||[]){ try{ const st=leadMessageStmt(env, leadId, clientId, m, v2); if(st){ stmts.push(st); kept.push(m); } }catch(e){} }
+  let latest=null;
   for(let i=0;i<stmts.length;i+=100){
     const chunk=stmts.slice(i, i+100);
-    try{ await env.DB.batch(chunk); }
-    catch(e){ for(const st of chunk){ try{ await st.run(); }catch(e2){} } }
+    let results=null;
+    try{ results=await env.DB.batch(chunk); }
+    catch(e){ results=[]; for(const st of chunk){ try{ results.push(await st.run()); }catch(e2){ results.push(null); } } }
+    (results||[]).forEach((r, j)=>{
+      if(!r?.meta?.changes) return;
+      const m=kept[i+j], ts=String(m?.ts||'');
+      if(!latest||ts>=latest.ts) latest={msg:m, ts, id:r.meta.last_row_id};
+    });
+  }
+  if(v2&&latest){
+    try{ await chatsV2AfterInsert(env, leadId, clientId, {...leadMessageNormalize(latest.msg), ts:latest.ts||new Date().toISOString()}, latest.id, {seed, broadcast:engineBroadcastUpdate}); }catch(e){}
   }
 }
 
@@ -1523,7 +1586,7 @@ async function handleGetChatMessages(request, env){
   if(!countRow||!countRow.n){
     let history=[];
     try{history=JSON.parse(lead.ConvHistory||'[]');}catch(e){}
-    await d1InsertLeadMessages(env, leadId, payload.cid, history);
+    await d1InsertLeadMessages(env, leadId, payload.cid, history, {seed:true});
   }
 
   // One-off: bring in photos/files from before media was recorded (see chatsBackfillChatwootMedia).
@@ -1538,10 +1601,14 @@ async function handleGetChatMessages(request, env){
     :await env.DB.prepare('SELECT * FROM lead_messages WHERE lead_id=? ORDER BY ts ASC')
         .bind(Number(leadId)).all().catch(()=>({results:[]}));
 
-  const messages=(rows.results||[]).map(r=>{
+  // Chats v2 activity events ("Assigned to …") are thread rows too; this v1 shape has no way to
+  // show them as anything but a customer bubble, so they're left out here.
+  const messages=(rows.results||[]).filter(r=>r.kind!=='event').map(r=>{
     const m={role:r.role, content:r.content, ts:r.ts};
     try{const a=JSON.parse(r.attachment||'{}');if(Object.keys(a).length)m.attachment=a;}catch(e){}
     try{const rt=JSON.parse(r.reply_to||'{}');if(Object.keys(rt).length)m.reply_to=rt;}catch(e){}
+    if(r.sender_type) m.sender_type=r.sender_type;
+    if(r.sender_name) m.sender_name=r.sender_name;
     return m;
   });
 
@@ -1551,10 +1618,18 @@ async function handleGetChatMessages(request, env){
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {conv_id, text, lead_id, reply_to}=await request.json().catch(()=>({}));
-  if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
+  const body=await request.json().catch(()=>({}));
   const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, body)}); }
+  catch(e){ return json({error:e.message}, e.status||502); }
+}
+// Shared by /chat/send and Chats v2 scheduled messages (chats-v2.js chatsV2RunScheduled).
+async function chatSendTextCore(env, c, payload, body){
+  const {conv_id, lead_id, reply_to}=body;
+  // **bold**/## headings typed or pasted by an agent reach WhatsApp as literal symbols — convert.
+  const text=toWhatsApp(body.text);
+  if(!conv_id||!text) throw Object.assign(new Error('conv_id and text required'), {status:400});
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) throw Object.assign(new Error('Chatwoot is not configured for this account.'), {status:400});
   // A swipe/tap "Reply" from chats.html: there is no Chatwoot message id to thread against, so the
   // quoted line is prefixed onto what the customer sees, while D1 keeps the plain text + reply_to
   // so the Chats thread renders the quote as a proper reply card.
@@ -1563,15 +1638,15 @@ async function handleChatSend(request, env){
   const fd=new FormData();
   fd.append('content', outText); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:502});
   // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
   if(lead_id){
     const ts=new Date().toISOString();
-    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...(quote?.snippet?{reply_to:quote}:{})});
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...chatsAgentSender(c, payload), ...(body.sender_type?{sender_type:body.sender_type}:{}), ...(quote?.snippet?{reply_to:quote}:{})});
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
       {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
   }
-  return json({ok:true, data:await r.json().catch(()=>({}))});
+  return await r.json().catch(()=>({}));
 }
 
 // Instagram's equivalent of /chat/send above — a human agent's manual reply from the Chats page's
@@ -1613,6 +1688,7 @@ async function handleChatPinLead(request, env){
   await ensureLeadsColumns(env, ['Pinned']);
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), Pinned:pinned?'Yes':'No'}});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  await chatsV2ApplyLeadPatch(env, lead_id, {Pinned:pinned?'Yes':'No'}, {broadcast:engineBroadcastUpdate});
   return json({ok:true, pinned:!!pinned});
 }
 
@@ -1634,6 +1710,7 @@ async function handleChatResolveLead(request, env){
   await ensureLeadsColumns(env, ['ConvResolved']);
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead_id), ConvResolved:resolved?'Yes':'No'}});
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  await chatsV2ApplyLeadPatch(env, lead_id, {ConvResolved:resolved?'Yes':'No'}, {broadcast:engineBroadcastUpdate});
   return json({ok:true, resolved:!!resolved});
 }
 
@@ -1663,10 +1740,16 @@ async function handleChatHandover(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {lead_id, takeover}=await request.json().catch(()=>({}));
   if(!lead_id) return json({error:'lead_id required'}, 400);
+  try{ return json({ok:true, lead:await chatHandoverCore(env, payload, lead_id, takeover)}); }
+  catch(e){ return json({error:e.message}, e.status||502); }
+}
+// Shared by /chat/handover and Chats v2's bot/human pill (chats-v2.js `handler` action) so both
+// write exactly the same lead fields the engine reads. Returns the patched fields.
+async function chatHandoverCore(env, payload, lead_id, takeover){
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
-  if(!leadR.ok) return json({error:'Lead not found'}, 404);
+  if(!leadR.ok) throw Object.assign(new Error('Lead not found'), {status:404});
   const lead=await leadR.json().catch(()=>({}));
-  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  if(String(lead.ClientId)!==String(payload.cid)) throw Object.assign(new Error('Lead not found'), {status:404});
   await ensureLeadsColumns(env, ['HandoverBy']);
   const by=String(payload.email||payload.sub||'Team').slice(0,120);
   const patch=takeover
@@ -1681,22 +1764,31 @@ async function handleChatHandover(request, env){
     }catch(e){}
   }
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
-  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:502});
   const {Id, 'Customer Facts':_facts, ...fields}=patch;
-  return json({ok:true, lead:fields});
+  await chatsV2ApplyLeadPatch(env, lead_id, fields, {broadcast:engineBroadcastUpdate});
+  return fields;
 }
 
 // A message a person sent from chats.html (attachment, voice note, template) — saved to the D1
 // thread the page reads from, after checking the lead belongs to this client, and LastMsgAt bumped
 // so the chat list re-sorts. Callers that pass no lead_id (quotations, broadcasts) skip this.
-async function chatsRecordOutgoing(env, cid, leadId, msg){
+// The person sending from Chats, for sender attribution (lead_messages.sender_*). The session token
+// carries the signed-in email (signSession); the display name comes from User Management.
+function chatsAgentSender(c, payload){
+  const email=String(payload?.email||'').trim().toLowerCase();
+  let names={}; try{ names=JSON.parse(c?.team_names||'{}')||{}; }catch(e){}
+  return {sender_type:'agent', sender_email:email, sender_name:String(names[email]||(email?email.split('@')[0]:'Team')).slice(0,80)};
+}
+async function chatsRecordOutgoing(env, cid, leadId, msg, payload=null){
   if(!leadId) return;
   const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
   const lead=leadR.ok?await leadR.json().catch(()=>({})):{};
   if(String(lead.ClientId)!==String(cid)) return;
   if(await d1HasChatwootMessage(env, leadId, msg.attachment?.cw_id)) return;
   const ts=new Date().toISOString();
-  await d1InsertLeadMessage(env, leadId, cid, {role:'assistant', ts, ...msg});
+  const sender=payload?chatsAgentSender(await getClientById(env, cid).catch(()=>null), payload):{};
+  await d1InsertLeadMessage(env, leadId, cid, {role:'assistant', ts, ...sender, ...msg});
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
     {method:'PATCH', body:{Id:Number(leadId), LastMsgAt:ts}}).catch(()=>{});
 }
@@ -1717,12 +1809,24 @@ export function chatwootMediaRows(body, role, content){
   if(isNaN(base)) base=new Date();
   const cwId=Number(body.id||body.message?.id)||0;
   return atts.map((a,i)=>{
+    const ft=String(a.file_type||'').toLowerCase();
+    const at=new Date(base.getTime()+i).toISOString();
+    // Shared location / contact card: no file, just coordinates or a name+number. Chats v2 shows
+    // them as a map card / contact card.
+    if(ft==='location'&&a.coordinates_lat!=null&&a.coordinates_long!=null){
+      const lat=Number(a.coordinates_lat), lng=Number(a.coordinates_long);
+      return {role, content:i===0?String(content||''):'', ts:at, attachment:{kind:'location', lat, lng, name:String(a.fallback_title||'Location').slice(0,200),
+        url:`https://maps.google.com/?q=${lat},${lng}`, ...(cwId?{cw_id:cwId}:{})}};
+    }
+    if(ft==='contact'){
+      return {role, content:i===0?String(content||''):'', ts:at, attachment:{kind:'contacts', name:String(a.meta?.first_name?[a.meta.first_name,a.meta.last_name].filter(Boolean).join(' '):'Contact').slice(0,120),
+        phone:String(a.fallback_title||'').slice(0,40), ...(cwId?{cw_id:cwId}:{})}};
+    }
     const url=a.data_url||a.file_url||'';
     if(!url) return null;
-    const ft=String(a.file_type||'').toLowerCase();
     let name='';try{name=decodeURIComponent(url.split('?')[0].split('/').pop()||'');}catch(e){}
     const kind=ft==='image'?'image':ft==='video'?'video':ft==='audio'?(/\.(ogg|opus|oga)$/i.test(name)?'voice':'audio'):'document';
-    return {role, content:i===0?String(content||''):'', ts:new Date(base.getTime()+i).toISOString(),
+    return {role, content:i===0?String(content||''):'', ts:at,
       attachment:{kind, url, name, size:Number(a.file_size)||0, ...(cwId?{cw_id:cwId}:{})}};
   }).filter(Boolean);
 }
@@ -1805,7 +1909,7 @@ async function handleQuoteSend(request, env){
     const kind=form.get('kind')==='voice'?'voice':type.startsWith('audio')?'audio':type.startsWith('image')?'image':type.startsWith('video')?'video':'document';
     const duration=Number(form.get('duration'))||0;
     await chatsRecordOutgoing(env, payload.cid, leadId, {content:caption,
-      attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{}), ...(data?.id?{cw_id:Number(data.id)}:{})}});
+      attachment:{kind, type, name:file.name||'', size:file.size||0, url:sent.data_url||sent.file_url||'', ...(duration?{duration}:{}), ...(data?.id?{cw_id:Number(data.id)}:{})}}, payload);
   }
   return json({ok:true, data});
 }
@@ -1878,7 +1982,7 @@ async function handleWaSendTemplate(request, env){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
-  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content||''), attachment:chatsTemplateAttachment(template_name, buttons)});
+  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content||''), attachment:chatsTemplateAttachment(template_name, buttons)}, payload);
   return json({ok:true, message_id:data?.messages?.[0]?.id});
 }
 
@@ -3589,7 +3693,7 @@ async function handleBroadcastSendTemplate(request, env){
     body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:template_name, category:category||'MARKETING', language:language||'en', processed_params:processed_params||{}}})
   });
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
-  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content), attachment:chatsTemplateAttachment(template_name, buttons)});
+  if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content), attachment:chatsTemplateAttachment(template_name, buttons)}, payload);
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
 
@@ -17879,7 +17983,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
   if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env,c,clientId,resolvedLeadId,state.lead,built.body,{inboxId:state.inboxId});
   if(resolvedLeadId){
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'user',content:userText,ts:new Date(startMs).toISOString()});
-    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
+    await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',sender_type:'bot',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
     await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,replyText);
     if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
     await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
@@ -18403,8 +18507,10 @@ async function engineLocalizeReply(env, c, text, targetLang){
 // it only ever meant "didn't crash." logEngineSkip here (reason 'send-failed'/'send-skipped-no-
 // setup') makes an actual delivery failure show up in that same table instead.
 // The LLM writes Markdown ("**bold**", "*   item", "## Heading"), which WhatsApp shows as raw
-// asterisks — it bolds with a single *. Converts to WhatsApp formatting; used for travel agency
-// clients' bot replies (engineSendChatwootReply / engineSendChatwootQuickReply).
+// asterisks — it bolds with a single *. Converts to WhatsApp formatting for every bot reply
+// (engineSendChatwootReply / engineSendChatwootQuickReply). Travel agency clients get this full
+// conversion (also "- " bullets → •); everyone else gets chats-v2.js toWhatsApp, which leaves
+// "- " lists alone — those already read fine on WhatsApp.
 export function engineMarkdownToWhatsApp(text){
   if(typeof text!=='string'||!text) return text;
   return text
@@ -18415,7 +18521,7 @@ export function engineMarkdownToWhatsApp(text){
 }
 
 function engineFormatBotText(c, text){
-  return ltLiveAgencyEnabled(c)?engineMarkdownToWhatsApp(text):text;
+  return ltLiveAgencyEnabled(c)?engineMarkdownToWhatsApp(text):toWhatsApp(text);
 }
 
 export async function engineSendChatwootReply(env, c, clientId, convId, text){
@@ -19645,7 +19751,7 @@ async function handleNativeFormEndpoint(request, env){
     const resolvedLeadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
     // Dual-write bot message to D1 lead_messages
     if(resolvedLeadId) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'assistant', content:sentText, ts:new Date().toISOString()});
+      {role:'assistant', sender_type:'bot', content:sentText, ts:new Date().toISOString()});
     if(resolvedLeadId && nextStage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, nextStage);
 
     if(flowMeta.convId){
@@ -20078,6 +20184,8 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 async function engineUpsertLead(env, method, leadId, body){
   if(leadId) body.Id=leadId;
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  // Chats v2: the engine's own lead changes (a bot handover, Owner from Lead Routing) reach the list.
+  if(leadId && r.ok) await chatsV2ApplyLeadPatch(env, leadId, body, {broadcast:engineBroadcastUpdate});
   if(leadId) return leadId;
   const created=await r.json().catch(()=>null);
   return created?.Id||null;
@@ -23520,7 +23628,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // No `media` here: the photo itself was posted to Chatwoot and is recorded from its
       // outgoing message_created webhook (engineRecordOutgoingChatwootMedia).
       if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-        {role:'assistant', content:routing.reply, ts:botTs,
+        {role:'assistant', sender_type:'bot', content:routing.reply, ts:botTs,
          ...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
     }
     if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
@@ -23712,7 +23820,7 @@ async function persistInstagramTurn(env, c, clientId, state, routing, userText, 
        ...(routing.userMedia?{media:routing.userMedia}:{}),
        ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
     if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'assistant', content:routing.reply, ts:now, ...(routing.media?{media:routing.media}:{})});
+      {role:'assistant', sender_type:'bot', content:routing.reply, ts:now, ...(routing.media?{media:routing.media}:{})});
   }
   if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
   // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
@@ -31000,6 +31108,47 @@ async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
   const event=prevStatus===''?'created':row.status!==prevStatus?'status_changed':'';
   await pmQueueTaskLifecycle(env, row, {event, prevStatus});
 }
+const CHATS_V2_DEPS={
+  json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
+  leadsTable:DEFAULT_LEADS_TABLE,
+  ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
+  broadcast:engineBroadcastUpdate,
+  handover:chatHandoverCore,
+  sendText:chatSendTextCore,
+  // WhatsApp Cloud API block list (Block contact). Needs the channel's own Meta credentials.
+  waBlock:async(env, c, phone, inboxId, block)=>{
+    const creds=resolveMetaCredentials(c, {inbox_id:inboxId});
+    if(!creds?.wa_token||!creds?.wa_phone_id) return {ok:false, error:'This WhatsApp number has no direct Meta connection, so it can only be blocked from the WhatsApp Business app.'};
+    const r=await fetch(`https://graph.facebook.com/v21.0/${creds.wa_phone_id}/block_users`, {method:block?'POST':'DELETE',
+      headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', block_users:[{user:String(phone).replace(/\D/g,'')}]})});
+    const d=await r.json().catch(()=>({}));
+    return r.ok?{ok:true}:{ok:false, error:d?.error?.error_user_msg||d?.error?.message||('Meta HTTP '+r.status)};
+  },
+  // Platform email (same RESEND_API_KEY the task notifications use) for "Email transcript".
+  sendEmail:async(env, to, subject, html)=>{
+    if(!env.RESEND_API_KEY) return {ok:false, error:'Email isn\'t configured on the server yet (RESEND_API_KEY missing).'};
+    const r=await fetch('https://api.resend.com/emails', {method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne <tasks@leadvyne.com>', to:[to], subject, html})});
+    const d=await r.json().catch(()=>({}));
+    return r.ok?{ok:true}:{ok:false, error:d?.message||'Resend HTTP '+r.status};
+  },
+  backfillMedia:chatsBackfillChatwootMedia,
+  // First open of a chat Chats v2 has never seen: ownership check + ConvHistory → D1 (as
+  // /chat/messages does), which also creates its conversations row.
+  seedLead:async(env, cid, leadId)=>{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}`);
+    if(!r.ok) return null;
+    const lead=await r.json().catch(()=>null);
+    if(!lead||String(lead.ClientId)!==String(cid)) return null;
+    let history=[]; try{ history=JSON.parse(lead.ConvHistory||'[]'); }catch(e){}
+    if(!Array.isArray(history)||!history.length) return null;
+    const stamped=history.map((m, i)=>({...m, ts:m.ts||m.timestamp||new Date(Date.parse(lead.LastMsgAt||'')-(history.length-i)*1000||Date.now()-(history.length-i)*1000).toISOString()}));
+    await d1InsertLeadMessages(env, leadId, cid, stamped, {seed:true});
+    await chatsV2ApplyLeadPatch(env, leadId, lead, {});
+    return lead;
+  },
+};
 const CEO_DEPS={
   json, requireSession, getClientById, reportOpsError, parseTeamWhatsapp,
   normalizePhone:(raw, c)=>normalizeStaffWhatsapp(raw, hotLeadAlertDefaultCc(c)),
@@ -34538,11 +34687,15 @@ export class ClientUpdatesHub{
   async webSocketMessage(ws, message){
     let msg=null;
     try{ msg=JSON.parse(message); }catch(e){ return; }
-    if(msg?.type!=='viewing' || !msg.lead_id) return;
+    // Chats v2 adds `typing` (an agent composing a reply) on the same ephemeral relay, for the
+    // collision warning in chats.html — ids and identity only, never the draft text.
+    // `mention`: an @mention in an internal note, delivered to whoever is online (to = their email).
+    if(!['viewing','typing','mention'].includes(msg?.type) || !msg.lead_id) return;
     let who={};
     try{ who=ws.deserializeAttachment()||{}; }catch(e){}
     if(!who.email) return;
-    const out=JSON.stringify({type:'viewing', lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
+    const out=JSON.stringify({type:msg.type, lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString(),
+      ...(msg.type==='mention'?{to:String(msg.to||'').toLowerCase().slice(0,140)}:{})});
     for(const other of this.state.getWebSockets()){
       if(other===ws) continue;
       try{ other.send(out); }catch(e){}
@@ -35073,6 +35226,7 @@ export default {
       // CEO Bot (ceo-bot.js) — session-gated, owner-only and 403 unless ceo_bot_enabled, except its
       // own WhatsApp webhook (/ceo/wa/webhook/<key>), which is Meta-signature-verified instead.
       else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
+      else if(url.pathname.startsWith('/chats/v2/')){ res=await chatsV2HandleRoute(request, env, CHATS_V2_DEPS, url, ctx); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
       else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
@@ -35313,6 +35467,8 @@ export default {
       ctx.waitUntil(runStaffWinExamplesForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){
+      // Chats v2 "Schedule message" — sends whatever is due (15-minute granularity).
+      ctx.waitUntil(chatsV2RunScheduled(env, CHATS_V2_DEPS).catch(e=>reportOpsError(env, 'chats scheduled messages', e)));
       // Leadvyne v2 reply-gap nudge — see engineV2NudgeDue.
       ctx.waitUntil(runV2NudgesForAllClients(env));
       // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.

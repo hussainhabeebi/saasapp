@@ -315,7 +315,10 @@ describe('WhatsApp webhook', ()=>{
     assert.equal(db.prepare(`SELECT status FROM pm_tasks WHERE id=11`).get().status, 'blocked');
     assert.match(textOf(sentTo(PHONES[OWNER])[0]), /Rahul K is blocked on #11.*\n"Waiting for prices from finance"/);
   });
-  test('delay needs owner approval; APPROVE moves the date and tells staff', async()=>{
+  test('delay needs owner approval; APPROVE moves the date and tells staff', async(t)=>{
+    // "friday" is resolved from the real clock — pin it to the fixture's Tuesday, otherwise this
+    // only passes during the week of TODAY.
+    t.mock.method(Date, 'now', ()=>at('10:00'));
     seed();
     openWindow(Object.values(PHONES), Date.now());
     await inbound(PHONES[RAHUL], {text:'delay 11 friday'});
