@@ -48,7 +48,9 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       if (failBootstrap) return route.fulfill({ status: 503, json: { error: 'down' } });
       return route.fulfill({ json: { version: 'v1', me: { email: ME, staff: false, locked: false }, agents: [{ email: ME, name: 'Boss' }, { email: SHAFNA, name: 'Shafna' }],
         labels: ['Hot'], canned: [{ id: 1, shortcut: 'price-list', body: 'Hi {{name}}, here is our price list' }, { id: 2, shortcut: 'order', body: 'Your order {{order_id}} is ready' }],
-        settings: { sla_warn_min: 15, sla_breach_min: 60 } } });
+        settings: { sla_warn_min: 15, sla_breach_min: 60 },
+        views: [{ id: 7, name: 'Hot leads', shared: 1, filter: { all: [{ f: 'label', op: 'has', v: 'Hot' }] } }],
+        macros: [{ id: 3, name: 'Mark as Hot lead', ops: [{ op: 'label_add', args: { label: 'Hot' } }, { op: 'assign', args: { email: SHAFNA } }] }] } });
     }
     if (p.endsWith('/chats/v2/counts')) return route.fulfill({ json: { all: 3, unread: 1, needs: 1, mine: 0, unassigned: 1, pending: 0, snoozed: 0, resolved: 1, unread_by_channel: { whatsapp: 1, instagram: 0 } } });
     if (p.endsWith('/chats/v2/list')) {
@@ -57,6 +59,8 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       if (q.updated_since !== undefined) return route.fulfill({ json: { rows: state.updated } });
       let rs = state.rows.filter(r => (q.view === 'resolved' ? r.status === 'resolved' : q.view === 'unassigned' ? !r.assignee_email && r.status !== 'resolved' : r.status !== 'snoozed'));
       if (q.handler === 'human') rs = rs.filter(r => r.handover === 'Yes');
+      if (q.filter) { calls.filter = JSON.parse(q.filter); rs = rs.filter(r => r.labels_key.includes(',hot,')); }
+      if (q.channel === 'whatsapp' || q.channel === 'instagram') rs = rs.filter(r => r.channel === q.channel);
       rs.sort((a, b) => b.last_message_at.localeCompare(a.last_message_at));
       const start = q.cursor ? Number(q.cursor) : 0, limit = Number(q.limit || 40);
       return route.fulfill({ json: { rows: rs.slice(start, start + limit), cursor: start + limit < rs.length ? String(start + limit) : null } });
@@ -70,6 +74,11 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       if (b.op === 'summary') return route.fulfill({ json: { summary: '• Asha wants a price\n• Asked about delivery' } });
     }
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(p) && req.method() === 'PATCH') { calls.patch = (calls.patch || []).concat([req.postDataJSON()]); return route.fulfill({ json: {} }); }
+    if (p.endsWith('/chats/v2/schedule')) {
+      if (req.method() === 'POST') { calls.schedule = (calls.schedule || []).concat([req.postDataJSON()]); return route.fulfill({ json: { ok: true } }); }
+      return route.fulfill({ json: { items: (calls.schedule || []).map((x, i) => ({ id: i + 1, text: x.text, send_at: x.send_at, status: 'scheduled' })) } });
+    }
+    if (p.endsWith('/pm/tasks')) { calls.task = req.postDataJSON(); return route.fulfill({ json: { ok: true } }); }
     if (p.endsWith('/chats/v2/send-probe')) return route.fulfill({ json: {} });
     if (p.endsWith('/chat/send')) { calls.send = (calls.send || []).concat([req.postDataJSON()]); return route.fulfill({ json: { ok: true } }); }
     if (p.endsWith('/chats/v2/thread')) {
@@ -121,7 +130,7 @@ test('the list comes from the v2 API with row badges, never the NocoDB lead list
   await expect(binu.locator('.hnd')).toHaveText('🤖');
   await expect(binu.locator('.wait')).toHaveClass(/warn/);
   await expect(binu.locator('.preview')).toContainText('🤖 Our price is AED 375');
-  await expect(page.locator('#filters .pill')).toHaveText(['All3', 'Unread1', 'Needs you1', 'Mine0', 'Unassigned1', 'Pending0', 'Snoozed0', 'Resolved1']);
+  await expect(page.locator('#filters .pill')).toHaveText(['All3', 'Unread1', 'Needs you1', 'Mine0', 'Unassigned1', 'Pending0', 'Snoozed0', 'Resolved1', 'Hot leads']);
 });
 
 test('tabs and the bot/human filter are server views', async ({ page }) => {
@@ -347,4 +356,69 @@ test('contact sidebar: edit fields, see details and notes, summarise, add a note
   await panel.locator('#infoNote').fill('VIP — offer free upgrade');
   await panel.locator('#infoNote').press('Enter');
   await expect.poll(() => (calls.patch || []).at(-1)?.NotesList || '').toContain('VIP — offer free upgrade');
+});
+
+test('location and contact cards; a failed send says why', async ({ page }) => {
+  const { calls } = await open(page, { thread: { messages: [
+    { id: 1, role: 'user', content: '', ts: minsAgo(5), attachment: { kind: 'location', lat: 9.93, lng: 76.26, name: 'Marine Drive', url: 'https://maps.google.com/?q=9.93,76.26' } },
+    { id: 2, role: 'user', content: '', ts: minsAgo(4), attachment: { kind: 'contacts', name: 'Ravi', phone: '+91 98470 00000' } },
+  ] } });
+  await page.route('**/chat/send', r => r.fulfill({ status: 502, json: { error: '(#131047) Re-engagement message' } }));
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await expect(page.locator('#thread .card', { hasText: 'Marine Drive' })).toHaveAttribute('href', 'https://maps.google.com/?q=9.93,76.26');
+  await expect(page.locator('#thread .card', { hasText: 'Ravi' }).locator('a', { hasText: 'WhatsApp' })).toHaveAttribute('href', 'https://wa.me/919847000000');
+  await page.locator('#msg').fill('hello');
+  await page.locator('#msg').press('Enter');
+  await expect(page.locator('#thread .fail-why')).toHaveText('Not delivered · 24-hour window closed — send a template');
+});
+
+test('All channels shows a channel badge; saved views and the filter builder query the server', async ({ page }) => {
+  const { calls } = await open(page, { rows: [conv(1, { name: 'Asha', labels: 'Hot', labels_key: ',hot,' }), conv(2, { name: 'Insta Ian', channel: 'instagram' })] });
+  await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
+  await page.locator('#allChannelPill').click();
+  await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Insta Ian']);
+  await expect(page.locator('#list .contact', { hasText: 'Insta Ian' }).locator('.ch-badge')).toHaveText('📸');
+  await page.locator('#filters .view-pill', { hasText: 'Hot leads' }).click();
+  await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
+  expect(calls.filter).toEqual({ all: [{ f: 'label', op: 'has', v: 'Hot' }] });
+  await page.locator('#filters .view-pill', { hasText: 'Hot leads' }).click();
+  await page.locator('#filterBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Apply' }).click();
+  await expect.poll(() => calls.filter?.all?.[0]?.f).toBe('label');
+});
+
+test('macros run their steps in order; schedule, forward and create a task', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await page.locator('#infoBtn').click();
+  await page.locator('#infoPanel button', { hasText: 'Mark as Hot lead' }).click();
+  await expect.poll(() => calls.act.slice(-2).map(a => a.op)).toEqual(['label_add', 'assign']);
+  await page.locator('#infoBtn').click();
+  await page.locator('#msg').fill('Reminder: your visa appointment is tomorrow');
+  await page.locator('#sendMore').click();
+  await page.locator('#ddMenu button', { hasText: 'Schedule' }).last().click();
+  await expect.poll(() => (calls.schedule || []).length).toBe(1);
+  expect(calls.schedule[0]).toMatchObject({ lead_id: 2, text: 'Reminder: your visa appointment is tomorrow' });
+  await expect(page.locator('#schedBar')).toContainText('Reminder: your visa');
+  await expect(page.locator('#msg')).toHaveValue('');
+  const row = page.locator('#thread .bubble-row', { hasText: 'I can help with that' });
+  await row.hover();
+  await row.locator('[data-act="task"]').click();
+  await page.locator('#ddMenu button', { hasText: 'Create' }).click();
+  await expect.poll(() => calls.task).toMatchObject({ lead_id: 2, title: 'Follow up: I can help with that', assignee_email: ME });
+  await row.hover();
+  await row.locator('[data-act="forward"]').click();
+  await page.locator('#fwdQ').fill('asha');
+  await page.locator('#ddMenu button', { hasText: 'Asha' }).click();
+  await expect.poll(() => (calls.send || []).at(-1)).toMatchObject({ lead_id: 1, text: 'I can help with that' });
+});
+
+test('@mention picker in internal notes', async ({ page }) => {
+  await open(page);
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await page.locator('#noteMode').click();
+  await page.locator('#msg').pressSequentially('Please call @sha');
+  await expect(page.locator('#cannedPanel button')).toHaveText([/@Shafna/]);
+  await page.locator('#msg').press('Enter');
+  await expect(page.locator('#msg')).toHaveValue('Please call @Shafna ');
 });

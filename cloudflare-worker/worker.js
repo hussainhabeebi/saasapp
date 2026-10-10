@@ -34689,11 +34689,13 @@ export class ClientUpdatesHub{
     try{ msg=JSON.parse(message); }catch(e){ return; }
     // Chats v2 adds `typing` (an agent composing a reply) on the same ephemeral relay, for the
     // collision warning in chats.html — ids and identity only, never the draft text.
-    if(!['viewing','typing'].includes(msg?.type) || !msg.lead_id) return;
+    // `mention`: an @mention in an internal note, delivered to whoever is online (to = their email).
+    if(!['viewing','typing','mention'].includes(msg?.type) || !msg.lead_id) return;
     let who={};
     try{ who=ws.deserializeAttachment()||{}; }catch(e){}
     if(!who.email) return;
-    const out=JSON.stringify({type:msg.type, lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
+    const out=JSON.stringify({type:msg.type, lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString(),
+      ...(msg.type==='mention'?{to:String(msg.to||'').toLowerCase().slice(0,140)}:{})});
     for(const other of this.state.getWebSockets()){
       if(other===ws) continue;
       try{ other.send(out); }catch(e){}

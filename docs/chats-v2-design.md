@@ -464,3 +464,45 @@ Labels, priority, sort, snooze/pending tabs, bulk + row menu, media cards, faile
    from roles in `team_permissions`?
 3. **Instagram 24h rules:** a separate timer (7 days with the human-agent tag) or none at all?
 4. **SLA:** one setting per client, or per label/priority as well?
+
+---
+
+## 11. Implementation status (10 Oct 2026)
+
+Built on branch `claude/compassionate-planck-bo9f5m`. Backend: `cloudflare-worker/chats-v2.js`
+(+ wiring in `worker.js`), tests in `chats-v2.test.js`. Frontend: `frontend/chats.html`, tests in
+`frontend/tests/chats-v2.spec.js`. The page uses `/chats/v2/*` when reachable and otherwise runs
+exactly as v1, so a v2 outage can't blank Chats. The D1 schema is created by the Worker on first
+use; `migrations/0112_chats_v2.sql` mirrors the tables but leaves the `lead_messages` columns to
+the Worker.
+
+Changes from the plan above:
+- Agent identity: sessions already carry a signed email (`signSession`), so open question 1 is
+  resolved — attribution, "Mine" and assignment use it.
+- Labels are stored as names (the lead's existing `Tags`), not ids.
+- Live deltas carry chat ids only (`{type:'conv', lead_ids}`), never names or text; the page
+  fetches changed rows through the access-checked list API. Staff can't read others' chats off
+  the shared socket.
+- Contact notes reuse the lead's `NotesList` (1 lead = 1 conversation today).
+- Scheduled messages go out on the existing `*/15` cron (up to 15 minutes late).
+- Bot replies get Markdown → WhatsApp conversion for every client (`toWhatsApp`).
+
+Built: everything in P1; in P2/P3 — Unassigned/Pending/Snoozed tabs, bot/human filter, sort,
+label filter, advanced filter + saved views, row badges (assignee, SLA wait, labels, priority,
+channel), bulk actions, row menu, header pill/assign/resolve+snooze/labels/priority/24h timer/
+stage chip, mark unread, block, export TXT/PDF, email transcript, sender attribution, date
+separators, unread divider, activity events, links/phones/emails, location and contact cards, bot
+quick-reply buttons, failed-send reasons, translate, forward, create task, in-chat search with
+▲/▼, canned responses, 24h lock, send & resolve, schedule, signature, ✨ rewrite, suggested
+replies, summarise, @mentions, contact sidebar with vertical fields, macros, collision
+(viewing/typing), notifications, keyboard shortcuts, RUM marks.
+
+Not built, and why:
+- Customer "typing…" on WhatsApp: the Cloud API doesn't send it.
+- Write-time badge counters: one indexed count query is cheaper and can't drift.
+- React/TanStack rewrite: no build pipeline in this repo; the gains came from the data path.
+- Voice notes as OGG/Opus: still MP3 in Chrome (needs a WebM→Ogg remuxer; next).
+- Emoji reactions and delete-for-everyone: need the WhatsApp message id (wamid), which this app
+  doesn't store, and Chatwoot doesn't relay either action.
+- Merge contact, CSAT on resolve, payment-link button: need product decisions (data model for
+  merged leads; how CSAT replies avoid triggering the bot; which payment provider/keys).
