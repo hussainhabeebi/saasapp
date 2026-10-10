@@ -4,18 +4,6 @@ public/
 tmp/
 *.log
 
-# Bring-your-own B-roll/SFX/music (see assets/*/README.md) — never commit real media files here,
-# only the placeholder READMEs.
-assets/broll/*
-assets/sfx/*
-assets/music/*
-!assets/broll/README.md
-!assets/sfx/README.md
-!assets/music/README.md
-
-# RVM ONNX model (~15 MB) — downloaded by the Dockerfile at build time, not committed.
-models/*.onnx
-
-# Python bytecode cache (asr/transcribe.py)
+# Python bytecode cache
 __pycache__/
 *.pyc
