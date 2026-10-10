@@ -17860,6 +17860,7 @@ document.addEventListener('click', e=>{
    csConnected (call-score.js), the same rule as Reports → Calls & Conversions; everything else
    (No Answer, Voicemail, Callback) is missed/unanswered. Date + member filters apply: leads by
    arrival date/Owner, calls by call time/who made the call. */
+let _lcUncalled=[], _lcUncalledCtx='';
 function renderReportsLeadsCalls(){
   const el=$id('reportsContent');
   const range=csRange();
@@ -17868,11 +17869,16 @@ function renderReportsLeadsCalls(){
   const inRange=ms=>ms!=null&&ms>=range.from&&ms<=range.to;
   const leadMs=l=>{ const t=Date.parse(l.Date||''); return isFinite(t)?t:null; };
   const mine=member?allLeads.filter(l=>sameEmail(l.Owner,member)):allLeads;
+  const periodLbl={all:'All Time',today:'Today',week:'This Week',month:'This Month',year:'This Year',custom:'Custom Range'}[_rptFilters.period]||'';
 
   // ── Leads
   const periodLeads=unbounded?mine:mine.filter(l=>inRange(leadMs(l)));
   const sod=new Date(); sod.setHours(0,0,0,0);
   const todayLeads=mine.filter(l=>{ const ms=leadMs(l); return ms!=null&&ms>=sod.getTime(); }).length;
+  // Leads from this period nobody has called yet (any telecaller) — spam left out. Kept for the
+  // tap-to-PDF list (lcUncalledPdf), newest first.
+  _lcUncalled=periodLeads.filter(l=>!csIsSpam(l)&&!csCalls(l).length).sort((a,b)=>(leadMs(b)||0)-(leadMs(a)||0));
+  _lcUncalledCtx=`${periodLbl}${member?' · '+(getTeamMembers().find(m=>sameEmail(m.email,member))?.name||member):''}`;
 
   // ── Calls — every CallLog entry across all leads, filtered by time + who made it
   const calls=[];
@@ -17889,7 +17895,6 @@ function renderReportsLeadsCalls(){
 
   const stat=(lbl,val,cls='')=>`<div class="stat${cls?' '+cls:''}"><div class="stat-lbl">${lbl}</div><div class="stat-val">${val}</div></div>`;
   const grid='display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr))';
-  const periodLbl={all:'All Time',today:'Today',week:'This Week',month:'This Month',year:'This Year',custom:'Custom Range'}[_rptFilters.period]||'';
 
   // ── Per telecaller
   const members=getTeamMembers().filter(m=>!member||sameEmail(m.email,member));
@@ -17918,8 +17923,9 @@ function renderReportsLeadsCalls(){
         <div style="${grid}">
           ${stat('Total Leads',periodLeads.length)}
           ${stat('New Leads Today',todayLeads,'accent')}
+          <div class="stat" id="lcUncalledStat" role="button" tabindex="0" style="cursor:pointer" title="Download the full list as PDF" onclick="lcUncalledPdf()" onkeydown="if(event.key==='Enter')lcUncalledPdf()"><div class="stat-lbl">Leads Not Called</div><div class="stat-val">${_lcUncalled.length}</div><div style="font-size:11px;color:var(--accent-ink);margin-top:4px;font-weight:600">📄 Tap for PDF list</div></div>
         </div>
-        <div class="s-note" style="margin-top:8px">Total Leads = leads received in the selected period. New Leads Today = leads received since midnight, whatever period is picked.</div>
+        <div class="s-note" style="margin-top:8px">Total Leads = leads received in the selected period. New Leads Today = leads received since midnight, whatever period is picked. Leads Not Called = leads from the selected period with no call logged by anyone yet (spam left out).</div>
       </div>
       <div class="card" id="lcCalls">
         <div class="card-title">📞 Calls Statistics</div>
@@ -17950,6 +17956,37 @@ function renderReportsLeadsCalls(){
       </table>
       </div>
     </div>`;
+}
+
+// Reports → Leads & Calls → "Leads Not Called" tile: the full uncalled list as a downloadable PDF
+// call sheet (full phone numbers — it's for the telecallers to work through). Same jsPDF +
+// autotable the quote/invoice PDF uses.
+function lcUncalledPdf(){
+  const list=_lcUncalled||[];
+  if(!list.length){ showToast('Every lead in this period has been called ✓','ok'); return; }
+  if(!window.jspdf?.jsPDF){ showToast('PDF library not loaded — check your connection and try again','err'); return; }
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'pt',format:'a4',orientation:'landscape'});
+  const marginX=36, pageW=doc.internal.pageSize.getWidth(), pageH=doc.internal.pageSize.getHeight();
+  const owners=Object.fromEntries(getTeamMembers().map(m=>[csEmailKey(m.email),m.name]));
+  const when=l=>{ const t=Date.parse(l.Date||''); return isFinite(t)?new Date(t).toLocaleString(undefined,{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'}):'—'; };
+  doc.setFont('helvetica','bold'); doc.setFontSize(16);
+  doc.text(`${clientRecord?.client_name||'Leads'} — Leads Not Called`,marginX,44);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`${_lcUncalledCtx} · ${list.length} lead${list.length===1?'':'s'} · generated ${new Date().toLocaleString()}`,marginX,62);
+  doc.setTextColor(0);
+  doc.autoTable({
+    startY:76,
+    margin:{left:marginX,right:marginX,bottom:36},
+    head:[['#','Ref','Name','Phone','Owner','Source','Stage','Received']],
+    body:list.map((l,i)=>[String(i+1),leadRef(l),l.Name||'—',l.Phone||'—',owners[csEmailKey(l.Owner)]||l.Owner||'Unassigned',l.Source||'—',stageLabel(l.Stage||'new'),when(l)]),
+    theme:'grid',
+    headStyles:{fillColor:[13,156,147]},
+    styles:{fontSize:9,cellPadding:4},
+    columnStyles:{0:{cellWidth:28},3:{cellWidth:100}},
+    didDrawPage:()=>{ doc.setFontSize(8); doc.setTextColor(120); doc.text(`Page ${doc.internal.getNumberOfPages()}`,pageW-marginX,pageH-16,{align:'right'}); doc.setTextColor(0); },
+  });
+  doc.save(`leads-not-called-${csToday()}.pdf`);
 }
 
 /* ── Overview — a handful of headline numbers so this doesn't just have to be a list of tabs.

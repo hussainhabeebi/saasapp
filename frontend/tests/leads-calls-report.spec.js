@@ -88,3 +88,44 @@ test('Log Call has no direction field', async ({ page }) => {
   await boot(page);
   await expect(page.locator('#callDirection')).toHaveCount(0);
 });
+
+test('Leads Not Called: count excludes spam, tapping it builds the PDF call sheet', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    const now = Date.now();
+    // @ts-ignore
+    allLeads.push(
+      { Id: 7, Name: 'Fresh Uncalled', Phone: '919111111111', Owner: 'rep@example.com', Stage: 'new', Source: 'Meta Ads', Date: new Date(now - 60e3).toISOString() },
+      { Id: 8, Name: 'Older Uncalled', Phone: '919222222222', Owner: '', Stage: 'new', Date: new Date(now - 3 * 86400e3).toISOString() },
+      { Id: 9, Name: 'Spam Uncalled', Phone: '919333333333', Owner: '', Stage: 'new', HandoverOutcome: 'Spam', Date: new Date(now - 120e3).toISOString() },
+    );
+    // Stub jsPDF (CDN is blocked here) and capture the table + file name
+    window.__pdf = {};
+    // @ts-ignore
+    window.jspdf = { jsPDF: function () {
+      return { internal: { pageSize: { getWidth: () => 842, getHeight: () => 595 }, getNumberOfPages: () => 1 },
+        setFont() {}, setFontSize() {}, setTextColor() {}, text(t) { (window.__pdf.text ||= []).push(String(t)); },
+        autoTable(o) { window.__pdf.head = o.head; window.__pdf.body = o.body; o.didDrawPage?.(); },
+        save(name) { window.__pdf.saved = name; } };
+    } };
+    window.renderReportsSubPage('leadscalls');
+  });
+  await expect(statVal(page, 'lcLeads', 'Leads Not Called')).toHaveText('2');
+  await page.locator('#lcUncalledStat').click();
+  const pdf = await page.evaluate(() => window.__pdf);
+  expect(pdf.saved).toMatch(/^leads-not-called-\d{4}-\d{2}-\d{2}\.pdf$/);
+  expect(pdf.head[0]).toEqual(['#', 'Ref', 'Name', 'Phone', 'Owner', 'Source', 'Stage', 'Received']);
+  expect(pdf.body.map((r) => r.slice(0, 7))).toEqual([
+    ['1', 'LD-00007', 'Fresh Uncalled', '919111111111', 'Rita', 'Meta Ads', 'New'],
+    ['2', 'LD-00008', 'Older Uncalled', '919222222222', 'Unassigned', '—', 'New'],
+  ]);
+  expect(pdf.text.join(' ')).toContain('Leads Not Called');
+});
+
+test('Leads Not Called: nothing to list shows a toast instead of an empty PDF', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => window.renderReportsSubPage('leadscalls'));
+  await expect(statVal(page, 'lcLeads', 'Leads Not Called')).toHaveText('0');
+  await page.locator('#lcUncalledStat').click();
+  await expect(page.locator('body')).toContainText('Every lead in this period has been called');
+});
