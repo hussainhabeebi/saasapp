@@ -17988,6 +17988,12 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
     if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
     await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
     if(isNewLead) await engineBroadcastUpdate(env,clientId,{type:'new_lead',lead_id:resolvedLeadId,lead_name:built.body.Name||built.body.Phone||'New Enquiry',at:new Date().toISOString()});
+    // Resort greeting showcase — same gate as handleEngineWebhook's post-turn call. A greeting-only
+    // first message ("hi") is answered here and returns before that call, so without this a resort
+    // lead never saw the property photos/picker (real observed case: "hi" got only the text intro).
+    if(isNewLead&&c.bot_reply_disabled!=='Yes'&&c.hospitality_enabled==='Yes'&&c.hospitality_style==='resort'&&state.convId&&c.hospitality_greeting_images!=='off'){
+      await hospitalitySendGreetingImages(env,c,clientId,state.convId,resolvedLeadId).catch(()=>{});
+    }
     if(isNewLead&&state.referrerLeadId){
       try{ await env.DB.prepare('INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referral_code, status, created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),Number(state.referrerLeadId),Number(resolvedLeadId),'','pending',new Date().toISOString()).run(); }catch(e){}
     }
