@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
-  chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute,
+  chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai,
 } from './chats-v2.js';
 
 function d1(db){
@@ -344,5 +344,39 @@ describe('sync and routes', ()=>{
     const s=await call('/chats/v2/search?q=yo', {who:'rahul'});
     assert.deepEqual(s.data.rows.map(r=>r.lead_id), []);
     assert.deepEqual((await call('/chats/v2/search?q=hel')).data.rows.map(r=>r.lead_id), [31]);
+  });
+});
+
+describe('AI assist', ()=>{
+  beforeEach(()=>fresh());
+  const aiDeps=(answers)=>{ const log=[]; return {...deps(), log, ai:async(env, c, sys, user)=>{ log.push({sys, user}); return answers.shift()??null; }}; };
+  const owner=chatsV2Access(CLIENT, OWNER);
+  test('rewrite keeps WhatsApp formatting and refuses empty text', async()=>{
+    const d=aiDeps(['"**Sure!** We can deliver tomorrow."']);
+    assert.deepEqual(await chatsV2Ai(env, d, CLIENT, owner, {op:'rewrite', mode:'friendlier', text:'we deliver tomorrow'}), {text:'*Sure!* We can deliver tomorrow.'});
+    assert.match(d.log[0].sys, /warmer and friendlier/);
+    await assert.rejects(chatsV2Ai(env, d, CLIENT, owner, {op:'rewrite', text:'  '}), /Nothing to rewrite/);
+  });
+  test('suggestions read the transcript, parse JSON or lines, and are cached per last message', async()=>{
+    await insertMsg(1, {role:'user', content:'Do you deliver to Kochi?', ts:T('10:00')});
+    const d=aiDeps(['["Yes, we deliver to Kochi.","Could you share your pincode?","Delivery takes 2 days."]']);
+    const a=await chatsV2Ai(env, d, CLIENT, owner, {op:'suggest', lead_id:1});
+    assert.equal(a.suggestions.length, 3);
+    assert.match(d.log[0].user, /Customer: Do you deliver to Kochi\?/);
+    const b=await chatsV2Ai(env, d, CLIENT, owner, {op:'suggest', lead_id:1});
+    assert.deepEqual(b, a);
+    assert.equal(d.log.length, 1);
+    await insertMsg(1, {role:'user', content:'?', ts:T('10:05')});
+    d.ai=async()=>'1. Yes\n2. Sure thing\n- Let me check';
+    assert.deepEqual((await chatsV2Ai(env, d, CLIENT, owner, {op:'suggest', lead_id:1})).suggestions, ['Yes', 'Sure thing', 'Let me check']);
+    const rahul=chatsV2Access(CLIENT, RAHUL);
+    db.prepare(`UPDATE conversations SET assignee_email=? WHERE lead_id=1`).run(SHAFNA);
+    await assert.rejects(chatsV2Ai(env, d, CLIENT, rahul, {op:'suggest', lead_id:1}), /not found/);
+  });
+  test('translate caches by message id', async()=>{
+    const d=aiDeps(['Is it available?']);
+    assert.deepEqual(await chatsV2Ai(env, d, CLIENT, owner, {op:'translate', target:'en', text:'ithu available aano?', message_id:5}), {text:'Is it available?'});
+    assert.deepEqual(await chatsV2Ai(env, d, CLIENT, owner, {op:'translate', target:'en', text:'ithu available aano?', message_id:5}), {text:'Is it available?'});
+    assert.equal(d.log.length, 1);
   });
 });

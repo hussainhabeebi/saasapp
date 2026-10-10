@@ -61,6 +61,15 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       const start = q.cursor ? Number(q.cursor) : 0, limit = Number(q.limit || 40);
       return route.fulfill({ json: { rows: rs.slice(start, start + limit), cursor: start + limit < rs.length ? String(start + limit) : null } });
     }
+    if (p.endsWith('/chats/v2/ai')) {
+      const b = req.postDataJSON();
+      calls.ai = (calls.ai || []).concat([b]);
+      if (b.op === 'rewrite') return route.fulfill({ json: { text: 'Hello! Happy to help 😊' } });
+      if (b.op === 'suggest') return route.fulfill({ json: { suggestions: ['The price is AED 375.', 'Can I call you?', 'Let me check and revert.'] } });
+      if (b.op === 'translate') return route.fulfill({ json: { text: 'And what about delivery?' } });
+      if (b.op === 'summary') return route.fulfill({ json: { summary: '• Asha wants a price\n• Asked about delivery' } });
+    }
+    if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(p) && req.method() === 'PATCH') { calls.patch = (calls.patch || []).concat([req.postDataJSON()]); return route.fulfill({ json: {} }); }
     if (p.endsWith('/chats/v2/send-probe')) return route.fulfill({ json: {} });
     if (p.endsWith('/chat/send')) { calls.send = (calls.send || []).concat([req.postDataJSON()]); return route.fulfill({ json: { ok: true } }); }
     if (p.endsWith('/chats/v2/thread')) {
@@ -87,7 +96,7 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
     }
     if (p.endsWith('/chats/v2/canned')) { calls.canned.push(req.postDataJSON()); return route.fulfill({ json: { ok: true } }); }
     if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records$/.test(p)) { calls.nocodbList++; return route.fulfill({ json: { list: [] } }); }
-    if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/\d+$/.test(p)) return route.fulfill({ json: { NotesList: '' } });
+    if (/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/\d+$/.test(p)) return route.fulfill({ json: { NotesList: JSON.stringify([{ text: 'Prefers calls after 6pm', author: 'Shafna' }]), Email: 'asha@example.com', Destination: 'Dubai', Budget: '50000', Source: 'Instagram ad' } });
     if (p.endsWith('/chats/v2/rum')) return route.fulfill({ json: { ok: true } });
     return route.abort();
   });
@@ -291,4 +300,51 @@ test('keyboard: J/K move between chats, E resolves', async ({ page }) => {
   await expect(page.locator('.chat-name')).toHaveText('Asha');
   await page.keyboard.press('e');
   await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'resolve', ids: [1] });
+});
+
+test('AI: suggested replies when a customer waits on a person, ✨ rewrite with undo, translate', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await expect(page.locator('#suggestRow button')).toHaveText(['The price is AED 375.', 'Can I call you?', 'Let me check and revert.']);
+  await page.locator('#suggestRow button').first().click();
+  await expect(page.locator('#msg')).toHaveValue('The price is AED 375.');
+  await page.locator('#msg').fill('hi how can help');
+  await page.locator('#aiBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Make friendlier' }).click();
+  await expect(page.locator('#msg')).toHaveValue('Hello! Happy to help 😊');
+  expect(calls.ai.find(a => a.op === 'rewrite')).toMatchObject({ mode: 'friendlier', text: 'hi how can help' });
+  await page.locator('#aiUndo button').click();
+  await expect(page.locator('#msg')).toHaveValue('hi how can help');
+  const row = page.locator('#thread .bubble-row', { hasText: 'And delivery?' });
+  await row.hover();
+  await row.locator('[data-act="translate"]').click();
+  await expect(row.locator('.tr')).toContainText('And what about delivery?');
+  expect(calls.ai.find(a => a.op === 'translate')).toMatchObject({ target: 'en', message_id: 16 });
+});
+
+test('no AI suggestions for a chat the bot is handling', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await expect(page.locator('#thread .bubble-row').first()).toBeVisible();
+  await expect(page.locator('#suggestRow')).toBeHidden();
+  expect((calls.ai || []).filter(a => a.op === 'suggest')).toHaveLength(0);
+});
+
+test('contact sidebar: edit fields, see details and notes, summarise, add a note', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await page.locator('#infoBtn').click();
+  const panel = page.locator('#infoPanel');
+  await expect(panel.locator('input[data-k="Email"]')).toHaveValue('asha@example.com');
+  await expect(panel.locator('input[data-k="Destination"]')).toHaveValue('Dubai');
+  await expect(panel).toContainText('Prefers calls after 6pm');
+  await panel.locator('input[data-k="Name"]').fill('Asha Menon');
+  await panel.locator('input[data-k="Name"]').press('Tab');
+  await expect.poll(() => (calls.patch || []).at(-1)).toMatchObject({ Id: 1, Name: 'Asha Menon' });
+  await expect(page.locator('#list .contact .name').first()).toHaveText('Asha Menon');
+  await panel.locator('button', { hasText: 'Summarise this chat' }).click();
+  await expect(panel.locator('.sum')).toContainText('Asha wants a price');
+  await panel.locator('#infoNote').fill('VIP — offer free upgrade');
+  await panel.locator('#infoNote').press('Enter');
+  await expect.poll(() => (calls.patch || []).at(-1)?.NotesList || '').toContain('VIP — offer free upgrade');
 });

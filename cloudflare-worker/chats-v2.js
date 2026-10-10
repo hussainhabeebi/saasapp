@@ -61,6 +61,11 @@ export const CHATS_V2_SCHEMA=[
     updated_at TEXT NOT NULL,
     UNIQUE(client_id, shortcut)
   )`,
+  `CREATE TABLE IF NOT EXISTS chat_ai_cache (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS chat_sync_state (
     client_id INTEGER PRIMARY KEY,
     backfilled_at TEXT,
@@ -649,6 +654,92 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   return {rows:fresh, events:evOut};
 }
 
+// ── AI assist ───────────────────────────────────────────────────────────────────────────────────
+// Rewrite a draft, suggest replies, translate a message, summarise a chat — on the client's own AI
+// setup (deps.ai = the engine's provider chain), cached per message so reopening is free.
+
+export const CHATS_V2_REWRITE={
+  rephrase:'Rephrase it in different words with the same meaning and tone.',
+  friendlier:'Make it warmer and friendlier, still professional.',
+  shorter:'Make it shorter and more direct. Keep every fact, price, date and link.',
+  grammar:'Fix spelling, grammar and punctuation only. Change nothing else.',
+  malayalam:'Translate it into natural Malayalam (Malayalam script) as a Kerala business would write on WhatsApp.',
+  english:'Translate it into clear, simple English.',
+};
+const AI_RULES='Keep any {{variables}}, URLs, phone numbers, prices and dates exactly as written. Use WhatsApp formatting (*bold*, _italic_) only, never Markdown. Reply with the message text only — no quotes, no preface, no explanation.';
+
+export function chatsV2Transcript(rows, max=4000){
+  const lines=[];
+  for(const r of rows){
+    if(r.kind==='event'||r.kind==='note') continue;
+    const who=r.role==='user'?'Customer':(r.sender_type==='bot'?'Business (bot)':'Business');
+    const a=safeJson(r.attachment);
+    const text=String(a.ai_text?(a.caption||r.content||''):(r.content||'')).replace(/\s+/g,' ').trim();
+    const label=a.kind==='template'?'[template] ':a.kind&&a.kind!=='template'?`[${a.kind}] `:'';
+    if(text||label) lines.push(`${who}: ${label}${text}`.slice(0,600));
+  }
+  let out=lines.join('\n');
+  while(out.length>max&&lines.length>1){ lines.shift(); out=lines.join('\n'); }
+  return out;
+}
+export function chatsV2ParseSuggestions(text){
+  const t=String(text||'');
+  const m=t.match(/\[[\s\S]*\]/);
+  if(m){ try{ const a=JSON.parse(m[0]); if(Array.isArray(a)) return a.map(x=>String(x||'').trim()).filter(Boolean).slice(0,3).map(x=>x.slice(0,500)); }catch(e){} }
+  return t.split('\n').map(x=>x.replace(/^\s*(?:[-*•]|\d+[.)])\s*/,'').replace(/^"|"$/g,'').trim()).filter(Boolean).slice(0,3).map(x=>x.slice(0,500));
+}
+async function aiCached(env, key, make){
+  const hit=await env.DB.prepare('SELECT value FROM chat_ai_cache WHERE key=?').bind(key).first().catch(()=>null);
+  if(hit) return JSON.parse(hit.value);
+  const value=await make();
+  if(value!=null) await env.DB.prepare('INSERT OR REPLACE INTO chat_ai_cache (key, value, at) VALUES (?,?,?)').bind(key, JSON.stringify(value), new Date().toISOString()).run().catch(()=>{});
+  return value;
+}
+export async function chatsV2Ai(env, deps, c, acc, body){
+  if(!deps.ai) throw Object.assign(new Error('AI is not available on this account'), {status:501});
+  const op=String(body.op||'');
+  const business=String(c?.client_name||c?.business_name||'the business').slice(0,80);
+  if(op==='rewrite'){
+    const mode=CHATS_V2_REWRITE[body.mode]?body.mode:'rephrase';
+    const text=String(body.text||'').trim().slice(0,3000);
+    if(!text) throw Object.assign(new Error('Nothing to rewrite'), {status:400});
+    const out=await deps.ai(env, c, `You edit WhatsApp replies that ${business}'s team sends to customers. ${CHATS_V2_REWRITE[mode]} ${AI_RULES}`, text, {temperature:0.4, maxOutputTokens:600});
+    if(!out) throw Object.assign(new Error('The AI did not answer — try again'), {status:502});
+    return {text:toWhatsApp(String(out).trim().replace(/^"([\s\S]*)"$/,'$1'))};
+  }
+  if(op==='translate'){
+    const target=body.target==='ml'?'Malayalam (Malayalam script)':'English';
+    const text=String(body.text||'').trim().slice(0,3000);
+    if(!text) throw Object.assign(new Error('Nothing to translate'), {status:400});
+    const key=body.message_id?`tr:${Number(body.message_id)}:${body.target==='ml'?'ml':'en'}`:null;
+    const make=async()=>{
+      const out=await deps.ai(env, c, `Translate the customer's WhatsApp message into ${target}. It may be Malayalam, Manglish (Malayalam typed in English letters), Hindi, Arabic or English. ${AI_RULES}`, text, {temperature:0.1, maxOutputTokens:600});
+      return out?{text:String(out).trim()}:null;
+    };
+    const res=key?await aiCached(env, key, make):await make();
+    if(!res) throw Object.assign(new Error('The AI did not answer — try again'), {status:502});
+    return res;
+  }
+  if(op==='suggest'||op==='summary'){
+    const leadId=Number(body.lead_id);
+    const row=await convRow(env, leadId);
+    if(!row||Number(row.client_id)!==Number(c.Id)||!canSee(acc, row)) throw Object.assign(new Error('Conversation not found'), {status:404});
+    const {results}=await env.DB.prepare(`SELECT role, content, attachment, sender_type, kind, ts FROM lead_messages WHERE lead_id=? ORDER BY ts DESC, id DESC LIMIT ${op==='summary'?80:20}`).bind(leadId).all();
+    const transcript=chatsV2Transcript((results||[]).reverse(), op==='summary'?8000:4000);
+    if(!transcript) return op==='summary'?{summary:''}:{suggestions:[]};
+    const key=`${op}:${leadId}:${row.last_message_id||row.last_message_at}`;
+    return aiCached(env, key, async()=>{
+      if(op==='summary'){
+        const out=await deps.ai(env, c, `Summarise this WhatsApp chat between a customer and ${business} for a team member taking it over. 3–6 short bullet lines starting with "• ": who the customer is, what they want, what was already offered or promised (prices, dates), and what is still open. Plain text, no Markdown headings.`, transcript, {temperature:0.2, maxOutputTokens:500});
+        return {summary:String(out||'').trim()};
+      }
+      const out=await deps.ai(env, c, `You suggest the next reply ${business}'s team could send in this WhatsApp chat. Give 3 different, short, ready-to-send replies (one or two sentences each) that answer the customer's latest message. Never invent prices, stock, dates or policies that are not in the chat — ask or offer to check instead. Write in the customer's language. Return a JSON array of 3 strings and nothing else.`, transcript, {temperature:0.5, maxOutputTokens:500});
+      return {suggestions:chatsV2ParseSuggestions(out).map(toWhatsApp)};
+    });
+  }
+  throw Object.assign(new Error('Unknown AI action'), {status:400});
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────────────────────────────
 
 async function ensureSynced(env, deps, cid, ctx){
@@ -744,6 +835,10 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
     if(path==='/chats/v2/act'&&method==='POST'){
       const body=await request.json().catch(()=>({}));
       return json({ok:true, ...await chatsV2Act(env, deps, payload, c, acc, body)});
+    }
+    if(path==='/chats/v2/ai'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      return json(await chatsV2Ai(env, deps, c, acc, body));
     }
     if(path==='/chats/v2/canned'&&method==='POST'){
       const body=await request.json().catch(()=>({}));

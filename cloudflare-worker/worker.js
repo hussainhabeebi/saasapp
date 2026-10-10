@@ -181,6 +181,8 @@ const RATE_LIMIT_RULES = [
   {test:(p,m)=>p==='/signup'&&m==='POST', bucket:'signup', limit:5, windowSec:3600},
   {test:(p,m)=>p==='/public/chat/message'&&m==='POST', bucket:'public-chat-msg', limit:30, windowSec:60},
   {test:(p,m)=>p==='/public/chat/config'&&m==='GET', bucket:'public-chat-cfg', limit:60, windowSec:60},
+  // Chats v2 AI assist (rewrite / suggest / translate / summarise) spends the client's AI quota.
+  {test:(p,m)=>p==='/chats/v2/ai'&&m==='POST', bucket:'chats-ai', limit:60, windowSec:60},
 ];
 function clientIp(request){
   return request.headers.get('CF-Connecting-IP')||request.headers.get('X-Forwarded-For')||'unknown';
@@ -1496,8 +1498,8 @@ function leadMessageStmt(env, leadId, clientId, msg, v2=false){
       :msg.attachment&&Object.keys(msg.attachment).length?String(msg.attachment.kind==='voice'?'audio':msg.attachment.kind||'document')
       :'text';
     return env.DB.prepare(
-      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts,sender_type,sender_email,sender_name,kind)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT OR IGNORE INTO lead_messages (lead_id,client_id,role,content,attachment,reply_to,ts,sender_type,sender_email,sender_name,kind,meta)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       Number(leadId), Number(clientId),
       msg.role,
@@ -1508,7 +1510,9 @@ function leadMessageStmt(env, leadId, clientId, msg, v2=false){
       String(msg.sender_type||(msg.role==='user'?'customer':'')),
       String(msg.sender_email||'').slice(0,140),
       String(msg.sender_name||'').slice(0,80),
-      kind.slice(0,20)
+      kind.slice(0,20),
+      // Quick-reply buttons the bot offered with this message, shown under the bubble in Chats.
+      Array.isArray(msg.options)&&msg.options.length?JSON.stringify({options:msg.options.map(o=>String(o?.title||o?.text||o||'').slice(0,40)).filter(Boolean).slice(0,10)}):'{}'
     );
   }
   return env.DB.prepare(
@@ -31090,6 +31094,7 @@ async function ceoBotTaskChanged(env, cid, taskId, prevStatus){
 const CHATS_V2_DEPS={
   json, requireSession, getClientById, ncFetch, ensureLeadsColumns,
   leadsTable:DEFAULT_LEADS_TABLE,
+  ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
   broadcast:engineBroadcastUpdate,
   handover:chatHandoverCore,
   backfillMedia:chatsBackfillChatwootMedia,

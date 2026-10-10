@@ -119,6 +119,12 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{background:#ffb02e}
 .ts-nav{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:12px;white-space:nowrap}.ts-nav button{border:0;background:transparent;width:26px;height:26px;border-radius:50%;color:#54656f}.ts-nav button:hover{background:#e5e8ea}
 .send-more{width:26px;height:46px;border:0;background:transparent;color:#54656f;flex:none;padding:0;font-size:13px}
+.info-panel{position:absolute;top:60px;right:0;bottom:0;width:340px;max-width:100%;background:#fff;border-left:1px solid var(--line);box-shadow:-6px 0 18px rgba(0,0,0,.08);z-index:25;overflow:auto;padding:0 0 30px}.info-panel h4{margin:16px 16px 6px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}.info-panel .fld{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;padding:3px 16px}.info-panel .fld span{font-size:12.5px;color:var(--muted)}.info-panel .fld input{border:1px solid transparent;border-radius:6px;padding:5px 7px;font-size:13.5px;min-width:0;background:transparent}.info-panel .fld input:hover{border-color:#e1e6ea}.info-panel .fld input:focus{border-color:var(--wa);outline:0;background:#fff}.info-panel .kv{display:grid;grid-template-columns:110px 1fr;gap:8px;padding:4px 16px;font-size:13px}.info-panel .kv span{color:var(--muted);font-size:12.5px}.info-panel .sum{margin:4px 16px;padding:10px;border-radius:8px;background:#f5f3ff;color:#3b2f73;font-size:13px;white-space:pre-wrap;line-height:1.45}.info-panel .nt{margin:4px 16px;padding:8px 10px;border-radius:7px;background:#fff5c4;color:#665c32;font-size:12.5px}.info-panel .nt small{display:block;color:#8b7c45;margin-top:2px}.info-panel .row-btn{margin:6px 16px;border:1px solid #d1d7db;background:#fff;border-radius:16px;padding:5px 12px;font-size:12.5px;color:#3b4a54}.info-panel .prev{display:block;width:calc(100% - 32px);margin:3px 16px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#fff;padding:7px 10px;font-size:13px}.info-panel .prev small{display:block;color:var(--muted)}.info-panel .add-note{display:flex;gap:6px;margin:6px 16px}.info-panel .add-note input{flex:1;border:1px solid #d1d7db;border-radius:8px;padding:6px 9px;font-size:13px;min-width:0}
+.suggest-row{display:flex;gap:6px;overflow-x:auto;padding:6px 12px 0;background:var(--header);flex:none;scrollbar-width:none}.suggest-row button{flex:none;max-width:320px;border:1px solid #c6f0d2;background:#fff;color:#0b6b57;border-radius:14px;padding:5px 11px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.suggest-row .lbl{background:transparent;color:var(--muted);padding:5px 0;border:0;font-size:12px}
+.ai-undo{background:#f5f3ff;color:#3b2f73;font-size:12.5px;padding:6px 12px;display:flex;gap:10px;align-items:center;flex:none}.ai-undo button{border:0;background:transparent;color:#5b3fd1;font-weight:650;padding:0}
+.tr{margin-top:5px;padding-top:5px;border-top:1px dashed rgba(0,0,0,.15);font-size:13px;color:#3b4a54;white-space:pre-wrap}.tr small{display:block;color:var(--muted);font-size:11px}
+.opt-btns{clear:both;display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 2px}.opt-btns span{border:1px solid rgba(0,0,0,.12);border-radius:14px;padding:3px 10px;font-size:12.5px;color:#027eb5;background:rgba(255,255,255,.6)}
+@media(max-width:700px){.info-panel{top:58px;width:100%}}
 @media(max-width:700px){.hdr-ctl .t{display:none}.hdr-ctl{gap:4px}.hdr-pill,.hdr-btn,.split button{padding:5px 7px}.vlist .contact{height:76px}}
 @media(max-width:1100px) and (min-width:701px){.hdr-ctl .t{display:none}}
 </style>
@@ -496,10 +502,10 @@ async function loadOlder(){
  const lead=current;if(!lead)return;const k=String(lead.Id),meta=threadMeta[k];if(!meta||!meta.has_more||meta.loading)return;
  meta.loading=true;try{const d=await fetchThread(lead,{before:meta.before});const ids=new Set((histCache[k]||[]).map(m=>m.id).filter(Boolean));histCache[k]=[...d.messages.filter(m=>!ids.has(m.id)),...(histCache[k]||[])];meta.before=d.before;meta.has_more=d.has_more;if(current===lead)drawMessages(false,'prepend')}catch{}finally{meta.loading=false}
 }
-async function fetchNotes(lead){lead.NotesList=lead.NotesList??'';try{const d=await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records/${encodeURIComponent(lead.Id)}`);lead.NotesList=d.NotesList||'';if(d.LastCustomerMsgAt&&(!lead.LastCustomerMsgAt||d.LastCustomerMsgAt>lead.LastCustomerMsgAt))lead.LastCustomerMsgAt=d.LastCustomerMsgAt;if(current===lead&&lead.NotesList&&lead.NotesList!=='[]')drawMessages(false)}catch{}}
+async function fetchNotes(lead){lead.NotesList=lead.NotesList??'';try{const d=await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records/${encodeURIComponent(lead.Id)}`);lead._rec=d;lead.NotesList=d.NotesList||'';if(current===lead)renderInfo();if(d.LastCustomerMsgAt&&(!lead.LastCustomerMsgAt||d.LastCustomerMsgAt>lead.LastCustomerMsgAt))lead.LastCustomerMsgAt=d.LastCustomerMsgAt;if(current===lead&&lead.NotesList&&lead.NotesList!=='[]')drawMessages(false)}catch{}}
 async function refreshMessages(lead,stick=false){
  const k=String(lead.Id);
- if(V2){try{await fetchThread(lead);if(current&&String(current.Id)===k){drawMessages(stick);const t=$('thread');if(t&&t.scrollHeight<=t.clientHeight+200)loadOlder()}return}catch(e){}}
+ if(V2){try{await fetchThread(lead);if(current&&String(current.Id)===k){drawMessages(stick);const t=$('thread');if(t&&t.scrollHeight<=t.clientHeight+200)loadOlder();maybeSuggest();renderInfo()}return}catch(e){}}
  // Keep this device's in-flight / failed sends across a server refresh — they aren't in D1 yet.
  const keep=(histCache[k]||[]).filter(m=>m._status);
  try{const data=await apiJson(`${WORKER}/chat/messages?lead_id=${encodeURIComponent(lead.Id)}`);histCache[k]=[...(data.messages||[]),...keep]}
@@ -507,16 +513,18 @@ async function refreshMessages(lead,stick=false){
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
 function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?'<button onclick="markUnread()">Mark as unread</button>':''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?'<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button>':''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
  <div id="handoverBar" class="window-bar hidden"><span>🙋 A person is handling this chat — the bot won't reply.</span><button onclick="toggleHandover()">Hand back to bot</button></div>
  <div id="windowBar" class="window-bar hidden"><span>⏱ The 24-hour reply window has closed. WhatsApp only delivers an approved template until the customer writes again.</span><button onclick="openTemplates()">Send template</button></div>
  <div id="collideBar" class="collide hidden"></div>
+ <div id="aiUndo" class="ai-undo hidden"></div>
+ <div id="suggestRow" class="suggest-row hidden"></div>
  <div id="replyBox" class="reply-preview hidden"></div>
  <div class="composer-mode" id="modeRow"><button class="mode-btn active" id="replyMode" onclick="setComposeMode('reply')">Reply</button><button class="mode-btn" id="noteMode" onclick="setComposeMode('note')">Internal note</button></div>
  <div class="composer" id="composer">
@@ -531,6 +539,7 @@ function buildShell(){
   </div>
   <div class="input-wrap" id="inputWrap">
    <button class="icon-btn" id="emojiBtn" title="Emoji" onclick="togglePanel('emojiPanel')">${IC.emoji}</button>
+   ${V2?`<button class="icon-btn" id="aiBtn" title="AI: rephrase, friendlier, shorter, fix grammar, translate" onclick="openAiMenu(this)">✨</button>`:''}
    <textarea id="msg" rows="1" placeholder="Type a message" oninput="onType()" onkeydown="keySend(event)" onpaste="onPaste(event)"></textarea>
    <button class="icon-btn" id="attachBtn" title="Attach" onclick="togglePanel('attachMenu')" ${ig?'disabled':''}>${IC.attach}</button>
    <button class="icon-btn cam-btn" id="camBtn" title="Camera" onclick="pickFiles('image/*',true)" ${ig?'disabled':''}>${IC.cam}</button>
@@ -545,8 +554,10 @@ function buildShell(){
   </div>
   ${V2?'<button class="send-more hidden" id="sendMore" title="More send options" onclick="openSendMore(this)">▾</button>':''}
   <button class="send" id="actionBtn" title="Record voice message">${IC.mic}</button>
- </div>`;
+ </div>
+ <aside class="info-panel hidden" id="infoPanel"></aside>`;
  $('chatMenu').innerHTML=menuHtml();renderHeaderCtl();
+ if(V2){let open=false;try{open=localStorage.getItem('lv_chats_info')==='1'&&matchMedia('(min-width:1100px)').matches}catch{}if(open)$('infoPanel').classList.remove('hidden')}
  const box=$('msg');box.value=getDraft(l.Id);grow(box);
  wireActionButton();wireThread();updateAction();
  $('emojiPanel').innerHTML=EMOJI.split(' ').map(e=>`<button type="button">${e}</button>`).join('');
@@ -585,8 +596,9 @@ function drawMessages(stick=false,mode=''){
   const text=bodyOf(m,atts),tr=transcriptOf(m,atts),tpl=atts.find(a=>a.kind==='template'),shown=atts.filter(a=>a.kind!=='template');
   const mediaOnly=!text&&!tr&&!quote&&!tpl&&!who&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
   const tplHead=tpl?`<div class="tpl-tag">📋 Template · ${esc(tpl.name||'')}</div>`:'';
-  const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:'';
-  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${who}${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
+  const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:(m.meta?.options?.length?`<div class="opt-btns">${m.meta.options.map(o=>`<span>${esc(o)}</span>`).join('')}</div>`:'');
+  const trHtml=m._tr?`<div class="tr"><small>🌐 ${m._tr.target==='ml'?'Malayalam':'English'}</small>${m._tr.loading?'Translating…':esc(m._tr.text)}</div>`:'';
+  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${who}${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}${trHtml}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}${V2&&text?`<button type="button" data-act="translate" title="Translate">🌐</button>`:''}</div></div>`;
  });
  updateWindowBar();updateHandoverBar();
  let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
@@ -607,7 +619,7 @@ function wireThread(){
  t.addEventListener('click',e=>{
   const img=e.target.closest('[data-view]');if(img)return viewImage(img.dataset.view);
   const retry=e.target.closest('[data-retry]');if(retry){const m=hist(current)[Number(retry.dataset.retry)];if(m?._retry)m._retry();return}
-  const act=e.target.closest('[data-act]');if(act){const i=Number(act.closest('.bubble-row').dataset.i),m=hist(current)[i];if(!m)return;if(act.dataset.act==='reply')setReply(i);else{navigator.clipboard?.writeText(bodyOf(m));toast('Message copied')}return}
+  const act=e.target.closest('[data-act]');if(act){const i=Number(act.closest('.bubble-row').dataset.i),m=hist(current)[i];if(!m)return;if(act.dataset.act==='reply')setReply(i);else if(act.dataset.act==='translate')translateMsg(m);else{navigator.clipboard?.writeText(bodyOf(m));toast('Message copied')}return}
   const play=e.target.closest('.vp-play');if(play)return togglePlay(play.closest('.vp'));
   const speed=e.target.closest('.vp-speed');if(speed)return cycleSpeed();
   const bar=e.target.closest('.vp-bar');if(bar)return seekPlayer(bar.closest('.vp'),e);
@@ -653,7 +665,7 @@ async function saveCanned(){const shortcut=$('cnShort').value.trim(),body=$('cnB
 async function deleteCanned(id){try{await apiJson(WORKER+'/chats/v2/canned?id='+id,{method:'DELETE'});await loadBootstrap();manageCanned()}catch(e){toast('Could not delete: '+e.message)}}
 
 // ── Composer ─────────────────────────────────────────────────────────────────────────────────
-function setComposeMode(m){composeMode=m;if(m==='note')clearReply();$('replyMode').classList.toggle('active',m==='reply');$('noteMode').classList.toggle('active',m==='note');$('composer').classList.toggle('note-mode',m==='note');$('modeRow').classList.toggle('note-mode',m==='note');$('msg').placeholder=m==='note'?'Add a private note (only your team sees this)':'Type a message';updateAction();updateWindowBar();$('msg').focus()}
+function setComposeMode(m){composeMode=m;if(m==='note'){clearReply();$('suggestRow')?.classList.add('hidden')}$('replyMode').classList.toggle('active',m==='reply');$('noteMode').classList.toggle('active',m==='note');$('composer').classList.toggle('note-mode',m==='note');$('modeRow').classList.toggle('note-mode',m==='note');$('msg').placeholder=m==='note'?'Add a private note (only your team sees this)':'Type a message';updateAction();updateWindowBar();$('msg').focus()}
 function grow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
 function onType(){const b=$('msg');grow(b);updateAction();checkCanned();sendTyping();clearTimeout(onType.t);onType.t=setTimeout(()=>current&&saveDraft(current.Id,b.value),400)}
 function keySend(e){if(cannedKey(e))return;if(V2&&e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&composeMode==='reply'){e.preventDefault();sendAndResolve();return}if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:701px)').matches){e.preventDefault();sendMessage()}}
@@ -1037,6 +1049,91 @@ document.addEventListener('keydown',e=>{
  else if(k==='/'){e.preventDefault();setComposeMode('reply');const b=$('msg');if(!b.disabled){insertAtCursor('/')}}
  else if(k==='?'){e.preventDefault();toast('J/K next/previous chat · R reply · N note · E resolve · A assign · / canned · Ctrl+K search · Ctrl+Enter send & resolve')}
 });
+// ── AI assist ──
+async function aiCall(body){return apiJson(WORKER+'/chats/v2/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}
+function openAiMenu(btn){
+ const has=($('msg')?.value||'').trim();
+ openDd(btn,has?`<div class="hint">Rewrite your draft</div><button onclick="aiRewrite('rephrase')">🔁 Rephrase</button><button onclick="aiRewrite('friendlier')">😊 Make friendlier</button><button onclick="aiRewrite('shorter')">✂️ Make shorter</button><button onclick="aiRewrite('grammar')">✅ Fix grammar</button><button onclick="aiRewrite('malayalam')">🌴 Translate to Malayalam</button><button onclick="aiRewrite('english')">🇬🇧 Translate to English</button><hr><button onclick="closeDd();maybeSuggest(true)">💡 Suggest replies</button>`:`<button onclick="closeDd();maybeSuggest(true)">💡 Suggest replies</button><div class="hint">Type a draft to rephrase, shorten or translate it.</div>`);
+}
+async function aiRewrite(mode){
+ closeDd();const b=$('msg'),before=b.value;if(!before.trim())return;const lead=current;
+ b.disabled=true;const ph=b.placeholder;b.placeholder='✨ Rewriting…';
+ try{const d=await aiCall({op:'rewrite',mode,text:before});if(current!==lead)return;b.value=d.text;grow(b);onType();showUndo(before)}catch(e){toast('AI: '+e.message)}finally{b.disabled=false;b.placeholder=ph;updateWindowBar();b.focus()}
+}
+function showUndo(prev){const u=$('aiUndo');if(!u)return;u.innerHTML=`<span>✨ Rewritten by AI — check it before sending.</span><button onclick="undoAi()">Undo</button>`;u.dataset.prev=prev;u.classList.remove('hidden');clearTimeout(showUndo.t);showUndo.t=setTimeout(()=>u.classList.add('hidden'),12000)}
+function undoAi(){const u=$('aiUndo'),b=$('msg');if(!u||!b)return;b.value=u.dataset.prev||'';grow(b);onType();u.classList.add('hidden')}
+// Suggested replies: only when the customer is waiting on a person (last message is theirs and a
+// human is handling it, or it's unassigned and waiting) — never spends AI on chats the bot has.
+const suggestFor={};
+async function maybeSuggest(force=false){
+ const row=$('suggestRow'),l=current;if(!row||!l||!V2)return;const r=l._v2||{};
+ const want=force||(r.last_message_dir==='in'&&(l.Handover==='Yes'||!!r.waiting_since)&&composeMode==='reply'&&windowOpen(l));
+ if(!want){row.classList.add('hidden');return}
+ const key=String(l.Id)+':'+(r.last_message_id||r.last_message_at);
+ if(!suggestFor[key]){row.innerHTML='<span class="lbl">💡 Thinking of replies…</span>';row.classList.remove('hidden');try{suggestFor[key]=(await aiCall({op:'suggest',lead_id:l.Id})).suggestions||[]}catch(e){suggestFor[key]=[];if(force)toast('AI: '+e.message)}}
+ if(current!==l)return;const list=suggestFor[key];
+ if(!list.length){row.classList.add('hidden');return}
+ row.innerHTML='<span class="lbl">💡</span>'+list.map((t,i)=>`<button title="${esc(t)}" onclick="useSuggestion(${i},'${esc(key)}')">${esc(t)}</button>`).join('');row.classList.remove('hidden');
+}
+function useSuggestion(i,key){const t=suggestFor[key]?.[i];if(!t)return;const b=$('msg');b.value=t;grow(b);onType();b.focus();$('suggestRow').classList.add('hidden')}
+async function translateMsg(m){
+ if(m._tr&&!m._tr.loading){delete m._tr;drawMessages(false);return}
+ const text=bodyOf(m);if(!text)return;const target=/[ഀ-ൿ]/.test(text)||!isOut(m)?'en':'ml';
+ m._tr={target,loading:true};drawMessages(false);
+ try{const d=await aiCall({op:'translate',target,text,message_id:m.id||undefined});m._tr={target,text:d.text}}catch(e){delete m._tr;toast('AI: '+e.message)}
+ if(current)drawMessages(false);
+}
+const summaries={};
+async function summarise(open){
+ const l=current;if(!l)return;if(open)toggleInfo(true);
+ summaries[String(l.Id)]={loading:true};renderInfo();
+ try{summaries[String(l.Id)]={text:(await aiCall({op:'summary',lead_id:l.Id})).summary||'Nothing to summarise yet.'}}catch(e){summaries[String(l.Id)]={text:'Could not summarise: '+e.message}}
+ if(current===l)renderInfo();
+}
+// ── Contact sidebar ──
+function toggleInfo(force){const p=$('infoPanel');if(!p)return;const open=force===undefined?p.classList.contains('hidden'):force;p.classList.toggle('hidden',!open);try{localStorage.setItem('lv_chats_info',open?'1':'0')}catch{}if(open){renderInfo();if(current&&current.NotesList===undefined)fetchNotes(current)}}
+const INFO_FIELDS=[['Stage','Lead stage'],['Score','Score'],['Source','Source'],['LeadSource','Lead source'],['AdCampaign','Ad campaign'],['AdName','Ad'],['LeadFormName','Lead form'],['Destination','Destination'],['TravelFrom','Travel from'],['TravelTo','Travel to'],['TripType','Trip type'],['PaxAdults','Adults'],['PaxChildren','Children'],['Budget','Budget'],['Doctor','Preferred doctor'],['AppointmentDate','Appointment'],['ServiceCategory','Service'],['InterestedProduct','Interested in'],['ProductCategory','Category'],['OrderId','Order ID'],['DeliveryStatus','Delivery status']];
+function firstResponse(h){const i=h.findIndex(m=>!isOut(m)&&m.kind!=='event');if(i<0)return'';const j=h.findIndex((m,k)=>k>i&&isOut(m)&&m.kind!=='event');if(j<0)return'';const ms=new Date(h[j].ts)-new Date(h[i].ts);if(!(ms>=0))return'';const m=Math.round(ms/60000);return m<1?'under a minute':m<60?m+' min':Math.floor(m/60)+'h '+(m%60)+'m'}
+function renderInfo(){
+ const p=$('infoPanel'),l=current;if(!p||!l||p.classList.contains('hidden'))return;
+ const rec=l._rec||{},v=k=>rec[k]??l[k]??'',sum=summaries[String(l.Id)];
+ const field=(k,label,type='text')=>`<label class="fld"><span>${esc(label)}</span><input type="${type}" value="${esc(v(k))}" data-k="${esc(k)}" onchange="saveField(this)"></label>`;
+ let notes=[];try{notes=JSON.parse(l.NotesList||'[]')}catch{}
+ const attrs=INFO_FIELDS.filter(([k])=>String(rec[k]??'').trim()).map(([k,label])=>field(k,label)).join('');
+ const created=rec.CreatedAt||rec.Date||rec.created_at;
+ p.innerHTML=`<h4>Contact</h4>${field('Name','Name')}${field('Phone','Phone','tel')}${field('Email','Email','email')}
+  ${attrs?`<h4>Details</h4>${attrs}`:''}
+  <h4>Conversation</h4>
+  ${created?`<div class="kv"><span>Created</span>${esc(new Date(created).toLocaleString([],{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}))}</div>`:''}
+  ${firstResponse(hist(l))?`<div class="kv"><span>First response</span>${esc(firstResponse(hist(l)))}</div>`:''}
+  <div class="kv"><span>Channel</span>${isIg(l)?'Instagram':'WhatsApp'}</div>
+  <div class="kv"><span>Handled by</span>${takenOver(l)?'👤 '+esc(agentName(l.HandoverBy)):'🤖 Bot'}</div>
+  ${l.Owner?`<div class="kv"><span>Assigned to</span>${esc(agentName(l.Owner))}</div>`:''}
+  <h4>AI summary</h4>${sum?`<div class="sum">${sum.loading?'✨ Summarising…':esc(sum.text)}</div>`:''}<button class="row-btn" onclick="summarise()">✨ ${sum&&!sum.loading?'Summarise again':'Summarise this chat'}</button>
+  <h4>Notes about this contact</h4>${notes.slice(-8).reverse().map(n=>`<div class="nt">${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}${n.ts?' · '+esc(ago(n.ts)):''}</small>`:''}</div>`).join('')||'<div class="kv" style="color:var(--muted)">No notes yet</div>'}
+  <div class="add-note"><input id="infoNote" placeholder="Add a note" onkeydown="if(event.key==='Enter')addInfoNote()"><button class="row-btn" style="margin:0" onclick="addInfoNote()">Add</button></div>
+  <h4>Other conversations</h4><div id="prevConvs"><div class="kv" style="color:var(--muted)">Looking…</div></div>
+  <button class="row-btn" onclick="goLead()">Open full lead in CRM →</button>`;
+ loadPrevConvs(l);
+}
+async function saveField(inp){const l=current,k=inp.dataset.k,val=inp.value.trim();if(!l)return;try{await patchLead(l,{[k]:val});if(l._rec)l._rec[k]=val;if(k==='Name'||k==='Phone'){if(l._v2)l._v2[k==='Name'?'name':'phone']=val;renderContacts();const n=document.querySelector('.chat-name');if(n&&k==='Name')n.textContent=val||l.Phone}toast('Saved')}catch(e){toast('Could not save: '+e.message)}}
+async function addInfoNote(){const i=$('infoNote'),text=(i?.value||'').trim(),l=current;if(!text||!l)return;let n=[];try{n=JSON.parse(l.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(l,{NotesList:JSON.stringify(n)});renderInfo();drawMessages(false);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}}
+const prevCache={};
+async function loadPrevConvs(l){
+ const box=()=>$('prevConvs');const digits=String(l.Phone||'').replace(/\D/g,'').slice(-10);
+ const paint=list=>{const b=box();if(!b||current!==l)return;b.innerHTML=list.length?list.map(r=>`<button class="prev" onclick="openConversation('${esc(r.lead_id)}')">${r.channel==='instagram'?'📸':'💬'} ${esc(r.name||r.phone)}<small>${esc(r.last_message_preview||'')} · ${esc(ago(r.last_message_at))}${r.status==='resolved'?' · resolved':''}</small></button>`).join(''):'<div class="kv" style="color:var(--muted)">None</div>'};
+ if(digits.length<6){paint([]);return}
+ if(prevCache[digits])return paint(prevCache[digits].filter(r=>String(r.lead_id)!==String(l.Id)));
+ try{const d=await apiJson(WORKER+'/chats/v2/search?q='+encodeURIComponent(digits));mergeRows(d.rows);prevCache[digits]=(d.rows||[]).filter(r=>String(r.phone||'').replace(/\D/g,'').endsWith(digits));paint(prevCache[digits].filter(r=>String(r.lead_id)!==String(l.Id)))}catch{paint([])}
+}
+// ── Export (.txt) ──
+function exportChat(){
+ toggleMenu(false);const l=current;if(!l)return;
+ const lines=[`Chat with ${l.Name||l.Phone||'contact'} (${l.Phone||''}) — exported ${new Date().toLocaleString()}`,''];
+ for(const m of hist(l)){const t=m.ts?new Date(m.ts).toLocaleString():'';if(m.kind==='event'){lines.push(`[${t}] — ${m.content}`);continue}const who=isOut(m)?(senderOf(m)?.label||'Business'):(l.Name||'Customer');const atts=attachmentsOf(m).map(a=>`[${kindLabel(a)}${a.url?' '+a.url:''}]`).join(' ');lines.push(`[${t}] ${who}: ${bodyOf(m)}${atts?' '+atts:''}`)}
+ if(threadMeta[String(l.Id)]?.has_more)lines.splice(1,0,'(Only the messages loaded on screen — scroll up in the chat first to include older ones.)');
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'}));a.download=`chat-${String(l.Name||l.Phone||l.Id).replace(/[^\w-]+/g,'_')}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
 async function setPending(){closeDd();try{await act('pending');toast('Marked as pending')}catch(e){toast('Could not update: '+e.message)}}
 function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
 function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
