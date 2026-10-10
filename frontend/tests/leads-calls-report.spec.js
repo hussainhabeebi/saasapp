@@ -60,9 +60,9 @@ test('All Time: separate leads and telecaller call totals', async ({ page }) => 
   await expect(statVal(page, 'lcCalls', 'Customers Called')).toHaveText('3');
   // Per telecaller: Rita 3 calls (2 answered), Boss 2 calls (1 answered) across 2 customers
   const rita = page.locator('#lcAgents tbody tr', { hasText: 'Rita' });
-  await expect(rita.locator('td')).toHaveText([/Rita/, '3', '2', '1', '67%', '1']);
+  await expect(rita.locator('td')).toHaveText([/Rita/, '3', '2', '1', '67%', '1', '0']);
   const boss = page.locator('#lcAgents tbody tr', { hasText: 'boss@example.com' });
-  await expect(boss.locator('td')).toHaveText([/boss@example\.com/, '2', '1', '1', '50%', '2']);
+  await expect(boss.locator('td')).toHaveText([/boss@example\.com/, '2', '1', '1', '50%', '2', '0']);
   // Day-by-day: 7 rows for All Time, today's row first
   const rows = page.locator('#lcDays tbody tr');
   await expect(rows).toHaveCount(7);

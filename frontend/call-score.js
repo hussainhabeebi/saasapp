@@ -24,7 +24,7 @@ const CS_HOT_MISSED_MS=24*3600000;  // Hot lead still never called after 24h
 function csDayKey(ms){ const d=new Date(ms); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function csToday(){ return csDayKey(Date.now()); }
 function csCallMs(c){ const t=Date.parse(c.at||c.date||''); return isFinite(t)?t:null; }
-function csCalls(l){ let c=[]; try{ c=JSON.parse(l.CallLog||'[]'); }catch(e){} return Array.isArray(c)?c.slice().reverse():[]; } // oldest first
+function csCalls(l){ return parseCallLog(l.CallLog).slice().reverse(); } // oldest first (parseCallLog: dashboard.html)
 // A call that ended with "Continue on WhatsApp" (Power Dial) was a real conversation — it scores as answered.
 function csConnected(c){ return c.outcome==='Answered'||c.outcome==='Moved to WhatsApp'; }
 function csIsSpam(l){ return l.HandoverOutcome==='Spam'; }
