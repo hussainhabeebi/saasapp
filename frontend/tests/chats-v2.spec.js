@@ -61,6 +61,8 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
       const start = q.cursor ? Number(q.cursor) : 0, limit = Number(q.limit || 40);
       return route.fulfill({ json: { rows: rs.slice(start, start + limit), cursor: start + limit < rs.length ? String(start + limit) : null } });
     }
+    if (p.endsWith('/chats/v2/send-probe')) return route.fulfill({ json: {} });
+    if (p.endsWith('/chat/send')) { calls.send = (calls.send || []).concat([req.postDataJSON()]); return route.fulfill({ json: { ok: true } }); }
     if (p.endsWith('/chats/v2/thread')) {
       calls.thread.push(Object.fromEntries(url.searchParams));
       const row = state.rows.find(r => String(r.lead_id) === url.searchParams.get('lead_id'));
@@ -76,6 +78,8 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
         if (body.op === 'snooze') { n.status = 'snoozed'; n.snoozed_until = body.args.until; }
         if (body.op === 'resolve') n.status = 'resolved';
         if (body.op === 'mark_read') n.unread_count = 0;
+        if (body.op === 'label_add') { const l = n.labels ? n.labels.split(', ') : []; if (!l.includes(body.args.label)) l.push(body.args.label); n.labels = l.join(', '); n.labels_key = ',' + l.map(x => x.toLowerCase()).join(',') + ','; }
+        if (body.op === 'priority') n.priority = body.args.value;
         Object.assign(r, n);
         return n;
       });
@@ -215,4 +219,76 @@ test('if the v2 API is unavailable, Chats falls back to the v1 lead list', async
   const { calls } = await open(page, { failBootstrap: true });
   await expect.poll(() => calls.nocodbList).toBeGreaterThan(0);
   await expect(page.locator('#list .empty-list')).toBeVisible();
+});
+
+test('labels: pick or create from the header; filter the list by label', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await page.locator('#labelBtn').click();
+  await page.locator('#lblQ').fill('Payment due');
+  await page.locator('#ddMenu button', { hasText: 'Create' }).click();
+  expect(calls.act.at(-1)).toMatchObject({ op: 'label_add', ids: [2], args: { label: 'Payment due' } });
+  await expect(page.locator('#labelBtn')).toContainText('Payment due');
+  await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.lbl')).toHaveText(['Payment due']);
+  await page.locator('#prioBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Urgent' }).click();
+  expect(calls.act.at(-1)).toMatchObject({ op: 'priority', args: { value: 4 } });
+  await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.prio.p4')).toBeVisible();
+  await page.locator('#labelFilterBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Hot' }).click();
+  await expect.poll(() => calls.list.at(-1).labels).toBe('Hot');
+  await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
+});
+
+test('bulk: select rows, then resolve them in one go; right-click opens the row menu', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).hover();
+  await page.locator('#list .contact', { hasText: 'Asha' }).locator('.ck').click();
+  await page.locator('#list .contact', { hasText: 'Binu' }).click(); // in selection mode a click selects
+  await expect(page.locator('#bulkBar b')).toHaveText('2 selected');
+  await page.locator('#bulkBar button', { hasText: 'Resolve' }).click();
+  expect(calls.act.at(-1)).toMatchObject({ op: 'resolve', ids: ['1', '2'] });
+  await expect(page.locator('#bulkBar')).toHaveCount(0);
+  await page.locator('#filters .pill', { hasText: 'Resolved' }).click();
+  await page.locator('#list .contact', { hasText: 'Chitra' }).click({ button: 'right' });
+  await page.locator('#ddMenu button', { hasText: 'Reopen' }).click();
+  expect(calls.act.at(-1)).toMatchObject({ op: 'reopen', ids: ['3'] });
+});
+
+test('send & resolve, clickable phone numbers and emails, and the 24-hour countdown', async ({ page }) => {
+  const { calls } = await open(page, { thread: { messages: [
+    { id: 1, role: 'user', content: 'Call me on +91 98765 43210 or mail asha@example.com', ts: minsAgo(90) },
+  ] } });
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await expect(page.locator('#thread a[href="tel:+919876543210"]')).toHaveText('+91 98765 43210');
+  await expect(page.locator('#thread a[href="mailto:asha@example.com"]')).toBeVisible();
+  await expect(page.locator('#winTimer')).toContainText(/23h \d+m/);
+  await page.locator('#msg').fill('Done, sent the quote');
+  await page.locator('#msg').press('Control+Enter');
+  await expect.poll(() => (calls.send || []).length).toBe(1);
+  await expect.poll(() => calls.act.some(a => a.op === 'resolve' && a.ids[0] === 2)).toBe(true);
+});
+
+test('search in conversation highlights matches and steps through them', async ({ page }) => {
+  await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await page.locator('[title="Search in conversation"]').first().click();
+  await page.locator('#threadSearchInput').fill('help');
+  await expect(page.locator('#thread mark')).toHaveCount(2);
+  await expect(page.locator('#tsCount')).toHaveText('2/2');
+  await page.locator('#threadSearchInput').press('Enter');
+  await expect(page.locator('#tsCount')).toHaveText('1/2');
+  await expect(page.locator('#thread mark.cur')).toHaveCount(1);
+});
+
+test('keyboard: J/K move between chats, E resolves', async ({ page }) => {
+  const { calls } = await open(page);
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await page.locator('#thread').click();
+  await page.keyboard.press('j');
+  await expect(page.locator('.chat-name')).toHaveText('Binu');
+  await page.keyboard.press('k');
+  await expect(page.locator('.chat-name')).toHaveText('Asha');
+  await page.keyboard.press('e');
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'resolve', ids: [1] });
 });

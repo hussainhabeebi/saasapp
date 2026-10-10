@@ -34646,11 +34646,13 @@ export class ClientUpdatesHub{
   async webSocketMessage(ws, message){
     let msg=null;
     try{ msg=JSON.parse(message); }catch(e){ return; }
-    if(msg?.type!=='viewing' || !msg.lead_id) return;
+    // Chats v2 adds `typing` (an agent composing a reply) on the same ephemeral relay, for the
+    // collision warning in chats.html — ids and identity only, never the draft text.
+    if(!['viewing','typing'].includes(msg?.type) || !msg.lead_id) return;
     let who={};
     try{ who=ws.deserializeAttachment()||{}; }catch(e){}
     if(!who.email) return;
-    const out=JSON.stringify({type:'viewing', lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
+    const out=JSON.stringify({type:msg.type, lead_id:msg.lead_id, email:who.email, name:who.name||who.email, at:new Date().toISOString()});
     for(const other of this.state.getWebSockets()){
       if(other===ws) continue;
       try{ other.send(out); }catch(e){}
