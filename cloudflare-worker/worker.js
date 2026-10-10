@@ -10988,14 +10988,15 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
     items:(seed?.items||'').trim().slice(0,500)||'Collected via chat',
     total:seed?.price||0, currency:seed?.currency||'',
     payment_method:seed?.paymentMethod||'',
+    ...(seed?.customerEmail?{customer_email:seed.customerEmail}:{}),
     delivery_address:(address||'').trim().slice(0,500), status:'pending',
-    notes:seed?.fashionFlow
+    notes:[seed?.extraNotes, seed?.fashionFlow
       ? 'Fashion order confirmed inside WhatsApp — verify pricing before fulfilling.'
       : seed?.electronicsFlow
         ? `Electronics order — Payment: ${seed?.paymentMethod||'not specified'}. Verify items and pricing before fulfilling.`
         : seed?.chatOrder
           ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
-          : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'
+          : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'].filter(Boolean).join('\n')
   };
   // Baby Care in-chat orders already have a 'draft' row (engineSyncDraftChatOrder) — complete
   // that row instead of adding a second one, keeping its order id and anything staff noted on it.
@@ -11035,6 +11036,10 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
    order only after the customer confirms a summary. An LLM writes each reply; the code keeps the
    guard rails — no price or option that isn't in the product row, no order saved without a shown
    summary + explicit yes + name + address. */
+// Everything the order-taking turn listens for. Items-side details end up in the order's items text
+// (ecomChatOrderItems); the rest go to their own column or a labelled notes line
+// (ecomChatOrderExtras) so staff see e.g. "Payment: COD" without reading the chat.
+export const ECOM_CHAT_ORDER_DETAIL_KEYS=['quantity','size','colour','customisation','customer_name','delivery_address','landmark','customer_email','alternate_phone','payment_method','delivery_date','gift_message','notes'];
 export function ecomChatOrderSeed(product){
   return {chatOrder:true, sku:product?.sku||'', productName:String(product?.name||'').trim(),
     price:Number(product?.price)||0, currency:product?.currency||'',
@@ -11057,6 +11062,8 @@ What you need before the order can be placed:
 - quantity (assume 1 unless they say otherwise);
 - customer_name and full delivery_address including PIN code.
 
+Pick up every order detail the customer mentions anywhere in the conversation — even unprompted, in passing, or before you asked — and never ask again for something they already said: size/age → size, colour → colour, print name/theme/add-ons → customisation, an email → customer_email, another number to reach them → alternate_phone, a landmark → landmark, COD / UPI / GPay / bank transfer / card → payment_method, a date they need it by ("before the 10th", "for her birthday on Sunday") → delivery_date, a gift note or card message → gift_message, anything else they want the team to know → notes. Don't ask for the optional ones (email, alternate phone, landmark, payment, date, gift message) — just record them when they come up.
+
 How to talk:
 - Sound like a friendly human: short (1-3 sentences), natural, a light emoji at most. Ask for one or two things at a time, never a list of blanks to fill.
 - If the customer asks a question, answer it from the product data first, then gently continue with what's still needed. Never invent prices, options, delivery times or policies; if something isn't in the product data, say the team will confirm it.
@@ -11065,7 +11072,7 @@ How to talk:
 - Set status "confirmed" ONLY when the customer clearly says yes to that summary. Then thank them and say the team will confirm payment and delivery shortly.
 - Set status "cancelled" if they no longer want to order. Set status "off_topic" if they have moved on to something unrelated to this order (another product, a general question not about ordering) — your reply is then ignored.
 
-Respond with ONLY JSON: {"reply":"...","status":"collecting|confirm|confirmed|cancelled|off_topic","details":{"quantity":"","customisation":"","customer_name":"","delivery_address":"","notes":""}} — details holds only values the customer actually gave (keep earlier ones).`;
+Respond with ONLY JSON: {"reply":"...","status":"collecting|confirm|confirmed|cancelled|off_topic","details":{${ECOM_CHAT_ORDER_DETAIL_KEYS.map(k=>`"${k}":""`).join(',')}}} — details holds only values the customer actually gave (keep earlier ones).`;
 }
 // Merges one LLM turn into the seed and enforces the guard rails. Returns null when the model gave
 // nothing usable (caller falls back to a plain, safe question).
@@ -11086,7 +11093,20 @@ export function ecomApplyChatOrderTurn(seed, raw){
 }
 export function ecomChatOrderItems(seed){
   const d=seed.details||{};
-  return [`${seed.productName}${d.quantity&&d.quantity!=='1'?` × ${d.quantity}`:''}`, d.customisation, d.notes].filter(Boolean).join(' | ');
+  return [`${seed.productName}${d.quantity&&d.quantity!=='1'?` × ${d.quantity}`:''}`,
+    d.size&&`Size: ${d.size}`, d.colour&&`Colour: ${d.colour}`, d.customisation, d.notes].filter(Boolean).join(' | ');
+}
+// The non-items details as order-row fields: address (+ landmark), email, payment method, and the
+// leftovers as labelled notes lines. Only what the customer actually gave.
+export function ecomChatOrderExtras(details){
+  const d=details||{}, out={};
+  if(d.delivery_address) out.delivery_address=[d.delivery_address, d.landmark&&`Landmark: ${d.landmark}`].filter(Boolean).join(' — ').slice(0,500);
+  if(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(d.customer_email||'').trim())) out.customer_email=String(d.customer_email).trim().slice(0,200);
+  if(d.payment_method) out.payment_method=String(d.payment_method).slice(0,100);
+  const lines=[d.delivery_date&&`Wanted by: ${d.delivery_date}`, d.alternate_phone&&`Alternate phone: ${d.alternate_phone}`,
+    d.gift_message&&`Gift message: ${d.gift_message}`, d.payment_method&&`Payment: ${d.payment_method}`].filter(Boolean);
+  if(lines.length) out.notes=lines.join('\n');
+  return out;
 }
 async function engineChatOrderTurn(env, c, seed, userText, history, lang){
   const recent=(history||[]).slice(-8).map(m=>`${m.role==='user'?'Customer':engineIsStaffTurn(m)?'Staff (human agent)':'You'}: ${m.content}`).join('\n');
@@ -11107,8 +11127,10 @@ async function engineHandleChatOrder(env, c, clientId, convId, phone, name, seed
   } else if(turn.status==='confirmed'){
     const d=nextSeed.details;
     const qty=Math.max(1, parseInt(d.quantity,10)||1);
+    const extras=ecomChatOrderExtras(d);
     const order=await finalizeChatOrder(env, c, clientId, phone, d.customer_name||name,
-      {chatOrder:true, draftOrderId:nextSeed.draftOrderId, items:ecomChatOrderItems(nextSeed), price:nextSeed.price?nextSeed.price*qty:0, currency:nextSeed.currency}, d.delivery_address);
+      {chatOrder:true, draftOrderId:nextSeed.draftOrderId, items:ecomChatOrderItems(nextSeed), price:nextSeed.price?nextSeed.price*qty:0, currency:nextSeed.currency,
+        paymentMethod:extras.payment_method, customerEmail:extras.customer_email, extraNotes:extras.notes}, extras.delivery_address||d.delivery_address);
     text=order.ok ? turn.reply
       : await engineLocalizeReply(env, c, "Thank you! I've noted your order — our team will confirm everything with you shortly 😊", replyLang);
     if(!order.ok) await engineSendHandoverLabel(c, convId);
@@ -11148,7 +11170,8 @@ export function ecomDraftOrderFields(seed){
     const qty=Math.max(1, parseInt(d.quantity,10)||1);
     if(Number(seed.price)>0){ out.total=Number(seed.price)*qty; out.currency=seed.currency||''; }
     if(d.customer_name) out.customer_name=String(d.customer_name).slice(0,200);
-    if(d.delivery_address) out.delivery_address=String(d.delivery_address).slice(0,500);
+    const {notes:_n, ...extras}=ecomChatOrderExtras(d); // notes stay staff's on a draft
+    Object.assign(out, extras);
   } else if(seed.babyCareFlow){
     out.items=ecomBabyCareOrderItems({...seed, productName:seed.productName||'Custom Baby Set'}).slice(0,500);
     if(seed.customerName) out.customer_name=String(seed.customerName).slice(0,200);
@@ -11231,26 +11254,33 @@ CURRENT ORDER:
 Items: ${order.items||''}
 Customer name: ${order.customer_name||''}
 Delivery address: ${order.delivery_address||''}
+Customer email: ${order.customer_email||''}
+Payment method: ${order.payment_method||''}
 
 Rules:
-- Only report a change the customer clearly asks for or states in the LATEST message (new/corrected address, name, quantity, size, colour, print name, add-ons, or an extra item for this order). Questions, greetings, thanks, payment chat and anything about a different new order are NOT changes.
+- Only report a change the customer clearly asks for or states in the LATEST message (new/corrected address or landmark, name, quantity, size, colour, print name, add-ons, an extra item for this order, an email, how they'll pay — COD/UPI/bank transfer — a date they need it by, another phone number, a gift message). Questions, greetings, thanks and anything about a different new order are NOT changes.
+- A date they need it by, another phone number or a gift message goes in "notes" as one short line (e.g. "Wanted by: 10 Oct").
 - "items" must be the FULL updated items text (keep the existing parts that did not change), or "" if items did not change.
 - Never invent values.
 
-Respond with ONLY JSON: {"changed":true|false,"items":"","customer_name":"","delivery_address":"","summary":"one short line, in English, describing what the customer changed"}`;
+Respond with ONLY JSON: {"changed":true|false,"items":"","customer_name":"","delivery_address":"","customer_email":"","payment_method":"","notes":"","summary":"one short line, in English, describing what the customer changed"}`;
 }
 export function ecomParseOrderUpdate(order, raw){
   let t=null;
   try{ t=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]); }catch(e){ return null; }
   if(!t || t.changed!==true) return null;
   const patch={};
-  for(const [k,max] of [['items',500],['customer_name',200],['delivery_address',500]]){
+  for(const [k,max] of [['items',500],['customer_name',200],['delivery_address',500],['customer_email',200],['payment_method',100]]){
     const v=String(t[k]??'').trim().slice(0,max);
+    if(k==='customer_email' && v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) continue;
     if(v && v!==String(order[k]||'').trim()) patch[k]=v;
   }
-  if(!Object.keys(patch).length) return null;
-  const summary=String(t.summary||'').trim().slice(0,200)||Object.keys(patch).join(', ')+' updated';
-  return {patch, summary};
+  // Notes are appended by the caller (never replace what staff wrote), so only a new line counts.
+  const note=String(t.notes||'').trim().slice(0,300);
+  const addNote=note && !String(order.notes||'').includes(note) ? note : '';
+  if(!Object.keys(patch).length && !addNote) return null;
+  const summary=String(t.summary||'').trim().slice(0,200)||[...Object.keys(patch), addNote&&'notes'].filter(Boolean).join(', ')+' updated';
+  return {patch, summary, ...(addNote?{note:addNote}:{})};
 }
 async function engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, userText, history){
   try{
@@ -11267,7 +11297,7 @@ async function engineMaybeApplyCustomerOrderUpdate(env, c, clientId, phone, user
     const upd=ecomParseOrderUpdate(order, raw);
     if(!upd) return null;
     const stamp=new Date().toISOString().slice(0,16).replace('T',' ');
-    const notes=[String(order.notes||'').trim(), `[${stamp}] Customer update via chat: ${upd.summary}`].filter(Boolean).join('\n').slice(-2000);
+    const notes=[String(order.notes||'').trim(), `[${stamp}] Customer update via chat: ${upd.summary}`, upd.note].filter(Boolean).join('\n').slice(-2000);
     const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:{Id:order.Id, ...upd.patch, notes}});
     return r.ok ? order.Id : null;
   }catch(e){ console.error('[ecom] engineMaybeApplyCustomerOrderUpdate failed', e.message); return null; }
@@ -11336,11 +11366,11 @@ async function handleEcomOrdersSyncChats(request, env){
 export function ecomOrderFromChatPrompt(order){
   return `From the WhatsApp conversation, extract the details of the order this customer placed or is placing with the shop.
 
-EXISTING ORDER (may be incomplete or outdated): ${JSON.stringify({items:order.items||'', customer_name:order.customer_name||'', delivery_address:order.delivery_address||''})}
+EXISTING ORDER (may be incomplete or outdated): ${JSON.stringify({items:order.items||'', customer_name:order.customer_name||'', delivery_address:order.delivery_address||'', customer_email:order.customer_email||'', payment_method:order.payment_method||''})}
 
-Use the LATEST value the customer gave for each detail (a later correction wins). Items must include product, quantity and every customisation mentioned (baby's name, size/age, colour, theme, add-ons). Leave a field "" if the conversation doesn't state it. Never invent values.
+Use the LATEST value the customer gave for each detail (a later correction wins), including details mentioned in passing or before the shop asked. Items must include product, quantity and every customisation mentioned (baby's name, size/age, colour, theme, add-ons) — one line per product if they ordered several. delivery_address is the full address with PIN code, plus any landmark they gave. payment_method is how they said they'll pay (COD, UPI, GPay, bank transfer, card…). Leave a field "" if the conversation doesn't state it. Never invent values.
 
-Respond with ONLY JSON: {"items":"","customer_name":"","delivery_address":"","notes":"anything else staff should know, e.g. delivery date wanted, payment preference"}`;
+Respond with ONLY JSON: {"items":"","customer_name":"","delivery_address":"","customer_email":"","payment_method":"","notes":"anything else staff should know, one per line, e.g. Wanted by: 10 Oct / Alternate phone: … / Gift message: …"}`;
 }
 async function handleEcomOrderFromChat(request, env){
   const body=await request.json().catch(()=>({}));
@@ -11363,7 +11393,9 @@ async function handleEcomOrderFromChat(request, env){
   let t=null; try{ t=JSON.parse((String(raw||'').replace(/```json|```/gi,'').match(/\{[\s\S]*\}/)||[''])[0]); }catch(e){}
   if(!t || typeof t!=='object') return json({error:'Could not read the order from the chat — try again'},502);
   const pick=(k,max)=>String(t[k]??'').trim().slice(0,max);
-  return json({ok:true, suggested:{items:pick('items',500), customer_name:pick('customer_name',200), delivery_address:pick('delivery_address',500), notes:pick('notes',500)}});
+  const email=pick('customer_email',200);
+  return json({ok:true, suggested:{items:pick('items',500), customer_name:pick('customer_name',200), delivery_address:pick('delivery_address',500),
+    customer_email:/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)?email:'', payment_method:pick('payment_method',100), notes:pick('notes',500)}});
 }
 
 // A message about one product that asks something ("Ith oru jodi alliyo" — isn't this a pair?,

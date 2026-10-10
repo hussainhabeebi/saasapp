@@ -56,3 +56,21 @@ test('customer update: only real changes are patched, items keep their full text
   assert.deepEqual(u.patch, { items: 'Romper Set | Name: Ayra', delivery_address: 'Thrissur 680001' });
   assert.equal(u.summary, 'Name spelling and address changed');
 });
+
+test('draft picks up email + payment from the chat but leaves notes to staff', () => {
+  const seed = { ...ecomChatOrderSeed(product), details: { customer_email: 'a@b.co', payment_method: 'UPI', delivery_date: 'Sunday' } };
+  const f = ecomDraftOrderFields(seed);
+  assert.equal(f.customer_email, 'a@b.co');
+  assert.equal(f.payment_method, 'UPI');
+  assert.equal(f.notes, undefined);
+});
+
+test('customer update: email/payment patched, a wanted-by date is appended as a note', () => {
+  const order = { items: 'Romper Set', customer_name: 'Murshid', delivery_address: 'Kochi', notes: 'Staff: gift wrap' };
+  assert.match(ecomOrderUpdatePrompt(order), /Payment method:/);
+  const u = ecomParseOrderUpdate(order, '{"changed":true,"payment_method":"COD","customer_email":"not an email","notes":"Wanted by: 10 Oct","summary":"Pays COD, needs it by 10 Oct"}');
+  assert.deepEqual(u.patch, { payment_method: 'COD' });
+  assert.equal(u.note, 'Wanted by: 10 Oct');
+  // only a note, already on the order → nothing to do
+  assert.equal(ecomParseOrderUpdate({ ...order, notes: 'Wanted by: 10 Oct' }, '{"changed":true,"notes":"Wanted by: 10 Oct"}'), null);
+});
