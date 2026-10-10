@@ -30962,11 +30962,17 @@ function resortOrdinalFromText(lower){
 // leadId is null for brand-new leads — that counts as never having received media.
 async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText){
   if(!userText) return false;
+  // Only suppress the LLM when engineMaybeSendHospitalityMedia will actually reply — it returns
+  // without sending anything when Chatwoot isn't connected or the client has no active units
+  // (real observed case: a resort client with no units configured went silent on "Looking for
+  // resorts" because this gate swallowed the reply and nothing else was sent).
+  if(!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return false;
   const lower=userText.toLowerCase();
   // Specific unit name match — always suppress LLM so the unit media speaks for itself,
   // regardless of whether this lead has received media before.
   const {results:units}=await env.DB.prepare(`SELECT name FROM hospitality_units WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
-  if(units && units.some(u=>hospUnitNameMatch(lower, u.name))) return true;
+  if(!units || !units.length) return false;
+  if(units.some(u=>hospUnitNameMatch(lower, u.name))) return true;
   // Specific property name match — same: always suppress LLM.
   const {results:props}=await env.DB.prepare(`SELECT name FROM hospitality_properties WHERE client_id=? AND active=1`).bind(Number(clientId)).all();
   if(props && props.some(p=>hospUnitNameMatch(lower, p.name))) return true;
@@ -30975,7 +30981,10 @@ async function engineCheckResortFirstInquiry(env, c, clientId, leadId, userText)
   // some images" without sending any is worse than the bot showing a picker.
   if(/\b(photos?|pictures?|images?|gallery|pics?)\b/i.test(lower)) return true;
   // General keyword (e.g. "rooms available?") — only suppress on the very first enquiry so
-  // subsequent keyword-only messages still get a normal LLM reply.
+  // subsequent keyword-only messages still get a normal LLM reply. The media step only answers a
+  // general keyword with a picker when intro images are off; with them on it sends nothing (the
+  // greeting showcase already offered the picker), so let the LLM answer instead of going silent.
+  if(c.hospitality_greeting_images!=='off') return false;
   if(!HOSPITALITY_RESORT_ENQUIRY_RE.test(lower)) return false;
   if(!leadId) return true;
   const sentUnit=await env.DB.prepare(`SELECT id FROM hospitality_media_sent WHERE lead_id=? LIMIT 1`).bind(leadId).first();
