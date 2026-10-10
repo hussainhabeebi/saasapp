@@ -16504,6 +16504,7 @@ export function ltNormalizeChatFlightRequest(raw={},defaultCurrency='AED'){
     adults:clamp(raw.adults,1,9,1),children:clamp(raw.children,0,9,0),infants:clamp(raw.infants,0,9,0),
     cabin:['economy','premium_economy','business','first'].includes(String(raw.cabin||'').toLowerCase())?String(raw.cabin).toLowerCase():'economy',
     currency:ltFxCode(raw.currency)||ltFxCode(defaultCurrency)||'AED'};
+  if(ltHasChatFlightFilters(raw.filters))out.filters=raw.filters;
   const missing=[];
   if(!out.origin) missing.push('origin airport code');
   if(!out.destination) missing.push('destination airport code');
@@ -16544,6 +16545,99 @@ export function ltParseFlightRoute(value){
   return origin&&destination&&origin!==destination?{origin,destination}:null;
 }
 
+// Customer flight filters typed in chat ("flynas", "direct only", "morning", "under 30000",
+// "cheapest"). Country-named airlines need the airline word so "Kochi to Qatar" is not read as
+// "Qatar Airways only". The AI Express pattern runs before Air India so it is not swallowed.
+const LT_AIRLINE_ALIASES=[
+  ['XY','flynas',/\bfly\s*nas\b/i],['FZ','flydubai',/\bfly\s*dubai\b/i],['F3','flyadeal',/\bfly\s*adeal\b/i],
+  ['G9','Air Arabia',/\bair\s*arabia\b/i],['IX','Air India Express',/\b(?:air\s*india\s*express|ai\s*express|aix)\b/i],
+  ['AI','Air India',/\bair\s*india\b(?!\s*express)/i],['QP','Akasa Air',/\bakasa\b/i],['6E','IndiGo',/\bindigo\b/i],
+  ['SG','SpiceJet',/\bspice\s*jet\b/i],['EK','Emirates',/(?<!arab\s)\bemirates\b/i],['EY','Etihad',/\betihad\b/i],
+  ['QR','Qatar Airways',/\bqatar\s*airways?\b/i],['SV','Saudia',/\bsaudia\b|\bsaudi\s*airlines?\b/i],['WY','Oman Air',/\boman\s*air\b/i],
+  ['OV','SalamAir',/\bsalam\s*air\b/i],['GF','Gulf Air',/\bgulf\s*air\b/i],['KU','Kuwait Airways',/\bkuwait\s*airways?\b/i],['J9','Jazeera Airways',/\bjazeera\b/i]
+];
+const LT_TIME_WINDOWS={morning:[5,12],afternoon:[12,17],evening:[17,21],night:[21,29]};
+export function ltParseChatFlightFilters(text){
+  const value=String(text||''),out={};
+  if(/\b(?:all\s+(?:airlines|flights|options)|any\s+airline|remove\s+(?:the\s+)?filters?|clear\s+(?:the\s+)?filters?|no\s+filters?|show\s+all)\b/i.test(value))out.clear=true;
+  const airlines=LT_AIRLINE_ALIASES.filter(([,,pattern])=>pattern.test(value)).map(([code,name])=>({code,name}));
+  if(airlines.length)out.airlines=airlines;
+  if(/\b(?:direct|non[\s-]?stop)\b/i.test(value))out.direct_only=true;
+  const time=value.match(/\b(morning|afternoon|evening|night)\b/i);
+  if(time)out.time_of_day=time[1].toLowerCase();
+  const price=value.match(/\b(?:under|below|less\s+than|within|max(?:imum)?|budget|upto|up\s+to)\s*(?:[a-z]{3}\s*|rs\.?\s*|₹\s*)?(\d[\d,]*)/i);
+  if(price){const max=Number(price[1].replace(/,/g,''));if(max>0)out.max_price=max;}
+  if(/\b(?:cheapest|lowest\s+(?:fare|price)|low\s+fare)\b/i.test(value))out.sort='cheapest';
+  else if(/\b(?:fastest|shortest|quickest)\b/i.test(value))out.sort='fastest';
+  else if(/\bearliest\b/i.test(value))out.sort='earliest';
+  return out;
+}
+// New filters replace old ones of the same kind; "show all" drops every saved filter first.
+export function ltMergeChatFlightFilters(old,next){
+  const merged={...(next?.clear?{}:(old||{})),...(next||{})};
+  delete merged.clear;
+  return merged;
+}
+export function ltHasChatFlightFilters(filters){
+  const f=filters||{};
+  return !!(f.airlines?.length||f.direct_only||f.time_of_day||f.max_price||f.sort);
+}
+// A short reply that only refines the last search ("direct only", "flynas flights", "morning",
+// "show all") — every word is a filter or filler, so "good night" or a new route never counts.
+// A bare airline name stays a booking choice for the options already listed.
+export function ltChatFlightFilterRefinement(text){
+  const value=String(text||'').trim();
+  if(!value||value.length>80||/^book\b/i.test(value))return false;
+  const f=ltParseChatFlightFilters(value);
+  if(!f.clear&&!ltHasChatFlightFilters(f))return false;
+  if(f.airlines?.length&&!f.clear&&!f.direct_only&&!f.time_of_day&&!f.max_price&&!f.sort&&!/\bonly\b|\bflights?\b|\boptions?\b/i.test(value))return false;
+  let rest=value;
+  for(const [,,pattern] of LT_AIRLINE_ALIASES)rest=rest.replace(new RegExp(pattern.source,'gi'),' ');
+  rest=rest.replace(/\b(?:under|below|less\s+than|within|max(?:imum)?|budget|upto|up\s+to)\s*(?:[a-z]{3}\s*|rs\.?\s*|₹\s*)?\d[\d,]*/gi,' ')
+    .replace(/\b(?:all|any|airlines?|remove|clear|filters?|no|direct|non[\s-]?stop|morning|afternoon|evening|night|cheapest|lowest|low|fare|fares|price|fastest|shortest|quickest|earliest|only|flights?|options?|tickets?|show|me|please|pls|plz|i|want|need|check|search|give|the|a|with|departures?|departing|in|prefer|preferred|one|ones|just|ok|okay)\b/gi,' ')
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+  return !rest;
+}
+export function ltChatFlightFilterLabel(filters){
+  const f=filters||{},parts=[];
+  if(f.airlines?.length)parts.push(f.airlines.map(a=>a.name).join('/'));
+  if(f.direct_only)parts.push('direct only');
+  if(f.time_of_day)parts.push(`${f.time_of_day} departures`);
+  if(f.max_price)parts.push(`under ${Number(f.max_price).toLocaleString('en-US')}`);
+  if(f.sort)parts.push(`${f.sort} first`);
+  return parts.join(', ');
+}
+function ltOfferDepartHour(o){
+  const leg=Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
+  if(!leg.departureTime)return null;
+  // Same clock the chat shows the customer (see ltFormatChatOffers).
+  const hour=Number(new Date(leg.departureTime).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',hour12:false}).slice(0,2));
+  return Number.isFinite(hour)?hour:null;
+}
+function ltOfferMatchesAirline(o,airlines){
+  const code=String(o?.airline_code||'').toUpperCase(),name=String(o?.airline_name||''),numbers=String(o?.flight_numbers||'').toUpperCase().replace(/\s+/g,'');
+  return airlines.some(a=>{
+    const pattern=LT_AIRLINE_ALIASES.find(([c])=>c===a.code)?.[2];
+    return code===a.code||(pattern&&pattern.test(name))||numbers.startsWith(a.code);
+  });
+}
+// Applies the customer's filters, then their sort (default: direct first, then cheapest).
+export function ltApplyChatFlightFilters(offers,filters){
+  const f=filters||{};
+  return (offers||[]).filter(o=>{
+    if(f.airlines?.length&&!ltOfferMatchesAirline(o,f.airlines))return false;
+    if(f.direct_only&&ltOfferStops(o)!==0)return false;
+    if(f.max_price&&!(Number(o?.total_amount)<=Number(f.max_price)))return false;
+    if(f.time_of_day){
+      const [from,to]=LT_TIME_WINDOWS[f.time_of_day]||[0,24],hour=ltOfferDepartHour(o);
+      if(hour==null)return false;
+      const h=hour<5&&to>24?hour+24:hour;
+      if(h<from||h>=to)return false;
+    }
+    return true;
+  });
+}
+
 async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   const transcript=(history||[]).slice(-8).filter(x=>x?.content).map(x=>`${x.role==='assistant'?'Assistant':'Customer'}: ${String(x.content).slice(0,500)}`).join('\n');
   const system=`Extract a flight search request from the conversation. Return JSON only with origin, destination, departure_date, return_date, trip_type, adults, children, infants, cabin, currency. Airport locations MUST be converted to three-letter IATA codes when unambiguous. Dates MUST be YYYY-MM-DD. Today is ${new Date().toISOString().slice(0,10)}. Natural dates such as "Sep 16", "16 September", and "16/09/2026" are valid; when the year is omitted, use the next occurrence that is today or in the future. Use null for missing facts and never invent a destination.`;
@@ -16579,14 +16673,20 @@ function ltOfferStops(o){
 }
 // Direct flights always come first, then cheapest. ltSaveChatOffers stores this same order, so
 // "Book Option 1" always books the flight shown as Option 1.
-export function ltBookableChatOffers(offers){
-  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0)
-    .sort((a,b)=>(ltOfferStops(a)===0?0:1)-(ltOfferStops(b)===0?0:1)||Number(a.total_amount)-Number(b.total_amount)).slice(0,3);
+// A customer sort ("cheapest", "fastest", "earliest") replaces the direct-first default.
+export function ltBookableChatOffers(offers,sort=''){
+  const price=(a,b)=>Number(a.total_amount)-Number(b.total_amount);
+  const leg=o=>Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
+  const compare=sort==='cheapest'?price
+    :sort==='fastest'?(a,b)=>(Number(leg(a).duration)||Infinity)-(Number(leg(b).duration)||Infinity)||price(a,b)
+    :sort==='earliest'?(a,b)=>(Date.parse(leg(a).departureTime)||Infinity)-(Date.parse(leg(b).departureTime)||Infinity)||price(a,b)
+    :(a,b)=>(ltOfferStops(a)===0?0:1)-(ltOfferStops(b)===0?0:1)||price(a,b);
+  return (offers||[]).filter(o=>o?.bookable&&o?.supplier_offer_id&&Number(o?.total_amount)>0).sort(compare).slice(0,3);
 }
-async function ltSaveChatOffers(env,clientId,phone,offers){
+async function ltSaveChatOffers(env,clientId,phone,offers,sort=''){
   if(!phone)return;
   await ltEnsureChatCheckoutSchema(env);
-  const top=ltBookableChatOffers(offers);
+  const top=ltBookableChatOffers(offers,sort);
   if(!top.length){
     await env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
     return;
@@ -16655,15 +16755,18 @@ export function ltStoredOfferSelectionIndex(offers,input){
   return matches.length===1?matches[0].i:-1;
 }
 
-export function ltFormatChatOffers(offers){
-  const top=ltBookableChatOffers(offers);
-  if(!top.length) return 'No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.';
+// opts.sort keeps the order the options were saved in; opts.note leads the reply (e.g. which
+// filter matched nothing); opts.filterHint tells the customer how to narrow the list.
+export function ltFormatChatOffers(offers,opts={}){
+  const top=ltBookableChatOffers(offers,opts.sort);
+  if(!top.length) return `${opts.note?opts.note+'\n\n':''}No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.`;
   const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
   const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
   const cabin=String(top[0].cabin||'economy').replace('_',' ');
   const count=top.length===1?'a flight':`${top.length} flights`;
   const hasDirect=top.some(o=>ltOfferStops(o)===0),hasConnecting=top.some(o=>ltOfferStops(o)>0);
-  const lines=[`✈️ I found ${count} from ${firstLeg.origin||'—'} to ${firstLeg.destination||'—'}${dateLabel?` on ${dateLabel}`:''} (${cabin}).${hasDirect&&hasConnecting?' Direct flights are listed first.':''}`];
+  const lines=[`✈️ I found ${count} from ${firstLeg.origin||'—'} to ${firstLeg.destination||'—'}${dateLabel?` on ${dateLabel}`:''} (${cabin}${opts.filterLabel?` · ${opts.filterLabel}`:''}).${!opts.sort&&hasDirect&&hasConnecting?' Direct flights are listed first.':''}`];
+  if(opts.note)lines.unshift(opts.note);
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
     const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'duration not provided';
@@ -16676,7 +16779,7 @@ export function ltFormatChatOffers(offers){
     if(o.seats_left!=null)line+=Number(o.seats_left)===1?' · only 1 seat left':` · ${o.seats_left} seats left`;
     lines.push(line);
   });
-  lines.push(`Tap the option you'd like to book below.\n_Fares may change until checkout._${ltChatFxNote(top)}`);
+  lines.push(`Tap the option you'd like to book below.${opts.filterHint?'\nTo filter, reply e.g. *direct only*, *morning*, *cheapest*, *under 30000* or an airline like *flynas only*.':''}\n_Fares may change until checkout._${ltChatFxNote(top)}`);
   return lines.join('\n\n');
 }
 // Converted chat fares are estimates: POOMAS charges in its own currency at checkout.
@@ -16745,6 +16848,28 @@ async function ltSaveChatSearchDraft(env,clientId,phone,draft){
 async function ltClearChatSearchDraft(env,clientId,phone){
   if(phone)await env.DB.prepare(`DELETE FROM live_travel_chat_search_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run();
 }
+// The last completed search, kept so a follow-up like "direct only" or "flynas only" re-runs it
+// with the new filter. Separate from the draft table: an open draft routes every message to search.
+async function ltEnsureChatLastSearchSchema(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_chat_last_search (
+    client_id INTEGER NOT NULL, phone TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (client_id,phone)
+  )`).run();
+}
+async function ltLoadChatLastSearch(env,clientId,phone){
+  if(!phone)return null;
+  await ltEnsureChatLastSearchSchema(env);
+  const row=await env.DB.prepare(`SELECT input_json FROM live_travel_chat_last_search WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  return row?ltJson(row.input_json,null):null;
+}
+async function ltSaveChatLastSearch(env,clientId,phone,input){
+  if(!phone)return;
+  await ltEnsureChatLastSearchSchema(env);
+  const now=new Date(),expires=new Date(now.getTime()+2*60*60*1000).toISOString(),{missing,...saved}=input||{};
+  await env.DB.prepare(`INSERT INTO live_travel_chat_last_search (client_id,phone,input_json,expires_at,updated_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id,phone) DO UPDATE SET input_json=excluded.input_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),String(phone),JSON.stringify(saved),expires,now.toISOString()).run();
+}
 async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,inboxId){
   await ltEnsureChatCheckoutSchema(env);
   const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
@@ -16772,6 +16897,8 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     // While the customer is answering a NEW search (a draft is open, or the message itself is a
     // flight request), only an explicit "Book Option N" tap may pick from the older options.
     if(!/^book\b/i.test(input)&&(ltChatFlightIntent(input)||await ltLoadChatSearchDraft(env,clientId,phone)))return null;
+    // "direct only", "flynas flights", "show all" narrow the search instead of picking an option.
+    if(ltChatFlightFilterRefinement(input))return null;
     const stored=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(stored,input);
     if(idx<0){
       if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(stored));
@@ -16811,6 +16938,7 @@ function ltMergeChatFlightDraft(draft,input,userText,fxPrefs={}){
   const asked=fxPrefs.allowOverride===false?'':ltFxCurrencyFromText(text);
   next.currency=asked||old.currency||(fxPrefs.allowOverride===false?'':fxPrefs.phoneCurrency)||fxPrefs.defaultCurrency||'AED';
   next.trip_type=old.trip_type||input.trip_type||'one_way';next.return_date=old.return_date||input.return_date||'';
+  next.filters=ltMergeChatFlightFilters(old.filters,ltParseChatFlightFilters(text));
   return ltNormalizeChatFlightRequest(next,fxPrefs.defaultCurrency||'AED');
 }
 
@@ -16841,7 +16969,8 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   const draft=await ltLoadChatSearchDraft(env,clientId,phone);
   const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
   const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
-  if(!ltChatFlightIntent(userText)&&!continuing)return null;
+  const lastSearch=!draft&&ltChatFlightFilterRefinement(userText)?await ltLoadChatLastSearch(env,clientId,phone):null;
+  if(!ltChatFlightIntent(userText)&&!continuing&&!lastSearch)return null;
   if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
     await ltClearChatSearchDraft(env,clientId,phone);
     return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
@@ -16850,12 +16979,14 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   await ltSeedSuppliers(env,clientId);
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
   if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
-  const extracted=await engineExtractChatFlightRequest(env,c,userText,history);
   const fxSettings=await ltFxSettings(env,clientId);
-  const input=ltMergeChatFlightDraft(draft,extracted,userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
+  // A filter-only follow-up re-runs the last search with the new filter; no extraction needed.
+  const input=lastSearch?ltNormalizeChatFlightRequest({...lastSearch,filters:ltMergeChatFlightFilters(lastSearch.filters,ltParseChatFlightFilters(userText))},fxSettings.default_currency)
+    :ltMergeChatFlightDraft(draft,await engineExtractChatFlightRequest(env,c,userText,history),userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
   if(input.missing.length){
     await ltSaveChatSearchDraft(env,clientId,phone,input);
-    const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`].filter(Boolean).join(' · ');
+    const filterLabel=ltChatFlightFilterLabel(input.filters);
+    const known=[input.origin&&`From: ${input.origin}`,input.destination&&`To: ${input.destination}`,input.departure_date&&`Date: ${input.departure_date}`,`Passengers: ${input.adults} adult${input.adults===1?'':'s'}`,`Cabin: ${input.cabin.replace('_',' ')}`,filterLabel&&`Filter: ${filterLabel}`].filter(Boolean).join(' · ');
     // Fresh request with no route yet → lead with the offer and ask the destination first,
     // instead of echoing back only defaulted passenger/cabin values as "details received".
     if(!draft&&!input.origin&&!input.destination&&!input.departure_date)
@@ -16869,11 +17000,18 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const data=await ltSupplierSearch(runtime,input,env);
     const fxInfo=await ltFxForClient(env,clientId,input.currency);
     const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId),fx:fxInfo.fx};
-    const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,50).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
-    const bookingOffers=ltBookableChatOffers(offers);
-    await ltSaveChatOffers(env,clientId,phone,bookingOffers);
+    const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,200).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
+    // Customer filters (airline, direct, time of day, budget). When nothing matches, say so and
+    // show the other fares rather than a dead end.
+    const filters=input.filters||{},matching=ltApplyChatFlightFilters(offers,filters);
+    const narrowed=ltChatFlightFilterLabel({...filters,sort:''});
+    const fallback=!!narrowed&&!ltBookableChatOffers(matching).length&&ltBookableChatOffers(offers).length>0;
+    const bookingOffers=ltBookableChatOffers(fallback?offers:matching,filters.sort);
+    const note=fallback?`No ${narrowed} flights found from ${input.origin} to ${input.destination} on ${input.departure_date}. Here are the other available options:`:'';
+    await ltSaveChatOffers(env,clientId,phone,bookingOffers,filters.sort);
+    await ltSaveChatLastSearch(env,clientId,phone,input);
     await ltClearChatSearchDraft(env,clientId,phone);
-    return {handled:true,reply:ltFormatChatOffers(bookingOffers),buttons:ltBookButtons(bookingOffers)};
+    return {handled:true,reply:ltFormatChatOffers(bookingOffers,{sort:filters.sort,note,filterLabel:fallback?'':ltChatFlightFilterLabel(filters),filterHint:!ltHasChatFlightFilters(filters)||fallback}),buttons:ltBookButtons(bookingOffers)};
   }catch(e){
     await reportOpsError(env,'Live ticketing chat search',e,{clientId});
     return {handled:true,reply:'I could not reach the live ticketing system just now. Please try again shortly, or ask our team to check this route manually.'};

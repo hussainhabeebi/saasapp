@@ -100,6 +100,10 @@ import {
   ltExactRouteOffers,
   ltLiveAgencyEnabled,
   ltParseFlightRoute,
+  ltParseChatFlightFilters,
+  ltMergeChatFlightFilters,
+  ltChatFlightFilterRefinement,
+  ltApplyChatFlightFilters,
   ltPoomasEnabledAfterSettingsSave,
   engineHedgeAi4BharatTts,
   engineResolveSarvamApiKey,
@@ -364,6 +368,41 @@ describe('Live Travel ticketing in chat',()=>{
     assert.match(text,/I found 3 flights from CCJ to DXB on 15 Oct 2026 \(economy\)\. Direct flights are listed first\./);
     assert.match(text,/\*Option 1: AI Express 345\* \(Direct\)[\s\S]*only 1 seat left/);
     assert.match(text,/\*Option 2: IndiGo 153\* \(1 stop\)/);
+  });
+
+  test('reads airline, direct, time, budget and sort filters from the customer message',()=>{
+    assert.deepEqual(ltParseChatFlightFilters('ccj to jeddah 15/11/2026 flynas ടിക്കറ്റ് നോക്കണം'),{airlines:[{code:'XY',name:'flynas'}]});
+    assert.deepEqual(ltParseChatFlightFilters('direct morning flights under 30,000, cheapest'),{direct_only:true,time_of_day:'morning',max_price:30000,sort:'cheapest'});
+    assert.deepEqual(ltParseChatFlightFilters('AI Express please').airlines,[{code:'IX',name:'Air India Express'}]);
+    // A country destination is not an airline filter.
+    assert.deepEqual(ltParseChatFlightFilters('Kochi to Qatar on 12 Nov'),{});
+    assert.deepEqual(ltMergeChatFlightFilters({airlines:[{code:'XY',name:'flynas'}]},{direct_only:true}),{airlines:[{code:'XY',name:'flynas'}],direct_only:true});
+    assert.deepEqual(ltMergeChatFlightFilters({airlines:[{code:'XY',name:'flynas'}]},{clear:true}),{});
+  });
+
+  test('only filter-only replies refine the last search',()=>{
+    for(const text of ['direct only','flynas only','morning flights please','under 30000','cheapest','show all'])assert.equal(ltChatFlightFilterRefinement(text),true,text);
+    // A bare airline name or "book …" still picks a listed option; small talk is not a filter.
+    for(const text of ['flynas','book flynas','good night','ok thanks','CCJ to JED on 15 Nov direct'])assert.equal(ltChatFlightFilterRefinement(text),false,text);
+  });
+
+  test('filters offers by airline, stops, departure time and budget, and sorts on request',()=>{
+    const offer=(airline_name,airline_code,total_amount,stops,departureTime,duration)=>({airline_name,airline_code,flight_numbers:'',total_amount,currency:'INR',bookable:true,supplier_offer_id:airline_code+total_amount,itinerary:[{origin:'CCJ',destination:'JED',departureTime,duration,stops}]});
+    const aix=offer('AI Express','IX',36364,0,'2026-11-15T19:40:00Z',385);
+    const flynas=offer('Flynas','XY',31000,1,'2026-11-15T04:10:00Z',540);
+    const akasa=offer('Akasa Air','QP',35000,0,'2026-11-15T19:55:00Z',390);
+    assert.deepEqual(ltApplyChatFlightFilters([aix,flynas,akasa],{airlines:[{code:'XY',name:'flynas'}]}),[flynas]);
+    assert.deepEqual(ltApplyChatFlightFilters([aix,flynas,akasa],{direct_only:true}),[aix,akasa]);
+    assert.deepEqual(ltApplyChatFlightFilters([aix,flynas,akasa],{time_of_day:'morning'}),[flynas]); // 08:10 Dubai time
+    assert.deepEqual(ltApplyChatFlightFilters([aix,flynas,akasa],{max_price:35000}),[flynas,akasa]);
+    assert.deepEqual(ltBookableChatOffers([aix,flynas,akasa]),[akasa,aix,flynas]);
+    assert.deepEqual(ltBookableChatOffers([aix,flynas,akasa],'cheapest'),[flynas,akasa,aix]);
+    assert.deepEqual(ltBookableChatOffers([aix,flynas,akasa],'fastest'),[aix,akasa,flynas]);
+    const text=ltFormatChatOffers([flynas],{sort:'',filterLabel:'flynas'});
+    assert.match(text,/\(economy · flynas\)/);
+    const fallback=ltFormatChatOffers([aix,akasa],{note:'No flynas flights found from CCJ to JED on 2026-11-15. Here are the other available options:',filterHint:true});
+    assert.match(fallback,/^No flynas flights found/);
+    assert.match(fallback,/flynas only/);
   });
 
   test('displayed options use only the validated fare list',()=>{
