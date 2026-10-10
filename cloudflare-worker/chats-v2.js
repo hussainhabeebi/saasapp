@@ -229,10 +229,10 @@ export async function chatsV2AfterInsert(env, leadId, clientId, msg, messageId, 
       WHERE lead_id=?1`).bind(Number(leadId)),
   ]);
   const row=await convRow(env, leadId);
-  if(broadcast&&row){
-    await broadcast(env, clientId, {type:'conv', lead_id:Number(leadId), conv:row,
-      msg:seed?null:{id:messageId||null, role:msg.role, ts, kind, sender_type:sender, sender_name:msg.sender_name||''}});
-  }
+  // Deltas carry ids only, never names or message text: every tab of the account shares this
+  // socket, including teammates who may not see this chat. The page fetches the changed rows
+  // through /chats/v2/list?updated_since=…, which applies the same access rules as the list.
+  if(broadcast&&row) await broadcast(env, clientId, {type:'conv', lead_ids:[Number(leadId)], dir:seed?'':(dir==='in'?'in':'out')});
   return row;
 }
 
@@ -268,7 +268,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
     const r=await env.DB.prepare(`UPDATE conversations SET ${set.join(', ')}, updated_at=? WHERE lead_id=?`).bind(...vals, new Date().toISOString(), Number(leadId)).run();
     if(!r?.meta?.changes) return null;
     const row=await convRow(env, leadId);
-    if(row&&broadcast) await broadcast(env, row.client_id, {type:'convs', rows:[row]});
+    if(row&&broadcast) await broadcast(env, row.client_id, {type:'conv', lead_ids:[Number(leadId)]});
     return row;
   }catch(e){ return null; }
 }
@@ -344,7 +344,7 @@ export async function chatsV2Backfill(env, deps, cid, {maxPages=20}={}){
 
 // Pulls the chat-relevant fields of the most recently active leads and fixes any row that drifted
 // (an Owner changed in the Leads tab, a handover the engine set, Tags edited elsewhere…). Changed
-// rows are pushed to open tabs as one `convs` delta.
+// rows are pushed to open tabs as one `conv` delta (ids only).
 export async function chatsV2Reconcile(env, deps, cid){
   const now=new Date().toISOString();
   await env.DB.prepare(`INSERT INTO chat_sync_state (client_id, reconciled_at) VALUES (?,?) ON CONFLICT(client_id) DO UPDATE SET reconciled_at=excluded.reconciled_at`).bind(Number(cid), now).run();
@@ -372,10 +372,7 @@ export async function chatsV2Reconcile(env, deps, cid){
     changedIds.push(Number(lead.Id));
   }
   for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));
-  if(changedIds.length&&deps.broadcast){
-    const rows=await rowsByIds(env, changedIds);
-    await deps.broadcast(env, cid, {type:'convs', rows});
-  }
+  if(changedIds.length&&deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:changedIds});
   return changedIds.length;
 }
 
@@ -648,7 +645,7 @@ export async function chatsV2Act(env, deps, payload, c, acc, body){
   const evOut={};
   for(const [id, [text, meta]] of events) evOut[id]=await insertEvent(env, id, cid, text, {...meta, by:actor.email}, actor);
   const fresh=await rowsByIds(env, rows.map(r=>Number(r.lead_id)));
-  if(deps.broadcast) await deps.broadcast(env, cid, {type:'convs', rows:fresh, events:evOut, by:acc.me});
+  if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:fresh.map(r=>Number(r.lead_id)), by:acc.me});
   return {rows:fresh, events:evOut};
 }
 
@@ -668,7 +665,7 @@ async function wakeSnoozed(env, deps, cid){
   const {results}=await env.DB.prepare(`SELECT lead_id FROM conversations WHERE client_id=? AND status='snoozed' AND snoozed_until<=?`).bind(Number(cid), now).all();
   if(!results?.length) return;
   await env.DB.prepare(`UPDATE conversations SET status='open', snoozed_until=NULL, updated_at=? WHERE client_id=? AND status='snoozed' AND snoozed_until<=?`).bind(now, Number(cid), now).run();
-  if(deps.broadcast) await deps.broadcast(env, cid, {type:'convs', rows:await rowsByIds(env, results.map(r=>r.lead_id))});
+  if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:results.map(r=>Number(r.lead_id))});
 }
 
 async function hashOf(obj){

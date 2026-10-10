@@ -117,8 +117,7 @@ describe('message write hook', ()=>{
     assert.equal(r.last_message_preview, 'hi');
     assert.equal(r.last_customer_at, T('10:00'));
     assert.equal(r.synced, 0);
-    assert.equal(sent.at(-1).type, 'conv');
-    assert.equal(sent.at(-1).msg.role, 'user');
+    assert.deepEqual(sent.at(-1), {type:'conv', lead_ids:[1], dir:'in'});
   });
   test('a bot reply clears waiting but not unread; an agent reply reads the chat', async()=>{
     await insertMsg(1, {role:'user', content:'hi', ts:T('10:00')});
@@ -164,7 +163,7 @@ describe('message write hook', ()=>{
     assert.equal(r.labels_key, ',hot,');
     assert.equal(r.status, 'resolved');
     assert.equal(r.handover, 'Yes');
-    assert.equal(sent.at(-1).type, 'convs');
+    assert.deepEqual(sent.at(-1), {type:'conv', lead_ids:[1]});
     assert.equal(await chatsV2ApplyLeadPatch(env, 99, {Owner:'x'}, {}), null);
     assert.equal(row(99), undefined);
   });
@@ -249,7 +248,7 @@ describe('actions', ()=>{
     assert.equal(row(1).status, 'resolved');
     assert.equal(row(3).status, 'open');
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].rows.length, 2);
+    assert.deepEqual(sent[0].lead_ids, [1, 2]);
     const ev=db.prepare(`SELECT * FROM lead_messages WHERE lead_id=1 AND kind='event'`).get();
     assert.equal(ev.content, 'Resolved by boss');
     assert.equal(out.events[1].meta.type, 'resolved');
@@ -315,7 +314,7 @@ describe('sync and routes', ()=>{
     assert.equal(await chatsV2Reconcile(env, deps(), CID), 1);
     assert.equal(row(21).name, 'Chitra');
     assert.equal(row(21).synced, 1);
-    assert.equal(sent[0].type, 'convs');
+    assert.deepEqual(sent[0], {type:'conv', lead_ids:[21]});
     assert.equal(await chatsV2Reconcile(env, deps(), CID), 0);
   });
   test('routes: auth, bootstrap version, list, thread scoping, canned', async()=>{

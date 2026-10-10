@@ -18,12 +18,15 @@ test.use({
   },
 });
 
+// Recent timestamps: the customer wrote inside WhatsApp's 24-hour window, so the composer is open
+// (outside it, Chats locks free text to templates — see chats-media-templates.spec.js).
+const minsAgo = m => new Date(Date.now() - m * 60000).toISOString();
 const MESSAGES = [
-  { role: 'user', content: 'Hi, is this *available*?', ts: '2026-09-28T09:00:00.000Z' },
-  { role: 'user', content: '', ts: '2026-09-28T09:01:00.000Z', attachment: { kind: 'voice', url: 'https://cdn.test/v.ogg', duration: 7 } },
-  { role: 'assistant', content: 'Here you go', ts: '2026-09-28T09:02:00.000Z', attachment: { name: 'brochure.pdf', size: 20480, url: 'https://cdn.test/b.pdf' } },
+  { role: 'user', content: 'Hi, is this *available*?', ts: minsAgo(30) },
+  { role: 'user', content: '', ts: minsAgo(29), attachment: { kind: 'voice', url: 'https://cdn.test/v.ogg', duration: 7 } },
+  { role: 'assistant', content: 'Here you go', ts: minsAgo(28), attachment: { name: 'brochure.pdf', size: 20480, url: 'https://cdn.test/b.pdf' } },
 ];
-const LEAD = { Id: 7, ClientId: '48', Name: 'Asha', Phone: '919800000000', ConversationID: '55', LastMsgAt: '2026-09-28T09:02:00.000Z', ConvHistory: JSON.stringify(MESSAGES) };
+const LEAD = { Id: 7, ClientId: '48', Name: 'Asha', Phone: '919800000000', ConversationID: '55', LastMsgAt: minsAgo(28), ConvHistory: JSON.stringify(MESSAGES) };
 
 async function open(page, { failSends = 0 } = {}) {
   const calls = { send: [], upload: [] };

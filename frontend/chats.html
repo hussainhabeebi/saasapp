@@ -86,16 +86,42 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 @media(min-width:701px){.cam-btn{display:none!important}}
 @media(max-width:700px){body{background:#fff}#app{display:block;max-width:none}.sidebar,.main{position:absolute;inset:0;height:100dvh}.sidebar{z-index:2}.main{z-index:3;display:none}.main.open{display:flex}.sidebar.thread-open{display:none}.side-top,.chat-top{height:58px}.back{display:grid}.thread{padding:11px 10px 18px}.bubble{max-width:86%;font-size:14.5px}.chat-actions .desktop-only{display:none}.composer{min-height:58px;padding-left:6px;padding-right:6px;gap:5px}.avatar{width:46px;height:46px}.contact{min-height:70px}.filter-row{padding-bottom:8px}.msg-actions{display:none}.to-bottom{bottom:80px;right:12px}}
 @media(max-width:380px){.channel-row,.filter-row{padding-left:8px;padding-right:8px}.side-top{padding-left:10px;padding-right:8px}.contact{padding:0 9px}.bubble{max-width:90%}.dash-btn .t{display:none}.input-wrap .icon-btn{width:34px}}
+/* ── Chats v2 ── */
+.vlist{position:relative;width:100%}.vlist .contact{position:absolute;left:0;right:0;height:76px;min-height:0}
+.contact .info{padding:11px 0}.row2{min-width:0}.row3{display:flex;align-items:center;gap:5px;margin-top:3px;min-height:16px}.row3:empty{display:none}
+.hnd{font-size:12px;flex:none;opacity:.85}.asg{width:20px;height:20px;border-radius:50%;background:#e1e6ea;color:#3b4a54;font-size:10px;font-weight:700;display:grid;place-items:center;flex:none}
+.wait{font-size:11px;font-weight:650;border-radius:9px;padding:1px 6px;flex:none;white-space:nowrap}.wait.warn{background:#fff3d6;color:#9a6400}.wait.breach{background:#ffe1e3;color:#c4001c}
+.lbl{font-size:10.5px;border-radius:4px;padding:1px 6px;background:#eef1f3;color:#54656f;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}.lbl.more{background:transparent;padding:0}
+.prio{width:8px;height:8px;border-radius:50%;flex:none}.prio.p3{background:#f59e0b}.prio.p4{background:#e5484d}
+.skel{position:absolute;left:0;right:0;height:76px;display:flex;gap:12px;align-items:center;padding:0 12px}.skel i{display:block;border-radius:6px;background:linear-gradient(90deg,#eef1f3 25%,#f6f8f9 50%,#eef1f3 75%);background-size:200% 100%;animation:sk 1.2s infinite}.skel .a{width:49px;height:49px;border-radius:50%;flex:none}.skel .t{flex:1;display:grid;gap:8px}.skel .t i:first-child{height:12px;width:55%}.skel .t i:last-child{height:10px;width:80%}@keyframes sk{to{background-position:-200% 0}}
+.seg-row{display:flex;gap:6px;align-items:center;padding:0 12px 7px;flex:none;border-bottom:1px solid var(--line)}.seg-row .pill{padding:3px 9px}.seg-row select{margin-left:auto;border:1px solid #d1d7db;border-radius:14px;background:#fff;color:#54656f;font-size:12px;padding:3px 6px}
+.filter-row{border-bottom:0}
+.day{position:sticky;top:0;z-index:4}
+.unread-div{display:flex;justify-content:center;margin:10px -7% 10px;padding:6px;background:rgba(255,255,255,.75);color:#54656f;font-size:12px;font-weight:600}
+.event{display:flex;justify-content:center;margin:8px 0}.event span{background:rgba(233,237,239,.95);color:#54656f;font-size:11.5px;padding:4px 10px;border-radius:7px;max-width:85%;text-align:center}
+.who{font-size:11.5px;font-weight:650;color:#027eb5;margin:0 0 2px}.who.bot{color:#7f66ff}
+.older{display:flex;justify-content:center;padding:6px;color:var(--muted);font-size:12px}
+.hdr-ctl{display:flex;align-items:center;gap:6px;flex:none}
+.hdr-pill,.hdr-btn,.split button{border:1px solid #d1d7db;background:#fff;color:#3b4a54;border-radius:16px;font-size:12.5px;padding:5px 10px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.hdr-pill.human{background:#fff5d6;border-color:#f1d98a;color:#7a5b00}.hdr-pill.needs{background:#ffe9ea;border-color:#f5b5ba;color:#b4232c}
+.hdr-btn .asg{width:18px;height:18px;font-size:9.5px}
+.split{display:inline-flex}.split button:first-child{border-radius:16px 0 0 16px;background:var(--wa);border-color:var(--wa);color:#fff}.split button:last-child{border-radius:0 16px 16px 0;border-left:0;background:var(--wa);border-color:var(--wa);color:#fff;padding:5px 7px}.split.resolved button{background:#fff;color:#3b4a54;border-color:#d1d7db}
+.dd{position:fixed;z-index:60;background:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.2);min-width:230px;max-width:300px;padding:6px 0;max-height:60vh;overflow:auto}.dd button{display:flex;gap:8px;align-items:center;width:100%;border:0;background:#fff;text-align:left;padding:9px 14px;color:var(--ink);font-size:14px}.dd button:hover,.dd button.sel{background:#f0f2f5}.dd button:disabled{opacity:.4;cursor:default}.dd input{margin:4px 10px 6px;width:calc(100% - 20px);height:34px;border:1px solid #d1d7db;border-radius:8px;padding:0 10px;outline:0}.dd hr{border:0;border-top:1px solid var(--line);margin:5px 0}.dd .hint{padding:4px 14px 8px;color:var(--muted);font-size:12px}
+.canned-panel{left:12px;right:70px;max-height:260px;overflow:auto;padding:6px 0}.canned-panel button{display:block;width:100%;border:0;background:#fff;text-align:left;padding:8px 14px}.canned-panel button.sel,.canned-panel button:hover{background:#f0f2f5}.canned-panel b{color:var(--wa-dark);font-size:13px}.canned-panel small{display:block;color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.canned-panel .foot{display:flex;justify-content:space-between;padding:6px 14px 2px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}.canned-panel .foot a{color:var(--wa-dark);cursor:pointer}
+.input-wrap.locked{background:#eef1f3}.input-wrap.locked textarea{cursor:not-allowed}
+@media(max-width:700px){.hdr-ctl .t{display:none}.hdr-ctl{gap:4px}.hdr-pill,.hdr-btn,.split button{padding:5px 7px}.vlist .contact{height:76px}}
+@media(max-width:1100px) and (min-width:701px){.hdr-ctl .t{display:none}}
 </style>
 </head>
 <body>
 <div id="loading" class="loading"><div><div class="spinner"></div><div id="loadingText">Opening Chats…</div></div></div>
 <div id="app" class="hidden">
   <aside class="sidebar" id="sidebar">
-    <div class="side-top"><div class="brand-avatar">L</div><div class="side-title">Chats</div><button class="icon-btn" title="Refresh" onclick="loadLeads(true)">↻</button><button class="dash-btn" title="Back to Dashboard" onclick="goBack()">← <span class="t">Dashboard</span></button></div>
+    <div class="side-top"><div class="brand-avatar">L</div><div class="side-title">Chats</div><button class="icon-btn" id="refreshBtn" title="Refresh" onclick="refreshAll()">↻</button><button class="dash-btn" title="Back to Dashboard" onclick="goBack()">← <span class="t">Dashboard</span></button></div>
     <div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div></div>
     <div class="channel-row"><button class="pill active" data-channel="whatsapp" onclick="setChannel('whatsapp')">WhatsApp</button><button class="pill" data-channel="instagram" onclick="setChannel('instagram')">Instagram</button></div>
     <div class="filter-row" id="filters"></div>
+    <div class="seg-row" id="segRow"></div>
     <div class="list" id="list"></div>
   </aside>
   <main class="main" id="main"><div class="empty-main"><div class="box"><div class="big">💬</div><h2>Leadvyne Chats</h2><p>Send messages, photos, documents and voice notes in a familiar WhatsApp-style workspace. Choose a conversation to start.</p></div></div></main>
@@ -104,6 +130,7 @@ button,input,textarea,select{font:inherit}button{cursor:pointer}.hidden{display:
 <div id="toast" class="toast hidden"></div>
 <script>
 'use strict';
+try{performance.mark('lv-start')}catch{}
 const WORKER='https://leadvyne-api-proxy.leadvyne.workers.dev';
 const LEADS_TABLE='mvg6rcw0ia5qqrx';
 const params=new URLSearchParams(location.search);
@@ -157,9 +184,123 @@ const draftKey=id=>`lv_chat_draft_${clientId}_${id}`;
 function getDraft(id){try{return localStorage.getItem(draftKey(id))||''}catch{return''}}
 function saveDraft(id,t){try{t?localStorage.setItem(draftKey(id),t):localStorage.removeItem(draftKey(id))}catch{}}
 async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:headers({...opts.headers})});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'HTTP '+r.status);return d}
+
+// ── Chats v2 data path (docs/chats-v2-design.md, worker chats-v2.js) ──────────────────────────
+// The list comes from the Worker's D1 read model in pages of 40 (no ConvHistory download), each
+// view's rows/counts are server-side, and a live socket pushes "these chats changed" so the page
+// fetches just those rows. If the v2 API isn't reachable the page runs exactly as before (v1:
+// NocoDB lead list + 12s poll), so nothing here can leave Chats blank.
+let V2=false,boot2=null,counts2=null,views2={},handlerFilter='',sortMode='newest',rowsUpdatedAt='',threadMeta={},dividerAt={},searchRows=null,ws=null,wsTries=0,syncTimer=null,syncIds=new Set();
+const ROW=76;
+const lc=s=>String(s||'').trim().toLowerCase();
+function rowToLead(r){return {Id:r.lead_id,Name:r.name,Phone:r.phone,Channel:r.channel,Owner:r.assignee_email,Handover:r.handover,HandoverBy:r.handover_by,ConvResolved:r.status==='resolved'?'Yes':'No',Pinned:r.pinned?'Yes':'No',Tags:r.labels,LastMsgAt:r.last_message_at,LastCustomerMsgAt:r.last_customer_at||'',ConversationID:r.conv_id,InboxId:r.inbox_id,_v2:r}}
+function mergeRows(rows){
+ for(const r of rows||[]){
+  const fresh=rowToLead(r),i=leads.findIndex(l=>String(l.Id)===String(r.lead_id));
+  // Keep the same object (the open conversation holds a reference) and anything only the page knows.
+  if(i>=0){const keep={NotesList:leads[i].NotesList};Object.assign(leads[i],fresh,keep.NotesList!==undefined?keep:{})}else leads.push(fresh);
+  if(r.updated_at&&r.updated_at>rowsUpdatedAt)rowsUpdatedAt=r.updated_at;
+ }
+}
+function v2Match(l){
+ const r=l._v2;if(!r||(r.channel||'whatsapp')!==channel||!visibleToMe(l))return false;
+ if(handlerFilter==='human'&&r.handover!=='Yes')return false;if(handlerFilter==='bot'&&r.handover==='Yes')return false;
+ if(sortMode==='waiting'&&(!r.waiting_since||['resolved','snoozed'].includes(r.status)))return false;
+ const done=['resolved','snoozed'].includes(r.status);
+ switch(filter){case'unread':return r.unread_count>0&&r.status!=='snoozed';case'needs':return r.handover==='Yes'&&!done;case'mine':return lc(r.assignee_email)===meEmail&&r.status!=='snoozed';case'unassigned':return !r.assignee_email&&!done;case'pending':return r.status==='pending';case'snoozed':return r.status==='snoozed';case'resolved':return r.status==='resolved';default:return r.status!=='snoozed'}
+}
+const viewKey=()=>[filter,channel,handlerFilter,sortMode].join('|');
+function v2Visible(){
+ const st=views2[viewKey()];
+ let list=leads.filter(v2Match);
+ if(st&&!st.done&&st.floor){list=list.filter(l=>l._v2.pinned&&sortMode==='newest'||st.ids.has(String(l.Id))||(sortMode==='newest'?l._v2.last_message_at>=st.floor:sortMode==='oldest'?l._v2.last_message_at<=st.floor:(l._v2.waiting_since||'')<=st.floor))}
+ const k=l=>sortMode==='waiting'?l._v2.waiting_since||'':l._v2.last_message_at||'';
+ return list.sort((a,b)=>sortMode==='newest'?((b._v2.pinned-a._v2.pinned)||k(b).localeCompare(k(a))):k(a).localeCompare(k(b)));
+}
+async function loadView(more=false){
+ const k=viewKey(),st=views2[k]||(views2[k]={ids:new Set(),cursor:null,done:false,floor:'',loading:false,loaded:false});
+ if(st.loading||(more&&(st.done||!st.cursor)))return;st.loading=true;
+ try{
+  const qs=new URLSearchParams({view:filter,channel,limit:'40',sort:sortMode});if(handlerFilter)qs.set('handler',handlerFilter);if(more)qs.set('cursor',st.cursor);
+  const d=await apiJson(WORKER+'/chats/v2/list?'+qs);
+  if(!more)st.ids=new Set();
+  mergeRows(d.rows);(d.rows||[]).forEach(r=>st.ids.add(String(r.lead_id)));
+  const paged=(d.rows||[]).filter(r=>sortMode!=='newest'||!r.pinned);
+  if(paged.length){const key=sortMode==='waiting'?'waiting_since':'last_message_at';const edge=paged[paged.length-1][key]||'';if(!st.floor||(sortMode==='newest'?edge<st.floor:edge>st.floor)||!more)st.floor=edge}
+  st.cursor=d.cursor;st.done=!d.cursor;st.loaded=true;
+  if(!more&&k===viewKey())saveSnapshot();
+ }finally{st.loading=false}
+ if(k===viewKey())renderContacts();
+}
+async function loadCounts(){try{counts2=await apiJson(WORKER+'/chats/v2/counts');renderFilters([]);updateTitle()}catch{}}
+async function loadBootstrap(){
+ const snapKey=`lv_chats_boot_${clientId}`;let cached=null;try{cached=JSON.parse(localStorage.getItem(snapKey)||'null')}catch{}
+ const d=await apiJson(WORKER+'/chats/v2/bootstrap'+(cached?.version?`?v=${encodeURIComponent(cached.version)}`:''));
+ boot2=d.unchanged&&cached?cached:d;if(!d.unchanged)try{localStorage.setItem(snapKey,JSON.stringify(d))}catch{}
+}
+const snapKey=()=>`lv_chats_snap_${clientId}`;
+function saveSnapshot(){if(filter!=='all'||handlerFilter||sortMode!=='newest')return;try{const rows=v2Visible().slice(0,60).map(l=>l._v2);localStorage.setItem(snapKey(),JSON.stringify({me:meEmail,channel,rows,counts:counts2}))}catch{}}
+function loadSnapshot(){try{const s=JSON.parse(localStorage.getItem(snapKey())||'null');if(!s||s.me!==meEmail||!Array.isArray(s.rows))return false;mergeRows(s.rows);counts2=s.counts||null;const st=views2[viewKey()]={ids:new Set(s.rows.map(r=>String(r.lead_id))),cursor:null,done:false,floor:s.rows.filter(r=>!r.pinned).slice(-1)[0]?.last_message_at||'',loading:false,loaded:true};return s.rows.length>0}catch{return false}}
+// A delta names chats that changed; fetch just those rows (scoped by the server to what this
+// person may see), refresh the counts, and the open thread if it's one of them.
+function queueSync(ids=[]){ids.forEach(i=>syncIds.add(String(i)));clearTimeout(syncTimer);syncTimer=setTimeout(runSync,250)}
+async function runSync(){
+ const ids=new Set(syncIds);syncIds.clear();
+ try{const d=await apiJson(WORKER+'/chats/v2/list?updated_since='+encodeURIComponent(rowsUpdatedAt||''));mergeRows(d.rows);(d.rows||[]).forEach(r=>ids.add(String(r.lead_id)))}catch{}
+ renderContacts();loadCounts();
+ if(current&&ids.has(String(current.Id))){await refreshMessages(current);renderHeaderCtl()}
+}
+function connectWs(){
+ if(!V2||ws||!('WebSocket'in window)||location.protocol==='file:')return;
+ const name=(boot2?.agents||[]).find(a=>a.email===meEmail)?.name||meEmail;
+ try{ws=new WebSocket(`${WORKER.replace(/^http/,'ws')}/engine/live?token=${encodeURIComponent(sessionToken)}&email=${encodeURIComponent(meEmail)}&name=${encodeURIComponent(name)}`)}catch{return}
+ ws.onopen=()=>{if(wsTries)queueSync();wsTries=0};
+ ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}
+  if(m.type==='conv')queueSync(m.lead_ids||[]);
+  else if(['message','new_lead','lead_reassigned'].includes(m.type))queueSync(m.lead_id?[m.lead_id]:[]);
+  else if(m.type==='cfg')loadBootstrap().catch(()=>{});
+ };
+ ws.onclose=()=>{ws=null;const wait=[1000,2000,5000,10000][Math.min(wsTries++,3)];setTimeout(connectWs,wait)};
+ ws.onerror=()=>{try{ws.close()}catch{}};
+}
+async function act(op,args={},ids){
+ ids=ids||[current?.Id];
+ const d=await apiJson(WORKER+'/chats/v2/act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op,ids,args})});
+ mergeRows(d.rows);renderContacts();loadCounts();
+ if(current&&ids.some(i=>String(i)===String(current.Id))){renderHeaderCtl();if(d.events&&Object.keys(d.events).length)refreshMessages(current)}
+ return d;
+}
+function agentsList(){
+ if(boot2?.agents)return boot2.agents;
+ let names={};try{names=JSON.parse(clientRecord.team_names||'{}')||{}}catch{}
+ return [...new Set([lc(clientRecord.authentik_email),...String(clientRecord.team_emails||'').split(',').map(lc)].filter(Boolean))].map(email=>({email,name:names[email]||email.split('@')[0]}));
+}
+const agentName=e=>agentsList().find(a=>a.email===lc(e))?.name||String(e||'').split('@')[0];
+const agentInitials=e=>{const n=agentName(e).trim().split(/\s+/);return ((n[0]||'?')[0]+(n[1]?.[0]||'')).toUpperCase()};
+// RUM: list-visible / thread-visible, sent once per page load (Worker logs them).
+const rum={};let rumSent=false;
+function rumMark(name,since='lv-start'){if(rum[name]!==undefined)return;try{rum[name]=Math.round(performance.now()-(since==='lv-start'?(performance.getEntriesByName('lv-start')[0]?.startTime||0):since))}catch{}if(rum['thread-visible']!==undefined&&rum['list-visible']!==undefined)sendRum()}
+function sendRum(){if(rumSent||!V2)return;rumSent=true;try{fetch(WORKER+'/chats/v2/rum',{method:'POST',keepalive:true,headers:headers({'Content-Type':'application/json'}),body:JSON.stringify({mode:'v2',marks:rum})}).catch(()=>{})}catch{}}
 async function boot(){
  if(!clientId||!sessionToken){$('loadingText').textContent='Open Chats from the Leadvyne dashboard.';return}
- try{const me=await apiJson(WORKER+'/session/me');clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();await loadLeads(false,true);$('loading').classList.add('hidden');$('app').classList.remove('hidden');let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
+ let me;
+ try{me=await apiJson(WORKER+'/session/me')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.';return}
+ clientRecord=me.client||{};meEmail=(me.email||me.user?.email||clientRecord.authentik_email||'').trim().toLowerCase();
+ const show=()=>{$('loading').classList.add('hidden');$('app').classList.remove('hidden')};
+ // v2: paint the last-seen list from this browser at once, then bootstrap + list + counts in
+ // parallel. Any failure in that first round drops back to v1, as if v2 didn't exist.
+ const warm=loadSnapshot();
+ if(warm){V2=true;show();renderContacts()}
+ try{
+  await Promise.all([loadBootstrap(),(async()=>{V2=true;await loadView(false)})(),loadCounts()]);
+  if(!boot2)throw new Error('no bootstrap');
+  V2=true;show();renderContacts();connectWs();
+  // Safety net while the socket is down or a delta was missed.
+  setInterval(()=>queueSync(),60000);
+  setInterval(()=>{if(!document.hidden)paintList()},30000);
+  toParent('ready');return;
+ }catch(e){V2=false;boot2=null;counts2=null;views2={};leads=[]}
+ try{await loadLeads(false,true);show();let tick=0;setInterval(()=>loadLeads(false,true,++tick%5!==0),12000);toParent('ready')}catch(e){$('loadingText').textContent='Session expired — reopen Chats from your dashboard.'}
 }
 // The 12s poll asks only for leads whose LastMsgAt moved since the newest one we hold (delta) and
 // merges them in, instead of re-downloading 200 full lead rows (each with its ConvHistory) every
@@ -174,8 +315,12 @@ async function loadLeads(show=true,silent=false,delta=false){
   if(current){const fresh=leads.find(x=>String(x.Id)===String(current.Id));if(fresh){const newMsg=fresh.LastMsgAt&&fresh.LastMsgAt!==current.LastMsgAt;current=fresh;if(newMsg){markRead(fresh.Id);await refreshMessages(fresh)}}}
   renderContacts();if(show&&!silent)toast('Chats refreshed')}catch(e){if(!silent)toast('Could not refresh chats')}
 }
-function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderContacts()}
-function setFilter(f){filter=f;renderContacts()}
+function refreshAll(){if(!V2)return loadLeads(true);views2={};loadView(false).then(()=>toast('Chats refreshed')).catch(()=>toast('Could not refresh chats'));loadCounts()}
+function onViewChange(){$('list').scrollTop=0;if(V2){const st=views2[viewKey()];if(!st?.loaded)loadView(false).catch(()=>{});else loadView(false).catch(()=>{})}renderContacts()}
+function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));onViewChange()}
+function setFilter(f){filter=f;onViewChange()}
+function setHandler(h){handlerFilter=handlerFilter===h?'':h;onViewChange()}
+function setSort(v){sortMode=v;onViewChange()}
 const isMine=l=>!!meEmail&&String(l.Owner||'').trim().toLowerCase()===meEmail;
 // Staff see only their own chats (see visibleToMe); the account owner and teammates with a
 // full-access role (Admin / General Manager in dashboard.html's ROLES) always see every chat.
@@ -190,7 +335,13 @@ function staffLocked(){if(!isStaff())return false;try{return !!JSON.parse(client
 // owner), shown when it's off, matching the Leads tab's "mine + unassigned" default for staff.
 function visibleToMe(l){if(!isStaff())return true;const o=String(l.Owner||'').trim();return o?isMine(l):!staffLocked()}
 function baseLeads(){return leads.filter(l=>(l.ConvHistory&&l.ConvHistory!=='[]')&&(l.Channel||'whatsapp')===channel&&visibleToMe(l))}
-function renderFilters(base){const counts={all:base.length,unread:base.filter(unread).length,needs:base.filter(l=>l.Handover==='Yes').length,mine:base.filter(isMine).length,resolved:base.filter(l=>l.ConvResolved==='Yes').length};const items=[['all','All'],['unread','Unread'],['needs','Needs you'],['mine','Mine'],['resolved','Resolved']];$('filters').innerHTML=items.map(([k,n])=>`<button class="pill ${filter===k?'active':''}" onclick="setFilter('${k}')">${n}<span class="n">${counts[k]}</span></button>`).join('')}
+function renderFilters(base){
+ const items=[['all','All'],['unread','Unread'],['needs','Needs you'],['mine','Mine'],['unassigned','Unassigned'],...(V2?[['pending','Pending'],['snoozed','Snoozed']]:[]),['resolved','Resolved']];
+ const counts=V2&&counts2?counts2:{all:base.length,unread:base.filter(unread).length,needs:base.filter(l=>l.Handover==='Yes').length,mine:base.filter(isMine).length,unassigned:base.filter(l=>!String(l.Owner||'').trim()&&l.ConvResolved!=='Yes').length,resolved:base.filter(l=>l.ConvResolved==='Yes').length};
+ if(staffLocked()&&filter!=='unassigned')items.splice(items.findIndex(x=>x[0]==='unassigned'),1);
+ $('filters').innerHTML=items.map(([k,n])=>`<button class="pill ${filter===k?'active':''}" onclick="setFilter('${k}')">${n}<span class="n">${counts[k]??''}</span></button>`).join('');
+ const seg=$('segRow');if(seg)seg.innerHTML=`<button class="pill ${handlerFilter==='bot'?'active':''}" title="Chats the bot is handling" onclick="setHandler('bot')">🤖 Bot</button><button class="pill ${handlerFilter==='human'?'active':''}" title="Chats a person is handling" onclick="setHandler('human')">👤 Human</button>${V2?`<select id="sortSel" title="Sort" onchange="setSort(this.value)"><option value="newest"${sortMode==='newest'?' selected':''}>Newest</option><option value="oldest"${sortMode==='oldest'?' selected':''}>Oldest</option><option value="waiting"${sortMode==='waiting'?' selected':''}>Waiting longest</option></select>`:''}`;
+}
 
 // ── Message content helpers ──────────────────────────────────────────────────────────────────
 const AUDIO_EXT=/\.(ogg|oga|opus|mp3|m4a|aac|wav|amr|weba)(\?|#|$)/i,IMG_EXT=/\.(jpe?g|png|gif|webp|bmp|heic|avif)(\?|#|$)/i,VID_EXT=/\.(mp4|mov|3gp|webm|mkv)(\?|#|$)/i;
@@ -221,6 +372,8 @@ function fmtDur(s){s=Math.max(0,Math.round(Number(s)||0));return Math.floor(s/60
 // WhatsApp formatting: *bold* _italic_ ~strike~ ```mono``` plus clickable links. Runs on escaped
 // text, so the only markup that can appear is what these replacements add.
 function fmtText(s){
+ // Older bot replies were stored in Markdown (**bold**, ## heading); show them as WhatsApp did.
+ s=String(s??'').replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm,'*$1*').replace(/\*\*(?=\S)([^*\n]+?)\*\*/g,'*$1*').replace(/~~(?=\S)([^~\n]+?)~~/g,'~$1~');
  let h=esc(s);
  h=h.replace(/```([\s\S]+?)```/g,'<code>$1</code>');
  h=h.replace(/(^|[\s(])\*([^*\n]+)\*(?=$|[\s).,!?:;])/g,'$1<b>$2</b>');
@@ -230,25 +383,102 @@ function fmtText(s){
  return h;
 }
 
-function renderContacts(){const base=baseLeads();renderFilters(base);const q=($('search').value||'').trim().toLowerCase();let list=base.filter(l=>{if(filter==='unread'&&!unread(l))return false;if(filter==='needs'&&l.Handover!=='Yes')return false;if(filter==='mine'&&!isMine(l))return false;if(filter==='resolved'&&l.ConvResolved!=='Yes')return false;if(q){let msg=false;try{msg=hist(l).some(m=>String(m.content||'').toLowerCase().includes(q))}catch{}return String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||msg}return true}).sort((a,b)=>((b.Pinned==='Yes')-(a.Pinned==='Yes'))||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||'')));
- const totalUnread=leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]'&&visibleToMe(l)&&unread(l)).length;document.title=(totalUnread?`(${totalUnread}) `:'')+'Leadvyne · Chats';
- if(!list.length){$('list').innerHTML='<div class="empty-list">No conversations here.</div>';return}
- $('list').innerHTML=list.map(l=>{const h=hist(l),last=h[h.length-1]||{},u=unread(l),active=current&&String(current.Id)===String(l.Id);const draft=active?'':getDraft(l.Id);let p=draft?`<span class="draft">Draft:</span> ${esc(draft.replace(/\s+/g,' ').slice(0,60))}`:esc(last.content||last.attachment||last.media_url?snippetOf(last).slice(0,70):(l.Phone||''));return `<div class="contact ${u?'unread':''} ${active?'active':''}" onclick="openConversation('${esc(l.Id)}')"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${l.Handover==='Yes'?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${!draft&&isOut(last)?'<span class="checks">✓✓ </span>':''}${p}</div>${u?'<span class="badge">1</span>':''}</div></div></div>`}).join('')}
+// The list is virtualised: only the ~20 rows in view (plus a few either side) exist in the DOM,
+// at fixed 76px slots, so 2,000 chats scroll as smoothly as 20.
+let listItems=[],listPainted=false;
+function renderContacts(){
+ const base=V2?[]:baseLeads();renderFilters(base);
+ const q=($('search').value||'').trim().toLowerCase();
+ let list;
+ if(V2){
+  list=v2Visible();
+  if(q){const ids=searchRows?new Set(searchRows.map(String)):null;list=leads.filter(l=>l._v2&&(l._v2.channel||'whatsapp')===channel&&visibleToMe(l)&&(String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||ids?.has(String(l.Id)))).sort((a,b)=>String(b.LastMsgAt).localeCompare(String(a.LastMsgAt)));queueSearch(q)}
+ }else{
+  list=base.filter(l=>{if(filter==='unread'&&!unread(l))return false;if(filter==='needs'&&l.Handover!=='Yes')return false;if(filter==='mine'&&!isMine(l))return false;if(filter==='unassigned'&&(String(l.Owner||'').trim()||l.ConvResolved==='Yes'))return false;if(filter==='resolved'&&l.ConvResolved!=='Yes')return false;if(handlerFilter==='human'&&l.Handover!=='Yes')return false;if(handlerFilter==='bot'&&l.Handover==='Yes')return false;if(q){let msg=false;try{msg=hist(l).some(m=>String(m.content||'').toLowerCase().includes(q))}catch{}return String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)||msg}return true}).sort((a,b)=>((b.Pinned==='Yes')-(a.Pinned==='Yes'))||String(b.LastMsgAt||b.Date||'').localeCompare(String(a.LastMsgAt||a.Date||'')));
+ }
+ listItems=list;updateTitle();paintList();if(current)renderHeaderCtl();
+ if(list.length&&!listPainted){listPainted=true;rumMark('list-visible')}
+}
+function updateTitle(){const n=V2?(counts2?.unread_by_channel?((counts2.unread_by_channel.whatsapp||0)+(counts2.unread_by_channel.instagram||0)):0):leads.filter(l=>l.ConvHistory&&l.ConvHistory!=='[]'&&visibleToMe(l)&&unread(l)).length;document.title=(n?`(${n}) `:'')+'Leadvyne · Chats'}
+let searchQ='',searchTimer=null;
+function queueSearch(q){if(q===searchQ)return;searchQ=q;clearTimeout(searchTimer);if(q.length<2){searchRows=null;return}searchTimer=setTimeout(async()=>{try{const d=await apiJson(WORKER+'/chats/v2/search?q='+encodeURIComponent(q));if(searchQ!==q)return;mergeRows(d.rows);searchRows=(d.rows||[]).map(r=>r.lead_id);renderContacts()}catch{}},250)}
+function paintList(){
+ const el=$('list');if(!el)return;
+ const st=V2?views2[viewKey()]:null;
+ if(!listItems.length){
+  if(V2&&(!st||!st.loaded)&&!($('search').value||'').trim()){el.innerHTML=`<div class="vlist" style="height:${ROW*8}px">${Array.from({length:8},(_,i)=>`<div class="skel" style="top:${i*ROW}px"><i class="a"></i><div class="t"><i></i><i></i></div></div>`).join('')}</div>`;return}
+  el.innerHTML='<div class="empty-list">No conversations here.</div>';return;
+ }
+ let inner=el.querySelector('.vlist');if(!inner||inner.querySelector('.skel')){el.innerHTML='<div class="vlist"></div>';inner=el.firstChild}
+ inner.style.height=listItems.length*ROW+'px';
+ const top=el.scrollTop,h=el.clientHeight||700,a=Math.max(0,Math.floor(top/ROW)-6),b=Math.min(listItems.length,Math.ceil((top+h)/ROW)+6);
+ inner.innerHTML=listItems.slice(a,b).map((l,k)=>rowHtml(l,a+k)).join('');
+ if(V2&&st&&!st.done&&top+h>listItems.length*ROW-ROW*8)loadView(true).catch(()=>{});
+}
+function waitBadge(r){
+ if(!r?.waiting_since||['resolved','snoozed'].includes(r.status))return'';
+ const mins=Math.floor((Date.now()-new Date(r.waiting_since))/60000),warn=boot2?.settings?.sla_warn_min||15,breach=boot2?.settings?.sla_breach_min||60;
+ if(!(mins>=warn))return'';
+ const t=mins<60?mins+'m':mins<1440?Math.floor(mins/60)+'h'+(mins%60?' '+(mins%60)+'m':''):Math.floor(mins/1440)+'d';
+ return `<span class="wait ${mins>=breach?'breach':'warn'}" title="Waiting for a reply">⏱ ${t}</span>`;
+}
+function rowHtml(l,i){
+ const r=l._v2,active=current&&String(current.Id)===String(l.Id),draft=active?'':getDraft(l.Id);
+ const u=r?r.unread_count>0:unread(l),human=l.Handover==='Yes';
+ let p,out;
+ if(r){out=r.last_message_dir==='out';p=esc(r.last_message_preview||l.Phone||'')}
+ else{const h=hist(l),last=h[h.length-1]||{};out=isOut(last);p=esc(last.content||last.attachment||last.media_url?snippetOf(last).slice(0,70):(l.Phone||''))}
+ if(draft)p=`<span class="draft">Draft:</span> ${esc(draft.replace(/\s+/g,' ').slice(0,60))}`;
+ else if(out)p=`<span class="checks">${r?.last_sender==='bot'?'🤖':'✓✓'} </span>`+p;
+ const labels=String(l.Tags||'').split(',').map(x=>x.trim()).filter(Boolean);
+ const row3=(labels.slice(0,2).map(x=>`<span class="lbl">${esc(x)}</span>`).join('')+(labels.length>2?`<span class="lbl more">+${labels.length-2}</span>`:'')+(r?.priority>=3?`<i class="prio p${r.priority}" title="${r.priority>=4?'Urgent':'High'} priority"></i>`:''));
+ const owner=String(l.Owner||'').trim();
+ return `<div class="contact ${u?'unread':''} ${active?'active':''}" style="top:${i*ROW}px" onclick="openConversation('${esc(l.Id)}')" onmouseenter="hoverPrefetch('${esc(l.Id)}')" onmouseleave="hoverPrefetch(null)"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${human?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(l.Name||l.Phone||'Unknown')}</div><span class="hnd" title="${human?'A person is handling this chat':'The bot is handling this chat'}">${human?'👤':'🤖'}</span><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${p}</div>${waitBadge(r)}${owner?`<span class="asg" title="Assigned to ${esc(agentName(owner))}">${esc(agentInitials(owner))}</span>`:''}${u?`<span class="badge">${r?Math.min(r.unread_count,99):1}</span>`:''}</div>${row3?`<div class="row3">${row3}</div>`:''}</div></div>`;
+}
+// Resting on a row for ~150ms fetches its thread, so the click opens from memory.
+let hoverT=null;
+function hoverPrefetch(id){clearTimeout(hoverT);if(!V2||!id||histCache[String(id)])return;hoverT=setTimeout(()=>{const l=leads.find(x=>String(x.Id)===String(id));if(l&&!histCache[String(id)])fetchThread(l).catch(()=>{})},150)}
 
 // ── Conversation shell ───────────────────────────────────────────────────────────────────────
 async function openConversation(id){
  const lead=leads.find(l=>String(l.Id)===String(id));if(!lead)return;
  if(rec)cancelRecording();
  if(current&&$('msg'))saveDraft(current.Id,$('msg').value);
+ const t0=performance.now();
+ // Unread divider: where this person last read up to, captured before opening marks it read.
+ const k0=String(lead.Id),r0=lead._v2;
+ dividerAt[k0]=r0?(r0.unread_count>0?(r0.last_read_at||''):null):(unread(lead)?(readMap()[lead.Id]||''):null);
  current=lead;replyTarget=null;unseen=0;composeMode='reply';markRead(lead.Id);toParent('thread',{leadId:lead.Id});
+ if(r0&&r0.unread_count>0){r0.unread_count=0;act('mark_read',{},[lead.Id]).catch(()=>{})}
+ if(V2&&lead.NotesList===undefined)fetchNotes(lead);
  $('main').classList.add('open');$('sidebar').classList.add('thread-open');
  buildShell();renderContacts();
  const cached=!!histCache[String(id)];
- if(cached)drawMessages(true);else $('thread').innerHTML='<div style="height:100%;display:grid;place-items:center"><div class="spinner"></div></div>';
- await refreshMessages(lead,true);
+ if(cached){drawMessages(true);rumMark('thread-visible',t0)}else $('thread').innerHTML='<div style="height:100%;display:grid;place-items:center"><div class="spinner"></div></div>';
+ await refreshMessages(lead,!cached);
+ if(!cached)rumMark('thread-visible',t0);
 }
+async function fetchThread(lead,opts={}){
+ const k=String(lead.Id),qs=new URLSearchParams({lead_id:lead.Id,limit:'40'});if(opts.before)qs.set('before',opts.before);
+ const d=await apiJson(WORKER+'/chats/v2/thread?'+qs);
+ if(d.conversation)mergeRows([d.conversation]);
+ if(opts.before)return d;
+ // Newest page replaces the tail; older pages already scrolled in stay; this device's in-flight /
+ // failed sends stay; sends the server now has (no _status) are replaced by its copy.
+ const prev=histCache[k]||[],first=d.messages[0];
+ const older=first?prev.filter(m=>m.id&&(m.ts<first.ts||(m.ts===first.ts&&m.id<first.id))):[];
+ histCache[k]=[...older,...d.messages,...prev.filter(m=>m._status)];
+ threadMeta[k]=older.length&&threadMeta[k]?threadMeta[k]:{before:d.before,has_more:d.has_more,loading:false};
+ return d;
+}
+async function loadOlder(){
+ const lead=current;if(!lead)return;const k=String(lead.Id),meta=threadMeta[k];if(!meta||!meta.has_more||meta.loading)return;
+ meta.loading=true;try{const d=await fetchThread(lead,{before:meta.before});const ids=new Set((histCache[k]||[]).map(m=>m.id).filter(Boolean));histCache[k]=[...d.messages.filter(m=>!ids.has(m.id)),...(histCache[k]||[])];meta.before=d.before;meta.has_more=d.has_more;if(current===lead)drawMessages(false,'prepend')}catch{}finally{meta.loading=false}
+}
+async function fetchNotes(lead){lead.NotesList=lead.NotesList??'';try{const d=await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records/${encodeURIComponent(lead.Id)}`);lead.NotesList=d.NotesList||'';if(d.LastCustomerMsgAt&&(!lead.LastCustomerMsgAt||d.LastCustomerMsgAt>lead.LastCustomerMsgAt))lead.LastCustomerMsgAt=d.LastCustomerMsgAt;if(current===lead&&lead.NotesList&&lead.NotesList!=='[]')drawMessages(false)}catch{}}
 async function refreshMessages(lead,stick=false){
  const k=String(lead.Id);
+ if(V2){try{await fetchThread(lead);if(current&&String(current.Id)===k){drawMessages(stick);const t=$('thread');if(t&&t.scrollHeight<=t.clientHeight+200)loadOlder()}return}catch(e){}}
  // Keep this device's in-flight / failed sends across a server refresh — they aren't in D1 yet.
  const keep=(histCache[k]||[]).filter(m=>m._status);
  try{const data=await apiJson(`${WORKER}/chat/messages?lead_id=${encodeURIComponent(lead.Id)}`);histCache[k]=[...(data.messages||[]),...keep]}
@@ -256,10 +486,10 @@ async function refreshMessages(lead,stick=false){
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
 function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button><button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?'<button onclick="markUnread()">Mark as unread</button>':''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}${l.Owner?' · '+esc(l.Owner):''}</div></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button><button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="searchThread(this.value)"></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -269,6 +499,7 @@ function buildShell(){
  <div class="composer-mode" id="modeRow"><button class="mode-btn active" id="replyMode" onclick="setComposeMode('reply')">Reply</button><button class="mode-btn" id="noteMode" onclick="setComposeMode('note')">Internal note</button></div>
  <div class="composer" id="composer">
   <div class="popover emoji-panel hidden" id="emojiPanel"></div>
+  <div class="popover canned-panel hidden" id="cannedPanel"></div>
   <div class="popover attach-menu hidden" id="attachMenu">
    <button onclick="pickFiles('*/*')"><span class="dot" style="background:#7f66ff">${IC.doc}</span>Document</button>
    <button onclick="pickFiles('image/*,video/*')"><span class="dot" style="background:#007bfc">${IC.image}</span>Photos &amp; videos</button>
@@ -292,14 +523,14 @@ function buildShell(){
   </div>
   <button class="send" id="actionBtn" title="Record voice message">${IC.mic}</button>
  </div>`;
- $('chatMenu').innerHTML=menuHtml();
+ $('chatMenu').innerHTML=menuHtml();renderHeaderCtl();
  const box=$('msg');box.value=getDraft(l.Id);grow(box);
  wireActionButton();wireThread();updateAction();
  $('emojiPanel').innerHTML=EMOJI.split(' ').map(e=>`<button type="button">${e}</button>`).join('');
  $('emojiPanel').onclick=e=>{const b=e.target.closest('button');if(b)insertAtCursor(b.textContent)};
  if(matchMedia('(min-width:701px)').matches)box.focus();
 }
-function fmtDay(ts){const d=new Date(ts||Date.now()),n=new Date();if(isNaN(d))return'';if(d.toDateString()===n.toDateString())return'TODAY';const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'YESTERDAY';return d.toLocaleDateString([],{day:'numeric',month:'short',year:'numeric'}).toUpperCase()}
+function fmtDay(ts){const d=new Date(ts||Date.now()),n=new Date();if(isNaN(d))return'';if(d.toDateString()===n.toDateString())return'TODAY';const y=new Date(n);y.setDate(y.getDate()-1);if(d.toDateString()===y.toDateString())return'YESTERDAY';if(n-d<6*86400000&&d<n)return d.toLocaleDateString([],{weekday:'long'}).toUpperCase();return d.toLocaleDateString([],{day:'numeric',month:'short',year:'numeric'}).toUpperCase()}
 function fmtTime(ts){try{const d=new Date(ts);return ts&&!isNaN(d)?d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):''}catch{return''}}
 function attHtml(a){
  const url=esc(a.url||'');
@@ -310,21 +541,29 @@ function attHtml(a){
  const inner=`<span class="ext">${esc(a.name&&a.name.includes('.')?ext:'file')}</span><div style="min-width:0"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</div><small>${esc(fmtBytes(a.size))}</small></div>`;
  return a.url?`<a class="doc" href="${url}" target="_blank" rel="noopener" download>${inner}</a>`:`<div class="doc">${inner}</div>`;
 }
-function drawMessages(stick=false){
+// Who sent an outgoing bubble — shown small at the top of each run from the same sender.
+function senderOf(m){if(!isOut(m))return null;const t=m.sender_type||'';if(t==='bot')return{key:'bot',label:'🤖 AI Bot',bot:true};if(t==='agent'){const n=m.sender_name||agentName(m.sender_email||'');return{key:'a:'+(m.sender_email||n),label:n||'Team'}}if(t==='broadcast')return{key:'bc',label:'📢 Broadcast'};if(t==='automation')return{key:'auto',label:'⚙️ Automation'};return{key:'',label:''}}
+function drawMessages(stick=false,mode=''){
  const t=$('thread');if(!t||!current)return;
- const nearBottom=t.scrollHeight-t.scrollTop-t.clientHeight<120,prevTop=t.scrollTop,prevCount=Number(t.dataset.count||0);
- const h=hist(current);let lastDay='',body='',prevDir='';
+ const nearBottom=t.scrollHeight-t.scrollTop-t.clientHeight<120,prevTop=t.scrollTop,prevH=t.scrollHeight,prevCount=Number(t.dataset.count||0);
+ const k=String(current.Id),h=hist(current),div=dividerAt[k];let lastDay='',body='',prevDir='',prevSender='',divDone=div===null||div===undefined,unreadN=0;
+ if(!divDone)unreadN=h.filter(m=>!isOut(m)&&m.kind!=='event'&&(m.ts||'')>div).length;
+ const meta=threadMeta[k];
+ if(V2&&meta?.has_more)body+=`<div class="older" id="olderRow">${meta.loading?'Loading earlier messages…':'Scroll up for earlier messages'}</div>`;
  h.forEach((m,i)=>{
   const ts=m.ts||m.timestamp||m.created_at,day=ts?fmtDay(ts):lastDay;
-  if(day&&day!==lastDay){body+=`<div class="day"><span>${esc(day)}</span></div>`;lastDay=day;prevDir=''}
-  const out=isOut(m),atts=attachmentsOf(m),dir=out?'out':'in',tail=dir!==prevDir;prevDir=dir;
+  if(day&&day!==lastDay){body+=`<div class="day"><span>${esc(day)}</span></div>`;lastDay=day;prevDir='';prevSender=''}
+  if(!divDone&&unreadN&&!isOut(m)&&m.kind!=='event'&&(ts||'')>div){body+=`<div class="unread-div" id="unreadDiv">${unreadN} unread message${unreadN>1?'s':''}</div>`;divDone=true;prevDir=''}
+  if(m.kind==='event'){body+=`<div class="event"><span>${esc(m.content||'')}${ts?' · '+esc(fmtTime(ts)):''}</span></div>`;prevDir='';prevSender='';return}
+  const out=isOut(m),atts=attachmentsOf(m),dir=out?'out':'in',snd=senderOf(m),sk=snd?.key||'',tail=dir!==prevDir||(out&&sk&&sk!==prevSender);prevDir=dir;prevSender=sk;
+  const who=out&&tail&&snd?.label?`<div class="who${snd.bot?' bot':''}">${esc(snd.label)}</div>`:'';
   const quote=m.reply_to?`<div class="quote"><b>${esc(m.reply_to.who||'Reply')}</b>${esc(m.reply_to.snippet||'')}</div>`:'';
   const tick=!out?'':m._status==='pending'?'<span class="tick-pending" title="Sending">🕓</span>':m._status==='failed'?`<span class="tick-failed" title="Not sent — tap to retry" data-retry="${i}">⚠ Retry</span>`:'<span class="checks">✓✓</span>';
   const text=bodyOf(m,atts),tr=transcriptOf(m,atts),tpl=atts.find(a=>a.kind==='template'),shown=atts.filter(a=>a.kind!=='template');
-  const mediaOnly=!text&&!tr&&!quote&&!tpl&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
+  const mediaOnly=!text&&!tr&&!quote&&!tpl&&!who&&shown.length===1&&['image','video'].includes(shown[0].kind)&&shown[0].url;
   const tplHead=tpl?`<div class="tpl-tag">📋 Template · ${esc(tpl.name||'')}</div>`:'';
   const btns=tpl?.buttons?.length?`<div class="tpl-btns">${tpl.buttons.map(b=>`<div>${esc(b)}</div>`).join('')}</div>`:'';
-  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
+  body+=`<div class="bubble-row ${dir}${m._status==='failed'?' failed-row':''}${tail?' group-start':''}" data-i="${i}"><div class="bubble ${dir}${tail?' tail':''}${mediaOnly?' media-only':''}">${who}${tplHead}${quote}${shown.map(attHtml).join('')}${tr?`<div class="transcript">${esc(tr)}</div>`:''}${text?fmtText(text):''}<span class="meta">${esc(fmtTime(ts))}${tick}</span>${btns}</div><div class="msg-actions"><button type="button" data-act="reply" title="Reply">${IC.reply}</button>${text?`<button type="button" data-act="copy" title="Copy">${IC.copy}</button>`:''}</div></div>`;
  });
  updateWindowBar();updateHandoverBar();
  let notes=[];try{notes=JSON.parse(current.NotesList||'[]')}catch{}for(const n of notes.slice(-10)){body+=`<div class="note">📝 ${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}</small>`:''}</div>`}
@@ -332,13 +571,16 @@ function drawMessages(stick=false){
  t.dataset.count=h.length;
  const q=$('threadSearchInput')?.value;if(q)searchThread(q);
  hydratePlayers();
+ if(mode==='prepend'){t.scrollTop=t.scrollHeight-prevH+prevTop;return}
+ const ud=$('unreadDiv');
+ if(stick&&ud){requestAnimationFrame(()=>{ud.scrollIntoView({block:'start'});updateFab()});return}
  if(stick||nearBottom){scrollToBottom(false)}else{t.scrollTop=prevTop;if(h.length>prevCount){unseen+=h.length-prevCount;updateFab()}}
 }
 function scrollToBottom(smooth){const t=$('thread');if(!t)return;unseen=0;requestAnimationFrame(()=>{t.scrollTo({top:t.scrollHeight,behavior:smooth?'smooth':'auto'});updateFab()})}
 function updateFab(){const t=$('thread'),b=$('toBottom');if(!t||!b)return;const away=t.scrollHeight-t.scrollTop-t.clientHeight>200;if(!away)unseen=0;b.classList.toggle('hidden',!away);const n=b.querySelector('.n');n.textContent=unseen;n.classList.toggle('hidden',!unseen)}
 function wireThread(){
  const t=$('thread');
- t.addEventListener('scroll',updateFab,{passive:true});
+ t.addEventListener('scroll',()=>{updateFab();if(V2&&t.scrollTop<200)loadOlder()},{passive:true});
  t.addEventListener('click',e=>{
   const img=e.target.closest('[data-view]');if(img)return viewImage(img.dataset.view);
   const retry=e.target.closest('[data-retry]');if(retry){const m=hist(current)[Number(retry.dataset.retry)];if(m?._retry)m._retry();return}
@@ -361,13 +603,37 @@ function wireThread(){
 function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force)}
 function toggleThreadSearch(){toggleMenu(false);const s=$('threadSearch');s.classList.toggle('hidden');if(s.classList.contains('hidden')){$('threadSearchInput').value='';searchThread('')}else $('threadSearchInput').focus()}
 function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open)el.classList.remove('hidden')}
-function closePopovers(){['emojiPanel','attachMenu'].forEach(id=>$(id)?.classList.add('hidden'))}
+function closePopovers(){['emojiPanel','attachMenu','cannedPanel'].forEach(id=>$(id)?.classList.add('hidden'))}
+// ── Canned responses: type / to search, ↑↓ to pick, Enter/Tab to insert ──────────────────────
+// {{name}} {{phone}} {{agent}} {{business}} fill in from this chat; any other {{x}} stays
+// highlighted in the draft and blocks sending until it's replaced.
+let cannedSel=0,cannedHits=[];
+function cannedQuery(){const b=$('msg');if(!b||composeMode!=='reply'&&composeMode!=='note')return null;const before=b.value.slice(0,b.selectionStart??b.value.length);const m=before.match(/(^|\s)\/([\w-]{0,30})$/);return m?{q:m[2].toLowerCase(),start:before.length-m[2].length-1}:null}
+function checkCanned(){
+ const p=$('cannedPanel');if(!p)return;const cq=V2&&boot2?cannedQuery():null;if(!cq){p.classList.add('hidden');return}
+ const all=boot2.canned||[];cannedHits=all.filter(c=>!cq.q||c.shortcut.includes(cq.q)||c.body.toLowerCase().includes(cq.q)).slice(0,8);cannedSel=Math.min(cannedSel,Math.max(0,cannedHits.length-1));
+ p.innerHTML=(cannedHits.map((c,i)=>`<button type="button" class="${i===cannedSel?'sel':''}" onmousedown="event.preventDefault();insertCanned(${i})"><b>/${esc(c.shortcut)}</b><small>${esc(c.body.replace(/\s+/g,' ').slice(0,120))}</small></button>`).join('')||`<div class="hint" style="padding:8px 14px;color:var(--muted);font-size:13px">${all.length?'No canned response matches':'No canned responses yet'}</div>`)+`<div class="foot"><span>↑↓ to pick · Enter to insert</span><a onmousedown="event.preventDefault();manageCanned()">Manage</a></div>`;
+ p.classList.remove('hidden');
+}
+function cannedKey(e){const p=$('cannedPanel');if(!p||p.classList.contains('hidden'))return false;if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();cannedSel=(cannedSel+(e.key==='ArrowDown'?1:-1)+cannedHits.length)%Math.max(1,cannedHits.length);checkCanned();return true}if((e.key==='Enter'||e.key==='Tab')&&cannedHits.length){e.preventDefault();insertCanned(cannedSel);return true}if(e.key==='Escape'){e.preventDefault();p.classList.add('hidden');return true}return false}
+function fillVars(t){const me=agentsList().find(a=>a.email===meEmail);const v={name:current?.Name||'',phone:current?.Phone||'',agent:me?.name||'',business:clientRecord.client_name||clientRecord.business_name||''};return String(t).replace(/\{\{\s*(\w+)\s*\}\}/g,(m,k)=>v[k.toLowerCase()]||m)}
+function insertCanned(i){const c=cannedHits[i],cq=cannedQuery();if(!c||!cq)return;const b=$('msg'),end=b.selectionStart??b.value.length,txt=fillVars(c.body);b.value=b.value.slice(0,cq.start)+txt+b.value.slice(end);const pos=cq.start+txt.length;b.selectionStart=b.selectionEnd=pos;$('cannedPanel').classList.add('hidden');b.focus();onType();const left=txt.match(/\{\{\s*\w+\s*\}\}/);if(left){const at=b.value.indexOf(left[0]);b.setSelectionRange(at,at+left[0].length);toast('Fill in '+left[0])}}
+function manageCanned(){
+ $('cannedPanel')?.classList.add('hidden');
+ let ov=$('cannedOv');if(!ov){ov=document.createElement('div');ov.id='cannedOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
+ const list=(boot2?.canned||[]).map(c=>`<div class="tpl-item" style="display:flex;gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><b>/${esc(c.shortcut)}</b><small>${esc(c.body)}</small></div><button class="icon-btn" title="Delete" onclick="deleteCanned(${c.id})">${IC.trash}</button></div>`).join('')||'<div class="tpl-empty">No canned responses yet.</div>';
+ ov.classList.remove('hidden');
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="$('cannedOv').classList.add('hidden')">${IC.close}</button><div style="flex:1"><b>Canned responses</b> <small style="color:var(--muted)">Type / in the message box to use one</small></div></div><div class="tpl-main"><div class="tpl-list"><div class="tpl-items">${list}</div></div><div class="tpl-detail"><div class="tpl-form"><label>Shortcut<input id="cnShort" placeholder="price-list"></label><label>Message<textarea id="cnBody" rows="6" style="width:100%;border:1px solid #d1d7db;border-radius:8px;padding:10px;font:inherit" placeholder="Hi {{name}}, here is our price list…"></textarea></label><small style="color:var(--muted)">Variables: {{name}} {{phone}} {{agent}} {{business}}</small><div class="tpl-actions"><span id="cnErr" style="color:var(--danger);font-size:13px"></span><button class="dash-btn" onclick="saveCanned()">Save</button></div></div></div></div>`;
+ $('cnShort').focus();
+}
+async function saveCanned(){const shortcut=$('cnShort').value.trim(),body=$('cnBody').value.trim();if(!shortcut||!body){$('cnErr').textContent='Add a shortcut and a message.';return}try{await apiJson(WORKER+'/chats/v2/canned',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({shortcut,body})});await loadBootstrap();manageCanned();toast('Canned response saved')}catch(e){$('cnErr').textContent=e.message}}
+async function deleteCanned(id){try{await apiJson(WORKER+'/chats/v2/canned?id='+id,{method:'DELETE'});await loadBootstrap();manageCanned()}catch(e){toast('Could not delete: '+e.message)}}
 
 // ── Composer ─────────────────────────────────────────────────────────────────────────────────
-function setComposeMode(m){composeMode=m;if(m==='note')clearReply();$('replyMode').classList.toggle('active',m==='reply');$('noteMode').classList.toggle('active',m==='note');$('composer').classList.toggle('note-mode',m==='note');$('modeRow').classList.toggle('note-mode',m==='note');$('msg').placeholder=m==='note'?'Add a private note (only your team sees this)':'Type a message';updateAction();$('msg').focus()}
+function setComposeMode(m){composeMode=m;if(m==='note')clearReply();$('replyMode').classList.toggle('active',m==='reply');$('noteMode').classList.toggle('active',m==='note');$('composer').classList.toggle('note-mode',m==='note');$('modeRow').classList.toggle('note-mode',m==='note');$('msg').placeholder=m==='note'?'Add a private note (only your team sees this)':'Type a message';updateAction();updateWindowBar();$('msg').focus()}
 function grow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px'}
-function onType(){const b=$('msg');grow(b);updateAction();clearTimeout(onType.t);onType.t=setTimeout(()=>current&&saveDraft(current.Id,b.value),400)}
-function keySend(e){if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:701px)').matches){e.preventDefault();sendMessage()}}
+function onType(){const b=$('msg');grow(b);updateAction();checkCanned();clearTimeout(onType.t);onType.t=setTimeout(()=>current&&saveDraft(current.Id,b.value),400)}
+function keySend(e){if(cannedKey(e))return;if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:701px)').matches){e.preventDefault();sendMessage()}}
 function insertAtCursor(txt){const b=$('msg');const s=b.selectionStart??b.value.length,en=b.selectionEnd??b.value.length;b.value=b.value.slice(0,s)+txt+b.value.slice(en);b.selectionStart=b.selectionEnd=s+txt.length;b.focus();onType()}
 function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length&&!isIg(current)){e.preventDefault();openPreview(files)}}
 // Mic when the box is empty, paper plane when there's something to send — same as WhatsApp.
@@ -380,11 +646,13 @@ function renderReply(){const box=$('replyBox');if(!box)return;if(!replyTarget){b
 async function patchLead(lead,patch){await apiJson(`${WORKER}/nocodb/api/v2/tables/${LEADS_TABLE}/records`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({Id:lead.Id,...patch})});Object.assign(lead,patch);const i=leads.findIndex(x=>String(x.Id)===String(lead.Id));if(i>=0&&leads[i]!==lead)Object.assign(leads[i],patch)}
 // Optimistic send: the bubble appears at once with a clock, flips to ✓✓ when the worker confirms,
 // or to "⚠ Retry" on failure (tap to resend) — nothing typed or recorded is lost to a bad network.
-function pushLocal(lead,msg){msg.ts=new Date().toISOString();msg._status='pending';hist(lead).push(msg);const L=leads.find(x=>String(x.Id)===String(lead.Id));if(L)L.LastMsgAt=msg.ts;markRead(lead.Id);if(current&&String(current.Id)===String(lead.Id))drawMessages(true);renderContacts();return msg}
+function pushLocal(lead,msg){msg.ts=new Date().toISOString();msg._status='pending';if(!msg.sender_type){msg.sender_type='agent';msg.sender_email=meEmail}hist(lead).push(msg);const L=leads.find(x=>String(x.Id)===String(lead.Id));if(L){L.LastMsgAt=msg.ts;if(L._v2)Object.assign(L._v2,{last_message_at:msg.ts,last_message_preview:snippetOf(msg),last_message_dir:'out',last_sender:'agent',waiting_since:null,unread_count:0})}markRead(lead.Id);if(current&&String(current.Id)===String(lead.Id))drawMessages(true);renderContacts();return msg}
 function setMsgStatus(lead,msg,status){if(status)msg._status=status;else delete msg._status;if(current&&String(current.Id)===String(lead.Id))drawMessages(false)}
 const persistable=h=>JSON.stringify(h.filter(m=>!m._status),(k,v)=>k.startsWith('_')?undefined:v);
 async function sendMessage(){
  if(!current)return;const box=$('msg'),text=(box.value||'').trim();if(!text)return;const lead=current;
+ const unfilled=composeMode==='reply'&&text.match(/\{\{\s*\w+\s*\}\}/);if(unfilled){const at=box.value.indexOf(unfilled[0]);box.focus();box.setSelectionRange(at,at+unfilled[0].length);toast('Fill in '+unfilled[0]+' before sending');return}
+ if(composeMode==='reply'&&!isIg(lead)&&!windowOpen(lead)){toast('The 24-hour window has closed — send a template');return}
  if(composeMode==='note'){let n=[];try{n=JSON.parse(lead.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(lead,{NotesList:JSON.stringify(n)});box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}return}
  if(!isIg(lead)&&!convId(lead)){toast('No linked WhatsApp conversation');return}
  const quote=replyTarget?{who:replyTarget.who,snippet:replyTarget.snippet}:null;
@@ -444,8 +712,11 @@ function viewImage(src){let ov=$('lightbox');if(!ov){ov=document.createElement('
 // composer shows a banner with a shortcut to the picker. Unknown timing counts as open (no banner).
 function lastCustomerAt(lead){let t=lead.LastCustomerMsgAt||'';const h=hist(lead);for(let i=h.length-1;i>=0;i--){if(isOut(h[i]))continue;const ts=h[i].ts||h[i].timestamp||h[i].created_at;if(ts&&(!t||new Date(ts)>new Date(t)))t=ts;break}return t}
 function windowOpen(lead){const t=lastCustomerAt(lead);return !t||isNaN(new Date(t))||Date.now()-new Date(t)<24*3600*1000}
-function updateHandoverBar(){const b=$('handoverBar');if(!b||!current)return;b.classList.toggle('hidden',!takenOver(current))}
-function updateWindowBar(){const b=$('windowBar');if(!b||!current)return;b.classList.toggle('hidden',isIg(current)||windowOpen(current))}
+function updateHandoverBar(){const b=$('handoverBar');if(!b||!current)return;b.classList.toggle('hidden',!takenOver(current));renderHeaderCtl()}
+// Outside the window WhatsApp drops free text, so the composer is locked to templates (notes
+// still work) instead of letting someone type a reply that will never arrive.
+function updateWindowBar(){const b=$('windowBar');if(!b||!current)return;const closed=!isIg(current)&&!windowOpen(current);b.classList.toggle('hidden',!closed);applyLock(closed)}
+function applyLock(closed){const box=$('msg'),wrap=$('inputWrap');if(!box||!wrap)return;const lock=closed&&composeMode==='reply';box.disabled=lock;wrap.classList.toggle('locked',lock);box.placeholder=lock?'Session expired — send a template to restart the chat':composeMode==='note'?'Add a private note (only your team sees this)':'Type a message';['camBtn','emojiBtn'].forEach(id=>{const x=$(id);if(x&&!isIg(current))x.disabled=lock});document.querySelectorAll('#attachMenu button').forEach(x=>{if(!/Template/.test(x.textContent))x.disabled=lock});const a=$('actionBtn');if(a)a.disabled=lock&&actionState()!=='send'}
 const tplCache={};let tplList=[],tplSel=null;
 const tplComp=(t,type)=>(t?.components||[]).find(c=>String(c.type||'').toUpperCase()===type);
 const tplBody=t=>tplComp(t,'BODY')?.text||'';
@@ -610,22 +881,49 @@ async function toMp3(blob){
 }
 
 // ── Header menu actions ──────────────────────────────────────────────────────────────────────
-async function togglePin(){const next=current.Pinned!=='Yes';try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
+async function togglePin(){const next=current.Pinned!=='Yes';if(V2){try{await act('pin',{pinned:next});toggleMenu(false);toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}return}try{await apiJson(WORKER+'/chat/pin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,pinned:next})});current.Pinned=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation pinned':'Conversation unpinned')}catch(e){toast('Could not update pin')}}
 // Manual takeover: the worker marks the lead handed over to this person (HandoverBy) so the bot
 // stays silent on it until someone hands it back — see handleChatHandover in worker.js.
 // A bot-triggered handover sets Handover='Yes' with no HandoverBy and the bot keeps replying
 // (unless the client turned on handover silence), so only a person's takeover counts here —
 // otherwise the bar claimed "the bot won't reply" and the menu offered only "Hand back".
 function takenOver(l){return !!l&&l.Handover==='Yes'&&!!String(l.HandoverBy||'').trim()}
-async function toggleHandover(){const lead=current,next=!takenOver(lead);try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
-async function toggleResolve(){const next=current.ConvResolved!=='Yes';try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
+async function toggleHandover(){const lead=current,next=!takenOver(lead);if(V2){try{await act('handler',{mode:next?'human':'bot'});toggleMenu(false);updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}return}try{const d=await apiJson(WORKER+'/chat/handover',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,takeover:next})});Object.assign(lead,d.lead||{Handover:next?'Yes':'No'});toggleMenu(false);renderContacts();updateHandoverBar();toast(next?'You\'ve taken over — the bot won\'t reply':'Handed back to the bot')}catch(e){toast('Could not update handover')}}
+async function toggleResolve(){const next=current.ConvResolved!=='Yes'&&current._v2?.status!=='snoozed';closeDd();if(V2){try{await act(next?'resolve':'reopen');toggleMenu(false);toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}return}try{await apiJson(WORKER+'/chat/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:current.Id,resolved:next})});current.ConvResolved=next?'Yes':'No';toggleMenu(false);renderContacts();toast(next?'Conversation resolved':'Conversation reopened')}catch(e){toast('Could not update conversation')}}
+async function markUnread(){toggleMenu(false);try{await act('mark_unread');toast('Marked as unread');closeConversation()}catch(e){toast('Could not mark as unread')}}
+// ── Header controls: bot/human pill, assignee, Resolve ▾ (snooze) ─────────────────────────────
+function renderHeaderCtl(){
+ const el=$('hdrCtl');if(!el||!current)return;const l=current,human=takenOver(l),needs=l.Handover==='Yes'&&!human;
+ const owner=lc(l.Owner),st=l._v2?.status||(l.ConvResolved==='Yes'?'resolved':'open'),done=st==='resolved'||st==='snoozed';
+ el.innerHTML=`<button class="hdr-pill ${human?'human':needs?'needs':''}" id="botPill" title="${human?'A person is handling this chat — click to hand it back to the bot':'Click to take over from the bot'}" onclick="toggleHandover()">${human?'👤':'🤖'} <span class="t">${human?'Human':needs?'Bot · needs you':'Bot active'}</span></button><button class="hdr-btn" id="assignBtn" title="Assign" onclick="openAssign(this)">${owner?`<span class="asg">${esc(agentInitials(owner))}</span><span class="t">${esc(agentName(owner))}</span>`:'👤 <span class="t">Assign</span>'}</button><span class="split ${done?'resolved':''}"><button id="resolveBtn" onclick="toggleResolve()">${done?'↺ <span class="t">'+(st==='snoozed'?'Unsnooze':'Reopen')+'</span>':'✓ <span class="t">Resolve</span>'}</button>${V2?'<button title="More: snooze, pending" onclick="openResolveMenu(this)">▾</button>':''}</span>`;
+}
+function closeDd(){$('ddMenu')?.remove()}
+function openDd(anchor,html){closeDd();const d=document.createElement('div');d.id='ddMenu';d.className='dd';d.innerHTML=html;document.body.appendChild(d);const r=anchor.getBoundingClientRect(),w=d.offsetWidth;d.style.top=Math.min(r.bottom+6,innerHeight-d.offsetHeight-8)+'px';d.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+'px';d.addEventListener('click',e=>e.stopPropagation());return d}
+function openAssign(btn){
+ const staff=isStaff(),owner=lc(current.Owner);
+ const items=q=>agentsList().filter(a=>!q||a.name.toLowerCase().includes(q)||a.email.includes(q)).map(a=>`<button ${staff&&a.email!==meEmail?'disabled title="Only an admin can assign to someone else"':''} class="${a.email===owner?'sel':''}" onclick="assignTo('${esc(a.email)}')"><span class="asg">${esc(agentInitials(a.email))}</span>${esc(a.name)}${a.email===meEmail?' (you)':''}</button>`).join('')||'<div class="hint">No match</div>';
+ const d=openDd(btn,`<input id="asgQ" placeholder="Search teammates" autocomplete="off"><div id="asgList">${items('')}</div><hr><button onclick="assignTo('')" ${!owner?'disabled':''}>✕ Unassign</button>`);
+ const q=d.querySelector('#asgQ');q.oninput=()=>{d.querySelector('#asgList').innerHTML=items(q.value.trim().toLowerCase())};q.focus();
+}
+async function assignTo(email){
+ closeDd();const lead=current;if(!lead)return;
+ try{if(V2)await act('assign',{email});else{await patchLead(lead,{Owner:email});renderContacts();renderHeaderCtl()}toast(email?`Assigned to ${agentName(email)}`:'Unassigned')}catch(e){toast('Could not assign: '+e.message)}
+}
+function snoozeTimes(){const n=new Date(),t=new Date(n);t.setDate(t.getDate()+1);t.setHours(9,0,0,0);const m=new Date(n);m.setDate(m.getDate()+((8-m.getDay())%7||7));m.setHours(9,0,0,0);return {hour:new Date(Date.now()+3600e3),tomorrow:t,monday:m}}
+function openResolveMenu(btn){
+ const t=snoozeTimes(),f=d=>d.toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'});
+ const d=openDd(btn,`<div class="hint">Snooze until…</div><button onclick="snoozeUntil('${t.hour.toISOString()}')">⏰ 1 hour <small style="margin-left:auto;color:var(--muted)">${esc(f(t.hour))}</small></button><button onclick="snoozeUntil('${t.tomorrow.toISOString()}')">🌅 Tomorrow 9am</button><button onclick="snoozeUntil('${t.monday.toISOString()}')">📅 Next Monday 9am</button><div style="display:flex;gap:6px;align-items:center;padding:4px 10px"><input type="datetime-local" id="snzCustom" style="margin:0;flex:1"><button style="width:auto;padding:6px 10px" onclick="snoozeCustom()">Set</button></div><hr><button onclick="setPending()">⏳ Mark as pending</button>`);
+}
+async function snoozeUntil(iso){closeDd();try{await act('snooze',{until:iso});toast('Snoozed until '+new Date(iso).toLocaleString([],{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))}catch(e){toast('Could not snooze: '+e.message)}}
+function snoozeCustom(){const v=$('snzCustom')?.value;if(!v)return toast('Pick a date and time');snoozeUntil(new Date(v).toISOString())}
+async function setPending(){closeDd();try{await act('pending');toast('Marked as pending')}catch(e){toast('Could not update: '+e.message)}}
 function copyPhone(){navigator.clipboard?.writeText(current.Phone||'');toggleMenu(false);toast('Number copied')}
 function goLead(){toggleMenu(false);if(embedded){toParent('openLead',{leadId:current.Id});return}location.href=`dashboard.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&lead=${encodeURIComponent(current.Id)}`}
 function goBack(){if(embedded){toParent('home');return}if(window.opener&&!window.opener.closed){window.opener.focus();window.close();}else if(history.length>1){history.back();}else{location.href='dashboard.html?client='+encodeURIComponent(clientId)+'&token='+encodeURIComponent(sessionToken);}}
 function searchThread(q){q=String(q||'').trim().toLowerCase();document.querySelectorAll('#thread .bubble').forEach(b=>{b.style.opacity=!q||b.textContent.toLowerCase().includes(q)?'1':'.22'})}
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
-document.addEventListener('click',e=>{if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
+document.addEventListener('click',e=>{if(!e.target.closest('.dd,.hdr-ctl'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
 document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
@@ -641,6 +939,7 @@ window.addEventListener('message',async e=>{
 });
 window.addEventListener('beforeunload',()=>{if(current&&$('msg'))saveDraft(current.Id,$('msg').value)});
 const EMOJI='😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 😉 😍 🥰 😘 😋 😜 🤪 🤗 🤔 🤐 😐 😏 😒 🙄 😬 😌 😔 😴 😷 🤒 🥳 😎 🤓 😕 😟 😮 😲 😳 🥺 😢 😭 😱 😤 😡 👍 👎 👌 ✌️ 🤞 🤝 👏 🙌 🙏 💪 👋 👉 👈 👆 👇 ☝️ ✋ ❤️ 🧡 💛 💚 💙 💜 🖤 💔 💯 ✅ ❌ ⚠️ ❓ ❗ 🔥 ⭐ 🌟 ✨ 🎉 🎊 🎁 🎂 💐 🌹 🌸 ☀️ 🌙 ⏰ 📅 📌 📍 📞 📱 💬 📷 🎥 🎤 📄 📎 💰 💵 💳 🛒 📦 🚚 🏠 🏢 🚗 ✈️ 🍽️ ☕ 🍰';
+$('list').addEventListener('scroll',()=>requestAnimationFrame(paintList),{passive:true});
 boot();
 if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
