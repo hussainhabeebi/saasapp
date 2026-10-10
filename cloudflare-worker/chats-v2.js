@@ -66,6 +66,36 @@ export const CHATS_V2_SCHEMA=[
     value TEXT NOT NULL,
     at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS chat_scheduled (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    lead_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    send_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    error TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS ix_sched_due ON chat_scheduled(status, send_at)`,
+  `CREATE INDEX IF NOT EXISTS ix_sched_lead ON chat_scheduled(lead_id, status)`,
+  `CREATE TABLE IF NOT EXISTS chat_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    owner_email TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    filter TEXT NOT NULL,
+    shared INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS chat_macros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    ops TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS chat_sync_state (
     client_id INTEGER PRIMARY KEY,
     backfilled_at TEXT,
@@ -467,7 +497,39 @@ function filterSql(q, acc){
   else if(q.handler==='bot'){ sql+=` AND handover<>'Yes'`; }
   const labels=String(q.labels||'').split(',').map(lc).filter(Boolean).slice(0,10);
   if(labels.length){ sql+=` AND (${labels.map(()=>`labels_key LIKE ?`).join(' OR ')})`; vals.push(...labels.map(l=>`%,${l.replace(/[%_]/g,'')},%`)); }
+  if(q.filter){
+    let parsed=q.filter;
+    if(typeof parsed==='string'){ try{ parsed=JSON.parse(parsed); }catch(e){ throw Object.assign(new Error('Bad filter'), {status:400}); } }
+    const f=chatsV2CompileFilter(parsed, acc); sql+=f.sql; vals.push(...f.vals);
+  }
   const s=scopeSql(acc); sql+=s.sql; vals.push(...s.vals);
+  return {sql, vals};
+}
+
+// Advanced filter / saved views: a small JSON condition list ANDed together, compiled to SQL from
+// a whitelist — field names and operators never reach the query as text, only bound values do.
+//   {all:[{f:'label',op:'has',v:'Hot'}, {f:'assignee',op:'eq',v:'shafna@x.com'}, {f:'last_message_age',op:'gt',v:2}]}
+export const CHATS_V2_FILTER_FIELDS={
+  label:['has','not_has'], assignee:['eq','neq'], status:['eq','neq'], handler:['eq'], channel:['eq'],
+  priority:['gte','eq'], unread:['eq'], last_message_age:['gt','lt'], waiting_age:['gt'],
+};
+export function chatsV2CompileFilter(filter, acc, nowMs=Date.now()){
+  const conds=Array.isArray(filter?.all)?filter.all.slice(0,10):[];
+  let sql='', vals=[];
+  for(const c of conds){
+    const f=String(c?.f||''), op=String(c?.op||'');
+    if(!CHATS_V2_FILTER_FIELDS[f]?.includes(op)) throw Object.assign(new Error(`Unsupported filter: ${f} ${op}`), {status:400});
+    const v=c.v;
+    if(f==='label'){ sql+=op==='has'?' AND labels_key LIKE ?':' AND labels_key NOT LIKE ?'; vals.push(`%,${lc(v).replace(/[%_]/g,'')},%`); }
+    else if(f==='assignee'){ const e=v==='me'?acc.me:lc(v); sql+=op==='eq'?' AND assignee_email=?':' AND assignee_email<>?'; vals.push(e); }
+    else if(f==='status'){ sql+=op==='eq'?' AND status=?':' AND status<>?'; vals.push(String(v||'')); }
+    else if(f==='handler'){ sql+=v==='human'?` AND handover='Yes'`:` AND handover<>'Yes'`; }
+    else if(f==='channel'){ sql+=' AND channel=?'; vals.push(v==='instagram'?'instagram':'whatsapp'); }
+    else if(f==='priority'){ sql+=op==='gte'?' AND priority>=?':' AND priority=?'; vals.push(Math.max(0, Math.min(4, Number(v)||0))); }
+    else if(f==='unread'){ sql+=v===true||v==='true'?' AND unread_count>0':' AND unread_count=0'; }
+    else if(f==='last_message_age'){ const t=new Date(nowMs-Math.max(0, Number(v)||0)*3600e3).toISOString(); sql+=op==='gt'?' AND last_message_at<?':' AND last_message_at>?'; vals.push(t); }
+    else if(f==='waiting_age'){ const t=new Date(nowMs-Math.max(0, Number(v)||0)*60e3).toISOString(); sql+=` AND waiting_since IS NOT NULL AND waiting_since<=? AND status NOT IN ('resolved','snoozed')`; vals.push(t); }
+  }
   return {sql, vals};
 }
 
@@ -740,6 +802,52 @@ export async function chatsV2Ai(env, deps, c, acc, body){
   throw Object.assign(new Error('Unknown AI action'), {status:400});
 }
 
+// ── Scheduled messages ──────────────────────────────────────────────────────────────────────────
+// Sent by the */15 cron (so "9:00" goes out between 9:00 and 9:15). Outside WhatsApp's 24-hour
+// window a free-text message can't be delivered, so it's marked failed with that reason instead of
+// being sent into the void; the agent sees it in the chat and can send a template.
+export async function chatsV2RunScheduled(env, deps, nowMs=Date.now()){
+  if(!await chatsV2Ready(env)) return 0;
+  const now=new Date(nowMs).toISOString();
+  const {results}=await env.DB.prepare(`SELECT * FROM chat_scheduled WHERE status='scheduled' AND send_at<=? ORDER BY send_at LIMIT 50`).bind(now).all();
+  let sent=0;
+  for(const job of results||[]){
+    const claim=await env.DB.prepare(`UPDATE chat_scheduled SET status='sending' WHERE id=? AND status='scheduled'`).bind(job.id).run();
+    if(!claim?.meta?.changes) continue;
+    let status='sent', error='';
+    try{
+      const row=await convRow(env, job.lead_id);
+      const c=await deps.getClientById(env, job.client_id);
+      if(!row||!c) throw new Error('Conversation not found');
+      if(row.channel==='whatsapp'&&(!row.last_customer_at||nowMs-Date.parse(row.last_customer_at)>24*3600e3)) throw new Error('The 24-hour window had closed — send a template instead');
+      if(!row.conv_id) throw new Error('No linked WhatsApp conversation');
+      await deps.sendText(env, c, {cid:String(job.client_id), email:job.created_by}, {conv_id:row.conv_id, lead_id:job.lead_id, text:job.text});
+      sent++;
+    }catch(e){ status='failed'; error=String(e?.message||e).slice(0,300); }
+    await env.DB.prepare('UPDATE chat_scheduled SET status=?, error=? WHERE id=?').bind(status, error, job.id).run();
+    if(status==='failed'){
+      await env.DB.prepare(`INSERT OR IGNORE INTO lead_messages (lead_id, client_id, role, content, attachment, reply_to, ts, sender_type, kind, meta) VALUES (?,?,'system',?,'{}','{}',?,'system','event',?)`)
+        .bind(job.lead_id, job.client_id, `⚠️ Scheduled message not sent: ${error}`, new Date().toISOString(), JSON.stringify({type:'schedule_failed', id:job.id})).run().catch(()=>{});
+    }
+    if(deps.broadcast) await deps.broadcast(env, job.client_id, {type:'conv', lead_ids:[Number(job.lead_id)]});
+  }
+  return sent;
+}
+
+function htmlEsc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+export function chatsV2TranscriptHtml(row, msgs, business){
+  const lines=msgs.map(r=>{
+    const t=new Date(r.ts).toISOString().slice(0,16).replace('T',' ');
+    if(r.kind==='event') return `<p style="color:#667781;text-align:center;font-size:12px">${htmlEsc(t)} · ${htmlEsc(r.content)}</p>`;
+    const who=r.role==='user'?(row.name||row.phone||'Customer'):(r.sender_type==='bot'?'AI Bot':(r.sender_name||business));
+    const a=safeJson(r.attachment);
+    const body=htmlEsc(a.ai_text?(a.caption||''):r.content).replace(/\n/g,'<br>');
+    const att=a.kind?` <i>[${htmlEsc(a.kind)}${a.url?`: <a href="${htmlEsc(a.url)}">${htmlEsc(a.name||'open')}</a>`:''}]</i>`:'';
+    return `<p><b>${htmlEsc(who)}</b> <span style="color:#667781;font-size:12px">${htmlEsc(t)} UTC</span><br>${body}${att}</p>`;
+  });
+  return `<h2 style="font-family:sans-serif">Chat with ${htmlEsc(row.name||row.phone)}</h2><p style="color:#667781">${htmlEsc(row.phone)} · ${row.channel==='instagram'?'Instagram':'WhatsApp'}</p><div style="font-family:sans-serif;font-size:14px">${lines.join('')}</div>`;
+}
+
 // ── Routes ──────────────────────────────────────────────────────────────────────────────────────
 
 async function ensureSynced(env, deps, cid, ctx){
@@ -782,7 +890,10 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
       const {results:lab}=await env.DB.prepare(`SELECT labels FROM conversations WHERE client_id=? AND labels<>'' GROUP BY labels LIMIT 500`).bind(cid).all();
       const labels=[...new Set((lab||[]).flatMap(r=>labelsOf(r.labels)))].sort((x,y)=>x.localeCompare(y));
       const settings={sla_warn_min:Number(c.chats_sla_warn_min)||15, sla_breach_min:Number(c.chats_sla_breach_min)||60};
-      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked}, agents:chatsV2Agents(c), labels, canned:canned||[], settings};
+      const {results:views}=await env.DB.prepare(`SELECT id, name, filter, owner_email, shared FROM chat_views WHERE client_id=? AND (shared=1 OR owner_email=?) ORDER BY name LIMIT 50`).bind(cid, acc.me).all();
+      const {results:macros}=await env.DB.prepare(`SELECT id, name, ops FROM chat_macros WHERE client_id=? ORDER BY name LIMIT 50`).bind(cid).all();
+      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked}, agents:chatsV2Agents(c), labels, canned:canned||[], settings,
+        views:(views||[]).map(v=>({...v, filter:parse(v.filter, {all:[]})})), macros:(macros||[]).map(m=>({...m, ops:parse(m.ops, [])}))};
       const version=await hashOf(data);
       if(qp.v&&qp.v===version) return json({version, unchanged:true});
       return json({version, ...data});
@@ -839,6 +950,83 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
     if(path==='/chats/v2/ai'&&method==='POST'){
       const body=await request.json().catch(()=>({}));
       return json(await chatsV2Ai(env, deps, c, acc, body));
+    }
+    if(path==='/chats/v2/block'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      const row=await convRow(env, body.lead_id);
+      if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
+      if(row.channel!=='whatsapp') return json({error:'Blocking is only available for WhatsApp chats'}, 400);
+      const block=body.block!==false;
+      const res=deps.waBlock?await deps.waBlock(env, c, row.phone, row.inbox_id, block):{ok:false, error:'Not available'};
+      if(!res.ok) return json({error:res.error}, 502);
+      if(deps.ensureLeadsColumns) await deps.ensureLeadsColumns(env, ['Blocked']);
+      await ncPatchLeads(env, deps, [{Id:Number(row.lead_id), Blocked:block?'Yes':'No', OptOut:block?'Yes':'No'}]);
+      await insertEvent(env, row.lead_id, cid, block?`Contact blocked by ${chatsV2Agents(c).find(a=>a.email===acc.me)?.name||acc.me}`:`Contact unblocked by ${acc.me}`, {type:block?'blocked':'unblocked', by:acc.me}, {email:acc.me});
+      if(deps.broadcast) await deps.broadcast(env, cid, {type:'conv', lead_ids:[Number(row.lead_id)]});
+      return json({ok:true, blocked:block});
+    }
+    if(path==='/chats/v2/email-transcript'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      const to=String(body.to||'').trim();
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return json({error:'Enter a valid email address'}, 400);
+      const row=await convRow(env, body.lead_id);
+      if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
+      const {results}=await env.DB.prepare(`SELECT * FROM lead_messages WHERE lead_id=? AND kind<>'note' ORDER BY ts ASC, id ASC LIMIT 2000`).bind(Number(row.lead_id)).all();
+      const business=String(c.client_name||c.business_name||'Team');
+      const res=deps.sendEmail?await deps.sendEmail(env, to, `Chat transcript — ${row.name||row.phone}`, chatsV2TranscriptHtml(row, results||[], business)):{ok:false, error:'Not available'};
+      return res.ok?json({ok:true}):json({error:res.error}, 502);
+    }
+    if(path==='/chats/v2/schedule'){
+      if(method==='GET'){
+        const row=await convRow(env, qp.lead_id);
+        if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
+        const {results}=await env.DB.prepare(`SELECT id, text, send_at, status, error, created_by FROM chat_scheduled WHERE lead_id=? AND status IN ('scheduled','failed') ORDER BY send_at LIMIT 20`).bind(Number(row.lead_id)).all();
+        return json({items:results||[]});
+      }
+      if(method==='POST'){
+        const body=await request.json().catch(()=>({}));
+        const row=await convRow(env, body.lead_id);
+        if(!row||Number(row.client_id)!==cid||!canSee(acc, row)) return json({error:'Conversation not found'}, 404);
+        const at=new Date(body.send_at||'');
+        if(isNaN(at)||at.getTime()<Date.now()+60e3) return json({error:'Pick a time at least a minute from now'}, 400);
+        if(at.getTime()>Date.now()+30*86400e3) return json({error:'Schedule within the next 30 days'}, 400);
+        const text=String(body.text||'').trim().slice(0,4000);
+        if(!text) return json({error:'Nothing to send'}, 400);
+        await env.DB.prepare(`INSERT INTO chat_scheduled (client_id, lead_id, text, send_at, created_by, created_at) VALUES (?,?,?,?,?,?)`).bind(cid, Number(row.lead_id), text, at.toISOString(), acc.me, new Date().toISOString()).run();
+        return json({ok:true});
+      }
+      if(method==='DELETE'){
+        await env.DB.prepare(`UPDATE chat_scheduled SET status='cancelled' WHERE id=? AND client_id=? AND status IN ('scheduled','failed')`).bind(Number(qp.id), cid).run();
+        return json({ok:true});
+      }
+    }
+    if(path==='/chats/v2/views'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      const name=String(body.name||'').trim().slice(0,60);
+      if(!name) return json({error:'Name the view'}, 400);
+      chatsV2CompileFilter(body.filter, acc); // validates
+      await env.DB.prepare(`INSERT INTO chat_views (client_id, owner_email, name, filter, shared, created_at) VALUES (?,?,?,?,?,?)`).bind(cid, acc.me, name, JSON.stringify(body.filter), body.shared?1:0, new Date().toISOString()).run();
+      if(deps.broadcast) await deps.broadcast(env, cid, {type:'cfg'});
+      return json({ok:true});
+    }
+    if(path==='/chats/v2/views'&&method==='DELETE'){
+      await env.DB.prepare(`DELETE FROM chat_views WHERE id=? AND client_id=? AND (owner_email=? OR ?=0)`).bind(Number(qp.id), cid, acc.me, acc.staff?1:0).run();
+      if(deps.broadcast) await deps.broadcast(env, cid, {type:'cfg'});
+      return json({ok:true});
+    }
+    if(path==='/chats/v2/macros'&&method==='POST'){
+      const body=await request.json().catch(()=>({}));
+      const name=String(body.name||'').trim().slice(0,60);
+      const ops=(Array.isArray(body.ops)?body.ops:[]).filter(o=>ACT_OPS.includes(o?.op)&&!['mark_read','mark_unread'].includes(o.op)).slice(0,8).map(o=>({op:o.op, args:o.args&&typeof o.args==='object'?o.args:{}}));
+      if(!name||!ops.length) return json({error:'Name the macro and add at least one step'}, 400);
+      await env.DB.prepare(`INSERT INTO chat_macros (client_id, name, ops, created_by, created_at) VALUES (?,?,?,?,?)`).bind(cid, name, JSON.stringify(ops), acc.me, new Date().toISOString()).run();
+      if(deps.broadcast) await deps.broadcast(env, cid, {type:'cfg'});
+      return json({ok:true});
+    }
+    if(path==='/chats/v2/macros'&&method==='DELETE'){
+      await env.DB.prepare(`DELETE FROM chat_macros WHERE id=? AND client_id=?`).bind(Number(qp.id), cid).run();
+      if(deps.broadcast) await deps.broadcast(env, cid, {type:'cfg'});
+      return json({ok:true});
     }
     if(path==='/chats/v2/canned'&&method==='POST'){
       const body=await request.json().catch(()=>({}));

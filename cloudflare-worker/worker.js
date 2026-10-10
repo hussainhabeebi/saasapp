@@ -1,6 +1,6 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
-import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,toWhatsApp} from './chats-v2.js';
+import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,toWhatsApp} from './chats-v2.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -1619,12 +1619,17 @@ async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
+  const c=await getClientById(env, payload.cid);
+  try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, body)}); }
+  catch(e){ return json({error:e.message}, e.status||502); }
+}
+// Shared by /chat/send and Chats v2 scheduled messages (chats-v2.js chatsV2RunScheduled).
+async function chatSendTextCore(env, c, payload, body){
   const {conv_id, lead_id, reply_to}=body;
   // **bold**/## headings typed or pasted by an agent reach WhatsApp as literal symbols — convert.
   const text=toWhatsApp(body.text);
-  if(!conv_id||!text) return json({error:'conv_id and text required'}, 400);
-  const c=await getClientById(env, payload.cid);
-  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  if(!conv_id||!text) throw Object.assign(new Error('conv_id and text required'), {status:400});
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) throw Object.assign(new Error('Chatwoot is not configured for this account.'), {status:400});
   // A swipe/tap "Reply" from chats.html: there is no Chatwoot message id to thread against, so the
   // quoted line is prefixed onto what the customer sees, while D1 keeps the plain text + reply_to
   // so the Chats thread renders the quote as a proper reply card.
@@ -1633,15 +1638,15 @@ async function handleChatSend(request, env){
   const fd=new FormData();
   fd.append('content', outText); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-  if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:502});
   // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
   if(lead_id){
     const ts=new Date().toISOString();
-    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...chatsAgentSender(c, payload), ...(quote?.snippet?{reply_to:quote}:{})});
+    await d1InsertLeadMessage(env, lead_id, payload.cid, {role:'assistant', content:text, ts, ...chatsAgentSender(c, payload), ...(body.sender_type?{sender_type:body.sender_type}:{}), ...(quote?.snippet?{reply_to:quote}:{})});
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,
       {method:'PATCH', body:{Id:Number(lead_id), LastMsgAt:ts}}).catch(()=>{});
   }
-  return json({ok:true, data:await r.json().catch(()=>({}))});
+  return await r.json().catch(()=>({}));
 }
 
 // Instagram's equivalent of /chat/send above — a human agent's manual reply from the Chats page's
@@ -1804,12 +1809,24 @@ export function chatwootMediaRows(body, role, content){
   if(isNaN(base)) base=new Date();
   const cwId=Number(body.id||body.message?.id)||0;
   return atts.map((a,i)=>{
+    const ft=String(a.file_type||'').toLowerCase();
+    const at=new Date(base.getTime()+i).toISOString();
+    // Shared location / contact card: no file, just coordinates or a name+number. Chats v2 shows
+    // them as a map card / contact card.
+    if(ft==='location'&&a.coordinates_lat!=null&&a.coordinates_long!=null){
+      const lat=Number(a.coordinates_lat), lng=Number(a.coordinates_long);
+      return {role, content:i===0?String(content||''):'', ts:at, attachment:{kind:'location', lat, lng, name:String(a.fallback_title||'Location').slice(0,200),
+        url:`https://maps.google.com/?q=${lat},${lng}`, ...(cwId?{cw_id:cwId}:{})}};
+    }
+    if(ft==='contact'){
+      return {role, content:i===0?String(content||''):'', ts:at, attachment:{kind:'contacts', name:String(a.meta?.first_name?[a.meta.first_name,a.meta.last_name].filter(Boolean).join(' '):'Contact').slice(0,120),
+        phone:String(a.fallback_title||'').slice(0,40), ...(cwId?{cw_id:cwId}:{})}};
+    }
     const url=a.data_url||a.file_url||'';
     if(!url) return null;
-    const ft=String(a.file_type||'').toLowerCase();
     let name='';try{name=decodeURIComponent(url.split('?')[0].split('/').pop()||'');}catch(e){}
     const kind=ft==='image'?'image':ft==='video'?'video':ft==='audio'?(/\.(ogg|opus|oga)$/i.test(name)?'voice':'audio'):'document';
-    return {role, content:i===0?String(content||''):'', ts:new Date(base.getTime()+i).toISOString(),
+    return {role, content:i===0?String(content||''):'', ts:at,
       attachment:{kind, url, name, size:Number(a.file_size)||0, ...(cwId?{cw_id:cwId}:{})}};
   }).filter(Boolean);
 }
@@ -31097,6 +31114,25 @@ const CHATS_V2_DEPS={
   ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
   broadcast:engineBroadcastUpdate,
   handover:chatHandoverCore,
+  sendText:chatSendTextCore,
+  // WhatsApp Cloud API block list (Block contact). Needs the channel's own Meta credentials.
+  waBlock:async(env, c, phone, inboxId, block)=>{
+    const creds=resolveMetaCredentials(c, {inbox_id:inboxId});
+    if(!creds?.wa_token||!creds?.wa_phone_id) return {ok:false, error:'This WhatsApp number has no direct Meta connection, so it can only be blocked from the WhatsApp Business app.'};
+    const r=await fetch(`https://graph.facebook.com/v21.0/${creds.wa_phone_id}/block_users`, {method:block?'POST':'DELETE',
+      headers:{Authorization:`Bearer ${creds.wa_token}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({messaging_product:'whatsapp', block_users:[{user:String(phone).replace(/\D/g,'')}]})});
+    const d=await r.json().catch(()=>({}));
+    return r.ok?{ok:true}:{ok:false, error:d?.error?.error_user_msg||d?.error?.message||('Meta HTTP '+r.status)};
+  },
+  // Platform email (same RESEND_API_KEY the task notifications use) for "Email transcript".
+  sendEmail:async(env, to, subject, html)=>{
+    if(!env.RESEND_API_KEY) return {ok:false, error:'Email isn\'t configured on the server yet (RESEND_API_KEY missing).'};
+    const r=await fetch('https://api.resend.com/emails', {method:'POST', headers:{Authorization:`Bearer ${env.RESEND_API_KEY}`, 'Content-Type':'application/json'},
+      body:JSON.stringify({from:env.RESEND_FROM_EMAIL||'Leadvyne <tasks@leadvyne.com>', to:[to], subject, html})});
+    const d=await r.json().catch(()=>({}));
+    return r.ok?{ok:true}:{ok:false, error:d?.message||'Resend HTTP '+r.status};
+  },
   backfillMedia:chatsBackfillChatwootMedia,
   // First open of a chat Chats v2 has never seen: ownership check + ConvHistory → D1 (as
   // /chat/messages does), which also creates its conversations row.
@@ -35429,6 +35465,8 @@ export default {
       ctx.waitUntil(runStaffWinExamplesForAllClients(env));
     }
     else if(event.cron==='*/15 * * * *'){
+      // Chats v2 "Schedule message" — sends whatever is due (15-minute granularity).
+      ctx.waitUntil(chatsV2RunScheduled(env, CHATS_V2_DEPS).catch(e=>reportOpsError(env, 'chats scheduled messages', e)));
       // Leadvyne v2 reply-gap nudge — see engineV2NudgeDue.
       ctx.waitUntil(runV2NudgesForAllClients(env));
       // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.

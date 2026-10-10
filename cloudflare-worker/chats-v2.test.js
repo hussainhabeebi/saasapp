@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
-  chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai,
+  chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai, chatsV2CompileFilter, chatsV2RunScheduled,
 } from './chats-v2.js';
 
 function d1(db){
@@ -378,5 +378,77 @@ describe('AI assist', ()=>{
     assert.deepEqual(await chatsV2Ai(env, d, CLIENT, owner, {op:'translate', target:'en', text:'ithu available aano?', message_id:5}), {text:'Is it available?'});
     assert.deepEqual(await chatsV2Ai(env, d, CLIENT, owner, {op:'translate', target:'en', text:'ithu available aano?', message_id:5}), {text:'Is it available?'});
     assert.equal(d.log.length, 1);
+  });
+});
+
+describe('advanced filters, scheduling, block, transcript, macros', ()=>{
+  beforeEach(()=>fresh());
+  const owner=chatsV2Access(CLIENT, OWNER);
+  const call=async(d, path, {method='GET', body, who='owner'}={})=>{
+    const req=new Request('https://w'+path, {method, headers:{Authorization:'Bearer '+who, 'Content-Type':'application/json'}, body:body?JSON.stringify(body):undefined});
+    const r=await chatsV2HandleRoute(req, env, d, new URL(req.url));
+    return {status:r.status, data:await r.json()};
+  };
+  test('filters compile from a whitelist and narrow the list', async()=>{
+    assert.throws(()=>chatsV2CompileFilter({all:[{f:'name; DROP TABLE x', op:'eq', v:1}]}, owner), /Unsupported/);
+    const now=Date.parse(T('12:00'));
+    // 1: hot, Shafna, 30 min old · 2: hot, Shafna, 4h old · 3: not hot, 4h old
+    await insertMsg(1, {role:'user', content:'x', ts:T('11:30')});
+    await insertMsg(2, {role:'user', content:'x', ts:T('08:00')});
+    await insertMsg(3, {role:'user', content:'x', ts:T('08:00')});
+    db.prepare(`UPDATE conversations SET synced=1`).run();
+    db.prepare(`UPDATE conversations SET labels_key=',hot,', assignee_email=? WHERE lead_id IN (1,2)`).run(SHAFNA);
+    const f={all:[{f:'label', op:'has', v:'Hot'}, {f:'assignee', op:'eq', v:SHAFNA}, {f:'last_message_age', op:'gt', v:2}]};
+    const c=chatsV2CompileFilter(f, owner, now);
+    const ids=db.prepare(`SELECT lead_id FROM conversations WHERE client_id=?${c.sql} ORDER BY lead_id`).all(CID, ...c.vals).map(r=>r.lead_id);
+    assert.deepEqual(ids, [2]);
+    const l=await chatsV2List(env, CID, owner, {view:'all', filter:JSON.stringify({all:[{f:'label', op:'has', v:'hot'}]})});
+    assert.deepEqual(l.rows.map(r=>r.lead_id).sort(), [1, 2]);
+  });
+  test('saved views and macros come back in bootstrap; bad macros are rejected', async()=>{
+    const d=deps();
+    assert.equal((await call(d, '/chats/v2/views', {method:'POST', body:{name:'Hot leads Kerala', filter:{all:[{f:'label', op:'has', v:'Hot'}]}, shared:true}})).status, 200);
+    assert.equal((await call(d, '/chats/v2/views', {method:'POST', body:{name:'x', filter:{all:[{f:'evil', op:'eq'}]}}})).status, 400);
+    assert.equal((await call(d, '/chats/v2/macros', {method:'POST', body:{name:'Hot lead', ops:[{op:'label_add', args:{label:'Hot'}}, {op:'assign', args:{email:SHAFNA}}, {op:'drop_db'}]}})).status, 200);
+    assert.equal((await call(d, '/chats/v2/macros', {method:'POST', body:{name:'Empty', ops:[{op:'nope'}]}})).status, 400);
+    const b=(await call(d, '/chats/v2/bootstrap')).data;
+    assert.equal(b.views[0].name, 'Hot leads Kerala');
+    assert.deepEqual(b.macros[0].ops.map(o=>o.op), ['label_add', 'assign']);
+    const rahulView=(await call(d, '/chats/v2/bootstrap', {who:'rahul'})).data.views;
+    assert.equal(rahulView.length, 1); // shared
+  });
+  test('scheduled messages send when due, or fail with a reason outside the 24h window', async()=>{
+    const sentTexts=[];
+    const d={...deps(), sendText:async(env, c, payload, body)=>{ sentTexts.push(body); }};
+    const now=Date.now();
+    await insertMsg(1, {role:'user', content:'hi', ts:new Date(now-3600e3).toISOString()});
+    await insertMsg(2, {role:'user', content:'old', ts:new Date(now-30*3600e3).toISOString()});
+    db.prepare(`UPDATE conversations SET conv_id='55', channel='whatsapp'`).run();
+    assert.equal((await call(d, '/chats/v2/schedule', {method:'POST', body:{lead_id:1, text:'See you at 9', send_at:new Date(now+10*60e3).toISOString()}})).status, 200);
+    assert.equal((await call(d, '/chats/v2/schedule', {method:'POST', body:{lead_id:1, text:'x', send_at:new Date(now-60e3).toISOString()}})).status, 400);
+    await call(d, '/chats/v2/schedule', {method:'POST', body:{lead_id:2, text:'Following up', send_at:new Date(now+5*60e3).toISOString()}});
+    assert.equal(await chatsV2RunScheduled(env, d, now), 0); // nothing due yet
+    assert.equal(await chatsV2RunScheduled(env, d, now+20*60e3), 1);
+    assert.deepEqual(sentTexts.map(x=>x.text), ['See you at 9']);
+    const failed=db.prepare(`SELECT status, error FROM chat_scheduled WHERE lead_id=2`).get();
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error, /24-hour window/);
+    assert.match(db.prepare(`SELECT content FROM lead_messages WHERE lead_id=2 AND kind='event'`).get().content, /not sent/);
+    assert.equal(await chatsV2RunScheduled(env, d, now+40*60e3), 0); // never twice
+  });
+  test('block goes to Meta first, then marks the lead; transcript email needs an address', async()=>{
+    await insertMsg(1, {role:'user', content:'spam', ts:T('10:00')});
+    db.prepare(`UPDATE conversations SET phone='919800000001'`).run();
+    const blocked=[];
+    const d={...deps(), waBlock:async(env, c, phone, inbox, block)=>{ blocked.push([phone, block]); return {ok:true}; },
+      sendEmail:async(env, to, subject, html)=>{ blocked.push([to, subject, html]); return {ok:true}; }};
+    assert.equal((await call(d, '/chats/v2/block', {method:'POST', body:{lead_id:1}})).status, 200);
+    assert.deepEqual(blocked[0], ['919800000001', true]);
+    assert.deepEqual(ncPatches.at(-1), {Id:1, Blocked:'Yes', OptOut:'Yes'});
+    const fail={...d, waBlock:async()=>({ok:false, error:'no creds'})};
+    assert.equal((await call(fail, '/chats/v2/block', {method:'POST', body:{lead_id:1}})).data.error, 'no creds');
+    assert.equal((await call(d, '/chats/v2/email-transcript', {method:'POST', body:{lead_id:1, to:'nope'}})).status, 400);
+    assert.equal((await call(d, '/chats/v2/email-transcript', {method:'POST', body:{lead_id:1, to:'boss@acme.com'}})).status, 200);
+    assert.match(blocked.at(-1)[2], /spam/);
   });
 });
