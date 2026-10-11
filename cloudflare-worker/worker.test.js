@@ -444,6 +444,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltStoredOfferSelectionIndex(offers,'Book Air India'),1);
     assert.equal(ltStoredOfferSelectionIndex(offers,'AI9058'),1);
     assert.equal(ltStoredOfferSelectionIndex(offers,'book'),-1);
+    // Free wording around an option number, in English or Malayalam.
+    assert.equal(ltStoredOfferSelectionIndex(offers,'option 1 book pls'),0);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'I want to book the 2nd one'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'1 ബുക്ക് ചെയ്യൂ'),0);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'two adults'),-1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'yes'),-1);
   });
 
   test('builds a WhatsApp Book Now CTA for the exact POOMAS checkout URL',()=>{

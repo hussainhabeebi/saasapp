@@ -16589,7 +16589,7 @@ const LT_LOCAL_TRAVEL_WORDS=[
   ['ticket','ടിക്കറ്റ|ടിക്കറ്റ്'],['flight','ഫ്ലൈറ്റ|ഫ്ളൈറ്റ|വിമാന'],['to','നിന്ന'],
   ['any','ഏതെങ്കിലു|ഏതായാലു'],['cheapest','കുറഞ്ഞ|കുറവ|ചീപ്പ|ചെലവ്കുറ'],['direct','നേരിട്ട|ഡയറക്ട'],
   ['morning','രാവിലെ'],['afternoon','ഉച്ച'],['evening','വൈകുന്നേര|വൈകിട്ട'],['night','രാത്ര'],
-  ['yes','അതെ|ഉവ്വ'],['ok','മതി|ശരി|ഓക്കെ|ഓകെ'],['want','വേണം'],['check','നോക്ക']
+  ['book','ബുക്ക'],['first','ഒന്നാമ|ഒന്ന'],['second','രണ്ടാമ|രണ്ട'],['third','മൂന്നാമ|മൂന്ന'],['please','ചെയ്യ'],['yes','അതെ|ഉവ്വ'],['ok','മതി|ശരി|ഓക്കെ|ഓകെ'],['want','വേണം'],['check','നോക്ക']
 ].map(([en,stems])=>[new RegExp(`(?:${stems})${LT_ML_SUFFIX}`,'gu'),` ${en} `]);
 export function ltLocalTravelText(text){
   let value=String(text||'');
@@ -16748,6 +16748,11 @@ export function ltChatFlightGoAhead(text){
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
   return !rest;
 }
+// "option 1 book pls", "book the Air Arabia one" — a request to book a listed fare.
+export function ltChatBookingRequest(text){
+  const value=ltLocalTravelText(text).trim();
+  return value.length<=80&&!ltParseFlightRoute(value)&&/\bbook(?:ing)?\b|\boption\s*[1-3]\b/i.test(value);
+}
 export function ltChatFlightFilterLabel(filters){
   const f=filters||{},parts=[];
   if(f.airlines?.length)parts.push(f.airlines.map(a=>a.name).join('/'));
@@ -16892,6 +16897,8 @@ function ltStoredOfferText(offers){
 export function ltBookButtons(offers){
   return (offers||[]).slice(0,3).map((_,i)=>({title:`Book Option ${i+1}`,value:`book ${['first','second','third'][i]}`}));
 }
+const LT_OPTION_WORDS={'1':0,one:0,first:0,'1st':0,'2':1,two:1,second:1,'2nd':1,'3':2,three:2,third:2,'3rd':2};
+const LT_BOOKING_FILLER=new Set(['book','booking','please','pls','plz','kindly','the','i','want','need','to','take','select','choose','go','with','this','that','ok','okay','yes','ticket','flight','option','opt','no','number','num','can','you','me','for','will','would','like','confirm','proceed','one','it','do','a','venam','cheyyu','cheyyoo','cheyyanam','cheyyuka','now']);
 export function ltStoredOfferSelectionIndex(offers,input){
   const list=Array.isArray(offers)?offers:[],text=String(input||'').trim();
   const numbered=text.match(/^(?:book\s+(?:option\s+)?)?([1-3])$/i);
@@ -16901,6 +16908,10 @@ export function ltStoredOfferSelectionIndex(offers,input){
   const ordinals={first:0,'1st':0,one:0,second:1,'2nd':1,two:1,third:2,'3rd':2,three:2};
   const ordinal=text.replace(/[.!]+$/,'').match(/^(?:(?:book|select|choose|take|i(?:'ll| will)? take|i want)\s+)?(?:the\s+)?(?:(?:option|flight|no\.?|number)\s+)?(first|1st|one|second|2nd|two|third|3rd|three)(?:\s+(?:one|option|flight))?(?:\s+please)?$/i);
   if(ordinal){const idx=ordinals[ordinal[1].toLowerCase()];return idx<list.length?idx:-1;}
+  // Free wording around one option number: "option 1 book pls", "I want to book the 2nd one",
+  // "1 ബുക്ക് ചെയ്യൂ". Every other word must be booking filler, so "two adults" never picks.
+  const picks=ltLocalTravelText(text).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').split(/\s+/).filter(word=>word&&!LT_BOOKING_FILLER.has(word));
+  if(picks.length===1&&LT_OPTION_WORDS[picks[0]]!=null){const idx=LT_OPTION_WORDS[picks[0]];return idx<list.length?idx:-1;}
   const normalize=v=>String(v||'').toLowerCase().replace(/\b(?:book|booking|please|ticket|flight|option)\b/g,'').replace(/[^a-z0-9]/g,'');
   const query=normalize(text);if(query.length<3)return -1;
   const matches=list.map((o,i)=>({i,airline:normalize(o?.airline),number:normalize(o?.flightNumber)})).filter(o=>(o.airline.length>=3&&query.includes(o.airline))||(o.number.length>=3&&query.includes(o.number)));
@@ -17045,7 +17056,15 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(converted),new Date().toISOString(),Number(clientId),String(phone)).run();
     return send(ltStoredOfferText(converted).replace('Previous live flight options:',`Flight options in ${switchTo}:`),ltBookButtons(converted));
   }
-  if(row.step==='select'){
+  if(row.step==='checkout_ready'&&/^(open checkout|checkout|book now|continue booking)$/i.test(input)){
+    const selected=ltJson(row.selected_offer_json,{});
+    if(!selected.fareId)return send('This fare has expired. Please run a new search.');
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  // After one pick the listed options stay bookable: "book option 2" still sends that link.
+  if(row.step==='select'||row.step==='checkout_ready'){
     // While the customer is answering a NEW search (a draft is open, or the message itself is a
     // flight request), only an explicit "Book Option N" tap may pick from the older options.
     if(!/^book\b/i.test(input)&&(ltChatFlightIntent(input)||await ltLoadChatSearchDraft(env,clientId,phone)))return null;
@@ -17053,7 +17072,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     if(ltChatFlightFilterRefinement(input))return null;
     const stored=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(stored,input);
     if(idx<0){
-      if(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document')return send('Please select one flight.',ltBookButtons(stored));
+      if(row.step==='select'&&(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document'))return send('Please select one flight.',ltBookButtons(stored));
       return null;
     }
     const selected=(await ltRepriceStoredChatOffers(env,clientId,phone,[stored[idx]]))[0];
@@ -17063,13 +17082,6 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'—';
     const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${ltFxFormat(selected.total,selected.currency)}${selected.supplierCurrency&&selected.supplierCurrency!==selected.currency?`\nCharged at checkout: ${ltFxFormat(selected.supplierTotal,selected.supplierCurrency)}`:''}`;
     await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
-    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
-    return {handled:true,step:'checkout_ready'};
-  }
-  if(row.step==='checkout_ready'&&/^(open checkout|checkout|book now|continue booking)$/i.test(input)){
-    const selected=ltJson(row.selected_offer_json,{});
-    if(!selected.fareId)return send('This fare has expired. Please run a new search.');
-    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
     await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
     return {handled:true,step:'checkout_ready'};
   }
@@ -17111,7 +17123,7 @@ async function ltLiveTicketsConnected(env,clientId){
 // rather than answering a travel enquiry without knowing where the customer is going.
 export function ltTravelAgencyPromptBlock(liveTicketsConnected){
   let block='\n\n## Travel Agency Rules\nWhen a customer asks about travel, a trip, a visa, a package or tickets and has not said where they are going, ask which destination they are travelling to and their travel date. Ask only for what is still missing.';
-  if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.\nLive fares are sent automatically as soon as the customer gives the departure city, destination and date. You cannot search fares yourself: never ask which airline they prefer, never ask "shall I check?", and never say you will check and get back. Ask only for whichever of departure city, destination or date is still missing.';
+  if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.\nLive fares are sent automatically as soon as the customer gives the departure city, destination and date. You cannot search fares yourself: never ask which airline they prefer, never ask "shall I check?", and never say you will check and get back. Ask only for whichever of departure city, destination or date is still missing. To book a fare already shown, the customer taps its Book Option button (or replies "book option 1") and the secure booking link is sent automatically: tell them exactly that. Never ask "would you like to proceed?", and never offer to connect them to the team to book or pay for a listed fare.';
   return block;
 }
 
@@ -17121,7 +17133,8 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   const draft=await ltLoadChatSearchDraft(env,clientId,phone);
   const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
   const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
-  const lastSearch=!draft&&ltChatFlightFilterRefinement(userText)?await ltLoadChatLastSearch(env,clientId,phone):null;
+  const bookingAsk=!draft&&ltChatBookingRequest(userText);
+  const lastSearch=!draft&&(ltChatFlightFilterRefinement(userText)||bookingAsk)?await ltLoadChatLastSearch(env,clientId,phone):null;
   // "yes" / "any cheap one" right after the customer asked for a route the AI only discussed.
   const goAhead=!draft&&!lastSearch&&!ltChatFlightIntent(userText)&&ltChatFlightGoAhead(userText)
     &&(history||[]).filter(x=>x?.role!=='assistant'&&x?.content).slice(-4).some(x=>ltChatFlightIntent(x.content));
@@ -17162,7 +17175,7 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const narrowed=ltChatFlightFilterLabel({...filters,sort:''});
     const fallback=!!narrowed&&!ltBookableChatOffers(matching).length&&ltBookableChatOffers(offers).length>0;
     const bookingOffers=ltBookableChatOffers(fallback?offers:matching,filters.sort);
-    const note=fallback?`No ${narrowed} flights found from ${input.origin} to ${input.destination} on ${input.departure_date}. Here are the other available options:`:'';
+    const note=bookingAsk&&!ltChatFlightIntent(userText)?'Those fares were refreshed. Tap *Book Option* on your flight below to get the secure booking link.':fallback?`No ${narrowed} flights found from ${input.origin} to ${input.destination} on ${input.departure_date}. Here are the other available options:`:'';
     await ltSaveChatOffers(env,clientId,phone,bookingOffers,filters.sort);
     await ltSaveChatLastSearch(env,clientId,phone,input);
     await ltClearChatSearchDraft(env,clientId,phone);
