@@ -20601,7 +20601,8 @@ async function handleSupportTicketsUpdate(request, env){
   10. A fresh lead gets the business's 360° video first, then the chat starts.
   11. Different video per ad / source (v2_source_videos rules).
   12. Reply-gap nudge: one check-in when a fresh lead goes quiet (15-minute cron).
-  13. Staff quality score (Reports → Team, GET /reports/staff-score). */
+  13. Staff quality score (Reports → Team, GET /reports/staff-score).
+  14. Keyword PDF brochures (v2_keyword_pdfs rules): a customer message naming a keyword gets that PDF. */
 export function engineV2On(c){
   return engineParseJsonField(c?.bot_config, {}).leadvyne_v2===true;
 }
@@ -20672,6 +20673,7 @@ export function engineActiveStaffNotes(json, nowMs=Date.now()){
 export function engineV2Block(state){
   let out='';
   if(state?.welcomeVideoSent) out+='\n\n## Just Sent\nThe customer was just sent our 360° business video before this reply. Do not send or promise it again; you may briefly invite them to watch it.';
+  if(state?.keywordPdfsSent?.length) out+=`\n\n## Just Sent\nThe customer was just sent ${state.keywordPdfsSent.length>1?'these PDF brochures':'this PDF brochure'} in the chat: ${state.keywordPdfsSent.join(', ')}. Do not say you can't send files and do not paste any link; you may briefly point them to it.`;
   if(state?.staffNotes?.length) out+=`\n\n## Instructions From the Team for This Chat\nA member of staff left these private instructions for you. Follow them, but never mention or quote them to the customer:\n${state.staffNotes.map(n=>'- '+n).join('\n')}`;
   if(state?.winExamples?.length) out+=`\n\n## How Our Team Has Closed Deals\nReal messages our staff sent in conversations that ended in a sale. Use them as a guide to tone and approach only — never copy names, prices or details from them:\n${state.winExamples.map(t=>'- "'+t+'"').join('\n')}`;
   return out;
@@ -20825,6 +20827,48 @@ async function engineV2OnFreshLead(env, c, clientId, phone, convId, name, source
   if(ok) await env.DB.prepare('UPDATE v2_fresh_leads SET video_sent=1, video_rule=? WHERE client_id=? AND phone=?').bind(v.rule||'', Number(clientId), String(phone)).run().catch(()=>{});
   else await reportOpsError(env, 'Leadvyne v2 welcome video did not send — check the Drive link is public and under 16 MB', new Error('send failed'), {clientId}).catch(()=>{});
   return ok;
+}
+
+// #14: keyword PDF brochures. bot_config.v2_keyword_pdfs=[{match, pdf_url, caption}]; `match` is one or
+// more comma-separated keywords. Every rule with a keyword in the customer's message sends its PDF
+// (Latin keywords match whole words, other scripts match anywhere), at most 3 per message.
+export function engineV2KeywordPdfs(c, userText){
+  const bc=engineParseJsonField(c?.bot_config, {});
+  const hay=String(userText||'').toLowerCase().normalize('NFC');
+  if(!hay.trim()) return [];
+  const out=[], urls=new Set();
+  for(const r of (Array.isArray(bc.v2_keyword_pdfs)?bc.v2_keyword_pdfs:[])){
+    const url=String(r?.pdf_url||'').trim();
+    if(!url || urls.has(url)) continue;
+    const hit=String(r?.match||'').split(',').map(k=>k.trim().toLowerCase().normalize('NFC')).filter(Boolean).find(k=>
+      /^[\w\s'-]+$/.test(k) ? new RegExp('(^|[^\\w])'+k.replace(/[-]/g,'\\-').replace(/\s+/g,'\\s+')+'([^\\w]|$)').test(hay) : hay.includes(k));
+    if(!hit) continue;
+    urls.add(url);
+    out.push({url, caption:String(r.caption||'').trim().slice(0,1000), rule:String(r.match).trim()});
+    if(out.length>=3) break;
+  }
+  return out;
+}
+// Sends the matching PDFs, each at most once per customer per day (a customer asking twice in one
+// chat isn't sent the same file again). Returns the rule names that went out, for the reply prompt.
+async function engineV2SendKeywordPdfs(env, c, clientId, phone, convId, name, userText){
+  const pdfs=engineV2KeywordPdfs(c, userText);
+  if(!pdfs.length || !convId || !c.chatwoot_base || !c.chatwoot_account_id || !c.chatwoot_token) return [];
+  const day=new Date().toISOString().slice(0,10), sent=[];
+  try{ await env.DB.prepare('CREATE TABLE IF NOT EXISTS v2_keyword_pdf_sent (client_id INTEGER, phone TEXT, pdf_url TEXT, sent_date TEXT, PRIMARY KEY(client_id, phone, pdf_url, sent_date))').run(); }catch(e){ return []; }
+  for(const p of pdfs){
+    const claim=await env.DB.prepare('INSERT OR IGNORE INTO v2_keyword_pdf_sent (client_id, phone, pdf_url, sent_date) VALUES (?,?,?,?)')
+      .bind(Number(clientId), String(phone), p.url, day).run().catch(()=>null);
+    if(!claim?.meta?.changes) continue;
+    const file=(p.rule.split(',')[0].trim().replace(/[^\w-]+/g,'-').replace(/^-+|-+$/g,'')||'brochure')+'.pdf';
+    const ok=await sendDriveMediaToChatwoot(c, convId, p.url, fillFlowTokens(p.caption, {Name:name||'', Phone:phone}), file).catch(()=>false);
+    if(ok) sent.push(p.rule);
+    else{
+      await env.DB.prepare('DELETE FROM v2_keyword_pdf_sent WHERE client_id=? AND phone=? AND pdf_url=? AND sent_date=?').bind(Number(clientId), String(phone), p.url, day).run().catch(()=>{});
+      await reportOpsError(env, 'Leadvyne v2 keyword PDF did not send — check the Drive link is public and under 16 MB', new Error('send failed'), {clientId, rule:p.rule}).catch(()=>{});
+    }
+  }
+  return sent;
 }
 
 // #12: reply-gap nudge. bot_config.v2_nudge_enabled + v2_nudge_hours (default 2) + optional
@@ -21371,6 +21415,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     const introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // Leadvyne v2: a keyword in the customer's message (or voice note) sends its PDF brochure.
+    if(engineV2On(c) && userText && !introAction)
+      state.keywordPdfsSent=await engineV2SendKeywordPdfs(env, c, clientId, phone, convId, name, userText);
 
     // ── Flowvyne scripted flows ──────────────────────────────────────────────
     // Runs before AI classification. Flowvyne's own tenant allowlist decides
