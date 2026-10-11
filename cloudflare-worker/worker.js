@@ -16574,7 +16574,33 @@ async function engineBuildTravelContext(env, c, clientId){
   return lines.length?('\n\n'+lines.join('\n')):'';
 }
 
+// Malayalam script (typed or from a voice note) and common Manglish → the English words the
+// flight parsers read. Only travel words are mapped, so other Malayalam text passes through
+// unchanged. "X-ൽ നിന്ന് Y-ലേക്ക്" (from X to Y) becomes "X to Y". A trailing run of Malayalam
+// letters after each stem is the case suffix (ഷാർജയിൽ, കോഴിക്കോട്ടേക്ക്), consumed with it.
+const LT_ML_SUFFIX='[\\u0D00-\\u0D7F]*';
+const LT_LOCAL_TRAVEL_WORDS=[
+  ['sharjah','ഷാർജ'],['dubai','ദുബാ|ദുബായ|ദുബൈ'],['abu dhabi','അബുദാബ|അബൂദബ|അബുദബ'],['kozhikode','കോഴിക്കോ|കാലിക്കറ്റ|കരിപ്പൂ'],
+  ['kochi','കൊച്ചി|നെടുമ്പാശ്ശേര'],['kannur','കണ്ണൂ'],['trivandrum','തിരുവനന്തപുര|ട്രിവാൻഡ്ര'],['mumbai','മുംബൈ|ബോംബെ'],['delhi','ഡൽഹ|ദില്ലി'],
+  ['chennai','ചെന്നൈ'],['bangalore','ബാംഗ്ലൂ|ബെംഗളൂരു|ബംഗളൂരു'],['hyderabad','ഹൈദരാബാ'],['doha','ദോഹ'],['muscat','മസ്കറ്റ|മസ്ക്കറ്റ'],
+  ['riyadh','റിയാദ|റിയാ‍ദ'],['jeddah','ജിദ്ദ'],['dammam','ദമ്മാ'],
+  ['january','ജനുവര'],['february','ഫെബ്രുവര'],['march','മാർച്ച'],['april','ഏപ്രി'],['may','മെയ|മേയ'],['june','ജൂൺ'],['july','ജൂലൈ'],
+  ['august','ഓഗസ്റ്റ|ആഗസ്റ്റ'],['september','സെപ്റ്റംബ|സെപ്തംബ'],['october','ഒക്ടോബ'],['november','നവംബ'],['december','ഡിസംബ'],
+  ['ticket','ടിക്കറ്റ|ടിക്കറ്റ്'],['flight','ഫ്ലൈറ്റ|ഫ്ളൈറ്റ|വിമാന'],['to','നിന്ന'],
+  ['any','ഏതെങ്കിലു|ഏതായാലു'],['cheapest','കുറഞ്ഞ|കുറവ|ചീപ്പ|ചെലവ്കുറ'],['direct','നേരിട്ട|ഡയറക്ട'],
+  ['morning','രാവിലെ'],['afternoon','ഉച്ച'],['evening','വൈകുന്നേര|വൈകിട്ട'],['night','രാത്ര'],
+  ['yes','അതെ|ഉവ്വ'],['ok','മതി|ശരി|ഓക്കെ|ഓകെ'],['want','വേണം'],['check','നോക്ക']
+].map(([en,stems])=>[new RegExp(`(?:${stems})${LT_ML_SUFFIX}`,'gu'),` ${en} `]);
+export function ltLocalTravelText(text){
+  let value=String(text||'');
+  if(/[\u0D00-\u0D7F]/u.test(value))for(const [pattern,en] of LT_LOCAL_TRAVEL_WORDS)value=value.replace(pattern,en);
+  // Manglish: "sharjah ninnu calicut", "kuranja ticket", "any mathi".
+  return value.replace(/\bninn?u\b/gi,' to ').replace(/\b(?:kuranj?a|kuravu|kuranjathu)\b/gi,' cheapest ').replace(/\b(?:mathi|madhi)\b/gi,' ok ').replace(/\b(?:venam|venum)\b/gi,' want ')
+    .replace(/[ \t]{2,}/g,' ');
+}
+
 export function ltChatFlightIntent(text){
+  text=ltLocalTravelText(text);
   const value=String(text||'').toLowerCase();
   if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
   const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying|plane\s*tickets?)\b/.test(value);
@@ -16591,7 +16617,7 @@ export function ltChatFlightIntent(text){
   const knownCityRoute=_cityParts.length>=2&&(()=>{
     const o=ltAirportCodeFromText(_cityParts[0]),d=ltAirportCodeFromText(_cityParts.slice(1).join(' '));
     return !!(o&&d&&o!==d);
-  })();
+  })()||!!ltParseFlightRoute(text);
   // "Visa with flight ticket", "air ticket pls" — naming a flight ticket is itself a ticket
   // request, even with no shopping verb. Without this the turn fell to the generic LLM, which
   // told customers of agencies with live ticketing connected that tickets aren't offered.
@@ -16618,7 +16644,7 @@ export function ltNormalizeChatFlightRequest(raw={},defaultCurrency='AED'){
 }
 
 function ltParseConversationalFlightDate(value,now=new Date()){
-  const text=String(value||'').trim();
+  const text=ltLocalTravelText(value).trim();
   const valid=(y,m,d)=>{const dt=new Date(Date.UTC(y,m-1,d));return dt.getUTCFullYear()===y&&dt.getUTCMonth()===m-1&&dt.getUTCDate()===d?dt:null};
   const iso=(dt)=>dt?.toISOString().slice(0,10)||'';
   let m=text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
@@ -16643,8 +16669,17 @@ function ltAirportCodeFromText(value){
   return text.match(/\b[A-Z]{3}\b/)?.[0]||'';
 }
 export function ltParseFlightRoute(value){
-  const text=String(value||'').trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
-  if(parts.length<2)return null;
+  const text=ltLocalTravelText(value).trim(),parts=text.split(/\s+to\s+|\s*→\s*/i);
+  if(parts.length<2){
+    // "ഷാർജ കോഴിക്കോട് ഫ്ലൈറ്റ്", "dubai calicut ticket": exactly two named cities, in the order
+    // written, unless "from" marks the second one as the origin ("calicut from dubai").
+    const found=[];
+    for(const [code,pattern] of LT_AIRPORT_ALIASES){const m=new RegExp(pattern.source,'i').exec(text);if(m&&!/^[A-Z]{3}$/.test(m[0]))found.push({code,at:m.index});}
+    if(found.length!==2)return null;
+    found.sort((a,b)=>a.at-b.at);
+    const fromSecond=/\bfrom\s*$/i.test(text.slice(0,found[1].at));
+    return fromSecond?{origin:found[1].code,destination:found[0].code}:{origin:found[0].code,destination:found[1].code};
+  }
   const origin=ltAirportCodeFromText(parts[0]),destination=ltAirportCodeFromText(parts.slice(1).join(' to '));
   return origin&&destination&&origin!==destination?{origin,destination}:null;
 }
@@ -16662,7 +16697,7 @@ const LT_AIRLINE_ALIASES=[
 ];
 const LT_TIME_WINDOWS={morning:[5,12],afternoon:[12,17],evening:[17,21],night:[21,29]};
 export function ltParseChatFlightFilters(text){
-  const value=String(text||''),out={};
+  const value=ltLocalTravelText(text),out={};
   if(/\b(?:all\s+(?:airlines|flights|options)|any\s+airline|remove\s+(?:the\s+)?filters?|clear\s+(?:the\s+)?filters?|no\s+filters?|show\s+all)\b/i.test(value))out.clear=true;
   const airlines=LT_AIRLINE_ALIASES.filter(([,,pattern])=>pattern.test(value)).map(([code,name])=>({code,name}));
   if(airlines.length)out.airlines=airlines;
@@ -16671,7 +16706,7 @@ export function ltParseChatFlightFilters(text){
   if(time)out.time_of_day=time[1].toLowerCase();
   const price=value.match(/\b(?:under|below|less\s+than|within|max(?:imum)?|budget|upto|up\s+to)\s*(?:[a-z]{3}\s*|rs\.?\s*|₹\s*)?(\d[\d,]*)/i);
   if(price){const max=Number(price[1].replace(/,/g,''));if(max>0)out.max_price=max;}
-  if(/\b(?:cheapest|lowest\s+(?:fare|price)|low\s+fare)\b/i.test(value))out.sort='cheapest';
+  if(/\b(?:cheapest|cheap|lowest\s+(?:fare|price)|low\s+(?:fare|price|rate)|less\s+(?:price|rate))\b/i.test(value))out.sort='cheapest';
   else if(/\b(?:fastest|shortest|quickest)\b/i.test(value))out.sort='fastest';
   else if(/\bearliest\b/i.test(value))out.sort='earliest';
   return out;
@@ -16690,7 +16725,7 @@ export function ltHasChatFlightFilters(filters){
 // "show all") — every word is a filter or filler, so "good night" or a new route never counts.
 // A bare airline name stays a booking choice for the options already listed.
 export function ltChatFlightFilterRefinement(text){
-  const value=String(text||'').trim();
+  const value=ltLocalTravelText(text).trim();
   if(!value||value.length>80||/^book\b/i.test(value))return false;
   const f=ltParseChatFlightFilters(value);
   if(!f.clear&&!ltHasChatFlightFilters(f))return false;
@@ -16699,6 +16734,17 @@ export function ltChatFlightFilterRefinement(text){
   for(const [,,pattern] of LT_AIRLINE_ALIASES)rest=rest.replace(new RegExp(pattern.source,'gi'),' ');
   rest=rest.replace(/\b(?:under|below|less\s+than|within|max(?:imum)?|budget|upto|up\s+to)\s*(?:[a-z]{3}\s*|rs\.?\s*|₹\s*)?\d[\d,]*/gi,' ')
     .replace(/\b(?:all|any|airlines?|remove|clear|filters?|no|direct|non[\s-]?stop|morning|afternoon|evening|night|cheapest|lowest|low|fare|fares|price|fastest|shortest|quickest|earliest|only|flights?|options?|tickets?|show|me|please|pls|plz|i|want|need|check|search|give|the|a|with|departures?|departing|in|prefer|preferred|one|ones|just|ok|okay)\b/gi,' ')
+    .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+  return !rest;
+}
+// A short go-ahead after the customer already gave a route ("yes", "ok", "any cheap one",
+// "ഏതെങ്കിലും കുറവ് മതി"): every word is a yes, a filter or filler. Lets the live search run
+// instead of the AI promising to "check and get back".
+export function ltChatFlightGoAhead(text){
+  const value=ltLocalTravelText(text).trim();
+  if(!value||value.length>80||/\?/.test(value))return false;
+  if(ltChatFlightFilterRefinement(value))return true;
+  const rest=value.replace(/\b(?:yes|yeah|yep|yup|ya|haa?|ok|okay|k|sure|fine|go|ahead|do|it|please|pls|plz|search|check|look|up|find|show|send|want|need|any|anything|airline|airlines|one|cheapest|cheap|options?|flights?|tickets?|fares?|that|is|the|a|me|for|thanks|thank|you|done|proceed|continue)\b/gi,' ')
     .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
   return !rest;
 }
@@ -16752,9 +16798,11 @@ async function engineExtractChatFlightRequest(env,c,userText,history=[]){
   if(!generated&&c?.openrouter_key) generated=await engineCallLlm(env,c,system,`${transcript}\nCustomer: ${userText}`,250);
   if(generated){try{raw=JSON.parse(generated)}catch(e){try{const objectText=String(generated).match(/\{[\s\S]*\}/)?.[0];if(objectText)raw=JSON.parse(objectText)}catch(e2){}}}
   raw=raw&&typeof raw==='object'?raw:{};
-  const customerHistory=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).join('\n');
-  const route=ltParseFlightRoute(userText)||ltParseFlightRoute(customerHistory);
-  const latestDate=ltParseConversationalFlightDate(userText),historicDate=ltParseConversationalFlightDate(customerHistory);
+  // Newest customer message first, so an older route or date never wins over a newer one.
+  const customerMessages=(history||[]).slice(-8).filter(x=>x?.role!=='assistant'&&x?.content).map(x=>String(x.content)).reverse();
+  const fromHistory=parse=>{for(const t of customerMessages){const v=parse(t);if(v)return v;}return null;};
+  const route=ltParseFlightRoute(userText)||fromHistory(ltParseFlightRoute);
+  const latestDate=ltParseConversationalFlightDate(userText),historicDate=fromHistory(ltParseConversationalFlightDate)||'';
   if(!raw.origin&&route)raw.origin=route.origin;if(!raw.destination&&route)raw.destination=route.destination;
   if(latestDate)raw.departure_date=latestDate;else if(!raw.departure_date&&historicDate)raw.departure_date=historicDate;
   if(!raw.trip_type)raw.trip_type=raw.return_date?'round_trip':'one_way';
@@ -17063,7 +17111,7 @@ async function ltLiveTicketsConnected(env,clientId){
 // rather than answering a travel enquiry without knowing where the customer is going.
 export function ltTravelAgencyPromptBlock(liveTicketsConnected){
   let block='\n\n## Travel Agency Rules\nWhen a customer asks about travel, a trip, a visa, a package or tickets and has not said where they are going, ask which destination they are travelling to and their travel date. Ask only for what is still missing.';
-  if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.';
+  if(liveTicketsConnected) block+='\nFLIGHT TICKETS: This agency HAS live flight ticket booking connected. We DO offer flight tickets, on their own or together with a visa or package. Never say flight tickets are not offered, and never offer a "dummy ticket" in place of a real ticket the customer asked for. For a ticket enquiry, confirm we offer tickets and ask for the destination, departure city, travel date and number of passengers.\nLive fares are sent automatically as soon as the customer gives the departure city, destination and date. You cannot search fares yourself: never ask which airline they prefer, never ask "shall I check?", and never say you will check and get back. Ask only for whichever of departure city, destination or date is still missing.';
   return block;
 }
 
@@ -17074,7 +17122,10 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
   const lastAssistant=[...(history||[])].reverse().find(x=>x?.role==='assistant')?.content||'';
   const continuing=/I can check live ticket prices for you/i.test(lastAssistant)||Boolean(draft);
   const lastSearch=!draft&&ltChatFlightFilterRefinement(userText)?await ltLoadChatLastSearch(env,clientId,phone):null;
-  if(!ltChatFlightIntent(userText)&&!continuing&&!lastSearch)return null;
+  // "yes" / "any cheap one" right after the customer asked for a route the AI only discussed.
+  const goAhead=!draft&&!lastSearch&&!ltChatFlightIntent(userText)&&ltChatFlightGoAhead(userText)
+    &&(history||[]).filter(x=>x?.role!=='assistant'&&x?.content).slice(-4).some(x=>ltChatFlightIntent(x.content));
+  if(!ltChatFlightIntent(userText)&&!continuing&&!lastSearch&&!goAhead)return null;
   if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
     await ltClearChatSearchDraft(env,clientId,phone);
     return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};

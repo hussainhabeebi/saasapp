@@ -104,6 +104,8 @@ import {
   ltMergeChatFlightFilters,
   ltChatFlightFilterRefinement,
   ltApplyChatFlightFilters,
+  ltChatFlightGoAhead,
+  ltLocalTravelText,
   ltPoomasEnabledAfterSettingsSave,
   engineHedgeAi4BharatTts,
   engineResolveSarvamApiKey,
@@ -378,6 +380,24 @@ describe('Live Travel ticketing in chat',()=>{
     assert.deepEqual(ltParseChatFlightFilters('Kochi to Qatar on 12 Nov'),{});
     assert.deepEqual(ltMergeChatFlightFilters({airlines:[{code:'XY',name:'flynas'}]},{direct_only:true}),{airlines:[{code:'XY',name:'flynas'}],direct_only:true});
     assert.deepEqual(ltMergeChatFlightFilters({airlines:[{code:'XY',name:'flynas'}]},{clear:true}),{});
+  });
+
+  test('understands Malayalam and Manglish flight requests',()=>{
+    for(const text of ['ഷാർജയിൽ നിന്ന് കോഴിക്കോട്ടേക്ക് നവംബർ 1-ന് ടിക്കറ്റ് വേണം','sharjah ninnu calicut nov 1 ticket venam','ഷാർജ കോഴിക്കോട് ഫ്ലൈറ്റ് നവംബർ 1']){
+      assert.equal(ltChatFlightIntent(text),true,text);
+      assert.deepEqual(ltParseFlightRoute(text),{origin:'SHJ',destination:'CCJ'},text);
+    }
+    assert.deepEqual(ltParseFlightRoute('calicut from dubai ticket'),{origin:'DXB',destination:'CCJ'});
+    assert.match(ltLocalTravelText('നവംബർ 1-ന്'),/november 1/);
+    assert.deepEqual(ltParseChatFlightFilters('ഏതെങ്കിലും കുറവ് മതി'),{sort:'cheapest'});
+    // Other Malayalam (a visa question) is not a flight request.
+    assert.equal(ltChatFlightIntent('ദുബായ് വിസ വേണം'),false);
+    assert.equal(ltChatFlightIntent('I live in Dubai, need Kochi visa'),false);
+  });
+
+  test('a short go-ahead continues a flight request instead of more questions',()=>{
+    for(const text of ['yes','ok any cheap one','ഏതെങ്കിലും കുറവ് മതി','Look up options'])assert.equal(ltChatFlightGoAhead(text),true,text);
+    for(const text of ['visa price?','visa venam','ദുബായ് വിസ വേണം','what is the baggage allowance'])assert.equal(ltChatFlightGoAhead(text),false,text);
   });
 
   test('only filter-only replies refine the last search',()=>{
