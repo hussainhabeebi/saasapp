@@ -104,6 +104,8 @@ import {
   ltMergeChatFlightFilters,
   ltChatFlightFilterRefinement,
   ltApplyChatFlightFilters,
+  ltChatFlightGoAhead,
+  ltLocalTravelText,
   ltPoomasEnabledAfterSettingsSave,
   engineHedgeAi4BharatTts,
   engineResolveSarvamApiKey,
@@ -380,6 +382,24 @@ describe('Live Travel ticketing in chat',()=>{
     assert.deepEqual(ltMergeChatFlightFilters({airlines:[{code:'XY',name:'flynas'}]},{clear:true}),{});
   });
 
+  test('understands Malayalam and Manglish flight requests',()=>{
+    for(const text of ['ഷാർജയിൽ നിന്ന് കോഴിക്കോട്ടേക്ക് നവംബർ 1-ന് ടിക്കറ്റ് വേണം','sharjah ninnu calicut nov 1 ticket venam','ഷാർജ കോഴിക്കോട് ഫ്ലൈറ്റ് നവംബർ 1']){
+      assert.equal(ltChatFlightIntent(text),true,text);
+      assert.deepEqual(ltParseFlightRoute(text),{origin:'SHJ',destination:'CCJ'},text);
+    }
+    assert.deepEqual(ltParseFlightRoute('calicut from dubai ticket'),{origin:'DXB',destination:'CCJ'});
+    assert.match(ltLocalTravelText('നവംബർ 1-ന്'),/november 1/);
+    assert.deepEqual(ltParseChatFlightFilters('ഏതെങ്കിലും കുറവ് മതി'),{sort:'cheapest'});
+    // Other Malayalam (a visa question) is not a flight request.
+    assert.equal(ltChatFlightIntent('ദുബായ് വിസ വേണം'),false);
+    assert.equal(ltChatFlightIntent('I live in Dubai, need Kochi visa'),false);
+  });
+
+  test('a short go-ahead continues a flight request instead of more questions',()=>{
+    for(const text of ['yes','ok any cheap one','ഏതെങ്കിലും കുറവ് മതി','Look up options'])assert.equal(ltChatFlightGoAhead(text),true,text);
+    for(const text of ['visa price?','visa venam','ദുബായ് വിസ വേണം','what is the baggage allowance'])assert.equal(ltChatFlightGoAhead(text),false,text);
+  });
+
   test('only filter-only replies refine the last search',()=>{
     for(const text of ['direct only','flynas only','morning flights please','under 30000','cheapest','show all'])assert.equal(ltChatFlightFilterRefinement(text),true,text);
     // A bare airline name or "book …" still picks a listed option; small talk is not a filter.
@@ -424,6 +444,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.equal(ltStoredOfferSelectionIndex(offers,'Book Air India'),1);
     assert.equal(ltStoredOfferSelectionIndex(offers,'AI9058'),1);
     assert.equal(ltStoredOfferSelectionIndex(offers,'book'),-1);
+    // Free wording around an option number, in English or Malayalam.
+    assert.equal(ltStoredOfferSelectionIndex(offers,'option 1 book pls'),0);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'I want to book the 2nd one'),1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'1 ബുക്ക് ചെയ്യൂ'),0);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'two adults'),-1);
+    assert.equal(ltStoredOfferSelectionIndex(offers,'yes'),-1);
   });
 
   test('builds a WhatsApp Book Now CTA for the exact POOMAS checkout URL',()=>{
