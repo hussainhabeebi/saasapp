@@ -452,18 +452,19 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       </div>
 
       <div class="form-field">
-        <label>Image / Video Attachment <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <label>Image / Video / PDF Attachment <span style="color:var(--muted);font-weight:400">(optional)</span></label>
         <div class="img-drop" id="imgDrop" onclick="document.getElementById('imgFile').click()"
           ondragover="event.preventDefault();this.classList.add('drag-over')"
           ondragleave="this.classList.remove('drag-over')"
           ondrop="event.preventDefault();this.classList.remove('drag-over');handleImgDrop(event.dataTransfer.files[0])">
           <div class="img-drop-icon">🖼️</div>
-          <div class="img-drop-label"><b>Click to upload</b> or drag &amp; drop<br>JPG, PNG, GIF, WebP — max 5 MB · MP4, MOV — max 16 MB</div>
+          <div class="img-drop-label"><b>Click to upload</b> or drag &amp; drop<br>JPG, PNG, GIF, WebP — max 5 MB · MP4, MOV, PDF — max 16 MB</div>
         </div>
-        <input type="file" id="imgFile" accept="image/*,video/*" style="display:none" onchange="handleImgFile(this.files[0])">
+        <input type="file" id="imgFile" accept="image/*,video/*,application/pdf,.pdf" style="display:none" onchange="handleImgFile(this.files[0])">
         <div id="imgPreview">
           <img id="imgThumb" src="" alt="Preview">
           <video id="vidThumb" src="" controls style="display:none"></video>
+          <div id="pdfThumb" style="display:none;font-size:40px;line-height:1">📄</div>
           <button class="img-clear" onclick="clearImage()" title="Remove attachment">✕</button>
           <div style="font-size:11px;color:var(--muted);margin-top:6px;font-family:var(--mono)" id="imgName"></div>
         </div>
@@ -2720,23 +2721,27 @@ function handleImgFile(file){
   if(!file) return;
   const isVideo=file.type.startsWith('video/');
   const isImage=file.type.startsWith('image/');
-  if(!isVideo&&!isImage){ alert('Please attach an image or video file.'); return; }
-  const maxSize=isVideo?16*1024*1024:5*1024*1024;
-  if(file.size>maxSize){ alert(isVideo?'Video must be under 16 MB.':'Image must be under 5 MB.'); return; }
+  const isPdf=isPdfFile(file);
+  if(!isVideo&&!isImage&&!isPdf){ alert('Please attach an image, video or PDF file.'); return; }
+  const maxSize=isImage?5*1024*1024:16*1024*1024;
+  if(file.size>maxSize){ alert(isImage?'Image must be under 5 MB.':(isPdf?'PDF':'Video')+' must be under 16 MB.'); return; }
   imgFile=file;
   const url=URL.createObjectURL(file);
-  $id('imgThumb').style.display=isVideo?'none':'';
+  $id('imgThumb').style.display=isImage?'':'none';
   $id('vidThumb').style.display=isVideo?'':'none';
-  if(isVideo){ $id('vidThumb').src=url; } else { $id('imgThumb').src=url; }
+  $id('pdfThumb').style.display=isPdf?'':'none';
+  if(isVideo){ $id('vidThumb').src=url; } else if(isImage){ $id('imgThumb').src=url; }
   $id('imgName').textContent=file.name+' ('+Math.round(file.size/1024)+' KB)';
   $id('imgPreview').style.display='block';
   $id('imgDrop').style.display='none';
 }
-function handleImgDrop(file){ if(file&&(file.type.startsWith('image/')||file.type.startsWith('video/'))) handleImgFile(file); else if(file) alert('Please attach an image or video file.'); }
+function isPdfFile(file){ return file.type==='application/pdf'||/\.pdf$/i.test(file.name||''); }
+function handleImgDrop(file){ if(file&&(file.type.startsWith('image/')||file.type.startsWith('video/')||isPdfFile(file))) handleImgFile(file); else if(file) alert('Please attach an image, video or PDF file.'); }
 function clearImage(){
   imgFile=null;
   $id('imgThumb').src='';
   $id('vidThumb').src='';
+  $id('pdfThumb').style.display='none';
   $id('imgPreview').style.display='none';
   $id('imgDrop').style.display='';
   document.getElementById('imgFile').value='';
@@ -2752,7 +2757,7 @@ function updateDmPreview(){
 // ── SEND DIRECT MESSAGES ──
 async function sendDm(){
   const text=($id('dmText').value||'').trim();
-  if(!text&&!imgFile){ alert('Enter a message or attach an image/video.'); return; }
+  if(!text&&!imgFile){ alert('Enter a message or attach an image, video or PDF.'); return; }
   if(!dmSelectedIds.size){ alert('Select at least one recipient.'); return; }
 
   const leads=allLeads.filter(l=>dmSelectedIds.has(String(l.Id)));
