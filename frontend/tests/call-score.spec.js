@@ -274,7 +274,10 @@ test('weekly team goal bar and personal-best celebration', async ({ page }) => {
     clientRecord.bot_config = JSON.stringify({ power_hour: { enabled: false }, team_goal: { won: 5 } });
     const now = Date.now(), lastWeek = now - 8 * 86400e3, me = 'boss@example.com';
     const calls = (base, n) => Array.from({ length: n }, (_, i) => ({ outcome: 'No Answer', at: new Date(base + i * 60e3).toISOString(), by: me }));
-    // best day so far: 6 calls last week; today: 7 calls → new record
+    // best day so far: 6 calls last week; today: 7 calls → new record. bootArena's own calls for
+    // this user sit at the start of the week, which is today on a Sunday, so they are dropped here.
+    // @ts-ignore
+    allLeads = allLeads.filter((l) => l.Owner !== me);
     // @ts-ignore
     allLeads.push({ Id: 700, Name: 'PB1', Phone: '1', Owner: me, Stage: 'new', Date: new Date(lastWeek).toISOString(), CallLog: JSON.stringify(calls(lastWeek, 6).reverse()) });
     // @ts-ignore
