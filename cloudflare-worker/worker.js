@@ -11520,7 +11520,7 @@ async function engineEcomProductAnswer(env, c, clientId, phone, state, replyLang
     const price=ecomFormatProductPrice(product.price, product.currency);
     const sys=engineBuildFaqSystemPrompt(c, state, ctxBlock, 'ecommerce', replyLang, isNewLead, routing.intent)
       +`\n\nPRODUCT QUESTION: The customer is asking about this exact product:\nName: ${product.name}${price?`\nPrice: ${price}`:''}\nDescription: ${String(product.description||'').slice(0,1200)}\nAnswer their question directly in 1-3 short, friendly sentences, using ONLY this product's data and the business prompt. If the answer isn't stated there, say our team will confirm it — never guess. The product photo and details are sent right after your answer, so don't repeat the whole description and don't output OPTIONS.`;
-    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 220, state.botMsgs?.[state.botMsgs.length-1]);
+    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 220, state.botMsgs?.[state.botMsgs.length-1], undefined, enginePriceGuardOpts(c, sys, userText, replyLang));
     return String(engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, product.sku||'', product)).text||'').trim();
   }catch(e){ await reportOpsError(env, 'engineEcomProductAnswer', e, {clientId}); return ''; }
 }
@@ -11535,7 +11535,7 @@ async function engineEcomCategoryAnswer(env, c, clientId, phone, state, replyLan
     const categoryContext=await engineBuildEcomContext(env, c, clientId, phone);
     const sys=engineBuildFaqSystemPrompt(c, state, categoryContext, 'ecommerce', replyLang, isNewLead, routing.intent)
       +'\n\nCATEGORY ENQUIRY: Reply to what the customer actually said, like a helpful shop assistant — answer their question or respond to what they told you (e.g. their baby\'s age → which sets suit them). Keep it short. Answer from the configured business prompt and VERIFIED ECOM CATALOGUE only. Do not invent products, availability, prices, features, or alternatives. A separate verified product picker will follow your answer, so do not list every product and do not output OPTIONS.';
-    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 300, state.botMsgs?.[state.botMsgs.length-1]);
+    const generated=await engineCallLlmAvoidingRepeat(env, c, sys, userText, 300, state.botMsgs?.[state.botMsgs.length-1], undefined, enginePriceGuardOpts(c, sys, userText, replyLang));
     return String(engineExtractReplyOptions(engineSubstituteOrderLinkPlaceholder(generated, c, clientId, '')).text||'').trim();
   }catch(e){ await reportOpsError(env, 'engineEcomCategoryAnswer', e, {clientId}); return ''; }
 }
@@ -17582,6 +17582,9 @@ BUTTONS — mandatory after EVERY reply:
     // ever come verbatim from the catalog entry for that exact product; if the requested size or
     // configuration has no listed price, escalate to a human.
     sys+=' PRICE INTEGRITY: Never calculate, derive, estimate, or extrapolate a price from a product\'s size, dimensions, inches, or any other attribute. The only valid price is the exact figure shown in the Product Catalog for that specific product. If a customer asks about a size or configuration whose price is not explicitly listed, tell them you do not have a confirmed price for that option and offer to connect them with a team member for accurate pricing — never compute or approximate a number.';
+    // Ecom Settings → Zero Price Hallucinations: stricter wording to go with the deterministic
+    // engineFindHallucinatedPrice check in engineCallLlmAvoidingRepeat.
+    if(ecomZeroPriceHallucinationOn(c)) sys+=' ZERO PRICE HALLUCINATION MODE (strict): Every price, amount, total, discount, offer price or delivery charge you write must appear exactly as written in the Product Catalog or business prompt above. Never quote a price for a product not listed there, never multiply by quantity, add up a total, apply a discount, convert currency or round. If the exact figure is not written above, say the team will confirm the price — do not give any number.';
 
     // Closes an observed real failure: a customer replied "Order M size" to a product the
     // assistant had just shown sizes for, and got "we don't have anything matching" back instead
@@ -18180,6 +18183,52 @@ export function engineFindHallucinatedLink(replyText, allowedLinks){
   return null;
 }
 
+// Ecom Settings → "Zero Price Hallucinations" (bot_config.ecom_zero_price_hallucination, off by
+// default). Ecom clients reported the bot quoting prices that exist nowhere in their catalog —
+// the PRICE INTEGRITY prompt rules are a request, not a guarantee. With the toggle on, every
+// currency-tagged amount in a generated reply must appear verbatim (as a number) in the text the
+// model was actually handed this turn (system prompt — catalog, business prompt, KB, recent
+// conversation — plus the customer's own message); anything else is treated as invented.
+export function ecomZeroPriceHallucinationOn(c){
+  return engineParseJsonField(c?.bot_config, {}).ecom_zero_price_hallucination===true;
+}
+const PRICE_CUR='(?:₹|rs\\.?|inr|aed|dhs?|dirhams?|sar|qar|kwd|omr|bhd|usd|us\\$|\\$|€|eur|£|gbp|rupees?|രൂപ|रुपये|रु\\.?|ر\\.س|د\\.إ)';
+const PRICE_NUM='(\\d{1,3}(?:,\\d{2,3})+(?:\\.\\d+)?|\\d+(?:\\.\\d+)?)';
+const PRICE_RES=[
+  new RegExp(PRICE_CUR+'\\s*'+PRICE_NUM,'gi'),
+  new RegExp(PRICE_NUM+'\\s*(?:/-|'+PRICE_CUR+'(?![a-z]))','gi'),
+];
+function enginePriceNorm(s){
+  const n=parseFloat(String(s).replace(/,/g,''));
+  return Number.isFinite(n) ? String(n) : null;
+}
+// Returns the first currency-tagged amount in `replyText` whose number never appears in
+// `sourceText`, or null when every quoted price is backed by real data.
+export function engineFindHallucinatedPrice(replyText, sourceText){
+  const allowed=new Set((String(sourceText||'').match(/\d[\d,]*(?:\.\d+)?/g)||[]).map(enginePriceNorm).filter(Boolean));
+  for(const re of PRICE_RES){
+    for(const m of String(replyText||'').matchAll(re)){
+      const n=enginePriceNorm(m[1]);
+      if(n && !allowed.has(n)) return m[0].trim();
+    }
+  }
+  return null;
+}
+// Last-resort cleanup when the retry still quotes an unverified price: drop every line/sentence
+// carrying one (a number cut out mid-sentence reads worse than no sentence) and add a short note
+// that the team will confirm the price.
+async function engineStripHallucinatedPrices(env, c, reply, sourceText, replyLang){
+  const pieces=String(reply).split(/(?<=[.!?।])\s+|\n/);
+  const kept=pieces.filter(p=>!engineFindHallucinatedPrice(p, sourceText));
+  const note=await engineLocalizeReply(env, c, 'Our team will confirm the exact price for you shortly.', replyLang||c.language||'en');
+  return [kept.join(' ').trim(), note].filter(Boolean).join('\n\n');
+}
+// Options bag for engineCallLlmAvoidingRepeat — undefined (check skipped) unless the client
+// turned the toggle on.
+export function enginePriceGuardOpts(c, systemPrompt, userText, replyLang){
+  return ecomZeroPriceHallucinationOn(c) ? {priceSource:`${systemPrompt}\n${userText||''}`, replyLang} : undefined;
+}
+
 // Deterministic backstop against a reply-generating LLM call (a) regenerating essentially the same
 // message it just sent, and (b) inventing a link that was never actually given to it — both are
 // cases where a "don't do this" instruction already baked into
@@ -18194,22 +18243,27 @@ export function engineFindHallucinatedLink(replyText, allowedLinks){
 // pass `[]` explicitly to mean "no link is legitimate at all this turn." Fully fail-open: if the
 // retry still isn't clean, a last-resort string-replace strips a still-hallucinated link (never
 // knowingly sends a fabricated URL a customer might click) rather than blocking the reply outright.
-async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks){
+async function engineCallLlmAvoidingRepeat(env, c, systemPrompt, userText, maxTokens, lastBotMsg, allowedLinks, priceGuard){
   const reply=await engineCallLlm(env, c, systemPrompt, userText, maxTokens);
   if(!reply) return reply;
   const isRepeat=lastBotMsg && engineTextSimilarity(reply, lastBotMsg)>=0.7;
   const badLink=allowedLinks ? engineFindHallucinatedLink(reply, allowedLinks) : null;
-  if(!isRepeat && !badLink) return reply;
+  const badPrice=priceGuard ? engineFindHallucinatedPrice(reply, priceGuard.priceSource) : null;
+  if(!isRepeat && !badLink && !badPrice) return reply;
   let correction='';
   if(isRepeat) correction+=`\n\nIMPORTANT: your draft reply above was nearly identical to what you already told this customer moments ago: "${lastBotMsg.slice(0,300)}". Do not send that again in any form, even reworded. Give NEW, different information this time — actual specifics you haven't shared yet (price, a concrete benefit, pack/size options, stock, or a direct answer to whatever they just said) — or, if you genuinely have nothing new to add, ask ONE different, more specific question instead of repeating the same one.`;
   if(badLink){
     const linksLine=allowedLinks.length?`The ONLY real link(s) you may share right now: ${allowedLinks.join(', ')}.`:'You have NO real link to share right now — do not include any URL at all.';
     correction+=`\n\nIMPORTANT: your draft reply included a link that does not exist and was never given to you: "${badLink}". Never invent, guess, or construct a URL of any kind — not from a product name, brand, or store domain, no matter how plausible it looks. ${linksLine} If you don't have a real link to share, say so honestly (offer to check and follow up) instead of fabricating one.`;
   }
+  if(badPrice) correction+=`\n\nIMPORTANT: your draft reply quoted a price that does not exist in the Product Catalog or business prompt: "${badPrice}". Never invent, estimate, round, total, discount or convert a price. Quote only a price written exactly in the data above for that exact product; if there isn't one, say the team will confirm the exact price.`;
   const retryReply=await engineCallLlm(env, c, systemPrompt+correction, userText, maxTokens);
-  if(!retryReply) return reply;
+  // When the only problem was a made-up price, the original reply must not go out as the fallback.
+  if(!retryReply) return badPrice ? engineStripHallucinatedPrices(env, c, reply, priceGuard.priceSource, priceGuard.replyLang) : reply;
   const retryBadLink=allowedLinks ? engineFindHallucinatedLink(retryReply, allowedLinks) : null;
-  return retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
+  let out=retryBadLink ? retryReply.replace(retryBadLink, '').trim() : retryReply;
+  if(priceGuard && engineFindHallucinatedPrice(out, priceGuard.priceSource)) out=await engineStripHallucinatedPrices(env, c, out, priceGuard.priceSource, priceGuard.replyLang);
+  return out;
 }
 
 // Shared by both FAQ/objection prompt builders (engineBuildFaqSystemPrompt/
@@ -23381,7 +23435,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       // every other industry, so the check is skipped there rather than treating a link the model
       // may legitimately reference from Knowledge Base text as a hallucination.
       const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
-      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks);
+      const ecomPriceGuard=routing.route==='ecom_faq' ? enginePriceGuardOpts(c, sysPrompt, userText, replyLang) : undefined;
+      let reply=await engineCallLlmAvoidingRepeat(env, c, sysPrompt, userText, 300, state.botMsgs?.[state.botMsgs.length-1], ecomAllowedLinks, ecomPriceGuard);
       if(!reply||reply.trim()==='One moment 🙏'){
         let fallbackMsg;
         if(mediaType==='voice') fallbackMsg="I got your voice message but couldn't make it out clearly. Could you type your message so I can help you?";
@@ -23900,7 +23955,8 @@ export async function processInstagramWebhookBody(env, body){
         state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
         const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead,routing.intent);
         const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
-        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks)).text;
+        const ecomPriceGuard=routing.route==='ecom_faq' ? enginePriceGuardOpts(c,sysPrompt,userText,replyLang) : undefined;
+        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks,ecomPriceGuard)).text;
         routing.reply=sentText; await deliver(sentText);
       }else if(routing.route==='objection'){
         sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
