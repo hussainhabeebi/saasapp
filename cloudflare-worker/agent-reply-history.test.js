@@ -6,7 +6,7 @@ import {
   engineMergeStaffNotes, engineActiveStaffNotes, engineV2Block, engineScriptLang, engineV2FollowStaffLanguage,
   engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock, engineV2WelcomeVideo,
   engineV2SourceText, engineV2IsFreshLead, engineV2NudgeSettings, engineV2NudgeDue, engineV2NudgeText, engineStaffScore,
-  engineV2FollowupGuardOn, engineChatLanguage, engineOpenQuestion, engineV2GuardedNudgeText,
+  engineV2FollowupGuardOn, engineChatLanguage, engineOpenQuestion, engineV2GuardedNudgeText, engineV2KeywordPdfs,
 } from './worker.js';
 
 const TS = '2026-10-04T10:00:00Z';
@@ -104,6 +104,21 @@ test('video per ad or source: first matching rule wins, else the default', () =>
   assert.equal(engineV2IsFreshLead({ leadId: null }), true);
   assert.equal(engineV2IsFreshLead({ leadId: 5, history: [{ role: 'assistant', content: 'template' }] }), true);
   assert.equal(engineV2IsFreshLead({ leadId: 5, history: [{ role: 'user', content: 'hi' }] }), false);
+});
+
+test('keyword PDF brochures: whole-word keywords, every matching rule, no repeats', () => {
+  const c = { bot_config: JSON.stringify({ v2_keyword_pdfs: [
+    { match: 'brochure, price list', pdf_url: 'https://drive.google.com/d/general', caption: 'Hi {name}, our brochure 👇' },
+    { match: 'villa', pdf_url: 'https://drive.google.com/d/villa', caption: '' },
+    { match: 'ബ്രോഷർ', pdf_url: 'https://drive.google.com/d/general', caption: '' },
+    { match: 'no link', pdf_url: '', caption: '' },
+  ] }) };
+  assert.deepEqual(engineV2KeywordPdfs(c, 'Can you send the Brochure?'), [{ url: 'https://drive.google.com/d/general', caption: 'Hi {name}, our brochure 👇', rule: 'brochure, price list' }]);
+  assert.deepEqual(engineV2KeywordPdfs(c, 'villa price  list please').map(p => p.url), ['https://drive.google.com/d/general', 'https://drive.google.com/d/villa']);
+  assert.deepEqual(engineV2KeywordPdfs(c, 'villas? no link'), []);
+  assert.equal(engineV2KeywordPdfs(c, 'ബ്രോഷർ അയക്കൂ')[0].url, 'https://drive.google.com/d/general');
+  assert.deepEqual(engineV2KeywordPdfs({ bot_config: '{}' }, 'brochure'), []);
+  assert.match(engineV2Block({ keywordPdfsSent: ['villa'] }), /PDF brochure in the chat: villa/);
 });
 
 test('reply-gap nudge: settings, when it is due, and the text', () => {

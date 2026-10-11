@@ -4121,6 +4121,11 @@ const ROLES = {
                 <textarea class="form-input" id="cfgV2SourceVideos" rows="4" placeholder="villa offer | https://drive.google.com/file/d/…/view | Hi {name}, here's a tour of the villa 👇&#10;inbox:12 | https://drive.google.com/file/d/…/view | Welcome to our Kochi branch!" style="margin-top:6px;max-width:720px;font-family:var(--mono);font-size:12px"></textarea>
               </div>
               <div style="margin-top:12px">
+                <label class="form-label">📄 PDF brochure by keyword (v2)</label>
+                <div class="s-note">One rule per line: <code>keywords | Google Drive link | caption</code>. When a customer's message (or voice note) mentions one of the keywords, that PDF is sent automatically in the chat. Separate several keywords with commas. Share the PDF as "Anyone with the link", under 16 MB. Each PDF goes to a customer at most once a day. Caption can use {name}.</div>
+                <textarea class="form-input" id="cfgV2KeywordPdfs" rows="4" placeholder="brochure, price list, catalogue | https://drive.google.com/file/d/…/view | Hi {name}, here's our brochure 👇&#10;villa, villas | https://drive.google.com/file/d/…/view | Villa floor plans and prices 📄" style="margin-top:6px;max-width:720px;font-family:var(--mono);font-size:12px"></textarea>
+              </div>
+              <div style="margin-top:12px">
                 <label class="form-label">⏰ Reply-gap nudge (v2)</label>
                 <div class="s-note">If a new lead goes quiet after our reply (or the video), send one friendly check-in after this many hours. Only once per lead, only inside WhatsApp's 24-hour window and your follow-up send hours, never when staff have taken over or replied. Message can use {name}; leave empty for the default. It is translated to the lead's language.</div>
                 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px">
@@ -12969,6 +12974,7 @@ function populateBotBehaviorPage(){
   $id('cfgV2WelcomeVideoUrl').value=botConfig.v2_welcome_video_url||'';
   $id('cfgV2WelcomeVideoCaption').value=botConfig.v2_welcome_video_caption||'';
   $id('cfgV2SourceVideos').value=(Array.isArray(botConfig.v2_source_videos)?botConfig.v2_source_videos:[]).map(r=>[r.match,r.video_url,r.caption||''].join(' | ')).join('\n');
+  $id('cfgV2KeywordPdfs').value=(Array.isArray(botConfig.v2_keyword_pdfs)?botConfig.v2_keyword_pdfs:[]).map(r=>[r.match,r.pdf_url,r.caption||''].join(' | ')).join('\n');
   $id('cfgV2NudgeEnabled').value=botConfig.v2_nudge_enabled===true?'Yes':'No';
   $id('cfgV2NudgeHours').value=botConfig.v2_nudge_hours||'';
   $id('cfgV2NudgeText').value=botConfig.v2_nudge_text||'';
@@ -13052,6 +13058,13 @@ $id('saveLeadvyneV2').addEventListener('click',async()=>{
     rules.push({match, video_url, caption:cap.join('|').trim()});
   }
   if(rules.length) botConfig.v2_source_videos=rules; else delete botConfig.v2_source_videos;
+  const pdfRules=[];
+  for(const line of $id('cfgV2KeywordPdfs').value.split('\n').map(l=>l.trim()).filter(Boolean)){
+    const [match,pdf_url,...cap]=line.split('|').map(x=>x.trim());
+    if(!match||!/drive\.google\.com|docs\.google\.com/.test(pdf_url||'')||/\/folders\//.test(pdf_url)){ $id('saveLeadvyneV2Msg').textContent='Check this PDF rule (needs keywords | Drive file link): '+line.slice(0,60); return; }
+    pdfRules.push({match, pdf_url, caption:cap.join('|').trim()});
+  }
+  if(pdfRules.length) botConfig.v2_keyword_pdfs=pdfRules; else delete botConfig.v2_keyword_pdfs;
   if($id('cfgV2NudgeEnabled').value==='Yes') botConfig.v2_nudge_enabled=true; else delete botConfig.v2_nudge_enabled;
   const nh=parseFloat($id('cfgV2NudgeHours').value);
   if(nh>0) botConfig.v2_nudge_hours=nh; else delete botConfig.v2_nudge_hours;
