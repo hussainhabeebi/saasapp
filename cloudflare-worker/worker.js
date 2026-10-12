@@ -1965,6 +1965,51 @@ async function handleWaSend(request, env){
   return json({ok:true, data});
 }
 
+// One row per WhatsApp template the platform successfully hands to Meta (directly or through
+// Chatwoot), whatever feature sent it — the Billing page's "Usage This Month" reads this
+// (handleBillingUsage). Templates are what Meta bills per message, so this is the one number a
+// client needs to reconcile against their WhatsApp spend. Best-effort: a logging failure must never
+// fail or retry a send that already went out. Schema is created lazily, same as chatsV2Ready.
+const WA_TEMPLATE_SENDS_SCHEMA=[
+  `CREATE TABLE IF NOT EXISTS wa_template_sends (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL, source TEXT NOT NULL, template_name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', lead_id INTEGER, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_wa_template_sends_client_time ON wa_template_sends(client_id, created_at)`,
+];
+const waTemplateSendsReady=new WeakMap();
+async function waTemplateSendsEnsureSchema(env){
+  if(!env?.DB) return false;
+  let p=waTemplateSendsReady.get(env.DB);
+  if(!p){
+    p=(async()=>{ for(const sql of WA_TEMPLATE_SENDS_SCHEMA) await env.DB.prepare(sql).run(); return true; })()
+      .catch(()=>{ waTemplateSendsReady.delete(env.DB); return false; });
+    waTemplateSendsReady.set(env.DB, p);
+  }
+  return p;
+}
+export async function logWaTemplateSend(env, clientId, source, {template='', phone='', leadId=null}={}){
+  try{
+    if(!Number(clientId) || !await waTemplateSendsEnsureSchema(env)) return;
+    await env.DB.prepare(`INSERT INTO wa_template_sends (client_id, source, template_name, phone, lead_id, created_at) VALUES (?,?,?,?,?,?)`)
+      .bind(Number(clientId), String(source), String(template||''), String(phone||'').replace(/\D/g,''), Number(leadId)||null, new Date().toISOString()).run();
+  }catch(e){ console.error('[logWaTemplateSend]', e.message); }
+}
+// GET /billing/usage?month=YYYY-MM (defaults to the current UTC month) → template sends that
+// month, total and per source.
+async function handleBillingUsage(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const qMonth=new URL(request.url).searchParams.get('month')||'';
+  const month=/^\d{4}-\d{2}$/.test(qMonth)?qMonth:new Date().toISOString().slice(0,7);
+  if(!await waTemplateSendsEnsureSchema(env)) return json({month, templates_sent:0, by_source:{}});
+  const [y, m]=month.split('-').map(Number);
+  const from=`${month}-01T00:00:00.000Z`;
+  const to=new Date(Date.UTC(y, m, 1)).toISOString();
+  const {results}=await env.DB.prepare(`SELECT source, COUNT(*) AS n FROM wa_template_sends WHERE client_id=? AND created_at>=? AND created_at<? GROUP BY source`)
+    .bind(Number(payload.cid), from, to).all();
+  const by_source={}; let total=0;
+  for(const r of results||[]){ by_source[r.source]=Number(r.n)||0; total+=Number(r.n)||0; }
+  return json({month, templates_sent:total, by_source});
+}
+
 // Template sends go straight to Meta's Graph API, bypassing Chatwoot entirely — needed for
 // leads outside the 24h session window, where only an approved template is allowed, and
 // avoids depending on Chatwoot's own whatsapp_templates sync (which some inboxes 404 on).
@@ -1982,6 +2027,7 @@ async function handleWaSendTemplate(request, env){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) return json({error:data?.error?.message||'HTTP '+r.status}, 502);
+  await logWaTemplateSend(env, payload.cid, 'manual', {template:template_name, phone, leadId:lead_id});
   if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content||''), attachment:chatsTemplateAttachment(template_name, buttons)}, payload);
   return json({ok:true, message_id:data?.messages?.[0]?.id});
 }
@@ -3693,6 +3739,7 @@ async function handleBroadcastSendTemplate(request, env){
     body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:template_name, category:category||'MARKETING', language:language||'en', processed_params:processed_params||{}}})
   });
   if(!r.ok) return json({error:'HTTP '+r.status}, 502);
+  await logWaTemplateSend(env, payload.cid, 'broadcast', {template:template_name, leadId:lead_id});
   if(lead_id) await chatsRecordOutgoing(env, payload.cid, lead_id, {content:String(content), attachment:chatsTemplateAttachment(template_name, buttons)}, payload);
   return json({ok:true, data:await r.json().catch(()=>({}))});
 }
@@ -4041,6 +4088,7 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     });
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
+    await logWaTemplateSend(env, c.Id, 'followup', {template:content.template_name, phone:lead.Phone, leadId:lead.Id});
     sentText=`[template: ${content.template_name}]`;
   }
 
@@ -4550,15 +4598,16 @@ async function sendFlowWhatsappDm(c, convId, content){
   if(!r.ok) throw new Error('Chatwoot send failed: HTTP '+r.status);
 }
 // Same Chatwoot template shape as handleBroadcastSendTemplate above.
-async function sendFlowWhatsappTemplate(c, convId, step, leadName){
+async function sendFlowWhatsappTemplate(env, c, convId, step, lead){
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
     method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
     body:JSON.stringify({content:step.template_name, message_type:'outgoing', private:false, template_params:{
       name:step.template_name, category:step.category||'MARKETING', language:step.language||'en',
-      processed_params:{1:leadName||'there'}
+      processed_params:{1:lead?.Name||'there'}
     }})
   });
   if(!r.ok) throw new Error('Chatwoot template send failed: HTTP '+r.status);
+  await logWaTemplateSend(env, c.Id, 'automation', {template:step.template_name, phone:lead?.Phone, leadId:lead?.Id});
 }
 // Reuses sendClientResendEmail plus the same unsubscribe-link footer handleEmailCampaignSendOne
 // sends — a flow's email step is just a one-recipient version of the same campaign send.
@@ -4586,7 +4635,7 @@ async function advanceFlowLead(env, c, lead, flow, entry){
     if(step.type==='send_whatsapp_dm'){
       if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendFlowWhatsappDm(c, convId, fillFlowTokens(step.message, lead));
     }else if(step.type==='send_whatsapp_template'){
-      if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendFlowWhatsappTemplate(c, convId, step, lead.Name);
+      if(convId && c.chatwoot_base && c.chatwoot_account_id && c.chatwoot_token) await sendFlowWhatsappTemplate(env, c, convId, step, lead);
     }else if(step.type==='send_email'){
       await sendFlowEmail(env, c, lead, step);
     }else if(step.type==='update_field'){
@@ -4913,6 +4962,7 @@ async function calendarSendEventToLeads(env, c, event, leads, occurrenceKey){
         body:JSON.stringify({content, message_type:'outgoing', private:false, template_params:{name:event.template_name, category:event.template_category||'MARKETING', language:event.template_language||'en', processed_params:processedParams}})
       });
       if(r.ok){
+        await logWaTemplateSend(env, c.Id, 'calendar', {template:event.template_name, phone:lead.Phone, leadId:lead.Id});
         await env.DB.prepare(`INSERT OR IGNORE INTO calendar_event_sends (client_id, event_id, lead_id, occurrence_key, sent_at) VALUES (?,?,?,?,?)`)
           .bind(Number(c.Id), event.id, lead.Id, occurrenceKey, new Date().toISOString()).run();
       }
@@ -5149,6 +5199,7 @@ export async function monthlyMktSendOne(env, clientId, creds, item, monthKey){
   }
   await env.DB.prepare(`UPDATE monthly_marketing_sends SET status='sent', wa_message_id=?, sent_at=? WHERE id=?`)
     .bind(data?.messages?.[0]?.id||null, new Date().toISOString(), rowId).run();
+  await logWaTemplateSend(env, clientId, 'monthly_marketing', {template:item.template.name, phone:item.phone, leadId:item.lead.Id});
   return 'sent';
 }
 // One client's pass. Returns how many sends it attempted, charged against the tick's budget.
@@ -6603,6 +6654,7 @@ async function sendShopifyNotification(env, c, kind, vars, logMeta){
     const data=await r.json().catch(()=>({}));
     entry.status=r.ok?'sent':'failed';
     entry.detail=r.ok?(data?.messages?.[0]?.id||'sent'):(data?.error?.message||'HTTP '+r.status);
+    if(r.ok) await logWaTemplateSend(env, c.Id, 'shopify', {template:cfg.name, phone:logMeta.phone});
   }
   log.push(entry);
   if(log.length>30) log=log.slice(-30); // ~last 30 events is plenty for the log view, not an audit trail
@@ -7447,6 +7499,37 @@ async function handleAiRepeatCustomers(request, env){
   });
   const customers=Object.values(byPhone).filter(cust=>cust.orders>1).sort((a,b)=>b.revenue-a.revenue).slice(0,50);
   return json({has_orders_table:true, currency:orders[0]?.currency||'', customers, repeat_customer_count:customers.length, total_customers:Object.keys(byPhone).length});
+}
+
+// GET /ecom/order-phones → every customer phone (digits only) with at least one real order, plus
+// the date of their first one. The dashboard uses it to count a lead as converted once that
+// customer has placed an order, whatever stage the lead record is in (isConvertedLead) — orders
+// from chat, the storefront, Shopify and the Orders page all land in the same table, so this one
+// read covers them all. Drafts the bot is still collecting and cancelled/refunded/failed orders
+// don't count.
+const ECOM_NON_CONVERTING_STATUSES=new Set(['draft','collecting','cancelled','canceled','refunded','failed']);
+async function handleEcomOrderPhones(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!isEcomEnabled(c)) return json({has_orders_table:false, phones:{}});
+  const tableId=await ecomResolveTable(env, payload.cid, 'orders');
+  if(!tableId) return json({has_orders_table:false, phones:{}});
+  const phones={};
+  for(let page=1; page<=25; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    for(const o of list){
+      if(ECOM_NON_CONVERTING_STATUSES.has(String(o.status||'').trim().toLowerCase())) continue;
+      const phone=String(o.customer_phone||'').replace(/\D/g,''); if(!phone) continue;
+      const date=String(o.order_date||'');
+      if(!(phone in phones) || (date && (!phones[phone] || date<phones[phone]))) phones[phone]=date;
+    }
+    if(list.length<200) break;
+  }
+  return json({has_orders_table:true, phones});
 }
 
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
@@ -13627,6 +13710,7 @@ async function mtgSendWhatsApp(env, c, clientId, cfg, phone, text, vars){
     if(res.ok || !tpl || !vars) return res;
     const tRes=await post({type:'template', template:{name:tpl, language:{code:cfg.settings.template_lang||'en'},
       components:[{type:'body', parameters:vars.map(v=>({type:'text', text:String(v||'-').slice(0,500)}))}]}});
+    if(tRes.ok) await logWaTemplateSend(env, clientId, 'meetings', {template:tpl, phone:to});
     return tRes.ok?{ok:true, via:'template'}:{ok:false, error:`${res.error} / template: ${tRes.error}`};
   }catch(e){ return {ok:false, error:String(e?.message||e)}; }
 }
@@ -15032,6 +15116,7 @@ export async function engineMaybeSendHotLeadAlert(env, c, clientId, leadId, prev
     const results=[];
     for(const rcpt of recipients){
       const res=await hotAlertSendOne(creds, cfg, rcpt.phone, params).catch(e=>({ok:false, detail:e.message}));
+      if(res.ok && cfg.template_name) await logWaTemplateSend(env, clientId, 'hot_alert', {template:cfg.template_name, phone:rcpt.phone, leadId});
       await hotAlertLog(env, clientId, leadId, rcpt, reason, res.ok?'sent':'failed', res.detail);
       results.push({...rcpt, ...res});
     }
@@ -15161,6 +15246,7 @@ async function handleHotAlertsTest(request, env){
   if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API not connected — connect WhatsApp in Settings → Channels first.'}, 400);
   const params=hotLeadAlertParams({name:'Test Lead', phone, reason:'test', link:appDashboardBase(env)});
   const out=await hotAlertSendOne(creds, cfg, phone, params).catch(e=>({ok:false, detail:e.message}));
+  if(out.ok && cfg.template_name) await logWaTemplateSend(env, payload.cid, 'hot_alert', {template:cfg.template_name, phone});
   await hotAlertEnsureSchema(env).catch(()=>{});
   await hotAlertLog(env, payload.cid, null, {email:target, phone}, 'test', out.ok?'sent':'failed', out.detail);
   if(out.ok) return json({ok:true});
@@ -15328,6 +15414,7 @@ export async function processMetaLeadgenChange(env, value){
       sendStatus=r.ok?'sent':'failed';
       sendDetail=r.ok?(data?.messages?.[0]?.id||'sent'):(data?.error?.message||'HTTP '+r.status);
       if(r.ok){
+        await logWaTemplateSend(env, clientId, 'lead_ad', {template:cfg.template_name, phone:parsed.phone, leadId:state.leadId});
         welcomeText=metaLeadgenRenderWelcome(cfg.template_name, cfg.params, params);
         const history=(state.history||[]).slice();
         history.push({role:'assistant', content:welcomeText, ts:now});
@@ -20506,7 +20593,7 @@ async function sendSupportTicketResolvedTemplate(env, c, ticket){
   const langCode=c.support_resolved_template_lang||'en';
   const convId=ticket.conv_id;
   if(!convId||!c.chatwoot_base||!c.chatwoot_account_id||!c.chatwoot_token) return;
-  await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`,{
     method:'POST',
     headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},
     body:JSON.stringify({
@@ -20521,6 +20608,7 @@ async function sendSupportTicketResolvedTemplate(env, c, ticket){
       }
     })
   });
+  if(r.ok) await logWaTemplateSend(env, c.Id, 'support', {template:templateName});
 }
 
 async function handleSupportTicketsList(request, env){
@@ -29674,6 +29762,7 @@ async function fpSendRemindersForClient(env, clientId){
         body:JSON.stringify({content:msg, message_type:'outgoing', private:false, template_params:{name:templateName, category:cfg.reminder_template_category||'MARKETING', language:cfg.reminder_template_language||'en', processed_params:{1:msg}}})
       });
       if(r.ok){
+        await logWaTemplateSend(env, clientId, 'payment_reminder', {template:templateName, leadId:due.lead_id});
         await env.DB.prepare(`UPDATE fp_expected_dues SET reminder_sent_at=? WHERE id=?`).bind(new Date().toISOString(), due.id).run();
         await fpLogReminderAttempt(env, clientId, due.id, 'sent', null);
       }else{
@@ -31326,6 +31415,7 @@ const CEO_DEPS={
   metaAppSecret:env=>env.META_APP_SECRET||'',
   onTaskChanged:ceoBotTaskChanged,
   waSend:ceoBotWaSend, waLookup:ceoBotWaLookup,
+  onTemplateSent:(env, cid, info)=>logWaTemplateSend(env, cid, 'ceo_bot', info),
   webhookBase:env=>env.WORKER_BASE_URL||'',
 };
 // POST /admin/ceo-bot {client_id, enabled:'Yes'|'No'} — super-admin only. ceo_bot_enabled is in
@@ -32790,7 +32880,7 @@ async function hcDispatchJobs(env,jobs){
   // this path keeps appointment CRUD usable during local tests or a staggered deployment.
   for(const job of jobs) await hcProcessQueueJob(env,job);
 }
-async function hcSendMetaAppointmentTemplate(c,row,templateName,language,kind){
+async function hcSendMetaAppointmentTemplate(env,c,row,templateName,language,kind){
   if(!c?.wa_phone_id||!c?.wa_token) throw new Error('WhatsApp Business API is not connected');
   const phone=String(row.patient_phone||'').replace(/\D/g,'');
   if(!phone) throw new Error('Appointment has no valid patient phone');
@@ -32802,6 +32892,7 @@ async function hcSendMetaAppointmentTemplate(c,row,templateName,language,kind){
   });
   const data=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data?.error?.message||`WhatsApp template HTTP ${r.status}`);
+  await logWaTemplateSend(env,c.Id,'appointments',{template:templateName,phone});
 }
 // "2026-10-07" → "Wed, 7 Oct 2026"; "14:30" → "2:30 PM". Unparseable values pass through as-is.
 export function apptFormatDate(date){
@@ -32873,7 +32964,7 @@ async function hcSendAppointmentNotification(env,job){
     const settings=await hcAutomationSettings(env,job.client_id);
     const templateName=job.kind==='confirmation'||job.kind==='cancellation'?settings.confirmation_template_name:settings.reminder_template_name;
     const convId=await apptFindConversation(env,c,job.client_id,row.patient_phone);
-    if(templateName) await hcSendMetaAppointmentTemplate(c,row,templateName,settings.template_language,job.kind);
+    if(templateName) await hcSendMetaAppointmentTemplate(env,c,row,templateName,settings.template_language,job.kind);
     else{
       if(!convId) throw new Error('No Chatwoot conversation and no approved WhatsApp template configured');
       if(!await engineSendChatwootReply(env,c,job.client_id,convId,hcAppointmentMessage(row,job.kind,c))) throw new Error('Chatwoot did not accept the appointment message');
@@ -35249,6 +35340,8 @@ export default {
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
+      else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
+      else if(url.pathname==='/billing/usage' && request.method==='GET'){ res=await handleBillingUsage(request, env); }
       else if(url.pathname==='/billing/plans' && request.method==='GET'){ res=await handleBillingPlans(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }
       else if(url.pathname==='/billing/portal' && request.method==='GET'){ res=await handleBillingPortal(request, env); }
