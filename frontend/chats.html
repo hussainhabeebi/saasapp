@@ -132,7 +132,26 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
 .fb-row{display:flex;gap:4px;padding:3px 10px;align-items:center}.fb-row select,.fb-row input{height:30px;border:1px solid #d1d7db;border-radius:6px;font-size:12.5px;padding:0 5px;min-width:0;margin:0;width:auto;flex:1}.fb-row button{width:auto;padding:4px 8px}
 .view-pill{border-style:dashed}
 .stage-chip{font-size:11.5px;border-radius:10px;padding:2px 8px;background:#eef6ff;color:#1d4f91;white-space:nowrap;cursor:pointer;border:0}
-@media(max-width:700px){.hdr-ctl .t{display:none}.hdr-ctl{gap:4px}.hdr-pill,.hdr-btn,.split button{padding:5px 7px}.vlist .contact{height:76px}}
+/* Phones: the name, a visible Call button and ⋮ stay on the first header row; the status pills
+   (bot/human, assign, labels, priority, window timer, resolve) get their own scrollable row below. */
+.call-btn{color:var(--wa-dark)}.mob-only{display:none!important}
+@media(max-width:700px){
+ .chat-top{height:auto!important;flex-wrap:wrap;row-gap:6px;padding:8px 8px 6px}
+ .chat-top .chat-meta{order:1;min-width:0}.chat-top .back{order:0}.chat-top>.avatar{order:0}
+ .chat-actions{order:2}
+ .chat-actions .call-btn{display:grid;background:#e7fce9;color:var(--wa-dark);width:40px;height:40px}
+ .hdr-ctl{order:3;flex:1 1 100%;overflow-x:auto;scrollbar-width:none;gap:6px;padding:0 2px 2px}.hdr-ctl::-webkit-scrollbar{display:none}
+ .hdr-ctl>*{flex:none}
+ .hdr-pill,.hdr-btn,.split button{padding:6px 10px;font-size:13px}
+ .vlist .contact{height:76px}
+ /* Menus become bottom sheets with big tap targets. */
+ .menu,.dd{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;min-width:0!important;max-height:72vh;overflow:auto;border-radius:16px 16px 0 0;padding:8px 0 calc(10px + env(safe-area-inset-bottom));z-index:95;box-shadow:0 -4px 20px rgba(0,0,0,.18)}
+ .sheet-backdrop{position:fixed;inset:0;background:rgba(11,20,26,.45);z-index:94}
+ .mob-only{display:block!important}
+ .menu::before,.dd::before{content:"";display:block;width:40px;height:4px;border-radius:2px;background:#d1d7db;margin:2px auto 8px}
+ .menu button,.dd button{padding:14px 20px;font-size:15.5px}
+ .dd input{height:42px;font-size:15px}
+}
 @media(max-width:1100px) and (min-width:701px){.hdr-ctl .t{display:none}}
 </style>
 </head>
@@ -522,10 +541,10 @@ async function refreshMessages(lead,stick=false){
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
 function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button>`}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn" title="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -648,7 +667,15 @@ function wireThread(){
  t.addEventListener('dragleave',()=>t.classList.remove('drop'));
  t.addEventListener('drop',e=>{t.classList.remove('drop');if(isIg(current)||!e.dataTransfer?.files?.length)return;e.preventDefault();openPreview([...e.dataTransfer.files])});
 }
-function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force)}
+function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force);syncBackdrop()}
+// Phones: menus are bottom sheets over a dimmed backdrop; tapping the backdrop closes them. The
+// backdrop lives in #main: the ⋮ sheet is inside #main's stacking layer and must sit above it.
+function syncBackdrop(){
+ const open=matchMedia('(max-width:700px)').matches&&(!!$('ddMenu')||($('chatMenu')&&!$('chatMenu').classList.contains('hidden')));
+ let b=$('sheetBackdrop');
+ if(open&&!b){b=document.createElement('div');b.id='sheetBackdrop';b.className='sheet-backdrop';b.addEventListener('click',e=>{e.stopPropagation();closeDd();toggleMenu(false)});($('main')||document.body).appendChild(b)}
+ else if(!open&&b)b.remove();
+}
 function toggleThreadSearch(){toggleMenu(false);const s=$('threadSearch');s.classList.toggle('hidden');if(s.classList.contains('hidden')){$('threadSearchInput').value='';searchThread('')}else $('threadSearchInput').focus()}
 function togglePanel(id){const el=$(id);const open=el.classList.contains('hidden');closePopovers();if(open)el.classList.remove('hidden')}
 function closePopovers(){['emojiPanel','attachMenu','cannedPanel'].forEach(id=>$(id)?.classList.add('hidden'))}
@@ -948,9 +975,9 @@ function renderHeaderCtl(){
  const owner=lc(l.Owner),st=l._v2?.status||(l.ConvResolved==='Yes'?'resolved':'open'),done=st==='resolved'||st==='snoozed';
  el.innerHTML=`<button class="hdr-pill ${human?'human':needs?'needs':''}" id="botPill" title="${human?'A person is handling this chat — click to hand it back to the bot':'Click to take over from the bot'}" onclick="toggleHandover()">${human?'👤':'🤖'} <span class="t">${human?'Human':needs?'Bot · needs you':'Bot active'}</span></button><button class="hdr-btn" id="assignBtn" title="Assign" onclick="openAssign(this)">${owner?`<span class="asg">${esc(agentInitials(owner))}</span><span class="t">${esc(agentName(owner))}</span>`:'👤 <span class="t">Assign</span>'}</button>${V2?`<button class="hdr-btn" id="labelBtn" title="Labels" onclick="openLabelPicker(this)">🏷${labelsOf(l).length?` <span class="t">${esc(labelsOf(l).slice(0,2).join(', '))}${labelsOf(l).length>2?' +'+(labelsOf(l).length-2):''}</span>`:''}</button><button class="hdr-btn" id="prioBtn" title="Priority" onclick="openPriority(this)"><i class="prio-dot p${l._v2?.priority||0}"></i><span class="t">${PRIO[l._v2?.priority||0]}</span></button>`:''}${l._rec?.Stage?`<button class="stage-chip" title="Lead stage — change it in the contact panel" onclick="toggleInfo(true)">${esc(l._rec.Stage)}</button>`:''}${windowChip(l)}${viewersChip(l)}<span class="split ${done?'resolved':''}"><button id="resolveBtn" onclick="toggleResolve()">${done?'↺ <span class="t">'+(st==='snoozed'?'Unsnooze':'Reopen')+'</span>':'✓ <span class="t">Resolve</span>'}</button>${V2?'<button title="More: snooze, pending" onclick="openResolveMenu(this)">▾</button>':''}</span>`;
 }
-function closeDd(){$('ddMenu')?.remove()}
+function closeDd(){$('ddMenu')?.remove();syncBackdrop()}
 let ddJustOpened=false,keyNav=false;
-function openDd(anchor,html){closeDd();ddJustOpened=true;setTimeout(()=>ddJustOpened=false);const d=document.createElement('div');d.id='ddMenu';d.className='dd';d.innerHTML=html;document.body.appendChild(d);const r=anchor.getBoundingClientRect(),w=d.offsetWidth;d.style.top=Math.min(r.bottom+6,innerHeight-d.offsetHeight-8)+'px';d.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+'px';d.addEventListener('click',e=>e.stopPropagation());return d}
+function openDd(anchor,html){closeDd();ddJustOpened=true;setTimeout(()=>ddJustOpened=false);const d=document.createElement('div');d.id='ddMenu';d.className='dd';d.innerHTML=html;document.body.appendChild(d);const r=anchor.getBoundingClientRect(),w=d.offsetWidth;d.style.top=Math.min(r.bottom+6,innerHeight-d.offsetHeight-8)+'px';d.style.left=Math.max(8,Math.min(r.right-w,innerWidth-w-8))+'px';d.addEventListener('click',e=>e.stopPropagation());syncBackdrop();return d}
 function openAssign(btn){
  const staff=isStaff(),owner=lc(current.Owner);
  const items=q=>agentsList().filter(a=>!q||a.name.toLowerCase().includes(q)||a.email.includes(q)).map(a=>`<button ${staff&&a.email!==meEmail?'disabled title="Only an admin can assign to someone else"':''} class="${a.email===owner?'sel':''}" onclick="assignTo('${esc(a.email)}')"><span class="asg">${esc(agentInitials(a.email))}</span>${esc(a.name)}${a.email===meEmail?' (you)':''}</button>`).join('')||'<div class="hint">No match</div>';
@@ -1107,7 +1134,7 @@ async function summarise(open){
  if(current===l)renderInfo();
 }
 // ── Contact sidebar ──
-function toggleInfo(force){const p=$('infoPanel');if(!p)return;const open=force===undefined?p.classList.contains('hidden'):force;p.classList.toggle('hidden',!open);try{localStorage.setItem('lv_chats_info',open?'1':'0')}catch{}if(open){renderInfo();if(current&&current.NotesList===undefined)fetchNotes(current)}}
+function toggleInfo(force){const p=$('infoPanel');if(!p)return;const open=force===undefined?p.classList.contains('hidden'):force;p.classList.toggle('hidden',!open);const top=document.querySelector('.chat-top');if(top)p.style.top=top.offsetHeight+'px';try{localStorage.setItem('lv_chats_info',open?'1':'0')}catch{}if(open){renderInfo();if(current&&current.NotesList===undefined)fetchNotes(current)}}
 const INFO_FIELDS=[['Stage','Lead stage'],['Score','Score'],['Source','Source'],['LeadSource','Lead source'],['AdCampaign','Ad campaign'],['AdName','Ad'],['LeadFormName','Lead form'],['Destination','Destination'],['TravelFrom','Travel from'],['TravelTo','Travel to'],['TripType','Trip type'],['PaxAdults','Adults'],['PaxChildren','Children'],['Budget','Budget'],['Doctor','Preferred doctor'],['AppointmentDate','Appointment'],['ServiceCategory','Service'],['InterestedProduct','Interested in'],['ProductCategory','Category'],['OrderId','Order ID'],['DeliveryStatus','Delivery status']];
 function firstResponse(h){const i=h.findIndex(m=>!isOut(m)&&m.kind!=='event');if(i<0)return'';const j=h.findIndex((m,k)=>k>i&&isOut(m)&&m.kind!=='event');if(j<0)return'';const ms=new Date(h[j].ts)-new Date(h[i].ts);if(!(ms>=0))return'';const m=Math.round(ms/60000);return m<1?'under a minute':m<60?m+' min':Math.floor(m/60)+'h '+(m%60)+'m'}
 function renderInfo(){
@@ -1253,7 +1280,7 @@ function searchThread(q){
 function stepThreadSearch(d){if(!tsHits.length)return;tsIdx=(tsIdx+d+tsHits.length)%tsHits.length;tsHits.forEach((m,k)=>m.classList.toggle('cur',k===tsIdx));tsHits[tsIdx].scrollIntoView({block:'center'});const nav=$('tsCount');if(nav)nav.textContent=`${tsIdx+1}/${tsHits.length}`}
 
 // Close popovers/menus on outside click; Esc backs out of whatever is open, innermost first.
-document.addEventListener('click',e=>{if(!ddJustOpened&&!e.target.closest('.dd'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions'))$('chatMenu')?.classList.add('hidden')});
+document.addEventListener('click',e=>{if(!ddJustOpened&&!e.target.closest('.dd'))closeDd();if(!e.target.closest('.popover,#emojiBtn,#attachBtn'))closePopovers();if(!e.target.closest('.chat-actions')){$('chatMenu')?.classList.add('hidden');syncBackdrop()}});
 document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('tplOv')&&!$('tplOv').classList.contains('hidden'))return tplBack();if(!$('lightbox')?.classList.contains('hidden')&&$('lightbox'))return $('lightbox').classList.add('hidden');if($('previewOv')&&!$('previewOv').classList.contains('hidden'))return closePreview();if(rec)return cancelRecording();if(document.querySelector('.popover:not(.hidden)'))return closePopovers();if(replyTarget)return clearReply();if($('chatMenu')&&!$('chatMenu').classList.contains('hidden'))return toggleMenu(false)});
 window.addEventListener('message',async e=>{
  if(!embedded||e.source!==window.parent||e.data?.source!=='lv-dashboard')return;
