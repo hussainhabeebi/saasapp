@@ -422,3 +422,46 @@ test('@mention picker in internal notes', async ({ page }) => {
   await page.locator('#msg').press('Enter');
   await expect(page.locator('#msg')).toHaveValue('Please call @Shafna ');
 });
+
+test.describe('on a phone', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  test('the header keeps the name, a visible Call button and ⋮; pills get their own row; menus are bottom sheets', async ({ page }) => {
+    await open(page);
+    await page.locator('#list .contact', { hasText: 'Asha' }).click();
+    const call = page.locator('#callBtn');
+    await expect(call).toBeVisible();
+    await expect(call).toHaveAttribute('href', 'tel:919800000001');
+    await expect(call).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('.chat-name')).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('.chat-actions [title="Menu"]')).toBeInViewport({ ratio: 1 });
+    const nameBox = await page.locator('.chat-name').boundingBox(), pillBox = await page.locator('#botPill').boundingBox();
+    expect(pillBox.y).toBeGreaterThan(nameBox.y + nameBox.height - 1); // pills sit on the row below
+    await expect(page.locator('#botPill')).toContainText('Human');      // labels are shown, not hidden
+    await page.locator('.chat-actions [title="Menu"]').click();
+    const menu = page.locator('#chatMenu');
+    await expect(menu).toBeVisible();
+    const mb = await menu.boundingBox();
+    expect(Math.round(mb.width)).toBe(390);
+    expect(Math.round(mb.y + mb.height)).toBe(844);
+    await expect(page.locator('#sheetBackdrop')).toBeVisible();
+    await page.locator('#sheetBackdrop').click({ position: { x: 20, y: 40 } });
+    await expect(menu).toBeHidden();
+    await expect(page.locator('#sheetBackdrop')).toHaveCount(0);
+    await page.locator('#assignBtn').click();
+    const dd = await page.locator('#ddMenu').boundingBox();
+    expect(Math.round(dd.y + dd.height)).toBe(844);
+    await page.locator('#sheetBackdrop').click({ position: { x: 20, y: 40 } });
+    await expect(page.locator('#ddMenu')).toHaveCount(0);
+  });
+});
+
+test.describe('on a phone (sheet stacking)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  test('menu items are tappable above the backdrop', async ({ page }) => {
+    const { calls } = await open(page);
+    await page.locator('#list .contact', { hasText: 'Binu' }).click();
+    await page.locator('.chat-actions [title="Menu"]').click();
+    await page.locator('#chatMenu button', { hasText: 'Mark as unread' }).click(); // fails if covered
+    await expect.poll(() => calls.act.some(a => a.op === 'mark_unread')).toBe(true);
+  });
+});
