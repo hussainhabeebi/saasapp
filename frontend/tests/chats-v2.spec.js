@@ -137,11 +137,11 @@ test('tabs and the bot/human filter are server views', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#filters .pill', { hasText: 'Resolved' }).click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Chitra']);
-  expect(calls.list.at(-1).view).toBe('resolved');
+  await expect.poll(() => calls.list.at(-1).view).toBe('resolved');
   await page.locator('#filters .pill', { hasText: 'All' }).click();
   await page.locator('#segRow .pill', { hasText: 'Human' }).click();
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha']);
-  expect(calls.list.at(-1)).toMatchObject({ view: 'all', handler: 'human' });
+  await expect.poll(() => calls.list.at(-1)).toMatchObject({ view: 'all', handler: 'human' });
 });
 
 test('a long list is virtualised and pages in as you scroll', async ({ page }) => {
@@ -174,16 +174,17 @@ test('header: take over from the bot, assign, and snooze from Resolve ▾', asyn
   await expect(page.locator('#botPill')).toContainText('Bot active');
   await page.locator('#botPill').click();
   await expect(page.locator('#botPill')).toContainText('Human');
-  expect(calls.act.at(-1)).toMatchObject({ op: 'handler', ids: [2], args: { mode: 'human' } });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'handler', ids: [2], args: { mode: 'human' } });
 
   await page.locator('#assignBtn').click();
   await page.locator('#asgQ').fill('shaf');
   await page.locator('#ddMenu button', { hasText: 'Shafna' }).click();
   await expect(page.locator('#assignBtn')).toContainText('Shafna');
-  expect(calls.act.at(-1)).toMatchObject({ op: 'assign', args: { email: SHAFNA } });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'assign', args: { email: SHAFNA } });
 
   await page.locator('.split button').nth(1).click();
   await page.locator('#ddMenu button', { hasText: '1 hour' }).click();
+  await expect.poll(() => calls.act.at(-1)?.op).toBe('snooze');
   const snooze = calls.act.at(-1);
   expect(snooze.op).toBe('snooze');
   const mins = (Date.parse(snooze.args.until) - Date.now()) / 60000;
@@ -245,12 +246,12 @@ test('labels: pick or create from the header; filter the list by label', async (
   await page.locator('#labelBtn').click();
   await page.locator('#lblQ').fill('Payment due');
   await page.locator('#ddMenu button', { hasText: 'Create' }).click();
-  expect(calls.act.at(-1)).toMatchObject({ op: 'label_add', ids: [2], args: { label: 'Payment due' } });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'label_add', ids: [2], args: { label: 'Payment due' } });
   await expect(page.locator('#labelBtn')).toContainText('Payment due');
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.lbl')).toHaveText(['Payment due']);
   await page.locator('#prioBtn').click();
   await page.locator('#ddMenu button', { hasText: 'Urgent' }).click();
-  expect(calls.act.at(-1)).toMatchObject({ op: 'priority', args: { value: 4 } });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'priority', args: { value: 4 } });
   await expect(page.locator('#list .contact', { hasText: 'Binu' }).locator('.prio.p4')).toBeVisible();
   await page.locator('#labelFilterBtn').click();
   await page.locator('#ddMenu button', { hasText: 'Hot' }).click();
@@ -265,12 +266,12 @@ test('bulk: select rows, then resolve them in one go; right-click opens the row 
   await page.locator('#list .contact', { hasText: 'Binu' }).click(); // in selection mode a click selects
   await expect(page.locator('#bulkBar b')).toHaveText('2 selected');
   await page.locator('#bulkBar button', { hasText: 'Resolve' }).click();
-  expect(calls.act.at(-1)).toMatchObject({ op: 'resolve', ids: ['1', '2'] });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'resolve', ids: ['1', '2'] });
   await expect(page.locator('#bulkBar')).toHaveCount(0);
   await page.locator('#filters .pill', { hasText: 'Resolved' }).click();
   await page.locator('#list .contact', { hasText: 'Chitra' }).click({ button: 'right' });
   await page.locator('#ddMenu button', { hasText: 'Reopen' }).click();
-  expect(calls.act.at(-1)).toMatchObject({ op: 'reopen', ids: ['3'] });
+  await expect.poll(() => calls.act.at(-1)).toMatchObject({ op: 'reopen', ids: ['3'] });
 });
 
 test('send & resolve, clickable phone numbers and emails, and the 24-hour countdown', async ({ page }) => {
