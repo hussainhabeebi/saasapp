@@ -4263,6 +4263,7 @@ const ROLES = {
             <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">
               <div class="stat"><div class="stat-lbl">WhatsApp Credits</div><div class="stat-val" id="billingWaCredits">0</div></div>
               <div class="stat"><div class="stat-lbl">Messages Sent</div><div class="stat-val" id="billingUsageMessages">0</div></div>
+              <div class="stat" id="billingUsageTemplatesStat"><div class="stat-lbl">Templates Sent</div><div class="stat-val" id="billingUsageTemplates">0</div></div>
               <div class="stat"><div class="stat-lbl">Leads Captured</div><div class="stat-val" id="billingUsageLeads">0</div></div>
               <div class="stat"><div class="stat-lbl">Conversion Rate</div><div class="stat-val" id="billingUsageConv">0%</div></div>
             </div>
@@ -14929,11 +14930,31 @@ function computeBillingUsage(){
   (allLeads||[]).forEach(l=>{
     if(!l.ConvHistory) return;
     let hist=[]; try{hist=JSON.parse(l.ConvHistory);}catch(e){return;}
-    messages+=hist.filter(m=>m.role==='assistant' && String(m.ts||'').slice(0,7)===monthPrefix).length;
+    // Template turns are counted server-side (GET /billing/usage) from every send path, so they're
+    // left out here to avoid counting the same message twice.
+    messages+=hist.filter(m=>m.role==='assistant' && m.by!=='template' && String(m.ts||'').slice(0,7)===monthPrefix).length;
   });
   const convertedThisMonth=leadsThisMonth.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
   const convRate=leadsThisMonth.length?Math.round(convertedThisMonth/leadsThisMonth.length*100):0;
-  return {messages, leads:leadsThisMonth.length, convRate};
+  return {messages, leads:leadsThisMonth.length, convRate, monthPrefix};
+}
+
+// WhatsApp templates sent this month across every feature (broadcasts, follow-ups, automations,
+// lead-ad welcomes, reminders…) — logged by the Worker at send time (wa_template_sends).
+const BILLING_TEMPLATE_SOURCE_LABELS={manual:'Chats',broadcast:'Broadcast',followup:'Follow-ups',automation:'Automations',
+  calendar:'Calendar events',monthly_marketing:'Monthly marketing',shopify:'Shopify',meetings:'Meetings',hot_alert:'Hot-lead alerts',
+  lead_ad:'Lead-ad welcomes',support:'Support',payment_reminder:'Payment reminders',appointments:'Appointments',ceo_bot:'CEO Bot'};
+async function loadBillingTemplateUsage(usage){
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/usage?month=${encodeURIComponent(usage.monthPrefix)}`,{headers:ncAuthHeaders()});
+    if(!r.ok) return;
+    const d=await r.json();
+    const n=Number(d.templates_sent)||0;
+    $id('billingUsageTemplates').textContent=n.toLocaleString();
+    $id('billingUsageMessages').textContent=(usage.messages+n).toLocaleString();
+    $id('billingUsageTemplatesStat').title=Object.entries(d.by_source||{}).sort((a,b)=>b[1]-a[1])
+      .map(([k,v])=>`${BILLING_TEMPLATE_SOURCE_LABELS[k]||k}: ${v}`).join('\n')||'No templates sent this month';
+  }catch(e){ /* leave the client-side counts in place */ }
 }
 
 let _billingCurrency=(typeof localStorage!=='undefined'&&localStorage.getItem('lv_billing_currency'))||CONFIG.BILLING_CURRENCIES[0];
@@ -15099,6 +15120,7 @@ function renderBillingPage(){
   $id('billingUsageMessages').textContent=usage.messages;
   $id('billingUsageLeads').textContent=usage.leads;
   $id('billingUsageConv').textContent=usage.convRate+'%';
+  loadBillingTemplateUsage(usage);
 }
 
 async function billingInit(){

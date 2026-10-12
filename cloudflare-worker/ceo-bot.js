@@ -272,6 +272,7 @@ export async function ceoSend(env, deps, ctx, {phone, email='', role='', kind, t
   try{ res=await deps.waSend(ctx.creds, {messaging_product:'whatsapp', recipient_type:'individual', to:phone, ...body}); }
   catch(e){ res={ok:false, error:String(e?.message||e)}; }
   await ceoLog(env, ctx.cid, {...base, status:res?.ok?'sent':'failed', detail:res?.ok?(inWindow?'':'template'):(res?.error||'send failed')});
+  if(res?.ok && !inWindow) await deps.onTemplateSent?.(env, ctx.cid, {template:ctx.cfg.template.name, phone});
   return res?.ok?{ok:true}:{ok:false, error:res?.error};
 }
 const sendAdmin=(env, deps, ctx, kind, text, extra={})=>ceoSend(env, deps, ctx, {phone:ctx.admin.phone, email:ctx.admin.email, role:'admin', kind, text, ...extra});

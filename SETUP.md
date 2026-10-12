@@ -2158,7 +2158,15 @@ we already know which CLIENTS row this is):
    can't be bypassed by calling the API directly.
 8. **Usage dashboard** — computed client-side from leads already loaded into the dashboard
    (`ConvHistory` entries with `role:'assistant'` this calendar month = messages sent, lead count
-   this month = leads captured, terminal-stage ratio = conversion rate). No new tracking needed.
+   this month = leads captured, terminal-stage ratio = conversion rate). **Templates Sent** comes
+   from the Worker: every WhatsApp template send path (Chats, Broadcast, Follow-ups, Automations,
+   Calendar events, Monthly marketing, Shopify, Meetings, Hot-lead alerts, Lead-ad welcomes, Support,
+   Payment reminders, Appointments, CEO Bot) logs a row to D1 `wa_template_sends`
+   (`logWaTemplateSend`, `migrations/0113_wa_template_sends.sql`) after a successful send, and
+   `GET /billing/usage?month=YYYY-MM` returns the month's total plus a per-source breakdown (shown as
+   the card's hover tooltip). Messages Sent = non-template bot/agent replies + templates sent.
+   Templates staff send by hand from inside Chatwoot itself aren't counted (they never pass through
+   the Worker's send code).
 
 **Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
