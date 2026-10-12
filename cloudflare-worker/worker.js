@@ -7501,6 +7501,37 @@ async function handleAiRepeatCustomers(request, env){
   return json({has_orders_table:true, currency:orders[0]?.currency||'', customers, repeat_customer_count:customers.length, total_customers:Object.keys(byPhone).length});
 }
 
+// GET /ecom/order-phones → every customer phone (digits only) with at least one real order, plus
+// the date of their first one. The dashboard uses it to count a lead as converted once that
+// customer has placed an order, whatever stage the lead record is in (isConvertedLead) — orders
+// from chat, the storefront, Shopify and the Orders page all land in the same table, so this one
+// read covers them all. Drafts the bot is still collecting and cancelled/refunded/failed orders
+// don't count.
+const ECOM_NON_CONVERTING_STATUSES=new Set(['draft','collecting','cancelled','canceled','refunded','failed']);
+async function handleEcomOrderPhones(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  if(!isEcomEnabled(c)) return json({has_orders_table:false, phones:{}});
+  const tableId=await ecomResolveTable(env, payload.cid, 'orders');
+  if(!tableId) return json({has_orders_table:false, phones:{}});
+  const phones={};
+  for(let page=1; page<=25; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    for(const o of list){
+      if(ECOM_NON_CONVERTING_STATUSES.has(String(o.status||'').trim().toLowerCase())) continue;
+      const phone=String(o.customer_phone||'').replace(/\D/g,''); if(!phone) continue;
+      const date=String(o.order_date||'');
+      if(!(phone in phones) || (date && (!phones[phone] || date<phones[phone]))) phones[phone]=date;
+    }
+    if(list.length<200) break;
+  }
+  return json({has_orders_table:true, phones});
+}
+
 // Webhook receiver — server-to-server from Shopify, so auth is the HMAC header, not a session.
 // Reads the raw body first and verifies before touching it as JSON (order matters: the HMAC is
 // computed over the exact bytes Shopify sent).
@@ -35309,6 +35340,7 @@ export default {
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
       else if(url.pathname==='/shopify/disconnect' && request.method==='POST'){ res=await handleShopifyDisconnect(request, env); }
       else if(url.pathname==='/billing/plan-status' && request.method==='GET'){ res=await handleBillingPlanStatus(request, env); }
+      else if(url.pathname==='/ecom/order-phones' && request.method==='GET'){ res=await handleEcomOrderPhones(request, env); }
       else if(url.pathname==='/billing/usage' && request.method==='GET'){ res=await handleBillingUsage(request, env); }
       else if(url.pathname==='/billing/plans' && request.method==='GET'){ res=await handleBillingPlans(request, env); }
       else if(url.pathname==='/billing/checkout-subscription' && request.method==='POST'){ res=await handleBillingCheckoutSubscription(request, env); }

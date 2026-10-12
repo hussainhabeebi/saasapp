@@ -6003,6 +6003,7 @@ async function loadAll(silent=false, force=false){
       const {ts,list}=JSON.parse(cached);
       if(list&&list.length){
         allLeads=_carryConvHistory(list);
+        loadEcomOrderPhones();
         renderHome();
         pdTryRestore(); // restore power dialer if Android killed the tab during a call
         if(!hadLeads) _rerenderVisibleLeads();
@@ -6041,6 +6042,7 @@ async function loadAll(silent=false, force=false){
     }
     allLeads=_carryConvHistory(list);
     _cacheLeads(allLeads);
+    loadEcomOrderPhones();
     renderHome();
     pdTryRestore(); // restore power dialer if Android killed the tab during a call
     if(!hadLeads) _rerenderVisibleLeads();
@@ -6260,7 +6262,7 @@ function renderHome(){
   try{updateChatBadge();}catch(e){}
 
   const ind=getIndustry();
-  const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+  const booked=allLeads.filter(isWonLead);
   const active=allLeads.filter(l=>!TERMINAL.has(l.Stage));
   const rate=allLeads.length?Math.round(booked.length/allLeads.length*100)+'%':'0%';
   try{$id('statsGrid').innerHTML=`
@@ -6483,7 +6485,7 @@ function renderConvTrend(){
     const wEndStr=d.toISOString().slice(0,10);
     labels.push(wStartStr.slice(5));
     newCounts.push(allLeads.filter(l=>{const dt=(l.Date||'').slice(0,10);return dt>=wStartStr&&dt<=wEndStr;}).length);
-    convCounts.push(allLeads.filter(l=>{const dt=(l.Date||'').slice(0,10);return dt>=wStartStr&&dt<=wEndStr&&(l.Stage==='won'||l.Stage==='converted'||TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');}).length);
+    convCounts.push(allLeads.filter(l=>{const dt=(l.Date||'').slice(0,10);return dt>=wStartStr&&dt<=wEndStr&&isWonLead(l);}).length);
   }
   if(_convTrendChart){_convTrendChart.destroy();}
   _convTrendChart=new Chart(canvas,{
@@ -6503,7 +6505,7 @@ function renderAgentTable(){
     const o=l.Owner||'Unassigned';
     if(!agentGroups[o])agentGroups[o]={total:0,booked:0};
     agentGroups[o].total++;
-    if(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')agentGroups[o].booked++;
+    if(isWonLead(l))agentGroups[o].booked++;
   });
   const rows=Object.entries(agentGroups).sort((a,b)=>b[1].total-a[1].total);
   if(!rows.length){$id('agentTable').innerHTML='<div style="color:var(--muted);font-size:13px">No leads yet</div>';return;}
@@ -10585,7 +10587,7 @@ function renderMorningBriefing(leads){
   const newToday=leads.filter(l=>l.Date&&l.Date.slice(0,10)===today).length;
   const hot=leads.filter(l=>l.Score==='Hot').length;
   const ind=getIndustry();
-  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const conv=leads.filter(isWonLead).length;
   const convRate=leads.length?Math.round(conv/leads.length*100):0;
   const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
   const overdue=tasks.filter(t=>t.due.slice(0,10)<today).length;
@@ -10653,7 +10655,7 @@ function bizBuildSummary(leads){
     if(l.Source) sources[l.Source]=(sources[l.Source]||0)+1;
     if(l.AgentName||l.Agent) { const a=l.AgentName||l.Agent; agents[a]=(agents[a]||0)+1; }
   }
-  const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const conv=leads.filter(isWonLead).length;
   const tasks=computeAllTasks().filter(t=>(t._type==='reminder'||t._type==='manual')&&t.due&&t.status!=='done');
   return {
     totalLeads:leads.length,
@@ -10822,7 +10824,7 @@ function bizChatQuery(q,leads){
 
   // Conversion rate
   if(/conver/i.test(ql)){
-    const conv=leads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+    const conv=leads.filter(isWonLead).length;
     const rate=leads.length?Math.round(conv/leads.length*100):0;
     return `📈 Conversion rate: <strong>${rate}%</strong> — ${conv} of ${leads.length} lead${leads.length!==1?'s':''} ${esc(ind.booked||'converted')}.`;
   }
@@ -13335,7 +13337,33 @@ function sendLeadCapiEvent(leadId, event, extra){
 // used to inline this same (Stage==='won'||'converted'||TERMINAL-but-not-handover) check
 // separately; the Revenue Forecast section below and the ClosedAt stamping just below need the
 // identical definition, so a new terminal-stage name only ever needs adding here.
-function isWonLead(l){ return l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover'); }
+// Ecommerce: a lead also counts as won once that customer has a real order in the Orders table
+// (chat, storefront, Shopify or the Orders page — see leadHasEcomOrder), whatever its Stage.
+function isWonLead(l){ return l.Stage==='won'||l.Stage==='converted'||(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')||leadHasEcomOrder(l); }
+
+// Customer phones with at least one non-draft, non-cancelled order (GET /ecom/order-phones),
+// keyed by the last 10 digits so "+91 98…" on the lead matches "98…" on the order.
+var _ecomOrderPhones=null, _ecomOrderPhonesAt=0; // var: isWonLead can run before this line is reached
+function _ecomPhoneKey(p){ return String(p||'').replace(/\D/g,'').slice(-10); }
+function leadHasEcomOrder(l){
+  if(!_ecomOrderPhones) return false;
+  const k=_ecomPhoneKey(l.Phone);
+  return k.length>=7 && _ecomOrderPhones.has(k);
+}
+async function loadEcomOrderPhones(){
+  if(!clientRecord || !(clientRecord.industry==='ecommerce'||clientRecord.ecom_enabled==='Yes')){ _ecomOrderPhones=null; return; }
+  if(Date.now()-_ecomOrderPhonesAt<60000) return;
+  _ecomOrderPhonesAt=Date.now();
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/ecom/order-phones`,{headers:ncAuthHeaders()});
+    if(!r.ok) return;
+    const d=await r.json();
+    const next=new Set(Object.keys(d.phones||{}).map(_ecomPhoneKey).filter(k=>k.length>=7));
+    const changed=!_ecomOrderPhones || next.size!==_ecomOrderPhones.size || [...next].some(k=>!_ecomOrderPhones.has(k));
+    _ecomOrderPhones=next;
+    if(changed && allLeads.length){ renderHome(); _rerenderVisibleLeads(); }
+  }catch(e){ console.error('[loadEcomOrderPhones]', e); }
+}
 // 'lost' matches what Human Deals actually writes (HD_OUTCOME_STAGE's 'Lost'->'lost').
 function isLostLead(l){ return l.Stage==='lost'; }
 
@@ -14934,7 +14962,7 @@ function computeBillingUsage(){
     // left out here to avoid counting the same message twice.
     messages+=hist.filter(m=>m.role==='assistant' && m.by!=='template' && String(m.ts||'').slice(0,7)===monthPrefix).length;
   });
-  const convertedThisMonth=leadsThisMonth.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length;
+  const convertedThisMonth=leadsThisMonth.filter(isWonLead).length;
   const convRate=leadsThisMonth.length?Math.round(convertedThisMonth/leadsThisMonth.length*100):0;
   return {messages, leads:leadsThisMonth.length, convRate, monthPrefix};
 }
@@ -15484,7 +15512,7 @@ async function renderBenchmark(){
     const others=Object.values(byClient).filter(c=>String(Object.keys(byClient).find(k=>byClient[k]===c))!==String(clientId));
     const avgLeads=others.length?Math.round(others.map(c=>c.intents.length).reduce((a,b)=>a+b,0)/others.length):0;
     const myLeads=me.intents.length;
-    const myConv=allLeads.length?Math.round(allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover').length/allLeads.length*100):0;
+    const myConv=allLeads.length?Math.round(allLeads.filter(isWonLead).length/allLeads.length*100):0;
     $id('benchmarkChart').innerHTML=`
       <div class="bar-row"><div style="min-width:80px;font-size:11px">Your leads</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.min(100,Math.round(myLeads/Math.max(myLeads,avgLeads)*100))}%"></div></div><div class="bar-val">${myLeads}</div></div>
       <div class="bar-row"><div style="min-width:80px;font-size:11px">Network avg</div><div class="bar-bg"><div class="bar-fill" style="width:${Math.min(100,Math.round(avgLeads/Math.max(myLeads,avgLeads)*100))}%;background:#94A3B8"></div></div><div class="bar-val">${avgLeads}</div></div>
@@ -15889,7 +15917,7 @@ function getBusinessPolicies(){
 // reads as accurate for "X people booked this week" without needing new backend tracking.
 function getRecentBookingsCount(){
   const cutoff=Date.now()-7*86400000;
-  return allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover'&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
+  return allLeads.filter(l=>isWonLead(l)&&l.Date&&new Date(l.Date).getTime()>=cutoff).length;
 }
 
 function getTeamMembers(){
@@ -19183,7 +19211,7 @@ async function deleteScheduledReport(id){
 /* ── PDF REPORT ── */
 function generateReport(){
   const ind=getIndustry();
-  const booked=allLeads.filter(l=>TERMINAL.has(l.Stage)&&l.Stage!=='human_handover');
+  const booked=allLeads.filter(isWonLead);
   const active=allLeads.filter(l=>!TERMINAL.has(l.Stage));
   const hot=allLeads.filter(l=>l.Score==='Hot').length;
   const rate=allLeads.length?Math.round(booked.length/allLeads.length*100):0;
@@ -19193,7 +19221,7 @@ function generateReport(){
   const stageRows=Object.entries(stageCount).sort((a,b)=>b[1]-a[1]).map(([s,n])=>`<tr><td>${s}</td><td>${n}</td><td>${Math.round(n/allLeads.length*100)}%</td></tr>`).join('');
 
   const agentGroups={};
-  allLeads.forEach(l=>{const o=l.Owner||'Unassigned';if(!agentGroups[o])agentGroups[o]={total:0,booked:0};agentGroups[o].total++;if(TERMINAL.has(l.Stage)&&l.Stage!=='human_handover')agentGroups[o].booked++;});
+  allLeads.forEach(l=>{const o=l.Owner||'Unassigned';if(!agentGroups[o])agentGroups[o]={total:0,booked:0};agentGroups[o].total++;if(isWonLead(l))agentGroups[o].booked++;});
   const agentRows=Object.entries(agentGroups).sort((a,b)=>b[1].total-a[1].total).map(([a,d])=>`<tr><td>${a}</td><td>${d.total}</td><td>${d.booked}</td><td>${d.total?Math.round(d.booked/d.total*100)+'%':'0%'}</td></tr>`).join('');
 
   const hotLeads=allLeads.filter(l=>l.Score==='Hot'||l.HotMoment==='Yes').slice(0,10);

@@ -2167,6 +2167,11 @@ we already know which CLIENTS row this is):
    the card's hover tooltip). Messages Sent = non-template bot/agent replies + templates sent.
    Templates staff send by hand from inside Chatwoot itself aren't counted (they never pass through
    the Worker's send code).
+   **Ecommerce conversions**: for ecommerce clients (`industry==='ecommerce'` or `ecom_enabled`),
+   a lead also counts as converted once its phone (last 10 digits) has an order in the Orders table
+   that isn't draft/collecting/cancelled/refunded/failed — `GET /ecom/order-phones`, read by the
+   dashboard into `leadHasEcomOrder`, which `isWonLead` checks. Every conversion number (Home,
+   Agent Performance, the PDF report, this card) goes through `isWonLead`.
 
 **Not yet verified against a live Stripe account**: the Checkout/Portal/webhook request shapes
 follow Stripe's public API docs, but this hasn't been smoke-tested end-to-end — test the full
