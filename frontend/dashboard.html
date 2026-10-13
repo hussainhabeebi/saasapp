@@ -2589,6 +2589,19 @@ const ROLES = {
           </div>
 
           <div class="settings-section">
+            <div class="s-head">🤝 Human Deals Visibility</div>
+            <div class="s-note">Choose who sees which deals on the Deals tab. "Owner only" shows each teammate just the deals assigned to them; the account owner and Admin / General Manager roles always see every deal.</div>
+            <select class="form-input" id="cfgHdVisibility" style="max-width:320px">
+              <option value="all">Show all human deals</option>
+              <option value="owner">Owner only (assigned deals)</option>
+            </select>
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+              <button class="save-btn" id="saveHdVisibility">Save</button>
+              <span class="save-msg" id="saveHdVisibilityMsg"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
             <div class="s-head">🧠 Objection Playbook</div>
             <div class="s-note">Approved response strategy per objection type — the bot follows this instead of a generic FAQ answer when it detects the objection. Leave any blank to fall back to a sensible default.</div>
             <label class="form-label">Price objection ("too expensive", "cheaper elsewhere"…)</label>
@@ -6661,7 +6674,17 @@ async function loadHomeRealEstateSnapshot(){
 }
 
 /* ── HUMAN DEALS ── */
-function humanDealsQueue(){ return allLeads.filter(l=>l.Stage==='human_handover'); }
+// Settings → Human Deals visibility (bot_config.hd_visibility): 'all' (default) shows every
+// handover to everyone; 'owner' shows a teammate only the deals they own. The account owner and
+// full-access roles (seesAllLeads) always see the whole queue.
+function hdOwnerOnly(){
+  let bc={}; try{ bc=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
+  return bc.hd_visibility==='owner' && !seesAllLeads();
+}
+function humanDealsQueue(){
+  const ownerOnly=hdOwnerOnly();
+  return allLeads.filter(l=>l.Stage==='human_handover' && (!ownerOnly || sameEmail(l.Owner,myEmail)));
+}
 
 function updateHdBadge(){
   const overdueCount=humanDealsQueue().filter(l=>handoverWaitInfo(l)?.overdue).length;
@@ -6720,9 +6743,6 @@ function humanDealCard(l){
       <span>${l.Owner?'👤 '+esc(l.Owner):'Unassigned'}</span>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap" onclick="event.stopPropagation()">
-      <button class="btn btn-secondary btn-sm" onclick="openCoachModal(${l.Id})">🧭 Coach</button>
-      <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'quote')">📤 Quote</button>
-      <button class="btn btn-secondary btn-sm" onclick="openQuoteFor(${l.Id},'invoice')">🧾 Invoice</button>
       <button class="btn btn-sm" style="background:#059669;color:#fff;border:1px solid #059669" onclick="markHumanDealWon(${l.Id})">✅ Won</button>
       <button class="btn btn-secondary btn-sm" style="color:#DC2626" onclick="markHumanDealSpam(${l.Id})">🚫 Spam</button>
     </div>
@@ -11798,6 +11818,7 @@ function populateSettings(){
   $id('cfgNotifEmail').value=clientRecord.notification_email||'';
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
+  $id('cfgHdVisibility').value=ecomBotConfig.hd_visibility==='owner'?'owner':'all';
   $id('cfgDealCurrency').value=clientRecord.deal_currency||'AED';
   populateObjectionPlaybook();
   loadQualQuestions();
@@ -13008,6 +13029,12 @@ $id('saveClassificationEnabled').addEventListener('click',async()=>{
   const off=$id('cfgClassificationEnabled').value==='No';
   if(off) botConfig.classification_enabled=false; else delete botConfig.classification_enabled;
   await saveField('saveClassificationEnabled','saveClassificationEnabledMsg',{bot_config:JSON.stringify(botConfig)});
+});
+$id('saveHdVisibility').addEventListener('click',async()=>{
+  let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
+  if($id('cfgHdVisibility').value==='owner') botConfig.hd_visibility='owner'; else delete botConfig.hd_visibility;
+  await saveField('saveHdVisibility','saveHdVisibilityMsg',{bot_config:JSON.stringify(botConfig)});
+  if(typeof renderHumanDeals==='function') renderHumanDeals();
 });
 $id('saveObjectionHandlingEnabled').addEventListener('click',async()=>{
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
