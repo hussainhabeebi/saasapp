@@ -1234,6 +1234,9 @@ const CONFIG = {
   // AUTHENTIK_MAGIC_LINK_FLOW turns on the gate's "Email me a sign-in link" option — leave it ''
   // until that blueprint has been applied, or the link would land on a missing Authentik flow.
   AUTHENTIK_INVITE_FLOW:'leadvyne-team-invite',
+  // Authentik's built-in logout flow (user_logout stage) — Sign out sends the browser here so the
+  // Authentik session ends too, not just this app's local token (see signOut()).
+  AUTHENTIK_INVALIDATION_FLOW:'default-invalidation-flow',
   AUTHENTIK_MAGIC_LINK_FLOW:'',
   // Both are public identifiers used only in browser-side Meta JS SDK calls (never secrets —
   // the App Secret used for the server-side token exchange lives only in the Worker). Get
@@ -1469,7 +1472,7 @@ const ROLES = {
          no separate form here; Chatwoot connection details are filled in later from
          Settings once inside the dashboard. -->
     <div id="gPanelLogin">
-      <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Secure Login</button>
+      <button class="gbtn" id="gBtn" onclick="startAuthentikLogin()">Sign in</button>
       <div class="gerr" id="gErr"></div>
       <button type="button" id="gMagicLink" onclick="startAuthentikFlowLogin(CONFIG.AUTHENTIK_MAGIC_LINK_FLOW)" style="display:none;margin:12px auto 0;background:none;border:0;color:rgba(255,255,255,.8);font-size:13px;text-decoration:underline;cursor:pointer">Email me a sign-in link instead</button>
       <div style="margin-top:14px;color:rgba(255,255,255,.55);font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px">🔒 Secured by Authentik</div>
@@ -5297,11 +5300,6 @@ async function pkceChallenge(verifier){
   return b64url(new Uint8Array(hash));
 }
 
-// Login runs in a popup so the main tab never leaves leadvyne.com — Authentik's hosted login
-// page can't be iframed (it sends frame-busting headers like every serious IdP), so a popup is
-// the closest safe equivalent to "same page" without reimplementing password handling ourselves.
-let _authPopup=null, _authPopupTimer=null;
-
 // Cheap trust signal, Google/GitHub-style: "you're securely back in, and here's proof this isn't
 // your first time" — costs zero extra clicks or round trips since it only reads/writes
 // localStorage. Deliberately only called from a real Authentik re-authentication (completeLoginResult),
@@ -5318,11 +5316,6 @@ function showLastLoginToast(){
 }
 
 function completeLoginResult(session){
-  if(window.opener && !window.opener.closed){
-    window.opener.postMessage({type:'lv_auth_complete', ...session}, window.location.origin);
-    window.close();
-    return;
-  }
   clientId=session.client_id; clientRecord=session.client; sessionToken=session.session_token;
   myEmail=(session.email||'').toLowerCase();
   localStorage.setItem('lv_cid',clientId);
@@ -5341,25 +5334,13 @@ function completeLoginResult(session){
   setTimeout(maybeShowInstallBanner,2000);
 }
 function completeLoginError(message){
-  if(window.opener && !window.opener.closed){
-    window.opener.postMessage({type:'lv_auth_error', message}, window.location.origin);
-    window.close();
-    return;
-  }
   $id('gErr').textContent=message;
   setGBtnState(false);
 }
 
 window.addEventListener('message', async (event)=>{
   if(event.origin!==window.location.origin) return;
-  if(event.data?.type==='lv_auth_complete'){
-    clearInterval(_authPopupTimer);
-    completeLoginResult(event.data);
-  }else if(event.data?.type==='lv_auth_error'){
-    clearInterval(_authPopupTimer);
-    setGBtnState(false);
-    $id('gErr').textContent=event.data.message||'Login failed.';
-  }else if(event.data?.type==='lv_silent_auth_code'){
+  if(event.data?.type==='lv_silent_auth_code'){
     // From the hidden iframe frontend/auth-silent.html loads — see trySilentAuthentikLogin().
     cleanupSilentAuthFrame();
     const savedState=sessionStorage.getItem('lv_oidc_state_silent');
@@ -5429,18 +5410,14 @@ async function trySilentAuthentikLogin(){
   _silentAuthTimer=setTimeout(()=>{ cleanupSilentAuthFrame(); setGBtnState(false); }, 2500);
 }
 
-function isMobileBrowser(){
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-}
-
-// Centralizes the login button's loading/idle visuals so every reset path (popup closed, error,
+// Centralizes the login button's loading/idle visuals so every reset path (error,
 // logout, mobile redirect) shows the same spinner+state instead of duplicating markup everywhere.
 function setGBtnState(loading, text){
   const btn=$id('gBtn');
   if(!btn) return;
   btn.disabled=loading;
   btn.classList.toggle('loading', loading);
-  btn.innerHTML=loading ? `<span class="gbtn-spinner"></span>${esc(text||'Connecting…')}` : esc(text||'Secure Login');
+  btn.innerHTML=loading ? `<span class="gbtn-spinner"></span>${esc(text||'Connecting…')}` : esc(text||'Sign in');
 }
 
 // Header "🔑" button — hands off to Authentik's own built-in device-enrollment flow (ships with
@@ -5487,47 +5464,14 @@ async function startAuthentikFlowLogin(flowSlug, extra={}){
     : CONFIG.AUTHENTIK_BASE+next;
 }
 
+// One path on every device: a same-tab redirect to Authentik and straight back with ?code=
+// (handleAuthentikCallback). No popup — popups got blocked, lost their sessionStorage on mobile,
+// and left a second window to manage; a redirect has none of those failure modes.
 async function startAuthentikLogin(){
   sessionStorage.removeItem('lv_oidc_retry');
   $id('gErr').textContent='';
-  // A deliberate login click always wins over the post-logout silent-auth suppression (see
-  // hLogout) — that flag only exists to stop an *automatic* re-login from undoing an explicit
-  // sign-out, never to block the user's own next explicit attempt.
-  sessionStorage.removeItem('lv_no_silent_auth');
-  // Immediate visual feedback on the very first click, before any async work starts.
-  setGBtnState(true, 'Connecting…');
-  // Mobile browsers are unreliable about giving a script-opened window/tab any sessionStorage
-  // at all, so the verifier/state below would never be visible to it regardless of timing —
-  // skip the popup on mobile entirely and use a plain full-page redirect instead.
-  const useMobileRedirect=isMobileBrowser();
-  // On desktop, a same-origin popup's sessionStorage is cloned from the opener at the exact
-  // moment window.open() runs, then never re-syncs afterward. The verifier/state MUST be written
-  // before opening the popup, not after — get this order wrong (as it was before) and the
-  // popup's clone never contains them, so every desktop login fails with "Login session expired"
-  // the moment Authentik redirects back into it. Both writes are synchronous and effectively
-  // instant, so the popup still appears immediately on click either way — only the
-  // crypto.subtle.digest() call below is actually async.
-  const verifier=randomToken(), state=randomToken();
-  sessionStorage.setItem('lv_pkce_verifier',verifier);
-  sessionStorage.setItem('lv_oidc_state',state);
-  if(!useMobileRedirect) _authPopup=window.open('','lv_auth','width=480,height=680');
-
-  const authorizeUrl=CONFIG.AUTHENTIK_BASE+await authorizePath(verifier, state);
-  if(useMobileRedirect || !_authPopup){
-    // Mobile, or popup blocked by the desktop browser — full-page redirect so login still works.
-    // Leave the button in its loading state; the page is about to navigate away anyway.
-    window.location.href=authorizeUrl;
-    return;
-  }
-  _authPopup.location.href=authorizeUrl;
-  setGBtnState(true, 'Waiting for Authentik…');
-  clearInterval(_authPopupTimer);
-  _authPopupTimer=setInterval(()=>{
-    if(_authPopup.closed){
-      clearInterval(_authPopupTimer);
-      setGBtnState(false);
-    }
-  },500);
+  // A deliberate login click always wins over the post-logout silent-auth suppression (signOut).
+  await startAuthentikFlowLogin(null);
 }
 
 // Shared by the interactive callback below and trySilentAuthentikLogin()'s hidden-iframe path —
@@ -5550,8 +5494,6 @@ async function exchangeCodeForSession(code, verifier, redirectUri){
 }
 
 // Returns true if this page load is an Authentik redirect-back (so boot can skip resumeSession).
-// Runs either in the popup (normal case) or the main tab (popup-blocked fallback) — completeLoginResult/
-// completeLoginError figure out which via window.opener and relay or finish accordingly.
 async function handleAuthentikCallback(){
   const url=new URL(window.location.href);
   const code=url.searchParams.get('code');
@@ -5626,7 +5568,11 @@ async function resumeSession(id){
   }
 }
 
-$id('hLogout').addEventListener('click',()=>{
+// Ends both sessions: this app's local token, then Authentik's own SSO session via its logout
+// (invalidation) flow — without the second step Authentik would hand the same account straight
+// back on the next Sign in click or silent re-auth. Also reached from other pages through
+// dashboard.html?logout=1 (see boot).
+function signOut(){
   closeProfileMenu();
   localStorage.removeItem('lv_cid');
   localStorage.removeItem('lv_session');
@@ -5641,16 +5587,13 @@ $id('hLogout').addEventListener('click',()=>{
   const notifBell=$id('notifBell');if(notifBell)notifBell.style.display='none';
   $id('app').classList.remove('show');
   $id('gate').classList.remove('hidden');
-  setGBtnState(false, 'Sign in with Authentik');
-  // This app's own logout never ends Authentik's separate SSO session (no RP-initiated logout
-  // call — this app doesn't have Authentik's exact end-session endpoint verified against a live
-  // instance to call safely). Without this flag, trySilentAuthentikLogin would just silently sign
-  // the same person back in the moment they reload — an explicit "Sign out" click has to actually
-  // stick for the rest of this tab's life, even though Authentik itself still thinks they're
-  // signed in. Cleared the moment they choose to sign in again (startAuthentikLogin), so a
-  // deliberate next login isn't affected by this.
+  // Belt and braces: if the Authentik redirect below never completes (offline, Authentik down),
+  // this tab still won't silently sign the same person back in. Cleared by the next Sign in click.
   sessionStorage.setItem('lv_no_silent_auth','1');
-});
+  setGBtnState(true, 'Signing out…');
+  window.location.href=`${CONFIG.AUTHENTIK_BASE}/if/flow/${encodeURIComponent(CONFIG.AUTHENTIK_INVALIDATION_FLOW)}/`;
+}
+$id('hLogout').addEventListener('click', signOut);
 
 $id('hRefresh').addEventListener('click',()=>loadAll());
 
@@ -22201,6 +22144,12 @@ function showUpdateBanner(){
   if(_inviteId){
     history.replaceState({},'',location.pathname);
     if(/^[0-9a-f-]{32,36}$/i.test(_inviteId)){ startAuthentikFlowLogin(CONFIG.AUTHENTIK_INVITE_FLOW, {itoken:_inviteId}); return; }
+  }
+  // Sign out links from other pages (broadcast.html etc.) land here so there's one sign-out path.
+  if(new URLSearchParams(location.search).get('logout')){
+    history.replaceState({},'',location.pathname);
+    signOut();
+    return;
   }
   const saved=localStorage.getItem('lv_cid');
   if(saved){ resumeSession(saved); return; }

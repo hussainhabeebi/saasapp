@@ -83,6 +83,19 @@ entries:
     attrs:
       name: Leadvyne
       provider: !Find [authentik_providers_oauth2.oauth2provider, [name, Leadvyne]]
+      # Where Authentik sends someone who signs in on its own page rather than from the app —
+      # e.g. right after dashboard.html's Sign out, which ends on Authentik's login screen.
+      meta_launch_url: https://CHANGE-ME.leadvyne.com/dashboard.html
+
+  # ── Make Leadvyne the brand's default application, so signing in on Authentik's own page (the
+  # screen Sign out leaves people on, via default-invalidation-flow) drops them straight back into
+  # the dashboard instead of Authentik's app library. A second entry for the same brand because
+  # the application above has to exist before it can be referenced.
+  - model: authentik_brands.brand
+    identifiers:
+      domain: CHANGE-ME.leadvyne.com
+    attrs:
+      default_application: !Find [authentik_core.application, [slug, leadvyne]]
 
   # ── Enrollment (self-serve "Sign up"): reuses Authentik's own built-in default-enrollment-flow
   # as-is, attached via the Identification stage — SETUP.md's manual step 3 ("edit the
