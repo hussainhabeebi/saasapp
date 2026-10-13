@@ -5743,7 +5743,7 @@ function navigate(page){
   }
   if(page==='team') renderTeamPerformance();
   if(page==='reports') renderReports();
-  if(page==='humandeals') renderHumanDeals();
+  if(page==='humandeals'){ renderHumanDeals(); refreshHdVisibility(); }
   if(page==='saasops') renderSaasOps();
   if(page==='knowledgebase') renderKnowledgeBase();
   if(page==='ecommerce') renderEcommerce();
@@ -5847,7 +5847,7 @@ function showApp(){
   loadAll();
   connectLiveUpdates();
   clearInterval(refreshTimer);
-  refreshTimer=setInterval(loadAll,60000);
+  refreshTimer=setInterval(()=>{ loadAll(); refreshHdVisibility(); },60000);
   setTimeout(pollNotifications,3000);
   clearInterval(_notifTimer);
   _notifTimer=setInterval(pollNotifications,60000);
@@ -6680,6 +6680,19 @@ async function loadHomeRealEstateSnapshot(){
 function hdOwnerOnly(){
   let bc={}; try{ bc=JSON.parse(clientRecord?.bot_config||'{}'); }catch(e){}
   return bc.hd_visibility==='owner' && !seesAllLeads();
+}
+// Staff keep the clientRecord they logged in with, so re-read bot_config to pick up an admin's
+// Human Deals visibility change without a reload (60s poll + opening the Deals tab).
+async function refreshHdVisibility(){
+  if(!clientRecord||!clientId||seesAllLeads()) return;
+  try{
+    const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${Number(clientId)}`);
+    if(fresh && fresh.bot_config!==clientRecord.bot_config){
+      clientRecord.bot_config=fresh.bot_config;
+      updateHdBadge();
+      if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals();
+    }
+  }catch(e){}
 }
 function humanDealsQueue(){
   const ownerOnly=hdOwnerOnly();
@@ -11819,6 +11832,11 @@ function populateSettings(){
   $id('cfgSlackWebhook').value=clientRecord.slack_webhook_url||'';
   $id('cfgSlaMinutes').value=clientRecord.sla_minutes||'15';
   $id('cfgHdVisibility').value=ecomBotConfig.hd_visibility==='owner'?'owner':'all';
+  // Only the account owner / Admin / General Manager set this; staff see it read-only.
+  const hdAdmin=seesAllLeads();
+  $id('cfgHdVisibility').disabled=!hdAdmin;
+  $id('saveHdVisibility').style.display=hdAdmin?'':'none';
+  $id('saveHdVisibilityMsg').textContent=hdAdmin?'':'Set by your admin';
   $id('cfgDealCurrency').value=clientRecord.deal_currency||'AED';
   populateObjectionPlaybook();
   loadQualQuestions();
@@ -13031,6 +13049,7 @@ $id('saveClassificationEnabled').addEventListener('click',async()=>{
   await saveField('saveClassificationEnabled','saveClassificationEnabledMsg',{bot_config:JSON.stringify(botConfig)});
 });
 $id('saveHdVisibility').addEventListener('click',async()=>{
+  if(!seesAllLeads()) return;
   let botConfig={}; try{ botConfig=JSON.parse(clientRecord.bot_config||'{}'); }catch(e){}
   if($id('cfgHdVisibility').value==='owner') botConfig.hd_visibility='owner'; else delete botConfig.hd_visibility;
   await saveField('saveHdVisibility','saveHdVisibilityMsg',{bot_config:JSON.stringify(botConfig)});
