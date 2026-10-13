@@ -20096,7 +20096,7 @@ function renderRcBotList(){
   if(_rcBotPage>pages)_rcBotPage=pages;
   const start=(_rcBotPage-1)*RC_BOT_PAGE_SIZE, pageRows=rows.slice(start,start+RC_BOT_PAGE_SIZE);
   const fmt=ts=>ts?new Date(ts).toLocaleString([], {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
-  el.innerHTML=`<div class="tbl-wrap"><table class="leads-tbl" style="min-width:900px">
+  el.innerHTML=`<div class="tbl-wrap"><table class="leads-tbl" style="min-width:1100px">
     <thead><tr>
       <th style="width:40px">#</th>
       <th style="cursor:pointer" onclick="rcBotSetSort()" title="Sort by date">Date ${_rcBotSortAsc?'▲':'▼'}</th>
@@ -20108,8 +20108,8 @@ function renderRcBotList(){
       <td style="font-weight:600">${esc(r.name)}</td>
       <td style="font-family:var(--mono);font-size:12px">${esc(r.phone)}</td>
       <td>${r.verdict==='eligible'?`<span style="background:#DCFCE7;color:#166534;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✓ Eligible</span>`:`<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">✗ Not Eligible</span>`}</td>
-      <td>${esc(r.job?.title||'—')}</td>
-      <td style="max-width:360px;color:var(--muted)" title="${esc(r.message||'')}">${esc(String(r.message||'').replace(/\s+/g,' '))}</td>
+      <td><div style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(r.job?.title||'—')}</div></td>
+      <td style="color:var(--muted)" title="${esc(r.message||'')}"><div style="max-width:360px;overflow:hidden;text-overflow:ellipsis">${esc(String(r.message||'').replace(/\s+/g,' '))}</div></td>
       <td onclick="event.stopPropagation()">${r.isCandidate?`<span class="badge badge-new">In Candidates</span>`:`<button class="btn btn-sm btn-ghost" onclick="rcBotAddCandidate(${Number(r.lead_id)})">+ Candidate</button>`}</td>
     </tr>`).join('')}
     </tbody></table></div>
