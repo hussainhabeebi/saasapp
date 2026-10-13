@@ -1859,7 +1859,9 @@ async function tryAutoLogin(){
 function logout(){
   localStorage.removeItem('lv_cid');
   localStorage.removeItem('lv_session');
-  goBack();
+  // dashboard.html's signOut() also ends the Authentik session — clearing local storage alone
+  // would just get silently signed back in there.
+  window.location.href='dashboard.html?logout=1';
 }
 
 function goBack(){
