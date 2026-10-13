@@ -182,3 +182,52 @@ test('pre-call brief: a brand-new lead still gets a first-call line and an opene
   await expect(brief).toContainText('First call');
   await expect(brief.locator('.pd-open')).toContainText('Hi Rahul, thanks for reaching out');
 });
+
+test('a leads refresh while logging leaves the dialer alone — notes box stays, minimized stays minimized', async ({ page }) => {
+  const pd = await openDialer(page);
+  await page.evaluate(() => pdSetState('outcome')); // "Log outcome" without a call
+  await pd.locator('#pdNoteInput').fill('Wants a site visit Sunday');
+  await page.evaluate(() => { allLeads = allLeads.map((l) => ({ ...l })); pdTryRestore(); }); // the 60s poll
+  await expect(pd).toHaveAttribute('data-state', 'outcome');
+  await expect(pd.locator('#pdNoteInput')).toHaveValue('Wants a site visit Sunday');
+  expect(await page.evaluate(() => _pdQueue[0] === allLeads[0])).toBe(true); // fresh lead objects swapped in
+  await page.evaluate(() => { pdMinimize(); pdTryRestore(); });
+  await expect(pd).toBeHidden();
+  await expect(page.locator('#pdResume')).toBeVisible();
+});
+
+test('notes typed during a call survive an Android tab-kill', async ({ page }) => {
+  const pd = await openDialer(page);
+  await page.evaluate(() => { _pdCallStart = Date.now(); _pdSaveState(); pdSetState('live'); });
+  await pd.locator('#pdNoteInput').fill('Budget 60L, needs loan');
+  // Simulate the page being reloaded from scratch with the same sessionStorage
+  await page.evaluate(() => { _pdQueue = []; document.getElementById('pdNoteInput').value = ''; pdTryRestore(); });
+  await expect(pd).toHaveAttribute('data-state', 'outcome');
+  await expect(pd.locator('#pdNoteInput')).toHaveValue('Budget 60L, needs loan');
+});
+
+test('on a short phone screen the top of the outcome card stays reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 360 });
+  const pd = await openDialer(page);
+  await page.evaluate(() => pdSetState('outcome'));
+  await pd.evaluate((el) => { el.scrollTop = 0; });
+  const name = await pd.locator('#pdName').boundingBox();
+  expect(name.y).toBeGreaterThanOrEqual(0);
+});
+
+test('closing Log Call by hand forgets the pending call so it does not pop back', async ({ page }) => {
+  await openDialer(page);
+  await page.evaluate(() => { exitPowerDialer(); window.startCallTimer(1); });
+  const modal = page.locator('#modalCall');
+  await expect(modal).toHaveClass(/open/);
+  await page.locator('#modalCall .modal-footer').getByRole('button', { name: 'Cancel' }).click();
+  await expect(modal).not.toHaveClass(/open/);
+  await expect(page.locator('#overlay')).not.toHaveClass(/show/);
+  expect(await page.evaluate(() => Object.keys(_callInProgress).length)).toBe(0);
+  expect(await page.evaluate(() => sessionStorage.getItem('lv_call_progress'))).toBe('{}');
+  // Tapping outside does the same
+  await page.evaluate(() => window.startCallTimer(1));
+  await page.evaluate(() => closeAllModals());
+  await expect(modal).not.toHaveClass(/open/);
+  expect(await page.evaluate(() => Object.keys(_callInProgress).length)).toBe(0);
+});

@@ -748,12 +748,14 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 /* power dialer overlay */
 /* Power Dial v3 — one primary action per state (data-state: idle → live → outcome), text over icons */
 #powerDialer{--pd-bg:#0B1220;--pd-fg:#F8FAFC;--pd-muted:#94A3B8;--pd-line:rgba(255,255,255,.09);--pd-hover:rgba(255,255,255,.05);--pd-accent:#4ADE80;
-  position:fixed;inset:0;z-index:5000;background:var(--pd-bg);color:var(--pd-fg);display:none;flex-direction:column;align-items:center;justify-content:center;padding:72px 16px 32px;font-family:var(--body);overflow-y:auto}
+  position:fixed;inset:0;z-index:5000;background:var(--pd-bg);color:var(--pd-fg);display:none;flex-direction:column;align-items:center;justify-content:flex-start;padding:72px 16px calc(32px + env(safe-area-inset-bottom));font-family:var(--body);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .pd-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:4px;padding:14px 16px}
 .pd-progress{font-size:13px;color:var(--pd-muted);margin-right:auto;font-variant-numeric:tabular-nums}
 .pd-bar{position:absolute;top:0;left:0;right:0;height:2px;background:var(--pd-line)}
 .pd-bar span{display:block;height:100%;width:0;background:var(--pd-fg);transition:width .3s ease}
-.pd-card{width:min(420px,100%);text-align:center}
+/* margin:auto centres the card when it fits; unlike justify-content:center it never pushes the top
+   (name, timer) out of reach when brief + notes + outcomes are taller than a phone screen */
+.pd-card{width:min(420px,100%);text-align:center;margin:auto 0}
 .pd-timer{font-size:15px;font-family:var(--mono);color:var(--pd-accent);margin-bottom:14px;font-variant-numeric:tabular-nums;visibility:hidden}
 #powerDialer:not([data-state="idle"]) .pd-timer{visibility:visible}
 #powerDialer[data-state="outcome"] .pd-timer{color:var(--pd-muted)}
@@ -4700,7 +4702,7 @@ const ROLES = {
 <!-- MODAL: Log Call -->
 <div class="modal" id="modalCall" style="max-width:420px">
   <span class="modal-drag"></span>
-  <div class="modal-hd"><span class="modal-title">Log Call</span><button class="icon-btn" onclick="closeModal('modalCall')">✕</button></div>
+  <div class="modal-hd"><span class="modal-title">Log Call</span><button class="icon-btn" onclick="dismissCallLog()">✕</button></div>
   <div class="modal-body">
     <div class="form-group"><label class="form-label">Outcome</label>
       <select class="form-input" id="callOutcome">
@@ -4715,7 +4717,7 @@ const ROLES = {
   </div>
   <div class="modal-footer">
     <button class="btn btn-primary" style="flex:1" onclick="saveCall()">Save Call</button>
-    <button class="btn btn-secondary" onclick="closeModal('modalCall')">Cancel</button>
+    <button class="btn btn-secondary" onclick="dismissCallLog()">Cancel</button>
   </div>
 
   <!-- BOOKINGS PANEL -->
@@ -9654,6 +9656,22 @@ function stopCallTimer(){
   }
 }
 
+// Log Call closed without saving (✕, Cancel, tap outside): the agent chose not to log this call, so
+// forget it — otherwise the pending call kept re-opening the form (or outcome chips) every time
+// they came back to the tab.
+function dismissCallLog(){
+  closeModal('modalCall');
+  _forgetPendingCall();
+}
+function _forgetPendingCall(){
+  const id=currentLead?.Id;
+  stopCallTimer();
+  $id('callDuration').value=''; $id('callNotes').value='';
+  if(id==null) return;
+  $id(`ct-${id}`)?.remove(); // the live timer badge on the Call button
+  document.querySelector(`[data-id="${id}"]`)?.closest('.lead-item')?.querySelectorAll('.outcome-chips').forEach(e=>e.remove());
+}
+
 function callTimerElapsed(leadId){
   const entry=_callInProgress[leadId]; if(!entry) return 0;
   return Math.round((Date.now()-entry.start)/60000);
@@ -9777,7 +9795,11 @@ function _pdSaveState(){
       queueIds: _pdQueue.map(l=>l.Id),
       idx: _pdIdx,
       callStart: _pdCallStart||null,
-      callEnd: _pdCallEnd||null
+      callEnd: _pdCallEnd||null,
+      // Notes typed so far, tied to the lead they were typed for — so an Android tab-kill while the
+      // agent is on the phone doesn't wipe what they jotted down.
+      notes: $id('pdNoteInput')?.value||'',
+      notesLeadId: _pdQueue[_pdIdx]?.Id??null
     }));
   }catch(e){}
 }
@@ -9788,7 +9810,14 @@ function _pdClearState(){
 
 // Called after allLeads loads — silently re-opens the dialer if it was
 // interrupted by an Android tab kill while a call was in progress.
+// Runs after every leads load (including the 60s poll), so when the dialer is already running in
+// this page it only swaps in the fresh lead objects — re-rendering here used to flip an agent who
+// was typing notes back to "idle" (hiding the notes box) and reopen a minimized dialer every poll.
 function pdTryRestore(){
+  if(_pdQueue.length){
+    _pdQueue=_pdQueue.map(l=>allLeads.find(x=>x.Id===l.Id)||l);
+    return;
+  }
   try{
     const raw=sessionStorage.getItem(_PD_SS); if(!raw) return;
     const s=JSON.parse(raw);
@@ -9800,6 +9829,8 @@ function pdTryRestore(){
     _pdCallStart=s.callStart||null;
     _pdCallEnd=s.callEnd||null;
     openPowerDialer(true); // true = restoring, don't reset timer/notes
+    const notes=$id('pdNoteInput');
+    if(notes&&typeof s.notes==='string'&&s.notesLeadId===_pdQueue[_pdIdx]?.Id) notes.value=s.notes;
   }catch(e){}
 }
 
@@ -9914,7 +9945,7 @@ function pdRenderCurrent(restoring){
   $id('pdPref').hidden=!leadPrefersWhatsApp(l);
   pdRenderBrief(l);
   // Slim leads load ConvHistory lazily — fill in "Asked" once it lands, if still on this lead.
-  if(!('ConvHistory' in l)) ensureLeadConvHistory(l).then(()=>{ if(_pdQueue[_pdIdx]===l) pdRenderBrief(l); });
+  if(!('ConvHistory' in l)) ensureLeadConvHistory(l).then(()=>{ if(_pdQueue[_pdIdx]?.Id===l.Id) pdRenderBrief(l); });
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   // Use a data-phone attribute + onclick to avoid Android <a href=tel:> quirks
   const btn=$id('pdCallBtn');
@@ -9924,6 +9955,7 @@ function pdRenderCurrent(restoring){
     // Only reset notes and timer when moving to a new lead
     $id('pdNoteInput').value=callNotesTemplate(l.Stage||'')||'';
     _pdCallStart=null; _pdCallEnd=null;
+    _pdSaveState();
     pdSetState('idle');
   } else {
     // Resuming (Android kill / minimized): an unfinished call means the agent is back from the
@@ -13307,6 +13339,7 @@ function closeModal(id){
   if(!anyOpen)$id('overlay').classList.remove('show');
 }
 function closeAllModals(){
+  if($id('modalCall')?.classList.contains('open')) _forgetPendingCall(); // tap outside = Cancel
   document.querySelectorAll('.modal').forEach(m=>m.classList.remove('open'));
   $id('overlay').classList.remove('show');
 }
@@ -22346,7 +22379,7 @@ function showUpdateBanner(){
     </div>
 
     <div class="pd-view pd-view-live pd-view-outcome pd-view-notes">
-      <textarea id="pdNoteInput" class="pd-notes" rows="2" placeholder="Notes"></textarea>
+      <textarea id="pdNoteInput" class="pd-notes" rows="2" placeholder="Notes" oninput="_pdSaveState()"></textarea>
     </div>
 
     <div class="pd-view pd-view-live">
