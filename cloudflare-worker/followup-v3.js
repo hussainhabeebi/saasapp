@@ -1,6 +1,6 @@
 // ── Follow-up V3 ─────────────────────────────────────────────────────────────────────────────────
 // A switch-on layer over the Follow-up Engine's 5-step ladder (worker.js FOLLOWUP_LADDER_STEP_SHAPE,
-// followup_ladder_steps). Off until the client turns it on (Campaigns → 💪 Follow-up Engine →
+// followup_ladder_steps). Off until the client turns it on (🔁 Follow-ups → Settings →
 // "Follow-up V3"); once on it needs no further setup. Ideas borrowed from the market:
 //   - Ready-made sequence on day one, templates submitted for approval automatically (WATI,
 //     Interakt, AiSensy default flows) — fv3Setup.
@@ -763,7 +763,7 @@ async function fv3MaybeDigest(env, deps, c, settings, now){
       (${t.reply_rate}% reply rate on ${t.sent} messages)${t.converted?`, and <b>${t.converted}</b> of them converted${t.revenue?` — <b>${esc(cur)} ${t.revenue.toLocaleString('en-IN')}</b> recovered`:''}`:''}.</p>
     ${best?`<p>Best step: <b>${esc(best.label)}</b> at ${best.reply_rate}% replies.</p>`:''}
     ${t.opt_out_rate>2?`<p style="color:#b45309">Opt-outs are at ${t.opt_out_rate}% — consider softer wording on the steps marked "watch".</p>`:''}
-    <p style="color:#777;font-size:12px">Full report: Campaigns → 💪 Follow-up Engine → Follow-up V3 report. Turn this email off in the same place.</p></div>`;
+    <p style="color:#777;font-size:12px">Full report: 🔁 Follow-ups → Overview in Leadvyne. Turn this email off in the same place.</p></div>`;
   await deps.sendEmail(env, to, `Follow-ups re-engaged ${t.leads_reengaged} lead${t.leads_reengaged===1?'':'s'} this week`, html).catch(()=>null);
 }
 function esc(s){ return String(s??'').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }

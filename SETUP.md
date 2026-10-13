@@ -8885,7 +8885,7 @@ Team report and, for the owner, in Dashboard → Reports → Team (above the age
 Tests: `cloudflare-worker/ceo-bot.test.js` (node:sqlite against the real migrations) and
 `frontend/tests/ceo-bot.spec.js`.
 
-## Follow-up V3 (`cloudflare-worker/followup-v3.js` — Campaigns → 💪 Follow-up Engine → 🚀 Follow-up V3)
+## Follow-up V3 (`cloudflare-worker/followup-v3.js` — 🔁 Follow-ups → Settings)
 
 Off until a client ticks **Enable Follow-up V3**. While it's on, the classic follow-up cron
 (`classicFollowupProcessClient`) and the Smart Follow-ups Durable Object skip that client, so nothing
@@ -8943,3 +8943,26 @@ Unset = each client switches it on themselves.
 
 Storage: `migrations/0114_followup_v3.sql` (also created lazily by `fv3EnsureSchema`, so it works
 before the migration is applied). Routes: `/followups/v3/settings|setup|lead|lead/skip|upcoming|report|report/leads`.
+
+## Campaigns and Follow-ups inside the dashboard (`frontend/broadcast.html`, embedded)
+
+Campaigns no longer opens in a separate browser tab. The dashboard menu has **📢 Campaigns** and
+**🔁 Follow-ups**; both show `#pageBroadcast`, one iframe of `broadcast.html?embed=1&view=…`, loaded on
+first visit. Later clicks switch its workspace by `postMessage` (`{source:'lv-dash', type:'workspace',
+ws}`) instead of reloading. The page reports switches it makes itself back
+(`{source:'lv-campaigns', …}`) so the menu highlight follows. `embed=1` hides the page's own top bar;
+if it can't load the account it shows a retry message instead of reloading the dashboard.
+Follow-ups follows the Campaigns permission and the "Campaigns" module toggle.
+
+- **Campaigns workspace** — left sidebar (Home, Send, Recurring, Templates, Intelligence). Home has
+  four "start a campaign" cards with live counts (leads reachable in the 24h window, approved
+  templates, active flows), audience tiles, the follow-up status and the Chat Page links.
+- **Follow-ups workspace** — one header (V3 status pill, Pause/Turn on, headline numbers) and a
+  switcher: **Overview** (performance report, or the classic step stats plus a "turn on V3" card),
+  **Sequence** (the ladder as a row of steps showing what's set and each step's reply rate; click a
+  step to jump to its editor), **Upcoming** (next 24h, with Skip), **Leads** (the classic in-sequence
+  list), **Settings** (V3 switch, setup checklist, settings; classic send window and Smart Follow-ups
+  while V3 is off).
+
+Opened directly (e.g. B2B's 📢 links, `broadcast.html?stage=…`) the page still works on its own, with
+a Campaigns / Follow-ups switch in its top bar. `#fuengine`/`#followups` in the URL open Follow-ups.
