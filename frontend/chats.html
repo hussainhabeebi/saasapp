@@ -170,6 +170,7 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
 </div>
 <input type="file" id="fileInput" class="hidden">
 <div id="toast" class="toast hidden"></div>
+<script src="followup-status.js?v=1"></script>
 <script>
 'use strict';
 try{performance.mark('lv-start')}catch{}
@@ -507,7 +508,7 @@ async function openConversation(id){
  if(V2&&lead.NotesList===undefined)fetchNotes(lead);
  startViewing();
  $('main').classList.add('open');$('sidebar').classList.add('thread-open');
- buildShell();renderContacts();
+ buildShell();renderContacts();paintFollowup(lead);loadFollowup(lead);
  const cached=!!histCache[String(id)];
  if(cached){drawMessages(true);rumMark('thread-visible',t0)}else $('thread').innerHTML='<div style="height:100%;display:grid;place-items:center"><div class="spinner"></div></div>';
  await refreshMessages(lead,!cached);
@@ -544,7 +545,7 @@ function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveD
 function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}</div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="fuChip"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -1152,6 +1153,7 @@ function renderInfo(){
   <div class="kv"><span>Channel</span>${isIg(l)?'Instagram':'WhatsApp'}</div>
   <div class="kv"><span>Handled by</span>${takenOver(l)?'👤 '+esc(agentName(l.HandoverBy)):'🤖 Bot'}</div>
   ${l.Owner?`<div class="kv"><span>Assigned to</span>${esc(agentName(l.Owner))}</div>`:''}
+  <div id="fuInfo"></div>
   <h4>AI summary</h4>${sum?`<div class="sum">${sum.loading?'✨ Summarising…':esc(sum.text)}</div>`:''}<button class="row-btn" onclick="summarise()">✨ ${sum&&!sum.loading?'Summarise again':'Summarise this chat'}</button>
   <h4>Macros</h4>${(boot2?.macros||[]).map(m=>`<button class="row-btn" title="${esc(m.ops.map(macroLabel).join(' → '))}" onclick="runMacro(${m.id})">▶ ${esc(m.name)}</button>`).join('')}<button class="row-btn" onclick="newMacro(this)">＋ New macro</button>
   <h4>Notes about this contact</h4>${notes.slice(-8).reverse().map(n=>`<div class="nt">${esc(n.text||n.content||String(n))}${n.author?`<small>${esc(n.author)}${n.ts?' · '+esc(ago(n.ts)):''}</small>`:''}</div>`).join('')||'<div class="kv" style="color:var(--muted)">No notes yet</div>'}
@@ -1159,6 +1161,24 @@ function renderInfo(){
   <h4>Other conversations</h4><div id="prevConvs"><div class="kv" style="color:var(--muted)">Looking…</div></div>
   <button class="row-btn" onclick="goLead()">Open full lead in CRM →</button>`;
  loadPrevConvs(l);
+ paintFollowup(l);
+}
+// ── Follow-up V3 status (followup-status.js): one line under the contact name, full card in the
+// info panel. Nothing shows unless the account has Follow-up V3 switched on.
+const fuCache={};
+function paintFollowup(l){
+ if(!l||current!==l)return;const d=fuCache[String(l.Id)];
+ const chip=$('fuChip');if(chip){const t=window.FollowupStatus&&d?FollowupStatus.shortText(d):'';chip.textContent=t?' · '+t:'';chip.title=t}
+ const box=$('fuInfo');if(box)box.innerHTML=d&&d.enabled&&window.FollowupStatus?`<h4>Follow-ups</h4><div style="margin:0 16px">${FollowupStatus.html(d,{onSkip:'skipFollowup',leadId:l.Id})}</div>`:'';
+}
+async function loadFollowup(l){
+ if(!l||!window.FollowupStatus||isIg(l))return;
+ try{fuCache[String(l.Id)]=await FollowupStatus.load(WORKER,sessionToken,l.Id)}catch{return}
+ paintFollowup(l);
+}
+async function skipFollowup(leadId,step){
+ if(!confirm('Skip this follow-up for this lead?'))return;
+ try{fuCache[String(leadId)]=await FollowupStatus.skip(WORKER,sessionToken,leadId,step);if(current&&String(current.Id)===String(leadId))paintFollowup(current);toast('Follow-up skipped')}catch(e){toast('Could not skip: '+e.message)}
 }
 async function saveField(inp){const l=current,k=inp.dataset.k,val=inp.value.trim();if(!l)return;try{await patchLead(l,{[k]:val});if(l._rec)l._rec[k]=val;if(k==='Name'||k==='Phone'){if(l._v2)l._v2[k==='Name'?'name':'phone']=val;renderContacts();const n=document.querySelector('.chat-name');if(n&&k==='Name')n.textContent=val||l.Phone}toast('Saved')}catch(e){toast('Could not save: '+e.message)}}
 async function addInfoNote(){const i=$('infoNote'),text=(i?.value||'').trim(),l=current;if(!text||!l)return;let n=[];try{n=JSON.parse(l.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(l,{NotesList:JSON.stringify(n)});renderInfo();drawMessages(false);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}}

@@ -374,7 +374,7 @@ html.dark .home-banner.danger{background:rgba(220,38,38,.16);color:#FCA5A5}
 #pageChats:not(.hidden){display:flex}
 #pageChats{padding-bottom:0!important}
 #chatsFrame{flex:1;width:100%;min-height:0;border:0;display:block;background:#efeae2}
-#pageEcommerce,#pageEducation,#pageBusinessservices{overflow:hidden;padding-bottom:0}
+#pageEcommerce,#pageEducation,#pageBusinessservices,#pageBroadcast{overflow:hidden;padding-bottom:0}
 @media(min-width:768px){.page{padding-bottom:28px}}
 .page.hidden{display:none}
 #pageBizai:not(.hidden){display:flex;flex-direction:column}
@@ -1566,6 +1566,7 @@ const ROLES = {
     <button class="dnTab industry-tab" data-industry="education" style="display:none" data-page="education">🎓 Education</button>
     <button class="dnTab industry-tab" data-industry="business_services" style="display:none" data-page="businessservices">🏢 Business Services</button>
     <button class="dnTab" data-page="broadcast" id="dnCampaignsTab">📢 Campaigns</button>
+    <button class="dnTab" data-page="followups" id="dnFollowupsTab">🔁 Follow-ups</button>
     <button class="dnTab" data-page="settings">⚙️ Settings</button>
   </div>
 
@@ -1586,7 +1587,7 @@ const ROLES = {
             <button class="hact-btn primary-act" data-act="add_lead" onclick="openAddLead()">＋ Add Lead</button>
             <button class="hact-btn" data-act="pipeline" onclick="goToPipeline()">📋 Pipeline</button>
             <button class="hact-btn" data-act="chats" onclick="navigate('chats')">💬 Chats</button>
-            <button class="hact-btn" data-act="campaigns" onclick="window.open('broadcast.html','_blank')">📢 Campaigns</button>
+            <button class="hact-btn" data-act="campaigns" onclick="navigate('broadcast')">📢 Campaigns</button>
             <button class="hact-btn" data-act="email" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
             <button class="hact-btn" data-act="projects" onclick="openProjectsTool()">🗂️ Projects</button>
           </div>
@@ -1720,7 +1721,7 @@ const ROLES = {
                 <button class="qact-btn" data-qact="pipeline" onclick="goToPipeline()">📋 View Pipeline</button>
                 <button class="qact-btn" data-qact="leads" onclick="navigate('leads')">📋 Manage Leads</button>
                 <button class="qact-btn" data-qact="chats" onclick="navigate('chats')">💬 Open Chats</button>
-                <button class="qact-btn" data-qact="campaigns" onclick="window.open('broadcast.html','_blank')">📢 Send Campaign</button>
+                <button class="qact-btn" data-qact="campaigns" onclick="navigate('broadcast')">📢 Send Campaign</button>
                 <button class="qact-btn" data-qact="email" onclick="window.open('email-marketing.html','_blank')">✉️ Email Marketing</button>
                 <button class="qact-btn" data-qact="settings" onclick="navigate('settings')">⚙️ Settings</button>
               </div>
@@ -2097,6 +2098,13 @@ const ROLES = {
          genuinely satisfying "don't make the client leave the dashboard shell" — nav/header/
          notifications all stay visible around it, only ecom.html's own duplicate header is hidden
          via its new embed=1 param. -->
+    <!-- CAMPAIGNS + FOLLOW-UPS — broadcast.html embedded (embed=1 hides its own top bar). One iframe
+         serves both menu items: the 📢 Campaigns workspace and the 🔁 Follow-ups workspace, switched
+         by postMessage so the page isn't reloaded (see renderCampaigns). -->
+    <div class="page hidden" id="pageBroadcast">
+      <iframe id="campaignsFrame" title="Campaigns and follow-ups" style="width:100%;height:100%;border:none;display:block"></iframe>
+    </div>
+
     <div class="page hidden" id="pageEcommerce">
       <iframe id="ecommerceFrame" style="width:100%;height:100%;border:none;display:block"></iframe>
     </div>
@@ -2777,7 +2785,7 @@ const ROLES = {
 
           <div class="settings-section">
             <div class="s-head">Follow-up Messages</div>
-            <div class="s-note">Every follow-up setting — the two nudges sent while still inside WhatsApp's 24-hour reply window, and the three template-based re-engagement sends at day 2/4/7 — now lives in one place: <a href="broadcast.html#fuengine" style="color:var(--accent);font-weight:600">Campaigns → 💪 Follow-up Engine</a>.</div>
+            <div class="s-note">Every follow-up setting — the two nudges sent while still inside WhatsApp's 24-hour reply window, and the three template-based re-engagement sends at day 2/4/7 — now lives in one place: <a href="#" onclick="navigate('followups');return false" style="color:var(--accent);font-weight:600">🔁 Follow-ups</a>.</div>
           </div>
 
           <hr class="div">
@@ -4295,6 +4303,7 @@ const ROLES = {
       <button class="more-item" data-page="bizai" id="moreBizaiTab"><span class="bnIcon">🤖</span><span class="bnLabel">AI Assistant</span></button>
       <button class="more-item" data-page="tasks" style="position:relative"><span class="bnIcon">✅</span><span class="bnLabel">Tasks</span><span id="bnTaskBadge" style="display:none;position:absolute;top:8px;right:12px;width:8px;height:8px;border-radius:50%;background:#ef4444"></span></button>
       <button class="more-item" data-page="broadcast" id="moreCampaignsTab"><span class="bnIcon">📢</span><span class="bnLabel">Campaigns</span></button>
+      <button class="more-item" data-page="followups" id="moreFollowupsTab"><span class="bnIcon">🔁</span><span class="bnLabel">Follow-ups</span></button>
       <button class="more-item" data-page="projects" id="moreProjectsTab"><span class="bnIcon">🗂️</span><span class="bnLabel">Projects</span></button>
       <!-- Only reachable from the Home hero row on desktop; that row is hidden on phones -->
       <button class="more-item" onclick="window.open('email-marketing.html','_blank');closeMoreSheet()"><span class="bnIcon">✉️</span><span class="bnLabel">Email Marketing</span></button>
@@ -4636,6 +4645,11 @@ const ROLES = {
     <!-- Recovery chip -->
     <div id="recoveryChipWrap" style="display:none;margin-top:12px">
       <div class="recovery-chip" id="recoveryChip"></div>
+    </div>
+    <!-- Follow-up V3 status (followup-status.js) — only shown while Follow-up V3 is on -->
+    <div id="fuV3Wrap" style="display:none;margin-top:12px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:10px 12px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">🚀 Follow-up status</div>
+      <div id="fuV3Status"></div>
     </div>
     <!-- AI summary -->
     <div style="margin-top:12px">
@@ -5672,7 +5686,7 @@ const SETTINGS_GROUP=['settings','channels','integrations','voice','modules','us
 const HUMANDEALS_GROUP=['humandeals','quotation'];
 // Pages moved into the mobile bottom nav's "More" sheet — anything not in the 5 daily-driver
 // tabs (home/chats/leads/pipeline/tasks). Used only to decide when to highlight the More button.
-const MORE_GROUP=['broadcast','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','billing'];
+const MORE_GROUP=['broadcast','followups','team','reports','humandeals','knowledgebase','ecommerce','b2b','accounting','agency','recruit','appointments','hospitality','realestate','healthcare','education','settings','channels','integrations','voice','modules','usermanagement','logs','botbehavior','billing'];
 
 function renderSettingsSubnav(active){
   document.querySelectorAll('.ssnav-btn').forEach(b=>{
@@ -5680,6 +5694,9 @@ function renderSettingsSubnav(active){
   });
 }
 
+// Menu items that open a page shared with another item: 🔁 Follow-ups is the Follow-ups workspace
+// of the same embedded Campaigns page (#pageBroadcast).
+const PAGE_HOST={followups:'broadcast'};
 function navigate(page){
   const dd=$id('notifDropdown');if(dd)dd.style.display='none';
   if(_leadsDocked && page!=='leads'){
@@ -5689,7 +5706,7 @@ function navigate(page){
   _leadsDocked=(page==='leads');
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
   document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>b.classList.remove('active'));
-  $id('page'+cap(page)).classList.remove('hidden');
+  $id('page'+cap(PAGE_HOST[page]||page)).classList.remove('hidden');
   const navPage=SETTINGS_GROUP.includes(page)?'settings':(HUMANDEALS_GROUP.includes(page)?'humandeals':page);
   document.querySelectorAll(`[data-page="${navPage}"]`).forEach(b=>b.classList.add('active'));
   const moreBtn=$id('bnMore');if(moreBtn)moreBtn.classList.toggle('active',MORE_GROUP.includes(navPage));
@@ -5717,6 +5734,7 @@ function navigate(page){
   if(page==='saasops') renderSaasOps();
   if(page==='knowledgebase') renderKnowledgeBase();
   if(page==='ecommerce') renderEcommerce();
+  if(page==='broadcast'||page==='followups') renderCampaigns(page);
   if(page==='b2b') renderB2b();
   if(page==='accounting') renderAccounting();
   if(page==='agency') renderAgency();
@@ -5771,7 +5789,6 @@ function pushLeadToProjects(lead){
 document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>{
   b.addEventListener('click',()=>{
     if(!b.dataset.page) return; // e.g. the "More" button itself, or Ecommerce (its own onclick opens a new tab)
-    if(b.dataset.page==='broadcast'){ window.open('broadcast.html','_blank'); closeMoreSheet(); return; }
     if(b.dataset.page==='projects'){ openProjectsTool(); closeMoreSheet(); return; }
     // Real task management (manual tasks, the "Projects" grouping, Google Calendar sync, the
     // Advanced Pipeline follow-up cadence's to-dos) all moved to the Projects tool — see
@@ -6540,6 +6557,23 @@ function renderEcommerce(){
   const frame=$id('ecommerceFrame');
   if(frame && !frame.getAttribute('src')) frame.src=`ecom.html?client=${clientId}&embed=1`;
 }
+
+// Campaigns / Follow-ups (broadcast.html) — loaded once; later visits switch its workspace instead of
+// reloading it. broadcast.html reads the session from localStorage (same origin), like it always has.
+function renderCampaigns(page){
+  const frame=$id('campaignsFrame'); if(!frame) return;
+  const ws=page==='followups'?'followups':'campaigns';
+  if(!frame.getAttribute('src')){ frame.src=`broadcast.html?embed=1&view=${ws}`; return; }
+  try{ frame.contentWindow.postMessage({source:'lv-dash', type:'workspace', ws}, location.origin); }catch(e){}
+}
+// The embedded page can switch workspace itself (e.g. "Open Follow-ups →" on the Campaigns home);
+// keep the menu highlight in step without reloading anything.
+window.addEventListener('message', e=>{
+  if(e.origin!==location.origin || e.data?.source!=='lv-campaigns' || e.data.type!=='workspace') return;
+  if($id('pageBroadcast')?.classList.contains('hidden')) return;
+  const key=e.data.ws==='followups'?'followups':'broadcast';
+  document.querySelectorAll('.bnItem,.dnTab,.more-item').forEach(b=>b.classList.toggle('active', b.dataset.page===key));
+});
 
 // Same pattern as renderEcommerce — education.html is client_id-only, no session token needed.
 function renderEducation(){
@@ -9086,6 +9120,7 @@ function openDetail(id){
    $id('crossSellWrap').style.display=_bc.crosssell_suggestions_enabled===false?'none':'block';}
   renderNbaChip(lead);
   renderRecoveryChip(lead);
+  renderFollowupV3Status(lead);
   renderLeadProfile(lead);
   renderWaReply(lead);
   openLeadDetailModal();
@@ -11317,6 +11352,8 @@ function applyUserModulePermissions(){
     if(ALWAYS_ON_MODULES.has(m.key)) return; // visible regardless of role or industry
     if(allowed.has(m.key)) return;
     document.querySelectorAll(`[data-page="${m.key}"]`).forEach(el=>{ el.style.display='none'; });
+    // Follow-ups lives inside Campaigns, so it follows the Campaigns permission.
+    if(m.key==='broadcast') document.querySelectorAll('[data-page="followups"]').forEach(el=>{ el.style.display='none'; });
   });
 }
 // Role-driven view differences (Home page sections, Leads page default filter) — separate from
@@ -19617,7 +19654,7 @@ function setupFeatureTabToggle({field, selectId, saveBtnId, msgId, badgeId, tabI
 // routes to a human at all, so the Human Deals tab (nothing to triage there) hides along with it,
 // same tabIds-hide mechanism as the four below.
 const _populateHandoverEnabled=setupFeatureTabToggle({field:'handover_enabled', selectId:'cfgHandoverEnabled', saveBtnId:'saveHandoverEnabled', msgId:'saveHandoverEnabledMsg', badgeId:'handoverEnabledStatusBadge', tabIds:['dnHumandealsTab','bnHumandealsTab']});
-const _populateCampaignsTab=setupFeatureTabToggle({field:'feat_campaigns_enabled', selectId:'cfgFeatCampaignsEnabled', saveBtnId:'saveFeatCampaignsEnabled', msgId:'saveFeatCampaignsEnabledMsg', badgeId:'campaignsTabStatusBadge', tabIds:['dnCampaignsTab','moreCampaignsTab']});
+const _populateCampaignsTab=setupFeatureTabToggle({field:'feat_campaigns_enabled', selectId:'cfgFeatCampaignsEnabled', saveBtnId:'saveFeatCampaignsEnabled', msgId:'saveFeatCampaignsEnabledMsg', badgeId:'campaignsTabStatusBadge', tabIds:['dnCampaignsTab','moreCampaignsTab','dnFollowupsTab','moreFollowupsTab']});
 const _populateTeamTab=setupFeatureTabToggle({field:'feat_team_enabled', selectId:'cfgFeatTeamEnabled', saveBtnId:'saveFeatTeamEnabled', msgId:'saveFeatTeamEnabledMsg', badgeId:'teamTabStatusBadge', tabIds:['dnTeamTab','moreTeamTab']});
 const _populateReportsTab=setupFeatureTabToggle({field:'feat_reports_enabled', selectId:'cfgFeatReportsEnabled', saveBtnId:'saveFeatReportsEnabled', msgId:'saveFeatReportsEnabledMsg', badgeId:'reportsTabStatusBadge', tabIds:['dnReportsTab','moreReportsTab']});
 const _populateKbTab=setupFeatureTabToggle({field:'feat_kb_enabled', selectId:'cfgFeatKbEnabled', saveBtnId:'saveFeatKbEnabled', msgId:'saveFeatKbEnabledMsg', badgeId:'kbTabStatusBadge', tabIds:['dnKbTab','moreKbTab']});
@@ -21342,6 +21379,25 @@ function recoveryBadgeHtml(lead){
   const label=done?'Recovered/Done':`Step ${Math.min(stage,total)}/${total}`;
   return `<span class="recovery-badge" title="${esc(lead.recovery_last_message||'')}">🔁 ${label}</span>`;
 }
+// Follow-up V3 — "was a follow-up sent, and what's next" on the lead card. Hidden when the account
+// hasn't switched V3 on (the endpoint answers {enabled:false}).
+async function renderFollowupV3Status(lead){
+  const wrap=$id('fuV3Wrap'); if(!wrap||!window.FollowupStatus) return;
+  wrap.style.display='none';
+  try{
+    const d=await FollowupStatus.load(CONFIG.WORKER_BASE, sessionToken, lead.Id);
+    if(currentLead!==lead||!d.enabled) return;
+    $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId:lead.Id});
+    wrap.style.display='';
+  }catch(e){ /* endpoint unavailable — leave the card hidden */ }
+}
+async function skipFollowupV3Step(leadId, step){
+  if(!confirm('Skip this follow-up for this lead?')) return;
+  try{
+    const d=await FollowupStatus.skip(CONFIG.WORKER_BASE, sessionToken, leadId, step);
+    if(currentLead&&currentLead.Id===leadId) $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId});
+  }catch(e){ alert('Could not skip: '+e.message); }
+}
 function renderRecoveryChip(lead){
   const wrap=$id('recoveryChipWrap');
   const chip=$id('recoveryChip');
@@ -22022,6 +22078,7 @@ async function deleteHospBooking(id){
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
+<script src="followup-status.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──
