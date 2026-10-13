@@ -4637,6 +4637,11 @@ const ROLES = {
     <div id="recoveryChipWrap" style="display:none;margin-top:12px">
       <div class="recovery-chip" id="recoveryChip"></div>
     </div>
+    <!-- Follow-up V3 status (followup-status.js) — only shown while Follow-up V3 is on -->
+    <div id="fuV3Wrap" style="display:none;margin-top:12px;border:1px solid var(--line,#e5e7eb);border-radius:10px;padding:10px 12px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:6px">🚀 Follow-up status</div>
+      <div id="fuV3Status"></div>
+    </div>
     <!-- AI summary -->
     <div style="margin-top:12px">
       <button class="btn btn-secondary btn-sm" onclick="generateSummary()">✨ AI Summary</button>
@@ -9086,6 +9091,7 @@ function openDetail(id){
    $id('crossSellWrap').style.display=_bc.crosssell_suggestions_enabled===false?'none':'block';}
   renderNbaChip(lead);
   renderRecoveryChip(lead);
+  renderFollowupV3Status(lead);
   renderLeadProfile(lead);
   renderWaReply(lead);
   openLeadDetailModal();
@@ -21342,6 +21348,25 @@ function recoveryBadgeHtml(lead){
   const label=done?'Recovered/Done':`Step ${Math.min(stage,total)}/${total}`;
   return `<span class="recovery-badge" title="${esc(lead.recovery_last_message||'')}">🔁 ${label}</span>`;
 }
+// Follow-up V3 — "was a follow-up sent, and what's next" on the lead card. Hidden when the account
+// hasn't switched V3 on (the endpoint answers {enabled:false}).
+async function renderFollowupV3Status(lead){
+  const wrap=$id('fuV3Wrap'); if(!wrap||!window.FollowupStatus) return;
+  wrap.style.display='none';
+  try{
+    const d=await FollowupStatus.load(CONFIG.WORKER_BASE, sessionToken, lead.Id);
+    if(currentLead!==lead||!d.enabled) return;
+    $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId:lead.Id});
+    wrap.style.display='';
+  }catch(e){ /* endpoint unavailable — leave the card hidden */ }
+}
+async function skipFollowupV3Step(leadId, step){
+  if(!confirm('Skip this follow-up for this lead?')) return;
+  try{
+    const d=await FollowupStatus.skip(CONFIG.WORKER_BASE, sessionToken, leadId, step);
+    if(currentLead&&currentLead.Id===leadId) $id('fuV3Status').innerHTML=FollowupStatus.html(d, {onSkip:'skipFollowupV3Step', leadId});
+  }catch(e){ alert('Could not skip: '+e.message); }
+}
 function renderRecoveryChip(lead){
   const wrap=$id('recoveryChipWrap');
   const chip=$id('recoveryChip');
@@ -22022,6 +22047,7 @@ async function deleteHospBooking(id){
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
+<script src="followup-status.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──

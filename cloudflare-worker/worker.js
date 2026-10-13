@@ -1,6 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,toWhatsApp} from './chats-v2.js';
+import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -900,6 +901,16 @@ async function handleSignup(request, env){
   if(!createClientR.ok){
     await authentikApiFetch(env, `/core/users/${userId}/`, {method:'DELETE'}).catch(()=>{});
     return json({error:'Could not create your account — please try again.'}, 502);
+  }
+  // Follow-up V3 on by default for new accounts when the platform opts in (wrangler [vars]
+  // FOLLOWUP_V3_NEW_CLIENTS="on"); otherwise each client switches it on in the Follow-up Engine tab.
+  // Only leads that arrive after this point are enrolled, and the ladder/templates are set up by the
+  // V3 sweep's hourly setup pass once WhatsApp is connected — nothing to configure by hand.
+  if(env.FOLLOWUP_V3_NEW_CLIENTS==='on'){
+    try{
+      const created=await createClientR.clone().json();
+      if(created?.Id) await fv3SaveSettings(env, created.Id, {enabled:true, industry:'general'});
+    }catch(e){ await reportOpsError(env, 'signup: enable Follow-up V3', e).catch(()=>{}); }
   }
 
   // Recovery/invite link — lets the user set their own password
@@ -4018,10 +4029,15 @@ function followupWithinQuietHours(c){
 // handleWaSendTemplate's own comment) — the only message type WhatsApp allows this far past the
 // customer's last message. Throws on a hard send failure so callers decide how to report it: a 502
 // to the rep for the manual route, a caught-and-logged per-lead skip for the cron sweep.
-async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
+// `opts` is only passed by Follow-up V3 (followup-v3.js fv3ProcessClient): overrideText (an
+// objection-aware nudge, logged as its own variant), fill ({product}/{business} placeholders),
+// templateParams (one value per {{n}}, instead of the lead's name in every slot), creds (the lead's
+// own channel credentials) and v3/kind/leadName for the extra followup_sends columns. Step 6 is V3's
+// re-engage message, which has no "Follow up N" lead field.
+async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
   const clientId=String(c.Id);
   let sentText='', sentViaVoice=false;
-  const variant=await pickLadderVariant(env, c.Id, step, stepCfg);
+  const variant=opts.overrideText?(opts.variant||'OBJ'):await pickLadderVariant(env, c.Id, step, stepCfg);
   const content=ladderVariantContent(stepCfg, variant);
 
   if(stepCfg.type==='session'){
@@ -4031,10 +4047,11 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
     // AI-generated mode (ai_mode=1): generate a personalised follow-up using the lead's name,
     // interested product and business prompt instead of the static template. Falls back to the
     // static message if the AI call produces nothing so the follow-up still goes out.
-    let staticText=String(content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    let staticText=String(opts.overrideText||content.message||'').replace(/\{name\}/gi, lead.Name||'there');
+    if(opts.fill) staticText=staticText.replace(/\{product\}/gi, opts.fill.product||'your enquiry').replace(/\{business\}/gi, opts.fill.business||'us');
     // Gemini generate and scarcity line are independent — run both in parallel.
     const [aiGenerated, scarcityLine]=await Promise.all([
-      stepCfg.ai_mode
+      stepCfg.ai_mode && !opts.overrideText
         ? (()=>{
             const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
             const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
@@ -4074,20 +4091,22 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
       if(!r.ok) throw new Error('HTTP '+r.status);
     }
   } else {
-    if(!c.wa_phone_id||!c.wa_token) throw new Error('WhatsApp Business API is not connected for this account — connect it from Settings → Channels.');
+    const waPhoneId=opts.creds?.wa_phone_id||c.wa_phone_id, waToken=opts.creds?.wa_token||c.wa_token;
+    if(!waPhoneId||!waToken) throw new Error('WhatsApp Business API is not connected for this account — connect it from Settings → Channels.');
     if(!lead.Phone) throw new Error('This lead has no phone number.');
     // Each {{n}} placeholder in the template's approved BODY text gets filled with the lead's name
     // (template_body_vars, counted when the template was picked in the Follow-up Engine UI) — a
     // pragmatic default covering the overwhelmingly common case (a template's only variable is the
     // customer's name), not a general variable-mapping system.
     const varCount=Math.max(0, content.template_body_vars||0);
-    const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, ()=>({type:'text', text:lead.Name||'there'}))}]:[];
-    const r=await fetch(`https://graph.facebook.com/v18.0/${c.wa_phone_id}/messages`, {
-      method:'POST', headers:{Authorization:`Bearer ${c.wa_token}`, 'Content-Type':'application/json'},
+    const params=Array.isArray(opts.templateParams)&&opts.templateParams.length===varCount?opts.templateParams:null;
+    const components=varCount?[{type:'body', parameters:Array.from({length:varCount}, (_, i)=>({type:'text', text:params?params[i]:(lead.Name||'there')}))}]:[];
+    const r=await fetch(`https://graph.facebook.com/v18.0/${waPhoneId}/messages`, {
+      method:'POST', headers:{Authorization:`Bearer ${waToken}`, 'Content-Type':'application/json'},
       body:JSON.stringify({messaging_product:'whatsapp', to:lead.Phone, type:'template', template:{name:content.template_name, language:{code:content.template_language||'en_US'}, components}})
     });
     const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data?.error?.message||('HTTP '+r.status));
+    if(!r.ok){ const err=new Error(data?.error?.message||('HTTP '+r.status)); err.code=data?.error?.code; throw err; }
     await logWaTemplateSend(env, c.Id, 'followup', {template:content.template_name, phone:lead.Phone, leadId:lead.Id});
     sentText=`[template: ${content.template_name}]`;
   }
@@ -4095,13 +4114,20 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg){
   // Mark the step as sent. If this PATCH fails the message still went out, so we log the failure
   // rather than throwing — throwing here would leave `Follow up N` unset and cause the next cron
   // tick to send the same message again (double-send).
-  const patchRes=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
-  if(!patchRes.ok) console.error('[followup] PATCH Follow up',step,'failed for lead',lead.Id,'HTTP',patchRes.status);
+  if(step<=5){
+    const patchRes=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), ['Follow up '+step]:'Yes'}});
+    if(!patchRes.ok) console.error('[followup] PATCH Follow up',step,'failed for lead',lead.Id,'HTTP',patchRes.status);
+  }
+  let sendId=null;
   try{
-    await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
-      .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
+    const r=opts.v3
+      ? await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at, v3, kind, lead_name) VALUES (?,?,?,?,?,1,?,?)`)
+          .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString(), opts.kind||'ladder', String(opts.leadName||lead.Name||'').slice(0,120)).run()
+      : await env.DB.prepare(`INSERT INTO followup_sends (client_id, lead_id, step, variant, sent_at) VALUES (?,?,?,?,?)`)
+          .bind(Number(c.Id), Number(lead.Id), step, variant, new Date().toISOString()).run();
+    sendId=r?.meta?.last_row_id??null;
   }catch(e){ /* best-effort — the message already went out regardless of whether this logs */ }
-  return {text:sentText, sentViaVoice, variant};
+  return {text:sentText, sentViaVoice, variant, sendId};
 }
 
 // Manual "send next follow-up now" — a rep's on-demand override alongside the automated ladder
@@ -4266,6 +4292,7 @@ async function runClassicFollowupsForAllClients(env){
 }
 async function classicFollowupProcessClient(env, c){
   if(c.followup_do_enabled==='Yes') return; // handed off to LeadFollowupAgent Durable Objects
+  if(await fv3IsEnabled(env, c.Id)) return; // Follow-up V3 is on — followup-v3.js sends instead
   const {results:stepRows}=await env.DB.prepare(`SELECT * FROM followup_ladder_steps WHERE client_id=?`).bind(Number(c.Id)).all();
   if(!stepRows||!stepRows.length) return; // Follow-up Engine never configured for this client
   // Checked once per client per tick, not per lead — it's the same answer for every lead of this
@@ -23930,7 +23957,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Follow-up Engine reply tracking (migrations/0007_followup_engine.sql) — any real inbound
     // message from a lead with an outstanding (unreplied) follow-up send counts as that follow-up
     // having worked, regardless of whether it also happened to change Stage.
-    if(userText && resolvedLeadId){
+    // Follow-up V3 (followup-v3.js fv3OnInbound) credits only the latest follow-up within its
+    // attribution window, notes opt-outs and the lead's usual writing hour instead.
+    if(userText && resolvedLeadId && !await fv3OnInbound(env, c, resolvedLeadId, {optOut:leadBody?.OptOut==='Yes'})){
       try{
         await env.DB.prepare(`UPDATE followup_sends SET replied_at=? WHERE lead_id=? AND replied_at IS NULL`)
           .bind(new Date().toISOString(), resolvedLeadId).run();
@@ -31405,6 +31434,44 @@ const CHATS_V2_DEPS={
     return lead;
   },
 };
+// Follow-up V3 (followup-v3.js) helpers.
+// Orders by customer phone (last 10 digits → latest real order's date and total), cached for 30 min
+// per client so the 15-minute sweep doesn't page the Orders table every tick.
+const fv3OrderCache=new Map();
+async function fv3OrderPhones(env, c){
+  if(!c || !isEcomEnabled(c)) return null;
+  const hit=fv3OrderCache.get(c.Id);
+  if(hit && Date.now()-hit.at<30*60000) return hit.map;
+  const tableId=await ecomResolveTable(env, c.Id, 'orders');
+  if(!tableId) return null;
+  const map={};
+  for(let page=1; page<=25; page++){
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,total,CreatedAt`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    for(const o of list){
+      if(ECOM_NON_CONVERTING_STATUSES.has(String(o.status||'').trim().toLowerCase())) continue;
+      const phone=String(o.customer_phone||'').replace(/\D/g,'').slice(-10); if(!phone) continue;
+      const date=String(o.order_date||o.CreatedAt||'');
+      if(!map[phone] || (date && date>(map[phone].date||''))) map[phone]={date, total:Number(o.total)||0};
+    }
+    if(list.length<200) break;
+  }
+  fv3OrderCache.set(c.Id, {at:Date.now(), map});
+  return map;
+}
+const FOLLOWUP_V3_DEPS={
+  json, requireSession, getClientById, ncFetch, ensureLeadsColumns, reportOpsError,
+  leadsTable:DEFAULT_LEADS_TABLE,
+  ai:(env, c, systemText, userText, opts)=>engineGeminiGenerateWithFallback(env, c, systemText, userText, opts),
+  // The lead's own WhatsApp channel first (multi-number accounts), then the account's only/legacy one.
+  metaCreds:(c, lead)=>resolveMetaCredentials(c, {inbox_id:lead?.InboxId||''})||resolveMetaCredentials(c, {})
+    ||(c?.wa_token&&(c.wa_phone_id||c.waba_id)?{waba_id:c.waba_id, wa_phone_id:c.wa_phone_id, wa_token:c.wa_token}:null),
+  sendStep:sendFollowupLadderStep,
+  sendEmail:(env, to, subject, html)=>CHATS_V2_DEPS.sendEmail(env, to, subject, html),
+  orderPhones:fv3OrderPhones,
+  objectionPlaybook:c=>{ try{ const p=JSON.parse(c?.objection_playbook||'[]'); return Array.isArray(p)?p:[]; }catch(e){ return []; } },
+};
 const CEO_DEPS={
   json, requireSession, getClientById, reportOpsError, parseTeamWhatsapp,
   normalizePhone:(raw, c)=>normalizeStaffWhatsapp(raw, hotLeadAlertDefaultCc(c)),
@@ -34382,6 +34449,7 @@ export class LeadFollowupAgent{
     const cData=await cR.json().catch(()=>null);
     const c=cData?.list?.[0];
     if(!c){ await this.state.storage.setAlarm(Date.now()+1800000); return; }
+    if(await fv3IsEnabled(this.env, clientId)) return; // Follow-up V3 took over this client — stand down
 
     if(!followupWithinQuietHours(c)){
       await this.state.storage.setAlarm(Date.now()+3600000); // outside send window — retry in 1h
@@ -35487,6 +35555,7 @@ export default {
       // own WhatsApp webhook (/ceo/wa/webhook/<key>), which is Meta-signature-verified instead.
       else if(url.pathname.startsWith('/ceo/')){ res=await ceoHandleRoute(request, env, CEO_DEPS, url, ctx); }
       else if(url.pathname.startsWith('/chats/v2/')){ res=await chatsV2HandleRoute(request, env, CHATS_V2_DEPS, url, ctx); }
+      else if(url.pathname.startsWith('/followups/v3/')){ res=await fv3HandleRoute(request, env, FOLLOWUP_V3_DEPS, url); }
       else if(url.pathname==='/re/init' && request.method==='GET'){ res=await handleReInit(request, env); }
       else if(url.pathname==='/re/webhook/lead' && request.method==='POST'){ res=await handleReLeadWebhook(request, env); }
       else if(url.pathname==='/re/leads' && request.method==='POST'){ res=await handleReLeadCreate(request, env); }
@@ -35734,6 +35803,8 @@ export default {
       // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.
       ctx.waitUntil(runHotLeadReassignForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
+      // Follow-up V3 — only clients who switched it on (the classic sweep above skips them). See followup-v3.js.
+      ctx.waitUntil(fv3RunForAllClients(env, FOLLOWUP_V3_DEPS).catch(e=>reportOpsError(env, 'followup v3 sweep', e)));
       // Baby Care product summary follow-up (Ecom → Settings) — see babyCareSummaryDue.
       ctx.waitUntil(runBabyCareSummaryFollowupsForAllClients(env));
       // Monthly Marketing (Campaigns → 📅 Monthly Marketing) — on this tick rather than the daily

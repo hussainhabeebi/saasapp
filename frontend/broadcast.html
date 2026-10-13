@@ -747,7 +747,51 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
        Chatwoot. Days/hours for steps 3-5 are fixed, not editable, by design.
   ══════════════════════════════════════ -->
   <div id="view-fuengine" style="display:none">
-    <div class="card">
+    <!-- Follow-up V3 (cloudflare-worker/followup-v3.js) — off until switched on here. -->
+    <div class="card" id="fv3Card">
+      <div class="card-title">🚀 Follow-up V3 <span style="font-size:11px;background:var(--accent);color:#fff;border-radius:4px;padding:2px 6px;margin-left:6px;vertical-align:middle">New</span></div>
+      <div class="msg info">Switch it on and follow-ups run by themselves — no setup. V3 fills in the two first nudges (with an AI-written B version to test), submits the day 1 / 3 / 7 and re-engage templates to WhatsApp for approval and plugs them in once approved. It stops when a lead replies, books, buys or is won, spaces messages out, never sends at night, sends template steps at the hour each lead usually writes, answers a lead's last objection from your Objection Playbook, and retries when WhatsApp holds a message. Only leads that arrive after you switch it on are enrolled. Every lead card and chat shows whether a follow-up was sent and what's next.</div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:7px;font-size:13.5px;cursor:pointer;font-weight:600">
+          <input type="checkbox" id="fv3Enabled" style="width:auto;cursor:pointer" onchange="fv3Toggle(this.checked)"> Enable Follow-up V3 for my account
+        </label>
+        <span id="fv3Msg" style="font-size:12.5px;color:var(--muted)"></span>
+      </div>
+      <div id="fv3Body" style="display:none;margin-top:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+          <div style="font-weight:700;font-size:14px">Setup status</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sec" onclick="fv3Recheck(false)">↻ Re-check templates</button>
+            <button class="btn btn-sec" id="fv3PauseBtn" onclick="fv3TogglePause()">⏸ Pause all follow-ups</button>
+          </div>
+        </div>
+        <div id="fv3Checklist"></div>
+        <details style="margin-top:14px">
+          <summary style="cursor:pointer;font-weight:700;font-size:13.5px">Settings</summary>
+          <div id="fv3Settings" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:12px"></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+            <button class="btn btn-primary" onclick="fv3SaveConfig()">Save settings</button>
+            <span id="fv3SaveMsg" style="font-size:12.5px"></span>
+          </div>
+        </details>
+      </div>
+    </div>
+    <div class="card" id="fv3UpcomingCard" style="display:none">
+      <div class="card-title">🗓️ Going out in the next 24 hours</div>
+      <div class="msg info">Skip a step for one lead if you're already talking to them another way. It only skips this round — if the lead writes again, a fresh sequence starts.</div>
+      <div id="fv3Upcoming" style="margin-top:10px"></div>
+    </div>
+    <div class="card" id="fv3ReportCard" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div class="card-title" style="margin:0">📊 Follow-up V3 report</div>
+        <select id="fv3Days" onchange="fv3LoadReport()" style="width:auto">
+          <option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <div id="fv3Report" style="margin-top:12px"></div>
+      <div id="fv3Drill" style="margin-top:12px"></div>
+    </div>
+    <div class="card" id="fuQuietCard">
       <div class="card-title">⏰ Preferred Send Window</div>
       <div class="msg info">A step that becomes due outside this window waits for the window to open instead of firing right away — nothing is skipped, just delayed to the next time it's within hours. Defaults to evenings, after typical office hours, since that's usually when a lead actually has time to reply on WhatsApp.</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:10px">
@@ -787,7 +831,7 @@ input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px rgba(14,124,90,.1)}
       <button class="btn btn-primary" onclick="saveFollowupEngine()">Save All Steps</button>
       <span id="fuEngineSaveMsg" style="font-size:12.5px"></span>
     </div>
-    <div class="card">
+    <div class="card" id="fuStatsCard">
       <div class="card-title">📊 Step Performance</div>
       <div class="msg info">Reply rate = the share of sends where the lead sent any real message afterward.</div>
       <div id="fuEngineStats"></div>
@@ -3472,6 +3516,7 @@ async function saveFollowupQuietHours(){
   }catch(e){ msg.textContent='Failed to save.'; }
 }
 async function loadFollowupEngine(){
+  fv3Load();
   loadFollowupQuietHours();
   loadSmartFollowupState();
   ['fuLadderSession','fuLadderStep3','fuLadderStep4','fuLadderStep5'].forEach(id=>{ $id(id).innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; });
@@ -3612,6 +3657,173 @@ async function saveFollowupEngine(){
     msg.textContent='Saved ✓';
     setTimeout(()=>{ if($id('fuEngineSaveMsg')) $id('fuEngineSaveMsg').textContent=''; },2000);
   }catch(e){ msg.textContent='Failed to save.'; }
+}
+// ── FOLLOW-UP V3 ── /followups/v3/* (cloudflare-worker/followup-v3.js). While V3 is on, the classic
+// send window and Smart Follow-ups cards don't apply (V3 has its own night-time quiet hours and
+// sweep), so they're hidden; the ladder step editors below stay — V3 sends those same steps.
+let fv3State=null;
+const FV3_STATUS_LABEL={APPROVED:'✅ Approved',PENDING:'⏳ Waiting for WhatsApp approval',IN_APPEAL:'⏳ In appeal',REJECTED:'❌ Rejected',ERROR:'⚠️ Could not submit',OWN:'✅ Your own template',NOT_SUBMITTED:'… Not submitted yet',PAUSED:'⏸ Paused by Meta',DISABLED:'❌ Disabled by Meta'};
+function fv3Rel(iso){
+  const t=Date.parse(iso||''); if(!t) return '';
+  const diff=t-Date.now(), a=Math.abs(diff), m=Math.round(a/60000), h=Math.round(a/3600000), d=Math.round(a/86400000);
+  const txt=m<1?'now':m<60?m+' min':h<48?h+'h':d+' days';
+  if(txt==='now') return 'now';
+  return diff>0?'in '+txt:txt+' ago';
+}
+function fv3When(iso){ const t=Date.parse(iso||''); return t?new Date(t).toLocaleString([], {weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit'}):''; }
+async function fv3Api(path, body){
+  const r=await fetch(`${CONFIG.WORKER_BASE}/followups/v3${path}`, body?{method:'POST', headers:ncAuthHeaders({'Content-Type':'application/json'}), body:JSON.stringify(body)}:{headers:ncAuthHeaders()});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+  return d;
+}
+async function fv3Load(){
+  try{ fv3State=await fv3Api('/settings'); }catch(e){ fv3State=null; $id('fv3Msg').textContent='Couldn\'t load Follow-up V3: '+e.message; return; }
+  fv3Render();
+}
+function fv3Render(){
+  const on=!!fv3State?.enabled;
+  $id('fv3Enabled').checked=on;
+  $id('fv3Body').style.display=on?'':'none';
+  $id('fv3UpcomingCard').style.display=on?'':'none';
+  $id('fv3ReportCard').style.display=on?'':'none';
+  ['fuQuietCard','smartFollowupCard','fuStatsCard'].forEach(id=>{ const el=$id(id); if(el) el.style.display=on?'none':''; });
+  const cfg=fv3State?.config||{};
+  $id('fv3Msg').innerHTML=on
+    ? (cfg.paused?'<b style="color:#9A5B12">⏸ Paused — nothing is being sent.</b>':`On since ${esc(fv3When(fv3State.enabled_at))}`)
+    : 'Off — your current follow-up settings keep working as they are.';
+  $id('fv3PauseBtn').textContent=cfg.paused?'▶ Resume follow-ups':'⏸ Pause all follow-ups';
+  if(!on) return;
+  $id('fv3Checklist').innerHTML=`<div class="tbl-wrap" style="max-height:none"><table class="tbl"><tbody>${(fv3State.checklist||[]).map(i=>{
+    const st=i.status?(FV3_STATUS_LABEL[i.status]||esc(i.status)):(i.ok?'✅ Ready':'⚠️ Not ready');
+    const detail=[i.template?`<code>${esc(i.template)}</code>`:'', i.error?`<span style="color:#991B1B">${esc(i.error)}</span>`:''].filter(Boolean).join(' · ');
+    return `<tr><td>${esc(i.label)}${i.optional?' <span style="color:var(--muted)">(off)</span>':''}</td><td style="white-space:nowrap">${st}</td><td style="font-size:12px;color:var(--muted)">${detail}</td></tr>`;
+  }).join('')}</tbody></table></div>
+  ${(fv3State.checklist||[]).some(i=>i.key==='whatsapp_api'&&!i.ok)?'<div class="msg info" style="margin-top:8px">Connect the WhatsApp Cloud API in Settings → Channels so V3 can submit and send the day 1 / 3 / 7 templates. Nudges 1-2 already work.</div>':''}
+  ${(fv3State.checklist||[]).some(i=>i.status==='REJECTED'||i.status==='ERROR')?'<div style="margin-top:8px"><button class="btn btn-sec" onclick="fv3Recheck(true)">Resubmit rejected templates</button></div>':''}`;
+  const num=(k,label,min,max,help)=>`<div class="form-field"><label>${label}</label><input type="number" min="${min}" max="${max}" id="fv3c_${k}" value="${Number(cfg[k])||0}">${help?`<div style="font-size:11px;color:var(--muted);margin-top:3px">${help}</div>`:''}</div>`;
+  const chk=(k,label,help)=>`<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer"><input type="checkbox" style="width:auto;margin-top:3px" id="fv3c_${k}" ${cfg[k]?'checked':''}><span>${label}${help?`<br><span style="font-size:11px;color:var(--muted)">${help}</span>`:''}</span></label>`;
+  $id('fv3Settings').innerHTML=[
+    num('quiet_start','No sends from (hour, 0-23)',0,23,'Night-time quiet hours, your timezone'),
+    num('quiet_end','…until (hour, 0-23)',0,23,''),
+    num('min_gap_hours','Hours between two follow-ups',1,48,'Stops nudges landing back-to-back'),
+    num('daily_cap','Max follow-ups per day',1,5000,''),
+    num('warmup_cap','Max per day in the first week',1,5000,'Gentle start while WhatsApp learns your number'),
+    num('lead_cap_30d','Max follow-ups per lead in 30 days',1,30,''),
+    num('reengage_after_days','Re-engage after (days of silence)',7,180,''),
+    num('reengage_max','Re-engage messages per lead',1,6,''),
+    num('attribution_hours','A reply counts for a follow-up within (hours)',1,336,''),
+    `<div class="form-field"><label>Also stop at these stages</label><input id="fv3c_exit_stages" value="${escAttr((cfg.exit_stages||[]).join(', '))}" placeholder="e.g. quote_sent, demo_done"><div style="font-size:11px;color:var(--muted);margin-top:3px">Won, booked, lost and handed-over leads always stop</div></div>`,
+    chk('include_existing_leads','Also follow up leads from before V3','Off = only new leads, so old contacts aren\'t messaged all at once'),
+    chk('smart_send_time','Smart send time','Template steps go out at the hour each lead usually writes'),
+    chk('objection_branching','Answer objections','Nudges 1-2 reply to the lead\'s last objection using your Objection Playbook'),
+    chk('exit_on_order','Stop when the customer orders','Ecommerce: an order ends the sequence'),
+    chk('reengage_enabled','Re-engage long-silent leads','One more message after a long silence, up to the limit above'),
+    chk('auto_templates','Create templates for me','Submit and plug in the day 1 / 3 / 7 and re-engage templates'),
+    chk('ai_variant_b','AI-written B version','A second wording for nudges 1-2; the better one gets sent more'),
+    chk('weekly_digest','Monday email summary','To the account owner\'s email'),
+  ].join('');
+  fv3LoadUpcoming();
+  fv3LoadReport();
+}
+async function fv3Toggle(on){
+  $id('fv3Msg').textContent=on?'Switching on and setting everything up… (this can take a few seconds)':'Switching off…';
+  $id('fv3Enabled').disabled=true;
+  try{ const d=await fv3Api('/settings', {enabled:on}); fv3State={...fv3State, ...d}; fv3Render(); }
+  catch(e){ $id('fv3Enabled').checked=!on; $id('fv3Msg').textContent='Error: '+e.message; }
+  finally{ $id('fv3Enabled').disabled=false; }
+  if(on) loadFollowupEngine(); // ladder editors now show what V3 filled in
+}
+async function fv3TogglePause(){
+  try{ const d=await fv3Api('/settings', {config:{paused:!fv3State?.config?.paused}}); fv3State={...fv3State, ...d}; fv3Render(); }
+  catch(e){ $id('fv3Msg').textContent='Error: '+e.message; }
+}
+async function fv3SaveConfig(){
+  const cfg={};
+  ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
+  ['include_existing_leads','smart_send_time','objection_branching','exit_on_order','reengage_enabled','auto_templates','ai_variant_b','weekly_digest'].forEach(k=>{ cfg[k]=$id('fv3c_'+k).checked; });
+  cfg.exit_stages=$id('fv3c_exit_stages').value.split(',').map(x=>x.trim()).filter(Boolean);
+  $id('fv3SaveMsg').textContent='Saving…';
+  try{ const d=await fv3Api('/settings', {config:cfg}); fv3State={...fv3State, ...d}; $id('fv3SaveMsg').textContent='Saved ✓'; fv3Render(); }
+  catch(e){ $id('fv3SaveMsg').textContent='Error: '+e.message; }
+}
+async function fv3Recheck(resubmit){
+  $id('fv3Msg').textContent='Checking templates with WhatsApp…';
+  try{ const d=await fv3Api('/setup', {resubmit}); fv3State={...fv3State, checklist:d.checklist}; fv3Render(); loadFollowupEngine(); }
+  catch(e){ $id('fv3Msg').textContent='Error: '+e.message; }
+}
+async function fv3LoadUpcoming(){
+  const el=$id('fv3Upcoming'); el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const {list}=await fv3Api('/upcoming');
+    if(!list.length){ el.innerHTML='<div style="font-size:12px;color:var(--muted)">Nothing scheduled in the next 24 hours.</div>'; return; }
+    el.innerHTML=`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Lead</th><th>Step</th><th>When</th><th></th></tr></thead><tbody>${list.map(r=>
+      `<tr><td>${esc(r.lead_name||('Lead #'+r.lead_id))}</td><td>${esc(r.label)}</td><td title="${esc(fv3When(r.next_due_at))}">${r.status==='due'?'Next run (≤15 min)':esc(fv3Rel(r.next_due_at))}</td><td><button class="btn btn-sec" style="padding:4px 10px;font-size:12px" onclick="fv3Skip(${Number(r.lead_id)},${Number(r.next_step)},this)">Skip</button></td></tr>`).join('')}</tbody></table></div>`;
+  }catch(e){ el.innerHTML=`<div style="font-size:12px;color:#991B1B">${esc(e.message)}</div>`; }
+}
+async function fv3Skip(leadId, step, btn){
+  btn.disabled=true; btn.textContent='Skipping…';
+  try{ await fv3Api('/lead/skip', {lead_id:leadId, step}); btn.textContent='Skipped'; }
+  catch(e){ btn.disabled=false; btn.textContent='Skip'; alert(e.message); }
+}
+function fv3Tile(label, value, sub){ return `<div style="background:var(--bg);border-radius:10px;padding:12px 14px;min-width:130px;flex:1"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-weight:700">${label}</div><div style="font-size:22px;font-weight:800;margin-top:4px">${value}</div>${sub?`<div style="font-size:11.5px;color:var(--muted)">${sub}</div>`:''}</div>`; }
+const FV3_HEALTH={good:'✅ Healthy',watch:'⚠️ Watch opt-outs',bad:'🛑 Too many opt-outs',new:'· Too early to tell'};
+const FV3_DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+async function fv3LoadReport(){
+  const el=$id('fv3Report'); el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>'; $id('fv3Drill').innerHTML='';
+  let r; try{ r=await fv3Api('/report?days='+encodeURIComponent($id('fv3Days').value)); }catch(e){ el.innerHTML=`<div style="font-size:12px;color:#991B1B">${esc(e.message)}</div>`; return; }
+  const t=r.totals, cur=r.currency?esc(r.currency)+' ':'';
+  const bench=r.benchmark?.reply_rate_by_step||{};
+  const tiles=`<div style="display:flex;gap:10px;flex-wrap:wrap">
+    ${fv3Tile('In a sequence now', r.in_sequence||0, 'leads with a follow-up scheduled')}
+    ${fv3Tile('Leads re-engaged', t.leads_reengaged, `${t.reply_rate}% of ${t.sent} follow-ups got a reply`)}
+    ${fv3Tile('Converted after a reply', t.converted, t.revenue?cur+Number(t.revenue).toLocaleString():'')}
+    ${fv3Tile('Opt-outs', t.opted_out, t.opt_out_rate+'% of sends')}
+    ${fv3Tile('Send problems', (r.failures||[]).reduce((a,f)=>a+f.n,0), 'see below')}
+  </div>`;
+  const steps=r.steps.length?`<div style="font-weight:700;font-size:14px;margin:18px 0 6px">Step by step</div>
+    <div class="tbl-wrap" style="max-height:none"><table class="tbl"><thead><tr><th>Step</th><th>Sent</th><th>Replied</th><th>Reply rate</th>${Object.keys(bench).length?'<th>Similar businesses</th>':''}<th>Converted</th><th>Opt-out</th><th>Health</th><th>A/B</th></tr></thead><tbody>${r.steps.map(s=>
+      `<tr><td>${esc(s.label)}</td>
+      <td><a href="#" onclick="fv3DrillDown(${s.step},'all');return false">${s.sent}</a></td>
+      <td><a href="#" onclick="fv3DrillDown(${s.step},'replied');return false">${s.replied}</a></td>
+      <td><b>${s.reply_rate}%</b></td>
+      ${Object.keys(bench).length?`<td>${bench[s.step]!==undefined?bench[s.step]+'%':'—'}</td>`:''}
+      <td><a href="#" onclick="fv3DrillDown(${s.step},'converted');return false">${s.converted}</a>${s.revenue?` <span style="color:var(--muted);font-size:11.5px">(${cur}${Number(s.revenue).toLocaleString()})</span>`:''}</td>
+      <td>${s.opt_out_rate}%</td><td style="white-space:nowrap">${FV3_HEALTH[s.health]||''}</td>
+      <td style="font-size:12px">${s.variants.map(v=>`${esc(v.variant==='OBJ'?'Objection':v.variant)}: ${v.reply_rate}% <span style="color:var(--muted)">(${v.sent})</span>`).join('<br>')}</td></tr>`).join('')}</tbody></table></div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:4px">A reply counts for the latest follow-up only, within your attribution window. Click a number to see the leads.</div>`
+    :'<div style="font-size:12.5px;color:var(--muted);margin-top:12px">No follow-ups sent in this period yet.</div>';
+  // Weekly trend — two series (sent, replied) on one axis, legend + per-bar hover title.
+  const maxW=Math.max(1, ...r.trend.map(w=>w.sent));
+  const trend=r.trend.some(w=>w.sent)?`<div style="font-weight:700;font-size:14px;margin:18px 0 6px">Weekly trend</div>
+    <div style="display:flex;gap:14px;font-size:11.5px;color:var(--muted);margin-bottom:6px"><span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--ls);margin-right:4px"></span>Sent</span><span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);margin-right:4px"></span>Replied</span></div>
+    <div role="img" aria-label="Follow-ups sent and replied per week" style="display:flex;align-items:flex-end;gap:10px;height:120px;border-bottom:1px solid var(--line);padding:0 2px">${r.trend.map(w=>
+      `<div style="flex:1;display:flex;align-items:flex-end;gap:2px;height:100%" title="Week of ${esc(w.week_start)}: ${w.sent} sent, ${w.replied} replied, ${w.converted} converted">
+        <div style="flex:1;background:var(--ls);border-radius:4px 4px 0 0;height:${Math.round(w.sent/maxW*100)}%"></div>
+        <div style="flex:1;background:var(--accent);border-radius:4px 4px 0 0;height:${Math.round(w.replied/maxW*100)}%"></div></div>`).join('')}</div>
+    <div style="display:flex;gap:10px;font-size:10.5px;color:var(--muted);padding:3px 2px 0">${r.trend.map(w=>`<div style="flex:1;text-align:center">${esc(w.week_start.slice(5))}</div>`).join('')}</div>`:'';
+  // When leads reply — weekday × hour, one-hue sequential.
+  const maxH=Math.max(1, ...r.heatmap.flat());
+  const heat=r.best_slot?`<div style="font-weight:700;font-size:14px;margin:18px 0 6px">When leads reply</div>
+    <div style="font-size:12.5px;margin-bottom:6px">Busiest: <b>${FV3_DOW[r.best_slot.dow]} around ${String(r.best_slot.hour).padStart(2,'0')}:00</b>. Smart send time already aims each lead's template steps at their own usual hour.</div>
+    <div style="overflow-x:auto"><div style="display:grid;grid-template-columns:34px repeat(24,minmax(14px,1fr));gap:2px;min-width:420px;font-size:10px;color:var(--muted)">
+      <div></div>${Array.from({length:24},(_,h)=>`<div style="text-align:center">${h%3===0?h:''}</div>`).join('')}
+      ${r.heatmap.map((row,d)=>`<div>${FV3_DOW[d]}</div>${row.map((n,h)=>`<div title="${FV3_DOW[d]} ${String(h).padStart(2,'0')}:00 — ${n} repl${n===1?'y':'ies'}" style="height:16px;border-radius:3px;background:${n?`color-mix(in srgb, var(--accent) ${Math.round(15+85*n/maxH)}%, var(--card))`:'var(--bg)'}"></div>`).join('')}`).join('')}
+    </div></div>`:'';
+  const fails=(r.failures||[]).length?`<div style="font-weight:700;font-size:14px;margin:18px 0 6px">Send problems and how to fix them</div>
+    <div class="tbl-wrap" style="max-height:none"><table class="tbl"><thead><tr><th>What happened</th><th>Times</th><th>Last</th><th>Fix</th></tr></thead><tbody>${r.failures.map(f=>
+      `<tr><td>${esc(f.hint)}${f.error_code?` <span style="color:var(--muted);font-size:11px">(code ${esc(f.error_code)})</span>`:''}</td><td>${f.n}</td><td>${esc(fv3Rel(f.last_at))}</td><td>${esc(f.fix)}</td></tr>`).join('')}</tbody></table></div>`:'';
+  el.innerHTML=tiles+steps+trend+heat+fails;
+}
+async function fv3DrillDown(step, outcome){
+  const el=$id('fv3Drill'); el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';
+  try{
+    const {list}=await fv3Api(`/report/leads?step=${step}&outcome=${outcome}&days=${encodeURIComponent($id('fv3Days').value)}`);
+    const title={all:'Sent',replied:'Replied',converted:'Converted',ignored:'No reply'}[outcome]||outcome;
+    el.innerHTML=`<div style="font-weight:700;font-size:14px;margin-bottom:6px">${esc(title)} — step ${step===6?'Re-engage':step} <a href="#" style="font-size:12px;font-weight:400" onclick="$id('fv3Drill').innerHTML='';return false">close</a></div>
+      ${list.length?`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Lead</th><th>Sent</th><th>Replied</th><th>Converted</th></tr></thead><tbody>${list.map(x=>
+        `<tr><td>${esc(x.lead_name||('Lead #'+x.lead_id))}</td><td>${esc(fv3When(x.sent_at))}</td><td>${x.replied_at?esc(fv3Rel(x.replied_at)):'—'}</td><td>${x.converted_at?'✅':''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="font-size:12px;color:var(--muted)">No leads.</div>'}`;
+  }catch(e){ el.innerHTML=`<div style="font-size:12px;color:#991B1B">${esc(e.message)}</div>`; }
 }
 async function fetchFollowupEngineStats(){
   $id('fuEngineStats').innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';

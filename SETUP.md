@@ -8884,3 +8884,62 @@ Team report and, for the owner, in Dashboard → Reports → Team (above the age
 
 Tests: `cloudflare-worker/ceo-bot.test.js` (node:sqlite against the real migrations) and
 `frontend/tests/ceo-bot.spec.js`.
+
+## Follow-up V3 (`cloudflare-worker/followup-v3.js` — Campaigns → 💪 Follow-up Engine → 🚀 Follow-up V3)
+
+Off until a client ticks **Enable Follow-up V3**. While it's on, the classic follow-up cron
+(`classicFollowupProcessClient`) and the Smart Follow-ups Durable Object skip that client, so nothing
+is sent twice. Turning it off hands the client straight back to the classic engine, settings intact.
+
+**No setup after switching on.** The switch-on (and an hourly pass from the 15-minute cron) runs
+`fv3Setup`:
+- Nudges 1-2 (session messages, 1h/6h): keeps what the client wrote, fills only empty ones from
+  presets, and has the AI write a Variant B so the existing auto-weighted A/B testing starts on day one.
+- Day 1 / 3 / 7 and re-engage templates: submitted to Meta as MARKETING templates
+  (`lv_followup_s3`, `_s4`, `_s5`, `_reengage`; variables = lead first name, business name, what
+  they asked about), polled hourly, and plugged into the ladder step once APPROVED. A template the
+  client picked themselves is never replaced. Rejected ones show in the checklist with a
+  **Resubmit** button. Needs the WhatsApp Cloud API connected (Settings → Channels); nudges 1-2 work
+  without it.
+
+**Sending rules** (`fv3Decide`, also what the lead card shows):
+- Only leads created after the first switch-on (unless "Also follow up leads from before V3").
+- Stops for good on opt-out, won/converted, booked stages, lost/closed, an ecommerce order placed
+  around/after the conversation, or any extra stage the client lists. Pauses while handed over or
+  when a person on the team replied last (the bot's own instant reply and our own follow-up message
+  don't count).
+- Every step waits at least `min_gap_hours` (default 3) after the previous follow-up — fixes nudge 1
+  and 2 landing minutes apart after a night-time silence.
+- Night quiet hours (default 21:00–09:00, client timezone) instead of a narrow evening window.
+- A session nudge that can't go out inside WhatsApp's 24h window is skipped; template steps more than
+  3 days overdue are dropped rather than sent late (protects old leads).
+- Template steps go out at the hour this lead usually writes, once it has written 3+ times.
+- Nudges 1-2 answer the lead's last objection with the Objection Playbook's approved response
+  (logged as variant `OBJ`).
+- Re-engage after `reengage_after_days` (30) of silence, up to `reengage_max` (2), once its template
+  is approved.
+- Caps: 50/day in the first week, then `daily_cap` (300); `lead_cap_30d` (8) per lead.
+- Failures: Meta frequency hold (131049) → retry in 24h; customer stopped marketing (131050) → no
+  more template steps; token/template errors → whole account waits 6h; others retry with backoff, then
+  skip the step. Each failure is logged once a day per lead/step/code with a plain-language fix.
+- A reply credits only the latest follow-up, within `attribution_hours` (72).
+
+**Follow-up status** — every lead card (CRM) and chat (header line + info panel) shows whether a
+follow-up was sent, whether the customer replied, what's next and when (or why nothing is next),
+and lets staff skip the next step (`frontend/followup-status.js`, `GET /followups/v3/lead`).
+
+**Report** (same tab): leads in a sequence, leads re-engaged, conversions and revenue after a reply
+(last-touch: the latest replied follow-up within 14 days before the lead was won/booked/ordered,
+revenue = DealValue or the order total), opt-outs, per-step reply/conversion/opt-out rate with a
+health flag, A/B results, an anonymised same-industry benchmark (3+ V3 accounts with 20+ sends), weekly
+trend, reply heatmap by weekday × hour, send problems with fixes, click-through to the leads. A
+Monday-morning summary email goes to the account owner (`weekly_digest`, needs `RESEND_API_KEY`).
+
+Delivered/read ticks aren't tracked: the Chatwoot webhook only subscribes to `message_created`, and
+templates go straight through the Graph API, whose status webhooks go to Chatwoot.
+
+**On by default for new signups**: set `FOLLOWUP_V3_NEW_CLIENTS = "on"` in wrangler `[vars]`.
+Unset = each client switches it on themselves.
+
+Storage: `migrations/0114_followup_v3.sql` (also created lazily by `fv3EnsureSchema`, so it works
+before the migration is applied). Routes: `/followups/v3/settings|setup|lead|lead/skip|upcoming|report|report/leads`.
