@@ -349,6 +349,12 @@ describe('Live Travel ticketing in chat',()=>{
     assert.deepEqual(ltNormalizeChatFlightRequest({origin:'Dubai',destination:'COK'}).missing,['origin airport code','departure date']);
   });
 
+  test('shows supplier local flight times as written, not shifted to Dubai',()=>{
+    const text=ltFormatChatOffers([{airline_name:'IndiGo',flight_numbers:'1457',currency:'AED',total_amount:2094,bookable:true,supplier_offer_id:'fare-6e',cabin:'economy',itinerary:[{origin:'BLR',destination:'SIN',departureTime:'2026-11-02T10:20',arrivalTime:'2026-11-02T17:40:00',duration:290,stops:0}]}]);
+    assert.match(text,/from BLR to SIN on 02 Nov 2026/);
+    assert.match(text,/Departs 10:20, arrives 17:40 · 4h 50m/);
+  });
+
   test('formats only verified offer fields and checkout links for chat',()=>{
     const text=ltFormatChatOffers([{airline_name:'Example Air',flight_numbers:'EA101',currency:'AED',total_amount:425.5,seats_left:3,bookable:true,supplier_offer_id:'fare-1',cabin:'economy',itinerary:[{origin:'DXB',destination:'CCJ',departureTime:'2026-09-22T05:40:00Z',arrivalTime:'2026-09-22T11:15:00Z',duration:275,stops:0}],baggage:{cabin:'7 KG',checked:'15 KG'}}]);
     assert.match(text,/✈️ I found a flight from DXB to CCJ on 22 Sept 2026 \(economy\)\./);

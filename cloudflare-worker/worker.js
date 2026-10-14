@@ -16876,12 +16876,23 @@ export function ltChatFlightFilterLabel(filters){
   if(f.sort)parts.push(`${f.sort} first`);
   return parts.join(', ');
 }
+// Supplier times (TripJack, Riya, Duffel, SERP) are the airport's own wall clock with no offset,
+// e.g. "2026-11-02T10:20". The worker runs in UTC, so never pass them through new Date() and a
+// time zone: show the clock as written. Only a UTC-stamped value ("…Z") is shown on Dubai time.
+function ltFlightClock(v){
+  const s=String(v||'').trim();if(!s)return null;
+  const m=s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?([+-]\d{2}:?\d{2})?$/);
+  if(m)return {year:+m[1],month:+m[2],day:+m[3],hour:+m[4],minute:+m[5]};
+  const d=new Date(s);if(Number.isNaN(d.getTime()))return null;
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Dubai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d).map(x=>[x.type,x.value]));
+  return {year:+p.year,month:+p.month,day:+p.day,hour:+p.hour,minute:+p.minute};
+}
+function ltFlightTime(v){const c=ltFlightClock(v);return c?`${String(c.hour).padStart(2,'0')}:${String(c.minute).padStart(2,'0')}`:'—';}
+function ltFlightDate(v){const c=ltFlightClock(v);return c?new Date(Date.UTC(c.year,c.month-1,c.day)).toLocaleDateString('en-GB',{timeZone:'UTC',day:'2-digit',month:'short',year:'numeric'}):'';}
 function ltOfferDepartHour(o){
   const leg=Array.isArray(o?.itinerary)?o.itinerary[0]||{}:{};
-  if(!leg.departureTime)return null;
   // Same clock the chat shows the customer (see ltFormatChatOffers).
-  const hour=Number(new Date(leg.departureTime).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',hour12:false}).slice(0,2));
-  return Number.isFinite(hour)?hour:null;
+  return ltFlightClock(leg.departureTime)?.hour??null;
 }
 function ltOfferMatchesAirline(o,airlines){
   const code=String(o?.airline_code||'').toUpperCase(),name=String(o?.airline_name||''),numbers=String(o?.flight_numbers||'').toUpperCase().replace(/\s+/g,'');
@@ -17038,7 +17049,7 @@ export function ltFormatChatOffers(offers,opts={}){
   const top=ltBookableChatOffers(offers,opts.sort);
   if(!top.length) return `${opts.note?opts.note+'\n\n':''}No bookable POOMAS fares were returned for this route and date. Please try another date or nearby airport.`;
   const firstLeg=Array.isArray(top[0].itinerary)?top[0].itinerary[0]||{}:{};
-  const dateLabel=firstLeg.departureTime?new Date(firstLeg.departureTime).toLocaleDateString('en-GB',{timeZone:'Asia/Dubai',day:'2-digit',month:'short',year:'numeric'}):'';
+  const dateLabel=ltFlightDate(firstLeg.departureTime);
   const cabin=String(top[0].cabin||'economy').replace('_',' ');
   const count=top.length===1?'a flight':`${top.length} flights`;
   const hasDirect=top.some(o=>ltOfferStops(o)===0),hasConnecting=top.some(o=>ltOfferStops(o)>0);
@@ -17047,8 +17058,7 @@ export function ltFormatChatOffers(offers,opts={}){
   top.forEach((o,i)=>{
     const leg=Array.isArray(o.itinerary)?o.itinerary[0]||{}:{};
     const duration=Number(leg.duration||0),durationText=duration?`${Math.floor(duration/60)}h ${duration%60}m`:'duration not provided';
-    const time=v=>v?new Date(v).toLocaleTimeString('en-GB',{timeZone:'Asia/Dubai',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
-    const depart=time(leg.departureTime),arrive=time(leg.arrivalTime);
+    const depart=ltFlightTime(leg.departureTime),arrive=ltFlightTime(leg.arrivalTime);
     const stops=Number(leg.stops||0),stopsText=stops===0?'Direct':`${stops} stop${stops===1?'':'s'}`;
     const cabinBag=o.baggage?.cabin||o.baggage?.cabinBaggage||'Not provided';
     const checkedBag=o.baggage?.checked||o.baggage?.checkedBaggage||'Not provided';
@@ -17193,7 +17203,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
     if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
     const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
-    const depart=selected.departureTime?new Date(selected.departureTime).toLocaleString('en-GB',{timeZone:'Asia/Dubai'}):'—';
+    const depart=selected.departureTime?`${ltFlightDate(selected.departureTime)}, ${ltFlightTime(selected.departureTime)}`:'—';
     const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${ltFxFormat(selected.total,selected.currency)}${selected.supplierCurrency&&selected.supplierCurrency!==selected.currency?`\nCharged at checkout: ${ltFxFormat(selected.supplierTotal,selected.supplierCurrency)}`:''}`;
     await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
     await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
