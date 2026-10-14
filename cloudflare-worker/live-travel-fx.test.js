@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import {
   ltFxRate, ltFxRound, ltFxFormat, ltFxApplyToOffer, ltFxCurrencyFromPhone, ltFxCurrencyFromText,
-  ltFxDriftPct, ltFxNormalizeSettings, ltFxRates, ltFxRefresh, ltFxRefreshIfStale, ltFxSlotStart, ltFxNextSlot, LT_FX_USD_PEGS,
+  ltFxDriftPct, ltFxNormalizeSettings, ltFxPoomasContext, ltFxRates, ltFxRefresh, ltFxRefreshIfStale, ltFxSlotStart, ltFxNextSlot, LT_FX_USD_PEGS,
 } from './live-travel-fx.js';
 import { ltNormalizeOffer, ltChatCurrencySwitch, ltConvertStoredChatOffers, ltFormatChatOffers, ltNormalizeChatFlightRequest, ltStoredOfferSelectionIndex, ltChatCustomerCurrency } from './worker.js';
 
@@ -11,6 +11,24 @@ const RATES={USD:1,INR:88,AED:3.6725,SAR:3.75,QAR:3.64,KWD:0.3065};
 const fx=(target,extra={})=>({target,rates:RATES,buffer_pct:0,rounding:'none',fetched_at:'2026-10-02T00:00:00Z',source:'test',...extra});
 
 describe('Live Agency currency conversion', () => {
+  test('POOMAS fares use the POOMAS checkout rate, no buffer, rounded up to the cent', () => {
+    const agency=fx('AED',{buffer_pct:1.5,rounding:'auto'});
+    const poomas=ltFxPoomasContext(agency,{base:'INR',rates:{AED:25.9531,USD:88.1,SAR:null},updatedAt:'2026-10-14T08:00:00Z'});
+    assert.equal(poomas.buffer_pct,0);
+    assert.equal(poomas.source,'poomas');
+    // IndiGo 1457 BLR-SIN: INR 54,138 shows as AED 2,086.00 on POOMAS checkout.
+    const [o]=ltConvertStoredChatOffers([{fareId:'f1',currency:'INR',total:54138,supplierCurrency:'INR',supplierTotal:54138}],poomas);
+    assert.equal(o.currency,'AED');
+    assert.equal(o.total,2086);
+    assert.equal(ltFxFormat(o.total,o.currency),'AED 2,086');
+    // Rounds up to the cent like POOMAS, not up to the whole dirham.
+    const [p]=ltConvertStoredChatOffers([{fareId:'f2',currency:'INR',total:10000,supplierCurrency:'INR',supplierTotal:10000}],poomas);
+    assert.equal(p.total,385.32);
+    // No POOMAS rate for the target (or no response) keeps the agency context.
+    assert.equal(ltFxPoomasContext(fx('SAR'),{rates:{AED:25.9531}}).source,'test');
+    assert.equal(ltFxPoomasContext(agency,null),agency);
+  });
+
   test('cross rates go through USD and same-currency is 1', () => {
     assert.equal(ltFxRate('AED','AED',RATES),1);
     assert.ok(Math.abs(ltFxRate('INR','AED',RATES)-3.6725/88)<1e-12);

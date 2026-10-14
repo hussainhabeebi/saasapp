@@ -2,7 +2,7 @@ import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospita
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
-import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
+import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
 // (avoids the Docker cross-resource networking problem hit trying to do this on
@@ -17104,7 +17104,7 @@ async function ltRepriceStoredChatOffers(env,clientId,phone,offers,requested='')
   const settings=await ltFxSettings(env,clientId);
   const target=ltChatCustomerCurrency(settings,phone,requested||offers?.[0]?.displayCurrency);
   const info=await ltFxForClient(env,clientId,target);
-  return ltConvertStoredChatOffers(offers,info.fx);
+  return ltConvertStoredChatOffers(offers,await ltPoomasFxContext(env,clientId,info.fx));
 }
 
 export function ltExactRouteOffers(offers,origin,destination){
@@ -17176,7 +17176,7 @@ async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,te
   if(switchTo&&row.step==='select'){
     const info=await ltFxForClient(env,clientId,switchTo);
     if(info.target!==switchTo)return send(`Prices are shown in ${info.settings.default_currency} for this agency.`,ltBookButtons(ltJson(row.offers_json,[])));
-    const converted=ltConvertStoredChatOffers(ltJson(row.offers_json,[]),info.fx);
+    const converted=ltConvertStoredChatOffers(ltJson(row.offers_json,[]),await ltPoomasFxContext(env,clientId,info.fx));
     await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(converted),new Date().toISOString(),Number(clientId),String(phone)).run();
     return send(ltStoredOfferText(converted).replace('Previous live flight options:',`Flight options in ${switchTo}:`),ltBookButtons(converted));
   }
@@ -17291,7 +17291,7 @@ async function engineHandleLiveTicketingChat(env,c,clientId,userText,history=[],
     const poomasRow=await env.DB.prepare(`SELECT * FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
     const data=await ltSupplierSearch(runtime,input,env);
     const fxInfo=await ltFxForClient(env,clientId,input.currency);
-    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId),fx:fxInfo.fx};
+    const ctx={...input,markup_type:setting.markup_type,markup_value:setting.markup_value,checkout_base:poomasRow?.checkout_base||'https://flypoomas.com',client_id:Number(clientId),fx:await ltPoomasFxContext(env,clientId,fxInfo.fx)};
     const offers=ltExactRouteOffers(ltExtractOffers('poomas',data).slice(0,200).map(raw=>ltNormalizeOffer('poomas',raw,ctx)),input.origin,input.destination);
     // Customer filters (airline, direct, time of day, budget). When nothing matches, say so and
     // show the other fares rather than a dead end.
@@ -33897,6 +33897,22 @@ async function ltFxForClient(env,cid,requested=''){
   const target=(settings.allow_currency_override&&ltFxCode(requested))||settings.default_currency;
   return {settings,rates,target,fx:ltFxContext(settings,rates,target)};
 }
+// POOMAS fares are priced at POOMAS's own published rate so the chat/agency price matches its
+// checkout (see ltFxPoomasContext). Cached per isolate for 10 minutes; on any failure the
+// agency's own rate is used instead.
+const _ltPoomasFxCache=new Map();
+async function ltPoomasFxContext(env,clientId,fx){
+  try{
+    const row=await env.DB.prepare(`SELECT api_base FROM live_travel_poomas_settings WHERE client_id=?`).bind(Number(clientId)).first();
+    const apiBase=(row?.api_base||'https://api.flypoomas.com').replace(/\/$/,'');
+    let hit=_ltPoomasFxCache.get(apiBase);
+    if(!hit||Date.now()-hit.at>10*60*1000){
+      hit={at:Date.now(),data:await ltFetchJson(`${apiBase}/api/search/fx`,{headers:{'x-tenant-slug':'poomas'}},5000)};
+      _ltPoomasFxCache.set(apiBase,hit);
+    }
+    return ltFxPoomasContext(fx,hit.data);
+  }catch(e){return fx;}
+}
 function ltSortOffers(offers){
   // Unconverted fares (no exchange rate available) are not comparable with the rest — list them last.
   return offers.sort((a,b)=>(a.fx_status==='unconverted')-(b.fx_status==='unconverted')||a.total_amount-b.total_amount);
@@ -34052,6 +34068,7 @@ async function handleLtSearch(request,env){
   const insert=await env.DB.prepare(`INSERT INTO live_travel_searches (client_id,search_ref,lead_id,trip_type,origin,destination,departure_date,return_date,adults,children,infants,cabin,currency,status,created_by,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'searching',?,?,?)`)
     .bind(auth.cid,searchRef,input.lead_id,input.trip_type,input.origin,input.destination,input.departure_date,input.return_date,input.adults,input.children,input.infants,input.cabin,input.currency,auth.email,now,expires).run();
   const searchId=insert.meta.last_row_id, errors={}, offers=[];
+  const poomasFx=poomasEnabled?await ltPoomasFxContext(env,auth.cid,fxInfo.fx):null;
   const settled=await Promise.all((settings||[]).map(async setting=>{
     try{const runtime=await ltSupplierRuntime(env,setting);runtime.client_id=auth.cid;return {setting,data:await ltSupplierSearch(runtime,input,env)};}catch(e){return {setting,error:String(e?.message||e)};}
   }));
@@ -34059,7 +34076,7 @@ async function handleLtSearch(request,env){
     const supplier=result.setting.supplier;
     if(result.error){errors[supplier]=result.error;continue;}
     const ctx={...input,markup_type:result.setting.markup_type,markup_value:result.setting.markup_value,fx:fxInfo.fx};
-    if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;}
+    if(supplier==='poomas'){ctx.checkout_base=poomasRow?.checkout_base||'https://flypoomas.com';ctx.client_id=auth.cid;ctx.fx=poomasFx;}
     for(const raw of ltExtractOffers(supplier,result.data).slice(0,50)){
       const normalized=ltNormalizeOffer(supplier,raw,ctx);
       if(!normalized.total_amount)continue;
@@ -34098,7 +34115,8 @@ async function handleLtRevalidate(request,env){
   // The supplier answers in its own currency; convert again at today's rate into the currency the
   // offer was shown in, with the supplier's markup re-applied after conversion.
   const fxInfo=await ltFxForClient(env,auth.cid,offer.currency);
-  const fxCtx=ltFxContext(fxInfo.settings,fxInfo.rates,offer.currency);
+  const agencyFx=ltFxContext(fxInfo.settings,fxInfo.rates,offer.currency);
+  const fxCtx=offer.supplier==='poomas'?await ltPoomasFxContext(env,auth.cid,agencyFx):agencyFx;
   const normalized=ltNormalizeOffer(offer.supplier,data?.offer||data,{currency:offer.supplier_currency||offer.currency,cabin:offer.cabin,markup_type:setting?.markup_type||'fixed',markup_value:setting?.markup_value||0,fx:fxCtx});
   const now=ltNow(), expires=new Date(Date.now()+10*60*1000).toISOString();
   await env.DB.prepare(`UPDATE live_travel_offers SET currency=?,base_amount=?,tax_amount=?,markup_amount=?,total_amount=?,supplier_currency=?,supplier_total=?,fx_rate=?,fx_rate_at=?,fx_source=?,fx_status=?,seats_left=?,baggage_json=?,fare_rules_json=?,raw_json=?,last_validated_at=?,expires_at=? WHERE id=? AND client_id=?`)
