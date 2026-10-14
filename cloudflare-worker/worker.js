@@ -21544,6 +21544,16 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(engineV2On(c) && userText && !introAction)
       state.keywordPdfsSent=await engineV2SendKeywordPdfs(env, c, clientId, phone, convId, name, userText);
 
+    // Open live-flight options: a pick ("option 1", "Book Option 2", "second one") must reach the
+    // booking handler before Flowvyne, the greeting intro or the industry-flow AI can answer it —
+    // otherwise the customer gets an AI reply and never the POOMAS booking link. Returns null for
+    // anything that is not a pick, so every other message continues down the normal path.
+    const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
+    if(liveCheckoutTurn?.handled){
+      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
+      return json({ok:true,route:'travel_live_checkout',sent:true,step:liveCheckoutTurn.step});
+    }
+
     // ── Flowvyne scripted flows ──────────────────────────────────────────────
     // Runs before AI classification. Flowvyne's own tenant allowlist decides
     // per-client enrollment; it returns handled:false for non-enrolled clients
@@ -21638,11 +21648,6 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(flowInterruptionTurn){
       await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,flowInterruptionTurn,startMs,mediaType,ctx);
       return json({ok:true,route:'industry_flow_ai',resumed_stage:flowInterruptionTurn.next,sent:c.bot_reply_disabled!=='Yes'});
-    }
-    const liveCheckoutTurn=await engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,userText,mediaType,parsed.inboxId);
-    if(liveCheckoutTurn?.handled){
-      await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
-      return json({ok:true,route:'travel_live_checkout',sent:true,step:liveCheckoutTurn.step});
     }
     const eduAdmissionTurn=await engineHandleEduAdmissionChat(env,c,clientId,convId,phone,state.leadId,userText,mediaType,mediaUrl,state.activeHistory);
     if(eduAdmissionTurn?.handled){
