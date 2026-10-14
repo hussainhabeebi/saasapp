@@ -76,6 +76,8 @@ export function ltFxRound(amount,currency,mode='auto'){
   if(!Number.isFinite(n))return 0;
   const decimals=ltFxDecimals(currency),scale=10**decimals;
   const effective=mode==='auto'?(LT_FX_CURRENCIES[ltFxCode(currency)]?.rounding||'none'):mode;
+  // up_cent: round up to the currency's smallest unit, the way POOMAS checkout converts INR.
+  if(effective==='up_cent')return Math.ceil(n*scale-1e-6)/scale;
   const step={up_1:1,up_5:5,up_10:10}[effective];
   // Strip float noise (e.g. 1050.0000000001) before rounding up so exact values stay put.
   const clean=Math.round(n*scale)/scale;
@@ -122,7 +124,9 @@ export function ltFxApplyToOffer(offer,ctx={}){
   const base=ltFxRate(supplierCurrency,fx.target,fx.rates);
   if(!base){out.fx_status='unconverted';return out;}
   const rate=base*(1+Math.max(0,Number(fx.buffer_pct||0))/100);
-  const conv=v=>Math.round(Number(v||0)*rate*1000)/1000;
+  // up_cent must round up the exact amount (as POOMAS does), not a 3-decimal approximation of it.
+  const precision=fx.rounding==='up_cent'?1e9:1000;
+  const conv=v=>Math.round(Number(v||0)*rate*precision)/precision;
   // Markup is re-applied in the target currency, on the converted supplier price.
   const price=conv(supplierTotal);
   const markup=ltFxMarkup(price,ctx.markup_type,ctx.markup_value);
@@ -300,6 +304,22 @@ export async function ltFxSaveSettings(env,cid,body={}){
 // Builds ctx.fx for ltFxApplyToOffer from settings + a chosen target currency.
 export function ltFxContext(settings,rates,target){
   return {target:ltFxCode(target)||settings.default_currency,rates:rates.rates,buffer_pct:settings.fx_buffer_pct,rounding:settings.rounding,fetched_at:rates.fetched_at,source:rates.source};
+}
+
+/* POOMAS prices fares in INR and its checkout charges other currencies at its own published rate
+   (GET /api/search/fx: INR per 1 unit, POOMAS margin already included), rounded up to the cent.
+   Converting POOMAS fares with that rate — no agency buffer, no whole-unit rounding — makes the
+   chat price the same number the customer sees and pays on POOMAS. `poomasFx` is that response.
+   Falls back to the agency context when POOMAS has no rate for the target currency. */
+export function ltFxPoomasContext(fx,poomasFx){
+  if(!fx?.target)return fx;
+  const rates={INR:1};
+  for(const [code,inrPer] of Object.entries(poomasFx?.rates||{})){
+    const n=Number(inrPer);
+    if(ltFxCode(code)&&code!=='INR'&&Number.isFinite(n)&&n>0)rates[code]=1/n;
+  }
+  if(!rates[fx.target])return fx;
+  return {...fx,rates,buffer_pct:0,rounding:'up_cent',fetched_at:poomasFx.updatedAt||fx.fetched_at||null,source:'poomas'};
 }
 
 // Public rate table relative to the agency currency, for the settings screen.
