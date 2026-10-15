@@ -10,8 +10,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <style>
 :root{
   --bg:#F0F9FF;--card:#FFFFFF;--ink:#0B2540;--muted:#5B7C93;
@@ -827,9 +825,38 @@ async function patchClient(fields){
 }
 async function patchLead(leadId,fields){ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:Number(leadId),...fields}); }
 
+// Only the lead columns this module reads — skipping ConvHistory (full chat transcripts) is most
+// of the payload. Code that needs a transcript fetches it fresh (freshConvHistory).
+const TA_LEAD_FIELDS=['Id','Name','Phone','Email','Stage','Date','Owner','Tags','Score','HotMoment','LastMsgAt',
+  'Destination','TravelDates','TripType','PaxCount','ServiceCategory','BookingTime','QuoteSentAt','QuoteSentTotal',
+  'ConversationID','ConversationId'];
 async function loadLeads(){
-  const data=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`);
+  const base=`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})`)}&limit=2000&sort=-Date`;
+  let data;
+  // NocoDB rejects a fields list naming a column this account's Leads table doesn't have — fall
+  // back to the full rows rather than failing the page.
+  try{ data=await ncGet(`${base}&fields=${encodeURIComponent(TA_LEAD_FIELDS.join(','))}`); }
+  catch(e){ data=await ncGet(base); }
   allLeads=data.list||[];
+}
+// dashboard.html (same tab, same origin) keeps its leads in sessionStorage for 5 minutes, without
+// transcripts — when embedded, start from that copy instead of waiting on a 2,000-row fetch.
+function cachedDashboardLeads(){
+  try{
+    const c=JSON.parse(sessionStorage.getItem(`lv_leads_${clientId}`)||'null');
+    if(c&&Array.isArray(c.list)&&Date.now()-c.ts<300000) return c.list;
+  }catch(e){}
+  return null;
+}
+// jsPDF is only needed when a quote/itinerary PDF is built, so it isn't loaded with the page.
+// Self-hosted copy — nginx.conf's CSP blocks cdn.jsdelivr.net (see vendor/jspdf/README.md).
+let _jsPdfLoading=null;
+function loadJsPdf(){
+  if(window.jspdf?.jsPDF?.API?.autoTable) return Promise.resolve();
+  const add=src=>new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=()=>rej(new Error('PDF library unavailable')); document.head.appendChild(s); });
+  return _jsPdfLoading||(_jsPdfLoading=add('vendor/jspdf/jspdf.umd.min.js')
+    .then(()=>add('vendor/jspdf/jspdf.plugin.autotable.min.js'))
+    .catch(e=>{ _jsPdfLoading=null; throw e; }));
 }
 
 /* Deep link back into the parent dashboard.html — used by renderTravelAnalyticsSection's trip
@@ -856,7 +883,13 @@ async function init(){
       $id('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">✈️</div>The Travel Agency module isn\'t enabled for this account. Ask your admin to enable it in Settings → Modules.</div>';
       return;
     }
-    await loadLeads();
+    const cached=isEmbedded?cachedDashboardLeads():null;
+    if(cached) allLeads=cached;
+    // Leads and the ta_* tables load in parallel; with a cached copy of leads the page renders as
+    // soon as the ta_* tables arrive and the fresh leads replace the cache in the background.
+    const leadsReady=loadLeads();
+    if(!cached) await leadsReady;
+    else leadsReady.then(()=>{ if(_taReady && ['dashboard','itineraries'].includes(_taPage)) renderAgencySubPage(_taPage); }).catch(()=>{});
     if(!taTablesReady()){
       $id('agencyContent').innerHTML=renderTaSetupNeeded();
       document.querySelectorAll('.ta-tab').forEach(t=>t.classList.remove('active'));
@@ -2555,6 +2588,7 @@ async function sqPreviewPdf(){
   const lead=leads[0]||{Name:'Sample Customer',Phone:'971500000000'};
   const previewNum=(isItinFull?'ITN-':'QUO-')+'0000 (preview)';
   msg.textContent='';msg.className='save-msg';
+  try{ await loadJsPdf(); }catch(e){ msg.textContent=e.message; msg.className='save-msg err'; return; }
   const doc=sqBuildPdfDoc(lead,src,format,price,currency,pax,validity,previewNum);
   window.open(doc.output('bloburl'),'_blank');
 }
@@ -2598,6 +2632,7 @@ async function sqSend(){
   let itinSeq=parseInt(clientRecord.itin_number_seq)||0;
 
   let sent=0,failed=0,skipped=0;
+  try{ await loadJsPdf(); }catch(e){ logRow('❌ '+e.message,'#DC2626'); btn.disabled=false; return; }
   for(let i=0;i<leads.length;i++){
     const lead=leads[i];
     const convId=leadConvId(lead);

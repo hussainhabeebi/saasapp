@@ -270,6 +270,36 @@ function tvApply(){
     tvBuildMobileNav();
   }
   tvBuildClassicEntry();
+  if(on){ tvSeedFromCache(); tvSchedulePreload(); }
+}
+
+/* ── speed: cached trip data + background preload ── */
+// The trips/Umrah/car rows Today and Departures read, kept in sessionStorage (same 5-minute,
+// tab-scoped pattern as dashboard.html's leads cache) so a reload paints them immediately
+// while taLoad() refreshes them.
+const TV_TA_CACHE_KEY=()=>'lv_tv_ta_'+clientId;
+const TV_TA_CACHE_TTL=300000;
+function tvCacheTa(){
+  try{ sessionStorage.setItem(TV_TA_CACHE_KEY(),JSON.stringify({ts:Date.now(),bookings:_taBookings,umrah:_taUmrahGroups,cars:_taCarBookings})); }
+  catch(e){ try{ sessionStorage.removeItem(TV_TA_CACHE_KEY()); }catch(e2){} }
+}
+function tvSeedFromCache(){
+  if(!tvAgencyEnabled()||_taLoaded||_taBookings.length) return;
+  try{
+    const c=JSON.parse(sessionStorage.getItem(TV_TA_CACHE_KEY())||'null');
+    if(!c||Date.now()-c.ts>TV_TA_CACHE_TTL) return;
+    _taBookings=c.bookings||[]; _taUmrahGroups=c.umrah||[]; _taCarBookings=c.cars||[];
+  }catch(e){}
+}
+// Load the Trips/Quotes frame once the dashboard has settled, so the first click on Trips,
+// Quotes, Packages… switches instantly instead of loading a whole page and its data.
+let _tvPreloadTimer=null;
+function tvSchedulePreload(){
+  if(_tvPreloadTimer||!tvAgencyEnabled()||!tvCanSee('tvtrips')) return;
+  const go=()=>{ const f=$id('agencyFrame'); if(f&&!f.getAttribute('src')&&isTravelView()) renderAgency('bookings'); };
+  _tvPreloadTimer=setTimeout(()=>{
+    if('requestIdleCallback' in window) requestIdleCallback(go,{timeout:4000}); else go();
+  },2500);
 }
 
 function tvSwitch(mode){
@@ -299,6 +329,7 @@ function tvOnNavigate(page){
 // Called at the end of dashboard.html's taLoad().
 function tvAfterTaLoad(){
   _tvTaLoadedAt=Date.now();
+  if(clientRecord?.industry==='travel') tvCacheTa();
   if(!$id('pageTravelhome')?.classList.contains('hidden')) renderTravelHome();
   if(!$id('pageDepartures')?.classList.contains('hidden')) renderDepartures();
 }
@@ -347,7 +378,9 @@ function tvCreated(r){ return tvDay(r.CreatedAt||r.created_at); }
 /* ── 🏠 TODAY ── */
 function renderTravelHome(){
   const el=$id('tvHomeBody');
-  if(!el || !isTravelView()) return;
+  // renderHome() calls this on every leads refresh — skip the work while Today isn't on screen;
+  // tvOnNavigate renders it fresh when it's opened.
+  if(!el || !isTravelView() || $id('pageTravelhome')?.classList.contains('hidden')) return;
   const today=TODAY, in7=tvAddDays(TODAY,7), in14=tvAddDays(TODAY,14), ago30=tvAddDays(TODAY,-30);
   const month=TODAY.slice(0,7);
   const leads=typeof allLeads!=='undefined'?allLeads:[];
