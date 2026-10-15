@@ -167,3 +167,16 @@ test('travel-agency.html loads slim leads in parallel and falls back to full row
   await page.evaluate(() => loadJsPdf());
   expect(await page.evaluate(() => typeof window.jspdf?.jsPDF?.API?.autoTable)).toBe('function');
 });
+
+test('travel lead form and Leads filter list every service category', async ({ page }) => {
+  await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
+  const expected = ['Package', 'Package + Hotel (Single)', 'Hotel', 'Air Ticket', 'Ticket', 'Group Ticket', 'Visa', 'Global Visa',
+    'Passport', 'Certificate Attestation', 'Saudi Services', 'Umrah and Hajj', 'Other Services'];
+  const formValues = await page.locator('#fServiceCategory option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean));
+  expect(formValues).toEqual(expected);
+  const filterValues = await page.locator('#leadCategoryFilter option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean));
+  expect(filterValues).toEqual(expected);
+  // Re-applying the theme (e.g. after saving Business Setup) must not duplicate the options.
+  await page.evaluate(() => { /* @ts-ignore */ applyTheme('travel'); });
+  await expect(page.locator('#fServiceCategory option')).toHaveCount(expected.length + 1);
+});

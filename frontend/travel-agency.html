@@ -1469,7 +1469,7 @@ function caseIcon(type) {
   return m[type] || '🗂️';
 }
 
-// Travel leads separation — Ticket / Package / Hotel / Other Services (LEAD_CATEGORIES). This
+// Travel leads separation by Service Category (LEAD_CATEGORIES). This
 // reads allLeads directly rather than a _ta* entity array: for a travel teammate restricted to
 // specific categories (User Management → profile), allLeads itself only ever contains the leads
 // the server-side /nocodb passthrough allowed through, so this widget — and every other view that
@@ -3656,9 +3656,11 @@ function renderTravelAnalyticsSection(){
 const TODAY = new Date().toISOString().slice(0,10);
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 function fmtDateShort(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}catch{return String(d).slice(0,10);}}
-const LEAD_CATEGORIES = ['Ticket','Package','Hotel','Other Services'];
+const LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Other Services'];
 function serviceCategoryIcon(cat){
-  return {Ticket:'✈️',Package:'📦',Hotel:'🏨','Other Services':'🧳'}[cat]||'🗂️';
+  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
+    Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
+    'Umrah and Hajj':'🕋','Other Services':'🧳'}[cat]||'🗂️';
 }
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}

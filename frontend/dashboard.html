@@ -1391,9 +1391,12 @@ const CROSS_SELL_DEFAULTS = {
 // classification, distinct from TripType which is a *trip style*). Used by the lead form's
 // Service Category field, the Leads page category filter, the Travel Agency Home page's
 // categorized-leads widget, and the per-user "lead categories" access restriction below.
-const LEAD_CATEGORIES = ['Ticket','Package','Hotel','Other Services'];
+// Ticket / Package / Hotel / Other Services are the original four — kept so existing leads still match.
+const LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Other Services'];
 function serviceCategoryIcon(cat){
-  return {Ticket:'✈️',Package:'📦',Hotel:'🏨','Other Services':'🧳'}[cat]||'🗂️';
+  return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
+    Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
+    'Umrah and Hajj':'🕋','Other Services':'🧳'}[cat]||'🗂️';
 }
 
 // Per-user module access (User Management → profile → "Module Access"). Every nav tab a teammate
@@ -4473,10 +4476,7 @@ const ROLES = {
       <div class="form-group"><label class="form-label">Service Category</label>
         <select class="form-input" id="fServiceCategory">
           <option value="">Select category…</option>
-          <option value="Ticket">✈️ Ticket</option>
-          <option value="Package">📦 Package</option>
-          <option value="Hotel">🏨 Hotel</option>
-          <option value="Other Services">🧳 Other Services</option>
+          <!-- options filled from LEAD_CATEGORIES in applyTheme() -->
         </select>
       </div>
       <div class="form-group"><label class="form-label">Destination</label><input class="form-input" id="fDestination" type="text" placeholder="Dubai, Bali, Paris…" /></div>
@@ -17324,6 +17324,11 @@ function applyTheme(industryKey){
   });
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
+  const sc=$id('fServiceCategory');
+  if(sc&&industryKey==='travel'&&!sc.dataset.populated){
+    sc.insertAdjacentHTML('beforeend',LEAD_CATEGORIES.map(c=>`<option value="${esc(c)}">${serviceCategoryIcon(c)} ${esc(c)}</option>`).join(''));
+    sc.dataset.populated='1';
+  }
   // Show/hide the Leads page's Ticket/Package/Hotel/Other Services category filter
   const cf=$id('leadCategoryFilter');
   if(cf){
