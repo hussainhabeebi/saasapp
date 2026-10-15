@@ -13673,6 +13673,7 @@ async function chLoadAndRenderInboxList(list){
         (isWA?`<button class="save-btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" onclick="autoDetectMetaCreds(${ib.id},this)">${detected?'Re-detect credentials':'Detect credentials'}</button>`:'')+
         `<select style="flex:1;min-width:120px;font-size:12px;padding:6px 8px;border:1px solid var(--border,#d1d5db);border-radius:6px;background:var(--card,#fff);color:var(--text,#111)" onchange="chSaveInboxAssignmentInline(${ib.id},this.value)">`+
         `<option value="">— Unassigned —</option>${opts}</select>`+
+        (cur&&seesAllLeads()?`<button class="save-btn" style="font-size:11px;padding:5px 10px;flex-shrink:0" title="Give every lead already in from this channel to its assigned user" onclick="chSyncInboxLeads(${ib.id},this)">↻ Move existing leads</button>`:'')+
         `<label title="Toggle AI auto-reply for this channel" style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;flex-shrink:0;color:var(--muted,#6b7280);white-space:nowrap">`+
         `<input type="checkbox" ${!assignments[ib.id]?.bot_reply_disabled?'checked':''} onchange="chToggleBotReply(${ib.id},!this.checked)"> AI Reply</label>`+
       `</div>`+
@@ -13696,6 +13697,22 @@ async function chSaveInboxAssignmentInline(inboxId, email){
       await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
     }
   }catch(e){alert('Failed to save assignment: '+e.message);await loadChannelsStatus();}
+}
+
+// Moves leads already in from an assigned channel to its user (Worker: /channels/inbox-assignment/sync)
+// — for channels assigned before that happened automatically, and older leads with no channel saved.
+async function chSyncInboxLeads(inboxId, btn){
+  if(btn){ btn.disabled=true; btn.textContent='Moving…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/inbox-assignment/sync`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({inbox_id:inboxId})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const n=Number(d.reassigned)||0;
+    showToast(n?`${n} lead${n===1?'':'s'} moved to the channel's assigned user`:'All leads from this channel are already with its assigned user');
+    try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e){}
+    loadAll(true,true);
+  }catch(e){ alert('Could not move leads: '+e.message); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='↻ Move existing leads'; } }
 }
 
 async function chToggleBotReply(inboxId, disabled){

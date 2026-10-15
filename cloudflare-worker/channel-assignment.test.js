@@ -95,6 +95,35 @@ describe('assigning a channel moves its existing leads', ()=>{
   });
 });
 
+describe('older leads with no channel saved are matched through Chatwoot', ()=>{
+  beforeEach(fresh);
+  test('a lead whose Chatwoot conversation is in the channel gets the owner and its InboxId', async()=>{
+    assert.equal(await chatsV2Ready(env), true);
+    raw.prepare(`INSERT INTO conversations (lead_id, client_id, inbox_id, assignee_email, last_message_at, updated_at) VALUES (5, ?, '', '', '2026-10-01', '2026-10-01')`).run(CID);
+    const c={...CLIENT, chatwoot_base:'http://cw.test', chatwoot_account_id:3, chatwoot_token:'k'};
+    const patched=[]; const realFetch=globalThis.fetch;
+    globalThis.fetch=async(url, opts={})=>{
+      url=String(url);
+      if(url.startsWith('http://cw.test')){
+        assert.match(url, /inbox_id=11&status=all/);
+        const page=Number(new URL(url).searchParams.get('page'));
+        return new Response(JSON.stringify({data:{payload:page===1?[{id:501},{id:502}]:[]}}));
+      }
+      if((opts.method||'GET')==='PATCH'){ patched.push(...JSON.parse(opts.body)); return new Response('{}'); }
+      const where=decodeURIComponent(url);
+      if(where.includes('(InboxId,eq,11)')) return new Response(JSON.stringify({list:[], pageInfo:{isLastPage:true}}));
+      assert.match(where, /\(InboxId,blank\)/);
+      return new Response(JSON.stringify({list:[{Id:5, Owner:'', ConversationID:'501'}, {Id:6, Owner:'', ConversationID:'999'}, {Id:7, Owner:SAM, ConversationID:502}], pageInfo:{isLastPage:true}}));
+    };
+    try{
+      assert.equal(await backfillChannelLeadOwner(env, CID, 11, RITA, c), 2);
+    }finally{ globalThis.fetch=realFetch; }
+    assert.deepEqual(patched, [{Id:5, Owner:RITA, InboxId:'11'}, {Id:7, Owner:RITA, InboxId:'11'}]);
+    const conv=raw.prepare('SELECT inbox_id, assignee_email FROM conversations WHERE lead_id=5').get();
+    assert.deepEqual({...conv}, {inbox_id:'11', assignee_email:RITA});
+  });
+});
+
 describe('Chats v2 hides channels assigned to someone else', ()=>{
   beforeEach(async()=>{
     await fresh();

@@ -6182,35 +6182,94 @@ async function handleChannelsInboxAssignmentPut(request, env){
   await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
   // Leads already in from this channel move to the assigned user too (new ones are routed to them
   // by engineAssignLeadOwner).
-  const reassigned=await backfillChannelLeadOwner(env, payload.cid, inboxId, email).catch(()=>0);
+  const reassigned=await backfillChannelLeadOwner(env, payload.cid, inboxId, email, c).catch(()=>0);
   // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
   if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
     .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
   return json({ok:true, inbox_id:inboxId, cleared:false, reassigned});
 }
 
-// Sets Owner on every lead from one channel (InboxId) to the user it's assigned to, in NocoDB and
-// in the Chats v2 list (conversations.assignee_email). Returns how many leads changed owner.
-// Leads saved before InboxId was recorded can't be matched to a channel and are left as they are.
-export async function backfillChannelLeadOwner(env, clientId, inboxId, email){
-  const owner=String(email||'').trim().toLowerCase();
-  if(!owner||!inboxId) return 0;
-  const where=encodeURIComponent(`(ClientId,eq,${Number(clientId)})~and(InboxId,eq,${Number(inboxId)})`);
-  const toFix=[];
-  for(let page=0; page<20; page++){
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&fields=Id,Owner&limit=1000&offset=${page*1000}`);
+// Sets Owner on every lead from one channel (Chatwoot inbox) to the user it's assigned to, in
+// NocoDB and in the Chats v2 list (conversations.assignee_email). Returns how many leads changed.
+// Leads are matched by InboxId; leads saved before InboxId was recorded are matched through their
+// Chatwoot conversation instead (when the client's Chatwoot is connected) and get InboxId filled in.
+async function chatwootInboxConversationIds(c, inboxId, maxPages=40){
+  const ids=new Set();
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return ids;
+  for(let page=1; page<=maxPages; page++){
+    const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${Number(inboxId)}&status=all&assignee_type=all&page=${page}`,
+      {headers:{api_access_token:c.chatwoot_token}}).catch(()=>null);
+    if(!r?.ok) break;
+    const d=await r.json().catch(()=>({}));
+    const list=d?.data?.payload||[];
+    for(const conv of list) if(conv?.id) ids.add(String(conv.id));
+    if(list.length<25) break;
+  }
+  return ids;
+}
+async function ncListLeads(env, where, fields, maxPages=20){
+  const out=[];
+  for(let page=0; page<maxPages; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&fields=${fields}&limit=1000&offset=${page*1000}`);
     if(!r.ok) break;
     const d=await r.json().catch(()=>({}));
     const list=d.list||[];
-    for(const l of list) if(String(l.Owner||'').trim().toLowerCase()!==owner) toFix.push({Id:Number(l.Id), Owner:owner});
+    out.push(...list);
     if(list.length<1000||d.pageInfo?.isLastPage) break;
   }
-  for(let i=0;i<toFix.length;i+=100){
-    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:toFix.slice(i,i+100)});
+  return out;
+}
+export async function backfillChannelLeadOwner(env, clientId, inboxId, email, c=null){
+  const owner=String(email||'').trim().toLowerCase();
+  const inbox=String(Number(inboxId));
+  if(!owner||!Number(inboxId)) return 0;
+  const cid=Number(clientId);
+  const toFix=new Map(); // lead Id → patch
+  for(const l of await ncListLeads(env, `(ClientId,eq,${cid})~and(InboxId,eq,${inbox})`, 'Id,Owner')){
+    if(String(l.Owner||'').trim().toLowerCase()!==owner) toFix.set(Number(l.Id), {Id:Number(l.Id), Owner:owner});
   }
-  if(env.DB) await env.DB.prepare(`UPDATE conversations SET assignee_email=?, updated_at=? WHERE client_id=? AND inbox_id=? AND assignee_email<>?`)
-    .bind(owner, new Date().toISOString(), Number(clientId), String(Number(inboxId)), owner).run().catch(()=>null);
-  return toFix.length;
+  // Older leads with no InboxId: match them to this channel through their Chatwoot conversation.
+  const convIds=await chatwootInboxConversationIds(c, inbox).catch(()=>new Set());
+  if(convIds.size){
+    for(const l of await ncListLeads(env, `(ClientId,eq,${cid})~and(InboxId,blank)`, 'Id,Owner,ConversationID')){
+      if(convIds.has(String(l.ConversationID||''))) toFix.set(Number(l.Id), {Id:Number(l.Id), Owner:owner, InboxId:inbox});
+    }
+  }
+  const patches=[...toFix.values()];
+  for(let i=0;i<patches.length;i+=100){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patches.slice(i,i+100)});
+  }
+  if(env.DB){
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE conversations SET assignee_email=?, updated_at=? WHERE client_id=? AND inbox_id=? AND assignee_email<>?`)
+      .bind(owner, now, cid, inbox, owner).run().catch(()=>null);
+    const filled=patches.filter(p=>p.InboxId).map(p=>p.Id);
+    for(let i=0;i<filled.length;i+=50){
+      const chunk=filled.slice(i,i+50);
+      await env.DB.prepare(`UPDATE conversations SET inbox_id=?, assignee_email=?, updated_at=? WHERE client_id=? AND lead_id IN (${chunk.map(()=>'?').join(',')})`)
+        .bind(inbox, owner, now, cid, ...chunk).run().catch(()=>null);
+    }
+  }
+  return patches.length;
+}
+
+// POST /channels/inbox-assignment/sync {inbox_id?} — moves leads already in from assigned
+// channels (one, or all of them) to the assigned user. Owner / admin only.
+async function handleChannelsInboxAssignmentSync(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!seesAllChannelLeads(c, payload.email)) return json({error:'Only the account owner or an admin can move channel leads.'}, 403);
+  const body=await request.json().catch(()=>({}));
+  await ensureInboxAssignmentsTable(env);
+  await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
+  const {results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email<>''`).bind(payload.cid).all();
+  const only=Number(body.inbox_id||0);
+  let reassigned=0;
+  for(const a of (results||[]).filter(a=>!only||Number(a.inbox_id)===only)){
+    reassigned+=await backfillChannelLeadOwner(env, payload.cid, a.inbox_id, a.assigned_email, c).catch(()=>0);
+  }
+  return json({ok:true, reassigned});
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
@@ -35498,6 +35557,7 @@ export default {
       else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
+      else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
       else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
       else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
       else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
