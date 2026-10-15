@@ -45,6 +45,9 @@ const WorkflowEntrypointBase=typeof process==='undefined'
 const SESSION_TTL_SECONDS = 30 * 24 * 3600;
 const CLIENTS_TABLE = 'mxl33bg4wi70fqj';
 const DEFAULT_LEADS_TABLE = 'mvg6rcw0ia5qqrx';
+// Team roles that see every lead and chat regardless of channel assignment — keep in step with
+// chats-v2.js FULL_ACCESS_ROLES and dashboard.html LEADS_FULL_ACCESS_ROLES.
+const LEADS_FULL_ACCESS_ROLES = ['admin','general_manager'];
 // Create these two tables once in NocoDB (shared across all clients, rows scoped by a
 // client_id column — see SETUP.md "Email Marketing module") and paste their real ids here.
 const EMAIL_CAMPAIGNS_TABLE = 'md3ghcfigac4yqs';
@@ -1321,6 +1324,28 @@ async function handleTeamChatwootAgent(request, env){
   return json({ok:true, email:emailNorm, user_id:chatwoot.user_id, chatwootPassword:password});
 }
 
+// Account owner and admin / general manager roles see every lead, whichever channel it came from.
+export function seesAllChannelLeads(c, email){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return false;
+  if(e===String(c?.authentik_email||'').trim().toLowerCase()) return true;
+  let perms={}; try{ perms=JSON.parse(c?.team_permissions||'{}')||{}; }catch(e2){}
+  const key=Object.keys(perms).find(k=>k.trim().toLowerCase()===e);
+  return LEADS_FULL_ACCESS_ROLES.includes(key?perms[key]?.role:'');
+}
+// NocoDB where-clause hiding leads from channels assigned to someone other than `email`: shows a
+// lead whose InboxId is blank (older / unassigned leads) or not one of those channels. '' = no filter.
+export function channelVisibilityClause(assignments, email){
+  const me=String(email||'').trim().toLowerCase();
+  const others=[...new Set((assignments||[])
+    .filter(a=>a.assigned_email && String(a.assigned_email).trim().toLowerCase()!==me)
+    .map(a=>String(Number(a.inbox_id))).filter(id=>id!=='0'&&id!=='NaN'))];
+  if(!others.length) return '';
+  // ~and for "not in list"; wrap in parens only when several conditions need grouping.
+  const neqParts=others.map(id=>`(InboxId,neq,${id})`).join('~and');
+  return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}`;
+}
+
 async function handleNocodbPassthrough(request, env, upstreamPath){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1410,10 +1435,11 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     }
 
     // Channel-specific lead visibility: leads from an assigned inbox are visible only to the
-    // assigned user — not to other team members or even the account owner.
+    // assigned user among staff. The account owner and admin / general manager roles see every
+    // lead (same full-access roles as Chats v2 and dashboard.html's seesAllLeads).
     // Rule: show a lead if InboxId is blank/null (old/unassigned leads) OR
     //       InboxId is NOT assigned to someone other than the current user.
-    if(isLeadsList && requesterEmail && env.DB){
+    if(isLeadsList && requesterEmail && env.DB && !seesAllChannelLeads(c, requesterEmail)){
       try{
         await ensureInboxAssignmentsTable(env);
         // Ensure InboxId column exists — a one-time migration for clients who had assignments
@@ -1422,21 +1448,8 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
         const asgns=await env.DB.prepare(
           `SELECT inbox_id,assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email!=''`
         ).bind(payload.cid).all();
-        const allAssigned=asgns.results||[];
-        if(allAssigned.length>0){
-          // Inboxes assigned to users OTHER than the current requester
-          const othersInboxIds=allAssigned
-            .filter(a=>a.assigned_email.toLowerCase()!==requesterEmail)
-            .map(a=>String(a.inbox_id));
-          if(othersInboxIds.length>0){
-            // Hide other users' channel leads; show blank (old/unassigned) and own channel leads.
-            // Use ~and for "not in list"; wrap in parens only when multiple conditions need grouping.
-            const neqParts=othersInboxIds.map(id=>`(InboxId,neq,${id})`).join('~and');
-            const notOthers=othersInboxIds.length>1?`(${neqParts})`:neqParts;
-            const clause=`(InboxId,blank)~or${notOthers}`;
-            qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
-          }
-        }
+        const clause=channelVisibilityClause(asgns.results||[], requesterEmail);
+        if(clause) qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
       }catch(e){}
     }
   }

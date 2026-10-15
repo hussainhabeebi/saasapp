@@ -7,7 +7,7 @@ import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { engineResolveLeadOwner, backfillChannelLeadOwner } from './worker.js';
+import { engineResolveLeadOwner, backfillChannelLeadOwner, seesAllChannelLeads, channelVisibilityClause } from './worker.js';
 import { chatsV2Ready, chatsV2Access, chatsV2HiddenInboxes, chatsV2List, chatsV2Counts, chatsV2AfterInsert, chatsV2Kind } from './chats-v2.js';
 
 function d1(db){
@@ -116,14 +116,42 @@ describe('Chats v2 hides channels assigned to someone else', ()=>{
     return {list:(await chatsV2List(env, CID, acc, {view:'all'})).rows.map(r=>r.lead_id).sort(), all:(await chatsV2Counts(env, CID, acc)).all};
   };
 
-  test('each user sees their own channel plus unassigned ones; the owner sees no assigned channel', async()=>{
+  test('each staff member sees their own channel plus unassigned ones; the owner sees everything', async()=>{
     assert.deepEqual(await ids(RITA), {list:[1, 3, 4], all:3});
     assert.deepEqual(await ids(SAM), {list:[2, 3, 4], all:3});
-    assert.deepEqual(await ids(OWNER), {list:[3, 4], all:2});
+    assert.deepEqual(await ids(OWNER), {list:[1, 2, 3, 4], all:4});
   });
 
   test('no assignments table yet means nothing is hidden', async()=>{
     raw.exec('DROP TABLE channel_inbox_assignments');
     assert.deepEqual(await chatsV2HiddenInboxes(env, CID, OWNER), []);
+  });
+});
+
+describe('Leads list: who sees assigned channels', ()=>{
+  const c={...CLIENT, team_permissions:JSON.stringify({'Admin@acme.com':{role:'admin'}, 'gm@acme.com':{role:'general_manager'}, [RITA]:{role:'sales_executive'}})};
+  test('owner, admin and general manager see every lead; other staff do not', ()=>{
+    assert.equal(seesAllChannelLeads(c, 'BOSS@acme.com'), true);
+    assert.equal(seesAllChannelLeads(c, 'admin@acme.com'), true);
+    assert.equal(seesAllChannelLeads(c, 'gm@acme.com'), true);
+    assert.equal(seesAllChannelLeads(c, RITA), false);
+    assert.equal(seesAllChannelLeads(c, SAM), false);
+    assert.equal(seesAllChannelLeads(c, ''), false);
+  });
+  test('staff are filtered to their own and unassigned channels', ()=>{
+    const asg=[{inbox_id:11, assigned_email:RITA}, {inbox_id:22, assigned_email:SAM}, {inbox_id:44, assigned_email:'Pat@acme.com'}];
+    assert.equal(channelVisibilityClause(asg, 'Rita@Acme.com'), '(InboxId,blank)~or((InboxId,neq,22)~and(InboxId,neq,44))');
+    assert.equal(channelVisibilityClause([{inbox_id:11, assigned_email:RITA}], SAM), '(InboxId,blank)~or(InboxId,neq,11)');
+    assert.equal(channelVisibilityClause([{inbox_id:11, assigned_email:RITA}], RITA), '');
+  });
+});
+
+describe('Chats v2: owner and admins see every channel', ()=>{
+  beforeEach(fresh);
+  test('hidden channels only apply to staff', ()=>{
+    const c={...CLIENT, team_permissions:JSON.stringify({[SAM]:{role:'admin'}})};
+    assert.deepEqual(chatsV2Access(c, OWNER, ['11']).hidden, []);
+    assert.deepEqual(chatsV2Access(c, SAM, ['11']).hidden, []);
+    assert.deepEqual(chatsV2Access(c, RITA, ['22']).hidden, ['22']);
   });
 });

@@ -452,15 +452,16 @@ function safeJson(s){ return parse(s, {})||{}; }
 // the server: a teammate without a full-access role sees only chats assigned to them, plus
 // unassigned ones when Lead Routing is off.
 // hiddenInboxes: channels (Chatwoot inbox ids) assigned to someone other than this user — their
-// chats are hidden from everyone else, the account owner included, same as the Leads list
-// (worker.js's /nocodb passthrough). See chatsV2HiddenInboxes.
+// chats are hidden from other staff, same as the Leads list (worker.js's /nocodb passthrough).
+// The account owner and admin / general manager roles always see every channel.
+// See chatsV2HiddenInboxes.
 export function chatsV2Access(c, email, hiddenInboxes=[]){
   const me=lc(email);
   const owner=lc(c?.authentik_email);
   const role=parse(c?.team_permissions, {})?.[me]?.role;
   const staff=!!me&&me!==owner&&!FULL_ACCESS_ROLES.includes(role);
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
-  const hidden=[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))];
+  const hidden=staff?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
   return {me, staff, locked, hidden};
 }
 export async function chatsV2HiddenInboxes(env, cid, email){
@@ -898,7 +899,8 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
   const cid=Number(payload.cid);
   const c=await deps.getClientById(env, cid);
   if(!c) return json({error:'Client not found'}, 404);
-  const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, cid, payload.email));
+  let acc=chatsV2Access(c, payload.email);
+  if(acc.staff) acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, cid, payload.email));
   const qp=Object.fromEntries(url.searchParams);
   const t0=Date.now();
   try{
