@@ -451,19 +451,36 @@ function safeJson(s){ return parse(s, {})||{}; }
 // Same rule chats.html applied client-side in v1 (isStaff/staffLocked/visibleToMe), now enforced on
 // the server: a teammate without a full-access role sees only chats assigned to them, plus
 // unassigned ones when Lead Routing is off.
-export function chatsV2Access(c, email){
+// hiddenInboxes: channels (Chatwoot inbox ids) assigned to someone other than this user — their
+// chats are hidden from everyone else, the account owner included, same as the Leads list
+// (worker.js's /nocodb passthrough). See chatsV2HiddenInboxes.
+export function chatsV2Access(c, email, hiddenInboxes=[]){
   const me=lc(email);
   const owner=lc(c?.authentik_email);
   const role=parse(c?.team_permissions, {})?.[me]?.role;
   const staff=!!me&&me!==owner&&!FULL_ACCESS_ROLES.includes(role);
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
-  return {me, staff, locked};
+  const hidden=[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))];
+  return {me, staff, locked, hidden};
+}
+export async function chatsV2HiddenInboxes(env, cid, email){
+  const me=lc(email);
+  if(!me) return [];
+  try{
+    const {results}=await env.DB.prepare(`SELECT inbox_id, assigned_email FROM channel_inbox_assignments WHERE client_id=? AND assigned_email<>''`).bind(Number(cid)).all();
+    return (results||[]).filter(r=>lc(r.assigned_email)!==me).map(r=>String(r.inbox_id));
+  }catch(e){ return []; } // table not created yet = no channel assignments
 }
 function scopeSql(acc){
-  if(!acc.staff) return {sql:'', vals:[]};
-  return acc.locked?{sql:' AND assignee_email=?', vals:[acc.me]}:{sql:` AND assignee_email IN (?, '')`, vals:[acc.me]};
+  let sql='', vals=[];
+  if(acc.hidden?.length){ sql+=` AND inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')})`; vals.push(...acc.hidden); }
+  if(!acc.staff) return {sql, vals};
+  if(acc.locked){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
+  else { sql+=` AND assignee_email IN (?, '')`; vals.push(acc.me); }
+  return {sql, vals};
 }
 function canSee(acc, row){
+  if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
   return row.assignee_email===acc.me||(!acc.locked&&!row.assignee_email);
 }
@@ -881,7 +898,7 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
   const cid=Number(payload.cid);
   const c=await deps.getClientById(env, cid);
   if(!c) return json({error:'Client not found'}, 404);
-  const acc=chatsV2Access(c, payload.email);
+  const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, cid, payload.email));
   const qp=Object.fromEntries(url.searchParams);
   const t0=Date.now();
   try{

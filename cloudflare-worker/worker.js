@@ -6167,10 +6167,37 @@ async function handleChannelsInboxAssignmentPut(request, env){
   ).bind(payload.cid,inboxId,email,agentId,disabled,now,now).run();
   // Ensure InboxId column exists on the leads table so channel-visibility filters work
   await ensureLeadsColumns(env, ['InboxId']).catch(()=>{});
+  // Leads already in from this channel move to the assigned user too (new ones are routed to them
+  // by engineAssignLeadOwner).
+  const reassigned=await backfillChannelLeadOwner(env, payload.cid, inboxId, email).catch(()=>0);
   // Best-effort: auto-assign open conversations in Chatwoot (only when we have a Chatwoot agent id)
   if(agentId) fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations?inbox_id=${inboxId}&status=open&page=1`, {headers:{api_access_token:c.chatwoot_token}})
     .then(r=>r.json()).then(d=>{const convs=(d?.data?.payload||[]);for(const conv of convs){fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv.id}/assignments`,{method:'POST',headers:{api_access_token:c.chatwoot_token,'Content-Type':'application/json'},body:JSON.stringify({assignee_id:agentId})}).catch(()=>{});}}).catch(()=>{});
-  return json({ok:true, inbox_id:inboxId, cleared:false});
+  return json({ok:true, inbox_id:inboxId, cleared:false, reassigned});
+}
+
+// Sets Owner on every lead from one channel (InboxId) to the user it's assigned to, in NocoDB and
+// in the Chats v2 list (conversations.assignee_email). Returns how many leads changed owner.
+// Leads saved before InboxId was recorded can't be matched to a channel and are left as they are.
+export async function backfillChannelLeadOwner(env, clientId, inboxId, email){
+  const owner=String(email||'').trim().toLowerCase();
+  if(!owner||!inboxId) return 0;
+  const where=encodeURIComponent(`(ClientId,eq,${Number(clientId)})~and(InboxId,eq,${Number(inboxId)})`);
+  const toFix=[];
+  for(let page=0; page<20; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&fields=Id,Owner&limit=1000&offset=${page*1000}`);
+    if(!r.ok) break;
+    const d=await r.json().catch(()=>({}));
+    const list=d.list||[];
+    for(const l of list) if(String(l.Owner||'').trim().toLowerCase()!==owner) toFix.push({Id:Number(l.Id), Owner:owner});
+    if(list.length<1000||d.pageInfo?.isLastPage) break;
+  }
+  for(let i=0;i<toFix.length;i+=100){
+    await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:toFix.slice(i,i+100)});
+  }
+  if(env.DB) await env.DB.prepare(`UPDATE conversations SET assignee_email=?, updated_at=? WHERE client_id=? AND inbox_id=? AND assignee_email<>?`)
+    .bind(owner, new Date().toISOString(), Number(clientId), String(Number(inboxId)), owner).run().catch(()=>null);
+  return toFix.length;
 }
 
 /* ── Shopify module (Integrations tab connect + order/fulfillment/checkout webhooks) ────────
@@ -14904,7 +14931,26 @@ async function engineNextRoundRobinSlot(env, clientId, routing){
     return Number.isFinite(n)&&n>0 ? n-1 : null;
   }catch(e){ return null; }
 }
+// The user a channel (Chatwoot inbox) is assigned to in Channels → inbox assignment, or ''.
+async function engineChannelOwner(env, clientId, inboxId){
+  if(!inboxId||!env?.DB) return '';
+  try{
+    const asgn=await env.DB.prepare(
+      `SELECT assigned_email FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND assigned_email!=''`
+    ).bind(Number(clientId), Number(inboxId)).first();
+    return String(asgn?.assigned_email||'').trim().toLowerCase();
+  }catch(e){ return ''; }
+}
 async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLead){
+  // ── Priority 0: channel inbox assignment — exclusive, so it bypasses every other rule, applies
+  // whether or not lead routing is switched on, and also claims existing leads from that channel
+  // (a lead that arrived before the channel was assigned moves to its user on its next message).
+  const channelOwner=await engineChannelOwner(env, clientId, state?.inboxId);
+  if(channelOwner){
+    const current=String(leadBody.Owner||state?.lead?.Owner||'').trim().toLowerCase();
+    if(current!==channelOwner) leadBody.Owner=channelOwner;
+    return;
+  }
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
   const routing=engineGetLeadRouting(c);
@@ -14933,16 +14979,6 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   }
 
   const get=f=>leadBody[f]||state.lead?.[f]||'';
-
-  // ── Priority 0: Channel inbox assignment (bypasses all other rules) ─────────
-  if(state.inboxId && env.DB){
-    try{
-      const asgn=await env.DB.prepare(
-        `SELECT assigned_email FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND assigned_email!=''`
-      ).bind(Number(clientId), Number(state.inboxId)).first();
-      if(asgn?.assigned_email){ leadBody.Owner=asgn.assigned_email; return; }
-    }catch(e){}
-  }
 
   // ── Priority 1: Product / Property match ─────────────────────────────────────
   if(modes.includes('product')){
@@ -20471,7 +20507,7 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
   if(text && engineV2On(c)) leadBody.ConvHistory=JSON.stringify([...(state.history||[]), {role:'user', content:text, ts:now}].slice(-40));
   await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
   leadBody.LastCustomerMsgAt=now;
-  if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+  await engineResolveLeadOwner(env,c,clientId,leadBody,state,isFirstMsg);
   const leadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
   state.leadId=state.leadId||leadId;
   if(state.leadId) await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:state.leadId,channel:'whatsapp',at:now}).catch(()=>{});

@@ -100,9 +100,10 @@ describe('formatting and preview', ()=>{
     assert.equal(chatsV2FieldsFromLead({ConvResolved:'No'}, {status:'resolved'}).status, 'open');
   });
   test('access mirrors the v1 staff rules', ()=>{
-    assert.deepEqual(chatsV2Access(CLIENT, OWNER), {me:OWNER, staff:false, locked:false});
-    assert.deepEqual(chatsV2Access(CLIENT, SHAFNA), {me:SHAFNA, staff:false, locked:false});
-    assert.deepEqual(chatsV2Access(CLIENT, RAHUL), {me:RAHUL, staff:true, locked:false});
+    assert.deepEqual(chatsV2Access(CLIENT, OWNER), {me:OWNER, staff:false, locked:false, hidden:[]});
+    assert.deepEqual(chatsV2Access(CLIENT, SHAFNA), {me:SHAFNA, staff:false, locked:false, hidden:[]});
+    assert.deepEqual(chatsV2Access(CLIENT, RAHUL), {me:RAHUL, staff:true, locked:false, hidden:[]});
+    assert.deepEqual(chatsV2Access(CLIENT, RAHUL, [11, '11', 22]).hidden, ['11', '22']);
     assert.equal(chatsV2Access({...CLIENT, lead_routing:'{"enabled":true}'}, RAHUL).locked, true);
   });
 });

@@ -13655,7 +13655,8 @@ async function chLoadAndRenderInboxList(list){
   const memberOpts='<option value="">— Unassigned —</option>'+members.map(m=>`<option value="${esc(m.email)}">${esc(m.name||m.email)}</option>`).join('');
   $id('chConnectedList').innerHTML=list.map(ib=>{
     const cur=assignments[ib.id]?.assigned_email||'';
-    const opts=members.map(m=>`<option value="${esc(m.email)}"${m.email===cur?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
+    // The Worker stores assigned_email lowercased; team emails may not be.
+    const opts=members.map(m=>`<option value="${esc(m.email)}"${sameEmail(m.email,cur)?' selected':''}>${esc(m.name||m.email)}</option>`).join('');
     const isWA=ib.channel_type==='Channel::Whatsapp';
     const detected=isWA&&ib.meta_credentials?.configured;
     return `<div style="padding:12px 0;border-bottom:1px solid var(--border,#e5e7eb)">`+
@@ -13682,7 +13683,15 @@ async function chLoadAndRenderInboxList(list){
 async function chSaveInboxAssignmentInline(inboxId, email){
   try{
     if(email){
-      await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,assigned_email:email,chatwoot_user_id:0});
+      // Keep this channel's AI Reply setting — the Worker resets it unless it's sent along.
+      const r=await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,assigned_email:email,chatwoot_user_id:0,
+        bot_reply_disabled:!!_chAssignments[inboxId]?.bot_reply_disabled});
+      _chAssignments[inboxId]={...(_chAssignments[inboxId]||{}),assigned_email:email};
+      const n=Number(r?.reassigned)||0;
+      showToast(n?`Channel assigned — ${n} existing lead${n===1?'':'s'} moved to ${email}`:`Channel assigned to ${email}`);
+      // Owners/visibility changed server-side — drop the cached lead list and reload it.
+      try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e){}
+      loadAll(true,true);
     } else {
       await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,clear:true});
     }
@@ -13692,6 +13701,7 @@ async function chSaveInboxAssignmentInline(inboxId, email){
 async function chToggleBotReply(inboxId, disabled){
   try{
     await chWorkerPut('/channels/inbox-assignment',{inbox_id:inboxId,bot_reply_disabled:disabled});
+    _chAssignments[inboxId]={...(_chAssignments[inboxId]||{}),bot_reply_disabled:disabled?1:0};
   }catch(e){alert('Failed to update AI reply setting: '+e.message);}
 }
 
