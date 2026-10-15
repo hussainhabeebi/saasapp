@@ -20446,6 +20446,38 @@ async function engineJournalStageChange(env, clientId, leadId, fromStage, toStag
   }catch(e){}
 }
 
+// Bot reply off (Settings → Bot Auto-Reply, or per inbox): no AI turn runs, but the customer's
+// message must still land like any other — a lead is created (or updated) and the message is written
+// to lead_messages, which is what puts the chat in the Chats inbox (chatsV2AfterInsert). The message
+// is written before the lead PATCH so that PATCH fills the new inbox row's name/phone.
+async function engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text){
+  const {phone, name, convId, mediaType, mediaUrl}=parsed;
+  const msgId=String(body.id||body.message?.id||'');
+  if(msgId && state.lead?.LastProcessedMessageId===msgId) return state.leadId;
+  const isFirstMsg=!state.leadId;
+  if(msgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, msgId)||state.leadId||null;
+  if(!state.leadId) state.leadId=await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new'}).catch(()=>null);
+  const now=new Date().toISOString();
+  if(state.leadId){
+    const media=engineInboundMediaFields(mediaType, mediaUrl, text, msgId);
+    await d1InsertLeadMessage(env, state.leadId, clientId, {role:'user', content:text||'', ts:now,
+      ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
+  }
+  const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
+    LastMsgAt:now,Channel:'whatsapp',
+    ...(isFirstMsg?{Date:now}:{}),
+    ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
+  // Leadvyne v2: ConvHistory too, so when the bot is switched back on it sees what was said.
+  if(text && engineV2On(c)) leadBody.ConvHistory=JSON.stringify([...(state.history||[]), {role:'user', content:text, ts:now}].slice(-40));
+  await ensureLeadsColumns(env,['LastCustomerMsgAt']).catch(()=>{});
+  leadBody.LastCustomerMsgAt=now;
+  if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
+  const leadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+  state.leadId=state.leadId||leadId;
+  if(state.leadId) await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:state.leadId,channel:'whatsapp',at:now}).catch(()=>{});
+  return state.leadId;
+}
+
 // Called by handleEngineWebhook right before the slow classify/LLM work — see that call site's
 // comment for why. Best-effort: if this write fails for any reason, falls back to the original
 // leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
@@ -21338,9 +21370,6 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
-    const configuredIntroCanRun=engineShouldUseConfiguredFlowIntro(c,text,mediaType);
-    if(!env.GEMINI_API_KEY && !c.openrouter_key&&!configuredIntroCanRun){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
-
     const state=await engineGetLeadState(env, clientId, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
     if(engineV2On(c)){
@@ -21372,14 +21401,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Exit before any AI classification or LLM call so no tokens are consumed — collect/upsert
     // the lead so the CRM stays current, then return. Mirrors the per-inbox check below.
     if(c.bot_reply_disabled==='Yes'){
-      const earlyMsgId=String(body.id||body.message?.id||'');
-      const isFirstMsg=!state.leadId;
-      if(earlyMsgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId)||state.leadId||null;
-      const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
-        Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',
-        ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
-      if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
-      await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
+      await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
       await logEngineSkip(env, clientId, phone, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off — lead collected, no AI reply');
       return json({ok:true, skipped:'bot-reply-disabled', lead_collected:true});
     }
@@ -21387,26 +21409,25 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Per-inbox AI reply toggle — if this inbox is marked bot_reply_disabled in channel_inbox_assignments,
     // still collect/upsert the lead (so the CRM stays current) but skip the AI reply entirely,
     // same shape as the global bot_reply_disabled check above.
+    let inboxBotOff=false;
     if(state.inboxId && env.DB){
       try{
         await ensureInboxAssignmentsTable(env);
-        const ibRow=await env.DB.prepare(
+        inboxBotOff=!!await env.DB.prepare(
           `SELECT bot_reply_disabled FROM channel_inbox_assignments WHERE client_id=? AND inbox_id=? AND bot_reply_disabled=1`
         ).bind(Number(clientId), Number(state.inboxId)).first();
-        if(ibRow){
-          // Collect lead then exit — no AI processing, no reply
-          const earlyMsgId=String(body.id||body.message?.id||'');
-          const isFirstMsg=!state.leadId;
-          if(earlyMsgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, earlyMsgId)||state.leadId||null;
-          const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
-            Date:new Date().toISOString(),LastMsgAt:new Date().toISOString(),Channel:'whatsapp',InboxId:String(state.inboxId)};
-          if(isFirstMsg) await engineResolveLeadOwner(env,c,clientId,leadBody,state,true);
-          await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
-          await logEngineSkip(env, clientId, phone, convId, 'inbox-bot-disabled', `inbox ${state.inboxId} — AI reply off, lead collected`);
-          return json({ok:true, skipped:'inbox-bot-disabled', lead_collected:true});
-        }
       }catch(e){}
     }
+    if(inboxBotOff){
+      await engineCollectLeadWithoutReply(env, c, clientId, body, state, parsed, text);
+      await logEngineSkip(env, clientId, phone, convId, 'inbox-bot-disabled', `inbox ${state.inboxId} — AI reply off, lead collected`);
+      return json({ok:true, skipped:'inbox-bot-disabled', lead_collected:true});
+    }
+
+    // Only now does the turn need an AI provider — a chat taken over or with the bot off above is
+    // still saved to the lead and the Chats inbox without one.
+    const configuredIntroCanRun=engineShouldUseConfiguredFlowIntro(c,text,mediaType);
+    if(!env.GEMINI_API_KEY && !c.openrouter_key&&!configuredIntroCanRun){ await logEngineSkip(env, clientId, phone, convId, 'no-ai-provider-key'); return json({ok:true, skipped:'no-ai-provider-key'}); }
 
     // Multi-industry: hard-lock this inbox to its configured industry, module flags, and prompt.
     // Each channel gets exactly its own context — nothing crosses to another channel.
