@@ -24,12 +24,13 @@ Object.keys(TV_AGENCY_PAGES).forEach(p=>{ PAGE_HOST[p]='agency'; });
 // Pages that need the Travel Agency module (ta_enabled) and the 'agency' module permission.
 const TV_AGENCY_GATED=new Set([...Object.keys(TV_AGENCY_PAGES),'departures','tvlive']);
 // Mobile: everything except Today / Trips (own bottom-nav buttons) lights up the More button.
-MORE_GROUP.push(...Object.keys(TV_AGENCY_PAGES).filter(p=>p!=='tvtrips'),'departures','tvlive');
+MORE_GROUP.push(...Object.keys(TV_AGENCY_PAGES).filter(p=>p!=='tvtrips'),'departures','tvlive','tvstatus');
 
 // Desktop nav: [page, label] or a dropdown group {group, items:[[page,label],…]}.
 const TV_NAV=[
   ['travelhome','🏠 Today'],
   ['leads','📥 Inquiries'],
+  ['tvstatus','📌 Status Board'],
   ['chats','💬 Inbox'],
   ['tvtrips','🎫 Trips'],
   ['tvquotes','🗺️ Quotes & Itineraries'],
@@ -52,6 +53,7 @@ const TV_NAV=[
 ];
 // Mobile "More" sheet: travel items shown above the regular ones.
 const TV_MORE=[
+  ['tvstatus','📌','Status Board'],
   ['departures','📅','Departures'],['tvquotes','🗺️','Quotes'],['tvpackages','📦','Packages'],
   ['tvvisa','🛂','Visa & Docs'],['tvumrah','🕌','Umrah'],['tvlive','✈️','Live Flights'],
   ['tvfinance','💰','Finance'],['__classic','↩️','Classic view'],
@@ -69,6 +71,7 @@ function tvCanSee(page){
     page='agency';
   }
   if(page==='travelhome'||page==='__classic') return true;
+  if(page==='tvstatus') page='leads'; // the status board is a view of the inquiries the user can already see
   if(!clientRecord||!myEmail||isAccountOwner()) return true;
   const mine=getTeamPermissions()[myEmail];
   if(!mine||!Array.isArray(mine.modules)) return true;
@@ -147,6 +150,7 @@ html:not(.tv-mode) .tv-only{display:none!important}
 
 function tvEnsurePages(){
   const pages=$id('pages'); if(!pages) return;
+  if(typeof tsEnsurePage==='function') tsEnsurePage(); // 📌 Status Board (travel-status.js)
   if(!$id('pageTravelhome')){
     const d=document.createElement('div'); d.className='page hidden'; d.id='pageTravelhome';
     d.innerHTML='<div class="page-pad" id="tvHomeBody"></div>';
@@ -319,6 +323,7 @@ function tvGo(page){
 function tvOnNavigate(page){
   if(page==='travelhome'){ renderTravelHome(); tvRefreshTa(); }
   else if(page==='departures'){ renderDepartures(); tvRefreshTa(); }
+  else if(page==='tvstatus'){ if(typeof renderTravelStatus==='function') renderTravelStatus(); }
   else if(page==='tvlive'){
     const f=$id('tvLiveFrame');
     if(f && !f.getAttribute('src')) f.src=`live-travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}&embed=1`;
@@ -459,6 +464,7 @@ function renderTravelHome(){
       <div class="card"><div class="card-title">💳 Balance due</div>
         <div class="tv-list">${due.length?due.slice(0,8).map(b=>row(b.departure_date?tvShort(tvDay(b.departure_date)):'No date',esc(b.client_name||'Traveler'),`${esc(b.package_name||'Booking')} · paid ${cur(b)} ${Math.round(tvNum(b.deposit)).toLocaleString()}`,`${cur(b)} ${Math.round(tvNum(b.sell_price)-tvNum(b.deposit)).toLocaleString()}`,"navigate('tvtrips')")).join(''):'<div class="tv-empty">No outstanding balances.</div>'}</div></div>
     </div>
+    ${typeof tsSummaryHtml==='function'?tsSummaryHtml():''}
     <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📥 Newest inquiries</div>

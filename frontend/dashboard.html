@@ -6268,6 +6268,8 @@ function renderHome(){
   try{loadHomeRealEstateSnapshot();}catch(e){}
   try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
   try{ if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('homeStaffPerf')); }catch(e){}
+  // 📌 Status Board (travel-status.js) — refresh with new leads unless someone is mid-edit on it.
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
 }
 
 /* ── TRUST SIGNALS (Home hero) ── */
@@ -22185,7 +22187,8 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-view.js?v=3"></script>
+<script src="travel-status.js?v=1"></script>
+<script src="travel-view.js?v=4"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>
 
