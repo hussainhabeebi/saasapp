@@ -84,7 +84,7 @@ test('marking a status saves it to the lead with who and when', async ({ page })
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'first_call', TravelStatusBy: OWNER });
   expect(patches[0].TravelStatusAt).toBeTruthy();
-  expect(fieldsAdded).toEqual(['TravelStatus', 'TravelFollowUpAt', 'TravelStatusAt', 'TravelStatusBy']);
+  expect(fieldsAdded).toEqual(['TravelStatus', 'TravelFollowUpAt', 'TravelStatusAt', 'TravelStatusBy', 'TravelStatusLog']);
   await expect(tileCount(page, 'First call done')).toHaveText('2');
   await expect(page.locator('tr[data-lead="1"]')).not.toContainText('auto');
 });

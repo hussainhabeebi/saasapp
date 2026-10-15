@@ -2389,6 +2389,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="saas">📈 SaaS</button>
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
         <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
+        <button class="hosp-tab" data-reports="tvstatus" id="rptTabTvStatus" style="display:none">📌 Status Changes</button>
       </div>
       <div id="rptFilterBar" style="background:var(--card);border-bottom:1px solid var(--line);padding:8px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:41px;z-index:9">
         <div style="display:flex;gap:3px;flex-wrap:wrap">
@@ -7536,6 +7537,7 @@ function renderLeadsList(){
         <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
+        ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           ${callBtnHTML(l,leadCallCount(l))}
           <button class="btn btn-secondary btn-sm li-sec" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
@@ -7899,10 +7901,12 @@ function renderLeadsTable(){
     return;
   }
   const QA_COLS=['age','profession','email','city','country','budget','language','source'];
+  // Travel clients: a status dropdown column right after Stage (travel-status.js).
+  const tsCol=clientRecord?.industry==='travel' && typeof tsInlineStatusHTML==='function';
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th><th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th>':''}<th>Score</th><th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -7919,6 +7923,7 @@ function renderLeadsTable(){
       <td>${esc(l.Name||'Unknown')}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
+      ${tsCol?`<td onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
@@ -18030,7 +18035,13 @@ function exportReportPdf(){
   pw.onload=()=>pw.print();
 }
 
-function renderReports(){ rptPopulateMemberFilter(); renderReportsSubPage(_reportsPage); }
+function renderReports(){
+  // 📌 Status Changes (travel-status.js) — travel clients only.
+  const tvTab=$id('rptTabTvStatus'); const isTravel=clientRecord?.industry==='travel';
+  if(tvTab) tvTab.style.display=isTravel?'':'none';
+  if(!isTravel&&_reportsPage==='tvstatus') _reportsPage='overview';
+  rptPopulateMemberFilter(); renderReportsSubPage(_reportsPage);
+}
 function renderReportsSubPage(page){
   _reportsPage=page;
   document.querySelectorAll('#reportsSubNav .hosp-tab').forEach(t=>t.classList.toggle('active',t.dataset.reports===page));
@@ -18039,6 +18050,7 @@ function renderReportsSubPage(page){
     marketing:renderReportsMarketing, source:renderReportsSource, adsauto:renderReportsAdsAutomation, whatsapp:renderReportsWhatsapp, shopify:renderReportsShopify,
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
     scheduled:renderReportsScheduled,
+    tvstatus:()=>typeof renderReportsTravelStatus==='function'?renderReportsTravelStatus():renderReportsOverview(),
   };
   (fns[page]||renderReportsOverview)();
 }
@@ -18247,6 +18259,8 @@ async function renderReportsOverview(){
   const wa=whatsappR.status==='fulfilled'?whatsappR.value:null;
   const sh=shopifyR.status==='fulfilled'?shopifyR.value:null;
   const se=seoR.status==='fulfilled'?seoR.value:null;
+  // Another Reports tab may have been opened while these loaded — don't paint over it.
+  if(_reportsPage!=='overview') return;
 
   cards.push({label:'WhatsApp Messages (30d)', value:wa?wa.total_messages:'—', tab:'whatsapp'});
   cards.push({label:'Ecommerce Revenue (6mo)', value:(sh&&sh.has_orders_table)?(sh.currency?sh.currency+' ':'')+Math.round(sh.total_revenue).toLocaleString():'—', tab:'shopify'});
@@ -22197,7 +22211,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=1"></script>
+<script src="travel-status.js?v=2"></script>
 <script src="travel-view.js?v=4"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>

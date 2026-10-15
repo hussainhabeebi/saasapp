@@ -6,6 +6,7 @@
      TravelStatus        status key (TS_STATUSES below)
      TravelFollowUpAt    YYYY-MM-DD, for follow_up_pending
      TravelStatusAt/By   when / who last changed it
+     TravelStatusLog     JSON history, newest first: [{at, by, from, to, fu}] — Reports → 📌 Status Changes
    An inquiry with no status yet shows "New inquiry", or "First call done (auto)" once a call is in
    its CallLog — so the board is useful before anyone has marked anything.
    This status is the travel desk's own tracking; it doesn't move the lead's pipeline Stage.
@@ -33,7 +34,8 @@ const TS_STATUSES=[
   ['cancelled','Cancelled','🚫','red'],
 ];
 const TS_BY_KEY=Object.fromEntries(TS_STATUSES.map(s=>[s[0],s]));
-const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy'];
+const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy',['TravelStatusLog','LongText']];
+const TS_LOG_MAX=200;
 const TS_PAGE_SIZE=100;
 
 let _tsFilter={status:'',owner:'',cat:'',q:''};
@@ -78,6 +80,12 @@ function tsInjectStyle(){
 .ts-due.overdue{background:#FEE2E2;color:#991B1B}.ts-due.today{background:#FEF3C7;color:#92400E}
 .ts-meta{font-size:11px;color:var(--muted)}
 .ts-empty{color:var(--muted);text-align:center;padding:24px;font-size:13px}
+.ts-inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
+.ts-sel-inline{min-height:34px}
+.ts-chip{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:3px 9px;white-space:nowrap;border:1px solid var(--line)}
+.ts-chip.gray{background:#F1F5F9;color:#475569}.ts-chip.blue{background:#E0F2FE;color:#075985}.ts-chip.amber{background:#FEF3C7;color:#92400E}.ts-chip.green{background:#DCFCE7;color:#166534}.ts-chip.red{background:#FEE2E2;color:#991B1B}
+.ts-rpt-tbl{width:100%;min-width:720px}
+@media(max-width:767px){.ts-sel-inline{width:100%;max-width:none;font-size:16px;min-height:42px;padding:6px 2px 6px 6px;letter-spacing:-.2px}.ts-inline .ts-due{margin-left:0}}
 `;
   document.head.appendChild(st);
 }
@@ -186,25 +194,50 @@ function tsMore(){ _tsShown+=TS_PAGE_SIZE; renderTravelStatus(); }
 
 async function tsEnsureFields(){
   if(_tsFieldsReady) return;
-  for(const f of TS_FIELDS) await ensureLeadsField(f);
+  for(const f of TS_FIELDS) await (Array.isArray(f)?ensureLeadsField(f[0],f[1]):ensureLeadsField(f));
   _tsFieldsReady=true;
+}
+function tsParseLog(raw){
+  try{ const v=typeof raw==='string'?JSON.parse(raw||'[]'):raw; return Array.isArray(v)?v:[]; }catch(e){ return []; }
 }
 async function tsSave(id,patch){
   const lead=(typeof allLeads!=='undefined'?allLeads:[]).find(l=>l.Id===id);
   if(!lead) return;
-  const before={}; Object.keys(patch).forEach(k=>{ before[k]=lead[k]; });
-  const full={...patch, TravelStatusAt:new Date().toISOString(), TravelStatusBy:myEmail||''};
+  const now=new Date().toISOString();
+  const full={...patch, TravelStatusAt:now, TravelStatusBy:myEmail||''};
+  const before={}; Object.keys(full).concat('TravelStatusLog').forEach(k=>{ before[k]=lead[k]; });
+  const from=tsStatusOf(lead).key;
+  const statusChanged=!!patch.TravelStatus && patch.TravelStatus!==lead.TravelStatus;
   Object.assign(lead,full);
-  renderTravelStatus();
+  tsRefreshViews();
   try{
     await tsEnsureFields();
+    if(statusChanged){
+      // Append to the history; start from the stored copy so a teammate's change made since this
+      // page loaded isn't lost (same approach as appendCallLog).
+      let log=tsParseLog(before.TravelStatusLog);
+      try{
+        const fresh=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${id}?fields=TravelStatusLog`);
+        log=tsParseLog(fresh?.TravelStatusLog);
+      }catch(e){}
+      const entry={at:now, by:myEmail||'', from, to:patch.TravelStatus};
+      if(full.TravelFollowUpAt) entry.fu=full.TravelFollowUpAt;
+      full.TravelStatusLog=JSON.stringify([entry,...log].slice(0,TS_LOG_MAX));
+      lead.TravelStatusLog=full.TravelStatusLog;
+    }
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,...full});
     if(typeof showToast==='function') showToast('Status saved');
   }catch(e){
     Object.assign(lead,before);
-    renderTravelStatus();
+    tsRefreshViews(true);
     if(typeof showToast==='function') showToast('Could not save status — '+e.message,'err');
   }
+}
+// Re-render whichever views show travel status. The Inquiries list only needs a redraw when a save
+// failed (to put the old value back) — the dropdown the user just changed already shows the new one.
+function tsRefreshViews(failed){
+  if(!$id('pageTvstatus')?.classList.contains('hidden')) renderTravelStatus();
+  if(failed && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
 }
 function tsSetStatus(id,key){
   if(!TS_BY_KEY[key]) return;
@@ -235,4 +268,121 @@ function tsSummaryHtml(){
 function tsOpen(status){
   _tsFilter={status:status||'',owner:'',cat:'',q:''}; _tsShown=TS_PAGE_SIZE;
   navigate('tvstatus');
+}
+
+/* ── Inquiries tab: one compact status dropdown per inquiry (list cards and table) ── */
+function tsIsTravel(){ return clientRecord?.industry==='travel'; }
+function tsInlineStatusHTML(l){
+  if(!tsIsTravel()||!l) return '';
+  tsInjectStyle();
+  const st=tsStatusOf(l); const grp=TS_BY_KEY[st.key][3]; const f=tsFollowUpState(l);
+  return `<div class="ts-inline" onclick="event.stopPropagation()">
+    <select class="ts-sel ts-sel-inline ${grp}" aria-label="Travel status" onchange="tsInlineChange(${Number(l.Id)},this)">
+      ${TS_STATUSES.map(s=>`<option value="${s[0]}"${st.key===s[0]?' selected':''}>${s[2]} ${esc(s[1])}</option>`).join('')}
+    </select>${l.TravelStatus==='follow_up_pending'&&l.TravelFollowUpAt?`<span class="ts-due ${f==='overdue'?'overdue':f==='today'?'today':''}">⏰ ${esc(String(l.TravelFollowUpAt).slice(0,10))}</span>`:''}
+  </div>`;
+}
+function tsInlineChange(id,sel){
+  const s=TS_BY_KEY[sel.value]; if(!s) return;
+  sel.className=`ts-sel ts-sel-inline ${s[3]}`;
+  tsSetStatus(id,sel.value);
+}
+
+/* ── Reports → 📌 Status Changes: every status change, date and time wise ── */
+let _tsRpt={q:'', status:'', group:false, shown:300};
+function tsRptRange(){
+  const f=typeof _rptFilters!=='undefined'?_rptFilters:{period:'all'};
+  const now=new Date(); let from=null, to=null;
+  if(f.period==='today'){ from=new Date(now); from.setHours(0,0,0,0); }
+  else if(f.period==='week'){ from=new Date(now); from.setDate(now.getDate()-now.getDay()); from.setHours(0,0,0,0); }
+  else if(f.period==='month'){ from=new Date(now.getFullYear(),now.getMonth(),1); }
+  else if(f.period==='year'){ from=new Date(now.getFullYear(),0,1); }
+  else if(f.period==='custom'){ if(f.from) from=new Date(f.from+'T00:00:00'); if(f.to) to=new Date(f.to+'T23:59:59'); }
+  return {from, to};
+}
+// Every change across all inquiries, newest first. Inquiries marked before the history was kept
+// contribute their last change (TravelStatusAt/By) so they still show up.
+function tsAllChanges(){
+  const out=[];
+  for(const l of (typeof allLeads!=='undefined'?allLeads:[])){
+    const log=tsParseLog(l.TravelStatusLog);
+    if(log.length) log.forEach(e=>{ if(e?.at&&TS_BY_KEY[e.to]) out.push({...e, lead:l}); });
+    else if(l.TravelStatusAt&&TS_BY_KEY[l.TravelStatus]) out.push({at:l.TravelStatusAt, by:l.TravelStatusBy||'', from:'', to:l.TravelStatus, fu:l.TravelFollowUpAt||'', lead:l, legacy:true});
+  }
+  return out.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+}
+function tsFmtDateTime(iso){
+  try{ const d=new Date(iso); return {date:d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}), time:d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}; }
+  catch(e){ return {date:String(iso).slice(0,10), time:''}; }
+}
+function tsStatusChip(key){
+  const s=TS_BY_KEY[key]; if(!s) return '<span class="ts-meta">—</span>';
+  return `<span class="ts-chip ${s[3]}">${s[2]} ${esc(s[1])}</span>`;
+}
+function renderReportsTravelStatus(){
+  tsInjectStyle();
+  const el=$id('reportsContent'); if(!el) return;
+  const {from,to}=tsRptRange();
+  const member=$id('rptMember')?.value||'';
+  const q=_tsRpt.q.trim().toLowerCase();
+  const all=tsAllChanges().filter(c=>{
+    const t=new Date(c.at);
+    if(from&&t<from) return false;
+    if(to&&t>to) return false;
+    if(member&&!sameEmail(c.by,member)) return false;
+    if(_tsRpt.status&&c.to!==_tsRpt.status) return false;
+    if(q&&![c.lead.Name,c.lead.Phone,c.lead.Destination].some(v=>String(v||'').toLowerCase().includes(q))) return false;
+    return true;
+  });
+  const leadsTouched=new Set(all.map(c=>c.lead.Id)).size;
+  const count=k=>all.filter(c=>c.to===k).length;
+  const row=c=>{ const dt=tsFmtDateTime(c.at); return `<tr>
+      <td style="white-space:nowrap">${esc(dt.date)}</td><td style="white-space:nowrap">${esc(dt.time)}</td>
+      <td><a href="#" onclick="openDetail(${Number(c.lead.Id)});return false"><b>${esc(c.lead.Name||c.lead.Phone||'Inquiry')}</b></a><div class="ts-meta">${esc(c.lead.Phone||'')}</div></td>
+      <td>${c.from?tsStatusChip(c.from):'<span class="ts-meta">—</span>'}</td>
+      <td>${tsStatusChip(c.to)}${c.legacy?' <span class="ts-auto" title="Changed before status history was kept">last change</span>':''}</td>
+      <td>${c.fu?esc(String(c.fu).slice(0,10)):'<span class="ts-meta">—</span>'}</td>
+      <td>${esc(tsOwnerName(c.by))}</td></tr>`; };
+  const head='<thead><tr><th>Date</th><th>Time</th><th>Inquiry</th><th>From</th><th>To</th><th>Follow-up</th><th>Changed by</th></tr></thead>';
+  let body;
+  if(_tsRpt.group){
+    const byLead=new Map();
+    all.forEach(c=>{ if(!byLead.has(c.lead.Id)) byLead.set(c.lead.Id,[]); byLead.get(c.lead.Id).push(c); });
+    body=[...byLead.values()].slice(0,_tsRpt.shown).map(list=>{
+      const l=list[0].lead;
+      return `<div class="card" style="margin-bottom:10px;padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(l.Name||l.Phone||'Inquiry')}</b></a>
+          <span>Now: ${tsStatusChip(tsStatusOf(l).key)}</span></div>
+        <div style="overflow-x:auto"><table class="leads-tbl ts-rpt-tbl">${head}<tbody>${list.map(row).join('')}</tbody></table></div></div>`;
+    }).join('');
+  } else {
+    body=`<div class="card" style="padding:6px 8px"><div style="overflow-x:auto"><table class="leads-tbl ts-rpt-tbl">${head}<tbody>${all.slice(0,_tsRpt.shown).map(row).join('')}</tbody></table></div></div>`;
+  }
+  const more=(_tsRpt.group?leadsTouched:all.length)>_tsRpt.shown;
+  el.innerHTML=`
+    <div style="margin-bottom:12px"><div class="card-title" style="margin-bottom:0">📌 Status Changes</div>
+      <div class="s-note">Every travel status change on an inquiry, by date and time. The period and member filters above apply (member = who changed it).</div></div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+      <div class="stat accent"><div class="stat-lbl">Status changes</div><div class="stat-val">${all.length}</div></div>
+      <div class="stat"><div class="stat-lbl">Inquiries updated</div><div class="stat-val">${leadsTouched}</div></div>
+      <div class="stat"><div class="stat-lbl">🎉 Booking closed</div><div class="stat-val">${count('booking_closed')}</div></div>
+      <div class="stat"><div class="stat-lbl">❌ Booking not done</div><div class="stat-val">${count('booking_not_done')}</div></div>
+      <div class="stat"><div class="stat-lbl">⏰ Follow ups set</div><div class="stat-val">${count('follow_up_pending')}</div></div>
+    </div>
+    <div class="ts-bar">
+      <input class="form-input" id="tsRptSearch" placeholder="Search inquiry name or phone…" value="${esc(_tsRpt.q)}" oninput="tsRptSet('q',this.value)">
+      <select class="form-input" onchange="tsRptSet('status',this.value)"><option value="">Any new status</option>
+        ${TS_STATUSES.map(s=>`<option value="${s[0]}"${_tsRpt.status===s[0]?' selected':''}>${s[2]} ${esc(s[1])}</option>`).join('')}</select>
+      <label class="ts-meta" style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" ${_tsRpt.group?'checked':''} onchange="tsRptSet('group',this.checked)"> Group by inquiry</label>
+    </div>
+    ${all.length?body:'<div class="card"><div class="ts-empty">No status changes in this period.</div></div>'}
+    ${more?`<div style="text-align:center;padding:10px"><button class="btn-ghost" onclick="tsRptSet('shown',${_tsRpt.shown+300})">Show more</button></div>`:''}`;
+  if(document.activeElement?.id!=='tsRptSearch' && _tsRpt._focus){ const s=$id('tsRptSearch'); if(s){ s.focus(); s.setSelectionRange(s.value.length,s.value.length); } }
+  _tsRpt._focus=false;
+}
+function tsRptSet(k,v){
+  _tsRpt[k]=v; if(k!=='shown') _tsRpt.shown=300;
+  if(k==='q') _tsRpt._focus=true;
+  renderReportsTravelStatus();
 }
