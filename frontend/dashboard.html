@@ -5773,6 +5773,7 @@ function navigate(page){
   if(page==='integrations') integrationsInit();
   if(page==='voice') voiceInit();
   if(page==='billing') billingInit();
+  if(typeof tvOnNavigate==='function') tvOnNavigate(page); // travel workspace pages (travel-view.js)
 }
 
 function openMoreSheet(){
@@ -5863,7 +5864,7 @@ function showApp(){
   const instagramParam=params.get('instagram');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
-  let landingPage='home';
+  let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':'home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
   else if(params.has('integrations')||shopifyParam||instagramParam) landingPage='integrations';
@@ -6260,6 +6261,7 @@ function renderHome(){
   try{renderBenchmark();}catch(e){}
   try{renderTasks();}catch(e){}
   try{loadHomeRealEstateSnapshot();}catch(e){}
+  try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
 }
 
 /* ── TRUST SIGNALS (Home hero) ── */
@@ -17333,6 +17335,8 @@ function applyTheme(industryKey){
   }
   // Recruit tab visibility synced from clientRecord (already set before applyTheme is called)
   if(typeof updateRecruitTabVisibility==='function') updateRecruitTabVisibility();
+  // Travel clients get their own app shell (travel-view.js)
+  if(typeof tvApply==='function') tvApply();
 }
 
 function previewTheme(val){
@@ -19602,11 +19606,22 @@ async function taLoad(){
   _taUmrahGroups=ug.map(r=>({...r,pilgrims:safeJson(r.pilgrims)}));
   _taCars=cars; _taCarBookings=carbks;
   _taLoaded=true;
+  if(typeof tvAfterTaLoad==='function') tvAfterTaLoad();
 }
 
-function renderAgency(){
+// sub = a travel-agency.html sub-page (bookings, itineraries, …), passed by the travel workspace
+// nav (travel-view.js); action='new' also opens that sub-page's "+ New …" form. First load picks it via ?tab=; after that the frame is told by postMessage
+// so it doesn't reload. In the travel workspace the frame hides its own tab bar (&shell=travel)
+// because the dashboard's travel nav drives it.
+function renderAgency(sub,action){
   const frame=$id('agencyFrame');
-  if(frame && !frame.getAttribute('src')) frame.src=`travel-agency.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1`;
+  if(!frame) return;
+  if(!frame.getAttribute('src')){
+    const shell=(typeof isTravelView==='function'&&isTravelView())?'&shell=travel':'';
+    frame.src=`travel-agency.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&embed=1${shell}${sub?'&tab='+encodeURIComponent(sub):''}${action==='new'?'&action=new':''}`;
+  } else if(sub){
+    frame.contentWindow?.postMessage({type:'ta:goto',page:sub,action},location.origin);
+  }
 }
 
 /* ── TA: SETTINGS ── */
@@ -19625,6 +19640,7 @@ function initTaSettings(){
 function updateAgencyTabVisibility(){
   const enabled=(clientRecord.ta_enabled==='Yes');
   [$id('dnAgencyTab'),$id('bnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
+  if(typeof tvApply==='function') tvApply();
 }
 
 $id('saveTaEnabled').addEventListener('click',async()=>{
@@ -22158,6 +22174,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
 <script src="followup-status.js?v=1"></script>
+<script src="travel-view.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──

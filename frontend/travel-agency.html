@@ -797,6 +797,9 @@ const params = new URLSearchParams(location.search);
 let clientId = params.get('client') || '';
 let sessionToken = params.get('token') || '';
 const isEmbedded = params.get('embed') === '1';
+// shell=travel: embedded in dashboard.html's travel workspace, whose own nav picks the sub-page
+// (?tab= on first load, a 'ta:goto' postMessage after that) — so this page's tab bar is hidden.
+const isTravelShell = isEmbedded && params.get('shell') === 'travel';
 let clientRecord = null;
 let allLeads = [];
 
@@ -837,11 +840,13 @@ function openLeadInParent(leadId){
 }
 
 function openLiveAgency(){
+  if(isTravelShell){ window.parent.postMessage({type:'ta:navigate', page:'tvlive'}, location.origin); return; }
   window.location.href=`live-travel-agency.html?client=${encodeURIComponent(clientId)}&token=${encodeURIComponent(sessionToken)}`;
 }
 
 async function init(){
   if(isEmbedded){ const hdr=document.querySelector('header'); if(hdr) hdr.style.display='none'; }
+  if(isTravelShell){ const tabs=$id('tabs'); if(tabs) tabs.style.display='none'; }
   if(!clientId){ clientId=prompt('Enter your Client ID:')||''; }
   if(!clientId||!sessionToken){ document.body.innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">🔒</div>Missing client/session — open this page from the Agency tab inside your dashboard.</div>'; return; }
   $id('app').style.display='flex';
@@ -860,14 +865,33 @@ async function init(){
     }
     await taLoad();
     taUpdateMissingBanner();
+    _taReady = true;
     renderAgencySubPage(_taPage);
+    if(_taPendingNew){ _taPendingNew = false; taOpenNew(_taPage); }
   }catch(e){
     $id('app').innerHTML=`<div class="empty-state" style="padding:60px"><div class="empty-icon">⚠️</div>Failed to load: ${esc(e.message)}</div>`;
   }
 }
 
 /* ── TRAVEL AGENCY MODULE ── */
-let _taPage = 'dashboard';
+const TA_PAGES = ['dashboard','packages','itineraries','services','attestation','visas','groupfares','specialfares','umrah','bookings','cars','finance'];
+let _taPage = TA_PAGES.includes(params.get('tab')) ? params.get('tab') : 'dashboard';
+let _taReady = false;
+let _taPendingNew = params.get('action') === 'new';
+// "+ New …" form for a sub-page — the travel workspace's quick actions (+ Itinerary, + Booking).
+const TA_NEW_FORM = {packages:'openPkgModal', itineraries:'openItinModal', visas:'openVisaModal', umrah:'openUmrahModal', bookings:'openBookingModal', groupfares:'openGroupFareModal', specialfares:'openSpecialFareModal', cars:'openCarBookingModal'};
+function taOpenNew(page){
+  const fn = window[TA_NEW_FORM[page]];
+  if(typeof fn === 'function') fn();
+}
+window.addEventListener('message', e => {
+  if(e.origin !== location.origin || e.source !== window.parent) return;
+  const d = e.data || {};
+  if(d.type !== 'ta:goto' || !TA_PAGES.includes(d.page)) return;
+  if(!_taReady){ _taPage = d.page; if(d.action === 'new') _taPendingNew = true; return; }
+  renderAgencySubPage(d.page);
+  if(d.action === 'new') taOpenNew(d.page);
+});
 let _taPackages = [], _taBookings = [], _taCases = [], _taItineraries = [], _taUmrahGroups = [], _taCars = [], _taCarBookings = [];
 let _attestServices = [];
 let _taVisas = [], _taGroupFares = [], _taSpecialFares = [];
