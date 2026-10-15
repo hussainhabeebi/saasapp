@@ -1653,6 +1653,11 @@ const ROLES = {
         <!-- Reminders / alerts -->
         <div id="remindersPanel" style="display:none;margin-bottom:18px"></div>
 
+        <!-- Staff Performance — filled by staff-performance.js (renderHome → renderStaffPerformance) -->
+        <div class="section-card" id="homeStaffPerfCard" style="margin-bottom:18px">
+          <div id="homeStaffPerf"><div class="sk sk-row"></div><div class="sk sk-row"></div></div>
+        </div>
+
         <!-- Main grid -->
         <div class="home-grid">
           <!-- LEFT: main content -->
@@ -6262,6 +6267,7 @@ function renderHome(){
   try{renderTasks();}catch(e){}
   try{loadHomeRealEstateSnapshot();}catch(e){}
   try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
+  try{ if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('homeStaffPerf')); }catch(e){}
 }
 
 /* ── TRUST SIGNALS (Home hero) ── */
@@ -22179,7 +22185,8 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-view.js?v=2"></script>
+<script src="travel-view.js?v=3"></script>
+<script src="staff-performance.js?v=1"></script>
 <script>
 
 /* ── PWA install prompt ──

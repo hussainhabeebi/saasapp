@@ -459,6 +459,7 @@ function renderTravelHome(){
       <div class="card"><div class="card-title">💳 Balance due</div>
         <div class="tv-list">${due.length?due.slice(0,8).map(b=>row(b.departure_date?tvShort(tvDay(b.departure_date)):'No date',esc(b.client_name||'Traveler'),`${esc(b.package_name||'Booking')} · paid ${cur(b)} ${Math.round(tvNum(b.deposit)).toLocaleString()}`,`${cur(b)} ${Math.round(tvNum(b.sell_price)-tvNum(b.deposit)).toLocaleString()}`,"navigate('tvtrips')")).join(''):'<div class="tv-empty">No outstanding balances.</div>'}</div></div>
     </div>
+    <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📥 Newest inquiries</div>
         <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc(l.Name||l.Phone||'Inquiry'),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
@@ -476,6 +477,7 @@ function renderTravelHome(){
         <div class="card-title" style="margin:16px 0 10px">🗂️ Open inquiries by service</div>
         <div class="tv-chips">${Object.entries(catCount).sort((a,b)=>b[1]-a[1]).map(([c,n])=>`<span class="tv-chip" onclick="tvOpenLeadsCategory(${esc(JSON.stringify(c)).replace(/"/g,'&quot;')})">${esc(c)}<b>${n}</b></span>`).join('')||'<div class="tv-empty">No open inquiries.</div>'}</div></div>
     </div>`;
+  if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('tvStaffPerf'));
 }
 
 function tvOpenLeadsCategory(cat){
