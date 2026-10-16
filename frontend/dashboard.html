@@ -59,9 +59,12 @@
 }
 /* Lead origin — Instagram (via Chatwoot) and manually added leads get their own colour; WhatsApp
    leads keep the default look. Used by leadOriginBadge()/leadOriginClass(). */
-:root{--ig:#C13584;--ig-soft:#FCE7F3;--manual:#C2410C;--manual-soft:#FFEDD5}
-@media(prefers-color-scheme:dark){html:not(.light):not(.dark){--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210}}
-html.dark{--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210}
+:root{--ig:#C13584;--ig-soft:#FCE7F3;--manual:#C2410C;--manual-soft:#FFEDD5;--auto:#047857;--auto-soft:#D1FAE5;--adlead:#1D4ED8;--adlead-soft:#DBEAFE;
+  --webform:#7C3AED;--webform-soft:#EDE9FE;--partner:#0E7490;--partner-soft:#CFFAFE;--cal:#475569;--cal-soft:#E2E8F0;--unknown:#6B7280;--unknown-soft:#F3F4F6}
+@media(prefers-color-scheme:dark){html:not(.light):not(.dark){--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210;--auto:#34D399;--auto-soft:#0F2E22;
+  --adlead:#60A5FA;--adlead-soft:#172554;--webform:#A78BFA;--webform-soft:#2E1065;--partner:#22D3EE;--partner-soft:#083344;--cal:#94A3B8;--cal-soft:#1E293B;--unknown:#9CA3AF;--unknown-soft:#1F2937}}
+html.dark{--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210;--auto:#34D399;--auto-soft:#0F2E22;
+  --adlead:#60A5FA;--adlead-soft:#172554;--webform:#A78BFA;--webform-soft:#2E1065;--partner:#22D3EE;--partner-soft:#083344;--cal:#94A3B8;--cal-soft:#1E293B;--unknown:#9CA3AF;--unknown-soft:#1F2937}
 html.dark{
   --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
   --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
@@ -562,16 +565,21 @@ tr:hover td{background:#FAFCFB}
 .ig-chat-btn,.ig-chat-btn:hover{background:var(--ig);color:#fff;text-decoration:none;border-color:transparent}
 .tv-cat-tbl .n{text-align:right;font-variant-numeric:tabular-nums}
 .origin-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle;white-space:nowrap}
-.origin-badge.ig{background:var(--ig-soft);color:var(--ig)}
-.origin-badge.manual{background:var(--manual-soft);color:var(--manual)}
-.lead-item.origin-ig,.kb-card.origin-ig{box-shadow:inset 3px 0 0 var(--ig)}
-.lead-item.origin-manual,.kb-card.origin-manual{box-shadow:inset 3px 0 0 var(--manual)}
-.kb-card.origin-ig{box-shadow:inset 3px 0 0 var(--ig),var(--shadow)}
-.kb-card.origin-manual{box-shadow:inset 3px 0 0 var(--manual),var(--shadow)}
-.origin-ig .li-avatar{background:var(--ig-soft);color:var(--ig)}
-.origin-manual .li-avatar{background:var(--manual-soft);color:var(--manual)}
-tr.origin-ig td:first-child{box-shadow:inset 3px 0 0 var(--ig)}
-tr.origin-manual td:first-child{box-shadow:inset 3px 0 0 var(--manual)}
+/* One colour pair per lead origin (LEAD_ORIGINS) — the badge, the row's left edge and the avatar. */
+.origin-ig{--o:var(--ig);--o-soft:var(--ig-soft)}
+.origin-manual,.origin-import{--o:var(--manual);--o-soft:var(--manual-soft)}
+.origin-auto{--o:var(--auto);--o-soft:var(--auto-soft)}
+.origin-lead_ad{--o:var(--adlead);--o-soft:var(--adlead-soft)}
+.origin-web{--o:var(--webform);--o-soft:var(--webform-soft)}
+.origin-partner{--o:var(--partner);--o-soft:var(--partner-soft)}
+.origin-calendar{--o:var(--cal);--o-soft:var(--cal-soft)}
+.origin-unknown{--o:var(--unknown);--o-soft:var(--unknown-soft)}
+.origin-badge{background:var(--o-soft);color:var(--o)}
+.lead-item.has-origin{box-shadow:inset 3px 0 0 var(--o)}
+.kb-card.has-origin{box-shadow:inset 3px 0 0 var(--o),var(--shadow)}
+.has-origin .li-avatar{background:var(--o-soft);color:var(--o)}
+tr.has-origin td:first-child{box-shadow:inset 3px 0 0 var(--o)}
+
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 @media(max-width:767px){.lead-ref-list{display:none}}
@@ -1678,6 +1686,8 @@ const ROLES = {
         <!-- Reminders / alerts -->
         <div id="remindersPanel" style="display:none;margin-bottom:18px"></div>
 
+        <!-- Leads per origin — Auto / Manual / Instagram / Lead form… (leadsSourceReportHtml) -->
+        <div class="section-card" id="homeSourceReport" style="display:none;margin-bottom:18px"></div>
         <!-- Travel only: leads per service category (travel-view.js tvCategoryReportHtml) -->
         <div class="section-card" id="homeCategoryReport" style="display:none;margin-bottom:18px"></div>
 
@@ -1941,6 +1951,9 @@ const ROLES = {
           <!-- Travel only: one chip per service category with its lead count — the same filter as the
                "All categories" dropdown below (leadCategoryFilter), one tap away. -->
           <div id="leadsCategoryChips" class="leads-view-tabs" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+          <!-- Where leads came from (LEAD_ORIGINS): Auto / Manual / Instagram / Lead form… with counts. -->
+          <div id="leadsOriginChips" class="leads-view-tabs" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
+          <div id="leadsOriginBanner"></div>
 
           <div class="leads-toolbar">
             <!-- Row 1: Search + owner + mine -->
@@ -4610,6 +4623,7 @@ const ROLES = {
     <div style="flex:1;min-width:0">
       <div class="modal-title" id="detailName">—</div>
       <div style="font-size:11px;color:var(--muted);font-family:var(--mono)" id="detailSub">—</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px" id="detailOrigin"></div>
     </div>
     <button class="btn btn-secondary btn-sm" onclick="editCurrentLead()">Edit</button>
     <button class="icon-btn" onclick="closeModal('modalDetail')">✕</button>
@@ -6296,6 +6310,7 @@ function renderHomeScoped(){
   try{loadHomeRealEstateSnapshot();}catch(e){}
   try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
   try{ if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('homeStaffPerf')); }catch(e){}
+  try{ const el=$id('homeSourceReport'); if(el){ const html=leadsSourceReportHtml(allLeads); el.innerHTML=html; el.style.display=html?'':'none'; } }catch(e){}
   try{ const el=$id('homeCategoryReport'); if(el){ const html=clientRecord?.industry==='travel'&&typeof tvCategoryReportHtml==='function'?tvCategoryReportHtml(allLeads):''; el.innerHTML=html; el.style.display=html?'':'none'; } }catch(e){}
 }
 
@@ -7222,6 +7237,7 @@ function applyLeadsViewFilter(leads){
   if(pf) out=out.filter(l=>(l.InterestedProduct||'')=== pf||(l.ProductCategory||'')=== pf||(l.Brand||'')=== pf);
   const srcf=$id('leadSourceFilter')?.value||'';
   if(srcf) out=out.filter(l=>(l.Source||'')===srcf);
+  if(_leadsOriginFilter) out=out.filter(l=>leadOrigin(l)===_leadsOriginFilter);
   if(_leadsFilter.stages.length) out=out.filter(l=>_leadsFilter.stages.includes(l.Stage));
   // Spam is hidden unless the stage filter explicitly asks for Lost (where Spam lands)
   else out=out.filter(l=>l.HandoverOutcome!=='Spam');
@@ -7291,6 +7307,88 @@ function renderLeadsCategoryChips(){
   wrap.innerHTML=chip('','All categories')+cats.map(c=>chip(c,`${serviceCategoryIcon(c)} ${esc(c)}`,counts[c])).join('');
   wrap.style.display=cats.length?'flex':'none';
 }
+// Source chips — one per lead origin present in this user's leads, with counts. Hidden when every
+// lead has the same origin (nothing to tell apart).
+var _leadsOriginFilter='';
+// Home → 🧭 Leads by source: per origin, the leads that came in during the period and how many are
+// still open / won / lost. Runs inside withHomeScope, so a teammate sees their own leads only.
+var _srcRptPeriod='month';
+const LEADS_RPT_PERIODS=[['month','This month'],['30','Last 30 days'],['90','Last 90 days'],['all','All time']];
+function leadsRptPeriodStart(p){
+  const d=new Date();
+  if(p==='month') return TODAY.slice(0,7)+'-01';
+  if(p==='30'||p==='90'){ d.setDate(d.getDate()-(Number(p)-1)); return d.toISOString().slice(0,10); }
+  return '';
+}
+function leadsSourceReportRows(leads, period){
+  const from=leadsRptPeriodStart(period), rows={};
+  for(const l of leads||[]){
+    if(from && String(l.Date||'').slice(0,10)<from) continue;
+    const k=leadOrigin(l)||'';
+    const r=rows[k]||(rows[k]={key:k, total:0, open:0, won:0, lost:0});
+    r.total++;
+    if(isWonLead(l)) r.won++; else if(isLostLead(l)) r.lost++; else r.open++;
+  }
+  const order=Object.keys(LEAD_ORIGINS), rank=k=>k?order.indexOf(k):order.length; // "Not recorded" last
+  return Object.values(rows).sort((a,b)=>b.total-a.total||rank(a.key)-rank(b.key));
+}
+function setSrcRptPeriod(p){ _srcRptPeriod=p; renderHome(); }
+function openLeadsOrigin(k){ navigate('leads'); _leadsOriginFilter=k||''; setTimeout(()=>onLeadsFilterChange(),0); }
+function leadsSourceReportHtml(leads){
+  if(!(leads||[]).length) return '';
+  const rows=leadsSourceReportRows(leads,_srcRptPeriod);
+  const tot=rows.reduce((t,r)=>({total:t.total+r.total, open:t.open+r.open, won:t.won+r.won, lost:t.lost+r.lost}),{total:0,open:0,won:0,lost:0});
+  const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
+  const name=k=>LEAD_ORIGINS[k]?`<span class="origin-badge ${LEAD_ORIGINS[k].cls}" style="margin-left:0">${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}</span>`:'<span style="color:var(--muted)">Not recorded</span>';
+  const tr=r=>`<tr style="cursor:pointer" onclick="openLeadsOrigin('${r.key}')"><td>${name(r.key)}</td><td class="n">${r.total}</td><td class="n">${r.open}</td><td class="n" style="color:#047857">${r.won}</td><td class="n" style="color:#B91C1C">${r.lost}</td><td class="n">${pct(r)}</td></tr>`;
+  return `<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🧭 Leads by source
+      <select class="form-input" aria-label="Period" style="margin-left:auto;max-width:160px;padding:6px 8px;font-size:12px" onchange="setSrcRptPeriod(this.value)">
+        ${LEADS_RPT_PERIODS.map(([k,l])=>`<option value="${k}"${_srcRptPeriod===k?' selected':''}>${l}</option>`).join('')}</select></div>
+    ${rows.length?`<div style="overflow-x:auto"><table class="leads-tbl tv-cat-tbl src-rpt-tbl" style="width:100%;font-size:13px">
+      <thead><tr><th>Source</th><th class="n">Leads</th><th class="n">Open</th><th class="n">Won</th><th class="n">Lost</th><th class="n">Conversion</th></tr></thead>
+      <tbody>${rows.map(tr).join('')}</tbody>
+      <tfoot><tr style="font-weight:700"><td>Total</td><td class="n">${tot.total}</td><td class="n">${tot.open}</td><td class="n">${tot.won}</td><td class="n">${tot.lost}</td><td class="n">${pct(tot)}</td></tr></tfoot>
+    </table></div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}`;
+}
+function renderLeadsOriginChips(){
+  const wrap=$id('leadsOriginChips'); if(!wrap) return;
+  const counts={};
+  for(const l of leadsInScope(allLeads)){ const k=leadOrigin(l); if(k) counts[k]=(counts[k]||0)+1; }
+  const keys=Object.keys(LEAD_ORIGINS).filter(k=>counts[k]);
+  if(_leadsOriginFilter&&!counts[_leadsOriginFilter]) keys.push(_leadsOriginFilter);
+  if(keys.length<2&&!_leadsOriginFilter){ wrap.style.display='none'; wrap.innerHTML=''; }
+  else{
+    const chip=(k,label,n)=>`<button class="lv-tab${_leadsOriginFilter===k?' active':''}" onclick="setLeadsOrigin('${k}')">${label}${n!==undefined?` (${n})`:''}</button>`;
+    wrap.innerHTML=chip('','All sources')+keys.map(k=>chip(k,`${LEAD_ORIGINS[k].icon} ${esc(LEAD_ORIGINS[k].label)}`,counts[k]||0)).join('');
+    wrap.style.display='flex';
+  }
+  const banner=$id('leadsOriginBanner'); if(banner) banner.innerHTML=leadsOriginBannerHtml();
+}
+function setLeadsOrigin(k){ _leadsOriginFilter=_leadsOriginFilter===k?'':k; onLeadsFilterChange(); }
+// Owner / admin: older leads with no recorded origin → one-tap backfill (worker.js
+// handleLeadsCreatedViaBackfill), which only ever fills blanks.
+function leadsOriginBannerHtml(){
+  if(!seesAllLeads()) return '';
+  const n=allLeads.filter(l=>!String(l.CreatedVia||'').trim()).length;
+  if(!n) return '';
+  return `<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:12px;font-size:13px">
+    <span>🗂️ <b>${n}</b> older lead${n===1?' has':'s have'} no recorded source yet.</span>
+    <button class="btn btn-secondary btn-sm" id="originBackfillBtn" style="margin-left:auto" onclick="runLeadsOriginBackfill(this)">Fill in sources</button></div>`;
+}
+async function runLeadsOriginBackfill(btn){
+  if(btn){ btn.disabled=true; btn.textContent='Filling in…'; }
+  try{
+    const r=await fetch(`${CONFIG.WORKER_BASE}/leads/created-via/backfill`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:'{}'});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    const c=d.counts||{};
+    const parts=Object.keys(LEAD_ORIGINS).filter(k=>c[k]).map(k=>`${c[k]} ${LEAD_ORIGINS[k].label}`);
+    showToast(d.updated?`✓ Sources filled in for ${d.updated} lead${d.updated===1?'':'s'}${parts.length?' — '+parts.join(', '):''}`:'All leads already have a source','ok');
+    try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e){}
+    await loadAll(true,true);
+    renderLeadsCurrentView();
+  }catch(e){ showToast('Could not fill in sources: '+e.message,'err'); if(btn){ btn.disabled=false; btn.textContent='Fill in sources'; } }
+}
 function setLeadsCategory(cat){
   const f=$id('leadCategoryFilter'); if(!f) return;
   if(cat&&![...f.options].some(o=>o.value===cat)) f.insertAdjacentHTML('beforeend',`<option value="${esc(cat)}">${esc(cat)}</option>`);
@@ -7299,6 +7397,7 @@ function setLeadsCategory(cat){
 }
 function renderLeadsViewTabs(){
   renderLeadsCategoryChips();
+  renderLeadsOriginChips();
   const wrap=$id('leadsViewTabs'); if(!wrap) return;
   const mine=leadsInScope(allLeads); // tab counts match the list the user is looking at
   const needsActionCount=mine.filter(l=>leadNeedsActionScore(l)>0).length;
@@ -9151,6 +9250,7 @@ function openDetail(id){
   if(!lead)return;
   currentLead=lead;
   $id('detailName').innerHTML=esc(leadDisplayName(lead)||'Unknown')+leadOriginBadge(lead);
+  $id('detailOrigin').textContent=leadOriginLine(lead);
   $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
 
   // actions
@@ -15364,19 +15464,41 @@ function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 // engineParseChatwootPayload) — not a number, so never masked, dialled or opened in WhatsApp.
 function isIgLeadKey(p){return String(p||'').startsWith('ig:');}
 function isIgLead(l){return String(l?.Channel||'').toLowerCase()==='instagram'||isIgLeadKey(l?.Phone);}
-// Where a lead came from, for its badge/colour: 'instagram', 'manual' (Add Lead form or a file
-// import — CreatedVia, stamped on create), or '' for everything else (WhatsApp, ads, web forms).
+// Where a lead came from (LEADS.CreatedVia, stamped by the Worker where each lead is created — see
+// worker.js LEAD_CREATED_VIA), for its badge, colour, the Source chips and the Leads by source report.
+// Instagram is told apart from other chat leads by its channel. An older lead with no CreatedVia yet
+// shows as Auto when it has a Chatwoot conversation, else nothing until the owner runs the
+// "Fill in sources" backfill (leadsOriginBannerHtml).
+const LEAD_ORIGINS={
+  instagram:{icon:'📷', label:'Instagram',  cls:'origin-ig',       title:'Came in through Instagram'},
+  chatwoot: {icon:'🤖', label:'Auto',       cls:'origin-auto',     title:'Created automatically from a WhatsApp chat'},
+  manual:   {icon:'✍️', label:'Manual',     cls:'origin-manual',   title:'Added by hand'},
+  import:   {icon:'📥', label:'Imported',   cls:'origin-import',   title:'Imported from a file'},
+  lead_ad:  {icon:'📋', label:'Lead form',  cls:'origin-lead_ad',  title:'Facebook / Instagram lead form'},
+  web:      {icon:'🌐', label:'Website',    cls:'origin-web',      title:'Website / capture form'},
+  partner:  {icon:'🤝', label:'Partner',    cls:'origin-partner',  title:'Channel partner portal'},
+  calendar: {icon:'📅', label:'Calendar',   cls:'origin-calendar', title:'Calendar contact'},
+  unknown:  {icon:'❔', label:'Older lead', cls:'origin-unknown',  title:'Created before lead sources were recorded'},
+};
 function leadOrigin(l){
   if(isIgLead(l)) return 'instagram';
-  const via=String(l?.CreatedVia||'').toLowerCase();
-  return via==='manual'||via==='import'?'manual':'';
+  const via=String(l?.CreatedVia||'').trim().toLowerCase();
+  if(LEAD_ORIGINS[via]) return via;
+  return String(l?.ConversationID||'').trim()?'chatwoot':'';
 }
-function leadOriginClass(l){ const o=leadOrigin(l); return o==='instagram'?'origin-ig':o==='manual'?'origin-manual':''; }
+// An older lead of unknown origin gets the grey badge only — no coloured edge.
+function leadOriginClass(l){ const k=leadOrigin(l), o=LEAD_ORIGINS[k]; return o?`${o.cls}${k==='unknown'?'':' has-origin'}`:''; }
 function leadOriginBadge(l){
-  const o=leadOrigin(l);
-  if(o==='instagram') return '<span class="origin-badge ig" title="Came in through Instagram">📷 Instagram</span>';
-  if(o==='manual') return `<span class="origin-badge manual" title="${String(l.CreatedVia).toLowerCase()==='import'?'Imported from a file':'Added by hand'}">✍️ ${String(l.CreatedVia).toLowerCase()==='import'?'Imported':'Manual'}</span>`;
-  return '';
+  const o=LEAD_ORIGINS[leadOrigin(l)];
+  return o?`<span class="origin-badge ${o.cls}" title="${esc(o.title)}">${o.icon} ${esc(o.label)}</span>`:'';
+}
+// "Created via ✍️ Manual by Rita · 16 Oct" for the lead detail header.
+function leadOriginLine(l){
+  const k=leadOrigin(l), o=LEAD_ORIGINS[k]; if(!o) return '';
+  const by=String(l.CreatedBy||'').trim();
+  const who=by?((getTeamMembers().find(m=>sameEmail(m.email,by))||{}).name||by):'';
+  const when=l.Date?new Date(l.Date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'';
+  return `Created via ${o.icon} ${o.label}${who?' by '+who:''}${when?' · '+when:''}`;
 }
 function leadDisplayName(l){return l?.Name||(isIgLeadKey(l?.Phone)?'Instagram user':l?.Phone)||'';}
 function openLeadChat(id){navigate('chats');const l=(allLeads||[]).find(x=>String(x.Id)===String(id));if(typeof setChatChannel==='function')setChatChannel(isIgLead(l)?'instagram':'whatsapp');if(typeof chatSelectLead==='function')chatSelectLead(id);}
@@ -22256,7 +22378,7 @@ async function deleteHospBooking(id){
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=3"></script>
-<script src="travel-view.js?v=6"></script>
+<script src="travel-view.js?v=7"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>
 

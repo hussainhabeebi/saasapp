@@ -115,9 +115,18 @@ export const CHATS_V2_MESSAGE_COLUMNS=[
 // Additive columns on conversations, same one-by-one "duplicate column is fine" rule.
 //   service_category — the lead's travel ServiceCategory (Visa, Air Ticket…): the inbox category
 //   filter and the per-user lead-category restriction (User Management) read it.
+//   created_via — where the lead came from (worker.js LEAD_CREATED_VIA: chatwoot, manual, lead_ad…),
+//   for the inbox source chips.
 export const CHATS_V2_CONV_COLUMNS=[
   `ALTER TABLE conversations ADD COLUMN service_category TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE conversations ADD COLUMN created_via TEXT NOT NULL DEFAULT ''`,
 ];
+// A lead's origin for the inbox: its CreatedVia, else (an older lead) 'chatwoot' when it has a
+// Chatwoot conversation — which every chat lead has.
+export function chatsV2CreatedVia(lead){
+  const v=String(lead?.CreatedVia||'').trim().toLowerCase().slice(0,20);
+  return v||(String(lead?.ConversationID||lead?.ConversationId||'').trim()?'chatwoot':'');
+}
 
 const schemaReady=new WeakMap();
 // true once the schema is in place for this D1 binding (cached per isolate); false if it couldn't
@@ -219,6 +228,7 @@ export function chatsV2FieldsFromLead(lead, existing){
     labels_key:chatsV2LabelsKey(lead.Tags),
     pinned:lead.Pinned==='Yes'?1:0,
     service_category:String(lead.ServiceCategory||'').trim().slice(0,80),
+    created_via:chatsV2CreatedVia(lead),
     status,
   };
   if(status!=='snoozed') out.snoozed_until=null;
@@ -294,6 +304,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
   if('HandoverBy' in patch) put('handover_by', String(patch.HandoverBy||'').slice(0,140));
   if('Pinned' in patch) put('pinned', patch.Pinned==='Yes'?1:0);
   if('ServiceCategory' in patch) put('service_category', String(patch.ServiceCategory||'').trim().slice(0,80));
+  if('CreatedVia' in patch&&patch.CreatedVia) put('created_via', String(patch.CreatedVia).trim().toLowerCase().slice(0,20));
   if('Tags' in patch){ put('labels', labelsOf(patch.Tags).join(', ')); put('labels_key', chatsV2LabelsKey(patch.Tags)); }
   if('ConversationID' in patch&&patch.ConversationID) put('conv_id', String(patch.ConversationID));
   if('InboxId' in patch&&patch.InboxId) put('inbox_id', String(patch.InboxId));
@@ -320,7 +331,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
 // ── Sync from NocoDB ────────────────────────────────────────────────────────────────────────────
 
 const RECONCILE_MS=120*1000;
-const LIST_FIELDS='Id,Name,Phone,Channel,Owner,Handover,HandoverBy,ConvResolved,Pinned,Tags,LastMsgAt,LastCustomerMsgAt,ConversationID,InboxId,ServiceCategory';
+const LIST_FIELDS='Id,Name,Phone,Channel,Owner,Handover,HandoverBy,ConvResolved,Pinned,Tags,LastMsgAt,LastCustomerMsgAt,ConversationID,InboxId,ServiceCategory,CreatedVia';
 
 async function ncList(env, deps, where, {fields=LIST_FIELDS, limit=200, offset=0}={}){
   const base=`api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=${limit}&offset=${offset}&sort=-LastMsgAt`;
@@ -368,14 +379,14 @@ export async function chatsV2Backfill(env, deps, cid, {maxPages=20}={}){
       const ts=String(lastD1?.ts||lead.LastMsgAt||now);
       const f=chatsV2FieldsFromLead(lead, null);
       stmts.push(env.DB.prepare(`INSERT INTO conversations (lead_id, client_id, channel, name, phone, conv_id, inbox_id, status, handover, handover_by, assignee_email, labels, labels_key, pinned,
-          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at, service_category)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?,?)
+          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at, service_category, created_via)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?,?,?)
         ON CONFLICT(lead_id) DO UPDATE SET channel=excluded.channel, name=excluded.name, phone=excluded.phone, conv_id=excluded.conv_id, inbox_id=excluded.inbox_id,
           handover=excluded.handover, handover_by=excluded.handover_by, assignee_email=excluded.assignee_email, labels=excluded.labels, labels_key=excluded.labels_key,
-          pinned=excluded.pinned, service_category=excluded.service_category, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
+          pinned=excluded.pinned, service_category=excluded.service_category, created_via=excluded.created_via, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
           synced=1, updated_at=excluded.updated_at`)
         .bind(Number(lead.Id), Number(cid), f.channel, f.name, f.phone, f.conv_id, f.inbox_id, f.status, f.handover, f.handover_by, f.assignee_email, f.labels, f.labels_key, f.pinned,
-          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now, f.service_category));
+          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now, f.service_category, f.created_via));
     }
     for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));
     count+=stmts.length;
@@ -536,6 +547,7 @@ function filterSql(q, acc){
   if(q.channel==='whatsapp'||q.channel==='instagram'){ sql+=' AND channel=?'; vals.push(q.channel); }
   // Travel inbox category chips: one ServiceCategory, or "__none" for chats with none set.
   if(q.category){ sql+=' AND service_category=?'; vals.push(q.category==='__none'?'':String(q.category).slice(0,80)); }
+  if(q.source){ sql+=' AND created_via=?'; vals.push(String(q.source).toLowerCase().slice(0,20)); }
   if(q.handler==='human'){ sql+=` AND handover='Yes'`; }
   else if(q.handler==='bot'){ sql+=` AND handover<>'Yes'`; }
   const labels=String(q.labels||'').split(',').map(lc).filter(Boolean).slice(0,10);
@@ -638,9 +650,18 @@ export async function chatsV2Counts(env, cid, acc){
     by_category[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
   }
   if(Object.keys(by_category).every(k=>k==='')) for(const k of Object.keys(by_category)) delete by_category[k];
+  // Open chats per lead origin (created_via), for the inbox source chips.
+  const {results:srcs}=await env.DB.prepare(`SELECT created_via AS src, channel, COUNT(*) AS n FROM conversations
+    WHERE client_id=? AND status NOT IN ('resolved','snoozed')${s.sql} GROUP BY created_via, channel`).bind(Number(cid), ...s.vals).all();
+  const by_source={};
+  for(const r of srcs||[]){
+    const k=String(r.src||'');
+    by_source[k]=by_source[k]||{whatsapp:0, instagram:0};
+    by_source[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
+  }
   return {all:n('all_n'), unread:n('unread'), needs:n('needs'), mine:n('mine'), unassigned:n('unassigned'),
     pending:n('pending'), snoozed:n('snoozed'), resolved:n('resolved'),
-    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}, by_category};
+    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}, by_category, by_source};
 }
 
 export function chatsV2MessageOut(r){

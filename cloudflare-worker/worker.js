@@ -307,6 +307,69 @@ async function ensureLeadsColumns(env, names){
   for(const n of names) await ncEnsureField(env, DEFAULT_LEADS_TABLE, existing, n);
 }
 
+/* ── Lead origin — LEADS.CreatedVia (+ CreatedBy for a person) is stamped where each lead is born,
+   so the dashboard can tell an auto-created chat lead from one a teammate added by hand:
+     chatwoot  a WhatsApp / Instagram message through the Chatwoot webhook (or the n8n track hook)
+     manual    the dashboard's Add Lead form / a real-estate walk-in (CreatedBy = who)
+     import    a CSV import from the dashboard
+     lead_ad   a Facebook / Instagram lead form
+     web       a public website / property capture form
+     partner   a channel-partner portal
+     calendar  a Google Calendar contact
+     unknown   an older lead the backfill (handleLeadsCreatedViaBackfill) couldn't place ── */
+export const LEAD_CREATED_VIA=['chatwoot','manual','import','lead_ad','web','partner','calendar','unknown'];
+let _createdViaColumns=null;
+function ensureCreatedViaColumns(env){
+  if(!_createdViaColumns) _createdViaColumns=ensureLeadsColumns(env, ['CreatedVia','CreatedBy']).catch(()=>{ _createdViaColumns=null; });
+  return _createdViaColumns;
+}
+// POST one new lead. Never lets the origin stamp cost a lead: if NocoDB refuses the row (the
+// columns couldn't be created on this base), it is created again without them.
+async function ncCreateLead(env, body){
+  if(body.CreatedVia||body.CreatedBy) await ensureCreatedViaColumns(env);
+  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body});
+  if(!r.ok && (body.CreatedVia||body.CreatedBy)){
+    const {CreatedVia, CreatedBy, ...rest}=body;
+    r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:rest});
+  }
+  return r;
+}
+// POST /leads/created-via/backfill — owner / admin / general manager. Gives every lead of this
+// client that has no CreatedVia yet its best-guess origin (leadCreatedViaGuess), 100 at a time.
+// Re-runnable: it only ever looks at leads still blank, so a second run just finishes the rest.
+async function handleLeadsCreatedViaBackfill(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!seesAllChannelLeads(c, payload.email)) return json({error:'Only the account owner or an admin can fill in lead sources.'}, 403);
+  await ensureCreatedViaColumns(env);
+  const where=encodeURIComponent(`(ClientId,eq,${payload.cid})~and(CreatedVia,blank)`);
+  const counts={}; let total=0;
+  for(let page=0;page<60;page++){
+    let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=100&fields=Id,Phone,Channel,ConversationID,MetaLeadgenId,LeadSource,Tags`);
+    // Lead-form columns only exist once that integration was used — NocoDB refuses unknown fields.
+    if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=100&fields=Id,Phone,Channel,ConversationID,Tags`);
+    if(!r.ok) return json({error:'Could not read leads (NocoDB '+r.status+')'}, 502);
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    const patches=rows.map(l=>({Id:Number(l.Id), CreatedVia:leadCreatedViaGuess(l)}));
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patches});
+    if(!pr.ok) return json({error:'Could not save lead sources (NocoDB '+pr.status+')', updated:total, counts}, 502);
+    for(const pt of patches){ counts[pt.CreatedVia]=(counts[pt.CreatedVia]||0)+1; await chatsV2ApplyLeadPatch(env, pt.Id, {CreatedVia:pt.CreatedVia}).catch(()=>{}); }
+    total+=patches.length;
+    if(rows.length<100) break;
+  }
+  return json({ok:true, updated:total, counts});
+}
+// Best guess for a lead created before CreatedVia existing — what the backfill writes.
+export function leadCreatedViaGuess(l){
+  if(String(l?.Channel||'').toLowerCase()==='instagram'||String(l?.Phone||'').startsWith('ig:')) return 'chatwoot';
+  if(String(l?.ConversationID||'').trim()) return 'chatwoot';
+  if(String(l?.MetaLeadgenId||'').trim()||/lead ad/i.test(String(l?.LeadSource||''))) return 'lead_ad';
+  if(/calendar contact/i.test(String(l?.Tags||''))) return 'calendar';
+  return 'unknown';
+}
+
 /* ── Chatwoot Platform API (master token, server-side only) — provisions a new
    Chatwoot Account + User per client. Only reaches accounts/users it created
    itself (Chatwoot restricts Platform tokens to their own objects). ── */
@@ -1360,7 +1423,8 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
 
   const method=request.method;
   const hasBody=!['GET','HEAD'].includes(method);
-  const body=hasBody?await request.text():undefined;
+  let body=hasBody?await request.text():undefined;
+  let unstampedBody=null;
 
   // Per-user access control (User Management → module/lead-category permissions — see
   // renderUserProfileModal in dashboard.html). Every teammate sharing a client account writes
@@ -1378,6 +1442,23 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   if(isClientPatch){ try{ parsedBody=JSON.parse(body); }catch(e){} }
   const touchesProtectedField=!!parsedBody && PROTECTED_CLIENT_FIELDS.some(k=>k in parsedBody);
   const isLeadsList=method==='GET' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`;
+  // A lead created from the dashboard (Add Lead form, CSV import) is the only kind that comes
+  // through here, so it is stamped manual — or import, when the import sends that — with who
+  // added it. Done on the server so the origin never depends on the browser finishing its own
+  // follow-up write.
+  if(method==='POST' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body){
+    try{
+      const parsed=JSON.parse(body);
+      const stamp=row=>{
+        if(!row||typeof row!=='object') return row;
+        const via=String(row.CreatedVia||'').toLowerCase();
+        return {...row, CreatedVia:via==='import'?'import':'manual', CreatedBy:String(row.CreatedBy||payload.email||'').slice(0,140)};
+      };
+      unstampedBody=body;
+      body=JSON.stringify(Array.isArray(parsed)?parsed.map(stamp):stamp(parsed));
+      await ensureCreatedViaColumns(env);
+    }catch(e){}
+  }
 
   // Plan enforcement, same generic-passthrough choke point as the permission checks below —
   // dashboard.html's Settings/Modules saves write straight through here with no per-field
@@ -1452,11 +1533,17 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     }
   }
 
-  const r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
+  let r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
     method,
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
     body
   });
+  // The origin stamp must never cost the lead: NocoDB refusing it (the columns couldn't be
+  // created on this base) → save the row as the dashboard sent it.
+  if(!r.ok && unstampedBody!==null){
+    body=unstampedBody;
+    r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {method, headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'}, body});
+  }
   let data=await r.text();
 
   // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
@@ -4996,7 +5083,7 @@ async function calendarResolveLeads(env, clientId, event){
       const lead=await r.json().catch(()=>null);
       if(r.ok&&lead) return [lead];
     }
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{ClientId:String(clientId), Name:event.contact_name, Phone:event.contact_phone, Stage:'new', Tags:'Calendar Contact'}});
+    const r=await ncCreateLead(env, {ClientId:String(clientId), Name:event.contact_name, Phone:event.contact_phone, Stage:'new', Tags:'Calendar Contact', CreatedVia:'calendar'});
     const created=await r.json().catch(()=>null);
     if(!r.ok||!created?.Id) return [];
     event.contact_lead_id=created.Id;
@@ -13418,9 +13505,9 @@ async function handleEngineTrack(request, env){
   if(leadId){
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ...upsertBody}});
   }else{
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:{
-      ClientId:clientId, Phone:phone, Name:body.name||'', Stage:upsertBody.Stage||'new', Channel:'whatsapp', ...upsertBody
-    }});
+    const r=await ncCreateLead(env, {
+      ClientId:clientId, Phone:phone, Name:body.name||'', Stage:upsertBody.Stage||'new', Channel:'whatsapp', CreatedVia:'chatwoot', ...upsertBody
+    });
     const d=await r.json().catch(()=>null);
     leadId=d?.Id||null;
   }
@@ -15395,7 +15482,7 @@ export async function processMetaLeadgenChange(env, value){
     }else if(cfg.template_name){ sendStatus='failed'; sendDetail='WhatsApp Business API not connected'; }
 
     const leadId=isNewLead
-      ? await engineCreateLeadOnce(env, clientId, parsed.phone, leadBody)
+      ? await engineCreateLeadOnce(env, clientId, parsed.phone, {...leadBody, CreatedVia:'lead_ad'})
       : await engineUpsertLead(env, 'PATCH', state.leadId, leadBody);
     if(!leadId){ await metaLeadgenFinish(env, leadgenId, {client_id:clientId, name:parsed.name, phone:parsed.phone, status:'failed', detail:'Could not save the lead'}); return {error:'lead-save'}; }
     if(isNewLead) await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...leadBody}}).catch(()=>{});
@@ -20377,7 +20464,9 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 // only learns the new lead's real id once this upsert actually completes.
 async function engineUpsertLead(env, method, leadId, body){
   if(leadId) body.Id=leadId;
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
+  // A lead first written here (no claim row yet) is a chat lead too.
+  if(method==='POST' && !leadId && !body.CreatedVia) body.CreatedVia='chatwoot';
+  const r=method==='POST'&&!leadId?await ncCreateLead(env, body):await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
   // Chats v2: the engine's own lead changes (a bot handover, Owner from Lead Routing) reach the list.
   if(leadId && r.ok) await chatsV2ApplyLeadPatch(env, leadId, body, {broadcast:engineBroadcastUpdate});
   if(leadId) return leadId;
@@ -20438,7 +20527,8 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
 // A brand-new Instagram lead row carries its channel from the very first write, so the Chats
 // inbox files it under Instagram even if the turn stops before the end-of-turn upsert.
 function engineLeadChannelFields(phone){
-  return engineIsInstagramLeadKey(phone)?{Channel:'instagram', IgId:String(phone).slice(INSTAGRAM_LEAD_KEY_PREFIX.length)}:{};
+  return {CreatedVia:'chatwoot',
+    ...(engineIsInstagramLeadKey(phone)?{Channel:'instagram', IgId:String(phone).slice(INSTAGRAM_LEAD_KEY_PREFIX.length)}:{})};
 }
 async function engineClaimMessage(env, clientId, phone, leadId, messageId){
   try{
@@ -20462,7 +20552,7 @@ async function engineClaimMessage(env, clientId, phone, leadId, messageId){
 const LEAD_CLAIM_STALE_MS=30000;
 async function engineCreateLeadOnce(env, clientId, phone, createBody){
   const post=async()=>{
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:createBody});
+    const r=await ncCreateLead(env, createBody);
     const d=await r.json().catch(()=>null);
     return d?.Id||null;
   };
@@ -32137,9 +32227,10 @@ async function reProcessNewLead(env, clientId, fields){
   if(existing){
     await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, ...leadPatch}});
   }else{
-    const createBody={ClientId:String(clientId), Name:fields.Name||'Unknown', Phone:fields.Phone||'', Stage:'new', ...leadPatch};
+    const createBody={ClientId:String(clientId), Name:fields.Name||'Unknown', Phone:fields.Phone||'', Stage:'new', ...leadPatch,
+      CreatedVia:LEAD_CREATED_VIA.includes(fields.CreatedVia)?fields.CreatedVia:'web', ...(fields.CreatedBy?{CreatedBy:String(fields.CreatedBy)}:{})};
     if(agent && !fields.Owner) createBody.Owner=agent;
-    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'POST', body:createBody});
+    const r=await ncCreateLead(env, createBody);
     const created=await r.json().catch(()=>({}));
     leadId=created.Id;
   }
@@ -32181,7 +32272,7 @@ async function handleReLeadCreate(request, env){
   const result=await reProcessNewLead(env, payload.cid, {
     Name:body.Name||'', Phone:body.Phone||'', re_source:body.re_source||'Walk-in', re_project:body.re_project||'',
     re_budget:body.re_budget||0, re_urgency:body.re_urgency||'', re_zone:body.re_zone||'', re_language:body.re_language||'',
-    re_investor:body.re_investor?'Yes':'', Owner:body.Owner||''
+    re_investor:body.re_investor?'Yes':'', Owner:body.Owner||'', CreatedVia:'manual', CreatedBy:payload.email||''
   });
   return json({ok:true, lead_id:result.leadId, duplicate:result.duplicate, assigned_agent:result.assignedAgent, score:result.score});
 }
@@ -33492,7 +33583,8 @@ async function handleReCpPortalLeadCreate(request, env, token){
   if(!body.phone) return json({error:'phone is required'}, 400);
   const result=await reProcessNewLead(env, cp.client_id, {
     Name:body.name||'', Phone:body.phone||'', re_source:`CP: ${cp.name}`, re_project:body.project||'',
-    re_budget:body.budget||0, re_urgency:body.urgency||'', re_zone:body.zone||'', re_language:body.language||'', re_cp_id:cp.id
+    re_budget:body.budget||0, re_urgency:body.urgency||'', re_zone:body.zone||'', re_language:body.language||'', re_cp_id:cp.id,
+    CreatedVia:'partner'
   });
   return json({ok:true, duplicate:result.duplicate});
 }
@@ -35255,6 +35347,7 @@ export default {
       else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
+      else if(url.pathname==='/leads/created-via/backfill' && request.method==='POST'){ res=await handleLeadsCreatedViaBackfill(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSendCompat(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }

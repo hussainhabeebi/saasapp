@@ -5299,6 +5299,22 @@ message from the same Instagram id (`engineAdoptLegacyInstagramLead`) instead of
 card. If you had that connection set up, remove the webhook from the Meta app, or it will keep
 posting to a route that no longer exists.
 
+## Lead origin (`LEADS.CreatedVia` / `CreatedBy`)
+Every lead records where it came from, stamped by the Worker where the lead is created (columns
+created on first use): `chatwoot` (WhatsApp / Instagram chat via the engine webhook, or the n8n
+track hook), `manual` (dashboard Add Lead form or a real-estate walk-in — `CreatedBy` = who),
+`import` (CSV import), `lead_ad` (Facebook / Instagram lead form), `web` (website / property
+capture), `partner` (channel-partner portal), `calendar` (calendar contact), `unknown` (an older lead
+the backfill couldn't place). Dashboard-created leads are stamped server-side in the `/nocodb`
+passthrough; if NocoDB refuses the stamped row the lead is saved without it.
+
+The dashboard shows a badge and colour per origin (Leads list / table / kanban, lead detail
+"Created via … by …"), a Source chip filter on the Leads page and in Chats, and 🧭 Leads by source
+on Home. Leads created before this have no `CreatedVia`: the owner / an admin taps **Fill in
+sources** on the Leads page (`POST /leads/created-via/backfill`), which guesses from the lead —
+a Chatwoot conversation or Instagram → `chatwoot`, lead-form data → `lead_ad`, the Calendar Contact
+tag → `calendar`, anything else → `unknown` — and only ever fills blanks.
+
 ### Order Link Sending toggle + chat-based order collection (`cloudflare-worker/worker.js`, `frontend/ecom.html`)
 
 Ecom Settings → **Order Link Sending** (`ecom_order_link_enabled`, Yes/No, default Yes — same

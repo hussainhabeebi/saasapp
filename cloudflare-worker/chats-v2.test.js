@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access,
+  toWhatsApp, chatsV2Preview, chatsV2Kind, chatsV2LabelsKey, chatsV2FieldsFromLead, chatsV2Access, chatsV2CreatedVia,
   chatsV2Ready, chatsV2AfterInsert, chatsV2ApplyLeadPatch, chatsV2List, chatsV2Counts, chatsV2Thread,
   chatsV2Act, chatsV2Backfill, chatsV2Reconcile, chatsV2HandleRoute, chatsV2Ai, chatsV2CompileFilter, chatsV2RunScheduled,
 } from './chats-v2.js';
@@ -237,6 +237,19 @@ describe('list, counts, thread', ()=>{
     // Not travel, or no restriction saved: no category scope at all.
     assert.equal(chatsV2Access(CLIENT, RAHUL).categories, undefined);
     assert.equal(chatsV2Access({...travel, team_permissions:'{}'}, RAHUL).categories, undefined);
+  });
+  test('lead origin: source filter, per-source counts, patch and fallback', async()=>{
+    db.prepare(`UPDATE conversations SET created_via='chatwoot'`).run();
+    db.prepare(`UPDATE conversations SET created_via='manual' WHERE lead_id IN (2,6)`).run();
+    const ids=async q=>(await chatsV2List(env, CID, owner, {view:'all', ...q})).rows.map(r=>r.lead_id);
+    assert.deepEqual(await ids({source:'manual'}), [6, 2]);
+    const c=await chatsV2Counts(env, CID, owner);
+    assert.deepEqual(c.by_source, {chatwoot:{whatsapp:4, instagram:0}, manual:{whatsapp:2, instagram:0}});
+    await chatsV2ApplyLeadPatch(env, 3, {CreatedVia:'Lead_Ad'});
+    assert.equal(db.prepare('SELECT created_via FROM conversations WHERE lead_id=3').get().created_via, 'lead_ad');
+    assert.equal(chatsV2CreatedVia({CreatedVia:'manual', ConversationID:'9'}), 'manual');
+    assert.equal(chatsV2CreatedVia({ConversationID:'9'}), 'chatwoot');
+    assert.equal(chatsV2CreatedVia({}), '');
   });
   test('a lead patch carries its category into the inbox', async()=>{
     await chatsV2ApplyLeadPatch(env, 3, {ServiceCategory:'Umrah and Hajj'});
