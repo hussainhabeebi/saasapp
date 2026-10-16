@@ -288,3 +288,22 @@ test('Service Categories settings are hidden for non-travel accounts', async ({ 
   await page.evaluate(() => { /* @ts-ignore */ clientRecord.industry = 'healthcare'; /* @ts-ignore */ navigate('settings'); /* @ts-ignore */ populateSettings(); });
   await expect(page.locator('#leadCatSettings')).toBeHidden();
 });
+
+test('a teammate\'s category change shows on an open dashboard without a reload, and survives a refresh', async ({ page }) => {
+  await boot(page);
+  await page.route(/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/2\?fields=Id,ServiceCategory$/, (route) => route.fulfill({ json: { Id: 2, ServiceCategory: 'Umrah and Hajj' } }));
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); _leadsActiveView = 'all'; if (!_leadsTableView) toggleLeadsView(); });
+  const sel = page.locator('#leadsTable select.ts-cat[data-lead="2"]');
+  await expect(sel).toHaveValue('');
+  // What the Worker broadcasts after a teammate's confirmed save.
+  // @ts-ignore
+  await page.evaluate(() => onLiveLeadUpdatedEvent({ type: 'lead_updated', lead_ids: [2], fields: ['ServiceCategory'], by: 'rep@example.com' }));
+  await expect(sel).toHaveValue('Umrah and Hajj');
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.find(l => l.Id === 2).ServiceCategory)).toBe('Umrah and Hajj');
+  // The session cache a refresh paints first carries it too.
+  // @ts-ignore
+  const cached = await page.evaluate(() => JSON.parse(sessionStorage.getItem(_CACHE_KEY())).list.find(l => l.Id === 2).ServiceCategory);
+  expect(cached).toBe('Umrah and Hajj');
+});

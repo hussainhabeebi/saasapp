@@ -5693,7 +5693,7 @@ function signOut(){
 }
 $id('hLogout').addEventListener('click', signOut);
 
-$id('hRefresh').addEventListener('click',()=>loadAll());
+$id('hRefresh').addEventListener('click',()=>loadAll(false, true));
 
 /* ── DARK MODE ──
    Explicit choice lives in localStorage as 'dark'/'light'; no stored choice at all means "follow
@@ -5916,7 +5916,9 @@ function showApp(){
   applyUserModulePermissions();
   applyRoleHomeView();
   applyRoleLeadsDefault();
-  loadAll();
+  // Paint the cached list, then always fetch: a page refresh must show what is saved now (a
+  // teammate's category change, say), not a copy from up to 5 minutes ago.
+  loadAll(false, true);
   connectLiveUpdates();
   clearInterval(refreshTimer);
   refreshTimer=setInterval(()=>{ loadAll(); refreshHdVisibility(); },60000);
@@ -6150,6 +6152,7 @@ function connectLiveUpdates(){
     else if(msg?.type==='viewing') onLiveViewingEvent(msg);
     else if(msg?.type==='new_lead') onLiveNewLeadEvent(msg);
     else if(msg?.type==='lead_reassigned') onLiveReassignEvent(msg);
+    else if(msg?.type==='lead_updated') onLiveLeadUpdatedEvent(msg);
   };
   // Reconnects on any close (server restart, idle Worker recycle, network blip) as long as the
   // app is still actually open — checked at fire time, not just at schedule time, so a logout in
@@ -6222,6 +6225,36 @@ async function onLiveNewLeadEvent(msg){
   if(lead && !leadVisibleToMe(lead)) return; // routing on: unassigned isn't on staff's list, so no chime
   notifyNewLead(msg);
   window.csNewLeadAlert?.(lead||{Id:msg.lead_id, Name:msg.lead_name, Date:msg.at}, 'new');
+}
+// A teammate changed a lead's fields (worker.js broadcasts type:'lead_updated' after a Service
+// Category save is confirmed stored). Re-read just those fields for those leads and update them in
+// place — the Leads list, chips, Home and Reports follow without a full reload or a scroll jump.
+async function onLiveLeadUpdatedEvent(msg){
+  const ids=(msg.lead_ids||[]).map(Number).filter(Boolean).slice(0,100);
+  const fields=(msg.fields||[]).filter(f=>/^[A-Za-z]+$/.test(f));
+  if(!ids.length||!fields.length) return;
+  let changed=false;
+  for(const id of ids){
+    const lead=allLeads.find(l=>l.Id===id);
+    if(!lead) continue;
+    try{
+      const row=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${id}?fields=Id,${fields.join(',')}`);
+      for(const f of fields){
+        const v=row?.[f]??'';
+        if(String(lead[f]??'')!==String(v)){ lead[f]=v; changed=true; }
+      }
+      // Any category picker on screen for this lead shows the new value.
+      if('ServiceCategory' in (row||{})) document.querySelectorAll(`select.ts-cat[data-lead="${id}"]`).forEach(sel=>{
+        const v=String(row.ServiceCategory||'');
+        if(v&&![...sel.options].some(o=>o.value===v)) sel.insertAdjacentHTML('beforeend',`<option value="${esc(v)}">${esc(v)}</option>`);
+        if(document.activeElement!==sel) sel.value=v;
+      });
+    }catch(e){}
+  }
+  if(!changed) return;
+  _cacheLeads(allLeads);
+  if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
+  if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
 }
 // Hot-lead auto-reassign (worker.js hotReallocProcessClient) — only the new owner is alerted.
 async function onLiveReassignEvent(msg){
@@ -22546,7 +22579,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=4"></script>
+<script src="travel-status.js?v=5"></script>
 <script src="travel-view.js?v=7"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>
