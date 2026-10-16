@@ -1408,6 +1408,28 @@ export function channelVisibilityClause(assignments, email){
 }
 
 let _leadsServiceCategoryReady=false;
+// After a lead create: for each created row, re-read `fields` and PATCH back any the insert lost
+// (sent non-empty, stored different). Returns the patches it made.
+async function leadsKeepFieldsAfterCreate(env, sentBody, responseText, fields){
+  const sent=[].concat(JSON.parse(sentBody)), created=[].concat(JSON.parse(responseText||'null'));
+  const patches=[];
+  for(let i=0; i<Math.min(sent.length, created.length, 100); i++){
+    const id=Number(created[i]?.Id); if(!id) continue;
+    const want=Object.fromEntries(fields.filter(f=>String(sent[i]?.[f]??'').trim()).map(f=>[f, sent[i][f]]));
+    if(!Object.keys(want).length) continue;
+    const rr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,${Object.keys(want).join(',')}`);
+    const row=rr.ok?await rr.json().catch(()=>({})):{};
+    const lost=Object.entries(want).filter(([k,v])=>String(row?.[k]??'')!==String(v));
+    if(lost.length) patches.push({Id:id, ...Object.fromEntries(lost)});
+  }
+  if(patches.length){
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patches});
+    if(!pr.ok) throw new Error('PATCH '+pr.status);
+    console.warn('[leads] re-saved fields the create dropped:', JSON.stringify(patches));
+    for(const pt of patches){ try{ await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate}); }catch(e){} }
+  }
+  return patches;
+}
 async function handleNocodbPassthrough(request, env, upstreamPath){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1555,6 +1577,14 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {method, headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'}, body});
   }
   let data=await r.text();
+
+  // A new lead's Service Category must survive the create: NocoDB has been seen to drop a later-added
+  // column's value on insert while updates keep it (same reason ensureLeadCreatedVia re-checks
+  // CreatedVia in dashboard.html), which left every new lead showing "No category". Read the
+  // created rows back and re-save the category on any that lost it, before answering the browser.
+  if(r.ok && method==='POST' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"ServiceCategory"')){
+    try{ await leadsKeepFieldsAfterCreate(env, body, data, ['ServiceCategory']); }catch(e){ console.error('[leads] ServiceCategory re-check failed:', e.message); }
+  }
 
   // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
   // browser after unrelated saves. Only the dedicated /voice/settings endpoint exposes a boolean.
