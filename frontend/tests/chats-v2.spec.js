@@ -388,6 +388,18 @@ test('All channels shows a channel badge; saved views and the filter builder que
   await expect.poll(() => calls.filter?.all?.[0]?.f).toBe('label');
 });
 
+test('an Instagram chat from Chatwoot replies through its conversation like WhatsApp', async ({ page }) => {
+  const { calls } = await open(page, { rows: [conv(1, { name: 'Asha' }), conv(4, { name: '', channel: 'instagram', phone: 'ig:1784001', conv_id: '604' })] });
+  await page.locator('.channel-row .pill[data-channel="instagram"]').click();
+  await expect(page.locator('#list .contact .name')).toHaveText(['Instagram user']);
+  await page.locator('#list .contact', { hasText: 'Instagram user' }).click();
+  await expect(page.locator('.chat-sub')).toContainText('Instagram');
+  await expect(page.locator('#callBtn')).toHaveCount(0);
+  await page.locator('#msg').fill('Hi from the team');
+  await page.locator('#msg').press('Enter');
+  await expect.poll(() => calls.send?.[0]).toMatchObject({ conv_id: '604', lead_id: 4, text: 'Hi from the team' });
+});
+
 test('macros run their steps in order; schedule, forward and create a task', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
