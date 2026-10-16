@@ -109,10 +109,12 @@ function tsInjectStyle(){
 .ts-empty{color:var(--muted);text-align:center;padding:24px;font-size:13px}
 .ts-inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ts-sel-inline{min-height:34px}
+.ts-cat{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1.5px solid #CBD5E1;background:var(--card);color:var(--ink);max-width:210px;min-height:34px}
+.ts-cat.set{border-color:#7DD3FC}
 .ts-chip{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;padding:3px 9px;white-space:nowrap;border:1px solid var(--line)}
 .ts-chip.gray{background:#F1F5F9;color:#475569}.ts-chip.blue{background:#E0F2FE;color:#075985}.ts-chip.amber{background:#FEF3C7;color:#92400E}.ts-chip.green{background:#DCFCE7;color:#166534}.ts-chip.red{background:#FEE2E2;color:#991B1B}
 .ts-rpt-tbl{width:100%;min-width:720px}
-@media(max-width:767px){.ts-sel-inline{width:100%;max-width:none;font-size:16px;min-height:42px;padding:6px 2px 6px 6px;letter-spacing:-.2px}.ts-inline .ts-due{margin-left:0}}
+@media(max-width:767px){.ts-cat{width:100%;max-width:none;font-size:16px;min-height:42px}.ts-sel-inline{width:100%;max-width:none;font-size:16px;min-height:42px;padding:6px 2px 6px 6px;letter-spacing:-.2px}.ts-inline .ts-due{margin-left:0}}
 `;
   document.head.appendChild(st);
 }
@@ -196,7 +198,7 @@ function renderTravelStatus(){
           return `<tr data-lead="${Number(l.Id)}" class="${tsOriginClass(l)}">
             <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}
               <div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
-            <td>${l.ServiceCategory?`${serviceCategoryIcon(l.ServiceCategory)} ${esc(l.ServiceCategory)}`:'<span class="ts-meta">—</span>'}</td>
+            <td>${tsInlineCategoryHTML(l)}</td>
             ${all?`<td>${esc(tsOwnerName(l.Owner))}</td>`:''}
             <td><select class="ts-sel ${grp}" aria-label="Status" onchange="tsSetStatus(${Number(l.Id)},this.value)">${TS_STATUSES.map(s=>opt(st.key,s)).join('')}</select>${st.auto?'<span class="ts-auto">auto</span>':''}</td>
             <td>${st.key==='follow_up_pending'?`<input type="date" class="ts-date" aria-label="Follow-up date" value="${esc(String(l.TravelFollowUpAt||'').slice(0,10))}" onchange="tsSetFollowUp(${Number(l.Id)},this.value)">${f==='overdue'?'<span class="ts-due overdue">Overdue</span>':f==='today'?'<span class="ts-due today">Today</span>':''}`:'<span class="ts-meta">—</span>'}</td>
@@ -317,6 +319,51 @@ function tsInlineChange(id,sel){
   const s=TS_BY_KEY[sel.value]; if(!s) return;
   sel.className=`ts-sel ts-sel-inline ${s[3]}`;
   tsSetStatus(id,sel.value);
+}
+
+/* ── Service Category picker (Leads table and list, Status Board) ──
+   Saves straight to the lead's ServiceCategory — the field the Leads category filter/chips, Home
+   "Leads by category", Reports → 🗂️ Service Category, the inbox category chips and the per-user
+   category access all read. A category saved before LEAD_CATEGORIES changed stays selectable. */
+let _tsCatFieldReady=false;
+function tsInlineCategoryHTML(l){
+  if(!tsIsTravel()||!l) return '';
+  tsInjectStyle();
+  const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[];
+  const cur=String(l.ServiceCategory||'').trim();
+  const opts=!cur||cats.includes(cur)?cats:[cur,...cats];
+  return `<select class="ts-cat ${cur?'set':''}" aria-label="Service category" title="Service category" onclick="event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">
+      <option value="">🗂️ No category</option>${opts.map(c=>`<option value="${esc(c)}"${c===cur?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}
+    </select>`;
+}
+async function tsSetCategory(id,cat){
+  const lead=(typeof allLeads!=='undefined'?allLeads:[]).find(l=>l.Id===id);
+  if(!lead) return;
+  cat=String(cat||'').trim();
+  const before=lead.ServiceCategory||'';
+  if(before===cat) return;
+  lead.ServiceCategory=cat;
+  tsRefreshCategoryViews();
+  try{
+    if(!_tsCatFieldReady){ await ensureLeadsField('ServiceCategory'); _tsCatFieldReady=true; }
+    await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id, ServiceCategory:cat});
+    if(typeof _cacheLeads==='function') _cacheLeads(allLeads);
+    if(typeof showToast==='function') showToast(cat?`Category set to ${cat}`:'Category cleared');
+  }catch(e){
+    lead.ServiceCategory=before;
+    tsRefreshCategoryViews(true);
+    if(typeof showToast==='function') showToast('Could not save category — '+e.message,'err');
+  }
+}
+// Category counts (Leads chips, Home report, Status Board) follow the change. The Leads list is
+// only redrawn when a category filter is on (the row may no longer belong) or a save failed.
+function tsRefreshCategoryViews(failed){
+  if(!$id('pageLeads')?.classList.contains('hidden')){
+    if(failed||$id('leadCategoryFilter')?.value){ if(typeof renderLeadsCurrentView==='function') renderLeadsCurrentView(); }
+    else if(typeof renderLeadsCategoryChips==='function') renderLeadsCategoryChips();
+  }
+  if(!$id('pageTvstatus')?.classList.contains('hidden')&&(failed||_tsFilter.cat)) renderTravelStatus();
+  if(typeof renderHome==='function') try{ renderHome(); }catch(e){}
 }
 
 /* ── Reports → 📌 Status Changes: every status change, date and time wise ── */

@@ -168,3 +168,75 @@ test('travel status and the pipeline stage move together', async ({ page }) => {
   await expect(page.locator('tr[data-lead="3"] select.ts-sel')).toHaveValue('booking_closed');
   await expect(page.locator('tr[data-lead="3"]')).toContainText('auto');
 });
+
+/* ── Service Category picker + Reports → 🗂️ Service Category ── */
+test('the Leads table category picker saves the category on the lead', async ({ page }) => {
+  const { patches, fieldsAdded } = await boot(page);
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); _leadsActiveView = 'all'; if (!_leadsTableView) toggleLeadsView(); });
+  await expect(page.locator('#leadsTable thead')).toContainText('Category');
+  const sel = page.locator('#leadsTable tr', { hasText: 'Ravi' }).locator('select.ts-cat');
+  await expect(sel).toHaveValue('');
+  await sel.selectOption('Air Ticket');
+  await expect.poll(() => patches.length).toBe(1);
+  expect(patches[0]).toEqual({ Id: 2, ServiceCategory: 'Air Ticket' });
+  expect(fieldsAdded).toEqual(['ServiceCategory']);
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.find(l => l.Id === 2).ServiceCategory)).toBe('Air Ticket');
+  // Clearing is saved too.
+  await page.locator('#leadsTable tr', { hasText: 'Asha' }).locator('select.ts-cat').selectOption('');
+  await expect.poll(() => patches.length).toBe(2);
+  expect(patches[1]).toEqual({ Id: 1, ServiceCategory: '' });
+});
+
+test('a failed category save puts the old category back', async ({ page }) => {
+  const { patches } = await boot(page, OWNER, 500);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  await page.locator('tr[data-lead="1"] select.ts-cat').selectOption('Hotel');
+  await expect.poll(() => patches.length).toBe(1);
+  await expect(page.locator('tr[data-lead="1"] select.ts-cat')).toHaveValue('Visa');
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.find(l => l.Id === 1).ServiceCategory)).toBe('Visa');
+});
+
+test('Edit Lead saves a cleared category and keeps one that is not in the list', async ({ page }) => {
+  const { patches } = await boot(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    allLeads.push({ Id: 5, Name: 'Old', Phone: '915', Owner: '', Date: new Date().toISOString(), Stage: 'new', ServiceCategory: 'Cruise' });
+    // @ts-ignore
+    window.loadAll = async () => {};
+    // @ts-ignore
+    openEditLead(allLeads.find(l => l.Id === 5));
+  });
+  await expect(page.locator('#fServiceCategory')).toHaveValue('Cruise');
+  // @ts-ignore
+  await page.evaluate(() => { openEditLead(allLeads.find(l => l.Id === 1)); $id('fServiceCategory').value = ''; return saveLead(); });
+  await expect.poll(() => patches.find(p => p.Id === 1)).toBeTruthy();
+  expect(patches.find(p => p.Id === 1).ServiceCategory).toBe('');
+});
+
+test('Reports → Service Category counts leads per category and the filter narrows reports', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => {
+    // @ts-ignore
+    _rptOlder = { at: Date.now(), list: [], complete: true, loading: null };
+    // @ts-ignore
+    allLeads[0].Stage = 'won'; allLeads[0].DealValue = 500;
+    // @ts-ignore
+    navigate('reports'); renderReportsSubPage('category');
+  });
+  await expect(page.locator('#rptTabCategory')).toBeVisible();
+  await expect(page.locator('#rptCategory')).toBeVisible();
+  const row = c => page.locator('#rptCatTbl tbody tr', { hasText: c });
+  await expect(row('Visa')).toContainText('100%');
+  await expect(row('Umrah and Hajj')).toBeVisible();
+  await expect(row('Uncategorised').locator('td').nth(1)).toHaveText('2');
+  await expect(page.locator('#rptCatTbl tfoot')).toContainText('4');
+  await expect(page.locator('#rptCatOwnerTbl')).toContainText('Rita');
+  await page.locator('#rptCategory').selectOption('Visa');
+  await expect(page.locator('#rptCatTbl tbody tr')).toHaveCount(1);
+  // @ts-ignore
+  expect(await page.evaluate(() => rptLeads().map(l => l.Id))).toEqual([1]);
+});

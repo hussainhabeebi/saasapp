@@ -19,7 +19,7 @@ function conv(id, over = {}) {
     last_message_dir: 'in', last_sender: 'customer', last_customer_at: minsAgo(id), waiting_since: null, synced: 1, updated_at: minsAgo(60), ...over };
 }
 
-async function open(page, { rows, thread = {}, failBootstrap = false, clock = false } = {}) {
+async function open(page, { rows, thread = {}, failBootstrap = false, clock = false, travel = false, myCategories = null } = {}) {
   const calls = { list: [], act: [], thread: [], nocodbList: 0, canned: [] };
   const state = {
     rows: rows || [
@@ -46,7 +46,7 @@ async function open(page, { rows, thread = {}, failBootstrap = false, clock = fa
     if (p.endsWith('/session/me')) return route.fulfill({ json: { email: ME, client: { authentik_email: ME, team_emails: SHAFNA, team_names: JSON.stringify({ [SHAFNA]: 'Shafna' }) } } });
     if (p.endsWith('/chats/v2/bootstrap')) {
       if (failBootstrap) return route.fulfill({ status: 503, json: { error: 'down' } });
-      return route.fulfill({ json: { version: 'v1', me: { email: ME, staff: false, locked: false }, agents: [{ email: ME, name: 'Boss' }, { email: SHAFNA, name: 'Shafna' }],
+      return route.fulfill({ json: { version: 'v1', me: { email: ME, staff: false, locked: false, categories: myCategories }, travel, agents: [{ email: ME, name: 'Boss' }, { email: SHAFNA, name: 'Shafna' }],
         labels: ['Hot'], canned: [{ id: 1, shortcut: 'price-list', body: 'Hi {{name}}, here is our price list' }, { id: 2, shortcut: 'order', body: 'Your order {{order_id}} is ready' }],
         settings: { sla_warn_min: 15, sla_breach_min: 60 },
         views: [{ id: 7, name: 'Hot leads', shared: 1, filter: { all: [{ f: 'label', op: 'has', v: 'Hot' }] } }],
@@ -491,4 +491,36 @@ test.describe('on a phone (sheet stacking)', () => {
     await page.locator('#chatMenu button', { hasText: 'Mark as unread' }).click(); // fails if covered
     await expect.poll(() => calls.act.some(a => a.op === 'mark_unread')).toBe(true);
   });
+});
+
+test('travel inbox: set or clear the service category from the header and the contact panel', async ({ page }) => {
+  const { calls } = await open(page, { travel: true, rows: [conv(1, { name: 'Asha', service_category: 'Visa' }), conv(2, { name: 'Binu' })] });
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await expect(page.locator('#catBtn')).toContainText('Category');
+  await page.locator('#catBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Air Ticket' }).click();
+  await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: 'Air Ticket' });
+  await expect(page.locator('#catBtn')).toContainText('Air Ticket');
+  await page.locator('#catBtn').click();
+  await page.locator('#ddMenu button', { hasText: 'Clear category' }).click();
+  await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: '' });
+  // Contact panel picker
+  await page.locator('#infoBtn').click();
+  await page.locator('#infoPanel label.fld', { hasText: 'Service category' }).locator('select').selectOption('Hotel');
+  await expect.poll(() => calls.patch?.at(-1)).toEqual({ Id: 2, ServiceCategory: 'Hotel' });
+  await expect(page.locator('#catBtn')).toContainText('Hotel');
+});
+
+test('a teammate limited to some categories can only pick those, and never clear', async ({ page }) => {
+  await open(page, { travel: true, myCategories: ['Visa', 'Hotel'], rows: [conv(1, { name: 'Asha', service_category: 'Visa' })] });
+  await page.locator('#list .contact', { hasText: 'Asha' }).click();
+  await page.locator('#catBtn').click();
+  await expect(page.locator('#ddMenu button')).toHaveText(['Hotel', '✓ Visa']);
+});
+
+test('non-travel inboxes show no category picker', async ({ page }) => {
+  await open(page);
+  await page.locator('#list .contact', { hasText: 'Binu' }).click();
+  await expect(page.locator('#botPill')).toBeVisible();
+  await expect(page.locator('#catBtn')).toHaveCount(0);
 });
