@@ -9187,7 +9187,26 @@ function companyFromEmail(email){
   return {domain, name};
 }
 
+// One save at a time: a second tap on Save while the first is still running used to create a
+// second copy of the same lead.
+let _leadSaving=false;
 async function saveLead(){
+  if(_leadSaving) return;
+  _leadSaving=true;
+  const btn=document.querySelector('#modalLead button[onclick="saveLead()"]');
+  if(btn){ btn.disabled=true; btn.dataset.label=btn.dataset.label||btn.textContent; btn.textContent='Saving…'; }
+  try{ await saveLeadNow(); }
+  catch(e){ showToast('Could not save the lead: '+e.message,'err'); }
+  finally{ _leadSaving=false; if(btn){ btn.disabled=false; btn.textContent=btn.dataset.label||'Save Lead'; } }
+}
+// A number this business already has (same last 10 digits — "8590123427" and "918590123427" are
+// one customer). The same rule the Worker uses to put a WhatsApp reply on that lead.
+function findLeadWithSameNumber(phone, exceptId){
+  const d=String(phone||'').replace(/\D/g,'');
+  if(d.length<10) return null;
+  return (allLeads||[]).find(l=>l.Id!==exceptId && String(l.Phone||'').replace(/\D/g,'').slice(-10)===d.slice(-10))||null;
+}
+async function saveLeadNow(){
   const id=$id('fLeadId').value;
   const original=id?allLeads.find(l=>l.Id===parseInt(id)):null;
   const email=$id('fEmail').value.trim();
@@ -9241,13 +9260,20 @@ async function saveLead(){
     }
   }
   if(!body.Phone){alert('Phone is required.');return;}
+  if(!id){
+    const same=findLeadWithSameNumber(body.Phone, null);
+    if(same && !confirm(`${leadDisplayName(same)||'A lead'} (${leadRef(same)}) already has this number.\n\nOK — create another lead anyway\nCancel — keep the existing one`)){
+      closeModal('modalLead'); openDetail(same.Id); return;
+    }
+  }
   if(id){
     body.Id=parseInt(id);
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
     reportLeadQualityChange(body.Id, original, body);
   }else{
     const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
-    if(created?.Id){ sendLeadCapiEvent(created.Id,'lead'); await ensureLeadCreatedVia([created.Id],'manual'); }
+    // The Worker stamps CreatedVia itself; this read-back is only a safety net, so it never holds the form open.
+    if(created?.Id){ sendLeadCapiEvent(created.Id,'lead'); ensureLeadCreatedVia([created.Id],'manual').catch(()=>{}); }
   }
   sessionStorage.removeItem(_CACHE_KEY()); // bust cache so fresh data loads
   closeModal('modalLead');

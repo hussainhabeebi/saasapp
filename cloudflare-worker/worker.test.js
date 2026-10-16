@@ -55,6 +55,7 @@ import {
   chatwootErrorText,
   chatSendRefusal,
   leadCreatedViaGuess,
+  engineSameNumber,
   LEAD_CREATED_VIA,
   engineIsInstagramLead,
   hotLeadAlertParams,
@@ -899,6 +900,16 @@ describe('Lead origin (CreatedVia)', () => {
     assert.equal(leadCreatedViaGuess({Tags:'Calendar Contact'}), 'calendar');
     assert.equal(leadCreatedViaGuess({Phone:'919847012345'}), 'unknown');
     for (const v of ['chatwoot','manual','import','lead_ad','web','partner','calendar','unknown']) assert.ok(LEAD_CREATED_VIA.includes(v));
+  });
+});
+
+describe('A WhatsApp reply finds the lead under another spelling of the number', () => {
+  test('same last 10 digits = same customer; short or different numbers never match', () => {
+    assert.equal(engineSameNumber('8590123427', '918590123427'), true);
+    assert.equal(engineSameNumber('+91 85901 23427', '918590123427'), true);
+    assert.equal(engineSameNumber('918590123428', '918590123427'), false);
+    assert.equal(engineSameNumber('23427', '918590123427'), false);
+    assert.equal(engineSameNumber('', '918590123427'), false);
   });
 });
 
