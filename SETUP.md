@@ -5666,10 +5666,11 @@ today" (or "✨ You're all caught up" when the Needs Action queue is empty) abov
 reuses the same `isWonLead`/7-day-window convention Home/Team already use. Empty states on every
 view are worded positively ("✨ You're all caught up — nothing needs action right now. Nice work!",
 "🌱 No dormant leads to reconnect with right now.") instead of a bare "no results."
-- **"N hot right now" is clickable**, not just a stat — `jumpToHotLead()` opens the single hottest
-  Hot-scored lead's detail directly (the one lead itself when there's exactly one, otherwise
-  whichever Hot lead ranks highest by `leadNeedsActionScore`), instead of making a rep filter for
-  it manually. `.momentum-link` (new CSS) is the shared underline-on-hover treatment.
+- **"N hot right now" is clickable**, not just a stat — `jumpToHotLead()` opens the lead's detail
+  directly when there's exactly one; with more, it switches the list to a temporary **🔥 Hot** view
+  tab (`_leadsActiveView==='hot'`, filter `isActiveHotLead`: Score Hot, not won/lost), clearing
+  search/category/source filters so all N show. The count uses `leadsInScope()` so it matches the
+  list. `.momentum-link` (new CSS) is the shared underline-on-hover treatment.
 
 ### Contact-attempt counter ("2nd no-answer" / "3rd no-answer")
 Reuses the three existing `Follow up 1`/`Follow up 2`/`Follow up 3` Yes/No fields already on the

@@ -7164,7 +7164,8 @@ function renderHumanDeals(){
 // One shared filter object drives both renderLeadsList and renderLeadsTable, replacing the two
 // near-duplicate ad-hoc filters they used to each build inline.
 let _leadsFilter={ stages:[], tag:'' };
-let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | a saved view's id
+let _leadsActiveView='needs_action'; // 'needs_action' | 'all' | 'reactivate' | 'hot' | a saved view's id
+const isActiveHotLead=l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l);
 let _leadsSavedViews=null; // lazy-loaded from clientRecord.lead_saved_views
 let _leadsOwnerScope=null; // 'mine' | 'all' — set on first navigate to leads (see navigate)
 let _leadsOwnerScopeInitialized=false;
@@ -7282,6 +7283,7 @@ function applyLeadsViewFilter(leads){
   if(_leadsActiveView!=='unmatched') out=leadsInScope(out); // Unmatched is by definition nobody's
   if(_leadsActiveView==='needs_action') out=out.filter(l=>leadNeedsActionScore(l)>0);
   else if(_leadsActiveView==='reactivate') out=out.filter(isReactivationCandidate);
+  else if(_leadsActiveView==='hot') out=out.filter(isActiveHotLead);
   else if(_leadsActiveView==='unmatched') out=out.filter(l=>!l.Owner);
 
   const q=($id('leadSearch')?.value||'').toLowerCase();
@@ -7481,6 +7483,7 @@ function renderLeadsViewTabs(){
   wrap.innerHTML=
     tab('needs_action','🎯 Needs Action',needsActionCount)+
     tab('all','📋 All Leads')+
+    (_leadsActiveView==='hot'?tab('hot','🔥 Hot',mine.filter(isActiveHotLead).length):'')+
     saved.map(v=>`<span class="lv-tab${_leadsActiveView===v.id?' active':''}" onclick="selectLeadsView('${v.id}')">⭐ ${esc(v.name)}<span class="lv-x" onclick="event.stopPropagation();deleteLeadsSavedView('${v.id}')" title="Delete this view">✕</span></span>`).join('')+
     tab('reactivate','♻️ Reconnect',reconnectCount)+
     (showUnmatched?tab('unmatched','⬡ Unmatched',unmatchedCount):'')+
@@ -7526,10 +7529,10 @@ function renderLeadsMomentumStrip(){
   const el=$id('leadsMomentumStrip'); if(!el) return;
   const weekAgo=Date.now()-7*86400000;
   const wonThisWeek=allLeads.filter(l=>isWonLead(l) && l.ClosedAt && new Date(l.ClosedAt).getTime()>=weekAgo).length;
-  const hotLeads=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l));
+  const hotLeads=leadsInScope(allLeads).filter(isActiveHotLead); // same scope as the Hot list it opens
   const needsAction=allLeads.filter(l=>leadNeedsActionScore(l)>0).length;
   const hotStat=hotLeads.length
-    ? `<span class="momentum-link" onclick="jumpToHotLead()" title="Jump ${hotLeads.length===1?'straight to this lead':'to your hottest lead'}">🔥 <strong>${hotLeads.length}</strong> hot right now</span>`
+    ? `<span class="momentum-link" onclick="jumpToHotLead()" title="${hotLeads.length===1?'Open this lead':'Show all hot leads'}">🔥 <strong>${hotLeads.length}</strong> hot right now</span>`
     : `<span>🔥 <strong>0</strong> hot right now</span>`;
   el.innerHTML=(typeof csLeadsTopHtml==='function'?csLeadsTopHtml():'')+`<div class="s-note" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
     <span>🎉 <strong>${wonThisWeek}</strong> won this week</span>
@@ -7537,14 +7540,18 @@ function renderLeadsMomentumStrip(){
     <span>${needsAction?`💪 <strong>${needsAction}</strong> ready for you today`:`✨ You're all caught up — nice work!`}</span>
   </div>`;
 }
-// "N hot right now" is clickable, not just a stat — jumps straight to the single hottest lead
-// (the one lead itself when there's exactly one, otherwise whichever hot lead needs action most)
-// instead of making a rep go filter for it manually.
+// "N hot right now" is clickable, not just a stat — opens the one lead directly when there's
+// exactly one, otherwise switches the list to the 🔥 Hot view (every open Hot lead, filters reset)
+// so the rep sees all N instead of filtering for them manually.
 function jumpToHotLead(){
-  const hotLeads=allLeads.filter(l=>l.Score==='Hot'&&!isWonLead(l)&&!isLostLead(l));
+  const hotLeads=leadsInScope(allLeads).filter(isActiveHotLead);
   if(!hotLeads.length) return;
-  const top=hotLeads.length===1?hotLeads[0]:[...hotLeads].sort((a,b)=>leadNeedsActionScore(b)-leadNeedsActionScore(a))[0];
-  openDetail(top.Id);
+  if(hotLeads.length===1){ openDetail(hotLeads[0].Id); return; }
+  if($id('leadSearch')) $id('leadSearch').value='';
+  if($id('leadCategoryFilter')) $id('leadCategoryFilter').value='';
+  _leadsOriginFilter='';
+  selectLeadsView('hot');
+  $id('leadsViewTabs')?.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 // ── Bulk selection & actions ──
