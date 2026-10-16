@@ -1,6 +1,6 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
-import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,toWhatsApp} from './chats-v2.js';
+import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
@@ -1637,11 +1637,53 @@ async function handleGetChatMessages(request, env){
   return json({messages, lead_id:Number(leadId)});
 }
 
+// Staff reply only in chats they can see — the same one-lead-one-owner rule as the Leads list and
+// the Chats v2 inbox (chatsV2Access): their own leads, plus unassigned ones while Lead Routing is
+// off. Replying to an unassigned chat claims it, like the first action on an unassigned lead in
+// the Leads tab (dashboard.html claimLeadIfUnowned), so it leaves every other teammate's inbox.
+// The owner and admin / general manager roles can reply anywhere and never claim. Returns the
+// message to refuse with, or ''.
+export function chatSendRefusal(acc, lead){
+  if(!lead) return '';
+  if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
+  if(!acc?.staff) return '';
+  if(acc.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
+  const owner=String(lead.Owner||'').trim().toLowerCase();
+  if(owner) return owner===acc.me?'':'This chat is assigned to someone else.';
+  return acc.locked?'This chat is not assigned to you.':'';
+}
+async function chatSendCheckAndClaim(env, c, payload, {leadId, convId}){
+  if(!payload?.email) return {ok:true};
+  const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email));
+  if(!acc.staff&&!acc.categories) return {ok:true};
+  let id=Number(leadId)||0;
+  if(!id && convId && env.DB){
+    const row=await env.DB.prepare('SELECT lead_id FROM conversations WHERE client_id=? AND conv_id=?').bind(Number(payload.cid), String(convId)).first().catch(()=>null);
+    id=Number(row?.lead_id)||0;
+  }
+  if(!id) return {ok:true};
+  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId,ServiceCategory`);
+  // ServiceCategory only exists once a travel client has used it — without it NocoDB refuses the list.
+  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId`);
+  const lead=r.ok?await r.json().catch(()=>null):null;
+  if(!lead||String(lead.ClientId)!==String(payload.cid)) return {ok:true};
+  const refusal=chatSendRefusal(acc, lead);
+  if(refusal) return {ok:false, error:refusal};
+  if(acc.staff&&!String(lead.Owner||'').trim()){
+    const patch={Id:id, Owner:acc.me};
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
+    if(pr.ok) await chatsV2ApplyLeadPatch(env, id, patch, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+  }
+  return {ok:true};
+}
+
 async function handleChatSend(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const body=await request.json().catch(()=>({}));
   const c=await getClientById(env, payload.cid);
+  const access=await chatSendCheckAndClaim(env, c, payload, {leadId:body.lead_id, convId:body.conv_id});
+  if(!access.ok) return json({error:access.error}, 403);
   try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, body)}); }
   catch(e){ return json({error:e.message}, e.status||502); }
 }
@@ -1668,6 +1710,8 @@ async function handleInstagramSendCompat(request, env){
   if(!lead||String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
   const conv_id=lead.ConversationID||lead.ConversationId||lead.chatwoot_conv_id;
   if(!conv_id) return json({error:'This Instagram lead has no Chatwoot conversation yet — it links on the customer\'s next message.'}, 400);
+  const access=await chatSendCheckAndClaim(env, c, payload, {leadId:body.lead_id, convId:conv_id});
+  if(!access.ok) return json({error:access.error}, 403);
   try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, {conv_id, lead_id:body.lead_id, text:body.text})}); }
   catch(e){ return json({error:e.message}, e.status||502); }
 }
@@ -1920,6 +1964,8 @@ async function handleQuoteSend(request, env){
   if(!conv_id||!file) return json({error:'conv_id and file required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const access=await chatSendCheckAndClaim(env, c, payload, {leadId:form.get('lead_id'), convId:conv_id});
+  if(!access.ok) return json({error:access.error}, 403);
   const fd=new FormData();
   fd.append('message_type','outgoing'); fd.append('private','false'); fd.append('content', caption);
   fd.append('attachments[]', file, file.name||'quotation.pdf');
@@ -10913,6 +10959,8 @@ async function handlePipelineVideoSend(request, env){
   if(!conv_id||!file) return json({error:'conv_id and file required'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return json({error:'Chatwoot is not configured for this account.'}, 400);
+  const access=await chatSendCheckAndClaim(env, c, payload, {leadId:form.get('lead_id'), convId:conv_id});
+  if(!access.ok) return json({error:access.error}, 403);
   const fd=new FormData();
   fd.append('message_type','outgoing'); fd.append('private','false'); fd.append('content', caption);
   fd.append('attachments[]', file, file.name||'follow-up.mp4');
@@ -15613,6 +15661,7 @@ export async function coldReallocProcessClient(env, c, now=new Date()){
     notes.unshift({text:`🔁 Auto-reallocated from ${owner} to ${next}: cold lead with no notes for ${cfg.days} day${cfg.days===1?'':'s'}.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[cold-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
+    await chatsV2ApplyLeadPatch(env, leadId, {Owner:next}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
     prev.push(owner);
     await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, warned_at=NULL, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
       .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
@@ -15725,6 +15774,7 @@ export async function hotReallocProcessClient(env, c, now=new Date()){
     notes.unshift({text:`⚡ Auto-reassigned from ${owner} to ${next}: Hot lead not called within ${cfg.minutes} minutes.`, date:now.toLocaleString(), ts:nowIso, author:COLD_REALLOC_NOTE_AUTHOR});
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
     if(!pr.ok){ console.error('[hot-realloc] lead patch failed', clientId, leadId, pr.status); continue; }
+    await chatsV2ApplyLeadPatch(env, leadId, {Owner:next}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
     prev.push(owner);
     await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
       .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
@@ -32169,7 +32219,8 @@ async function handleReAssignLead(request, env){
   let rrState={}; try{ rrState=JSON.parse(client.re_rr_state_json||'{}'); }catch(e){}
   const {agent, rrState:newRrState}=pickRoundRobinAgent(routingRules, rrState, {zone:body.zone, project:body.project, language:body.language});
   if(!agent) return json({error:'No routing rule matches — configure Agent Routing first.'}, 400);
-  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(body.lead_id), Owner:agent}});
+  const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(body.lead_id), Owner:agent}});
+  if(pr.ok) await chatsV2ApplyLeadPatch(env, Number(body.lead_id), {Owner:agent}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
   await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'PATCH', body:{Id:Number(payload.cid), re_rr_state_json:JSON.stringify(newRrState)}});
   return json({ok:true, assigned_agent:agent});
 }

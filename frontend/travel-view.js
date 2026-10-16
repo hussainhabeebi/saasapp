@@ -380,8 +380,62 @@ function tvUmrah(){ return (typeof _taUmrahGroups!=='undefined'?_taUmrahGroups:[
 function tvCarBookings(){ return (typeof _taCarBookings!=='undefined'?_taCarBookings:[]).filter(Boolean); }
 function tvCreated(r){ return tvDay(r.CreatedAt||r.created_at); }
 
+/* ── Leads by service category (Today page and the classic Home for travel clients) ──
+   One row per category: leads that came in during the period, how many of them are still open,
+   won (Won/Converted) or lost, and the conversion rate. A teammate without full access sees their
+   own leads only (dashboard.html withHomeScope narrows allLeads before this runs). */
+let _tvCatPeriod='month';
+const TV_CAT_PERIODS=[['month','This month'],['30','Last 30 days'],['90','Last 90 days'],['all','All time']];
+function tvCatPeriodStart(p){
+  if(p==='month') return TODAY.slice(0,7)+'-01';
+  if(p==='30') return tvAddDays(TODAY,-29);
+  if(p==='90') return tvAddDays(TODAY,-89);
+  return '';
+}
+function tvCategoryReportRows(leads, period){
+  const from=tvCatPeriodStart(period);
+  const rows={};
+  for(const l of leads||[]){
+    if(from && tvDay(l.Date)<from) continue;
+    const c=String(l.ServiceCategory||'').trim()||'Uncategorised';
+    const r=rows[c]||(rows[c]={cat:c, total:0, open:0, won:0, lost:0});
+    r.total++;
+    if(l.Stage==='won'||l.Stage==='converted') r.won++;
+    else if(l.Stage==='lost') r.lost++;
+    else r.open++;
+  }
+  return Object.values(rows).sort((a,b)=>b.total-a.total||a.cat.localeCompare(b.cat));
+}
+function tvSetCatPeriod(p){
+  _tvCatPeriod=p;
+  if(typeof renderHome==='function') renderHome(); // also redraws the Today page when it is open
+}
+function tvCategoryReportHtml(leads){
+  const rows=tvCategoryReportRows(leads,_tvCatPeriod);
+  const tot=rows.reduce((t,r)=>({total:t.total+r.total, open:t.open+r.open, won:t.won+r.won, lost:t.lost+r.lost}),{total:0,open:0,won:0,lost:0});
+  const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
+  const icon=c=>c==='Uncategorised'?'🗂️':(typeof serviceCategoryIcon==='function'?serviceCategoryIcon(c):'🗂️');
+  const tr=r=>`<tr style="cursor:pointer" onclick="tvOpenLeadsCategory(${esc(JSON.stringify(r.cat))})"><td>${icon(r.cat)} ${esc(r.cat)}</td><td class="n">${r.total}</td><td class="n">${r.open}</td><td class="n" style="color:#047857">${r.won}</td><td class="n" style="color:#B91C1C">${r.lost}</td><td class="n">${pct(r)}</td></tr>`;
+  return `<div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">🗂️ Leads by category
+      <select class="form-input" aria-label="Period" style="margin-left:auto;max-width:160px;padding:6px 8px;font-size:12px" onchange="tvSetCatPeriod(this.value)">
+        ${TV_CAT_PERIODS.map(([k,l])=>`<option value="${k}"${_tvCatPeriod===k?' selected':''}>${l}</option>`).join('')}</select></div>
+    ${rows.length?`<div style="overflow-x:auto"><table class="leads-tbl tv-cat-tbl" style="width:100%;font-size:13px">
+      <thead><tr><th>Category</th><th class="n">Leads</th><th class="n">Open</th><th class="n">Won</th><th class="n">Lost</th><th class="n">Conversion</th></tr></thead>
+      <tbody>${rows.map(tr).join('')}</tbody>
+      <tfoot><tr style="font-weight:700"><td>Total</td><td class="n">${tot.total}</td><td class="n">${tot.open}</td><td class="n">${tot.won}</td><td class="n">${tot.lost}</td><td class="n">${pct(tot)}</td></tr></tfoot>
+    </table></div>`:'<div class="tv-empty">No leads in this period.</div>'}`;
+}
+
 /* ── 🏠 TODAY ── */
+// Narrowed to a teammate's own leads like the classic Home (dashboard.html withHomeScope).
 function renderTravelHome(){
+  const r=typeof withHomeScope==='function'?withHomeScope(renderTravelHomeScoped):renderTravelHomeScoped();
+  // 🏆 Weekly Arena (call-score.js) — team-wide, so drawn after the scoped render, and skipped when
+  // renderHome is the caller (it draws the arena itself once its own scope has ended).
+  if(!(typeof _homeScoped!=='undefined'&&_homeScoped)) try{ window.csRenderHomeArena?.(); }catch(e){}
+  return r;
+}
+function renderTravelHomeScoped(){
   const el=$id('tvHomeBody');
   // renderHome() calls this on every leads refresh — skip the work while Today isn't on screen;
   // tvOnNavigate renders it fresh when it's opened.
@@ -423,8 +477,6 @@ function renderTravelHome(){
     const k=String(l.Destination).trim(); if(k) destCount[k]=(destCount[k]||0)+1;
   });
   const topDest=Object.entries(destCount).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  const catCount={};
-  leads.filter(l=>!tvIsClosedLead(l)).forEach(l=>{ const c=l.ServiceCategory||'Uncategorised'; catCount[c]=(catCount[c]||0)+1; });
 
   const hour=new Date().getHours();
   const greet=hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
@@ -450,6 +502,7 @@ function renderTravelHome(){
     </div>
     ${agency?'':`<div class="tv-banner">✈️ Turn on the <b>Travel Agency</b> module to track trips, quotes, departures and payments here.
       ${isAccountOwner()?`<button class="btn btn-primary btn-sm" onclick="navigate('modules')">Enable in Settings → Modules</button>`:'Ask your account owner to enable it.'}</div>`}
+    <div id="tvHomeArena" style="display:none;margin-bottom:14px"></div>
     <div class="tv-kpis">
       ${kpi('Departures today',depToday.length,`${depWeek.length+umrahWeek.length} in the next 7 days`,"navigate('departures')")}
       ${kpi('New inquiries',newToday.length,'today',"navigate('leads')")}
@@ -465,12 +518,13 @@ function renderTravelHome(){
         <div class="tv-list">${due.length?due.slice(0,8).map(b=>row(b.departure_date?tvShort(tvDay(b.departure_date)):'No date',esc(b.client_name||'Traveler'),`${esc(b.package_name||'Booking')} · paid ${cur(b)} ${Math.round(tvNum(b.deposit)).toLocaleString()}`,`${cur(b)} ${Math.round(tvNum(b.sell_price)-tvNum(b.deposit)).toLocaleString()}`,"navigate('tvtrips')")).join(''):'<div class="tv-empty">No outstanding balances.</div>'}</div></div>
     </div>
     ${typeof tsSummaryHtml==='function'?tsSummaryHtml():''}
+    <div class="card" style="margin-bottom:14px" id="tvCategoryReport">${tvCategoryReportHtml(leads)}</div>
     <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📥 Newest inquiries</div>
-        <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc(l.Name||l.Phone||'Inquiry'),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
+        <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
       <div class="card"><div class="card-title">🧳 Inquiries travelling in the next 14 days</div>
-        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(l=>row(tvShort(tvLeadTravelFrom(l)),esc(l.Name||l.Phone||'Inquiry'),`${esc(l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
+        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(l=>row(tvShort(tvLeadTravelFrom(l)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),`${esc(l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
     </div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📊 Last 30 days</div>
@@ -479,9 +533,7 @@ function renderTravelHome(){
         </div>
         <div class="tv-meta" style="margin-top:8px">Quoted / booked / travelled come from Trips (Agency bookings) created in this period.</div></div>
       <div class="card"><div class="card-title">🌍 Top destinations — 90 days</div>
-        ${topDest.length?`<div class="tv-chips">${topDest.map(([d,n])=>`<span class="tv-chip" style="cursor:default">${esc(d)}<b>${n}</b></span>`).join('')}</div>`:'<div class="tv-empty">Add a Destination to inquiries to see this.</div>'}
-        <div class="card-title" style="margin:16px 0 10px">🗂️ Open inquiries by service</div>
-        <div class="tv-chips">${Object.entries(catCount).sort((a,b)=>b[1]-a[1]).map(([c,n])=>`<span class="tv-chip" onclick="tvOpenLeadsCategory(${esc(JSON.stringify(c)).replace(/"/g,'&quot;')})">${esc(c)}<b>${n}</b></span>`).join('')||'<div class="tv-empty">No open inquiries.</div>'}</div></div>
+        ${topDest.length?`<div class="tv-chips">${topDest.map(([d,n])=>`<span class="tv-chip" style="cursor:default">${esc(d)}<b>${n}</b></span>`).join('')}</div>`:'<div class="tv-empty">Add a Destination to inquiries to see this.</div>'}</div>
     </div>`;
   if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('tvStaffPerf'));
 }
@@ -489,7 +541,11 @@ function renderTravelHome(){
 function tvOpenLeadsCategory(cat){
   navigate('leads');
   if(cat==='Uncategorised') return;
-  setTimeout(()=>{ const f=$id('leadCategoryFilter'); if(f){ f.value=cat; if(typeof onLeadsFilterChange==='function') onLeadsFilterChange(); } },50);
+  setTimeout(()=>{
+    const f=$id('leadCategoryFilter'); if(!f) return;
+    if(typeof setLeadsCategory==='function'){ f.value=''; setLeadsCategory(cat); }
+    else { f.value=cat; if(typeof onLeadsFilterChange==='function') onLeadsFilterChange(); }
+  },50);
 }
 /* ── 📅 DEPARTURES ── */
 let _tvCalMonth=TODAY.slice(0,7);

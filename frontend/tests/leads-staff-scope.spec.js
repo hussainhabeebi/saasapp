@@ -106,3 +106,29 @@ test('claiming a still-unassigned lead makes it the claimer\'s', async ({ page }
   await page.evaluate(() => claimLeadIfUnowned(3, 'Note'));
   expect(patches.map((p) => p.Owner)).toEqual(['bob@biz.com']);
 });
+
+test('new-message chime only for chats the user may see', async ({ page }) => {
+  await setup(page, { me: 'bob@biz.com', routing: { enabled: true } });
+  const notified = await page.evaluate(async () => {
+    const seen = [];
+    // @ts-ignore
+    window.loadAll = async () => {}; window.notifyNewMessage = (m) => seen.push(m.lead_id);
+    // @ts-ignore
+    for (const id of [1, 2, 3]) await onLiveMessageEvent({ lead_id: id });
+    return seen;
+  });
+  // 1 is Alice's, 3 is unassigned while routing is on — only Bob's own lead chimes.
+  expect(notified).toEqual([2]);
+});
+
+test('Home shows a teammate only the leads they own; the owner sees all', async ({ page }) => {
+  await setup(page, { me: 'bob@biz.com', routing: {} });
+  const total = () => page.evaluate(() => { renderHome(); return document.querySelector('#statsGrid .stat-val')?.textContent; });
+  expect(await total()).toBe('1');
+  // Narrowed only while Home renders.
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.length)).toBe(3);
+  // @ts-ignore
+  await page.evaluate(() => { myEmail = 'owner@biz.com'; });
+  expect(await total()).toBe('3');
+});

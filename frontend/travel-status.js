@@ -9,12 +9,22 @@
      TravelStatusLog     JSON history, newest first: [{at, by, from, to, fu}] — Reports → 📌 Status Changes
    An inquiry with no status yet shows "New inquiry", or "First call done (auto)" once a call is in
    its CallLog — so the board is useful before anyone has marked anything.
-   This status is the travel desk's own tracking; it doesn't move the lead's pipeline Stage.
+   Linked to the lead's pipeline Stage both ways (tsStageFor / tsStatusOf): Booking closed, Ticket
+   issued and Travelled mark the lead Won; Booking not done and Cancelled mark it Lost; picking an
+   open status on a won/lost lead reopens it (to the pipeline stage of the same name when there is
+   one). A lead marked Won / Lost anywhere else shows Booking closed / Booking not done (auto).
    Uses dashboard.html's globals: $id, esc, allLeads, ncPatch, CONFIG, ensureLeadsField, myEmail,
    getTeamMembers, sameEmail, seesAllLeads, parseCallLog, openDetail, showToast, TODAY,
    LEAD_CATEGORIES, serviceCategoryIcon, clientId.
    Bump the ?v= on its <script> tag in dashboard.html when changing this file — sw.js serves
    scripts cache-first. ── */
+
+// Lead origin badge/colour (dashboard.html leadOriginBadge/leadOriginClass) and a phone that
+// never shows an Instagram lead's internal "ig:<id>" key.
+const tsOriginBadge=l=>typeof leadOriginBadge==='function'?leadOriginBadge(l):'';
+const tsOriginClass=l=>typeof leadOriginClass==='function'?leadOriginClass(l):'';
+const tsLeadName=l=>(typeof leadDisplayName==='function'?leadDisplayName(l):(l.Name||l.Phone))||'Inquiry';
+const tsPhone=l=>String(l?.Phone||'').startsWith('ig:')?'Instagram':(l?.Phone||'');
 
 // [key, label, icon, colour group]. Order = the inquiry's usual journey.
 const TS_STATUSES=[
@@ -34,6 +44,18 @@ const TS_STATUSES=[
   ['cancelled','Cancelled','🚫','red'],
 ];
 const TS_BY_KEY=Object.fromEntries(TS_STATUSES.map(s=>[s[0],s]));
+const TS_WON=new Set(['booking_closed','ticket_issued','travelled']);
+const TS_LOST=new Set(['booking_not_done','cancelled']);
+const tsStageWon=l=>l?.Stage==='won'||l?.Stage==='converted';
+const tsStageLost=l=>l?.Stage==='lost';
+// The pipeline Stage a travel status puts the lead in, or null to leave Stage as it is.
+function tsStageFor(key, lead){
+  if(TS_WON.has(key)) return tsStageWon(lead)?null:'won';
+  if(TS_LOST.has(key)) return tsStageLost(lead)?null:'lost';
+  let stages=[]; try{ stages=Object.keys((typeof getFlow==='function'?getFlow():{}).stages||{}); }catch(e){}
+  if(stages.includes(key)) return lead?.Stage===key?null:key;
+  return (tsStageWon(lead)||tsStageLost(lead))?'new':null;
+}
 const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy',['TravelStatusLog','LongText']];
 const TS_LOG_MAX=200;
 const TS_PAGE_SIZE=100;
@@ -44,7 +66,12 @@ let _tsFieldsReady=false;
 
 // The status an inquiry is shown with: what staff set, else derived from its calls.
 function tsStatusOf(l){
-  if(TS_BY_KEY[l.TravelStatus]) return {key:l.TravelStatus, auto:false};
+  // The pipeline outcome wins: a lead marked Won / Lost elsewhere (Mark Won, kanban, the bot) never
+  // keeps showing an open travel status.
+  const k=TS_BY_KEY[l.TravelStatus]?l.TravelStatus:'';
+  if(tsStageWon(l)&&!TS_WON.has(k)) return {key:'booking_closed', auto:true};
+  if(tsStageLost(l)&&!TS_LOST.has(k)) return {key:'booking_not_done', auto:true};
+  if(k) return {key:k, auto:false};
   let calls=[]; try{ calls=parseCallLog(l.CallLog); }catch(e){}
   return calls.length?{key:'first_call', auto:true}:{key:'new', auto:true};
 }
@@ -166,9 +193,9 @@ function renderTravelStatus(){
         <thead><tr><th>Inquiry</th><th>Service</th>${all?'<th>Staff</th>':''}<th>Status</th><th>Follow-up</th><th>Updated</th></tr></thead>
         <tbody>${list.length?list.slice(0,_tsShown).map(l=>{
           const st=tsStatusOf(l); const grp=TS_BY_KEY[st.key][3]; const f=tsFollowUpState(l);
-          return `<tr data-lead="${Number(l.Id)}">
-            <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(l.Name||l.Phone||'Inquiry')}</b></a>
-              <div class="ts-meta">${[l.Phone,l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
+          return `<tr data-lead="${Number(l.Id)}" class="${tsOriginClass(l)}">
+            <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}
+              <div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
             <td>${l.ServiceCategory?`${serviceCategoryIcon(l.ServiceCategory)} ${esc(l.ServiceCategory)}`:'<span class="ts-meta">—</span>'}</td>
             ${all?`<td>${esc(tsOwnerName(l.Owner))}</td>`:''}
             <td><select class="ts-sel ${grp}" aria-label="Status" onchange="tsSetStatus(${Number(l.Id)},this.value)">${TS_STATUSES.map(s=>opt(st.key,s)).join('')}</select>${st.auto?'<span class="ts-auto">auto</span>':''}</td>
@@ -205,9 +232,11 @@ async function tsSave(id,patch){
   if(!lead) return;
   const now=new Date().toISOString();
   const full={...patch, TravelStatusAt:now, TravelStatusBy:myEmail||''};
+  const statusChanged=!!patch.TravelStatus && patch.TravelStatus!==lead.TravelStatus;
+  const stage=statusChanged?tsStageFor(patch.TravelStatus, lead):null;
+  if(stage) full.Stage=stage;
   const before={}; Object.keys(full).concat('TravelStatusLog').forEach(k=>{ before[k]=lead[k]; });
   const from=tsStatusOf(lead).key;
-  const statusChanged=!!patch.TravelStatus && patch.TravelStatus!==lead.TravelStatus;
   Object.assign(lead,full);
   tsRefreshViews();
   try{
@@ -226,7 +255,9 @@ async function tsSave(id,patch){
       lead.TravelStatusLog=full.TravelStatusLog;
     }
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,...full});
-    if(typeof showToast==='function') showToast('Status saved');
+    if(stage && typeof reportLeadQualityChange==='function') reportLeadQualityChange(id, {Stage:before.Stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+    if(stage && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
+    if(typeof showToast==='function') showToast(stage?`Status saved — lead moved to ${typeof stageLabel==='function'?stageLabel(stage):stage}`:'Status saved');
   }catch(e){
     Object.assign(lead,before);
     tsRefreshViews(true);
@@ -338,7 +369,7 @@ function renderReportsTravelStatus(){
   const count=k=>all.filter(c=>c.to===k).length;
   const row=c=>{ const dt=tsFmtDateTime(c.at); return `<tr>
       <td style="white-space:nowrap">${esc(dt.date)}</td><td style="white-space:nowrap">${esc(dt.time)}</td>
-      <td><a href="#" onclick="openDetail(${Number(c.lead.Id)});return false"><b>${esc(c.lead.Name||c.lead.Phone||'Inquiry')}</b></a><div class="ts-meta">${esc(c.lead.Phone||'')}</div></td>
+      <td><a href="#" onclick="openDetail(${Number(c.lead.Id)});return false"><b>${esc(tsLeadName(c.lead))}</b></a>${tsOriginBadge(c.lead)}<div class="ts-meta">${esc(tsPhone(c.lead))}</div></td>
       <td>${c.from?tsStatusChip(c.from):'<span class="ts-meta">—</span>'}</td>
       <td>${tsStatusChip(c.to)}${c.legacy?' <span class="ts-auto" title="Changed before status history was kept">last change</span>':''}</td>
       <td>${c.fu?esc(String(c.fu).slice(0,10)):'<span class="ts-meta">—</span>'}</td>
@@ -352,7 +383,7 @@ function renderReportsTravelStatus(){
       const l=list[0].lead;
       return `<div class="card" style="margin-bottom:10px;padding:12px 14px">
         <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-          <a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(l.Name||l.Phone||'Inquiry')}</b></a>
+          <span><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}</span>
           <span>Now: ${tsStatusChip(tsStatusOf(l).key)}</span></div>
         <div style="overflow-x:auto"><table class="leads-tbl ts-rpt-tbl">${head}<tbody>${list.map(row).join('')}</tbody></table></div></div>`;
     }).join('');

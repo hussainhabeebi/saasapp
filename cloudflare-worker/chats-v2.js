@@ -112,6 +112,13 @@ export const CHATS_V2_MESSAGE_COLUMNS=[
   `ALTER TABLE lead_messages ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'`,
 ];
 
+// Additive columns on conversations, same one-by-one "duplicate column is fine" rule.
+//   service_category — the lead's travel ServiceCategory (Visa, Air Ticket…): the inbox category
+//   filter and the per-user lead-category restriction (User Management) read it.
+export const CHATS_V2_CONV_COLUMNS=[
+  `ALTER TABLE conversations ADD COLUMN service_category TEXT NOT NULL DEFAULT ''`,
+];
+
 const schemaReady=new WeakMap();
 // true once the schema is in place for this D1 binding (cached per isolate); false if it couldn't
 // be created, in which case callers keep the v1 behaviour.
@@ -121,7 +128,7 @@ export async function chatsV2Ready(env){
   if(!p){
     p=(async()=>{
       for(const sql of CHATS_V2_SCHEMA) await env.DB.prepare(sql).run();
-      for(const sql of CHATS_V2_MESSAGE_COLUMNS){
+      for(const sql of [...CHATS_V2_MESSAGE_COLUMNS, ...CHATS_V2_CONV_COLUMNS]){
         try{ await env.DB.prepare(sql).run(); }
         catch(e){ if(!/duplicate column/i.test(String(e?.message||e))) throw e; }
       }
@@ -211,6 +218,7 @@ export function chatsV2FieldsFromLead(lead, existing){
     labels:labelsOf(lead.Tags).join(', '),
     labels_key:chatsV2LabelsKey(lead.Tags),
     pinned:lead.Pinned==='Yes'?1:0,
+    service_category:String(lead.ServiceCategory||'').trim().slice(0,80),
     status,
   };
   if(status!=='snoozed') out.snoozed_until=null;
@@ -285,6 +293,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
   if('Handover' in patch) put('handover', patch.Handover==='Yes'?'Yes':'No');
   if('HandoverBy' in patch) put('handover_by', String(patch.HandoverBy||'').slice(0,140));
   if('Pinned' in patch) put('pinned', patch.Pinned==='Yes'?1:0);
+  if('ServiceCategory' in patch) put('service_category', String(patch.ServiceCategory||'').trim().slice(0,80));
   if('Tags' in patch){ put('labels', labelsOf(patch.Tags).join(', ')); put('labels_key', chatsV2LabelsKey(patch.Tags)); }
   if('ConversationID' in patch&&patch.ConversationID) put('conv_id', String(patch.ConversationID));
   if('InboxId' in patch&&patch.InboxId) put('inbox_id', String(patch.InboxId));
@@ -311,7 +320,7 @@ export async function chatsV2ApplyLeadPatch(env, leadId, patch, {broadcast}={}){
 // ── Sync from NocoDB ────────────────────────────────────────────────────────────────────────────
 
 const RECONCILE_MS=120*1000;
-const LIST_FIELDS='Id,Name,Phone,Channel,Owner,Handover,HandoverBy,ConvResolved,Pinned,Tags,LastMsgAt,LastCustomerMsgAt,ConversationID,InboxId';
+const LIST_FIELDS='Id,Name,Phone,Channel,Owner,Handover,HandoverBy,ConvResolved,Pinned,Tags,LastMsgAt,LastCustomerMsgAt,ConversationID,InboxId,ServiceCategory';
 
 async function ncList(env, deps, where, {fields=LIST_FIELDS, limit=200, offset=0}={}){
   const base=`api/v2/tables/${deps.leadsTable}/records?where=${encodeURIComponent(where)}&limit=${limit}&offset=${offset}&sort=-LastMsgAt`;
@@ -359,14 +368,14 @@ export async function chatsV2Backfill(env, deps, cid, {maxPages=20}={}){
       const ts=String(lastD1?.ts||lead.LastMsgAt||now);
       const f=chatsV2FieldsFromLead(lead, null);
       stmts.push(env.DB.prepare(`INSERT INTO conversations (lead_id, client_id, channel, name, phone, conv_id, inbox_id, status, handover, handover_by, assignee_email, labels, labels_key, pinned,
-          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?)
+          unread_count, last_read_at, last_message_id, last_message_at, last_message_preview, last_message_dir, last_sender, last_customer_at, synced, updated_at, service_category)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1,?,?)
         ON CONFLICT(lead_id) DO UPDATE SET channel=excluded.channel, name=excluded.name, phone=excluded.phone, conv_id=excluded.conv_id, inbox_id=excluded.inbox_id,
           handover=excluded.handover, handover_by=excluded.handover_by, assignee_email=excluded.assignee_email, labels=excluded.labels, labels_key=excluded.labels_key,
-          pinned=excluded.pinned, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
+          pinned=excluded.pinned, service_category=excluded.service_category, status=CASE WHEN excluded.status='resolved' THEN 'resolved' WHEN conversations.status='resolved' THEN 'open' ELSE conversations.status END,
           synced=1, updated_at=excluded.updated_at`)
         .bind(Number(lead.Id), Number(cid), f.channel, f.name, f.phone, f.conv_id, f.inbox_id, f.status, f.handover, f.handover_by, f.assignee_email, f.labels, f.labels_key, f.pinned,
-          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now));
+          ts, lastD1?.id||null, ts, chatsV2Preview(last), last.role==='user'?'in':'out', chatsV2SenderOf(last), f.last_customer_at||null, now, f.service_category));
     }
     for(let i=0;i<stmts.length;i+=50) await env.DB.batch(stmts.slice(i, i+50));
     count+=stmts.length;
@@ -455,14 +464,23 @@ function safeJson(s){ return parse(s, {})||{}; }
 // chats are hidden from other staff, same as the Leads list (worker.js's /nocodb passthrough).
 // The account owner and admin / general manager roles always see every channel.
 // See chatsV2HiddenInboxes.
+// categories: a travel teammate restricted to some lead categories (User Management → profile,
+// team_permissions[email].leadCategories — the same rule worker.js applies to the Leads list) only
+// sees chats in those categories; an empty list means none. null = no restriction.
 export function chatsV2Access(c, email, hiddenInboxes=[]){
   const me=lc(email);
   const owner=lc(c?.authentik_email);
-  const role=parse(c?.team_permissions, {})?.[me]?.role;
+  // Case-insensitive, like worker.js's seesAllChannelLeads — team_permissions keys keep the case
+  // the email was typed with.
+  const perms=parse(c?.team_permissions, {})||{};
+  const role=perms[Object.keys(perms).find(k=>lc(k)===me)]?.role;
   const staff=!!me&&me!==owner&&!FULL_ACCESS_ROLES.includes(role);
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
   const hidden=staff?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
-  return {me, staff, locked, hidden};
+  const mine=perms[Object.keys(perms).find(k=>lc(k)===me)];
+  const categories=(me&&me!==owner&&c?.industry==='travel'&&Array.isArray(mine?.leadCategories))
+    ?[...new Set(mine.leadCategories.map(x=>String(x||'').trim()).filter(Boolean))]:null;
+  return {me, staff, locked, hidden, ...(categories?{categories}:{})};
 }
 export async function chatsV2HiddenInboxes(env, cid, email){
   const me=lc(email);
@@ -474,6 +492,10 @@ export async function chatsV2HiddenInboxes(env, cid, email){
 }
 function scopeSql(acc){
   let sql='', vals=[];
+  if(acc.categories){
+    if(!acc.categories.length) sql+=' AND 0';
+    else { sql+=` AND service_category IN (${acc.categories.map(()=>'?').join(',')})`; vals.push(...acc.categories); }
+  }
   if(acc.hidden?.length){ sql+=` AND inbox_id NOT IN (${acc.hidden.map(()=>'?').join(',')})`; vals.push(...acc.hidden); }
   if(!acc.staff) return {sql, vals};
   if(acc.locked){ sql+=' AND assignee_email=?'; vals.push(acc.me); }
@@ -481,6 +503,7 @@ function scopeSql(acc){
   return {sql, vals};
 }
 function canSee(acc, row){
+  if(acc.categories&&!acc.categories.includes(String(row.service_category||''))) return false;
   if(acc.hidden?.includes(String(row.inbox_id||''))) return false;
   if(!acc.staff) return true;
   return row.assignee_email===acc.me||(!acc.locked&&!row.assignee_email);
@@ -511,6 +534,8 @@ function filterSql(q, acc){
   const v=VIEWS[q.view]||VIEWS.all;
   sql+=v.sql; vals.push(...v.vals(acc));
   if(q.channel==='whatsapp'||q.channel==='instagram'){ sql+=' AND channel=?'; vals.push(q.channel); }
+  // Travel inbox category chips: one ServiceCategory, or "__none" for chats with none set.
+  if(q.category){ sql+=' AND service_category=?'; vals.push(q.category==='__none'?'':String(q.category).slice(0,80)); }
   if(q.handler==='human'){ sql+=` AND handover='Yes'`; }
   else if(q.handler==='bot'){ sql+=` AND handover<>'Yes'`; }
   const labels=String(q.labels||'').split(',').map(lc).filter(Boolean).slice(0,10);
@@ -602,9 +627,20 @@ export async function chatsV2Counts(env, cid, acc){
       SUM(CASE WHEN channel='instagram' AND unread_count>0 AND status<>'snoozed' THEN 1 ELSE 0 END) AS unread_instagram
     FROM conversations WHERE client_id=?${s.sql}`).bind(acc.me, Number(cid), ...s.vals).first();
   const n=k=>Number(row?.[k])||0;
+  // Open chats per travel category, for the inbox category chips ('' = no category set). Empty for
+  // businesses that never set one, so their inbox shows no chips.
+  const {results:cats}=await env.DB.prepare(`SELECT service_category AS cat, channel, COUNT(*) AS n FROM conversations
+    WHERE client_id=? AND status NOT IN ('resolved','snoozed')${s.sql} GROUP BY service_category, channel`).bind(Number(cid), ...s.vals).all();
+  const by_category={};
+  for(const r of cats||[]){
+    const k=String(r.cat||'');
+    by_category[k]=by_category[k]||{whatsapp:0, instagram:0};
+    by_category[k][r.channel==='instagram'?'instagram':'whatsapp']+=Number(r.n)||0;
+  }
+  if(Object.keys(by_category).every(k=>k==='')) for(const k of Object.keys(by_category)) delete by_category[k];
   return {all:n('all_n'), unread:n('unread'), needs:n('needs'), mine:n('mine'), unassigned:n('unassigned'),
     pending:n('pending'), snoozed:n('snoozed'), resolved:n('resolved'),
-    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}};
+    unread_by_channel:{whatsapp:n('unread_whatsapp'), instagram:n('unread_instagram')}, by_category};
 }
 
 export function chatsV2MessageOut(r){

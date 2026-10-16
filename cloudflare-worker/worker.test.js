@@ -53,6 +53,7 @@ import {
   ProjectTaskWorkflow,
   engineParseChatwootPayload,
   chatwootErrorText,
+  chatSendRefusal,
   engineIsInstagramLead,
   hotLeadAlertParams,
   monthlyMktSkipReason,
@@ -862,6 +863,27 @@ describe('Chatwoot send errors', () => {
     assert.equal(await chatwootErrorText(new Response('{"error":"You are not authorized to do this action"}',{status:401})),'Chatwoot HTTP 401 — You are not authorized to do this action');
     assert.equal(await chatwootErrorText(new Response('{"errors":["Message failed"]}',{status:422})),'Chatwoot HTTP 422 — Message failed');
     assert.equal(await chatwootErrorText(new Response('<html>',{status:502})),'Chatwoot HTTP 502');
+  });
+});
+
+describe('Chats: staff send only into their own chats', () => {
+  const staff={me:'rahul@x.test', staff:true, locked:false, hidden:['22']};
+  test('own lead and, with routing off, an unassigned one are allowed', () => {
+    assert.equal(chatSendRefusal(staff, {Owner:'Rahul@x.test'}), '');
+    assert.equal(chatSendRefusal(staff, {Owner:''}), '');
+  });
+  test("a teammate's lead, a hidden channel, or unassigned with routing on are refused", () => {
+    assert.match(chatSendRefusal(staff, {Owner:'shafna@x.test'}), /assigned to someone else/);
+    assert.match(chatSendRefusal(staff, {Owner:'', InboxId:'22'}), /channel assigned to someone else/);
+    assert.match(chatSendRefusal({...staff, locked:true}, {Owner:''}), /not assigned to you/);
+  });
+  test('a category-restricted travel teammate only sends in their categories', () => {
+    const visa={...staff, categories:['Visa']};
+    assert.equal(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Visa'}), '');
+    assert.match(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Air Ticket'}), /category/);
+  });
+  test('the owner and admins are never refused', () => {
+    assert.equal(chatSendRefusal({me:'boss@x.test', staff:false, hidden:[]}, {Owner:'shafna@x.test'}), '');
   });
 });
 

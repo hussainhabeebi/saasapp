@@ -85,7 +85,7 @@ async function csLoadWork(force){
   const [t,p]=await Promise.all([get('/pm/tasks'), get('/pm/projects')]);
   _csWork={tasks:Array.isArray(t.list)?t.list:[], projects:Array.isArray(p.list)?p.list:[], at:Date.now()};
   _csCache=null;
-  try{ if($id('homeArena')?.style.display!=='none') csRenderHomeArena(); }catch(e){}
+  try{ if(csArenaEls().some(e=>e.style.display!=='none')) csRenderHomeArena(); }catch(e){}
   try{ if(typeof renderLeadsMomentumStrip==='function') renderLeadsMomentumStrip(); }catch(e){}
 }
 function csTasks(){
@@ -588,14 +588,18 @@ function csAvColor(key){ let h=0; for(const c of String(key)) h=(h*31+c.charCode
 function csAvatar(m,size){ return `<span class="csa-av" style="background:${csAvColor(csEmailKey(m.email))}${size?`;width:${size}px;height:${size}px;font-size:${Math.round(size*.38)}px`:''}">${esc(csInitials(csName(m)))}</span>`; }
 function csCallsFor(pts){ return Math.max(1,Math.ceil(pts/CS_PTS.answered)); }
 
+// Rendered into the classic Home (#homeArena) and the travel Today page (#tvHomeArena, see
+// travel-view.js). Always from the whole team's leads — never inside dashboard.html's
+// withHomeScope, or a teammate's board would show everyone else at 0.
+function csArenaEls(){ return [$id('homeArena'),$id('tvHomeArena')].filter(Boolean); }
 function csRenderHomeArena(){
-  const el=$id('homeArena'); if(!el) return;
+  const els=csArenaEls(); if(!els.length) return;
   _csCache=null;
   // Tasks/projects load in the background, after the page's own critical requests (leads) —
   // the arena re-renders itself when they arrive.
   if(!_csWorkTimer && Date.now()-_csWork.at>=60000) _csWorkTimer=setTimeout(()=>{ _csWorkTimer=null; csLoadWork(); },1500);
   const members=getTeamMembers();
-  if(!members.length||!myEmail){ el.style.display='none'; return; }
+  if(!members.length||!myEmail){ els.forEach(e=>{ e.style.display='none'; }); return; }
   const board=csWeekBoard(0), badges=csWeekBadges(board), owner=isAccountOwner();
   const me=board.find(r=>sameEmail(r.m.email,myEmail));
   const solo=members.length<2;
@@ -683,8 +687,7 @@ function csRenderHomeArena(){
     ${hall.length>1?`<div class="csa-hall">🏛 ${hall.map(x=>`${esc(csName(x.w.m))} <small>${csWeekStart(x.o).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</small>`).join(' · ')}</div>`:''}
   </details>`;
   html+=`</div></div>`;
-  el.innerHTML=html;
-  el.style.display='';
+  els.forEach(e=>{ e.innerHTML=html; e.style.display=''; });
 }
 
 // Called by dashboard.html moveTaskStatus after a task is marked done.

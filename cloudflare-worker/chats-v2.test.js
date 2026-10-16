@@ -106,6 +106,12 @@ describe('formatting and preview', ()=>{
     assert.deepEqual(chatsV2Access(CLIENT, RAHUL, [11, '11', 22]).hidden, ['11', '22']);
     assert.equal(chatsV2Access({...CLIENT, lead_routing:'{"enabled":true}'}, RAHUL).locked, true);
   });
+  test('a full-access role saved with a capitalised email still sees everything', ()=>{
+    const perms=JSON.parse(CLIENT.team_permissions||'{}');
+    const mixed={...CLIENT, team_permissions:JSON.stringify(Object.fromEntries(Object.entries(perms).map(([k,v])=>[k.toUpperCase(), v])))};
+    assert.equal(chatsV2Access(mixed, SHAFNA).staff, false);
+    assert.equal(chatsV2Access(mixed, RAHUL).staff, true);
+  });
 });
 
 describe('message write hook', ()=>{
@@ -214,6 +220,28 @@ describe('list, counts, thread', ()=>{
     const r=await chatsV2Counts(env, CID, rahul);
     assert.equal(r.all, 6);
     assert.equal(r.mine, 2);
+  });
+  test('travel: category filter, per-category counts, and a category-restricted teammate', async()=>{
+    db.prepare(`UPDATE conversations SET service_category='Visa' WHERE lead_id IN (1,6)`).run();
+    db.prepare(`UPDATE conversations SET service_category='Air Ticket' WHERE lead_id=2`).run();
+    const ids=async (acc, q)=>(await chatsV2List(env, CID, acc, {view:'all', ...q})).rows.map(r=>r.lead_id);
+    assert.deepEqual(await ids(owner, {category:'Visa'}), [1, 6]);
+    assert.deepEqual(await ids(owner, {category:'__none'}), [7, 5, 4, 3]);
+    const c=await chatsV2Counts(env, CID, owner);
+    assert.deepEqual(c.by_category, {'Visa':{whatsapp:2, instagram:0}, 'Air Ticket':{whatsapp:1, instagram:0}, '':{whatsapp:3, instagram:0}});
+    const travel={...CLIENT, industry:'travel', team_permissions:JSON.stringify({[RAHUL]:{role:'staff', leadCategories:['Visa']}})};
+    const visaOnly=chatsV2Access(travel, RAHUL);
+    assert.deepEqual(visaOnly.categories, ['Visa']);
+    assert.deepEqual(await ids(visaOnly, {}), [1, 6]);
+    assert.deepEqual(await ids(chatsV2Access({...travel, team_permissions:JSON.stringify({[RAHUL]:{leadCategories:[]}})}, RAHUL), {}), []);
+    // Not travel, or no restriction saved: no category scope at all.
+    assert.equal(chatsV2Access(CLIENT, RAHUL).categories, undefined);
+    assert.equal(chatsV2Access({...travel, team_permissions:'{}'}, RAHUL).categories, undefined);
+  });
+  test('a lead patch carries its category into the inbox', async()=>{
+    await chatsV2ApplyLeadPatch(env, 3, {ServiceCategory:'Umrah and Hajj'});
+    assert.equal(db.prepare('SELECT service_category FROM conversations WHERE lead_id=3').get().service_category, 'Umrah and Hajj');
+    assert.equal(chatsV2FieldsFromLead({ServiceCategory:' Visa '}, null).service_category, 'Visa');
   });
   test('thread pages newest-first and returns oldest → newest', async()=>{
     for(let i=0;i<5;i++) await insertMsg(1, {role:i%2?'assistant':'user', content:'t'+i, ts:T(`11:0${i}`)});

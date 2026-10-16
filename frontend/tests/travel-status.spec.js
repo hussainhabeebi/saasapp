@@ -111,14 +111,60 @@ test('a failed save puts the old status back', async ({ page }) => {
   await expect(page.locator('tr[data-lead="4"] select.ts-sel')).toHaveValue('booking_closed');
 });
 
-test('Today shows the status summary and staff get no Staff column', async ({ page }) => {
+test('Today shows a teammate only their own inquiries; the board has no Staff column', async ({ page }) => {
   await boot(page, STAFF);
   // @ts-ignore
   await page.evaluate(() => navigate('travelhome'));
   const summary = page.locator('#tvHomeBody .card', { hasText: 'Inquiry status' });
-  await expect(summary).toContainText('1 follow-up due');
-  await summary.locator('.tv-chip', { hasText: 'Booking closed' }).click();
+  // Rita owns Asha (new) and Ravi (first call) — Meera's overdue follow-up and John's booking aren't hers.
+  await expect(summary.locator('.tv-chip')).toHaveText(['🆕 New inquiry1', '📞 First call done1']);
+  await expect(summary).not.toContainText('follow-up due');
+  await expect(page.locator('#tvHomeBody')).not.toContainText('Meera');
+  await summary.locator('.tv-chip', { hasText: 'First call done' }).click();
   await expect(page.locator('#pageTvstatus')).toBeVisible();
   await expect(page.locator('.ts-tbl thead')).not.toContainText('Staff');
-  await expect(page.locator('.ts-tbl tbody tr')).toHaveCount(1);
+  // The full list comes back once Home is done — the board still has its own rules.
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.length)).toBe(4);
+});
+
+test('Today: leads by category, with a period picker; the owner sees every lead', async ({ page }) => {
+  await boot(page, OWNER);
+  // @ts-ignore
+  await page.evaluate(() => navigate('travelhome'));
+  const report = page.locator('#tvCategoryReport');
+  await expect(report.locator('tbody tr')).toHaveCount(3);
+  await expect(report.locator('tbody tr', { hasText: 'Visa' }).locator('td')).toHaveText(['🛂 Visa', '1', '1', '0', '0', '0%']);
+  await expect(report.locator('tfoot td')).toHaveText(['Total', '4', '4', '0', '0', '0%']);
+  await report.locator('tbody tr', { hasText: 'Visa' }).click();
+  await expect(page.locator('#leadCategoryFilter')).toHaveValue('Visa');
+  await expect(page.locator('#leadsCategoryChips .lv-tab.active')).toContainText('Visa');
+});
+
+test('travel status and the pipeline stage move together', async ({ page }) => {
+  const { patches } = await boot(page);
+  const status = () => patches.filter((p) => p.TravelStatus);
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  // Booking closed → the lead is Won (and the usual won-lead bookkeeping runs: ClosedAt).
+  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('booking_closed');
+  await expect.poll(() => status().length).toBe(1);
+  expect(status()[0]).toMatchObject({ Id: 1, TravelStatus: 'booking_closed', Stage: 'won' });
+  await expect.poll(() => patches.some((p) => p.Id === 1 && p.ClosedAt)).toBe(true);
+  // Back to an open status → reopened.
+  await page.locator('tr[data-lead="1"] select.ts-sel').selectOption('negotiating');
+  await expect.poll(() => status().length).toBe(2);
+  expect(status()[1]).toMatchObject({ Id: 1, TravelStatus: 'negotiating', Stage: 'new' });
+  // Cancelled → Lost; an open status on an open lead leaves Stage alone.
+  await page.locator('tr[data-lead="2"] select.ts-sel').selectOption('cancelled');
+  await expect.poll(() => status().length).toBe(3);
+  expect(status()[2]).toMatchObject({ Id: 2, Stage: 'lost' });
+  await page.locator('tr[data-lead="3"] select.ts-sel').selectOption('quote_sent');
+  await expect.poll(() => status().length).toBe(4);
+  expect(status()[3].Stage).toBeUndefined();
+  // Marked Won elsewhere → shows Booking closed (auto).
+  // @ts-ignore
+  await page.evaluate(() => { allLeads.find((l) => l.Id === 3).Stage = 'won'; renderTravelStatus(); });
+  await expect(page.locator('tr[data-lead="3"] select.ts-sel')).toHaveValue('booking_closed');
+  await expect(page.locator('tr[data-lead="3"]')).toContainText('auto');
 });
