@@ -54,6 +54,8 @@ import {
   engineParseChatwootPayload,
   chatwootErrorText,
   chatSendRefusal,
+  leadCreatedViaGuess,
+  LEAD_CREATED_VIA,
   engineIsInstagramLead,
   hotLeadAlertParams,
   monthlyMktSkipReason,
@@ -884,6 +886,19 @@ describe('Chats: staff send only into their own chats', () => {
   });
   test('the owner and admins are never refused', () => {
     assert.equal(chatSendRefusal({me:'boss@x.test', staff:false, hidden:[]}, {Owner:'shafna@x.test'}), '');
+  });
+});
+
+describe('Lead origin (CreatedVia)', () => {
+  test('older leads get a best guess: chat, lead form, calendar, else unknown', () => {
+    assert.equal(leadCreatedViaGuess({ConversationID:'44'}), 'chatwoot');
+    assert.equal(leadCreatedViaGuess({Phone:'ig:1784001'}), 'chatwoot');
+    assert.equal(leadCreatedViaGuess({Channel:'instagram'}), 'chatwoot');
+    assert.equal(leadCreatedViaGuess({MetaLeadgenId:'99'}), 'lead_ad');
+    assert.equal(leadCreatedViaGuess({LeadSource:'Instagram Lead Ad'}), 'lead_ad');
+    assert.equal(leadCreatedViaGuess({Tags:'Calendar Contact'}), 'calendar');
+    assert.equal(leadCreatedViaGuess({Phone:'919847012345'}), 'unknown');
+    for (const v of ['chatwoot','manual','import','lead_ad','web','partner','calendar','unknown']) assert.ok(LEAD_CREATED_VIA.includes(v));
   });
 });
 

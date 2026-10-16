@@ -14,6 +14,9 @@ const LEADS = [
   { Id: 2, Name: 'Binu', Phone: '919876543210', CreatedVia: 'manual', Stage: 'new', Score: 'Cold' },
   { Id: 3, Name: 'Chitra', Phone: '919876543211', CreatedVia: 'import', Stage: 'new', Score: 'Cold' },
   { Id: 4, Name: 'Devi', Phone: '919876543212', Channel: 'whatsapp', Stage: 'new', Score: 'Cold' },
+  { Id: 5, Name: 'Esha', Phone: '919876543213', Channel: 'whatsapp', CreatedVia: 'chatwoot', ConversationID: '77', Stage: 'won', Score: 'Hot' },
+  { Id: 6, Name: 'Faris', Phone: '919876543214', ConversationID: '78', Stage: 'new', Score: 'Cold' },
+  { Id: 7, Name: 'Gopi', Phone: '919876543215', CreatedVia: 'lead_ad', Stage: 'lost', Score: 'Cold' },
 ];
 
 async function render(page, mode) {
@@ -39,7 +42,7 @@ test('list: Instagram and manual leads get their own badge and colour, WhatsApp 
   await expect(row('Asha').locator('.origin-badge')).toHaveText('📷 Instagram');
   await expect(row('Binu')).toHaveClass(/origin-manual/);
   await expect(row('Binu').locator('.origin-badge')).toHaveText('✍️ Manual');
-  await expect(row('Chitra').locator('.origin-badge')).toHaveText('✍️ Imported');
+  await expect(row('Chitra').locator('.origin-badge')).toHaveText('📥 Imported');
   await expect(row('Devi').locator('.origin-badge')).toHaveCount(0);
   await expect(row('Devi')).not.toHaveClass(/origin-/);
   const igEdge = await row('Asha').evaluate((el) => getComputedStyle(el).boxShadow);
@@ -80,4 +83,58 @@ test('a CreatedVia value NocoDB dropped right after the column was created is wr
   // Already saved: nothing is written.
   await page.evaluate(() => window.ensureLeadCreatedVia([9], 'manual'));
   expect(patches.length).toBe(1);
+});
+
+test('chat leads are Auto (also older ones with a conversation); lead forms get their own badge', async ({ page }) => {
+  await render(page, 'list');
+  const row = (name) => page.locator('#leadsList .lead-item', { hasText: name });
+  // Faris is open, so he's on the default list; Esha (won) and Gopi (lost) are checked directly.
+  await expect(row('Faris').locator('.origin-badge')).toHaveText('🤖 Auto');
+  await expect(row('Faris')).toHaveClass(/origin-auto/);
+  const badge = (id) => page.evaluate((id) => window.leadOriginBadge(allLeads.find((l) => l.Id === id)), id);
+  expect(await badge(5)).toContain('🤖 Auto');
+  expect(await badge(7)).toContain('📋 Lead form');
+});
+
+test('Source chips count each origin and filter the list', async ({ page }) => {
+  await render(page, 'list');
+  const chips = page.locator('#leadsOriginChips .lv-tab');
+  await expect(chips).toHaveText(['All sources', '📷 Instagram (1)', '🤖 Auto (2)', '✍️ Manual (1)', '📥 Imported (1)', '📋 Lead form (1)']);
+  await chips.filter({ hasText: 'Manual' }).click();
+  await expect(page.locator('#leadsList .lead-item .li-name')).toHaveText([/Binu/]);
+  await page.locator('#leadsOriginChips .lv-tab', { hasText: 'Manual' }).click();
+  await expect(page.locator('#leadsList .lead-item')).toHaveCount(5);
+});
+
+test('owner: older leads without a source get a one-tap backfill', async ({ page }) => {
+  await render(page, 'list');
+  let called = 0;
+  await page.route('**/leads/created-via/backfill', (route) => { called++; return route.fulfill({ json: { ok: true, updated: 3, counts: { chatwoot: 1, unknown: 2 } } }); });
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord = { authentik_email: 'boss@x.com' }; myEmail = 'boss@x.com'; window.loadAll = async () => {}; renderLeadsList();
+  });
+  // Asha (ig), Devi, Faris have no CreatedVia.
+  await expect(page.locator('#leadsOriginBanner')).toContainText('3 older leads have no recorded source');
+  await page.locator('#originBackfillBtn').click();
+  await expect.poll(() => called).toBe(1);
+});
+
+test('lead detail says how and by whom a lead was created', async ({ page }) => {
+  await render(page, 'list');
+  const line = await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord = { team_emails: 'rita@x.com', team_names: JSON.stringify({ 'rita@x.com': 'Rita' }) };
+    return window.leadOriginLine({ CreatedVia: 'manual', CreatedBy: 'rita@x.com', Date: '2026-10-16T08:00:00Z' });
+  });
+  expect(line).toBe('Created via ✍️ Manual by Rita · 16 Oct 2026');
+});
+
+test('Leads by source report: rows per origin with open / won / lost', async ({ page }) => {
+  await render(page, 'list');
+  const rows = await page.evaluate(() => window.leadsSourceReportRows(allLeads, 'all').map((r) => [r.key, r.total, r.open, r.won, r.lost]));
+  expect(rows).toEqual([['chatwoot', 2, 1, 1, 0], ['instagram', 1, 1, 0, 0], ['manual', 1, 1, 0, 0], ['import', 1, 1, 0, 0], ['lead_ad', 1, 0, 0, 1], ['', 1, 1, 0, 0]]);
+  const html = await page.evaluate(() => window.leadsSourceReportHtml(allLeads));
+  expect(html).toContain('🧭 Leads by source');
+  expect(html).toContain('Not recorded');
 });
