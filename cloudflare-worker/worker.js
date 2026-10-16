@@ -16225,6 +16225,47 @@ export function engineTextSimilarity(a, b){
 // a lead keyed by IgId with an empty Phone. The first message through Chatwoot's Instagram inbox
 // takes that lead over (stamps the `ig:` key into Phone) instead of opening a second card for the
 // same person — the rest of the turn then sees it exactly as engineGetLeadState would have.
+// The exact Phone lookup missed, but this business may already have the customer under another
+// spelling of the same number — most often a lead added by hand as "8590123427" while WhatsApp
+// (via Chatwoot) sends "918590123427". Without this every reply opened a new lead. Matches on the
+// last 10 digits within this client only, prefers the lead this webhook already created for the
+// number (lead_create_claims), and stamps the full WhatsApp number on it so the next message
+// matches exactly.
+export function engineSameNumber(a, b){
+  const x=String(a||'').replace(/\D/g,''), y=String(b||'').replace(/\D/g,'');
+  return x.length>=10 && y.length>=10 && x.slice(-10)===y.slice(-10);
+}
+async function engineAdoptLeadBySameNumber(env, clientId, state, phone){
+  const digits=String(phone||'').replace(/\D/g,'');
+  if(engineIsInstagramLeadKey(phone) || digits.length<10) return;
+  try{
+    let lead=null;
+    if(env.DB){
+      const claim=await env.DB.prepare('SELECT lead_id FROM lead_create_claims WHERE client_id=? AND phone=? AND lead_id IS NOT NULL').bind(Number(clientId)||0, String(phone)).first().catch(()=>null);
+      if(claim?.lead_id){
+        const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(claim.lead_id)}`);
+        const l=r.ok?await r.json().catch(()=>null):null;
+        if(l?.Id && String(l.ClientId)===String(clientId)) lead=l;
+      }
+    }
+    if(!lead){
+      const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(Phone,like,%${digits.slice(-10)})`);
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=-Id&limit=20&fields=Id,Phone`);
+      const d=r.ok?await r.json().catch(()=>({})):{};
+      const hit=(d.list||[]).find(l=>engineSameNumber(l.Phone, digits));
+      if(hit?.Id) lead={Id:hit.Id};
+    }
+    if(!lead?.Id) return;
+    const found=await engineGetLeadState(env, clientId, lead.Id, 'Id');
+    if(!found.lead) return;
+    if(String(found.lead.Phone||'')!==String(phone)){
+      await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:found.leadId, Phone:String(phone)}});
+      found.lead.Phone=String(phone);
+      await chatsV2ApplyLeadPatch(env, found.leadId, {Phone:String(phone)}).catch(()=>{});
+    }
+    Object.assign(state, found);
+  }catch(e){}
+}
 async function engineAdoptLegacyInstagramLead(env, clientId, state, parsed){
   if(!parsed?.igId) return;
   try{
@@ -21613,6 +21654,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(parsed.channel==='instagram') await ensureLeadsColumns(env, ['Channel','IgId']).catch(()=>{});
     const state=await engineGetLeadState(env, clientId, phone);
     if(parsed.channel==='instagram' && !state.lead) await engineAdoptLegacyInstagramLead(env, clientId, state, parsed);
+    if(parsed.channel!=='instagram' && !state.lead) await engineAdoptLeadBySameNumber(env, clientId, state, phone);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
     state.channel=parsed.channel||'whatsapp';
     if(parsed.igId) state.igId=parsed.igId;
