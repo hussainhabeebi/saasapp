@@ -240,3 +240,51 @@ test('Reports → Service Category counts leads per category and the filter narr
   // @ts-ignore
   expect(await page.evaluate(() => rptLeads().map(l => l.Id))).toEqual([1]);
 });
+
+/* ── Custom service categories (Settings → 🗂️ Service Categories) ── */
+test('custom categories from Settings show in every picker, and can be added and removed', async ({ page }) => {
+  const { patches, fieldsAdded } = await boot(page);
+  // patchClient re-reads the client record to confirm the save — echo back what was patched.
+  let saved = JSON.stringify(['Cruise']);
+  await page.route(/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/7$/, (route) => route.fulfill({ json: { Id: 7, industry: 'travel', lead_categories_custom: saved } }));
+  page.on('request', (req) => { if (req.method() === 'PATCH' && /lead_categories_custom/.test(req.postData() || '')) saved = JSON.parse(req.postData()).lead_categories_custom; });
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.lead_categories_custom = JSON.stringify(['Cruise', 'Hotel']); // a duplicate of a built-in is ignored
+    // @ts-ignore
+    applyTheme('travel');
+  });
+  const values = sel => page.locator(sel + ' option').evaluateAll(os => os.map(o => o.value).filter(Boolean));
+  expect((await values('#fServiceCategory')).slice(-3)).toEqual(['Marketing Messages', 'Other Services', 'Cruise']);
+  expect(await values('#leadCategoryFilter')).toContain('Cruise');
+  // @ts-ignore
+  await page.evaluate(() => navigate('tvstatus'));
+  expect(await values('tr[data-lead="1"] select.ts-cat')).toContain('Cruise');
+  expect(await values('tr[data-lead="1"] select.ts-cat')).toContain('Marketing Messages');
+
+  // Settings: add one, then remove one.
+  await page.evaluate(() => { /* @ts-ignore */ navigate('settings'); /* @ts-ignore */ populateSettings(); });
+  await expect(page.locator('#leadCatSettings')).toBeVisible();
+  await expect(page.locator('#leadCatBuiltIn')).toContainText('Marketing Messages');
+  await expect(page.locator('#leadCatCustom')).toContainText('Cruise');
+  await page.locator('#leadCatNew').fill('Visa');
+  await page.locator('#leadCatAddBtn').click();
+  await expect(page.locator('#leadCatMsg')).toContainText('already in the list');
+  await page.locator('#leadCatNew').fill('Holiday Homes');
+  await page.locator('#leadCatAddBtn').click();
+  await expect(page.locator('#leadCatMsg')).toContainText('Added Holiday Homes');
+  expect(patches.at(-1)).toEqual({ Id: 7, lead_categories_custom: JSON.stringify(['Cruise', 'Holiday Homes']) });
+  expect(fieldsAdded).toContain('lead_categories_custom');
+  expect(await values('#fServiceCategory')).toContain('Holiday Homes');
+  page.once('dialog', d => d.accept());
+  await page.locator('#leadCatCustom button[aria-label="Remove Cruise"]').click();
+  await expect(page.locator('#leadCatMsg')).toContainText('Removed Cruise');
+  expect(patches.at(-1)).toEqual({ Id: 7, lead_categories_custom: JSON.stringify(['Holiday Homes']) });
+  expect(await values('#fServiceCategory')).not.toContain('Cruise');
+});
+
+test('Service Categories settings are hidden for non-travel accounts', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { /* @ts-ignore */ clientRecord.industry = 'healthcare'; /* @ts-ignore */ navigate('settings'); /* @ts-ignore */ populateSettings(); });
+  await expect(page.locator('#leadCatSettings')).toBeHidden();
+});

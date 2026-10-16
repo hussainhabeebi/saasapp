@@ -1017,11 +1017,13 @@ function closeDd(){$('ddMenu')?.remove();syncBackdrop()}
 // ── Travel: the lead's Service Category, set from the header (🗂) or the contact panel. Saved on the
 // lead (ServiceCategory) like the CRM's Edit Lead, so Leads, Home and Reports count it; the Worker
 // copies it onto the conversation for the category chips. Same list as dashboard.html LEAD_CATEGORIES.
-const SERVICE_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Other Services'];
+const SERVICE_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
 function isTravelInbox(){return V2&&!!boot2?.travel}
+// Built-in list + the account's custom categories (Settings → 🗂️ Service Categories).
+function serviceCategories(){return [...new Set([...SERVICE_CATEGORIES,...(boot2?.categories_custom||[])])]}
 function catOf(l){return String(l?._v2?.service_category??l?.ServiceCategory??'').trim()}
 // A teammate limited to some categories can only pick (and never clear to) one they can see.
-function categoryChoices(cur){const allowed=boot2?.me?.categories;const list=allowed?SERVICE_CATEGORIES.filter(c=>allowed.includes(c)).concat(allowed.filter(c=>!SERVICE_CATEGORIES.includes(c))):SERVICE_CATEGORIES.slice();if(cur&&!list.includes(cur))list.unshift(cur);return list}
+function categoryChoices(cur){const allowed=boot2?.me?.categories;const all=serviceCategories();const list=allowed?all.filter(c=>allowed.includes(c)).concat(allowed.filter(c=>!all.includes(c))):all;if(cur&&!list.includes(cur))list.unshift(cur);return list}
 function openCategoryPicker(btn){
  const l=current;if(!l)return;const cur=catOf(l);
  openDd(btn,`<div class="hint">Service category</div>${categoryChoices(cur).map(c=>`<button class="${c===cur?'sel':''}" onclick="setLeadCategory(${esc(JSON.stringify(c))})">${c===cur?'✓ ':''}${esc(c)}</button>`).join('')}${boot2?.me?.categories?'':`<hr><button onclick="setLeadCategory('')" ${!cur?'disabled':''}>✕ Clear category</button>`}`);
