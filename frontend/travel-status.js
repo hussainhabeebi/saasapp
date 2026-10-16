@@ -9,7 +9,10 @@
      TravelStatusLog     JSON history, newest first: [{at, by, from, to, fu}] — Reports → 📌 Status Changes
    An inquiry with no status yet shows "New inquiry", or "First call done (auto)" once a call is in
    its CallLog — so the board is useful before anyone has marked anything.
-   This status is the travel desk's own tracking; it doesn't move the lead's pipeline Stage.
+   Linked to the lead's pipeline Stage both ways (tsStageFor / tsStatusOf): Booking closed, Ticket
+   issued and Travelled mark the lead Won; Booking not done and Cancelled mark it Lost; picking an
+   open status on a won/lost lead reopens it (to the pipeline stage of the same name when there is
+   one). A lead marked Won / Lost anywhere else shows Booking closed / Booking not done (auto).
    Uses dashboard.html's globals: $id, esc, allLeads, ncPatch, CONFIG, ensureLeadsField, myEmail,
    getTeamMembers, sameEmail, seesAllLeads, parseCallLog, openDetail, showToast, TODAY,
    LEAD_CATEGORIES, serviceCategoryIcon, clientId.
@@ -41,6 +44,18 @@ const TS_STATUSES=[
   ['cancelled','Cancelled','🚫','red'],
 ];
 const TS_BY_KEY=Object.fromEntries(TS_STATUSES.map(s=>[s[0],s]));
+const TS_WON=new Set(['booking_closed','ticket_issued','travelled']);
+const TS_LOST=new Set(['booking_not_done','cancelled']);
+const tsStageWon=l=>l?.Stage==='won'||l?.Stage==='converted';
+const tsStageLost=l=>l?.Stage==='lost';
+// The pipeline Stage a travel status puts the lead in, or null to leave Stage as it is.
+function tsStageFor(key, lead){
+  if(TS_WON.has(key)) return tsStageWon(lead)?null:'won';
+  if(TS_LOST.has(key)) return tsStageLost(lead)?null:'lost';
+  let stages=[]; try{ stages=Object.keys((typeof getFlow==='function'?getFlow():{}).stages||{}); }catch(e){}
+  if(stages.includes(key)) return lead?.Stage===key?null:key;
+  return (tsStageWon(lead)||tsStageLost(lead))?'new':null;
+}
 const TS_FIELDS=['TravelStatus','TravelFollowUpAt','TravelStatusAt','TravelStatusBy',['TravelStatusLog','LongText']];
 const TS_LOG_MAX=200;
 const TS_PAGE_SIZE=100;
@@ -51,7 +66,12 @@ let _tsFieldsReady=false;
 
 // The status an inquiry is shown with: what staff set, else derived from its calls.
 function tsStatusOf(l){
-  if(TS_BY_KEY[l.TravelStatus]) return {key:l.TravelStatus, auto:false};
+  // The pipeline outcome wins: a lead marked Won / Lost elsewhere (Mark Won, kanban, the bot) never
+  // keeps showing an open travel status.
+  const k=TS_BY_KEY[l.TravelStatus]?l.TravelStatus:'';
+  if(tsStageWon(l)&&!TS_WON.has(k)) return {key:'booking_closed', auto:true};
+  if(tsStageLost(l)&&!TS_LOST.has(k)) return {key:'booking_not_done', auto:true};
+  if(k) return {key:k, auto:false};
   let calls=[]; try{ calls=parseCallLog(l.CallLog); }catch(e){}
   return calls.length?{key:'first_call', auto:true}:{key:'new', auto:true};
 }
@@ -212,9 +232,11 @@ async function tsSave(id,patch){
   if(!lead) return;
   const now=new Date().toISOString();
   const full={...patch, TravelStatusAt:now, TravelStatusBy:myEmail||''};
+  const statusChanged=!!patch.TravelStatus && patch.TravelStatus!==lead.TravelStatus;
+  const stage=statusChanged?tsStageFor(patch.TravelStatus, lead):null;
+  if(stage) full.Stage=stage;
   const before={}; Object.keys(full).concat('TravelStatusLog').forEach(k=>{ before[k]=lead[k]; });
   const from=tsStatusOf(lead).key;
-  const statusChanged=!!patch.TravelStatus && patch.TravelStatus!==lead.TravelStatus;
   Object.assign(lead,full);
   tsRefreshViews();
   try{
@@ -233,7 +255,9 @@ async function tsSave(id,patch){
       lead.TravelStatusLog=full.TravelStatusLog;
     }
     await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,{Id:id,...full});
-    if(typeof showToast==='function') showToast('Status saved');
+    if(stage && typeof reportLeadQualityChange==='function') reportLeadQualityChange(id, {Stage:before.Stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency}, {Stage:stage, DealValue:lead.DealValue, DealCurrency:lead.DealCurrency});
+    if(stage && !$id('pageLeads')?.classList.contains('hidden') && typeof renderLeadsCurrentView==='function') renderLeadsCurrentView();
+    if(typeof showToast==='function') showToast(stage?`Status saved — lead moved to ${typeof stageLabel==='function'?stageLabel(stage):stage}`:'Status saved');
   }catch(e){
     Object.assign(lead,before);
     tsRefreshViews(true);

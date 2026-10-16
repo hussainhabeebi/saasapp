@@ -327,3 +327,25 @@ test('a lead marked Won counts even without ClosedAt or an owner (team goal + Cl
   expect(r).toEqual({ manuWon: 1, team: 3 });
   await expect(page.locator('#homeArena .csa-goal')).toContainText('3/5 conversions');
 });
+
+test('Home arena for a teammate still counts the whole team (Home is otherwise their own leads only)', async ({ page }) => {
+  await bootArena(page, { me: STAFF });
+  const arena = page.locator('#homeArena');
+  await expect(arena).toBeVisible();
+  // Rita's own Home stats show only her lead, but the league keeps Manu's points.
+  await expect(arena.locator('.csa-row', { hasText: 'Manu' })).toContainText('60');
+  await expect(arena.locator('.csa-row.me')).toContainText('65');
+  await expect(page.locator('#statsGrid .stat-val').first()).toHaveText('1');
+});
+
+test('travel Today page shows the Weekly Arena too', async ({ page }) => {
+  await bootArena(page, { me: STAFF });
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientRecord.industry = 'travel'; applyTheme('travel'); navigate('travelhome');
+  });
+  const arena = page.locator('#tvHomeArena');
+  await expect(arena).toBeVisible();
+  await expect(arena.locator('.csa-title')).toContainText('Weekly Arena');
+  await expect(arena.locator('.csa-row', { hasText: 'Manu' })).toContainText('60');
+});

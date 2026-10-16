@@ -1644,7 +1644,9 @@ async function handleGetChatMessages(request, env){
 // The owner and admin / general manager roles can reply anywhere and never claim. Returns the
 // message to refuse with, or ''.
 export function chatSendRefusal(acc, lead){
-  if(!acc?.staff||!lead) return '';
+  if(!lead) return '';
+  if(acc?.categories&&!acc.categories.includes(String(lead.ServiceCategory||'').trim())) return 'This chat is in a category you don\'t have access to.';
+  if(!acc?.staff) return '';
   if(acc.hidden?.includes(String(lead.InboxId||''))) return 'This chat belongs to a channel assigned to someone else.';
   const owner=String(lead.Owner||'').trim().toLowerCase();
   if(owner) return owner===acc.me?'':'This chat is assigned to someone else.';
@@ -1653,19 +1655,21 @@ export function chatSendRefusal(acc, lead){
 async function chatSendCheckAndClaim(env, c, payload, {leadId, convId}){
   if(!payload?.email) return {ok:true};
   const acc=chatsV2Access(c, payload.email, await chatsV2HiddenInboxes(env, payload.cid, payload.email));
-  if(!acc.staff) return {ok:true};
+  if(!acc.staff&&!acc.categories) return {ok:true};
   let id=Number(leadId)||0;
   if(!id && convId && env.DB){
     const row=await env.DB.prepare('SELECT lead_id FROM conversations WHERE client_id=? AND conv_id=?').bind(Number(payload.cid), String(convId)).first().catch(()=>null);
     id=Number(row?.lead_id)||0;
   }
   if(!id) return {ok:true};
-  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId`);
+  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId,ServiceCategory`);
+  // ServiceCategory only exists once a travel client has used it — without it NocoDB refuses the list.
+  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,ClientId,Owner,InboxId`);
   const lead=r.ok?await r.json().catch(()=>null):null;
   if(!lead||String(lead.ClientId)!==String(payload.cid)) return {ok:true};
   const refusal=chatSendRefusal(acc, lead);
   if(refusal) return {ok:false, error:refusal};
-  if(!String(lead.Owner||'').trim()){
+  if(acc.staff&&!String(lead.Owner||'').trim()){
     const patch={Id:id, Owner:acc.me};
     const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patch});
     if(pr.ok) await chatsV2ApplyLeadPatch(env, id, patch, {broadcast:engineBroadcastUpdate}).catch(()=>{});

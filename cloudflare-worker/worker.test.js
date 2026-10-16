@@ -877,6 +877,11 @@ describe('Chats: staff send only into their own chats', () => {
     assert.match(chatSendRefusal(staff, {Owner:'', InboxId:'22'}), /channel assigned to someone else/);
     assert.match(chatSendRefusal({...staff, locked:true}, {Owner:''}), /not assigned to you/);
   });
+  test('a category-restricted travel teammate only sends in their categories', () => {
+    const visa={...staff, categories:['Visa']};
+    assert.equal(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Visa'}), '');
+    assert.match(chatSendRefusal(visa, {Owner:'rahul@x.test', ServiceCategory:'Air Ticket'}), /category/);
+  });
   test('the owner and admins are never refused', () => {
     assert.equal(chatSendRefusal({me:'boss@x.test', staff:false, hidden:[]}, {Owner:'shafna@x.test'}), '');
   });
