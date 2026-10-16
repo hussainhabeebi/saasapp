@@ -52,6 +52,7 @@ import {
   pmHandleQueueBatch,
   ProjectTaskWorkflow,
   engineParseChatwootPayload,
+  chatwootErrorText,
   engineIsInstagramLead,
   hotLeadAlertParams,
   monthlyMktSkipReason,
@@ -853,6 +854,14 @@ describe('Instagram through Chatwoot', () => {
     assert.equal(hotLeadAlertParams({name:'Ravi', phone:'919847012345', reason:'booking', link:'x'})[1],'+919847012345');
     const idx=monthlyMktIndexHistory([]);
     assert.equal(monthlyMktSkipReason({Id:1, Score:'Hot', Stage:'new', Phone:'ig:1784001', Channel:'instagram'}, idx, '2026-10'),'no_phone');
+  });
+});
+
+describe('Chatwoot send errors', () => {
+  test('carry Chatwoot\'s own reason, not just the status', async () => {
+    assert.equal(await chatwootErrorText(new Response('{"error":"You are not authorized to do this action"}',{status:401})),'Chatwoot HTTP 401 — You are not authorized to do this action');
+    assert.equal(await chatwootErrorText(new Response('{"errors":["Message failed"]}',{status:422})),'Chatwoot HTTP 422 — Message failed');
+    assert.equal(await chatwootErrorText(new Response('<html>',{status:502})),'Chatwoot HTTP 502');
   });
 });
 
