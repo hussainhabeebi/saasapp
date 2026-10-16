@@ -1645,6 +1645,33 @@ async function handleChatSend(request, env){
   try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, body)}); }
   catch(e){ return json({error:e.message}, e.status||502); }
 }
+// Chatwoot's own reason ("You are not authorized…", "Resource could not be found") instead of a bare
+// status code, so a failed send in Chats says what to fix — e.g. the API token's user not being a
+// member of the Instagram inbox.
+export async function chatwootErrorText(r){
+  const d=await r.json().catch(()=>null);
+  const msg=d?.error||d?.message||(Array.isArray(d?.errors)?d.errors.join(', '):'');
+  return `Chatwoot HTTP ${r.status}${msg?' — '+String(msg).slice(0,200):''}`;
+}
+
+// The Chats page before Instagram moved to Chatwoot posted Instagram replies here ({lead_id, text}).
+// A browser still holding that page keeps working: the reply goes out through the lead's Chatwoot
+// conversation, exactly as /chat/send would send it.
+async function handleInstagramSendCompat(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  if(!body.lead_id||!body.text) return json({error:'lead_id and text required'}, 400);
+  const c=await getClientById(env, payload.cid);
+  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${Number(body.lead_id)}`);
+  const lead=leadR.ok?await leadR.json().catch(()=>null):null;
+  if(!lead||String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
+  const conv_id=lead.ConversationID||lead.ConversationId||lead.chatwoot_conv_id;
+  if(!conv_id) return json({error:'This Instagram lead has no Chatwoot conversation yet — it links on the customer\'s next message.'}, 400);
+  try{ return json({ok:true, data:await chatSendTextCore(env, c, payload, {conv_id, lead_id:body.lead_id, text:body.text})}); }
+  catch(e){ return json({error:e.message}, e.status||502); }
+}
+
 // Shared by /chat/send and Chats v2 scheduled messages (chats-v2.js chatsV2RunScheduled).
 async function chatSendTextCore(env, c, payload, body){
   const {conv_id, lead_id, reply_to}=body;
@@ -1660,7 +1687,7 @@ async function chatSendTextCore(env, c, payload, body){
   const fd=new FormData();
   fd.append('content', outText); fd.append('message_type','outgoing'); fd.append('private','false');
   const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${conv_id}/messages`, {method:'POST', headers:{api_access_token:c.chatwoot_token}, body:fd});
-  if(!r.ok) throw Object.assign(new Error('HTTP '+r.status), {status:502});
+  if(!r.ok) throw Object.assign(new Error(await chatwootErrorText(r)), {status:502});
   // Persist to D1 and update NocoDB LastMsgAt (frontend no longer patches ConvHistory)
   if(lead_id){
     const ts=new Date().toISOString();
@@ -35177,6 +35204,7 @@ export default {
       else if(url.pathname==='/channels/agents' && request.method==='GET'){ res=await handleChannelsAgents(request, env); }
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
+      else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSendCompat(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
