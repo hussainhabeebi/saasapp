@@ -2434,6 +2434,7 @@ const ROLES = {
         <button class="hosp-tab" data-reports="seo">🔍 SEO</button>
         <button class="hosp-tab" data-reports="scheduled">🗓️ Scheduled Reports</button>
         <button class="hosp-tab" data-reports="tvstatus" id="rptTabTvStatus" style="display:none">📌 Status Changes</button>
+        <button class="hosp-tab" data-reports="category" id="rptTabCategory" style="display:none">🗂️ Service Category</button>
       </div>
       <div id="rptFilterBar" style="background:var(--card);border-bottom:1px solid var(--line);padding:8px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;position:sticky;top:41px;z-index:9">
         <div style="display:flex;gap:3px;flex-wrap:wrap">
@@ -2448,6 +2449,10 @@ const ROLES = {
         <input type="date" id="rptTo"   style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="setRptCustom()">
         <select id="rptMember" style="font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="renderReports()">
           <option value="">All Members</option>
+        </select>
+        <!-- Travel only: narrows every lead-based report to one ServiceCategory -->
+        <select id="rptCategory" style="display:none;font-size:12px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)" onchange="renderReports()">
+          <option value="">All Categories</option>
         </select>
         <div style="flex:1"></div>
         <button class="btn btn-secondary btn-sm" onclick="exportReportCsv()">📥 CSV</button>
@@ -7681,6 +7686,7 @@ function renderLeadsList(){
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
+        ${typeof tsInlineCategoryHTML==='function'&&clientRecord?.industry==='travel'?`<div class="ts-inline" onclick="event.stopPropagation()">${tsInlineCategoryHTML(l)}</div>`:''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           ${callBtnHTML(l,leadCallCount(l))}
           ${leadMoreMenuHTML(l)}
@@ -8046,7 +8052,7 @@ function renderLeadsTable(){
   const rows=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-rows.length;
   el.innerHTML=`<table class="leads-tbl"><thead><tr>
-    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th>':''}<th>Score</th><th>Brand/Product</th><th>Owner</th>
+    <th></th><th class="lead-ref-list">Lead Ref</th><th>Name</th><th>Phone</th><th>Stage</th>${tsCol?'<th>Status</th><th>Category</th>':''}<th>Score</th><th>Brand/Product</th><th>Owner</th>
     <th>Age</th><th>Profession</th><th>Email</th><th>City</th><th>Country</th><th>Budget</th><th>Language</th><th>Source</th>
     <th>Date</th><th>Actions</th>
   </tr></thead><tbody>${rows.map(l=>{
@@ -8063,7 +8069,7 @@ function renderLeadsTable(){
       <td>${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
-      ${tsCol?`<td onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td>`:''}
+      ${tsCol?`<td onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td><td onclick="event.stopPropagation()" style="min-width:170px">${typeof tsInlineCategoryHTML==='function'?tsInlineCategoryHTML(l):esc(l.ServiceCategory||'')}</td>`:''}
       <td>${scoreBadge(l.Score)}</td>
       <td>${leadBrandCell(l)}</td>
       <td>${esc(l.Owner||'—')}</td>
@@ -9112,7 +9118,10 @@ function openEditLead(lead){
   // Travel fields
   if(clientRecord?.industry==='travel'){
     const dates=(lead.TravelDates||'').split('→');
-    $id('fServiceCategory').value=lead.ServiceCategory||'';
+    const sc=$id('fServiceCategory'), cat=String(lead.ServiceCategory||'').trim();
+    // A category saved before the list changed stays selectable, so saving doesn't wipe it.
+    if(cat&&![...sc.options].some(o=>o.value===cat)) sc.insertAdjacentHTML('beforeend',`<option value="${esc(cat)}">${esc(cat)}</option>`);
+    sc.value=cat;
     $id('fDestination').value=lead.Destination||'';
     $id('fTravelFrom').value=(dates[0]||'').trim();
     $id('fTravelTo').value=(dates[1]||'').trim();
@@ -9224,8 +9233,10 @@ async function saveLead(){
     // Service Category (Ticket/Package/Hotel/Other Services) — the leads-separation classification
     // used by the Leads page category filter, the Travel Agency Home page widget, and the
     // per-user lead-category access restriction (User Management → profile).
-    if($id('fServiceCategory').value){
-      body.ServiceCategory=$id('fServiceCategory').value;
+    // Saved on every edit (clearing it too), not only when one is picked.
+    const cat=$id('fServiceCategory').value;
+    if(cat||(id&&String(original?.ServiceCategory||'').trim())){
+      body.ServiceCategory=cat;
       await ensureLeadsField('ServiceCategory');
     }
   }
@@ -18150,7 +18161,23 @@ function rptLeads(src){
   }
   const member=$id('rptMember')?.value||'';
   if(member) leads=leads.filter(l=>sameEmail(l.Owner,member));
-  return leads;
+  return rptByCategory(leads);
+}
+// Travel: the Reports category filter ('' = all, '__none' = leads with no ServiceCategory).
+function rptCategory(){ return clientRecord?.industry==='travel'?($id('rptCategory')?.value||''):''; }
+function rptByCategory(leads){
+  const cat=rptCategory(); if(!cat) return leads;
+  return leads.filter(l=>String(l.ServiceCategory||'').trim()===(cat==='__none'?'':cat));
+}
+function rptPopulateCategoryFilter(){
+  const sel=$id('rptCategory'); if(!sel) return;
+  const isTravel=clientRecord?.industry==='travel';
+  sel.style.display=isTravel?'':'none';
+  if(!isTravel){ sel.value=''; return; }
+  const cur=sel.value;
+  const cats=[...new Set([...LEAD_CATEGORIES, ...allLeads.map(l=>String(l.ServiceCategory||'').trim()).filter(Boolean)])];
+  sel.innerHTML='<option value="">All Categories</option>'+cats.map(c=>`<option value="${esc(c)}"${cur===c?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')
+    +`<option value="__none"${cur==='__none'?' selected':''}>No category</option>`;
 }
 
 function exportReportCsv(){
@@ -18202,8 +18229,9 @@ function renderReports(){
   // 📌 Status Changes (travel-status.js) — travel clients only.
   const tvTab=$id('rptTabTvStatus'); const isTravel=clientRecord?.industry==='travel';
   if(tvTab) tvTab.style.display=isTravel?'':'none';
-  if(!isTravel&&_reportsPage==='tvstatus') _reportsPage='overview';
-  rptPopulateMemberFilter(); renderReportsSubPage(_reportsPage);
+  const catTab=$id('rptTabCategory'); if(catTab) catTab.style.display=isTravel?'':'none';
+  if(!isTravel&&(_reportsPage==='tvstatus'||_reportsPage==='category')) _reportsPage='overview';
+  rptPopulateMemberFilter(); rptPopulateCategoryFilter(); renderReportsSubPage(_reportsPage);
 }
 function renderReportsSubPage(page){
   _reportsPage=page;
@@ -18214,6 +18242,7 @@ function renderReportsSubPage(page){
     product:renderReportsProduct, saas:renderReportsSaas, seo:renderReportsSeo,
     scheduled:renderReportsScheduled,
     tvstatus:()=>typeof renderReportsTravelStatus==='function'?renderReportsTravelStatus():renderReportsOverview(),
+    category:renderReportsCategory,
   };
   (fns[page]||renderReportsOverview)();
 }
@@ -18268,7 +18297,7 @@ function renderReportsLeadsCalls(){
   const unbounded=range.from===-Infinity&&range.to===Infinity;
   const inRange=ms=>ms!=null&&ms>=range.from&&ms<=range.to;
   const leadMs=l=>{ const t=Date.parse(l.Date||''); return isFinite(t)?t:null; };
-  const mine=member?pool.filter(l=>sameEmail(l.Owner,member)):pool;
+  const mine=rptByCategory(member?pool.filter(l=>sameEmail(l.Owner,member)):pool);
   const periodLbl={all:'All Time',today:'Today',week:'This Week',month:'This Month',year:'This Year',custom:'Custom Range'}[_rptFilters.period]||'';
 
   // ── Leads
@@ -18389,6 +18418,60 @@ function lcUncalledPdf(){
     didDrawPage:()=>{ doc.setFontSize(8); doc.setTextColor(120); doc.text(`Page ${doc.internal.getNumberOfPages()}`,pageW-marginX,pageH-16,{align:'right'}); doc.setTextColor(0); },
   });
   doc.save(`leads-not-called-${csToday()}.pdf`);
+}
+
+/* ── 🗂️ Service Category (travel) — leads per ServiceCategory for the picked period / member:
+   open, won, lost, conversion and won value, then a category × team member split. Same lead pool
+   as Leads & Calls (older leads paged in), so totals match it. Tap a category to open those leads. */
+function renderReportsCategory(){
+  if(!_rptOlder.loading&&Date.now()-_rptOlder.at>300000) rptLoadOlderLeads().then(()=>{ if(_reportsPage==='category') renderReportsCategory(); });
+  const loadedIds=new Set(allLeads.map(l=>l.Id));
+  const leads=rptLeads(allLeads.concat(_rptOlder.list.filter(l=>!loadedIds.has(l.Id))));
+  const dealCcy=clientRecord?.deal_currency||allLeads.find(l=>l.DealCurrency)?.DealCurrency||'';
+  const money=n=>n?(dealCcy?dealCcy+' ':'')+Math.round(n).toLocaleString():'—';
+  const catOf=l=>String(l.ServiceCategory||'').trim()||'Uncategorised';
+  const rows={};
+  for(const l of leads){
+    const c=catOf(l), r=rows[c]||(rows[c]={cat:c,total:0,open:0,won:0,lost:0,value:0});
+    r.total++;
+    if(isWonLead(l)){ r.won++; r.value+=Number(l.DealValue)||0; }
+    else if(isLostLead(l)) r.lost++;
+    else r.open++;
+  }
+  const list=Object.values(rows).sort((a,b)=>(a.cat==='Uncategorised')-(b.cat==='Uncategorised')||b.total-a.total||a.cat.localeCompare(b.cat));
+  const tot=list.reduce((t,r)=>({total:t.total+r.total,open:t.open+r.open,won:t.won+r.won,lost:t.lost+r.lost,value:t.value+r.value}),{total:0,open:0,won:0,lost:0,value:0});
+  const pct=r=>r.total?Math.round(r.won/r.total*100)+'%':'—';
+  const icon=c=>c==='Uncategorised'?'🗂️':serviceCategoryIcon(c);
+  const uncat=rows.Uncategorised?.total||0;
+  // Category × team member (owner). Unassigned leads get their own row.
+  const cats=list.map(r=>r.cat);
+  const owners={};
+  for(const l of leads){ const k=csEmailKey(l.Owner)||''; (owners[k]=owners[k]||{}); owners[k][catOf(l)]=(owners[k][catOf(l)]||0)+1; }
+  const names=Object.fromEntries(getTeamMembers().map(m=>[csEmailKey(m.email),m.name||m.email]));
+  const ownerRows=Object.entries(owners).map(([k,c])=>({name:k?(names[k]||k):'Unassigned',c,n:Object.values(c).reduce((a,b)=>a+b,0)})).sort((a,b)=>b.n-a.n);
+  $id('reportsContent').innerHTML=`
+    <div class="s-note" style="margin-bottom:12px">Leads grouped by the <b>Service Category</b> saved on each lead (set it in the Leads table, the lead's Edit form, or the Chats header). Period and member filters apply; leads are counted by the date they came in.${uncat?` <b>${uncat}</b> lead${uncat===1?' has':'s have'} no category yet.`:''}</div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px">
+      <div class="stat"><div class="stat-lbl">Leads</div><div class="stat-val">${tot.total}</div></div>
+      <div class="stat"><div class="stat-lbl">Categorised</div><div class="stat-val">${tot.total-uncat}</div></div>
+      <div class="stat"><div class="stat-lbl">Won</div><div class="stat-val">${tot.won}</div></div>
+      <div class="stat"><div class="stat-lbl">Conversion</div><div class="stat-val">${pct(tot)}</div></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title">🗂️ Leads by Service Category</div>
+      ${list.length?`<div style="overflow-x:auto"><table class="leads-tbl" id="rptCatTbl" style="width:100%;min-width:640px">
+        <thead><tr><th>Category</th><th>Leads</th><th>Open</th><th>Won</th><th>Lost</th><th>Conversion</th><th>Won Value</th></tr></thead>
+        <tbody>${list.map(r=>`<tr style="cursor:pointer" onclick="tvOpenLeadsCategory(${esc(JSON.stringify(r.cat))})"><td>${icon(r.cat)} ${esc(r.cat)}</td><td><b>${r.total}</b></td><td>${r.open}</td><td style="color:#047857">${r.won}</td><td style="color:#B91C1C">${r.lost}</td><td>${pct(r)}</td><td>${money(r.value)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr style="font-weight:700"><td>Total</td><td>${tot.total}</td><td>${tot.open}</td><td>${tot.won}</td><td>${tot.lost}</td><td>${pct(tot)}</td><td>${money(tot.value)}</td></tr></tfoot>
+      </table></div>`:'<div style="color:var(--muted);font-size:13px">No leads in this period.</div>'}
+    </div>
+    ${list.length?`<div class="card">
+      <div class="card-title">👤 Category by Team Member</div>
+      <div style="overflow-x:auto"><table class="leads-tbl" id="rptCatOwnerTbl" style="width:100%;min-width:${Math.max(480,140+cats.length*110)}px">
+        <thead><tr><th>Team Member</th>${cats.map(c=>`<th>${icon(c)} ${esc(c)}</th>`).join('')}<th>Total</th></tr></thead>
+        <tbody>${ownerRows.map(o=>`<tr><td>${esc(o.name)}</td>${cats.map(c=>`<td>${o.c[c]||0}</td>`).join('')}<td><b>${o.n}</b></td></tr>`).join('')}</tbody>
+      </table></div>
+    </div>`:''}`;
 }
 
 /* ── Overview — a handful of headline numbers so this doesn't just have to be a list of tabs.
@@ -22377,7 +22460,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=3"></script>
+<script src="travel-status.js?v=4"></script>
 <script src="travel-view.js?v=7"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>

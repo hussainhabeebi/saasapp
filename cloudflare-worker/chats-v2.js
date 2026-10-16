@@ -968,7 +968,9 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
       const settings={sla_warn_min:Number(c.chats_sla_warn_min)||15, sla_breach_min:Number(c.chats_sla_breach_min)||60};
       const {results:views}=await env.DB.prepare(`SELECT id, name, filter, owner_email, shared FROM chat_views WHERE client_id=? AND (shared=1 OR owner_email=?) ORDER BY name LIMIT 50`).bind(cid, acc.me).all();
       const {results:macros}=await env.DB.prepare(`SELECT id, name, ops FROM chat_macros WHERE client_id=? ORDER BY name LIMIT 50`).bind(cid).all();
-      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked}, agents:chatsV2Agents(c), labels, canned:canned||[], settings,
+      // travel: the inbox header shows a Service Category picker; me.categories limits it to the
+      // categories a restricted teammate can see (null = all).
+      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', agents:chatsV2Agents(c), labels, canned:canned||[], settings,
         views:(views||[]).map(v=>({...v, filter:parse(v.filter, {all:[]})})), macros:(macros||[]).map(m=>({...m, ops:parse(m.ops, [])}))};
       const version=await hashOf(data);
       if(qp.v&&qp.v===version) return json({version, unchanged:true});

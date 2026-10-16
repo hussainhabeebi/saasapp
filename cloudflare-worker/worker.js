@@ -1407,6 +1407,7 @@ export function channelVisibilityClause(assignments, email){
   return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}`;
 }
 
+let _leadsServiceCategoryReady=false;
 async function handleNocodbPassthrough(request, env, upstreamPath){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -1531,6 +1532,15 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
         if(clause) qs=qs.includes('where=') ? qs.replace(/where=([^&]*)/, (m0,w)=>`where=${w}~and(${clause})`) : (qs?qs+'&':'')+'where='+clause;
       }catch(e){}
     }
+  }
+
+  // A lead write carrying the travel ServiceCategory (Leads table, Edit Lead, Chats header) makes
+  // sure the column exists first — NocoDB rejects the whole write for an unknown field, which used
+  // to leave the category unsaved (and missing from the reports) whenever the browser's own
+  // ensureLeadsField hadn't run yet. Checked once per Worker isolate.
+  if(!_leadsServiceCategoryReady && (method==='PATCH'||method==='POST') && body
+     && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body.includes('"ServiceCategory"')){
+    try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
   }
 
   let r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
