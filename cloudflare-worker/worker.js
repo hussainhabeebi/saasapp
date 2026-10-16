@@ -8637,7 +8637,17 @@ async function handleEcomCreate(request, env, kind){
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   if(kind==='products') await ensureEcomProductStyleFields(env, tableId);
-  const { client_id, Id, ...fields }=body;
+  const { client_id, Id, allow_duplicate, ...fields }=body;
+  // Baby Care: a second open order for the same phone within 24h is refused until staff confirm
+  // it's a genuine new order (the Orders tab re-sends with allow_duplicate).
+  if(kind==='orders' && allow_duplicate!==true && String(fields.status||'').toLowerCase()!=='draft' && fields.customer_phone){
+    const c=await getClientById(env, clientId);
+    if(ecomIsBabyCare(c)){
+      const dup=ecomFindDuplicateOrder(await ecomRecentOrdersForPhone(env, tableId, clientId, fields.customer_phone), fields);
+      if(dup) return json({error:'duplicate', message:`This phone number already has an open order (#${dup.order_id||dup.Id}, ${dup.status}) from the last 24 hours.`,
+        duplicate_of:{Id:dup.Id, order_id:dup.order_id, status:dup.status, order_date:dup.order_date, items:dup.items}}, 409);
+    }
+  }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
@@ -11243,6 +11253,20 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
           ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
           : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'].filter(Boolean).join('\n')
   };
+  // Baby Care: the same items confirmed again by the same phone within 24h (a double "yes", a
+  // re-run of the flow) completes nothing new — the open order stands and the draft is closed off.
+  if(ecomIsBabyCare(c)){
+    try{
+      const recent=await ecomRecentOrdersForPhone(env, ordersTable, clientId, phone);
+      const dup=ecomFindDuplicateOrder(recent, {customer_phone:phone, items:body.items}, {sameItemsOnly:true});
+      if(dup){
+        const draft=(seed?.chatOrder||seed?.babyCareFlow) && recent.find(o=>o.status==='draft' && (!seed.draftOrderId || o.Id===seed.draftOrderId));
+        if(draft) await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:{Id:draft.Id, status:'cancelled',
+          notes:[String(draft.notes||'').replace(ECOM_DRAFT_ORDER_NOTE,'').trim(), `Duplicate of order #${dup.order_id||dup.Id} — same items from the same phone, not created again.`].filter(Boolean).join('\n')}});
+        return {ok:true, order_id:dup.order_id||String(dup.Id), duplicate:true};
+      }
+    }catch(e){ console.error('[ecom] finalizeChatOrder duplicate check failed', e.message); }
+  }
   // Baby Care in-chat orders already have a 'draft' row (engineSyncDraftChatOrder) — complete
   // that row instead of adding a second one, keeping its order id and anything staff noted on it.
   if(seed?.chatOrder||seed?.babyCareFlow){
@@ -11641,6 +11665,164 @@ async function handleEcomOrderFromChat(request, env){
   const email=pick('customer_email',200);
   return json({ok:true, suggested:{items:pick('items',500), customer_name:pick('customer_name',200), delivery_address:pick('delivery_address',500),
     customer_email:/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)?email:'', payment_method:pick('payment_method',100), notes:pick('notes',500)}});
+}
+
+/* ── Baby Care Orders tab: lead source / assignee, warm leads, order session, duplicates ───────
+   Couplo (Oct 2026) asked the Orders page to show, per order, where the lead came from and who it
+   was assigned to, the chat session behind it, which customers the AI has talked to several
+   times without an order yet (warm leads), and to stop the same phone number placing the same
+   order twice. Baby Care only — other ecom styles keep the Orders page exactly as it was. */
+export function ecomIsBabyCare(c){ return engineParseJsonField(c?.bot_config, {})?.ecom_communication_style==='baby_care'; }
+// Last 10 digits — "+91 98765 43210", "919876543210" and "9876543210" are the same customer.
+export function ecomPhoneKey(phone){ const d=String(phone||'').replace(/\D/g,''); return d.length>10?d.slice(-10):d; }
+export const ECOM_OPEN_ORDER_STATUSES=['pending','received','processing'];
+export const ECOM_DUPLICATE_WINDOW_MS=24*3600*1000;
+export const ECOM_WARM_MIN_INTERACTIONS=2;
+// Same order text = duplicate, whatever the spacing / case / punctuation.
+export function ecomItemsKey(items){ return String(items||'').toLowerCase().replace(/[^a-z0-9ഀ-ൿ]+/g,''); }
+function ecomOrderTime(o){ return Date.parse(o?.CreatedAt||'')||Date.parse(o?.order_date||'')||0; }
+// The open order (pending/received/processing, last 24h) that `candidate` would duplicate, or null.
+// sameItemsOnly: the bot's own confirmations only treat a repeat of the same items as a duplicate,
+// so a genuine second order in the same chat still goes through.
+export function ecomFindDuplicateOrder(orders, candidate, {now=Date.now(), sameItemsOnly=false}={}){
+  const key=ecomPhoneKey(candidate?.customer_phone);
+  if(!key) return null;
+  const items=ecomItemsKey(candidate?.items);
+  return (orders||[]).filter(o=>o && o.Id!==candidate?.Id && ecomPhoneKey(o.customer_phone)===key
+      && ECOM_OPEN_ORDER_STATUSES.includes(String(o.status||'').toLowerCase())
+      && (!ecomOrderTime(o) || now-ecomOrderTime(o)<ECOM_DUPLICATE_WINDOW_MS)
+      && (!sameItemsOnly || ecomItemsKey(o.items)===items))
+    .sort((a,b)=>ecomOrderTime(b)-ecomOrderTime(a)||(b.Id||0)-(a.Id||0))[0]||null;
+}
+async function ecomRecentOrdersForPhone(env, ordersTable, clientId, phone){
+  const key=ecomPhoneKey(phone);
+  if(!key) return [];
+  const where=`(client_id,eq,${clientId})~and(customer_phone,like,%${ecomSanitizeFilterValue(key)})`;
+  const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(where)}&sort=-Id&limit=10`);
+  const d=await r.json().catch(()=>({}));
+  return r.ok ? (d.list||[]) : [];
+}
+// "Where did this lead come from" in words staff use, from the lead-origin fields.
+export function ecomLeadSourceLabel(lead){
+  const via=String(lead?.CreatedVia||'').toLowerCase();
+  const src=String(lead?.LeadSource||'').trim();
+  const ig=String(lead?.Channel||'').toLowerCase()==='instagram'||String(lead?.Phone||'').startsWith('ig:');
+  if(src) return src;
+  if(via==='chatwoot'||(!via && String(lead?.ConversationID||'').trim())) return ig?'Instagram chat':'WhatsApp chat';
+  return ({manual:'Added manually', import:'Imported', lead_ad:'Lead form', web:'Website', partner:'Partner', calendar:'Calendar'})[via]||'Unknown';
+}
+// One lead → what the Orders tab needs about it. No message text — only counts and times.
+export function ecomOrderLeadInsight(lead, teamNames={}){
+  let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  if(!Array.isArray(hist)) hist=[];
+  const ts=hist.map(m=>Date.parse(m?.ts||'')).filter(Boolean);
+  const owner=String(lead?.Owner||'').trim().toLowerCase();
+  const via=String(lead?.CreatedVia||'').toLowerCase();
+  return {
+    lead_id:lead?.Id, phone:String(lead?.Phone||''), phone_key:ecomPhoneKey(lead?.Phone), name:String(lead?.Name||''),
+    stage:String(lead?.Stage||''), score:String(lead?.Score||''), channel:String(lead?.Channel||'whatsapp'),
+    source:ecomLeadSourceLabel(lead), created_via:via, created_by:String(lead?.CreatedBy||''),
+    ad_campaign:String(lead?.AdCampaign||''),
+    owner, owner_name:owner?String(teamNames[owner]||owner.split('@')[0]):'',
+    conversation_id:String(lead?.ConversationID||''),
+    first_at:(ts.length?new Date(Math.min(...ts)).toISOString():'')||String(lead?.Date||lead?.CreatedAt||''),
+    last_at:String(lead?.LastMsgAt||'')||(ts.length?new Date(Math.max(...ts)).toISOString():''),
+    customer_msgs:hist.filter(m=>m?.role==='user').length,
+    bot_msgs:hist.filter(m=>m?.role==='assistant').length,
+    opted_out:String(lead?.OptOut||'')==='Yes',
+  };
+}
+// Customers the AI has talked with several times (customer + bot both ≥ N messages) who have no
+// placed order yet — drafts still count as warm. Most recent chat first.
+export function ecomWarmLeads(insights, orders, minInteractions=ECOM_WARM_MIN_INTERACTIONS){
+  const placed=new Set(), drafts=new Map();
+  for(const o of orders||[]){
+    const k=ecomPhoneKey(o?.customer_phone), st=String(o?.status||'').toLowerCase();
+    if(!k) continue;
+    if(st==='draft') drafts.set(k, o.order_id||o.Id);
+    else if(st!=='cancelled') placed.add(k);
+  }
+  return (insights||[]).filter(l=>l.phone_key && !l.opted_out && !placed.has(l.phone_key)
+      && l.customer_msgs>=minInteractions && l.bot_msgs>=minInteractions
+      && !/^(?:lost|closed_lost|won|closed_won|converted)$/i.test(l.stage))
+    .map(l=>({...l, draft_order:drafts.get(l.phone_key)||null}))
+    .sort((a,b)=>(Date.parse(b.last_at)||0)-(Date.parse(a.last_at)||0));
+}
+async function ecomRequireOrdersSession(request, env, clientId){
+  const payload=await requireSession(request, env);
+  if(!payload) return {error:json({error:'Sign in again to see lead details'}, 401)};
+  if(String(payload.cid)!==String(clientId)) return {error:json({error:'Forbidden'}, 403)};
+  const c=await getClientById(env, clientId);
+  if(!c) return {error:json({error:'Client not found'}, 404)};
+  if(!ecomIsBabyCare(c)) return {error:json({error:'Only available for Baby Care stores'}, 400)};
+  let teamNames={}; try{ teamNames=JSON.parse(c.team_names||'{}')||{}; }catch(e){}
+  const norm={}; for(const [k,v] of Object.entries(teamNames)) norm[k.trim().toLowerCase()]=v;
+  return {payload, c, teamNames:norm, fullAccess:seesAllChannelLeads(c, payload.email)};
+}
+const ECOM_INSIGHT_LEAD_FIELDS='Id,Name,Phone,Stage,Score,Channel,ConversationID,Date,LastMsgAt,OptOut,Owner,ConvHistory';
+const ECOM_INSIGHT_ORIGIN_FIELDS=',CreatedVia,CreatedBy,LeadSource,AdCampaign';
+async function ecomFetchInsightLeads(env, where, limit){
+  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&sort=-LastMsgAt&limit=${limit}&fields=${ECOM_INSIGHT_LEAD_FIELDS}${ECOM_INSIGHT_ORIGIN_FIELDS}`);
+  // Origin / lead-form columns only exist once those features were used — NocoDB refuses unknown fields.
+  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&sort=-LastMsgAt&limit=${limit}&fields=${ECOM_INSIGHT_LEAD_FIELDS}`);
+  if(!r.ok) return null;
+  return (await r.json().catch(()=>({})))?.list||[];
+}
+// GET /ecom/orders/insights?client_id= — session-gated (it returns lead owners and sources, which
+// the client_id-only /ecom/* routes never expose). Per-phone lead info for the order rows + the
+// warm-lead list. Staff without full lead access only get the leads assigned to them.
+async function handleEcomOrdersInsights(request, env){
+  const clientId=String(new URL(request.url).searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const me=String(auth.payload.email||'').trim().toLowerCase();
+  const where=`(ClientId,eq,${clientId})`+(auth.fullAccess?'':`~and(Owner,eq,${ecomSanitizeFilterValue(me)})`);
+  const leads=await ecomFetchInsightLeads(env, where, 500);
+  if(!leads) return json({error:'Could not read leads'},502);
+  const insights=leads.map(l=>ecomOrderLeadInsight(l, auth.teamNames));
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  let orders=[];
+  if(ordersTable){
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_id,customer_phone,status&limit=1000`);
+    orders=r.ok?((await r.json().catch(()=>({})))?.list||[]):[];
+  }
+  return json({ok:true, leads:insights, warm_leads:ecomWarmLeads(insights, orders), warm_min_interactions:ECOM_WARM_MIN_INTERACTIONS});
+}
+// GET /ecom/orders/session?client_id=&Id= — the chat session behind one order: when it started,
+// how many messages each side sent, how long it took to order, and the last few messages.
+export function ecomOrderSessionSummary(order, lead, teamNames={}){
+  const info=ecomOrderLeadInsight(lead||{}, teamNames);
+  let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  if(!Array.isArray(hist)) hist=[];
+  const placedAt=ecomOrderTime(order), startedAt=Date.parse(info.first_at)||0;
+  const beforeOrder=placedAt?hist.filter(m=>!Date.parse(m?.ts||'')||Date.parse(m.ts)<=placedAt+60000):hist;
+  return {...info,
+    order_id:order?.order_id||order?.Id, order_status:order?.status||'', order_date:order?.order_date||'',
+    minutes_to_order:placedAt&&startedAt&&placedAt>=startedAt?Math.round((placedAt-startedAt)/60000):null,
+    customer_msgs_before_order:beforeOrder.filter(m=>m?.role==='user').length,
+    bot_msgs_before_order:beforeOrder.filter(m=>m?.role==='assistant').length,
+    recent:hist.slice(-8).map(m=>({role:m?.role==='user'?'customer':'shop', text:String(m?.content||'').slice(0,300), ts:String(m?.ts||'')})),
+  };
+}
+async function handleEcomOrderSession(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  const id=parseInt(url.searchParams.get('Id'),10);
+  if(!clientId||!id) return json({error:'client_id and Id required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  const order=await ecomGetOrderRow(env, ordersTable, clientId, id);
+  if(!order) return json({error:'Not found'},404);
+  const key=ecomPhoneKey(order.customer_phone);
+  if(!key) return json({ok:true, session:ecomOrderSessionSummary(order, null, auth.teamNames), no_chat:true});
+  const leads=await ecomFetchInsightLeads(env, `(ClientId,eq,${clientId})~and(Phone,like,%${ecomSanitizeFilterValue(key)})`, 5);
+  const lead=(leads||[]).find(l=>ecomPhoneKey(l.Phone)===key)||null;
+  const me=String(auth.payload.email||'').trim().toLowerCase();
+  if(lead && !auth.fullAccess && String(lead.Owner||'').trim().toLowerCase()!==me) return json({error:'This lead is assigned to someone else'},403);
+  return json({ok:true, session:ecomOrderSessionSummary(order, lead, auth.teamNames), no_chat:!lead});
 }
 
 // A message about one product that asks something ("Ith oru jodi alliyo" — isn't this a pair?,
@@ -24344,6 +24526,12 @@ async function handleEcomPublicOrder(request, env){
     delivery_address:address, status:'pending',
     notes:notes?`Placed via the order page.\n\nCustomer notes: ${notes}`:'Placed via the order page.'
   };
+  // Baby Care: the same item submitted again from the same phone within 24h (double submit, back
+  // + resubmit) returns the order already placed instead of creating a second one.
+  if(ecomIsBabyCare(c)){
+    const dup=ecomFindDuplicateOrder(await ecomRecentOrdersForPhone(env, ordersTable, clientId, phone).catch(()=>[]), orderBody, {sameItemsOnly:true});
+    if(dup) return json({ok:true, order_id:dup.order_id||String(dup.Id), duplicate:true});
+  }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
   if(!r.ok){
     const data=await r.json().catch(()=>({}));
@@ -35197,6 +35385,8 @@ export default {
       else if(url.pathname==='/ecom/orders' && request.method==='DELETE'){ res=await handleEcomDelete(request, env, 'orders'); }
       else if(url.pathname==='/ecom/orders/sync-chats' && request.method==='POST'){ res=await handleEcomOrdersSyncChats(request, env); }
       else if(url.pathname==='/ecom/orders/from-chat' && request.method==='POST'){ res=await handleEcomOrderFromChat(request, env); }
+      else if(url.pathname==='/ecom/orders/insights' && request.method==='GET'){ res=await handleEcomOrdersInsights(request, env); }
+      else if(url.pathname==='/ecom/orders/session' && request.method==='GET'){ res=await handleEcomOrderSession(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='PATCH'){ res=await handleEcomCategoryUpdate(request, env); }

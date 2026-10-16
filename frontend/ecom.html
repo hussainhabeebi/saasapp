@@ -108,6 +108,23 @@ tbody tr:hover{background:var(--bg)}
 .order-bulk{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;background:var(--accent-soft);border:1px solid var(--ls);border-radius:10px;font-size:13px;color:var(--accent-ink)}
 .order-bulk .save-btn{padding:7px 12px;font-size:12px}
 .order-bulk .bulk-count{font-weight:600;margin-right:auto}
+/* Baby Care Orders: status / date counts, duplicates, warm leads, order session */
+.bc-panel{margin-bottom:16px;display:flex;flex-direction:column;gap:12px}
+.bc-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.bc-row-lbl{font-size:12px;font-weight:600;color:var(--muted);margin-right:4px}
+.cnt-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--card);border-radius:20px;padding:5px 11px;font-size:12px;font-family:var(--body);color:var(--ink);cursor:pointer}
+.cnt-chip b{font-family:var(--disp);font-size:13px;color:var(--accent-ink)}
+.cnt-chip.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink)}
+.cnt-chip.warn b{color:#B45309}
+.dup-flag{display:inline-block;margin-top:3px;padding:2px 6px;border-radius:5px;font-size:10px;font-weight:600;background:#FEF3C7;color:#92400E}
+.src-cell{font-size:12px;line-height:1.45}
+.src-cell .muted{color:var(--muted)}
+.sess-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.sess-grid div{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px}
+.sess-grid small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}
+.sess-msg{font-size:12px;padding:6px 10px;border-radius:8px;margin-bottom:6px;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere}
+.sess-msg.customer{background:var(--bg);border:1px solid var(--line)}
+.sess-msg.shop{background:var(--accent-soft);margin-left:auto}
 .ord-check{width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}
 .icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
 .icon-btn:hover{background:var(--bg)}
@@ -328,6 +345,31 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
     <div class="stat"><div class="stat-val" id="statShipped">—</div><div class="stat-lbl">Shipped</div></div>
     <div class="stat"><div class="stat-val" id="statRevenue">—</div><div class="stat-lbl">Revenue</div></div>
   </div>
+  <!-- Baby Care only (isBabyCareStore) — orders by status / by date, duplicates, warm leads -->
+  <div class="bc-panel" id="bcOrdersPanel" style="display:none">
+    <div class="card">
+      <div class="bc-row" id="orderStatusChips"></div>
+      <div class="bc-row" style="margin-top:12px">
+        <span class="bc-row-lbl">Orders by date</span>
+        <input class="search-input" id="orderDateFilter" type="date" style="width:160px" onchange="setOrderDateFilter(this.value)" title="Show only orders received on this date">
+        <span id="orderDateSummary" style="font-size:13px;font-weight:600;color:var(--accent-ink)"></span>
+      </div>
+      <div class="bc-row" id="orderDayCounts" style="margin-top:8px"></div>
+    </div>
+    <div class="card" id="warmLeadsCard">
+      <div class="card-title-row">
+        <div class="card-title">🌡️ Warm leads — chatting, no order yet</div>
+        <button class="save-btn sec" onclick="loadOrderInsights(true)" title="Refresh">↻</button>
+      </div>
+      <div class="s-hint" id="warmLeadsHint" style="margin:-4px 0 10px">Customers the AI has talked with several times who haven't placed an order yet.</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Customer</th><th>Chats</th><th>Last message</th><th>Stage</th><th>Source</th><th>Assigned to</th></tr></thead>
+          <tbody id="warmLeadsTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   <div class="card">
     <div class="card-title-row">
       <div class="card-title">Orders</div>
@@ -350,7 +392,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <table>
         <thead>
           <tr>
-            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th>Actions</th>
+            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th class="bc-only" style="display:none">Source / Assigned</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1059,6 +1101,15 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
   </div>
 </div>
 
+<!-- ORDER SESSION MODAL (Baby Care) -->
+<div class="modal-overlay" id="orderSessionOverlay" onclick="if(event.target===this) closeOrderSession()">
+  <div class="modal-card">
+    <div class="modal-title" id="orderSessionTitle">Order session</div>
+    <div id="orderSessionBody"></div>
+    <div class="s-row" style="justify-content:flex-end"><button class="save-btn sec" onclick="closeOrderSession()">Close</button></div>
+  </div>
+</div>
+
 <!-- ADD ORDER MODAL -->
 <div class="modal-overlay" id="orderModalOverlay" onclick="if(event.target===this) closeOrderModal()">
   <div class="modal-card">
@@ -1179,6 +1230,17 @@ let tmSelectedProductIds = new Set();
 const ORDER_STATUS_OPTIONS = ['draft','pending','received','processing','shipped','delivered','cancelled'];
 let editingOrderId = null;
 let selectedOrderIds = new Set();
+// Baby Care Orders extras — status / date filters, duplicate flags, lead source + assignee,
+// warm leads, order session. The lead details come from session-gated Worker routes, so they
+// need the dashboard sign-in (same-origin localStorage, or ?token= when opened directly).
+let orderStatusFilter = '';
+let orderDateFilter = '';
+let orderDupOnly = false;
+let orderInsightsByPhone = null;
+let orderInsightsError = '';
+let warmLeads = [];
+const ORDER_OPEN_STATUSES = ['pending','received','processing'];
+const ecomSessionToken = (() => { try { return params.get('token') || localStorage.getItem('lv_session') || ''; } catch(e) { return params.get('token') || ''; } })();
 
 const WA_TEMPLATE_KINDS = [
   { key:'received',  label:'Order Received Template' },
@@ -2373,36 +2435,206 @@ async function deleteTestimonialById(id) {
 }
 
 // ── ORDERS ──────────────────────────────────────
+function isBabyCareStore() { return botConfig?.ecom_communication_style === 'baby_care'; }
+function orderColCount() { return isBabyCareStore() ? 9 : 8; }
+// Last 10 digits — "+91 98765 43210" and "919876543210" are the same customer (Worker: ecomPhoneKey).
+function phoneKey(p) { const d = String(p || '').replace(/\D/g, ''); return d.length > 10 ? d.slice(-10) : d; }
+function orderDay(o) { return String(o.order_date || o.CreatedAt || '').slice(0, 10); }
+function orderTime(o) { return Date.parse(o.CreatedAt || '') || Date.parse(o.order_date || '') || 0; }
+
 async function loadOrders() {
   const tbody = document.getElementById('ordersTbody');
   if (!ecomTableIds.orders) {
-    tbody.innerHTML = '<tr><td colspan="8" class="loading-row">Set Orders Table ID in Settings first</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${orderColCount()}" class="loading-row">Set Orders Table ID in Settings first</td></tr>`;
     return;
   }
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders?client_id=${encodeURIComponent(clientId)}&sort=-order_date&limit=200`);
     const data = await r.json();
-    if (!r.ok) { tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
+    if (!r.ok) { tbody.innerHTML = `<tr><td colspan="${orderColCount()}" class="loading-row">Error: ${esc(data.error||'Failed to load orders')}</td></tr>`; return; }
     allOrders = data.list || [];
     const ids = new Set(allOrders.map(o => o.Id));
     selectedOrderIds.forEach(id => { if (!ids.has(id)) selectedOrderIds.delete(id); });
     renderOrdersTable();
+    if (isBabyCareStore()) loadOrderInsights();
   } catch(e) {
-    tbody.innerHTML = `<tr><td colspan="8" class="loading-row">Error: ${esc(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${orderColCount()}" class="loading-row">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
+// Lead source / assignee per phone + the warm-lead list (Baby Care only, needs a session).
+async function loadOrderInsights(force) {
+  if (!isBabyCareStore()) return;
+  if (orderInsightsByPhone && !force) { renderOrdersTable(); return; }
+  if (!ecomSessionToken) {
+    orderInsightsError = 'Open Ecommerce from the dashboard (signed in) to see lead sources, assignees and warm leads.';
+    orderInsightsByPhone = {}; warmLeads = []; renderOrdersTable(); return;
+  }
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/insights?client_id=${encodeURIComponent(clientId)}`, { headers: { Authorization: 'Bearer ' + ecomSessionToken } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    orderInsightsByPhone = {};
+    (data.leads || []).forEach(l => { if (l.phone_key && !orderInsightsByPhone[l.phone_key]) orderInsightsByPhone[l.phone_key] = l; });
+    warmLeads = data.warm_leads || [];
+    orderInsightsError = '';
+    const n = data.warm_min_interactions || 2;
+    document.getElementById('warmLeadsHint').textContent = `Customers the AI has talked with ${n}+ times who haven't placed an order yet.`;
+  } catch(e) {
+    orderInsightsByPhone = {}; warmLeads = [];
+    orderInsightsError = 'Lead details unavailable: ' + e.message;
+  }
+  renderOrdersTable();
+}
+
+// Ids of open orders that share a phone number with another open order within 24 hours.
+function duplicateOrderIds() {
+  const byPhone = {};
+  allOrders.forEach(o => {
+    const k = phoneKey(o.customer_phone);
+    if (k && ORDER_OPEN_STATUSES.includes(String(o.status || '').toLowerCase())) (byPhone[k] = byPhone[k] || []).push(o);
+  });
+  const dup = new Map();
+  Object.values(byPhone).forEach(list => {
+    for (const a of list) for (const b of list) {
+      if (a === b) continue;
+      const ta = orderTime(a), tb = orderTime(b);
+      if (!ta || !tb || Math.abs(ta - tb) < 24 * 3600 * 1000) { dup.set(a.Id, b); break; }
+    }
+  });
+  return dup;
+}
+
+function setOrderStatusFilter(s) { orderStatusFilter = orderStatusFilter === s ? '' : s; orderDupOnly = false; renderOrdersTable(); }
+function toggleDupOnly() { orderDupOnly = !orderDupOnly; if (orderDupOnly) orderStatusFilter = ''; renderOrdersTable(); }
+function setOrderDateFilter(d) { orderDateFilter = d || ''; const el = document.getElementById('orderDateFilter'); if (el && el.value !== orderDateFilter) el.value = orderDateFilter; renderOrdersTable(); }
+
+function fmtDay(d) {
+  const t = Date.parse(d + 'T00:00:00');
+  return t ? new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : d;
+}
+function ordinalDay(d) {
+  const n = parseInt(String(d).slice(8, 10), 10);
+  if (!n) return d;
+  const s = (n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+  return n + s;
+}
+
+function renderBabyCareOrderPanel() {
+  const panel = document.getElementById('bcOrdersPanel');
+  const on = isBabyCareStore();
+  panel.style.display = on ? '' : 'none';
+  document.querySelectorAll('.bc-only').forEach(el => el.style.display = on ? '' : 'none');
+  if (!on) return;
+  // 1. how many orders under each status
+  const counts = {};
+  allOrders.forEach(o => { const s = String(o.status || 'pending').toLowerCase(); counts[s] = (counts[s] || 0) + 1; });
+  const statuses = [...ORDER_STATUS_OPTIONS, ...Object.keys(counts).filter(s => !ORDER_STATUS_OPTIONS.includes(s))];
+  const label = s => s === 'draft' ? 'Draft (in chat)' : s.charAt(0).toUpperCase() + s.slice(1);
+  const dupCount = duplicateOrderIds().size;
+  document.getElementById('orderStatusChips').innerHTML = `<span class="bc-row-lbl">Orders by status</span>`
+    + `<button class="cnt-chip ${!orderStatusFilter && !orderDupOnly ? 'active' : ''}" onclick="setOrderStatusFilter('')">All <b>${allOrders.length}</b></button>`
+    + statuses.map(s => `<button class="cnt-chip ${orderStatusFilter === s ? 'active' : ''}" data-status="${escAttr(s)}" onclick="setOrderStatusFilter(this.dataset.status)">${esc(label(s))} <b>${counts[s] || 0}</b></button>`).join('')
+    + `<button class="cnt-chip warn ${orderDupOnly ? 'active' : ''}" id="orderDupChip" onclick="toggleDupOnly()" title="Open orders from the same phone number within 24 hours">⚠ Duplicates <b>${dupCount}</b></button>`;
+  // 2. how many orders on a date
+  const byDay = {};
+  allOrders.forEach(o => { const d = orderDay(o); if (d) byDay[d] = (byDay[d] || 0) + 1; });
+  const sum = document.getElementById('orderDateSummary');
+  if (orderDateFilter) {
+    const n = byDay[orderDateFilter] || 0;
+    sum.innerHTML = `${n} order${n === 1 ? '' : 's'} received on the ${esc(ordinalDay(orderDateFilter))} (${esc(fmtDay(orderDateFilter))}) <button class="icon-btn" style="margin-left:6px" onclick="setOrderDateFilter('')" title="Show all dates">✕</button>`;
+  } else sum.textContent = '';
+  const days = Object.keys(byDay).sort().reverse().slice(0, 14);
+  document.getElementById('orderDayCounts').innerHTML = days.length
+    ? days.map(d => `<button class="cnt-chip ${orderDateFilter === d ? 'active' : ''}" data-day="${escAttr(d)}" onclick="setOrderDateFilter(orderDateFilter===this.dataset.day?'':this.dataset.day)">${esc(fmtDay(d))} <b>${byDay[d]}</b></button>`).join('')
+    : '<span class="s-hint">No orders yet</span>';
+  // 3. warm leads
+  const wt = document.getElementById('warmLeadsTbody');
+  if (!orderInsightsByPhone) wt.innerHTML = `<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>`;
+  else if (orderInsightsError) wt.innerHTML = `<tr><td colspan="6" class="loading-row">${esc(orderInsightsError)}</td></tr>`;
+  else if (!warmLeads.length) wt.innerHTML = `<tr><td colspan="6"><div class="empty-state" style="padding:16px">No warm leads right now</div></td></tr>`;
+  else wt.innerHTML = warmLeads.slice(0, 100).map(l => `
+    <tr>
+      <td>${esc(l.name || '—')}<div style="font-size:11px;color:var(--muted)">${esc(l.phone)}</div>${l.draft_order ? `<span class="badge draft" style="margin-top:3px">Draft #${esc(String(l.draft_order))}</span>` : ''}</td>
+      <td title="Customer messages / AI replies">${l.customer_msgs} / ${l.bot_msgs}</td>
+      <td style="font-size:12px">${esc(fmtWhen(l.last_at))}</td>
+      <td>${esc(l.stage || '—')}${l.score ? `<div style="font-size:11px;color:var(--muted)">${esc(l.score)}</div>` : ''}</td>
+      <td style="font-size:12px">${esc(l.source)}${l.created_by ? `<div style="color:var(--muted)">by ${esc(l.created_by)}</div>` : ''}</td>
+      <td style="font-size:12px">${esc(l.owner_name || 'Unassigned')}</td>
+    </tr>`).join('');
+}
+
+function fmtWhen(iso) {
+  const t = Date.parse(iso || '');
+  return t ? new Date(t).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '—';
+}
+
+function orderSourceCell(o) {
+  if (!orderInsightsByPhone) return '<span class="spinner"></span>';
+  const l = orderInsightsByPhone[phoneKey(o.customer_phone)];
+  if (!l) return `<span class="muted">${orderInsightsError ? '—' : 'No chat lead'}</span>`;
+  return `<div>${esc(l.source)}${l.created_by ? ` <span class="muted">by ${esc(l.created_by)}</span>` : ''}</div><div class="muted">→ ${esc(l.owner_name || 'Unassigned')}</div>`;
+}
+
+// 6. the chat session behind an order
+async function openOrderSession(id) {
+  const o = allOrders.find(x => x.Id === id);
+  if (!o) return;
+  document.getElementById('orderSessionTitle').textContent = 'Order session — #' + (o.order_id || o.Id);
+  const body = document.getElementById('orderSessionBody');
+  body.innerHTML = '<div class="loading-row"><span class="spinner"></span>Loading…</div>';
+  document.getElementById('orderSessionOverlay').classList.add('active');
+  if (!ecomSessionToken) { body.innerHTML = `<div class="s-hint">Open Ecommerce from the dashboard (signed in) to see the order session.</div>`; return; }
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/session?client_id=${encodeURIComponent(clientId)}&Id=${encodeURIComponent(id)}`, { headers: { Authorization: 'Bearer ' + ecomSessionToken } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    const s = data.session || {};
+    const mins = s.minutes_to_order;
+    const took = mins == null ? '—' : mins < 60 ? `${mins} min` : mins < 2880 ? `${Math.round(mins / 60)} h` : `${Math.round(mins / 1440)} days`;
+    const cell = (k, v) => `<div><small>${esc(k)}</small>${esc(v == null || v === '' ? '—' : String(v))}</div>`;
+    body.innerHTML = (data.no_chat ? `<div class="s-hint" style="margin-bottom:10px">No WhatsApp / Instagram chat found for ${esc(o.customer_phone || 'this order')}.</div>` : '')
+      + `<div class="sess-grid">`
+      + cell('Order', `#${s.order_id || o.order_id || o.Id} · ${s.order_status || o.status || ''}`)
+      + cell('Order date', s.order_date || o.order_date)
+      + cell('Chat started', fmtWhen(s.first_at))
+      + cell('Last message', fmtWhen(s.last_at))
+      + cell('Chat → order', took)
+      + cell('Messages before order', data.no_chat ? '—' : `${s.customer_msgs_before_order} customer · ${s.bot_msgs_before_order} AI`)
+      + cell('Total messages', data.no_chat ? '—' : `${s.customer_msgs} customer · ${s.bot_msgs} AI`)
+      + cell('Channel', s.channel)
+      + cell('Stage', s.stage)
+      + cell('Lead source', s.source + (s.created_by ? ` (by ${s.created_by})` : ''))
+      + cell('Assigned to', s.owner_name || 'Unassigned')
+      + cell('Conversation', s.conversation_id ? '#' + s.conversation_id : '')
+      + `</div>`
+      + ((s.recent || []).length ? `<div class="flow-section-title">Latest messages</div>` + s.recent.map(m => `<div class="sess-msg ${m.role === 'customer' ? 'customer' : 'shop'}">${esc(m.text)}${m.ts ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(fmtWhen(m.ts))}</div>` : ''}</div>`).join('') : '');
+  } catch(e) {
+    body.innerHTML = `<div class="s-hint">Error: ${esc(e.message)}</div>`;
+  }
+}
+function closeOrderSession() { document.getElementById('orderSessionOverlay').classList.remove('active'); }
+
 function filteredOrders() {
   const q = (document.getElementById('orderSearch')?.value || '').trim().toLowerCase();
-  return q
+  let list = q
     ? allOrders.filter(o => [o.customer_name, o.customer_phone, o.items, String(o.order_id||o.Id||'')].some(v => (v||'').toString().toLowerCase().includes(q)))
     : allOrders;
+  if (isBabyCareStore()) {
+    if (orderStatusFilter) list = list.filter(o => String(o.status || 'pending').toLowerCase() === orderStatusFilter);
+    if (orderDateFilter) list = list.filter(o => orderDay(o) === orderDateFilter);
+    if (orderDupOnly) { const dup = duplicateOrderIds(); list = list.filter(o => dup.has(o.Id)); }
+  }
+  return list;
 }
 
 function renderOrdersTable() {
   const tbody = document.getElementById('ordersTbody');
   const list = filteredOrders();
   renderOrderBulkBar();
+  renderBabyCareOrderPanel();
+  const babyCare = isBabyCareStore();
+  const dupOf = babyCare ? duplicateOrderIds() : new Map();
 
   const pending  = allOrders.filter(o => o.status === 'pending').length;
   const shipped  = allOrders.filter(o => o.status === 'shipped').length;
@@ -2414,7 +2646,7 @@ function renderOrdersTable() {
   document.getElementById('statRevenue').textContent = revenue.toLocaleString();
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${orderColCount()}"><div class="empty-state"><div class="empty-icon">🧾</div>${allOrders.length ? 'No orders match your search' : 'No orders found'}</div></td></tr>`;
     return;
   }
   const statusClass = s => ({draft:'draft',shipped:'shipped',delivered:'shipped',pending:'pending',received:'processing',cancelled:'cancelled',processing:'processing'}[s]||'');
@@ -2425,12 +2657,13 @@ function renderOrdersTable() {
     <tr>
       <td><input type="checkbox" class="ord-check" ${selectedOrderIds.has(o.Id)?'checked':''} onchange="toggleOrderSelected(${o.Id}, this.checked)" title="Select for export"></td>
       <td style="font-family:var(--mono);font-size:12px">#${esc(String(o.order_id||o.Id||'—'))}</td>
-      <td>${esc(o.customer_name||'—')}${o.customer_phone ? `<div style="font-size:11px;color:var(--muted)">${esc(o.customer_phone)}</div>` : ''}</td>
+      <td>${esc(o.customer_name||'—')}${o.customer_phone ? `<div style="font-size:11px;color:var(--muted)">${esc(o.customer_phone)}</div>` : ''}${dupOf.has(o.Id) ? `<span class="dup-flag" title="Same phone number has another open order within 24 hours">⚠ Possible duplicate of #${esc(String(dupOf.get(o.Id).order_id||dupOf.get(o.Id).Id))}</span>` : ''}</td>
       <td>${esc(o.order_date||'—')}</td>
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
-      <td><div class="row-actions"><button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn" onclick="exportOrders('orders', [${o.Id}])" title="Download order PDF">📄</button><button class="icon-btn" onclick="exportOrders('packing', [${o.Id}])" title="Download packing list">📦</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
+      ${babyCare ? `<td class="src-cell">${orderSourceCell(o)}</td>` : ''}
+      <td><div class="row-actions">${babyCare ? `<button class="icon-btn" onclick="openOrderSession(${o.Id})" title="Order session — the chat behind this order">🕑</button>` : ''}<button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn" onclick="exportOrders('orders', [${o.Id}])" title="Download order PDF">📄</button><button class="icon-btn" onclick="exportOrders('packing', [${o.Id}])" title="Download packing list">📦</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`;
   }).join('');
 }
@@ -2518,7 +2751,7 @@ function closeOrderModal() {
   document.getElementById('orderModalOverlay').classList.remove('active');
 }
 
-async function submitAddOrder() {
+async function submitAddOrder(allowDuplicate) {
   const phone = document.getElementById('omCustomerPhone').value.trim();
   if (!phone) { showMsg('orderModalMsg', 'Customer phone is required'); return; }
   const body = {
@@ -2539,6 +2772,7 @@ async function submitAddOrder() {
   const payment = document.getElementById('omPayment').value.trim();
   const prevPayment = editingOrderId ? (allOrders.find(x => x.Id === editingOrderId)?.payment_method || '') : '';
   if (payment || prevPayment) body.payment_method = payment;
+  if (allowDuplicate === true) body.allow_duplicate = true;
   showMsg('orderModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
@@ -2546,6 +2780,14 @@ async function submitAddOrder() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(editingOrderId ? { ...body, Id: editingOrderId } : body)
     });
+    // Baby Care: the Worker refuses a second open order for the same phone within 24h.
+    if (r.status === 409 && !editingOrderId) {
+      const d = await r.json().catch(() => ({}));
+      document.getElementById('orderModalMsg').textContent = '';
+      if (confirm((d.message || 'This phone number already has an open order.') + '\n\nSave this as a separate new order anyway?')) return submitAddOrder(true);
+      showMsg('orderModalMsg', `Not saved — duplicate of #${d.duplicate_of?.order_id || d.duplicate_of?.Id || ''}`, 6000);
+      return;
+    }
     if (!r.ok) throw new Error('HTTP ' + r.status);
     closeOrderModal();
     loadOrders();
