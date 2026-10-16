@@ -57,6 +57,11 @@
     --shadow-md:0 4px 16px rgba(0,0,0,.45);
   }
 }
+/* Lead origin — Instagram (via Chatwoot) and manually added leads get their own colour; WhatsApp
+   leads keep the default look. Used by leadOriginBadge()/leadOriginClass(). */
+:root{--ig:#C13584;--ig-soft:#FCE7F3;--manual:#C2410C;--manual-soft:#FFEDD5}
+@media(prefers-color-scheme:dark){html:not(.light):not(.dark){--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210}}
+html.dark{--ig:#F472B6;--ig-soft:#3B1530;--manual:#FB923C;--manual-soft:#3A2210}
 html.dark{
   --bg:#0B1613;--card:#141F1B;--ink:#E9F1EC;--muted:#8CA298;
   --line:#233029;--ls:#31423A;--warn-soft:#3A2A12;
@@ -554,6 +559,18 @@ tr:hover td{background:#FAFCFB}
 .lead-item:last-child{border-bottom:none}
 .li-avatar{width:40px;height:40px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .li-body{flex:1;min-width:0}
+.ig-chat-btn,.ig-chat-btn:hover{background:var(--ig);color:#fff;text-decoration:none;border-color:transparent}
+.origin-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle;white-space:nowrap}
+.origin-badge.ig{background:var(--ig-soft);color:var(--ig)}
+.origin-badge.manual{background:var(--manual-soft);color:var(--manual)}
+.lead-item.origin-ig,.kb-card.origin-ig{box-shadow:inset 3px 0 0 var(--ig)}
+.lead-item.origin-manual,.kb-card.origin-manual{box-shadow:inset 3px 0 0 var(--manual)}
+.kb-card.origin-ig{box-shadow:inset 3px 0 0 var(--ig),var(--shadow)}
+.kb-card.origin-manual{box-shadow:inset 3px 0 0 var(--manual),var(--shadow)}
+.origin-ig .li-avatar{background:var(--ig-soft);color:var(--ig)}
+.origin-manual .li-avatar{background:var(--manual-soft);color:var(--manual)}
+.leads-tbl tr.origin-ig td:first-child{box-shadow:inset 3px 0 0 var(--ig)}
+.leads-tbl tr.origin-manual td:first-child{box-shadow:inset 3px 0 0 var(--manual)}
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 @media(max-width:767px){.lead-ref-list{display:none}}
@@ -6520,10 +6537,10 @@ function handoverWaitInfo(l){
 function kbCard(l){
   const sentimentIcon=l.Sentiment==='Frustrated'?'😠':(l.Sentiment==='Negative'?'🙁':'');
   const overdue=handoverWaitInfo(l)?.overdue;
-  return `<div class="kb-card ${scoreCardClass(l.Score)}" draggable="true" id="kbc${l.Id}"
+  return `<div class="kb-card ${scoreCardClass(l.Score)} ${leadOriginClass(l)}" draggable="true" id="kbc${l.Id}"
     ondragstart="kbStart(event,${l.Id})" ondragend="kbEnd(event)"
     onclick="openDetail(${l.Id})">
-    <div class="kb-name">${esc(leadDisplayName(l)||'Unknown')}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
+    <div class="kb-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
     <div class="kb-phone">${maskPhone(l.Phone)}</div>
     <div class="kb-meta">${scoreBadge(l.Score)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
   </div>`;
@@ -7502,11 +7519,11 @@ function renderLeadsList(){
     const needsCallback=leadNeedsCallback(l);
     const attemptBadge=leadAttemptBadge(l);
     const callDoneBadge=leadCallDoneBadge(l);
-    return `<div class="lead-item" onclick="openDetail(${l.Id})">
+    return `<div class="lead-item ${leadOriginClass(l)}" onclick="openDetail(${l.Id})">
       <input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)" style="margin-right:2px;align-self:flex-start;margin-top:14px">
       <div class="li-avatar">${initials}</div>
       <div class="li-body">
-        <div class="li-name">${esc(l.Name||'Unknown')}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
+        <div class="li-name">${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}${l.IsDuplicate==='Yes'?'<span title="Duplicate phone" style="margin-left:4px">⚠️</span>':''}</div>
         <div class="li-sub"><span class="lead-ref lead-ref-list">${leadRef(l)} · </span>${esc(l.Stage||'new')} · ${maskPhone(l.Phone)}${l.Owner?' · '+esc(l.Owner):''}</div>
         ${(tags.length||attemptBadge||callDoneBadge||l.InterestedProduct||(l.ProductCategory||l.Brand))?`<div class="tags-row" style="margin-top:4px">${leadBrandChip(l)}${tags.slice(0,3).map(t=>`<span class="tag ${tagClass(t)}">${esc(t)}</span>`).join('')}${attemptBadge}${callDoneBadge}</div>`:''}
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
@@ -7889,10 +7906,10 @@ function renderLeadsTable(){
     const needsCallback=leadNeedsCallback(l);
     const attemptBadge=leadAttemptBadge(l);
     const callDoneBadge=leadCallDoneBadge(l);
-    return `<tr onclick="openDetail(${l.Id})">
+    return `<tr class="${leadOriginClass(l)}" onclick="openDetail(${l.Id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="bulk-chk" data-id="${l.Id}" ${_bulkSelectedLeadIds.has(l.Id)?'checked':''} onclick="toggleBulkSelect(${l.Id},event)"></td>
       <td class="lead-ref lead-ref-list" style="white-space:nowrap">${leadRef(l)}</td>
-      <td>${esc(l.Name||'Unknown')}</td>
+      <td>${esc(leadDisplayName(l)||'Unknown')}${leadOriginBadge(l)}</td>
       <td>${esc(maskPhone(l.Phone))}</td>
       <td>${esc(l.Stage||'new')}${attemptBadge?`<br>${attemptBadge}`:''}${callDoneBadge?`<br>${callDoneBadge}`:''}</td>
       ${tsCol?`<td onclick="event.stopPropagation()" style="min-width:190px">${tsInlineStatusHTML(l)}</td>`:''}
@@ -9038,6 +9055,8 @@ async function saveLead(){
   if(!id){
     const country=phoneToCountryClient(body.Phone);
     if(country) body.Country=country;
+    await ensureLeadsField('CreatedVia');
+    body.CreatedVia='manual';
   }
   if(email && (!original || !original.CompanyDomain)){
     const co=companyFromEmail(email);
@@ -9081,7 +9100,7 @@ function openDetail(id){
   const lead=allLeads.find(l=>l.Id===id);
   if(!lead)return;
   currentLead=lead;
-  $id('detailName').textContent=leadDisplayName(lead)||'Unknown';
+  $id('detailName').innerHTML=esc(leadDisplayName(lead)||'Unknown')+leadOriginBadge(lead);
   $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
 
   // actions
@@ -9536,7 +9555,7 @@ function callStateFor(l){
 
 // Returns HTML for the smart split call button with channel dropdown
 function callBtnHTML(l, label){
-  if(isIgLead(l)) return `<span class="call-btn-wrap"><a class="btn btn-sm call-main" href="#" title="Open the Instagram chat" onclick="event.preventDefault();event.stopPropagation();openLeadChat(${l.Id})">📷 Chat</a></span>`;
+  if(isIgLead(l)) return `<span class="call-btn-wrap"><a class="btn btn-sm call-main ig-chat-btn" href="#" title="Open the Instagram chat" onclick="event.preventDefault();event.stopPropagation();openLeadChat(${l.Id})">📷 Chat</a></span>`;
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   const tel=`tel:+${phone}`;
   const wa=`https://wa.me/${phone}`;
@@ -15272,6 +15291,20 @@ function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
 // engineParseChatwootPayload) — not a number, so never masked, dialled or opened in WhatsApp.
 function isIgLeadKey(p){return String(p||'').startsWith('ig:');}
 function isIgLead(l){return String(l?.Channel||'').toLowerCase()==='instagram'||isIgLeadKey(l?.Phone);}
+// Where a lead came from, for its badge/colour: 'instagram', 'manual' (Add Lead form or a file
+// import — CreatedVia, stamped on create), or '' for everything else (WhatsApp, ads, web forms).
+function leadOrigin(l){
+  if(isIgLead(l)) return 'instagram';
+  const via=String(l?.CreatedVia||'').toLowerCase();
+  return via==='manual'||via==='import'?'manual':'';
+}
+function leadOriginClass(l){ const o=leadOrigin(l); return o==='instagram'?'origin-ig':o==='manual'?'origin-manual':''; }
+function leadOriginBadge(l){
+  const o=leadOrigin(l);
+  if(o==='instagram') return '<span class="origin-badge ig" title="Came in through Instagram">📷 Instagram</span>';
+  if(o==='manual') return `<span class="origin-badge manual" title="${String(l.CreatedVia).toLowerCase()==='import'?'Imported from a file':'Added by hand'}">✍️ ${String(l.CreatedVia).toLowerCase()==='import'?'Imported':'Manual'}</span>`;
+  return '';
+}
 function leadDisplayName(l){return l?.Name||(isIgLeadKey(l?.Phone)?'Instagram user':l?.Phone)||'';}
 function openLeadChat(id){navigate('chats');const l=(allLeads||[]).find(x=>String(x.Id)===String(id));if(typeof setChatChannel==='function')setChatChannel(isIgLead(l)?'instagram':'whatsapp');if(typeof chatSelectLead==='function')chatSelectLead(id);}
 function maskPhone(p){if(!p)return'—';if(isIgLeadKey(p))return'📷 Instagram';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
@@ -19398,6 +19431,7 @@ function renderImportMapping(){
 
 async function doImport(){
   const btn=$id('importBtn');btn.disabled=true;
+  await ensureLeadsField('CreatedVia');
   const mapping={};
   IMPORT_FIELDS.forEach(f=>{const v=$id('map_'+f)?.value;if(v!=='')mapping[f]=parseInt(v);});
   if(mapping.Phone===undefined){$id('importStatus').textContent='Phone column is required';btn.disabled=false;return;}
@@ -19420,6 +19454,7 @@ async function doImport(){
     if(!lead.Stage||!validStages.includes(lead.Stage))lead.Stage='new';
     if(!lead.Score||!['Hot','Warm','Cold'].includes(lead.Score))lead.Score='Cold';
     lead.Date=new Date().toISOString();
+    lead.CreatedVia='import';
     try{
       const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,lead);
       if(created?.Id) _importCreated.push({...lead,Id:created.Id});
