@@ -1425,11 +1425,29 @@ const CROSS_SELL_DEFAULTS = {
 // Service Category field, the Leads page category filter, the Travel Agency Home page's
 // categorized-leads widget, and the per-user "lead categories" access restriction below.
 // Ticket / Package / Hotel / Other Services are the original four — kept so existing leads still match.
-const LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Other Services'];
+const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+// Built-in categories plus the account's own (Settings → 🗂️ Service Categories, stored as a JSON
+// array in CLIENTS.lead_categories_custom). Rebuilt by refreshLeadCategories() whenever the client
+// record loads or the list is edited, so every picker, filter and report sees the same list.
+let LEAD_CATEGORIES = BASE_LEAD_CATEGORIES.slice();
+function customLeadCategories(){
+  let v=[]; try{ v=JSON.parse(clientRecord?.lead_categories_custom||'[]'); }catch(e){}
+  return Array.isArray(v)?[...new Set(v.map(x=>String(x||'').trim().slice(0,60)).filter(Boolean))].filter(c=>!BASE_LEAD_CATEGORIES.includes(c)):[];
+}
+function refreshLeadCategories(){
+  LEAD_CATEGORIES=[...BASE_LEAD_CATEGORIES, ...customLeadCategories()];
+  // Rebuild the Edit Lead picker and the Leads filter, keeping what is selected.
+  const opts=LEAD_CATEGORIES.map(c=>`<option value="${esc(c)}">${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('');
+  const sc=$id('fServiceCategory');
+  if(sc){ const v=sc.value; sc.innerHTML='<option value="">Select category…</option>'+opts; sc.value=v; }
+  const cf=$id('leadCategoryFilter');
+  if(cf){ const v=cf.value; cf.innerHTML='<option value="">All categories</option>'+opts;
+    if(v&&![...cf.options].some(o=>o.value===v)) cf.insertAdjacentHTML('beforeend',`<option value="${esc(v)}">${esc(v)}</option>`); cf.value=v; }
+}
 function serviceCategoryIcon(cat){
   return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
     Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
-    'Umrah and Hajj':'🕋','Other Services':'🧳'}[cat]||'🗂️';
+    'Umrah and Hajj':'🕋','Marketing Messages':'📣','Other Services':'🧳'}[cat]||'🏷️';
 }
 
 // Per-user module access (User Management → profile → "Module Access"). Every nav tab a teammate
@@ -2508,6 +2526,20 @@ const ROLES = {
               </div>
               <button class="save-btn" id="saveIndustryBtn" onclick="saveIndustry()">Save</button>
               <span class="save-msg" id="saveIndustryMsg"></span>
+            </div>
+          </div>
+
+          <!-- Travel only: the account's own Service Categories on top of the built-in list
+               (CLIENTS.lead_categories_custom). See refreshLeadCategories(). -->
+          <div class="settings-section" id="leadCatSettings" style="display:none;border-top:1px solid var(--line);padding-top:14px">
+            <div class="s-head">🗂️ Service Categories</div>
+            <div class="s-note">The categories staff pick on a lead (Leads table, Edit Lead, Chats) and that Reports, Home and the inbox group by. Add your own below — removing one keeps it on leads that already have it.</div>
+            <div id="leadCatBuiltIn" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+            <div id="leadCatCustom" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input class="form-input" id="leadCatNew" maxlength="60" placeholder="New category, e.g. Cruise" style="max-width:260px" onkeydown="if(event.key==='Enter'){event.preventDefault();addLeadCategory();}">
+              <button class="save-btn" id="leadCatAddBtn" onclick="addLeadCategory()">Add</button>
+              <span class="save-msg" id="leadCatMsg"></span>
             </div>
           </div>
 
@@ -12028,6 +12060,7 @@ function populateSettings(){
   const indEl=$id('cfgIndustry');
   indEl.innerHTML=Object.entries(INDUSTRIES).map(([k,v])=>`<option value="${k}"${clientRecord.industry===k?' selected':''}>${v.label}</option>`).join('');
   populateMultiIndustrySection();
+  renderLeadCategorySettings();
   // prompt / test — followup_count/hours/messages retired from this page, see the Follow-up
   // Messages settings-section note above; broadcast.html's Follow-up Engine is now the only place
   // that reads/writes follow-up config (followup_ladder_steps, D1).
@@ -12278,9 +12311,46 @@ async function saveIndustry(){
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
     await applyIndustryChange($id('cfgIndustry').value);
+    renderLeadCategorySettings();
     msg.textContent='✓ Saved — theme applied';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+}
+
+// ── SERVICE CATEGORIES (travel) — Settings → Business Setup ─────────────────────
+function renderLeadCategorySettings(){
+  const box=$id('leadCatSettings'); if(!box) return;
+  const on=clientRecord?.industry==='travel';
+  box.style.display=on?'':'none';
+  if(!on) return;
+  const chip=(c,custom)=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:4px 9px;border:1px solid ${custom?'var(--accent)':'var(--line)'};border-radius:999px;background:${custom?'var(--accent-soft)':'var(--card)'}">${serviceCategoryIcon(c)} ${esc(c)}${custom?`<button type="button" class="lead-cat-del" title="Remove ${esc(c)}" aria-label="Remove ${esc(c)}" onclick="removeLeadCategory(${esc(JSON.stringify(c))})" style="border:0;background:none;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;padding:0 0 0 2px">×</button>`:''}</span>`;
+  $id('leadCatBuiltIn').innerHTML=BASE_LEAD_CATEGORIES.map(c=>chip(c,false)).join('');
+  const custom=customLeadCategories();
+  $id('leadCatCustom').innerHTML=custom.length?custom.map(c=>chip(c,true)).join(''):'<span class="s-note" style="margin:0">No custom categories yet.</span>';
+}
+async function saveLeadCategories(list, okText){
+  const msg=$id('leadCatMsg'), btn=$id('leadCatAddBtn');
+  msg.className='save-msg'; msg.textContent='Saving…'; if(btn) btn.disabled=true;
+  try{
+    await ensureClientField('lead_categories_custom','LongText');
+    await patchClient({lead_categories_custom:JSON.stringify(list)});
+    refreshLeadCategories(); renderLeadCategorySettings();
+    if(typeof renderLeadsCategoryChips==='function') renderLeadsCategoryChips();
+    msg.textContent=okText;
+  }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
+  finally{ if(btn) btn.disabled=false; setTimeout(()=>{ if(msg.textContent===okText) msg.textContent=''; },3000); }
+}
+function addLeadCategory(){
+  const inp=$id('leadCatNew'), name=String(inp.value||'').replace(/\s+/g,' ').trim().slice(0,60);
+  const msg=$id('leadCatMsg'); msg.className='save-msg err';
+  if(!name){ msg.textContent='Type a category name first.'; return; }
+  if(LEAD_CATEGORIES.some(c=>c.toLowerCase()===name.toLowerCase())){ msg.textContent=`“${name}” is already in the list.`; return; }
+  inp.value='';
+  return saveLeadCategories([...customLeadCategories(), name], `✓ Added ${name}`);
+}
+function removeLeadCategory(name){
+  if(!confirm(`Remove “${name}” from the list? Leads that already have it keep it.`)) return;
+  return saveLeadCategories(customLeadCategories().filter(c=>c!==name), `✓ Removed ${name}`);
 }
 
 // ── MULTI-INDUSTRY ──────────────────────────────────────────────────────────
@@ -17521,20 +17591,10 @@ function applyTheme(industryKey){
   });
   // Show/hide travel fields in lead form
   const tf=$id('travelFields');if(tf)tf.style.display=industryKey==='travel'?'block':'none';
-  const sc=$id('fServiceCategory');
-  if(sc&&industryKey==='travel'&&!sc.dataset.populated){
-    sc.insertAdjacentHTML('beforeend',LEAD_CATEGORIES.map(c=>`<option value="${esc(c)}">${serviceCategoryIcon(c)} ${esc(c)}</option>`).join(''));
-    sc.dataset.populated='1';
-  }
-  // Show/hide the Leads page's Ticket/Package/Hotel/Other Services category filter
+  // Service Category picker (Edit Lead) and the Leads page category filter: built-in + custom list
   const cf=$id('leadCategoryFilter');
-  if(cf){
-    cf.style.display=industryKey==='travel'?'':'none';
-    if(industryKey==='travel'&&!cf.dataset.populated){
-      cf.innerHTML='<option value="">All categories</option>'+LEAD_CATEGORIES.map(c=>`<option value="${esc(c)}">${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('');
-      cf.dataset.populated='1';
-    }
-  }
+  if(cf) cf.style.display=industryKey==='travel'?'':'none';
+  if(industryKey==='travel') refreshLeadCategories();
   // Recruit tab visibility synced from clientRecord (already set before applyTheme is called)
   if(typeof updateRecruitTabVisibility==='function') updateRecruitTabVisibility();
   // Travel clients get their own app shell (travel-view.js)

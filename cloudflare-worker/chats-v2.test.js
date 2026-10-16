@@ -383,6 +383,14 @@ describe('sync and routes', ()=>{
     const b2=await call('/chats/v2/bootstrap');
     assert.deepEqual(b2.data.canned.map(x=>x.shortcut), ['price-list']);
     assert.notEqual(b2.data.version, b.data.version);
+    assert.equal(b2.data.travel, false);
+    assert.deepEqual(b2.data.categories_custom, []);
+    // Travel: the account's custom Service Categories ride along with the bootstrap.
+    const travel={...CLIENT, industry:'travel', lead_categories_custom:JSON.stringify([' Cruise ', 'Cruise', '', 'Holiday Homes'])};
+    const req=new Request('https://w/chats/v2/bootstrap', {headers:{Authorization:'Bearer owner'}});
+    const tb=await (await chatsV2HandleRoute(req, env, deps(travel), new URL(req.url))).json();
+    assert.equal(tb.travel, true);
+    assert.deepEqual(tb.categories_custom, ['Cruise', 'Holiday Homes']);
     const s=await call('/chats/v2/search?q=yo', {who:'rahul'});
     assert.deepEqual(s.data.rows.map(r=>r.lead_id), []);
     assert.deepEqual((await call('/chats/v2/search?q=hel')).data.rows.map(r=>r.lead_id), [31]);

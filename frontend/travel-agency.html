@@ -879,6 +879,7 @@ async function init(){
   $id('app').style.display='flex';
   try{
     clientRecord=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.CLIENTS_TABLE_ID}/records/${clientId}`);
+    LEAD_CATEGORIES=leadCategoriesFor(clientRecord);
     if(clientRecord.ta_enabled!=='Yes'){
       $id('app').innerHTML='<div class="empty-state" style="padding:60px"><div class="empty-icon">✈️</div>The Travel Agency module isn\'t enabled for this account. Ask your admin to enable it in Settings → Modules.</div>';
       return;
@@ -3656,11 +3657,19 @@ function renderTravelAnalyticsSection(){
 const TODAY = new Date().toISOString().slice(0,10);
 const TERMINAL = new Set(['consultation_booked','human_handover','visit_booked','appt_booked']);
 function fmtDateShort(d){if(!d)return'—';try{return new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});}catch{return String(d).slice(0,10);}}
-const LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Other Services'];
+const BASE_LEAD_CATEGORIES = ['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+// Built-in + the account's own categories (CLIENTS.lead_categories_custom, edited in the dashboard's
+// Settings → 🗂️ Service Categories) — same list as dashboard.html.
+function leadCategoriesFor(rec){
+  let v=[]; try{ v=JSON.parse(rec?.lead_categories_custom||'[]'); }catch(e){}
+  const custom=Array.isArray(v)?v.map(x=>String(x||'').trim()).filter(c=>c&&!BASE_LEAD_CATEGORIES.includes(c)):[];
+  return [...new Set([...BASE_LEAD_CATEGORIES, ...custom])];
+}
+let LEAD_CATEGORIES = BASE_LEAD_CATEGORIES.slice();
 function serviceCategoryIcon(cat){
   return {Package:'📦','Package + Hotel (Single)':'🏝️',Hotel:'🏨','Air Ticket':'🎫',Ticket:'✈️','Group Ticket':'👥',
     Visa:'🛂','Global Visa':'🌐',Passport:'📘','Certificate Attestation':'📜','Saudi Services':'🏜️',
-    'Umrah and Hajj':'🕋','Other Services':'🧳'}[cat]||'🗂️';
+    'Umrah and Hajj':'🕋','Marketing Messages':'📣','Other Services':'🧳'}[cat]||'🏷️';
 }
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}

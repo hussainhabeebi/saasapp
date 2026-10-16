@@ -171,7 +171,7 @@ test('travel-agency.html loads slim leads in parallel and falls back to full row
 test('travel lead form and Leads filter list every service category', async ({ page }) => {
   await openTravel(page, { industry: 'travel', ta_enabled: 'Yes' });
   const expected = ['Package', 'Package + Hotel (Single)', 'Hotel', 'Air Ticket', 'Ticket', 'Group Ticket', 'Visa', 'Global Visa',
-    'Passport', 'Certificate Attestation', 'Saudi Services', 'Umrah and Hajj', 'Other Services'];
+    'Passport', 'Certificate Attestation', 'Saudi Services', 'Umrah and Hajj', 'Marketing Messages', 'Other Services'];
   const formValues = await page.locator('#fServiceCategory option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean));
   expect(formValues).toEqual(expected);
   const filterValues = await page.locator('#leadCategoryFilter option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean));

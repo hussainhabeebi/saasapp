@@ -478,6 +478,12 @@ function safeJson(s){ return parse(s, {})||{}; }
 // categories: a travel teammate restricted to some lead categories (User Management → profile,
 // team_permissions[email].leadCategories — the same rule worker.js applies to the Leads list) only
 // sees chats in those categories; an empty list means none. null = no restriction.
+// The account's own Service Categories (dashboard Settings → 🗂️ Service Categories), on top of the
+// built-in list the inbox ships with.
+function customCategories(c){
+  const v=parse(c?.lead_categories_custom, []);
+  return Array.isArray(v)?[...new Set(v.map(x=>String(x||'').trim().slice(0,60)).filter(Boolean))]:[];
+}
 export function chatsV2Access(c, email, hiddenInboxes=[]){
   const me=lc(email);
   const owner=lc(c?.authentik_email);
@@ -970,7 +976,7 @@ export async function chatsV2HandleRoute(request, env, deps, url, ctx=null){
       const {results:macros}=await env.DB.prepare(`SELECT id, name, ops FROM chat_macros WHERE client_id=? ORDER BY name LIMIT 50`).bind(cid).all();
       // travel: the inbox header shows a Service Category picker; me.categories limits it to the
       // categories a restricted teammate can see (null = all).
-      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', agents:chatsV2Agents(c), labels, canned:canned||[], settings,
+      const data={me:{email:acc.me, staff:acc.staff, locked:acc.locked, categories:acc.categories||null}, travel:c.industry==='travel', categories_custom:c.industry==='travel'?customCategories(c):[], agents:chatsV2Agents(c), labels, canned:canned||[], settings,
         views:(views||[]).map(v=>({...v, filter:parse(v.filter, {all:[]})})), macros:(macros||[]).map(m=>({...m, ops:parse(m.ops, [])}))};
       const version=await hashOf(data);
       if(qp.v&&qp.v===version) return json({version, unchanged:true});
