@@ -6225,14 +6225,17 @@ function onLiveViewingEvent(msg){
 // Every Home widget reads the allLeads global, so it is narrowed for the (synchronous) render and
 // put back right after; pages with their own rules (Leads, Human Deals, Status Board) never see it.
 function homeScopedLeads(){ return (!myEmail||seesAllLeads())?allLeads:allLeads.filter(l=>sameEmail(l.Owner,myEmail)); }
+let _homeScoped=false;
 function withHomeScope(fn){
   const all=allLeads, scoped=homeScopedLeads();
-  if(scoped===all) return fn();
-  allLeads=scoped;
-  try{ return fn(); } finally{ allLeads=all; }
+  if(scoped===all||_homeScoped) return fn();
+  allLeads=scoped; _homeScoped=true;
+  try{ return fn(); } finally{ allLeads=all; _homeScoped=false; }
 }
 function renderHome(){
   withHomeScope(renderHomeScoped);
+  // Weekly Arena — team-wide on purpose (everyone's points), so outside the scope above.
+  try{window.csRenderHomeArena?.();}catch(e){}
   // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
   // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
   try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
@@ -6252,7 +6255,6 @@ function renderHomeScoped(){
   try{renderTrustBadges();}catch(e){}
   try{renderHomeBillingBanners();}catch(e){}
   try{renderOnboardingChecklist();}catch(e){}
-  try{window.csRenderHomeArena?.();}catch(e){}
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
@@ -22244,10 +22246,10 @@ async function deleteHospBooking(id){
 </script>
 <script src="chats.js"></script>
 <script src="hospitality-pro.js?v=1"></script>
-<script src="call-score.js?v=7"></script>
+<script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
 <script src="travel-status.js?v=3"></script>
-<script src="travel-view.js?v=5"></script>
+<script src="travel-view.js?v=6"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>
 

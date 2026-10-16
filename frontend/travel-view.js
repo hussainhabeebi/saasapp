@@ -429,7 +429,11 @@ function tvCategoryReportHtml(leads){
 /* ── 🏠 TODAY ── */
 // Narrowed to a teammate's own leads like the classic Home (dashboard.html withHomeScope).
 function renderTravelHome(){
-  return typeof withHomeScope==='function'?withHomeScope(renderTravelHomeScoped):renderTravelHomeScoped();
+  const r=typeof withHomeScope==='function'?withHomeScope(renderTravelHomeScoped):renderTravelHomeScoped();
+  // 🏆 Weekly Arena (call-score.js) — team-wide, so drawn after the scoped render, and skipped when
+  // renderHome is the caller (it draws the arena itself once its own scope has ended).
+  if(!(typeof _homeScoped!=='undefined'&&_homeScoped)) try{ window.csRenderHomeArena?.(); }catch(e){}
+  return r;
 }
 function renderTravelHomeScoped(){
   const el=$id('tvHomeBody');
@@ -498,6 +502,7 @@ function renderTravelHomeScoped(){
     </div>
     ${agency?'':`<div class="tv-banner">✈️ Turn on the <b>Travel Agency</b> module to track trips, quotes, departures and payments here.
       ${isAccountOwner()?`<button class="btn btn-primary btn-sm" onclick="navigate('modules')">Enable in Settings → Modules</button>`:'Ask your account owner to enable it.'}</div>`}
+    <div id="tvHomeArena" style="display:none;margin-bottom:14px"></div>
     <div class="tv-kpis">
       ${kpi('Departures today',depToday.length,`${depWeek.length+umrahWeek.length} in the next 7 days`,"navigate('departures')")}
       ${kpi('New inquiries',newToday.length,'today',"navigate('leads')")}
