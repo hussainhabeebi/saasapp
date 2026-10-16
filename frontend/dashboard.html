@@ -6110,7 +6110,10 @@ async function onLiveMessageEvent(msg){
     renderChatContacts();
     if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
   }
-  if(!isOpenThread) notifyNewMessage(msg);
+  // Only for a chat this user may see — a teammate's lead never chimes or shows its customer's name
+  // here (same one-lead-one-owner rule as the Leads list and the Chats inbox).
+  const lead=allLeads.find(l=>l.Id===msg.lead_id);
+  if(!isOpenThread && lead && leadVisibleToMe(lead)) notifyNewMessage(msg);
 }
 // New-message alert (soft tone + browser Notification) for a message that arrives while the rep
 // isn't already looking straight at that exact thread — previously the only signal was the badge

@@ -106,6 +106,12 @@ describe('formatting and preview', ()=>{
     assert.deepEqual(chatsV2Access(CLIENT, RAHUL, [11, '11', 22]).hidden, ['11', '22']);
     assert.equal(chatsV2Access({...CLIENT, lead_routing:'{"enabled":true}'}, RAHUL).locked, true);
   });
+  test('a full-access role saved with a capitalised email still sees everything', ()=>{
+    const perms=JSON.parse(CLIENT.team_permissions||'{}');
+    const mixed={...CLIENT, team_permissions:JSON.stringify(Object.fromEntries(Object.entries(perms).map(([k,v])=>[k.toUpperCase(), v])))};
+    assert.equal(chatsV2Access(mixed, SHAFNA).staff, false);
+    assert.equal(chatsV2Access(mixed, RAHUL).staff, true);
+  });
 });
 
 describe('message write hook', ()=>{

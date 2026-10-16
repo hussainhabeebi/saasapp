@@ -458,7 +458,10 @@ function safeJson(s){ return parse(s, {})||{}; }
 export function chatsV2Access(c, email, hiddenInboxes=[]){
   const me=lc(email);
   const owner=lc(c?.authentik_email);
-  const role=parse(c?.team_permissions, {})?.[me]?.role;
+  // Case-insensitive, like worker.js's seesAllChannelLeads — team_permissions keys keep the case
+  // the email was typed with.
+  const perms=parse(c?.team_permissions, {})||{};
+  const role=perms[Object.keys(perms).find(k=>lc(k)===me)]?.role;
   const staff=!!me&&me!==owner&&!FULL_ACCESS_ROLES.includes(role);
   const locked=staff&&!!parse(c?.lead_routing, {})?.enabled;
   const hidden=staff?[...new Set((hiddenInboxes||[]).map(v=>String(v)).filter(Boolean))]:[];
