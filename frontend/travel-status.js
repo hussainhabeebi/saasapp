@@ -16,6 +16,13 @@
    Bump the ?v= on its <script> tag in dashboard.html when changing this file — sw.js serves
    scripts cache-first. ── */
 
+// Lead origin badge/colour (dashboard.html leadOriginBadge/leadOriginClass) and a phone that
+// never shows an Instagram lead's internal "ig:<id>" key.
+const tsOriginBadge=l=>typeof leadOriginBadge==='function'?leadOriginBadge(l):'';
+const tsOriginClass=l=>typeof leadOriginClass==='function'?leadOriginClass(l):'';
+const tsLeadName=l=>(typeof leadDisplayName==='function'?leadDisplayName(l):(l.Name||l.Phone))||'Inquiry';
+const tsPhone=l=>String(l?.Phone||'').startsWith('ig:')?'Instagram':(l?.Phone||'');
+
 // [key, label, icon, colour group]. Order = the inquiry's usual journey.
 const TS_STATUSES=[
   ['new','New inquiry','🆕','gray'],
@@ -166,9 +173,9 @@ function renderTravelStatus(){
         <thead><tr><th>Inquiry</th><th>Service</th>${all?'<th>Staff</th>':''}<th>Status</th><th>Follow-up</th><th>Updated</th></tr></thead>
         <tbody>${list.length?list.slice(0,_tsShown).map(l=>{
           const st=tsStatusOf(l); const grp=TS_BY_KEY[st.key][3]; const f=tsFollowUpState(l);
-          return `<tr data-lead="${Number(l.Id)}">
-            <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(l.Name||l.Phone||'Inquiry')}</b></a>
-              <div class="ts-meta">${[l.Phone,l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
+          return `<tr data-lead="${Number(l.Id)}" class="${tsOriginClass(l)}">
+            <td><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}
+              <div class="ts-meta">${[tsPhone(l),l.Destination,l.TravelDates].filter(Boolean).map(esc).join(' · ')}</div></td>
             <td>${l.ServiceCategory?`${serviceCategoryIcon(l.ServiceCategory)} ${esc(l.ServiceCategory)}`:'<span class="ts-meta">—</span>'}</td>
             ${all?`<td>${esc(tsOwnerName(l.Owner))}</td>`:''}
             <td><select class="ts-sel ${grp}" aria-label="Status" onchange="tsSetStatus(${Number(l.Id)},this.value)">${TS_STATUSES.map(s=>opt(st.key,s)).join('')}</select>${st.auto?'<span class="ts-auto">auto</span>':''}</td>
@@ -338,7 +345,7 @@ function renderReportsTravelStatus(){
   const count=k=>all.filter(c=>c.to===k).length;
   const row=c=>{ const dt=tsFmtDateTime(c.at); return `<tr>
       <td style="white-space:nowrap">${esc(dt.date)}</td><td style="white-space:nowrap">${esc(dt.time)}</td>
-      <td><a href="#" onclick="openDetail(${Number(c.lead.Id)});return false"><b>${esc(c.lead.Name||c.lead.Phone||'Inquiry')}</b></a><div class="ts-meta">${esc(c.lead.Phone||'')}</div></td>
+      <td><a href="#" onclick="openDetail(${Number(c.lead.Id)});return false"><b>${esc(tsLeadName(c.lead))}</b></a>${tsOriginBadge(c.lead)}<div class="ts-meta">${esc(tsPhone(c.lead))}</div></td>
       <td>${c.from?tsStatusChip(c.from):'<span class="ts-meta">—</span>'}</td>
       <td>${tsStatusChip(c.to)}${c.legacy?' <span class="ts-auto" title="Changed before status history was kept">last change</span>':''}</td>
       <td>${c.fu?esc(String(c.fu).slice(0,10)):'<span class="ts-meta">—</span>'}</td>
@@ -352,7 +359,7 @@ function renderReportsTravelStatus(){
       const l=list[0].lead;
       return `<div class="card" style="margin-bottom:10px;padding:12px 14px">
         <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-          <a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(l.Name||l.Phone||'Inquiry')}</b></a>
+          <span><a href="#" onclick="openDetail(${Number(l.Id)});return false"><b>${esc(tsLeadName(l))}</b></a>${tsOriginBadge(l)}</span>
           <span>Now: ${tsStatusChip(tsStatusOf(l).key)}</span></div>
         <div style="overflow-x:auto"><table class="leads-tbl ts-rpt-tbl">${head}<tbody>${list.map(row).join('')}</tbody></table></div></div>`;
     }).join('');

@@ -468,9 +468,9 @@ function renderTravelHome(){
     <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📥 Newest inquiries</div>
-        <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc(l.Name||l.Phone||'Inquiry'),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
+        <div class="tv-list">${leads.length?[...leads].sort((a,b)=>String(b.Date||'').localeCompare(String(a.Date||''))).slice(0,8).map(l=>row(tvShort(tvDay(l.Date)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),[l.Destination,l.TravelDates,l.PaxCount,l.ServiceCategory].filter(Boolean).map(esc).join(' · ')||esc(stageLabel(l.Stage||'new')),'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries yet.</div>'}</div></div>
       <div class="card"><div class="card-title">🧳 Inquiries travelling in the next 14 days</div>
-        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(l=>row(tvShort(tvLeadTravelFrom(l)),esc(l.Name||l.Phone||'Inquiry'),`${esc(l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
+        <div class="tv-list">${travellingSoon.length?travellingSoon.slice(0,8).map(l=>row(tvShort(tvLeadTravelFrom(l)),esc((typeof leadDisplayName==='function'?leadDisplayName(l):l.Name||l.Phone)||'Inquiry')+(typeof leadOriginBadge==='function'?leadOriginBadge(l):''),`${esc(l.Destination||'—')} · ${esc(stageLabel(l.Stage||'new'))}`,'',`openDetail(${Number(l.Id)})`)).join(''):'<div class="tv-empty">No inquiries with travel dates in the next 14 days.</div>'}</div></div>
     </div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📊 Last 30 days</div>
