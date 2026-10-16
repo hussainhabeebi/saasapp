@@ -138,3 +138,31 @@ test('Leads by source report: rows per origin with open / won / lost', async ({ 
   expect(html).toContain('🧭 Leads by source');
   expect(html).toContain('Not recorded');
 });
+
+test('Add Lead: a double tap saves once, and a number that already exists is flagged', async ({ page }) => {
+  await render(page, 'list');
+  let posts = 0;
+  await page.route('**/nocodb/api/v2/**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'POST' && /\/records$/.test(new URL(req.url()).pathname)) { posts++; await new Promise((r) => setTimeout(r, 300)); return route.fulfill({ json: { Id: 99 } }); }
+    if (req.url().includes('/meta/tables/')) return route.fulfill({ json: { columns: [{ title: 'CreatedVia' }] } });
+    return route.fulfill({ json: { list: [], Id: 99, CreatedVia: 'manual' } });
+  });
+  await page.evaluate(() => {
+    // @ts-ignore
+    clientId = 7; clientRecord = { authentik_email: 'boss@x.com', language: 'en' }; myEmail = 'boss@x.com'; window.loadAll = async () => {};
+    window.openAddLead();
+  });
+  await page.locator('#fName').fill('New person');
+  await page.locator('#fPhone').fill('9111111111');
+  await page.evaluate(() => { window.saveLead(); window.saveLead(); });
+  await expect.poll(() => posts).toBe(1);
+  // Same last 10 digits as Binu (919876543210) → asked first; Cancel keeps the existing lead.
+  await page.evaluate(() => window.openAddLead());
+  await page.locator('#fName').fill('Binu again');
+  await page.locator('#fPhone').fill('9876543210');
+  page.once('dialog', (d) => { expect(d.message()).toContain('already has this number'); d.dismiss(); });
+  await page.evaluate(() => window.saveLead());
+  await expect(page.locator('#modalDetail')).toHaveClass(/open/);
+  expect(posts).toBe(1);
+});
