@@ -120,3 +120,15 @@ test('new-message chime only for chats the user may see', async ({ page }) => {
   // 1 is Alice's, 3 is unassigned while routing is on — only Bob's own lead chimes.
   expect(notified).toEqual([2]);
 });
+
+test('Home shows a teammate only the leads they own; the owner sees all', async ({ page }) => {
+  await setup(page, { me: 'bob@biz.com', routing: {} });
+  const total = () => page.evaluate(() => { renderHome(); return document.querySelector('#statsGrid .stat-val')?.textContent; });
+  expect(await total()).toBe('1');
+  // Narrowed only while Home renders.
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.length)).toBe(3);
+  // @ts-ignore
+  await page.evaluate(() => { myEmail = 'owner@biz.com'; });
+  expect(await total()).toBe('3');
+});

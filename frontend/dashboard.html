@@ -560,6 +560,7 @@ tr:hover td{background:#FAFCFB}
 .li-avatar{width:40px;height:40px;border-radius:50%;background:var(--accent-soft);color:var(--accent-ink);font-family:var(--disp);font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .li-body{flex:1;min-width:0}
 .ig-chat-btn,.ig-chat-btn:hover{background:var(--ig);color:#fff;text-decoration:none;border-color:transparent}
+.tv-cat-tbl .n{text-align:right;font-variant-numeric:tabular-nums}
 .origin-badge{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;vertical-align:middle;white-space:nowrap}
 .origin-badge.ig{background:var(--ig-soft);color:var(--ig)}
 .origin-badge.manual{background:var(--manual-soft);color:var(--manual)}
@@ -1667,6 +1668,9 @@ const ROLES = {
         <!-- Reminders / alerts -->
         <div id="remindersPanel" style="display:none;margin-bottom:18px"></div>
 
+        <!-- Travel only: leads per service category (travel-view.js tvCategoryReportHtml) -->
+        <div class="section-card" id="homeCategoryReport" style="display:none;margin-bottom:18px"></div>
+
         <!-- Staff Performance — filled by staff-performance.js (renderHome → renderStaffPerformance) -->
         <div class="section-card" id="homeStaffPerfCard" style="margin-bottom:18px">
           <div id="homeStaffPerf"><div class="sk sk-row"></div><div class="sk sk-row"></div></div>
@@ -1924,6 +1928,9 @@ const ROLES = {
           <!-- View tabs — Needs Action Today (default) / All Leads / saved views / Reconnect.
                See renderLeadsViewTabs()/SETUP.md "Leads page: Saved Views & Needs Action". -->
           <div id="leadsViewTabs" class="leads-view-tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
+          <!-- Travel only: one chip per service category with its lead count — the same filter as the
+               "All categories" dropdown below (leadCategoryFilter), one tap away. -->
+          <div id="leadsCategoryChips" class="leads-view-tabs" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px"></div>
 
           <div class="leads-toolbar">
             <!-- Row 1: Search + owner + mine -->
@@ -6213,7 +6220,26 @@ function onLiveViewingEvent(msg){
 }
 
 /* ── HOME ── */
+// Home for a teammate without full access (not the owner / admin / general manager) shows only the
+// leads they own — counts, charts, hot leads, recent leads, messages handled, the travel Today page.
+// Every Home widget reads the allLeads global, so it is narrowed for the (synchronous) render and
+// put back right after; pages with their own rules (Leads, Human Deals, Status Board) never see it.
+function homeScopedLeads(){ return (!myEmail||seesAllLeads())?allLeads:allLeads.filter(l=>sameEmail(l.Owner,myEmail)); }
+function withHomeScope(fn){
+  const all=allLeads, scoped=homeScopedLeads();
+  if(scoped===all) return fn();
+  allLeads=scoped;
+  try{ return fn(); } finally{ allLeads=all; }
+}
 function renderHome(){
+  withHomeScope(renderHomeScoped);
+  // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
+  // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
+  try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
+  // 📌 Status Board (travel-status.js) — refresh with new leads unless someone is mid-edit on it.
+  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
+}
+function renderHomeScoped(){
   // Run KPI/greeting first so UI is never blank even if other renders fail
   try{populateCommandCenter(allLeads);}catch(e){}
   try{renderMorningBriefing(allLeads);}catch(e){}
@@ -6230,9 +6256,6 @@ function renderHome(){
   try{updateTasksBadge();}catch(e){}
   try{updateBillingBadge();}catch(e){}
   try{updateHdBadge();}catch(e){}
-  // Human Deals is a live queue — refresh it on every data arrival while it's open, or a page
-  // opened before leads finished loading (e.g. straight after login) shows "0 waiting" until revisited.
-  try{ if(!$id('pageHumandeals')?.classList.contains('hidden')) renderHumanDeals(); }catch(e){}
   try{updateChatBadge();}catch(e){}
 
   const ind=getIndustry();
@@ -6261,8 +6284,7 @@ function renderHome(){
   try{loadHomeRealEstateSnapshot();}catch(e){}
   try{ if(typeof renderTravelHome==='function') renderTravelHome(); }catch(e){}
   try{ if(typeof renderStaffPerformance==='function') renderStaffPerformance($id('homeStaffPerf')); }catch(e){}
-  // 📌 Status Board (travel-status.js) — refresh with new leads unless someone is mid-edit on it.
-  try{ if(typeof renderTravelStatus==='function' && !$id('pageTvstatus')?.classList.contains('hidden') && !$id('tsBody')?.contains(document.activeElement)) renderTravelStatus(); }catch(e){}
+  try{ const el=$id('homeCategoryReport'); if(el){ const html=clientRecord?.industry==='travel'&&typeof tvCategoryReportHtml==='function'?tvCategoryReportHtml(allLeads):''; el.innerHTML=html; el.style.display=html?'':'none'; } }catch(e){}
 }
 
 /* ── TRUST SIGNALS (Home hero) ── */
@@ -7246,7 +7268,25 @@ function clearLeadsAdvFilters(){
 // View tabs — Needs Action Today (default) / All Leads / saved views / Reconnect. Selecting a
 // saved view restores its captured filters (stage chips + tag); Needs Action/All/Reconnect just
 // reset the advanced filters and let the view's own base rule do the filtering.
+function renderLeadsCategoryChips(){
+  const wrap=$id('leadsCategoryChips'); if(!wrap) return;
+  if(clientRecord?.industry!=='travel'){ wrap.style.display='none'; return; }
+  const cur=$id('leadCategoryFilter')?.value||'';
+  const counts={}; let none=0;
+  for(const l of leadsInScope(allLeads)){ const c=String(l.ServiceCategory||'').trim(); if(c) counts[c]=(counts[c]||0)+1; else none++; }
+  const cats=[...new Set([...LEAD_CATEGORIES.filter(c=>counts[c]), ...Object.keys(counts)])];
+  const chip=(val,label,n)=>`<button class="lv-tab${cur===val?' active':''}" onclick="setLeadsCategory(${esc(JSON.stringify(val))})">${label}${n!==undefined?` (${n})`:''}</button>`;
+  wrap.innerHTML=chip('','All categories')+cats.map(c=>chip(c,`${serviceCategoryIcon(c)} ${esc(c)}`,counts[c])).join('');
+  wrap.style.display=cats.length?'flex':'none';
+}
+function setLeadsCategory(cat){
+  const f=$id('leadCategoryFilter'); if(!f) return;
+  if(cat&&![...f.options].some(o=>o.value===cat)) f.insertAdjacentHTML('beforeend',`<option value="${esc(cat)}">${esc(cat)}</option>`);
+  f.value=f.value===cat?'':cat;
+  onLeadsFilterChange();
+}
 function renderLeadsViewTabs(){
+  renderLeadsCategoryChips();
   const wrap=$id('leadsViewTabs'); if(!wrap) return;
   const mine=leadsInScope(allLeads); // tab counts match the list the user is looking at
   const needsActionCount=mine.filter(l=>leadNeedsActionScore(l)>0).length;
@@ -19827,7 +19867,7 @@ async function pollNotifications(){
   const cutoff=new Date(now-24*3600*1000).toISOString().slice(0,19).replace('T',' ');
   try{
     const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})~and(Date,gte,${encodeURIComponent(cutoff)})&limit=20&sort=-Date`);
-    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(leadDisplayName(l)||'Unknown'),time:l.Date}));
+    (d.list||[]).filter(l=>seesAllLeads()||sameEmail(l.Owner,myEmail)).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(leadDisplayName(l)||'Unknown'),time:l.Date}));
   }catch(e){}
   if(_taLoaded){
     const td=now.toISOString().slice(0,10);
@@ -22206,8 +22246,8 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=7"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=2"></script>
-<script src="travel-view.js?v=4"></script>
+<script src="travel-status.js?v=3"></script>
+<script src="travel-view.js?v=5"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>
 

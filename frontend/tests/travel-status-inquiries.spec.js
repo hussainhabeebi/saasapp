@@ -51,12 +51,13 @@ test('each inquiry card has a status dropdown that saves without opening the inq
   await expect(sel).toHaveValue('new');
   await expect(page.locator('#leadsList .lead-item', { hasText: 'Ravi' }).locator('select.ts-sel-inline')).toHaveValue('quote_sent');
   await sel.selectOption('booking_closed');
-  await expect.poll(() => patches.length).toBe(1);
+  await expect.poll(() => patches.filter((p) => p.TravelStatus).length).toBe(1);
   expect(patches[0]).toMatchObject({ Id: 1, TravelStatus: 'booking_closed', TravelStatusBy: OWNER });
   // History: the new change goes on top of what was stored on the server.
   const log = JSON.parse(patches[0].TravelStatusLog);
   expect(log.map((e) => [e.from, e.to])).toEqual([['new', 'booking_closed'], ['new', 'first_call']]);
-  await expect(sel).toHaveClass(/green/);
+  // Booking closed wins the lead (travel-status.js tsStageFor), like Mark Won.
+  expect(patches[0].Stage).toBe('won');
   await expect(page.locator('#modalDetail.open')).toHaveCount(0);
 });
 
