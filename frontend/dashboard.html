@@ -575,8 +575,9 @@ tr.origin-manual td:first-child{box-shadow:inset 3px 0 0 var(--manual)}
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 @media(max-width:767px){.lead-ref-list{display:none}}
-.lead-more-btn{min-width:30px;font-weight:700;letter-spacing:1px}
-.lead-spam-btn{min-width:30px;padding-left:6px;padding-right:6px}
+.lead-more-btn{min-width:36px;height:34px;padding:0 10px;font-weight:700;letter-spacing:1px;display:inline-flex;align-items:center;justify-content:center}
+.lead-more-drop .lmd-sep{height:1px;background:var(--line);margin:4px 0}
+.lead-more-drop .lmd-danger{color:#DC2626}
 /* Call & Convert score (call-score.js) */
 .cs-strip{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;margin-bottom:10px}
 .cs-bar{display:inline-block;width:60px;height:6px;background:var(--line);border-radius:3px;vertical-align:middle;margin-left:4px;overflow:hidden}
@@ -747,12 +748,18 @@ textarea.form-input{resize:vertical;min-height:80px;line-height:1.6}
 .call-meta{font-size:11px;color:var(--muted);margin-top:2px;font-family:var(--mono)}
 
 /* call button intelligence */
-.call-btn-wrap{position:relative;display:inline-flex;align-items:center;gap:0}
+.call-btn-wrap{position:relative;display:inline-flex;align-items:stretch;gap:0;flex-shrink:0}
+/* Primary Call / Chat: one solid split button — main + caret share the same height, labelled, easy to hit */
+.call-btn-wrap .call-main,.call-btn-wrap .call-caret{height:34px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;box-sizing:border-box}
+.call-btn-wrap .call-main{min-width:92px;gap:6px;padding:0 14px;font-size:13px;white-space:nowrap}
+.call-btn-wrap .call-caret{width:30px;padding:0!important}
+.call-btn-wrap .ig-chat-btn{border-radius:6px!important}
+.call-count{font-family:var(--mono);font-size:11px;background:rgba(255,255,255,.22);border-radius:99px;padding:1px 6px}
 .call-state-fresh{background:#059669!important;color:#fff!important}
 .call-state-callback{background:#D97706!important;color:#fff!important}
 .call-state-answered{background:#6B7280!important;color:#fff!important}
 .call-state-danger{background:#DC2626!important;color:#fff!important}
-.call-caret{padding:2px 5px!important;min-width:18px!important;border-left:1px solid rgba(255,255,255,.3)!important;border-radius:0 6px 6px 0!important}
+.call-caret{min-width:18px!important;border-left:1px solid rgba(255,255,255,.3)!important;border-radius:0 6px 6px 0!important}
 .call-main{border-radius:6px 0 0 6px!important}
 .call-channel-drop{position:absolute;top:calc(100% + 4px);left:0;z-index:9999;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 6px 20px rgba(0,0,0,.15);min-width:170px;padding:4px 0;display:none}
 .call-channel-drop.open{display:block}
@@ -949,15 +956,18 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 .li-actions{display:flex;gap:6px;flex-wrap:nowrap;margin-top:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px}
 .li-actions::-webkit-scrollbar{display:none}
 .li-actions{align-items:center}
-.call-channel-drop .lmd-phone{display:none}
-/* Phones: one clean row — Call, Spam, ⋯ (snooze / follow-up / template move into ⋯) */
+/* Row = primary Call/Chat + ⋯ (everything else lives in ⋯) */
 @media(max-width:600px){
   .lead-item{align-items:flex-start;gap:10px;padding:12px}
   .li-avatar{width:34px;height:34px;font-size:13px}
   .li-actions{overflow:visible}
-  .li-actions .li-sec{display:none}
-  .call-channel-drop .lmd-phone{display:flex}
-  .li-actions .call-main{min-width:64px;justify-content:center}
+  /* Phones: thumb-sized targets; Call grows wider, ⋯ sits right beside it */
+  .li-actions .call-btn-wrap{flex:1 1 auto;max-width:240px}
+  .li-actions .call-main,.li-actions .call-caret,.li-actions .lead-more-btn{height:40px}
+  .li-actions .call-main{flex:1;font-size:14px}
+  .li-actions .call-caret{width:36px}
+  .li-actions .lead-more-btn{min-width:44px}
+  .lead-more-drop button{padding:11px 14px;font-size:14px}
 }
 .momentum-link{cursor:pointer;text-decoration:underline;text-underline-offset:3px}
 .momentum-link:hover{opacity:.8}
@@ -7574,9 +7584,6 @@ function renderLeadsList(){
         ${typeof tsInlineStatusHTML==='function'?tsInlineStatusHTML(l):''}
         ${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
           ${callBtnHTML(l,leadCallCount(l))}
-          <button class="btn btn-secondary btn-sm li-sec" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id});event.stopPropagation()">⏰</button>
-          <button class="btn btn-secondary btn-sm li-sec" title="Follow-up task" onclick="openFollowupForLead(${l.Id})">📅</button>
-          <button class="btn btn-secondary btn-sm li-sec" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
           ${leadMoreMenuHTML(l)}
         </div>`:''}
         ${reconnect?`<div class="li-actions" onclick="event.stopPropagation()"><button class="btn btn-sm" style="background:#0D9C93;color:#fff" onclick="reactivateLead(${l.Id},event)">♻️ Reactivate</button></div>`:''}
@@ -7971,9 +7978,7 @@ function renderLeadsTable(){
       <td>${esc(l.Source||qGet('source'))}</td>
       <td>${esc(fmtDateShort(l.Date))}</td>
       <td>${showOutcomeBtns?`<div class="li-actions" onclick="event.stopPropagation()">
-        ${callBtnHTML(l,'📞')}
-        <button class="btn btn-secondary btn-sm" title="Snooze reminder" onclick="snoozeReminderLead(${l.Id})">⏰</button>
-        <button class="btn btn-secondary btn-sm" title="Send WhatsApp template" onclick="openSendTemplateModal([${l.Id}])">📣</button>
+        ${callBtnHTML(l,leadCallCount(l))}
         ${leadMoreMenuHTML(l)}
       </div>`:(reconnect?`<button class="btn btn-sm" style="background:#0D9C93;color:#fff;white-space:nowrap" onclick="event.stopPropagation();reactivateLead(${l.Id},event)">♻️ Reactivate</button>`:'—')}</td>
     </tr>`;
@@ -9584,7 +9589,7 @@ async function _saveCall(){
 // Returns call count label: "📞" if never called, "📞 2" if 2 calls logged
 function leadCallCount(l){
   let calls=[]; try{calls=parseCallLog(l.CallLog);}catch(e){}
-  return calls.length?`📞 ${calls.length}`:'📞';
+  return calls.length?`📞 Call <span class="call-count">${calls.length}</span>`:'📞 Call';
 }
 
 // Returns CSS class for call button color based on call history
@@ -9600,7 +9605,7 @@ function callStateFor(l){
 
 // Returns HTML for the smart split call button with channel dropdown
 function callBtnHTML(l, label){
-  if(isIgLead(l)) return `<span class="call-btn-wrap"><a class="btn btn-sm call-main ig-chat-btn" href="#" title="Open the Instagram chat" onclick="event.preventDefault();event.stopPropagation();openLeadChat(${l.Id})">📷 Chat</a></span>`;
+  if(isIgLead(l)) return `<span class="call-btn-wrap"><a class="btn btn-sm call-main ig-chat-btn" href="#" title="Open the Instagram chat" aria-label="Open the Instagram chat" onclick="event.preventDefault();event.stopPropagation();openLeadChat(${l.Id})">📷 Chat</a></span>`;
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   const tel=`tel:+${phone}`;
   const wa=`https://wa.me/${phone}`;
@@ -9610,7 +9615,7 @@ function callBtnHTML(l, label){
   const inProgress=_callInProgress&&_callInProgress[l.Id];
   const timerBadge=inProgress?`<span class="call-timer-badge" id="ct-${l.Id}">…</span>`:'';
   return `<span class="call-btn-wrap">
-    <a class="btn btn-sm ${sc} call-main" href="${tel}" onclick="event.stopPropagation();startCallTimer(${l.Id})">${lbl}${timerBadge}</a><button class="btn btn-sm ${sc} call-caret" onclick="event.stopPropagation();toggleCallDrop(${l.Id})">▾</button>
+    <a class="btn btn-sm ${sc} call-main" href="${tel}" title="Call" aria-label="Call" onclick="event.stopPropagation();startCallTimer(${l.Id})">${lbl}${timerBadge}</a><button class="btn btn-sm ${sc} call-caret" title="Other ways to reach" aria-label="Other ways to reach" onclick="event.stopPropagation();toggleCallDrop(${l.Id})">▾</button>
     <div class="call-channel-drop" id="ccd-${l.Id}">
       <a href="${tel}" onclick="event.stopPropagation();startCallTimer(${l.Id});toggleCallDrop(${l.Id},false)">📞 Phone Call</a>
       <a href="${wa}" target="_blank" onclick="event.stopPropagation();toggleCallDrop(${l.Id},false)">💬 WhatsApp</a>
@@ -9621,18 +9626,20 @@ function callBtnHTML(l, label){
   </span>`;
 }
 
-// "⋯" menu for the outcome actions (Won / Spam) that used to sit before Call as their own buttons —
-// one tap away still, but no longer the first thing a telecaller's thumb lands on. Reuses the call
-// dropdown's styling/close-all behaviour; positioned fixed because .li-actions scrolls sideways and
-// would clip an absolutely positioned menu.
-// Spam sits next to it as a single small icon — one tap, no confirm, with an Undo toast instead.
+// "⋯" menu holds every secondary row action (snooze / follow-up / template / Won / Spam) so the row
+// itself is just the primary Call (or IG Chat) button — one obvious target on phone and desktop alike.
+// Reuses the call dropdown's styling/close-all behaviour; positioned fixed because .li-actions scrolls
+// sideways and would clip an absolutely positioned menu. Spam stays one tap, no confirm, with an Undo toast.
 function leadMoreMenuHTML(l){
-  return `<button class="btn btn-secondary btn-sm lead-spam-btn" title="Mark as spam" aria-label="Mark as spam" onclick="markLeadSpam(${l.Id},event)">🚫</button><button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
-    <div class="call-channel-drop" id="lmd-${l.Id}" style="position:fixed">
-      <button onclick="toggleLeadMoreMenu(${l.Id},null,false);markLeadWon(${l.Id},event)">✅ Mark Won</button>
-      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);snoozeReminderLead(${l.Id})">⏰ Snooze reminder</button>
-      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);openFollowupForLead(${l.Id})">📅 Follow-up task</button>
-      <button class="lmd-phone" onclick="toggleLeadMoreMenu(${l.Id},null,false);openSendTemplateModal([${l.Id}])">📣 WhatsApp template</button>
+  const go=fn=>`event.stopPropagation();toggleLeadMoreMenu(${l.Id},null,false);${fn}`;
+  return `<button class="btn btn-secondary btn-sm lead-more-btn" title="More actions" aria-label="More actions" aria-haspopup="menu" onclick="event.stopPropagation();toggleLeadMoreMenu(${l.Id},this)">⋯</button>
+    <div class="call-channel-drop lead-more-drop" id="lmd-${l.Id}" role="menu" style="position:fixed">
+      <button role="menuitem" onclick="${go(`snoozeReminderLead(${l.Id})`)}">⏰ Snooze reminder</button>
+      <button role="menuitem" onclick="${go(`openFollowupForLead(${l.Id})`)}">📅 Follow-up task</button>
+      <button role="menuitem" onclick="${go(`openSendTemplateModal([${l.Id}])`)}">📣 WhatsApp template</button>
+      <div class="lmd-sep"></div>
+      <button role="menuitem" onclick="${go(`markLeadWon(${l.Id},event)`)}">✅ Mark Won</button>
+      <button role="menuitem" class="lead-spam-btn lmd-danger" onclick="${go(`markLeadSpam(${l.Id},event)`)}">🚫 Mark as spam</button>
     </div>`;
 }
 function toggleLeadMoreMenu(id, btn, force){

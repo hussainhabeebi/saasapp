@@ -1,5 +1,5 @@
 // Leads list row actions (dashboard.html renderLeadsList/renderLeadsTable): Call is the first
-// action, Spam is a single 🚫 icon (with Undo), Won lives behind the "⋯" menu, and the Lead Ref (LD-00042) is
+// action and the only other row button is "⋯" — snooze / follow-up / template / Won / Spam (with Undo) all live in it, and the Lead Ref (LD-00042) is
 // a small desktop-only lookup aid hidden on phones. Same hermetic file:// setup as
 // qual-questions.spec.js — no backend, the page's own global render functions are driven directly.
 import { test, expect } from '@playwright/test';
@@ -32,28 +32,39 @@ async function renderLeads(page, { table = false } = {}) {
   }, table);
 }
 
-test('list row: Call comes first, Spam is one icon, Won sits behind the ⋯ menu', async ({ page }) => {
+test('list row: only Call and ⋯; Won sits behind the ⋯ menu', async ({ page }) => {
   await renderLeads(page);
   const actions = page.locator('#leadsList .li-actions').first();
   await expect(actions.locator(':scope > *').first()).toHaveClass(/call-btn-wrap/);
-  await expect(actions.locator('.lead-spam-btn')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Mark Won' })).toBeHidden();
+  await expect(actions.locator(':scope > button')).toHaveCount(1); // just ⋯
+  await expect(actions.locator('.call-main')).toContainText('Call');
+  await expect(page.getByRole('menuitem', { name: '✅ Mark Won' })).toBeHidden();
 
   await actions.locator('.lead-more-btn').click();
-  await expect(page.getByRole('button', { name: '✅ Mark Won' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '✅ Mark Won' })).toBeVisible();
 
-  await page.getByRole('button', { name: '✅ Mark Won' }).click();
+  await page.getByRole('menuitem', { name: '✅ Mark Won' }).click();
   expect(await page.evaluate(() => window.__won)).toBe(15787);
   await expect(page.locator('#lmd-15787')).toBeHidden();
 });
 
-test('table row: Call comes first, Spam icon + ⋯ menu', async ({ page }) => {
+test('table row: only Call and ⋯', async ({ page }) => {
   await renderLeads(page, { table: true });
   const actions = page.locator('#leadsTable .li-actions').first();
   await expect(actions.locator(':scope > *').first()).toHaveClass(/call-btn-wrap/);
-  await expect(actions.getByText('✅ Won')).toHaveCount(0);
+  await expect(actions.locator(':scope > button')).toHaveCount(1);
   await expect(actions.locator('.lead-more-btn')).toBeVisible();
-  await expect(actions.locator('.lead-spam-btn')).toBeVisible();
+});
+
+test('instagram lead: Chat is the only primary button, fully rounded', async ({ page }) => {
+  await renderLeads(page);
+  await page.evaluate(() => {
+    window.isIgLead = () => true;
+    window.renderLeadsList();
+  });
+  const actions = page.locator('#leadsList .li-actions').first();
+  await expect(actions.locator('.ig-chat-btn')).toBeVisible();
+  await expect(actions.locator(':scope > button')).toHaveCount(1);
 });
 
 test('Lead Ref shows on desktop, hidden on phones', async ({ page }) => {
@@ -81,7 +92,8 @@ test('spam: one tap hides the lead, Undo brings it back', async ({ page }) => {
     _leadsActiveView = 'all';
     window.renderLeadsList();
   });
-  await page.locator('#leadsList .lead-spam-btn').first().click();
+  await page.locator('#leadsList .lead-more-btn').first().click();
+  await page.getByRole('menuitem', { name: '🚫 Mark as spam' }).click();
   await expect(page.locator('#leadsList .lead-item')).toHaveCount(0);
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.locator('#leadsList .lead-item')).toHaveCount(1);
@@ -114,23 +126,25 @@ test('called leads move down: never-called first, then follow-up due, then oldes
   await expect(page.locator('#leadsList')).toContainText('1st call done · 1m ago');
 });
 
-test('phone: row shows only Call, Spam and ⋯; snooze/follow-up/template live in ⋯; outcomes go below the row', async ({ page }) => {
+test('phone: row shows only Call and ⋯; snooze/follow-up/template/spam live in ⋯; outcomes go below the row', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await renderLeads(page);
   const actions = page.locator('#leadsList .li-actions').first();
-  await expect(actions.locator('.li-sec')).toHaveCount(3);
-  for (const b of await actions.locator('.li-sec').all()) await expect(b).toBeHidden();
   await expect(actions.locator('.call-main')).toBeVisible();
-  await expect(actions.locator('.lead-spam-btn')).toBeVisible();
+  await expect(actions.locator(':scope > button')).toHaveCount(1);
 
-  // the whole row fits — nothing clipped off the right edge
+  // the whole row fits — nothing clipped off the right edge — and the targets are thumb-sized
   const box = await actions.boundingBox();
   const more = await actions.locator('.lead-more-btn').boundingBox();
   expect(more.x + more.width).toBeLessThanOrEqual(box.x + box.width + 1);
+  const main = await actions.locator('.call-main').boundingBox();
+  const caret = await actions.locator('.call-caret').boundingBox();
+  expect(main.height).toBeGreaterThanOrEqual(40);
+  expect(Math.abs(main.height - caret.height)).toBeLessThan(1); // split button halves line up
 
   await actions.locator('.lead-more-btn').click();
-  await expect(page.getByRole('button', { name: '⏰ Snooze reminder' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '📣 WhatsApp template' })).toBeVisible();
+  for (const name of ['⏰ Snooze reminder', '📅 Follow-up task', '📣 WhatsApp template', '🚫 Mark as spam'])
+    await expect(page.getByRole('menuitem', { name })).toBeVisible();
   await page.mouse.click(5, 5);
 
   await page.evaluate(() => window.showInlineOutcomeChips(15787));
@@ -141,11 +155,13 @@ test('phone: row shows only Call, Spam and ⋯; snooze/follow-up/template live i
   expect(btnH).toBeLessThan(50); // buttons keep their normal height
 });
 
-test('desktop: ⋯ menu does not repeat the row buttons', async ({ page }) => {
+test('desktop: row is Call + ⋯, secondary actions are in ⋯', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await renderLeads(page);
   const actions = page.locator('#leadsList .li-actions').first();
-  await expect(actions.locator('.li-sec').first()).toBeVisible();
+  const main = await actions.locator('.call-main').boundingBox();
+  const caret = await actions.locator('.call-caret').boundingBox();
+  expect(Math.abs(main.height - caret.height)).toBeLessThan(1);
   await actions.locator('.lead-more-btn').click();
-  await expect(page.getByRole('button', { name: '⏰ Snooze reminder' })).toBeHidden();
+  await expect(page.getByRole('menuitem', { name: '⏰ Snooze reminder' })).toBeVisible();
 });
