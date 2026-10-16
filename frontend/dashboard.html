@@ -6110,7 +6110,10 @@ async function onLiveMessageEvent(msg){
     renderChatContacts();
     if(_chatLeadId && _chatLeadId===msg.lead_id) chatSelectLead(_chatLeadId);
   }
-  if(!isOpenThread) notifyNewMessage(msg);
+  // Only for a chat this user may see — a teammate's lead never chimes or shows its customer's name
+  // here (same one-lead-one-owner rule as the Leads list and the Chats inbox).
+  const lead=allLeads.find(l=>l.Id===msg.lead_id);
+  if(!isOpenThread && lead && leadVisibleToMe(lead)) notifyNewMessage(msg);
 }
 // New-message alert (soft tone + browser Notification) for a message that arrives while the rep
 // isn't already looking straight at that exact thread — previously the only signal was the badge
@@ -9087,7 +9090,7 @@ async function saveLead(){
     reportLeadQualityChange(body.Id, original, body);
   }else{
     const created=await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`,body);
-    if(created?.Id) sendLeadCapiEvent(created.Id,'lead');
+    if(created?.Id){ sendLeadCapiEvent(created.Id,'lead'); await ensureLeadCreatedVia([created.Id],'manual'); }
   }
   sessionStorage.removeItem(_CACHE_KEY()); // bust cache so fresh data loads
   closeModal('modalLead');
@@ -11404,6 +11407,27 @@ async function ensureClientField(name, uidt='SingleLineText'){
     const cols=(info.columns||[]).map(c=>c.title);
     if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
   }catch(e){}
+}
+// CreatedVia is what marks a lead "✍️ Manual" / "✍️ Imported" (leadOrigin). NocoDB can drop a value
+// written right after its column was created — the column is new on each tenant's first manual
+// lead — so read one new row back and, if the value didn't stick, write it again for all of them,
+// briefly backing off.
+async function ensureLeadCreatedVia(ids, via){
+  ids=(ids||[]).filter(Boolean);
+  if(!ids.length) return;
+  for(let attempt=0;;attempt++){
+    try{
+      const row=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records/${ids[0]}?fields=Id,CreatedVia`);
+      if(String(row?.CreatedVia||'').toLowerCase()===via) return;
+    }catch(e){}
+    if(attempt===3) break;
+    if(attempt) await new Promise(r=>setTimeout(r,900*attempt));
+    await ensureLeadsField('CreatedVia');
+    for(let i=0;i<ids.length;i+=100){
+      try{ await ncPatch(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records`, ids.slice(i,i+100).map(Id=>({Id, CreatedVia:via}))); }catch(e){}
+    }
+  }
+  console.warn('[leads] CreatedVia could not be saved for', ids);
 }
 async function ensureLeadsField(name, uidt='SingleLineText'){
   try{
@@ -19463,6 +19487,7 @@ async function doImport(){
     $id('importStatus').textContent=`Importing… ${i+1}/${_importRows.length}`;
     await new Promise(r=>setTimeout(r,80));
   }
+  await ensureLeadCreatedVia(_importCreated.map(l=>l.Id),'import');
   $id('importStatus').textContent=`✓ Imported ${ok} leads${fail?', '+fail+' failed':''}`;
   renderImportResult();
   btn.disabled=false;

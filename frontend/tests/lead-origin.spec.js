@@ -61,3 +61,23 @@ test('kanban card carries the origin badge', async ({ page }) => {
   expect(html[1]).toContain('✍️ Manual');
   expect(html[2]).not.toContain('origin-badge');
 });
+
+test('a CreatedVia value NocoDB dropped right after the column was created is written again', async ({ page }) => {
+  const patches = [];
+  let stored = '';
+  await page.route('**/*', async (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.includes('/api/v2/meta/tables/')) return route.fulfill({ json: { columns: [{ title: 'Name' }, { title: 'CreatedVia' }] } });
+    if (/\/records\/9\?/.test(url)) return route.fulfill({ json: { Id: 9, CreatedVia: stored || null } });
+    if (url.includes('/records') && req.method() === 'PATCH') { const b = JSON.parse(req.postData()); patches.push(b); stored = b[0].CreatedVia; return route.fulfill({ json: [{ Id: 9 }] }); }
+    return route.abort();
+  });
+  await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
+  await page.evaluate(() => window.ensureLeadCreatedVia([9], 'manual'));
+  expect(patches).toEqual([[{ Id: 9, CreatedVia: 'manual' }]]);
+  // Already saved: nothing is written.
+  await page.evaluate(() => window.ensureLeadCreatedVia([9], 'manual'));
+  expect(patches.length).toBe(1);
+});
