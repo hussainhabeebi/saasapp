@@ -332,7 +332,7 @@ function tsInlineCategoryHTML(l){
   const cats=typeof LEAD_CATEGORIES!=='undefined'?LEAD_CATEGORIES:[];
   const cur=String(l.ServiceCategory||'').trim();
   const opts=!cur||cats.includes(cur)?cats:[cur,...cats];
-  return `<select class="ts-cat ${cur?'set':''}" aria-label="Service category" title="Service category" onclick="event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">
+  return `<select class="ts-cat ${cur?'set':''}" data-lead="${Number(l.Id)}" aria-label="Service category" title="Service category" onclick="event.stopPropagation()" onchange="tsSetCategory(${Number(l.Id)},this.value)">
       <option value="">🗂️ No category</option>${opts.map(c=>`<option value="${esc(c)}"${c===cur?' selected':''}>${serviceCategoryIcon(c)} ${esc(c)}</option>`).join('')}
     </select>`;
 }

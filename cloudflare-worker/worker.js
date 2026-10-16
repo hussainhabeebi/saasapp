@@ -1408,27 +1408,29 @@ export function channelVisibilityClause(assignments, email){
 }
 
 let _leadsServiceCategoryReady=false;
-// After a lead create: for each created row, re-read `fields` and PATCH back any the insert lost
-// (sent non-empty, stored different). Returns the patches it made.
-async function leadsKeepFieldsAfterCreate(env, sentBody, responseText, fields){
-  const sent=[].concat(JSON.parse(sentBody)), created=[].concat(JSON.parse(responseText||'null'));
-  const patches=[];
-  for(let i=0; i<Math.min(sent.length, created.length, 100); i++){
-    const id=Number(created[i]?.Id); if(!id) continue;
-    const want=Object.fromEntries(fields.filter(f=>String(sent[i]?.[f]??'').trim()).map(f=>[f, sent[i][f]]));
-    if(!Object.keys(want).length) continue;
-    const rr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${id}?fields=Id,${Object.keys(want).join(',')}`);
-    const row=rr.ok?await rr.json().catch(()=>({})):{};
-    const lost=Object.entries(want).filter(([k,v])=>String(row?.[k]??'')!==String(v));
-    if(lost.length) patches.push({Id:id, ...Object.fromEntries(lost)});
-  }
-  if(patches.length){
-    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patches});
-    if(!pr.ok) throw new Error('PATCH '+pr.status);
-    console.warn('[leads] re-saved fields the create dropped:', JSON.stringify(patches));
-    for(const pt of patches){ try{ await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate}); }catch(e){} }
-  }
-  return patches;
+// A lead write's `fields` must actually be stored: NocoDB has been seen to drop a later-added
+// column's value (ServiceCategory) on insert, and the dashboard can't tell — it would look saved
+// until the next refresh. `rows` is [{Id, field:value…}] as sent. Each row is read back, any lost
+// value is written again, and anything still lost after that is returned (empty = all stored).
+async function leadsVerifyFields(env, rows, fields){
+  const want=rows.map(r=>({Id:Number(r?.Id), vals:Object.fromEntries(fields.filter(f=>r&&f in r).map(f=>[f, String(r[f]??'').trim()]))}))
+    .filter(r=>r.Id && Object.keys(r.vals).length).slice(0,100);
+  const lostNow=async ()=>{
+    const out=[];
+    for(const w of want){
+      const rr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${w.Id}?fields=Id,${Object.keys(w.vals).join(',')}`);
+      const row=rr.ok?await rr.json().catch(()=>({})):{};
+      const lost=Object.entries(w.vals).filter(([k,v])=>String(row?.[k]??'').trim()!==v);
+      if(lost.length) out.push({Id:w.Id, ...Object.fromEntries(lost)});
+    }
+    return out;
+  };
+  const lost=await lostNow();
+  if(!lost.length) return [];
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:lost});
+  console.warn('[leads] re-saved fields NocoDB dropped:', JSON.stringify(lost));
+  for(const pt of lost){ try{ await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate}); }catch(e){} }
+  return lostNow();
 }
 async function handleNocodbPassthrough(request, env, upstreamPath){
   const payload=await requireSession(request, env);
@@ -1578,12 +1580,27 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   }
   let data=await r.text();
 
-  // A new lead's Service Category must survive the create: NocoDB has been seen to drop a later-added
-  // column's value on insert while updates keep it (same reason ensureLeadCreatedVia re-checks
-  // CreatedVia in dashboard.html), which left every new lead showing "No category". Read the
-  // created rows back and re-save the category on any that lost it, before answering the browser.
-  if(r.ok && method==='POST' && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"ServiceCategory"')){
-    try{ await leadsKeepFieldsAfterCreate(env, body, data, ['ServiceCategory']); }catch(e){ console.error('[leads] ServiceCategory re-check failed:', e.message); }
+  // A lead's Service Category (set by anyone — owner, admin or staff — from Add Lead, Edit Lead, the
+  // Leads table or Chats) must really be stored on the lead before the browser is told it saved.
+  // NocoDB has been seen to drop it on insert (every new lead then showed "No category"), so the
+  // rows are read back and repaired here; a value that still won't stick is reported as an error so
+  // the dashboard puts the old one back instead of showing a category that a refresh would undo.
+  // Then every other open dashboard on the account is told, so an admin sees a teammate's change.
+  if(r.ok && (method==='POST'||method==='PATCH') && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"ServiceCategory"')){
+    let rows=[];
+    try{
+      const sent=[].concat(JSON.parse(body));
+      const ids=method==='POST'?[].concat(JSON.parse(data||'null')).map(x=>x?.Id):sent.map(x=>x?.Id);
+      rows=sent.map((x,i)=>({...x, Id:ids[i]})).filter(x=>x.Id && 'ServiceCategory' in x);
+      // A new lead without a category has nothing to keep.
+      if(method==='POST') rows=rows.filter(x=>String(x.ServiceCategory??'').trim());
+      const stillLost=await leadsVerifyFields(env, rows, ['ServiceCategory']);
+      if(stillLost.length){
+        console.error('[leads] ServiceCategory would not save:', JSON.stringify(stillLost));
+        if(method==='PATCH') return json({error:'The category could not be saved — please try again.'}, 502);
+      }
+    }catch(e){ console.error('[leads] ServiceCategory check failed:', e.message); }
+    if(rows.length) await engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:rows.map(x=>Number(x.Id)), fields:['ServiceCategory'], by:String(payload.email||''), at:new Date().toISOString()});
   }
 
   // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the

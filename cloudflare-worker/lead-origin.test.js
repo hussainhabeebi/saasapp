@@ -100,3 +100,55 @@ test('a category the insert kept, or no category at all, needs no extra write', 
   const none=await createWithStore({ClientId:'7', Phone:'4'}, {dropOnInsert:true});
   assert.equal(none.calls.filter(c=>c.includes(`records/41`)).length, 0);
 });
+
+/* ── Category edits (Leads table, Edit Lead, Chats — any teammate) are checked as stored ── */
+async function patchWithStore(patch, {dropOnUpdate=0, broadcasts=[]}={}){
+  const realFetch=globalThis.fetch;
+  const stored={41:{Id:41, ServiceCategory:'Visa'}};
+  let drops=dropOnUpdate;
+  globalThis.fetch=async (url, opts={})=>{
+    const u=String(url), m=opts.method||'GET';
+    if(u.includes('/api/v2/meta/tables/')) return Response.json({columns:[{title:'ServiceCategory'}]});
+    if(u.endsWith(`/tables/${LEADS}/records`) && m==='PATCH'){
+      [].concat(JSON.parse(opts.body)).forEach(p=>{ const {ServiceCategory, ...rest}=p; Object.assign(stored[p.Id], rest); if(drops>0) drops--; else stored[p.Id].ServiceCategory=ServiceCategory; });
+      return Response.json([{Id:41}]);
+    }
+    const one=u.match(new RegExp(`/tables/${LEADS}/records/(\\d+)`));
+    if(one) return Response.json(stored[one[1]]||{});
+    return Response.json({list:[]});
+  };
+  const e={...env, CLIENT_UPDATES:{idFromName:n=>n, get:()=>({fetch:async (_u, o)=>{ broadcasts.push(JSON.parse(o.body)); return new Response('ok'); }})}};
+  try{
+    const session=await token(env.SESSION_SIGNING_KEY, 7, 'staff@biz.com');
+    const r=await worker.fetch(new Request(`https://worker.test/nocodb/api/v2/tables/${LEADS}/records`, {method:'PATCH',
+      headers:{Authorization:`Bearer ${session}`, 'Content-Type':'application/json'}, body:JSON.stringify(patch)}), e, {});
+    return {status:r.status, data:await r.json().catch(()=>null), stored, broadcasts};
+  }finally{ globalThis.fetch=realFetch; }
+}
+
+test('a teammate\'s category change is stored and every open dashboard is told', async ()=>{
+  const r=await patchWithStore({Id:41, ServiceCategory:'Hotel'});
+  assert.equal(r.status, 200);
+  assert.equal(r.stored[41].ServiceCategory, 'Hotel');
+  assert.deepEqual(r.broadcasts.map(b=>({type:b.type, ids:b.lead_ids, fields:b.fields, by:b.by})),
+    [{type:'lead_updated', ids:[41], fields:['ServiceCategory'], by:'staff@biz.com'}]);
+});
+
+test('a category change NocoDB dropped once is written again; one that never sticks is an error', async ()=>{
+  const once=await patchWithStore({Id:41, ServiceCategory:'Hotel'}, {dropOnUpdate:1});
+  assert.equal(once.status, 200);
+  assert.equal(once.stored[41].ServiceCategory, 'Hotel');
+  const never=await patchWithStore({Id:41, ServiceCategory:'Hotel'}, {dropOnUpdate:5});
+  assert.equal(never.status, 502);
+  assert.match(never.data.error, /could not be saved/);
+  assert.equal(never.stored[41].ServiceCategory, 'Visa');
+});
+
+test('clearing a category is checked too; edits without a category are left alone', async ()=>{
+  const cleared=await patchWithStore({Id:41, ServiceCategory:''});
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.stored[41].ServiceCategory, '');
+  const other=await patchWithStore({Id:41, Notes:'hi'});
+  assert.equal(other.status, 200);
+  assert.equal(other.broadcasts.length, 0);
+});
