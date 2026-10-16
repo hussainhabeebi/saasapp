@@ -1,4 +1,4 @@
-const CACHE = 'lv-v15';
+const CACHE = 'lv-v16';
 const OFFLINE_URL = '/offline.html';
 const ASSETS = [
   OFFLINE_URL,

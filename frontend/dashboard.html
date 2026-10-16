@@ -569,8 +569,8 @@ tr:hover td{background:#FAFCFB}
 .kb-card.origin-manual{box-shadow:inset 3px 0 0 var(--manual),var(--shadow)}
 .origin-ig .li-avatar{background:var(--ig-soft);color:var(--ig)}
 .origin-manual .li-avatar{background:var(--manual-soft);color:var(--manual)}
-.leads-tbl tr.origin-ig td:first-child{box-shadow:inset 3px 0 0 var(--ig)}
-.leads-tbl tr.origin-manual td:first-child{box-shadow:inset 3px 0 0 var(--manual)}
+tr.origin-ig td:first-child{box-shadow:inset 3px 0 0 var(--ig)}
+tr.origin-manual td:first-child{box-shadow:inset 3px 0 0 var(--manual)}
 .li-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lead-ref{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted)}
 @media(max-width:767px){.lead-ref-list{display:none}}
@@ -6493,8 +6493,8 @@ function renderAgentTable(){
 function renderRecentTable(){
   const rows=allLeads.slice(0,20);
   if(!rows.length){$id('recentBody').innerHTML='<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--muted)">No leads yet</td></tr>';return;}
-  $id('recentBody').innerHTML=rows.map(l=>`<tr style="cursor:pointer" onclick="openDetail(${l.Id})">
-    <td><b>${esc(l.Name||'—')}</b></td>
+  $id('recentBody').innerHTML=rows.map(l=>`<tr class="${leadOriginClass(l)}" style="cursor:pointer" onclick="openDetail(${l.Id})">
+    <td><b>${esc(leadDisplayName(l)||'—')}</b>${leadOriginBadge(l)}</td>
     <td>${stageBadge(l.Stage)}</td>
     <td>${scoreBadge(l.Score)}</td>
     <td style="color:var(--muted);font-size:12px">${esc(l.Owner||'—')}</td>
