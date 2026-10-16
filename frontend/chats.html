@@ -163,6 +163,7 @@ mark{background:#ffe58a;color:inherit;border-radius:2px;padding:0 1px}mark.cur{b
     <div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="search" placeholder="Search name, number or message" autocomplete="off" oninput="renderContacts()"></div></div>
     <div class="channel-row"><button class="pill active" data-channel="whatsapp" onclick="setChannel('whatsapp')">WhatsApp</button><button class="pill" data-channel="instagram" onclick="setChannel('instagram')">Instagram</button><button class="pill hidden" data-channel="all" id="allChannelPill" onclick="setChannel('all')">All channels</button></div>
     <div class="filter-row hidden" id="catRow"></div>
+    <div class="filter-row hidden" id="srcRow"></div>
     <div class="filter-row" id="filters"></div>
     <div class="seg-row" id="segRow"></div>
     <div class="list" id="list"></div>
@@ -241,6 +242,10 @@ async function apiJson(url,opts={}){const r=await fetch(url,{...opts,headers:hea
 // Travel inbox: one ServiceCategory ('' = all, '__none' = chats with no category) — chips built
 // from /chats/v2/counts by_category, so a business that never sets categories sees none.
 let catFilter='';
+// Lead origin chips (conversations.created_via — worker.js LEAD_CREATED_VIA), from /chats/v2/counts
+// by_source; shown only when the open chats come from more than one source.
+let srcFilter='';
+const SRC_LABELS={chatwoot:'🤖 Auto',manual:'✍️ Manual',import:'📥 Imported',lead_ad:'📋 Lead form',web:'🌐 Website',partner:'🤝 Partner',calendar:'📅 Calendar',unknown:'❔ Older lead'};
 let V2=false,boot2=null,counts2=null,views2={},handlerFilter='',sortMode='newest',rowsUpdatedAt='',threadMeta={},dividerAt={},searchRows=null,ws=null,wsTries=0,syncTimer=null,syncIds=new Set();
 const ROW=76;
 let customView=null,labelFilter=[],picked=new Set(),viewers={},notifyOn=false,typingSentAt=0,viewingTimer=null;
@@ -262,10 +267,11 @@ function v2Match(l){
  if(sortMode==='waiting'&&(!r.waiting_since||['resolved','snoozed'].includes(r.status)))return false;
  if(labelFilter.length&&!labelFilter.some(x=>String(r.labels_key||'').includes(','+lc(x)+',')))return false;
  if(catFilter&&String(r.service_category||'')!==(catFilter==='__none'?'':catFilter))return false;
+ if(srcFilter&&String(r.created_via||'')!==srcFilter)return false;
  const done=['resolved','snoozed'].includes(r.status);
  switch(filter){case'unread':return r.unread_count>0&&r.status!=='snoozed';case'needs':return r.handover==='Yes'&&!done;case'mine':return lc(r.assignee_email)===meEmail&&r.status!=='snoozed';case'unassigned':return !r.assignee_email&&!done;case'pending':return r.status==='pending';case'snoozed':return r.status==='snoozed';case'resolved':return r.status==='resolved';default:return r.status!=='snoozed'}
 }
-const viewKey=()=>[filter,channel,handlerFilter,sortMode,labelFilter.join(','),customView?JSON.stringify(customView.filter):'',catFilter].join('|');
+const viewKey=()=>[filter,channel,handlerFilter,sortMode,labelFilter.join(','),customView?JSON.stringify(customView.filter):'',catFilter,srcFilter].join('|');
 function v2Visible(){
  const st=views2[viewKey()];
  let list=leads.filter(v2Match);
@@ -277,7 +283,7 @@ async function loadView(more=false){
  const k=viewKey(),st=views2[k]||(views2[k]={ids:new Set(),cursor:null,done:false,floor:'',loading:false,loaded:false});
  if(st.loading||(more&&(st.done||!st.cursor)))return;st.loading=true;
  try{
-  const qs=new URLSearchParams({view:filter,channel,limit:'40',sort:sortMode});if(handlerFilter)qs.set('handler',handlerFilter);if(labelFilter.length)qs.set('labels',labelFilter.join(','));if(customView)qs.set('filter',JSON.stringify(customView.filter));if(catFilter)qs.set('category',catFilter);if(more)qs.set('cursor',st.cursor);
+  const qs=new URLSearchParams({view:filter,channel,limit:'40',sort:sortMode});if(handlerFilter)qs.set('handler',handlerFilter);if(labelFilter.length)qs.set('labels',labelFilter.join(','));if(customView)qs.set('filter',JSON.stringify(customView.filter));if(catFilter)qs.set('category',catFilter);if(srcFilter)qs.set('source',srcFilter);if(more)qs.set('cursor',st.cursor);
   const d=await apiJson(WORKER+'/chats/v2/list?'+qs);
   if(!more)st.ids=new Set();
   mergeRows(d.rows);(d.rows||[]).forEach(r=>st.ids.add(String(r.lead_id)));
@@ -288,7 +294,7 @@ async function loadView(more=false){
  }finally{st.loading=false}
  if(k===viewKey())renderContacts();
 }
-async function loadCounts(){try{counts2=await apiJson(WORKER+'/chats/v2/counts');renderFilters([]);renderCategoryRow();updateTitle()}catch{}}
+async function loadCounts(){try{counts2=await apiJson(WORKER+'/chats/v2/counts');renderFilters([]);renderCategoryRow();renderSourceRow();updateTitle()}catch{}}
 async function loadBootstrap(){
  const snapKey=`lv_chats_boot_${clientId}`;let cached=null;try{cached=JSON.parse(localStorage.getItem(snapKey)||'null')}catch{}
  const d=await apiJson(WORKER+'/chats/v2/bootstrap'+(cached?.version?`?v=${encodeURIComponent(cached.version)}`:''));
@@ -379,11 +385,22 @@ async function loadLeads(show=true,silent=false,delta=false){
 }
 function refreshAll(){if(!V2)return loadLeads(true);views2={};loadView(false).then(()=>toast('Chats refreshed')).catch(()=>toast('Could not refresh chats'));loadCounts()}
 function onViewChange(){$('list').scrollTop=0;if(V2){const st=views2[viewKey()];if(!st?.loaded)loadView(false).catch(()=>{});else loadView(false).catch(()=>{})}renderContacts()}
-function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderCategoryRow();onViewChange()}
+function setChannel(c){channel=c;filter='all';document.querySelectorAll('[data-channel]').forEach(b=>b.classList.toggle('active',b.dataset.channel===c));renderCategoryRow();renderSourceRow();onViewChange()}
 function setFilter(f){filter=f;customView=null;onViewChange()}
 function setHandler(h){handlerFilter=handlerFilter===h?'':h;onViewChange()}
 function setSort(v){sortMode=v;onViewChange()}
 function setCategory(c){catFilter=catFilter===c?'':c;renderCategoryRow();onViewChange()}
+function setSource(k){srcFilter=srcFilter===k?'':k;renderSourceRow();onViewChange()}
+function renderSourceRow(){
+ const el=$('srcRow');if(!el)return;
+ const by=V2&&counts2?.by_source||{};
+ const n=k=>channel==='all'?((by[k]?.whatsapp||0)+(by[k]?.instagram||0)):(by[k]?.[channel]||0);
+ const keys=Object.keys(SRC_LABELS).filter(k=>n(k)>0);
+ if(keys.length<2&&!srcFilter){el.classList.add('hidden');el.innerHTML='';return}
+ el.classList.remove('hidden');
+ el.innerHTML=`<button class="pill ${!srcFilter?'active':''}" onclick="setSource('')">All sources</button>`+
+  keys.map(k=>`<button class="pill ${srcFilter===k?'active':''}" onclick="setSource('${k}')">${SRC_LABELS[k]}<span class="n">${n(k)}</span></button>`).join('');
+}
 function renderCategoryRow(){
  const el=$('catRow');if(!el)return;
  const by=V2&&counts2?.by_category||{};

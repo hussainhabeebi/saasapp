@@ -519,6 +519,7 @@ function renderTravelHomeScoped(){
     </div>
     ${typeof tsSummaryHtml==='function'?tsSummaryHtml():''}
     <div class="card" style="margin-bottom:14px" id="tvCategoryReport">${tvCategoryReportHtml(leads)}</div>
+    ${typeof leadsSourceReportHtml==='function'&&leads.length?`<div class="card" style="margin-bottom:14px" id="tvSourceReport">${leadsSourceReportHtml(leads)}</div>`:''}
     <div class="card" style="margin-bottom:14px"><div id="tvStaffPerf"></div></div>
     <div class="tv-grid">
       <div class="card"><div class="card-title">📥 Newest inquiries</div>

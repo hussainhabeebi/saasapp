@@ -414,6 +414,19 @@ test('travel inbox: category chips with counts filter the list on the server', a
   await expect(page.locator('#list .contact .name')).toHaveText(['Asha', 'Binu', 'Chitra']);
 });
 
+test('inbox source chips: Auto vs Manual chats, filtered on the server', async ({ page }) => {
+  const { calls } = await open(page, { rows: [conv(1, { name: 'Asha', created_via: 'chatwoot' }), conv(2, { name: 'Binu', created_via: 'manual' }), conv(3, { name: 'Chitra', created_via: 'chatwoot' })] });
+  await expect(page.locator('#srcRow')).toBeHidden();
+  await page.route('**/chats/v2/counts', (route) => route.fulfill({ json: { all: 3, unread: 0, needs: 0, mine: 0, unassigned: 3, pending: 0, snoozed: 0, resolved: 0,
+    unread_by_channel: { whatsapp: 0, instagram: 0 }, by_category: {}, by_source: { chatwoot: { whatsapp: 2, instagram: 0 }, manual: { whatsapp: 1, instagram: 0 } } } }));
+  await page.evaluate(() => window.loadCounts());
+  await expect(page.locator('#srcRow .pill')).toHaveText(['All sources', '🤖 Auto2', '✍️ Manual1']);
+  await expect(page.locator('#catRow')).toBeHidden();
+  await page.locator('#srcRow .pill', { hasText: 'Manual' }).click();
+  await expect.poll(() => calls.list.at(-1)?.source).toBe('manual');
+  await expect(page.locator('#list .contact .name')).toHaveText(['Binu']);
+});
+
 test('macros run their steps in order; schedule, forward and create a task', async ({ page }) => {
   const { calls } = await open(page);
   await page.locator('#list .contact', { hasText: 'Binu' }).click();
