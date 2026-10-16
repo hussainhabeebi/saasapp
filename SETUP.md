@@ -5269,98 +5269,35 @@ are still swallowed silently by design — alerting on every best-effort fallbac
 file would be noisy without much operational value. The three wiring points above were chosen as
 the highest-signal: total silence to a customer, or a fully unhandled crash.
 
-## Instagram DM module (`POST /ig/webhook` — native, no Chatwoot)
-Unlike WhatsApp above, Instagram DMs never touch Chatwoot at all: this Worker receives Meta's raw
-webhook itself, sends replies straight through the Graph API, and conversations show up in
-`dashboard.html`'s existing Chats page (a new "📷 Instagram" switch — same `ConvHistory` shape,
-same Leads table). Reuses the engine's classify/route/reply pipeline
-(`engineClassifyIntent`/`engineRouteFlow`/`engineCallLlm`) unchanged — confirmed channel-agnostic
-— but is deliberately leaner than `handleEngineWebhook`: only the qualify/FAQ/objection/human/drop
-routes are implemented. Incoming text, image, voice, video/file attachments, story replies and
-postbacks are preserved in Chats. The ecommerce order-link automation, hospitality/category media
-sends and booking-signal auto-send that WhatsApp also gets are **not** replicated here.
+## Instagram DMs (through Chatwoot, same pipeline as WhatsApp)
+Instagram is connected as a **Chatwoot Instagram inbox** (`Channel::Instagram`) — added in Chatwoot
+itself, it then shows under Settings → Channels → Connected Channels with the same assignment
+dropdown, "Move existing leads" and AI Reply toggle as a WhatsApp inbox. No Worker secrets or Meta
+app setup are needed on this side.
 
-**Uses "Instagram API with Instagram Login"**, not the Facebook-Login-for-Business/Page-linked
-variant — a deliberately separate app credential pair from `META_APP_ID`/`META_APP_SECRET`
-(WhatsApp's), authenticating directly against the Instagram professional account with no Facebook
-Page involved, and its own OAuth host (`instagram.com`/`graph.instagram.com`, not
-`graph.facebook.com`). This means the connect flow is a plain browser-redirect OAuth (same shape
-as the Shopify module's connect flow) rather than the Meta JS SDK's `FB.login` popup WhatsApp uses.
+Chatwoot delivers Instagram messages to the same account-wide engine webhook as WhatsApp
+(`/engine/webhook/<secret>` — Chatwoot webhooks are account-level, so every inbox's
+`message_created` reaches it). `engineParseChatwootPayload` sees `conversation.channel ===
+'Channel::Instagram'` and, since an Instagram contact has no phone number, keys the contact as
+`ig:<instagram id>` (Chatwoot's `conversation.contact_inbox.source_id`) in the `phone` slot.
+Everything downstream — lead lookup/creation, owner from the channel assignment, AI reply (sent
+back through the Chatwoot conversation), Chats thread, follow-ups — then runs exactly as it does
+for WhatsApp. The lead row stores that key in `Phone`, plus `Channel='instagram'` and `IgId`.
 
-**One-time Meta setup:**
-1. In [developers.facebook.com](https://developers.facebook.com) → your app (can be the same app
-   as WhatsApp's, or a separate one — see the note on that in the PR discussion; nothing about
-   this flow depends on which) → **Add use case** → check **"Manage messaging & content on
-   Instagram"** → Save.
-2. Under that use case → **1. Add required messaging permissions** → **Add all required
-   permissions** (`instagram_business_basic`, `instagram_business_manage_messages`,
-   `instagram_business_manage_comments`).
-3. **2. Generate access tokens** → **Add account** → log in with the Instagram professional
-   account you want connected (also adds you as a tester, needed before the app is published).
-4. **3. Configure webhooks** → Callback URL: `{WORKER_BASE_URL}/ig/webhook` (this Worker's
-   production URL is `https://leadvyne-api-proxy.leadvyne.workers.dev/ig/webhook`) → Verify Token:
-   any string you choose. Set that same string as a Worker secret: `wrangler secret put
-   META_IG_VERIFY_TOKEN`.
-5. Copy that use case's **Instagram app ID** / **Instagram app secret** (shown at the top of its
-   setup page — distinct from the main app's own ID/secret) → Worker secrets `META_IG_APP_ID` /
-   `META_IG_APP_SECRET`.
-6. Nothing else to create by hand — connecting auto-provisions every NocoDB column it needs and
-   calls `/{ig_user_id}/subscribed_apps` for `messages`, `messaging_postbacks`,
-   `message_reactions`, and `messaging_seen`. Settings → Integrations shows live token/subscription
-   health and its **Repair & recheck** action re-subscribes an already-connected account.
+WhatsApp-only sends skip Instagram leads: WhatsApp templates (manual, follow-up template steps,
+monthly marketing) and direct Graph API sends refuse an `ig:` number, and the hot-lead alert shows
+"Instagram" instead of a number. In the dashboard, `maskPhone` shows `📷 Instagram` for these
+leads, and Call/WhatsApp buttons become "📷 Chat", which opens the lead in Chats. In Chats,
+Instagram replies, attachments and voice notes go through `/chat/send` and `/quote/send` with the
+lead's Chatwoot conversation id, the same as WhatsApp. The 24-hour template lock and
+template picker stay WhatsApp-only.
 
-**Before submitting for App Review** (only needed once you want *other clients'* Instagram
-accounts to connect — any account you've added as a tester works right now without review):
-under that use case's **Business login settings**, set:
-- **Deauthorize Callback URL**: `{WORKER_BASE_URL}/ig/deauthorize` — `handleInstagramDeauthorize`
-  in `worker.js` verifies Meta's signed request and clears that client's `ig_*` fields the moment
-  they revoke access from their own Instagram/Meta settings, instead of the stored token just
-  silently failing on every send afterward.
-- **Data Deletion Request URL**: point this at wherever your actual data-deletion process is
-  documented (`privacy.html`'s "Your Rights" section touches on it, but tighten the wording with a
-  concrete method — email address, self-serve link — before relying on it for review; this is a
-  business decision, not something to leave generic).
-
-**Connect flow:** Settings → Integrations → "📷 Instagram DM" → Connect → `POST /ig/oauth/start`
-returns `https://www.instagram.com/oauth/authorize?...` (client id + scope + a signed `state`
-carrying the client id, same `signOauthState`/`verifyOauthState` helper Shopify/Google Search
-Console use) and the browser navigates there directly (full-page redirect). `GET
-/ig/oauth/callback` verifies `state`, exchanges `code` for a short-lived (1h) token via
-`api.instagram.com`, swaps that for a long-lived (60-day) token via `graph.instagram.com`, and
-stores `ig_id` (the `user_id` Instagram returns — an Instagram-scoped id, not a phone number),
-`ig_access_token`, `ig_username`, `ig_connected_at` on the CLIENTS row — auto-created via
-NocoDB's Meta API the moment you connect (`ensureClientColumns()` in `worker.js`). The long-lived
-token is refreshed daily by `runInstagramTokenRefreshForAllClients` (piggybacked on the existing
-2am cron tick) — Meta's tokens expire 60 days after issue if never refreshed, so this has to run
-on an ongoing basis, not just at connect time.
-
-Inbound webhook POSTs require Meta's `X-Hub-Signature-256` signed with `META_IG_APP_SECRET` and
-are acknowledged immediately with `ctx.waitUntil`; processing failures therefore do not cause
-Meta retry storms. All events in every batch are processed. A valid inbound DM is always saved to
-Chats even when the global engine, this client's engine, Bot Auto-Reply, or the AI provider is
-disabled; those settings suppress only the automated outbound reply. `ig_webhook_debug` stores
-only `received:<timestamp>` for the matched client and never stores message content or another
-client's payload.
-
-**Data model** — Instagram leads live in the *same* Leads table as WhatsApp, not a separate one
-(one unified pipeline/dashboard): a new `IgId` column (Instagram has no phone number, only an
-IGSID) and a `Channel` column (`whatsapp`/`instagram`, defaults to `whatsapp` for every existing
-row). Both auto-created the same way (`ensureLeadsColumns()`), the first time a DM comes in.
-`engineGetLeadState`/`engineBuildLeadUpsertBody` both take an optional identity-field parameter
-now (`'Phone'` by default — every WhatsApp call site is unaffected) so the same upsert logic works
-for either channel.
-
-**Human handover** reuses the exact same `Handover`/`HandoverAt`/`SlaAlerted` fields
-`engineBuildLeadUpsertBody` already sets for WhatsApp — the SLA-breach alert
-(`n8n/notifications.json`) polls the Leads table generically, not by channel, so an Instagram
-handover surfaces there for free. There's no Chatwoot conversation to label
-(`engineSendHandoverLabel`), so the Instagram path simply doesn't call it; the lead shows up under
-the Chats page's existing "Needs You" filter exactly like a WhatsApp handover does.
-
-**Manual replies** — the Chats page's "📷 Instagram" switch reuses the exact same contact
-list/thread UI as WhatsApp (`chatConvoLeads`/`chatSelectLead`, filtered by `Channel`); sending
-posts to `POST /instagram/send` (`{lead_id, text}`) instead of `/chat/send`, since there's no
-Chatwoot conversation id to send through.
+The earlier direct Instagram connection (Instagram Login OAuth, `/ig/*` routes, `/instagram/send`,
+the token-refresh cron and the Settings → Integrations "📷 Instagram DM" card) has been removed.
+A lead created by that connection (`IgId` set, `Phone` empty) is taken over by the first Chatwoot
+message from the same Instagram id (`engineAdoptLegacyInstagramLead`) instead of becoming a second
+card. If you had that connection set up, remove the webhook from the Meta app, or it will keep
+posting to a route that no longer exists.
 
 ### Order Link Sending toggle + chat-based order collection (`cloudflare-worker/worker.js`, `frontend/ecom.html`)
 
@@ -6979,10 +6916,9 @@ Plan Instagram posts (title + caption, scheduled to a date) ahead of time, on th
 NocoDB `marketing_content_posts` table the rest of this module uses. This is the **planning layer
 only** — the table already has `image_key`/`approved_at`/`ig_media_id` columns reserved for two
 later increments that build on top of it without a schema change: AI image generation/editing via
-fal.ai (Image Studio), and the actual approval-gated auto-publish to Instagram (reusing the
-Instagram DM module's `ig_id`/`ig_access_token` connection, whose OAuth scope already requests
-`instagram_business_content_publish` — see that module's own comment for the reconnect caveat on
-accounts connected before this scope existed).
+fal.ai (Image Studio), and the actual approval-gated auto-publish to Instagram (which will need
+its own Instagram publishing connection — the old direct Instagram DM connection it was going to
+reuse has been removed now that DMs come through Chatwoot; see "Instagram DMs (through Chatwoot)").
 
 ### CRUD (`handleContentPost{List,Create,Update,Delete}` in worker.js)
 Standard per-client CRUD on `marketing_content_posts`. A post with `scheduled_at` set gets

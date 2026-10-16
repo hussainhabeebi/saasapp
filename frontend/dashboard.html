@@ -1245,9 +1245,6 @@ const CONFIG = {
   // these from Meta Developer Portal → your Tech Provider app → WhatsApp → Embedded Signup.
   META_APP_ID:              '958889290317772',
   META_WHATSAPP_CONFIG_ID:  '1628996898332605',
-  // Instagram DM ("Instagram API with Instagram Login") needs no browser-side config at all — the
-  // app id only appears server-side, when the Worker builds the authorize URL
-  // (POST /ig/oauth/start). See SETUP.md "Instagram DM module".
   // Billing (Stripe). Plans are rendered here from /billing/plans (reads STRIPE_PLAN_PRICE_IDS
   // from the Worker's own Stripe account, no publishable key or Stripe.js needed in the browser)
   // and subscribing posts to /billing/checkout-subscription — the Worker creates the Checkout
@@ -3087,25 +3084,6 @@ const ROLES = {
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">💬 WhatsApp (Meta)</div>
             <div id="intWaStatus" class="s-note">Checking…</div>
-          </div>
-        </div>
-
-        <!-- Instagram DM — native (no Chatwoot): the bot answers DMs directly through the Graph
-             API, and conversations show up in the Chats page's own "📷 Instagram" switch. -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">📷 Instagram DM</div>
-            <div class="s-note">Connect an Instagram Business Account so DMs get answered by the same AI bot as WhatsApp — no Chatwoot involved. Conversations show up under Chats → 📷 Instagram.</div>
-            <div id="intInstagramStatus" class="s-note" style="margin:8px 0">Checking…</div>
-            <div id="intInstagramConnectForm" style="display:none;margin-top:8px">
-              <button class="save-btn" onclick="connectInstagram()">Connect Instagram</button>
-              <span class="save-msg" id="intInstagramMsg"></span>
-            </div>
-            <div id="intInstagramConnectedActions" style="display:none;margin-top:8px">
-              <button class="save-btn" id="intInstagramRepairBtn" onclick="refreshInstagramHealth(true)">Repair &amp; recheck</button>
-              <button class="save-btn" style="background:var(--muted)" onclick="disconnectInstagram()">Disconnect</button>
-              <span class="save-msg" id="intInstagramDisconnectMsg"></span>
-            </div>
           </div>
         </div>
 
@@ -5803,8 +5781,8 @@ function openProjectsTool(){
 // directly in D1 (the same store projects.html reads from) rather than only in manual_tasks.
 function pushLeadToProjects(lead){
   if(!lead) return;
-  const title=encodeURIComponent(`Follow up with ${lead.Name||lead.Phone||'lead'}`);
-  const url=`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&new_task=1&lead_id=${lead.Id}&lead_name=${encodeURIComponent(lead.Name||lead.Phone||'')}&title=${title}`;
+  const title=encodeURIComponent(`Follow up with ${leadDisplayName(lead)||'lead'}`);
+  const url=`projects.html?client=${clientId}&token=${encodeURIComponent(sessionToken)}&new_task=1&lead_id=${lead.Id}&lead_name=${encodeURIComponent(leadDisplayName(lead)||'')}&title=${title}`;
   window.open(url,'_blank');
 }
 
@@ -5867,13 +5845,12 @@ function showApp(){
   // redirect) always wins over that default when present, same as before this changed.
   const params=new URLSearchParams(location.search);
   const shopifyParam=params.get('shopify');
-  const instagramParam=params.get('instagram');
   const gscParam=params.get('gsc');
   const gcalParam=params.get('gcal');
   let landingPage=(typeof isTravelView==='function'&&isTravelView())?'travelhome':'home';
   if(params.has('billing')) landingPage='billing';
   else if(params.has('channels')) landingPage='channels';
-  else if(params.has('integrations')||shopifyParam||instagramParam) landingPage='integrations';
+  else if(params.has('integrations')||shopifyParam) landingPage='integrations';
   else if(gscParam) landingPage='reports';
   else if(gcalParam) landingPage='tasks';
   navigate(landingPage);
@@ -5883,11 +5860,6 @@ function showApp(){
     params.delete('lead');
     history.replaceState(null, '', location.pathname+(params.toString()?'?'+params.toString():''));
     openLeadFromAlert(leadParam);
-  }
-  if(instagramParam){
-    if(instagramParam==='connected'){ showToast('Instagram connected ✓'); refreshClientRecord().then(renderInstagramStatus); }
-    else showToast(params.get('msg')||'Instagram connection failed', 'error');
-    history.replaceState(null, '', location.pathname+(clientId?`?client=${clientId}`:''));
   }
   if(shopifyParam){
     if(shopifyParam==='connected'){
@@ -6551,7 +6523,7 @@ function kbCard(l){
   return `<div class="kb-card ${scoreCardClass(l.Score)}" draggable="true" id="kbc${l.Id}"
     ondragstart="kbStart(event,${l.Id})" ondragend="kbEnd(event)"
     onclick="openDetail(${l.Id})">
-    <div class="kb-name">${esc(l.Name||l.Phone||'Unknown')}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
+    <div class="kb-name">${esc(leadDisplayName(l)||'Unknown')}${sentimentIcon?` <span title="${esc(l.Sentiment)}">${sentimentIcon}</span>`:''}${overdue?' <span title="SLA breached">⏱️</span>':''}</div>
     <div class="kb-phone">${maskPhone(l.Phone)}</div>
     <div class="kb-meta">${scoreBadge(l.Score)}${dealHealthChip(l)}${l.DealValue?`<span style="font-size:10px;color:var(--accent-ink);font-weight:600">${esc(l.DealCurrency||'')} ${Number(l.DealValue).toLocaleString()}</span>`:''}${l.Owner?`<span style="font-size:10px;color:var(--muted)">${esc(l.Owner)}</span>`:''}</div>
   </div>`;
@@ -6750,7 +6722,7 @@ function humanDealCard(l){
   return `<div class="card" style="border-left:3px solid ${wait?.overdue?'#DC2626':'var(--accent)'};cursor:pointer" onclick="openDetail(${l.Id})">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
       <div>
-        <div style="font-weight:700;font-size:14px">${esc(l.Name||l.Phone||'Unknown')}</div>
+        <div style="font-weight:700;font-size:14px">${esc(leadDisplayName(l)||'Unknown')}</div>
         <div style="font-size:11px;color:var(--muted);font-family:var(--mono)">${maskPhone(l.Phone)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:4px" onclick="event.stopPropagation()">
@@ -7523,7 +7495,7 @@ function renderLeadsList(){
   const visible=filtered.slice(0,_leadsPage*LEADS_PGS);
   const remaining=filtered.length-visible.length;
   el.innerHTML=visible.map(l=>{
-    const initials=(l.Name||l.Phone||'?').charAt(0).toUpperCase();
+    const initials=(leadDisplayName(l)||'?').charAt(0).toUpperCase();
     const tags=parseTags(l.Tags);
     const showOutcomeBtns=!isWonLead(l)&&!isLostLead(l)&&l.OptOut!=='Yes';
     const reconnect=isReactivationCandidate(l);
@@ -7969,7 +7941,7 @@ function openSendTemplateModal(leadIds){
   const leads=_stLeadIds.map(id=>allLeads.find(l=>l.Id===id));
   $id('stModalTitle').textContent=_stLeadIds.length>1?`Send Template — ${_stLeadIds.length} leads`:'Send Template';
   $id('stRecipientNote').textContent=_stLeadIds.length>1
-    ? leads.slice(0,3).map(l=>l.Name||l.Phone).join(', ')+(leads.length>3?` +${leads.length-3} more`:'')
+    ? leads.slice(0,3).map(l=>leadDisplayName(l)).join(', ')+(leads.length>3?` +${leads.length-3} more`:'')
     : `To: ${leads[0].Name||'Unknown'} (${maskPhone(leads[0].Phone)})`;
   $id('stVarFields').innerHTML=''; $id('stPreviewWrap').style.display='none'; $id('stProgressWrap').style.display='none';
   $id('stModalMsg').textContent=''; $id('stLogBox').innerHTML=''; $id('stProgBar').style.width='0%';
@@ -8052,14 +8024,14 @@ async function sendLeadsTemplate(){
           });
           const data=await r.json().catch(()=>({}));
           if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
-          sent++; log(`✅ ${lead.Name||lead.Phone} — sent directly (no prior conversation)`);
+          sent++; log(`✅ ${leadDisplayName(lead)} — sent directly (no prior conversation)`);
           bumpLeadAttempt(lead.Id);
-        }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — direct send failed: ${e.message}`); }
+        }catch(e){ failed++; log(`❌ ${leadDisplayName(lead)} — direct send failed: ${e.message}`); }
       }else{
         failed++;
         log(clientRecord?.wa_phone_id
           ? `⚠️ ${lead.Name||'lead'} — no conversation and no phone on file`
-          : `⚠️ ${lead.Name||lead.Phone} — no conversation (connect WhatsApp Business API in Settings → Channels to reach cold leads)`);
+          : `⚠️ ${leadDisplayName(lead)} — no conversation (connect WhatsApp Business API in Settings → Channels to reach cold leads)`);
       }
       setProg(i+1,leads.length);
       continue;
@@ -8082,9 +8054,9 @@ async function sendLeadsTemplate(){
       });
       const data=await r.json().catch(()=>({}));
       if(!r.ok) throw new Error(data.error||('HTTP '+r.status));
-      sent++; log(`✅ ${lead.Name||lead.Phone} — sent`);
+      sent++; log(`✅ ${leadDisplayName(lead)} — sent`);
       bumpLeadAttempt(lead.Id);
-    }catch(e){ failed++; log(`❌ ${lead.Name||lead.Phone} — ${e.message}`); }
+    }catch(e){ failed++; log(`❌ ${leadDisplayName(lead)} — ${e.message}`); }
     setProg(i+1,leads.length);
   }
   $id('stSendBtn').disabled=false;
@@ -8743,7 +8715,7 @@ function aiSalesPlanRow(r){
   const l=r.lead;
   return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)">
     <div style="flex:1;min-width:0">
-      <div style="font-weight:600;cursor:pointer" onclick="openDetail(${l.Id})">${esc(l.Name||l.Phone||'Unknown')}</div>
+      <div style="font-weight:600;cursor:pointer" onclick="openDetail(${l.Id})">${esc(leadDisplayName(l)||'Unknown')}</div>
       <div style="font-size:11.5px;color:var(--muted)">${r.reasons.map(esc).join(' · ')||'—'}</div>
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0">
@@ -9109,15 +9081,15 @@ function openDetail(id){
   const lead=allLeads.find(l=>l.Id===id);
   if(!lead)return;
   currentLead=lead;
-  $id('detailName').textContent=lead.Name||lead.Phone||'Unknown';
-  $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(lead.Phone||'')+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
+  $id('detailName').textContent=leadDisplayName(lead)||'Unknown';
+  $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
 
   // actions
   const waLink=`https://wa.me/${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   const callLink=`tel:+${(lead.Phone||'').replace(/[^0-9]/g,'')}`;
   $id('detailActions').innerHTML=`
-    <a class="action-btn" href="${callLink}" onclick="startCallTimer(${lead.Id})"><span class="ab-icon">📞</span>Call</a>
-    <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>
+    ${isIgLead(lead)?`<button class="action-btn" onclick="closeModal('modalDetail');openLeadChat(${lead.Id})"><span class="ab-icon">📷</span>Instagram chat</button>`:`<a class="action-btn" href="${callLink}" onclick="startCallTimer(${lead.Id})"><span class="ab-icon">📞</span>Call</a>
+    <a class="action-btn" href="${waLink}" target="_blank"><span class="ab-icon">💬</span>WhatsApp</a>`}
     <button class="action-btn" onclick="pushLeadToProjects(currentLead)"><span class="ab-icon">📌</span>Push to Task</button>
     <button class="action-btn" onclick="exportSingle()"><span class="ab-icon">📥</span>Export</button>
     ${TERMINAL.has(lead.Stage)?`<button class="action-btn" onclick="reopenLead()"><span class="ab-icon">🔄</span>Re-open</button>`:''}
@@ -9564,6 +9536,7 @@ function callStateFor(l){
 
 // Returns HTML for the smart split call button with channel dropdown
 function callBtnHTML(l, label){
+  if(isIgLead(l)) return `<span class="call-btn-wrap"><a class="btn btn-sm call-main" href="#" title="Open the Instagram chat" onclick="event.preventDefault();event.stopPropagation();openLeadChat(${l.Id})">📷 Chat</a></span>`;
   const phone=(l.Phone||'').replace(/[^0-9]/g,'');
   const tel=`tel:+${phone}`;
   const wa=`https://wa.me/${phone}`;
@@ -12447,7 +12420,7 @@ function openQuoteFor(leadId,mode){
   const sel=$id('quoteLeadSelect');
   if(sel){
     if(![...sel.options].some(o=>o.value===String(leadId))){
-      sel.insertAdjacentHTML('afterbegin',`<option value="${leadId}">${esc(lead.Name||lead.Phone||'Unknown')} · ${esc(maskPhone(lead.Phone))}</option>`);
+      sel.insertAdjacentHTML('afterbegin',`<option value="${leadId}">${esc(leadDisplayName(lead)||'Unknown')} · ${esc(maskPhone(lead.Phone))}</option>`);
     }
     sel.value=String(leadId);
   }
@@ -12532,7 +12505,7 @@ function renderQuoteSentLog(){
       ${sentLeads.map(l=>`
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
           <div style="min-width:0">
-            <div style="font-weight:600;font-size:13px">${esc(l.Name||l.Phone||'Unknown')}</div>
+            <div style="font-weight:600;font-size:13px">${esc(leadDisplayName(l)||'Unknown')}</div>
             <div style="font-size:11px;color:var(--muted)">${esc(maskPhone(l.Phone))} · ${esc(l.Stage||'')}</div>
           </div>
           <div style="text-align:right;flex-shrink:0">
@@ -12580,7 +12553,7 @@ function quoteFilterLeads(){
   const prev=sel.value;
   _quoteEligible=quoteEligibleLeads();
   const rows=_quoteEligible.filter(x=>!q||(x.lead.Name||'').toLowerCase().includes(q)||(x.lead.Phone||'').includes(q)).slice(0,100);
-  sel.innerHTML='<option value="">Select a lead…</option>'+rows.map(x=>`<option value="${x.lead.Id}">${esc(x.lead.Name||x.lead.Phone||'Unknown')} · ${esc(maskPhone(x.lead.Phone))} · last price: ${esc(x.mention.snippet)}</option>`).join('');
+  sel.innerHTML='<option value="">Select a lead…</option>'+rows.map(x=>`<option value="${x.lead.Id}">${esc(leadDisplayName(x.lead)||'Unknown')} · ${esc(maskPhone(x.lead.Phone))} · last price: ${esc(x.mention.snippet)}</option>`).join('');
   if(rows.some(x=>String(x.lead.Id)===prev)) sel.value=prev;
   hint.textContent=_quoteEligible.length?`${_quoteEligible.length} lead(s) with a price mentioned in chat and no quotation sent yet.`:'No leads awaiting a quotation right now.';
 }
@@ -12780,7 +12753,7 @@ function quoteBuildPdfDoc(lead,items,total,currency,invoiceNumber){
   y+=80;
 
   doc.setFontSize(11);
-  doc.text(`Prepared for: ${lead.Name||lead.Phone||'Customer'}`,marginX,y);
+  doc.text(`Prepared for: ${leadDisplayName(lead)||'Customer'}`,marginX,y);
   doc.text(`Date: ${new Date().toLocaleDateString()}`,400,y);
   y+=16;
   if(isInvoice){
@@ -12884,7 +12857,7 @@ async function quoteSend(){
     const fd=new FormData();
     fd.append('conv_id',convId);
     fd.append('caption',caption);
-    fd.append('file',pdfBlob,`${isInvoice?'Invoice':'Quotation'}-${(lead.Name||lead.Phone||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
+    fd.append('file',pdfBlob,`${isInvoice?'Invoice':'Quotation'}-${(leadDisplayName(lead)||'lead').replace(/[^a-z0-9]+/gi,'-')}.pdf`);
     const r=await fetch(`${CONFIG.WORKER_BASE}/quote/send`,{
       method:'POST',headers:ncAuthHeaders(),body:fd
     });
@@ -12934,7 +12907,7 @@ async function quoteSend(){
   try{
     const acctBody={
       type:isInvoice?'invoice':'quotation', lead_id:lead.Id,
-      title:`${isInvoice?'Invoice':'Quotation'} — ${lead.Name||lead.Phone||'Lead'}`,
+      title:`${isInvoice?'Invoice':'Quotation'} — ${leadDisplayName(lead)||'Lead'}`,
       currency, tax_pct:Number($id('quoteTaxPercent').value)||0, status:'sent',
       line_items:items.map(it=>({name:it.name,qty:it.qty,price:it.unitPrice})),
     };
@@ -13804,7 +13777,6 @@ const INT_SHEETS=[
 
 function integrationsInit(){
   renderWaStatus();
-  renderInstagramStatus();
   renderShopifyStatus();
   renderSheetsList();
   loadEmailStatus();
@@ -14910,66 +14882,6 @@ async function autoDetectMetaCreds(inboxId, clickedButton){
   finally{ btn.disabled=false; setTimeout(()=>{ msg.textContent=''; msg.className='save-msg'; },5000); }
 }
 
-// ── Instagram DM (native — no Chatwoot) ── "Instagram API with Instagram Login" authenticates
-// against instagram.com directly, not through the Meta JS SDK's FB.login popup (that's a
-// Facebook-Login-for-Business thing, a different product) — so this is a plain full-page OAuth
-// redirect, same shape as connectShopifyOAuth above, not connectWhatsApp's Embedded-Signup flow.
-let instagramHealthChecked=false;
-function renderInstagramStatus(){
-  const connected=!!clientRecord?.ig_id;
-  $id('intInstagramConnectForm').style.display=connected?'none':'block';
-  $id('intInstagramConnectedActions').style.display=connected?'block':'none';
-  $id('intInstagramStatus').innerHTML=connected
-    ? `⏳ Checking token and message delivery — <b>@${esc(clientRecord.ig_username||clientRecord.ig_id)}</b>`
-    : 'Not connected.';
-  if(connected&&!instagramHealthChecked){ instagramHealthChecked=true; refreshInstagramHealth(true); }
-}
-
-async function refreshInstagramHealth(repair=false){
-  const status=$id('intInstagramStatus'), btn=$id('intInstagramRepairBtn');
-  if(!clientRecord?.ig_id) return renderInstagramStatus();
-  status.innerHTML=`⏳ ${repair?'Repairing webhook subscription…':'Checking Instagram…'}`;
-  if(btn) btn.disabled=true;
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/ig/health`,{method:repair?'POST':'GET',headers:ncAuthHeaders()});
-    const data=await r.json().catch(()=>({}));
-    if(data.token_valid&&data.messages_subscribed){
-      status.innerHTML=`✅ Ready — <b>@${esc(data.username||clientRecord.ig_username||clientRecord.ig_id)}</b><br><span style="color:var(--muted)">Token valid · Messages subscribed${data.last_webhook_at?' · Last DM received '+esc(new Date(data.last_webhook_at).toLocaleString()):''}</span>`;
-    }else{
-      const problem=data.error||(!data.token_valid?'Access token is invalid or expired.':'Message webhook is not subscribed.');
-      status.innerHTML=`⚠️ Connected, but not ready — ${esc(problem)}<br><span style="color:var(--muted)">Use Repair &amp; recheck. If the token expired, disconnect and reconnect.</span>`;
-    }
-  }catch(e){ status.innerHTML=`⚠️ Health check failed — ${esc(e.message)}`; }
-  finally{ if(btn) btn.disabled=false; }
-}
-
-async function connectInstagram(){
-  const msg=$id('intInstagramMsg');
-  if(clientRecord?.ig_id){ msg.textContent='Instagram is already connected for this client.'; return; }
-  msg.textContent='Connecting…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/ig/oauth/start`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'})});
-    const data=await r.json();
-    if(!r.ok||!data.url){ msg.textContent=data.error||'Failed to start Instagram connection'; return; }
-    window.location.href=data.url;
-  }catch(e){ msg.textContent='Error: '+e.message; }
-}
-
-async function disconnectInstagram(){
-  if(!confirm('Disconnect Instagram? DMs will stop being answered until you reconnect.')) return;
-  const msg=$id('intInstagramDisconnectMsg');
-  msg.textContent='Disconnecting…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/channels/instagram/disconnect`,{method:'POST',headers:ncAuthHeaders()});
-    const data=await r.json();
-    if(!r.ok){ msg.textContent=data.error||'Failed to disconnect'; return; }
-    Object.assign(clientRecord,{ig_id:'', ig_access_token:'', ig_username:''});
-    instagramHealthChecked=false;
-    renderInstagramStatus();
-    showToast('Instagram disconnected');
-  }catch(e){ msg.textContent='Error: '+e.message; }
-}
-
 function renderChannelInboxForm(){
   const type=$id('chNewType').value;
   $id('chInboxFormWebWidget').style.display=type==='web_widget'?'block':'none';
@@ -15356,7 +15268,13 @@ function $id(id){return document.getElementById(id);}
 function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function escAttr(s){return esc(s).replace(/'/g,'&#39;');}
-function maskPhone(p){if(!p)return'—';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
+// Instagram leads come in through Chatwoot keyed as Phone "ig:<instagram id>" (the Worker's
+// engineParseChatwootPayload) — not a number, so never masked, dialled or opened in WhatsApp.
+function isIgLeadKey(p){return String(p||'').startsWith('ig:');}
+function isIgLead(l){return String(l?.Channel||'').toLowerCase()==='instagram'||isIgLeadKey(l?.Phone);}
+function leadDisplayName(l){return l?.Name||(isIgLeadKey(l?.Phone)?'Instagram user':l?.Phone)||'';}
+function openLeadChat(id){navigate('chats');const l=(allLeads||[]).find(x=>String(x.Id)===String(id));if(typeof setChatChannel==='function')setChatChannel(isIgLead(l)?'instagram':'whatsapp');if(typeof chatSelectLead==='function')chatSelectLead(id);}
+function maskPhone(p){if(!p)return'—';if(isIgLeadKey(p))return'📷 Instagram';const s=String(p);return s.length<=4?s:s.slice(0,2)+'***'+s.slice(-2);}
 function parseTags(t){if(!t)return[];return String(t).split(',').map(s=>s.trim()).filter(Boolean);}
 // Customer-facing lead reference: the Leads row Id, prefixed and zero-padded (42 → LD-00042).
 // No separate column or counter — Id is already unique and never reused. Same helper lives in
@@ -15365,7 +15283,7 @@ const LEAD_REF_PREFIX='LD-';
 function leadRef(l){const id=Number(l&&typeof l==='object'?l.Id:l);return id>0?LEAD_REF_PREFIX+String(id).padStart(5,'0'):'';}
 // "LD-00042" / "ld42" / "42" → 42 (the Id to match), anything else → 0.
 function leadRefSearchId(q){const m=String(q||'').trim().match(/^(?:[a-z]+-?)?0*(\d+)$/i);return m?parseInt(m[1],10):0;}
-function leadLabel(l){return l.Name||l.Phone||leadRef(l);}
+function leadLabel(l){return leadDisplayName(l)||leadRef(l);}
 // A lead's CallLog (JSON array, newest first). Also reads the "[...]\n[...]" shape the old
 // duplicate-merge wrote by gluing two arrays together — plain JSON.parse fails on that and every
 // call on the merged lead silently vanished from the call history and every report.
@@ -16964,7 +16882,7 @@ async function sendTaskWaFollowUp(leadId,btn){
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     if(data.stage) lead['Follow up '+data.stage]='Yes';
-    alert('✓ Follow-up sent to '+(lead.Name||lead.Phone));
+    alert('✓ Follow-up sent to '+(leadDisplayName(lead)));
   }catch(e){ alert('Could not send follow-up: '+e.message); }
   finally{ if(btn){ btn.disabled=false; btn.textContent='💬 WA Follow-up'; } }
 }
@@ -17010,7 +16928,7 @@ async function sendPipelineVideoFollowup(){
     const data=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     closeVideoFollowupModal();
-    showToast('✓ Video sent to '+(lead.Name||lead.Phone),'ok');
+    showToast('✓ Video sent to '+(leadDisplayName(lead)),'ok');
     renderTasks();
   }catch(e){ msg.textContent='Error: '+e.message; msg.className='save-msg err'; }
   finally{ btn.disabled=false; }
@@ -17026,7 +16944,7 @@ function openTaskModal(id, prefillLead, prefillProjectId){
   const state=getTasksState();
   const t=id?state.items.find(x=>x.id===id):null;
   $id('taskModalTitle').textContent=t?'Edit Task':'New Task';
-  $id('taskTitle').value=t?t.title||'':(prefillLead?`Follow up with ${prefillLead.Name||prefillLead.Phone||'lead'}`:'');
+  $id('taskTitle').value=t?t.title||'':(prefillLead?`Follow up with ${leadDisplayName(prefillLead)||'lead'}`:'');
   $id('taskNotes').value=t?.notes||'';
   $id('taskDueDate').value=t?t.due_date||'':(prefillLead?.ReminderDate||new Date().toISOString().slice(0,10));
   $id('taskDueTime').value=t?.due_time||'';
@@ -17097,7 +17015,7 @@ async function saveTaskFromModal(){
   Object.assign(task,{
     title, notes:$id('taskNotes').value.trim(),
     due_date:$id('taskDueDate').value||'', due_time:$id('taskDueTime').value||'',
-    lead_id:leadId, lead_name:lead?(lead.Name||lead.Phone||''):'',
+    lead_id:leadId, lead_name:lead?(leadDisplayName(lead)||''):'',
     assignee_email:assigneeEmail, category, project_id:projectId,
     notify_customer:notifyCustomer, depends_on:dependsOn,
   });
@@ -19849,7 +19767,7 @@ async function pollNotifications(){
   const cutoff=new Date(now-24*3600*1000).toISOString().slice(0,19).replace('T',' ');
   try{
     const d=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/tables/${CONFIG.LEADS_TABLE_ID}/records?where=(ClientId,eq,${clientId})~and(Date,gte,${encodeURIComponent(cutoff)})&limit=20&sort=-Date`);
-    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(l.Name||l.Phone||'Unknown'),time:l.Date}));
+    (d.list||[]).forEach(l=>items.push({id:'lead_'+l.Id,icon:'👤',text:'New lead: '+(leadDisplayName(l)||'Unknown'),time:l.Date}));
   }catch(e){}
   if(_taLoaded){
     const td=now.toISOString().slice(0,10);
@@ -19916,7 +19834,7 @@ async function checkReminders(){
       .forEach(b=>alerts.push({icon:'✈️',text:`Departure: ${b.client_name||''} – ${b.package_name||'Booking'} on ${b.departure_date}`}));
   }
   allLeads.filter(l=>l.passport_expiry&&l.passport_expiry>=today&&l.passport_expiry<=in30d)
-    .forEach(l=>alerts.push({icon:'📘',text:`Passport expiring: ${l.Name||l.Phone} on ${l.passport_expiry}`}));
+    .forEach(l=>alerts.push({icon:'📘',text:`Passport expiring: ${leadDisplayName(l)} on ${l.passport_expiry}`}));
   const el=$id('remindersPanel');
   if(!el)return;
   if(!alerts.length){el.style.display='none';return;}
@@ -20168,7 +20086,7 @@ function _rcBotRows(){
     const lead=allLeads.find(l=>String(l.Id)===String(r.lead_id))||{};
     const job=_rcJobs.find(j=>String(j.Id)===String(r.job_id));
     const pk=_rcBotPhoneKey(lead.Phone);
-    return{...r,lead,job,name:lead.Name||lead.Phone||leadRef(r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
+    return{...r,lead,job,name:leadDisplayName(lead)||leadRef(r.lead_id),phone:lead.Phone||'',isCandidate:!!(pk&&candPhones.has(pk))};
   });
 }
 // Older chats (before per-message storage) only exist in each lead's ConvHistory — the worker

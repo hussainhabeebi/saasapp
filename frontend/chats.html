@@ -194,9 +194,13 @@ const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 const headers=extra=>({'Authorization':'Bearer '+sessionToken,...extra});
 const convId=l=>l&&(l.ConversationID||l.conv_id||l.ConversationId||l.chatwoot_conv_id||'');
 const hist=l=>{const k=String(l?.Id||'');if(k&&histCache[k])return histCache[k];try{const p=JSON.parse(l?.ConvHistory||'[]');if(k)histCache[k]=p;return p}catch{return[]}};
-const initials=l=>{const s=(l.Name||l.Phone||'?').trim();return (s[0]||'?').toUpperCase()};
+const initials=l=>{const s=(who(l)||'?').trim();return (s[0]||'?').toUpperCase()};
 const isOut=m=>['assistant','bot','agent'].includes(m?.role);
-const isIg=l=>(l?.Channel||'whatsapp')==='instagram';
+// Instagram contacts come in through Chatwoot like WhatsApp, keyed as Phone "ig:<instagram id>"
+// (the Worker's engineParseChatwootPayload) — never shown or dialled as a number.
+const isIgKey=p=>String(p||'').startsWith('ig:');
+const isIg=l=>(l?.Channel||'whatsapp')==='instagram'||isIgKey(l?.Phone);
+const who=l=>l?.Name||(isIgKey(l?.Phone)?'Instagram user':l?.Phone)||'';
 const svg=(d,s=24)=>`<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
 const IC={
   mic:svg('<path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15zm6.2-3.6a.9.9 0 0 0-1.8 0 4.4 4.4 0 0 1-8.8 0 .9.9 0 0 0-1.8 0 6.2 6.2 0 0 0 5.3 6.1V20H8.6a.9.9 0 0 0 0 1.8h6.8a.9.9 0 0 0 0-1.8h-2.5v-2.5a6.2 6.2 0 0 0 5.3-6.1z"/>'),
@@ -311,7 +315,7 @@ function connectWs(){
   else if(['message','new_lead','lead_reassigned'].includes(m.type))queueSync(m.lead_id?[m.lead_id]:[]);
   else if(m.type==='cfg')loadBootstrap().catch(()=>{});
   else if(m.type==='viewing'||m.type==='typing')onPresence(m);
-  else if(m.type==='mention'&&lc(m.to)===meEmail){const l=leads.find(x=>String(x.Id)===String(m.lead_id));toast(`${m.name} mentioned you in a note`);const was=notifyOn;notifyOn=true;notify(`${m.name} mentioned you`,l?(l.Name||l.Phone):'Open the chat',m.lead_id);notifyOn=was}
+  else if(m.type==='mention'&&lc(m.to)===meEmail){const l=leads.find(x=>String(x.Id)===String(m.lead_id));toast(`${m.name} mentioned you in a note`);const was=notifyOn;notifyOn=true;notify(`${m.name} mentioned you`,l?(who(l)):'Open the chat',m.lead_id);notifyOn=was}
  };
  ws.onclose=()=>{ws=null;const wait=[1000,2000,5000,10000][Math.min(wsTries++,3)];setTimeout(connectWs,wait)};
  ws.onerror=()=>{try{ws.close()}catch{}};
@@ -488,7 +492,7 @@ function rowHtml(l,i){
  const row3=(labels.slice(0,2).map(x=>`<span class="lbl">${esc(x)}</span>`).join('')+(labels.length>2?`<span class="lbl more">+${labels.length-2}</span>`:'')+(r?.priority>=3?`<i class="prio p${r.priority}" title="${r.priority>=4?'Urgent':'High'} priority"></i>`:''));
  const owner=String(l.Owner||'').trim();
  const pk=picked.has(String(l.Id));
- return `<div class="contact ${u?'unread':''} ${active?'active':''} ${pk?'picked':''}" style="top:${i*ROW}px" data-id="${esc(l.Id)}" onclick="rowClick(event,'${esc(l.Id)}')" onmouseenter="hoverPrefetch('${esc(l.Id)}')" onmouseleave="hoverPrefetch(null)"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${channel==='all'&&r?`<span class="ch-badge" title="${isIg(l)?'Instagram':'WhatsApp'}">${isIg(l)?'📸':'💬'}</span>`:''}${V2?`<span class="ck" title="Select" onclick="event.stopPropagation();togglePick('${esc(l.Id)}')">${pk?'✓':'☐'}</span>`:''}${human?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(l.Name||l.Phone||'Unknown')}</div><span class="hnd" title="${human?'A person is handling this chat':'The bot is handling this chat'}">${human?'👤':'🤖'}</span><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${p}</div>${waitBadge(r)}${owner?`<span class="asg" title="Assigned to ${esc(agentName(owner))}">${esc(agentInitials(owner))}</span>`:''}${u?`<span class="badge">${r?Math.min(r.unread_count,99):1}</span>`:''}</div>${row3?`<div class="row3">${row3}</div>`:''}</div></div>`;
+ return `<div class="contact ${u?'unread':''} ${active?'active':''} ${pk?'picked':''}" style="top:${i*ROW}px" data-id="${esc(l.Id)}" onclick="rowClick(event,'${esc(l.Id)}')" onmouseenter="hoverPrefetch('${esc(l.Id)}')" onmouseleave="hoverPrefetch(null)"><div class="avatar-wrap"><div class="avatar">${esc(initials(l))}</div>${channel==='all'&&r?`<span class="ch-badge" title="${isIg(l)?'Instagram':'WhatsApp'}">${isIg(l)?'📸':'💬'}</span>`:''}${V2?`<span class="ck" title="Select" onclick="event.stopPropagation();togglePick('${esc(l.Id)}')">${pk?'✓':'☐'}</span>`:''}${human?'<i class="handover"></i>':''}</div><div class="info"><div class="row1"><div class="name">${esc(who(l)||'Unknown')}</div><span class="hnd" title="${human?'A person is handling this chat':'The bot is handling this chat'}">${human?'👤':'🤖'}</span><div class="time">${esc(ago(l.LastMsgAt||l.Date))}</div></div><div class="row2">${l.Pinned==='Yes'?'<span class="pin">📌</span>':''}<div class="preview">${p}</div>${waitBadge(r)}${owner?`<span class="asg" title="Assigned to ${esc(agentName(owner))}">${esc(agentInitials(owner))}</span>`:''}${u?`<span class="badge">${r?Math.min(r.unread_count,99):1}</span>`:''}</div>${row3?`<div class="row3">${row3}</div>`:''}</div></div>`;
 }
 // Resting on a row for ~150ms fetches its thread, so the click opens from memory.
 let hoverT=null;
@@ -542,10 +546,10 @@ async function refreshMessages(lead,stick=false){
  if(current&&String(current.Id)===k)drawMessages(stick);
 }
 function closeConversation(){if(rec)cancelRecording();if(current&&$('msg'))saveDraft(current.Id,$('msg').value);$('main').classList.remove('open');$('sidebar').classList.remove('thread-open');current=null;replyTarget=null;toParent('thread',{leadId:null});renderContacts()}
-function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button><button onclick="copyPhone()">Copy contact number</button>${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
+function menuHtml(){const l=current,wa=String(l.Phone||'').replace(/[^0-9]/g,'');return `<button onclick="togglePin()">${l.Pinned==='Yes'?'Unpin':'Pin'} conversation</button><button onclick="toggleResolve()">${l.ConvResolved==='Yes'?'Reopen':'Resolve'} conversation</button><button onclick="toggleHandover()">${takenOver(l)?'🤖 Hand back to bot':'🙋 Take over from bot'}</button>${V2?`<button onclick="markUnread()">Mark as unread</button><button onclick="toggleMenu(false);summarise(true)">✨ Summarise this chat</button><button onclick="exportChat()">Export chat (.txt)</button><button onclick="exportPdf()">Export chat (PDF)</button><button onclick="emailTranscript()">Email transcript…</button><button onclick="toggleSig()">${sigOn()?'✓ ':''}Add my name to replies</button>${!isIg(l)?`<button onclick="blockContact()">${(l._rec?.Blocked==='Yes')?'Unblock contact':'🚫 Block contact'}</button>`:''}`:''}<button onclick="toggleThreadSearch()">Search in conversation</button>${isIg(l)?'':'<button onclick="copyPhone()">Copy contact number</button>'}${wa&&!isIg(l)?`<button onclick="window.open('https://wa.me/${wa}','_blank');toggleMenu(false)">Open in WhatsApp</button>`:''}<button onclick="goLead()">View lead details</button><button class="dash-item" onclick="goBack()">← Back to Dashboard</button><button class="mob-only" onclick="toggleMenu(false)">Cancel</button>`}
 function buildShell(){
  const l=current,ig=isIg(l),tel=String(l.Phone||'').replace(/[^0-9+]/g,'');
- $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(l.Name||l.Phone||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="fuChip"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
+ $('main').innerHTML=`<div class="chat-top"><button class="icon-btn back" title="Back" onclick="closeConversation()">←</button><div class="avatar" style="width:40px;height:40px">${esc(initials(l))}</div><div class="chat-meta" title="View lead details" onclick="goLead()"><div class="chat-name">${esc(who(l)||'Unknown')}</div><div class="chat-sub">${esc(ig?'Instagram':(l.Phone||'WhatsApp'))}<span id="fuChip"></span></div></div><div class="hdr-ctl" id="hdrCtl"></div><div class="chat-actions">${tel&&!ig?`<a class="icon-btn call-btn" id="callBtn" title="Call ${esc(l.Phone||'')}" aria-label="Call" href="tel:${esc(tel)}">${IC.phone}</a>`:''}<button class="icon-btn desktop-only" title="Search in conversation" onclick="toggleThreadSearch()">⌕</button>${V2?'<button class="icon-btn" id="infoBtn" title="Contact details" onclick="toggleInfo()">ⓘ</button>':''}<button class="icon-btn" title="Menu" onclick="toggleMenu()">⋮</button><div class="menu hidden" id="chatMenu"></div></div></div>
  <div id="threadSearch" class="search-wrap hidden" style="border-bottom:1px solid #ddd"><div class="searchbox"><span>⌕</span><input id="threadSearchInput" placeholder="Search in conversation" oninput="tsIdx=-1;searchThread(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();stepThreadSearch(event.shiftKey?1:-1)}"><span class="ts-nav"><span id="tsCount"></span><button title="Earlier match" onclick="stepThreadSearch(-1)">▲</button><button title="Later match" onclick="stepThreadSearch(1)">▼</button></span></div></div>
  <div class="thread" id="thread"></div>
  <button id="toBottom" class="to-bottom hidden" title="Scroll to latest" onclick="scrollToBottom(true)">${IC.down}<span class="n hidden"></span></button>
@@ -664,9 +668,9 @@ function wireThread(){
  t.addEventListener('touchmove',e=>{if(!sw)return;const p=e.touches[0],dx=p.clientX-sw.x,dy=p.clientY-sw.y;if(sw.lock===null&&(Math.abs(dx)>8||Math.abs(dy)>8))sw.lock=Math.abs(dx)>Math.abs(dy)&&dx>0;if(!sw.lock)return;sw.dx=Math.min(80,Math.max(0,dx));sw.row.style.transform=`translateX(${sw.dx}px)`},{passive:true});
  t.addEventListener('touchend',()=>{if(!sw)return;const {row,dx}=sw;sw=null;row.style.transform='';if(dx>55){navigator.vibrate?.(15);setReply(Number(row.dataset.i))}});
  // Drag & drop files straight into the conversation.
- t.addEventListener('dragover',e=>{if(isIg(current)||!e.dataTransfer?.types?.includes('Files'))return;e.preventDefault();t.classList.add('drop')});
+ t.addEventListener('dragover',e=>{if(!e.dataTransfer?.types?.includes('Files'))return;e.preventDefault();t.classList.add('drop')});
  t.addEventListener('dragleave',()=>t.classList.remove('drop'));
- t.addEventListener('drop',e=>{t.classList.remove('drop');if(isIg(current)||!e.dataTransfer?.files?.length)return;e.preventDefault();openPreview([...e.dataTransfer.files])});
+ t.addEventListener('drop',e=>{t.classList.remove('drop');if(!e.dataTransfer?.files?.length)return;e.preventDefault();openPreview([...e.dataTransfer.files])});
 }
 function toggleMenu(force){const m=$('chatMenu');if(!m)return;m.innerHTML=menuHtml();m.classList.toggle('hidden',force===undefined?!m.classList.contains('hidden'):!force);syncBackdrop()}
 // Phones: menus are bottom sheets over a dimmed backdrop; tapping the backdrop closes them. The
@@ -711,10 +715,10 @@ function grow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,14
 function onType(){const b=$('msg');grow(b);updateAction();checkCanned();checkMention();sendTyping();clearTimeout(onType.t);onType.t=setTimeout(()=>current&&saveDraft(current.Id,b.value),400)}
 function keySend(e){if(cannedKey(e))return;if(V2&&e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&composeMode==='reply'){e.preventDefault();sendAndResolve();return}if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&matchMedia('(min-width:701px)').matches){e.preventDefault();sendMessage()}}
 function insertAtCursor(txt){const b=$('msg');const s=b.selectionStart??b.value.length,en=b.selectionEnd??b.value.length;b.value=b.value.slice(0,s)+txt+b.value.slice(en);b.selectionStart=b.selectionEnd=s+txt.length;b.focus();onType()}
-function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length&&!isIg(current)){e.preventDefault();openPreview(files)}}
+function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();openPreview(files)}}
 // Mic when the box is empty, paper plane when there's something to send — same as WhatsApp.
 // Internal notes and Instagram are text-only, so they always show send.
-function actionState(){if(rec)return'rec';if(composeMode==='note'||isIg(current)||($('msg')?.value||'').trim())return'send';return'mic'}
+function actionState(){if(rec)return'rec';if(composeMode==='note'||($('msg')?.value||'').trim())return'send';return'mic'}
 function updateAction(){const b=$('actionBtn');if(!b)return;const s=actionState();if(b.dataset.state===s)return;b.dataset.state=s;b.innerHTML=s==='mic'?IC.mic:IC.send;b.title=s==='mic'?'Record voice message (hold, or tap to lock)':s==='rec'?'Send voice message':'Send';const cam=$('camBtn');if(cam)cam.classList.toggle('hidden',s!=='mic');const sm=$('sendMore');if(sm)sm.classList.toggle('hidden',s!=='send'||composeMode!=='reply')}
 function setReply(i){if(!current)return;const m=hist(current)[i];if(!m)return;if(composeMode==='note')setComposeMode('reply');replyTarget={index:i,snippet:snippetOf(m),who:isOut(m)?'You':(current.Name||'Customer')};renderReply();$('msg')?.focus()}
 function clearReply(){replyTarget=null;renderReply()}
@@ -732,14 +736,13 @@ async function sendMessage(){
  const unfilled=composeMode==='reply'&&text.match(/\{\{\s*\w+\s*\}\}/);if(unfilled){const at=box.value.indexOf(unfilled[0]);box.focus();box.setSelectionRange(at,at+unfilled[0].length);toast('Fill in '+unfilled[0]+' before sending');return}
  if(composeMode==='reply'&&!isIg(lead)&&!windowOpen(lead)){toast('The 24-hour window has closed — send a template');return}
  if(composeMode==='note'){let n=[];try{n=JSON.parse(lead.NotesList||'[]')}catch{}n.push({text,author:meEmail||'Team',ts:new Date().toISOString()});try{await patchLead(lead,{NotesList:JSON.stringify(n)});sendMentions(lead,text);box.value='';grow(box);saveDraft(lead.Id,'');drawMessages(true);toast('Note added')}catch(e){toast('Could not save note: '+e.message)}return}
- if(!isIg(lead)&&!convId(lead)){toast('No linked WhatsApp conversation');return}
+ if(!convId(lead)){toast(isIg(lead)?'No linked Instagram conversation':'No linked WhatsApp conversation');return}
  const quote=replyTarget?{who:replyTarget.who,snippet:replyTarget.snippet}:null;
- if(V2&&sigOn()&&!isIg(lead)){const me=agentsList().find(a=>a.email===meEmail);if(me?.name)text=text+`\n\n— ${me.name}`}
+ if(V2&&sigOn()){const me=agentsList().find(a=>a.email===meEmail);if(me?.name)text=text+`\n\n— ${me.name}`}
  box.value='';grow(box);saveDraft(lead.Id,'');clearReply();updateAction();closePopovers();
  const msg=pushLocal(lead,{role:'assistant',content:text,...(quote?{reply_to:quote}:{})});
  msg._retry=async()=>{setMsgStatus(lead,msg,'pending');try{
-   if(isIg(lead)){const out=quote?`*↩️ Replying to:* "${quote.snippet}"\n\n${text}`:text;await apiJson(WORKER+'/instagram/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:lead.Id,text:out})});setMsgStatus(lead,msg,null);await patchLead(lead,{ConvHistory:persistable(hist(lead)),LastMsgAt:msg.ts}).catch(()=>{})}
-   else{await apiJson(WORKER+'/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:convId(lead),lead_id:lead.Id,text,...(quote?{reply_to:quote}:{})})});setMsgStatus(lead,msg,null)}
+   await apiJson(WORKER+'/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:convId(lead),lead_id:lead.Id,text,...(quote?{reply_to:quote}:{})})});setMsgStatus(lead,msg,null)
   }catch(e){setMsgStatus(lead,msg,'failed',e.message);toast('Not sent: '+failReason(e.message))}};
  await msg._retry();
 }
@@ -759,7 +762,7 @@ function sendFileMessage(lead,file,{caption='',kind,duration=0}={}){
 // ── Attachments: picker, preview with caption, send ──────────────────────────────────────────
 const MAX_FILE=40*1024*1024;
 let previewFiles=[],previewIdx=0;
-function pickFiles(accept,camera){closePopovers();if(!current||isIg(current))return;const inp=$('fileInput');inp.value='';inp.accept=accept||'';inp.multiple=!camera;if(camera)inp.setAttribute('capture','environment');else inp.removeAttribute('capture');inp.click()}
+function pickFiles(accept,camera){closePopovers();if(!current)return;const inp=$('fileInput');inp.value='';inp.accept=accept||'';inp.multiple=!camera;if(camera)inp.setAttribute('capture','environment');else inp.removeAttribute('capture');inp.click()}
 $('fileInput').onchange=e=>{const f=[...(e.target.files||[])];e.target.value='';if(f.length)openPreview(f)};
 function openPreview(files){
  if(!current)return;if(!convId(current)){toast('No linked WhatsApp conversation');return}
@@ -776,7 +779,7 @@ function drawPreview(){
  const stage=p.kind==='image'?`<img src="${p.url}" alt="">`:p.kind==='video'?`<video src="${p.url}" controls playsinline></video>`:p.kind==='audio'?`<div class="big-doc">${IC.audio}<div style="margin:8px 0">${esc(p.file.name)}</div><audio src="${p.url}" controls></audio></div>`:`<div class="big-doc"><div class="doc"><span class="ext">${ext}</span></div><div>${esc(p.file.name)}</div><small>${esc(fmtBytes(p.file.size))}</small></div>`;
  const thumbs=previewFiles.length>1?`<div class="thumbs">${previewFiles.map((q,i)=>`<button class="thumb ${i===previewIdx?'active':''}" onclick="previewIdx=${i};drawPreview()">${q.kind==='image'?`<img src="${q.url}" alt="">`:esc((q.file.name.split('.').pop()||'').slice(0,4))}<span class="x" onclick="event.stopPropagation();removePreview(${i})">×</span></button>`).join('')}</div>`:'';
  const cap=$('capInput')?.value||'';
- ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="closePreview()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send to <b>${esc(current.Name||current.Phone||'contact')}</b>${previewFiles.length>1?` · ${previewFiles.length} files`:''}</div></div><div class="stage">${stage}</div><div class="foot">${thumbs}<div class="cap-row"><input id="capInput" placeholder="Add a caption…" value="${esc(cap)}" onkeydown="if(event.key==='Enter'){event.preventDefault();sendPreview()}"><button class="send" title="Send" onclick="sendPreview()">${IC.send}</button></div></div>`;
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="closePreview()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send to <b>${esc(who(current)||'contact')}</b>${previewFiles.length>1?` · ${previewFiles.length} files`:''}</div></div><div class="stage">${stage}</div><div class="foot">${thumbs}<div class="cap-row"><input id="capInput" placeholder="Add a caption…" value="${esc(cap)}" onkeydown="if(event.key==='Enter'){event.preventDefault();sendPreview()}"><button class="send" title="Send" onclick="sendPreview()">${IC.send}</button></div></div>`;
 }
 function removePreview(i){const [p]=previewFiles.splice(i,1);if(p?.url)URL.revokeObjectURL(p.url);previewIdx=Math.min(previewIdx,previewFiles.length-1);previewFiles.length?drawPreview():closePreview()}
 function closePreview(revoke=true){const ov=$('previewOv');if(ov){ov.classList.add('hidden');ov.innerHTML=''}if(revoke)previewFiles.forEach(p=>p.url&&URL.revokeObjectURL(p.url));previewFiles=[]}
@@ -806,7 +809,7 @@ async function openTemplates(){
  closePopovers();if(!current||isIg(current))return;
  let ov=$('tplOv');if(!ov){ov=document.createElement('div');ov.id='tplOv';ov.className='overlay tpl-ov';document.body.appendChild(ov)}
  ov.classList.remove('hidden');tplSel=null;
- ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="tplBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send a template to <b>${esc(current.Name||current.Phone||'contact')}</b></div><button class="icon-btn" title="Reload templates" onclick="loadTemplateList(true)">↻</button></div><div class="tpl-main" id="tplMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="tplSearch" placeholder="Search templates" oninput="drawTemplateList()"></div></div><div class="tpl-items" id="tplItems"><div class="tpl-empty"><div class="spinner"></div>Loading approved templates…</div></div></div><div class="tpl-detail" id="tplDetail"><div class="tpl-empty">Choose a template to preview it.</div></div></div>`;
+ ov.innerHTML=`<div class="bar"><button class="icon-btn" title="Close" onclick="tplBack()">${IC.close}</button><div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Send a template to <b>${esc(who(current)||'contact')}</b></div><button class="icon-btn" title="Reload templates" onclick="loadTemplateList(true)">↻</button></div><div class="tpl-main" id="tplMain"><div class="tpl-list"><div class="search-wrap"><div class="searchbox"><span>⌕</span><input id="tplSearch" placeholder="Search templates" oninput="drawTemplateList()"></div></div><div class="tpl-items" id="tplItems"><div class="tpl-empty"><div class="spinner"></div>Loading approved templates…</div></div></div><div class="tpl-detail" id="tplDetail"><div class="tpl-empty">Choose a template to preview it.</div></div></div>`;
  await loadTemplateList(false);
 }
 async function loadTemplateList(force){
@@ -899,7 +902,7 @@ function showRecUI(on){$('inputWrap').classList.toggle('hidden',on);$('recRow').
 function showRecHint(on){const h=$('recHint'),w=$('recWave');if(!h||!w)return;h.classList.toggle('hidden',!on);w.classList.toggle('hidden',on);$('recPause').classList.toggle('hidden',on);h.style.transform=''}
 function recElapsed(r=rec){return r?r.acc+(r.paused||!r.since?0:Date.now()-r.since):0}
 async function startRecording(){
- if(rec||!current||isIg(current))return;
+ if(rec||!current)return;
  if(!convId(current)){toast('No linked WhatsApp conversation');hold=null;$('actionBtn')?.classList.remove('holding');return}
  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){toast('Voice recording is not supported in this browser');hold=null;return}
  const r=rec={lead:current,acc:0,since:0,paused:false,chunks:[],levels:[],cancelled:false};
@@ -1185,7 +1188,7 @@ async function addInfoNote(){const i=$('infoNote'),text=(i?.value||'').trim(),l=
 const prevCache={};
 async function loadPrevConvs(l){
  const box=()=>$('prevConvs');const digits=String(l.Phone||'').replace(/\D/g,'').slice(-10);
- const paint=list=>{const b=box();if(!b||current!==l)return;b.innerHTML=list.length?list.map(r=>`<button class="prev" onclick="openConversation('${esc(r.lead_id)}')">${r.channel==='instagram'?'📸':'💬'} ${esc(r.name||r.phone)}<small>${esc(r.last_message_preview||'')} · ${esc(ago(r.last_message_at))}${r.status==='resolved'?' · resolved':''}</small></button>`).join(''):'<div class="kv" style="color:var(--muted)">None</div>'};
+ const paint=list=>{const b=box();if(!b||current!==l)return;b.innerHTML=list.length?list.map(r=>`<button class="prev" onclick="openConversation('${esc(r.lead_id)}')">${r.channel==='instagram'?'📸':'💬'} ${esc(r.name||(isIgKey(r.phone)?'Instagram user':r.phone))}<small>${esc(r.last_message_preview||'')} · ${esc(ago(r.last_message_at))}${r.status==='resolved'?' · resolved':''}</small></button>`).join(''):'<div class="kv" style="color:var(--muted)">None</div>'};
  if(digits.length<6){paint([]);return}
  if(prevCache[digits])return paint(prevCache[digits].filter(r=>String(r.lead_id)!==String(l.Id)));
  try{const d=await apiJson(WORKER+'/chats/v2/search?q='+encodeURIComponent(digits));mergeRows(d.rows);prevCache[digits]=(d.rows||[]).filter(r=>String(r.phone||'').replace(/\D/g,'').endsWith(digits));paint(prevCache[digits].filter(r=>String(r.lead_id)!==String(l.Id)))}catch{paint([])}
@@ -1193,10 +1196,10 @@ async function loadPrevConvs(l){
 // ── Export (.txt) ──
 function exportChat(){
  toggleMenu(false);const l=current;if(!l)return;
- const lines=[`Chat with ${l.Name||l.Phone||'contact'} (${l.Phone||''}) — exported ${new Date().toLocaleString()}`,''];
+ const lines=[`Chat with ${who(l)||'contact'} (${l.Phone||''}) — exported ${new Date().toLocaleString()}`,''];
  for(const m of hist(l)){const t=m.ts?new Date(m.ts).toLocaleString():'';if(m.kind==='event'){lines.push(`[${t}] — ${m.content}`);continue}const who=isOut(m)?(senderOf(m)?.label||'Business'):(l.Name||'Customer');const atts=attachmentsOf(m).map(a=>`[${kindLabel(a)}${a.url?' '+a.url:''}]`).join(' ');lines.push(`[${t}] ${who}: ${bodyOf(m)}${atts?' '+atts:''}`)}
  if(threadMeta[String(l.Id)]?.has_more)lines.splice(1,0,'(Only the messages loaded on screen — scroll up in the chat first to include older ones.)');
- const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'}));a.download=`chat-${String(l.Name||l.Phone||l.Id).replace(/[^\w-]+/g,'_')}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'}));a.download=`chat-${String(who(l)||l.Id).replace(/[^\w-]+/g,'_')}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
 }
 // ── @mentions in internal notes ──
 let mentionHits=[],mentionSel=0;
@@ -1215,17 +1218,17 @@ function sigOn(){try{return localStorage.getItem('lv_chats_sig')==='1'}catch{ret
 function toggleSig(){const on=!sigOn();try{localStorage.setItem('lv_chats_sig',on?'1':'0')}catch{}toggleMenu(false);toast(on?'Your name will be added to replies':'Signature off')}
 // ── Forward / task from a message ──
 function forwardMsg(m,btn){
- const text=bodyOf(m);if(!text)return;const others=leads.filter(l=>l._v2&&String(l.Id)!==String(current.Id)&&!isIg(l)&&visibleToMe(l));
- const draw=q=>others.filter(l=>!q||String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)).slice(0,8).map(l=>`<button onclick="doForward('${esc(l.Id)}')">${esc(l.Name||l.Phone)}</button>`).join('')||'<div class="hint">No chat matches</div>';
+ const text=bodyOf(m);if(!text)return;const others=leads.filter(l=>l._v2&&String(l.Id)!==String(current.Id)&&visibleToMe(l));
+ const draw=q=>others.filter(l=>!q||String(l.Name||'').toLowerCase().includes(q)||String(l.Phone||'').includes(q)).slice(0,8).map(l=>`<button onclick="doForward('${esc(l.Id)}')">${esc(who(l))}</button>`).join('')||'<div class="hint">No chat matches</div>';
  forwardText=text;const d=openDd(btn,`<div class="hint">Forward to…</div><input id="fwdQ" placeholder="Search chats" autocomplete="off"><div id="fwdList">${draw('')}</div>`);const q=d.querySelector('#fwdQ');q.oninput=()=>{d.querySelector('#fwdList').innerHTML=draw(q.value.trim().toLowerCase())};q.focus();
 }
 let forwardText='';
-async function doForward(id){closeDd();const l=leads.find(x=>String(x.Id)===String(id));if(!l)return;if(!windowOpen(l)){toast(`${l.Name||l.Phone}'s 24-hour window is closed — open that chat and send a template`);return}if(!convId(l)){toast('That chat has no linked WhatsApp conversation');return}try{await apiJson(WORKER+'/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:convId(l),lead_id:l.Id,text:forwardText})});toast(`Forwarded to ${l.Name||l.Phone}`)}catch(e){toast('Not forwarded: '+failReason(e.message))}}
+async function doForward(id){closeDd();const l=leads.find(x=>String(x.Id)===String(id));if(!l)return;if(!windowOpen(l)){toast(`${who(l)}'s 24-hour window is closed — open that chat and send a template`);return}if(!convId(l)){toast('That chat has no linked WhatsApp conversation');return}try{await apiJson(WORKER+'/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conv_id:convId(l),lead_id:l.Id,text:forwardText})});toast(`Forwarded to ${who(l)}`)}catch(e){toast('Not forwarded: '+failReason(e.message))}}
 function taskFromMsg(m,btn){
  const t=new Date(Date.now()+86400e3),v=new Date(t-t.getTimezoneOffset()*60000).toISOString().slice(0,10);
  const d=openDd(btn,`<div class="hint">Create a task for this chat</div><input id="taskTitle" maxlength="200" value="${esc(('Follow up: '+bodyOf(m)).replace(/\s+/g,' ').slice(0,120))}"><div class="fb-row"><input type="date" id="taskDue" value="${v}"><button onclick="createTask()">Create</button></div>`);d.querySelector('#taskTitle').focus();
 }
-async function createTask(){const l=current,title=($('taskTitle')?.value||'').trim(),due=$('taskDue')?.value||'';closeDd();if(!l||!title)return;try{await apiJson(WORKER+'/pm/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,description:`From the chat with ${l.Name||l.Phone}`,lead_id:Number(l.Id),lead_name:l.Name||l.Phone||'',due_date:due,assignee_email:meEmail,category:'Follow-up'})});toast('Task created — it\'s in Projects / Tasks')}catch(e){toast('Could not create task: '+e.message)}}
+async function createTask(){const l=current,title=($('taskTitle')?.value||'').trim(),due=$('taskDue')?.value||'';closeDd();if(!l||!title)return;try{await apiJson(WORKER+'/pm/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,description:`From the chat with ${who(l)}`,lead_id:Number(l.Id),lead_name:who(l)||'',due_date:due,assignee_email:meEmail,category:'Follow-up'})});toast('Task created — it\'s in Projects / Tasks')}catch(e){toast('Could not create task: '+e.message)}}
 // ── Export PDF / email transcript / block ──
 let jspdfLoading=null;
 function loadJsPdf(){if(window.jspdf)return Promise.resolve();return jspdfLoading||(jspdfLoading=new Promise((res,rej)=>{const s=document.createElement('script');s.src='vendor/jspdf/jspdf.umd.min.js';s.onload=res;s.onerror=()=>{jspdfLoading=null;rej(new Error('PDF library unavailable'))};document.head.appendChild(s)}))}
@@ -1234,14 +1237,14 @@ async function exportPdf(){
  try{await loadJsPdf()}catch(e){toast(e.message);return}
  const doc=new jspdf.jsPDF({unit:'pt',format:'a4'}),W=doc.internal.pageSize.getWidth()-80,H=doc.internal.pageSize.getHeight();let y=50;
  const line=(t,size=10,color=[17,27,33])=>{doc.setFontSize(size);doc.setTextColor(...color);for(const part of doc.splitTextToSize(t,W)){if(y>H-50){doc.addPage();y=50}doc.text(part,40,y);y+=size+4}};
- line(`Chat with ${l.Name||l.Phone||'contact'}`,15);line(`${l.Phone||''} · exported ${new Date().toLocaleString()}`,9,[102,119,129]);y+=8;
+ line(`Chat with ${who(l)||'contact'}`,15);line(`${l.Phone||''} · exported ${new Date().toLocaleString()}`,9,[102,119,129]);y+=8;
  // jsPDF's built-in fonts are Latin-1 only; other scripts (Malayalam, emoji) are replaced so the file still opens.
  const latin=t=>String(t||'').replace(/[^\x09\x0A\x0D\x20-\xFF]/g,'?');
  for(const m of hist(l)){const t=m.ts?new Date(m.ts).toLocaleString():'';if(m.kind==='event'){line(latin(`— ${m.content} (${t})`),9,[102,119,129]);continue}const who=isOut(m)?(senderOf(m)?.label||'Business'):(l.Name||'Customer');line(latin(`${who} · ${t}`),9,[0,128,105]);const atts=attachmentsOf(m).map(a=>`[${kindLabel(a)}]`).join(' ');line(latin(bodyOf(m)+(atts?' '+atts:'')));y+=4}
- doc.save(`chat-${String(l.Name||l.Phone||l.Id).replace(/[^\w-]+/g,'_')}.pdf`);
+ doc.save(`chat-${String(who(l)||l.Id).replace(/[^\w-]+/g,'_')}.pdf`);
 }
 async function emailTranscript(){toggleMenu(false);const l=current;if(!l)return;const to=prompt('Email the transcript to:',meEmail);if(!to)return;try{await apiJson(WORKER+'/chats/v2/email-transcript',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:l.Id,to})});toast('Transcript sent to '+to)}catch(e){toast('Could not send: '+e.message)}}
-async function blockContact(){toggleMenu(false);const l=current;if(!l)return;const blocked=l._rec?.Blocked==='Yes';if(!confirm(blocked?`Unblock ${l.Name||l.Phone}?`:`Block ${l.Name||l.Phone}? They won't be able to message this WhatsApp number.`))return;try{await apiJson(WORKER+'/chats/v2/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:l.Id,block:!blocked})});if(l._rec)l._rec.Blocked=blocked?'No':'Yes';toast(blocked?'Contact unblocked':'Contact blocked');refreshMessages(l)}catch(e){toast('Could not '+(blocked?'unblock':'block')+': '+e.message)}}
+async function blockContact(){toggleMenu(false);const l=current;if(!l)return;const blocked=l._rec?.Blocked==='Yes';if(!confirm(blocked?`Unblock ${who(l)}?`:`Block ${who(l)}? They won't be able to message this WhatsApp number.`))return;try{await apiJson(WORKER+'/chats/v2/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lead_id:l.Id,block:!blocked})});if(l._rec)l._rec.Blocked=blocked?'No':'Yes';toast(blocked?'Contact unblocked':'Contact blocked');refreshMessages(l)}catch(e){toast('Could not '+(blocked?'unblock':'block')+': '+e.message)}}
 // ── Scheduled messages ──
 async function scheduleDraft(){
  const l=current,v=$('schedAt')?.value,text=($('msg').value||'').trim();closeDd();if(!l||!v||!text)return toast('Type a message and pick a time');

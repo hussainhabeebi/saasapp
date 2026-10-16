@@ -51,9 +51,11 @@ import {
   pmTaskDueUtcMs,
   pmHandleQueueBatch,
   ProjectTaskWorkflow,
-  engineParseInstagramEvents,
-  engineSendInstagramReply,
-  subscribeInstagramWebhooks,
+  engineParseChatwootPayload,
+  engineIsInstagramLead,
+  hotLeadAlertParams,
+  monthlyMktSkipReason,
+  monthlyMktIndexHistory,
   verifyWebhookSignature,
   ecomIsGeneralBusinessInfoQuery,
   ecomMatchProductCategory,
@@ -795,51 +797,74 @@ describe('Ecom general business information routing', () => {
   });
 });
 
-describe('Instagram messaging reliability', () => {
-  test('parses every actionable event in a webhook batch and ignores echoes', () => {
-    const events=engineParseInstagramEvents({id:'business-1',messaging:[
-      {sender:{id:'customer-1'},recipient:{id:'business-1'},message:{mid:'m1',text:'Hello'}},
-      {sender:{id:'business-1'},recipient:{id:'customer-1'},message:{mid:'m2',text:'echo',is_echo:true}},
-      {sender:{id:'customer-1'},recipient:{id:'business-1'},postback:{mid:'m3',title:'Book now',payload:'BOOK'}},
-    ]});
-    assert.deepEqual(events.map(e=>[e.mid,e.text,e.recipientId]),[['m1','Hello','business-1'],['m3','Book now','business-1']]);
+describe('Instagram through Chatwoot', () => {
+  const igPayload=(extra={})=>({
+    id:501, message_type:'incoming', content:'Hi, price?',
+    conversation:{id:77, inbox_id:9, channel:'Channel::Instagram', contact_inbox:{source_id:'1784001'},
+      meta:{sender:{id:12, name:'Asha', phone_number:null, identifier:null, additional_attributes:{social_instagram_user_name:'asha.k'}}}},
+    ...extra,
   });
 
-  test('preserves image, voice and story-reply content for the Chats timeline', () => {
-    const events=engineParseInstagramEvents({id:'business-1',messaging:[
-      {sender:{id:'c1'},message:{mid:'i1',attachments:[{type:'image',payload:{url:'https://cdn.example/image.jpg'}}]}},
-      {sender:{id:'c1'},message:{mid:'a1',attachments:[{type:'audio',payload:{url:'https://cdn.example/audio.mp4'}}]}},
-      {sender:{id:'c1'},message:{mid:'s1',text:'How much?',reply_to:{story:{url:'https://cdn.example/story.jpg'}}}},
-    ]});
-    assert.equal(events[0].userMedia.url,'https://cdn.example/image.jpg');
-    assert.equal(events[1].userAttachment.kind,'voice');
-    assert.equal(events[2].text,'How much?');
-    assert.equal(events[2].mediaUrl,'https://cdn.example/story.jpg');
+  test('keys an Instagram contact as ig:<id> and keeps its conversation and inbox', () => {
+    const parsed=engineParseChatwootPayload(igPayload());
+    assert.equal(parsed.phone,'ig:1784001');
+    assert.equal(parsed.channel,'instagram');
+    assert.equal(parsed.igId,'1784001');
+    assert.equal(parsed.convId,77);
+    assert.equal(parsed.inboxId,9);
+    assert.equal(parsed.text,'Hi, price?');
+    assert.equal(parsed.name,'Asha');
   });
 
-  test('validates Meta webhook signatures with the Instagram app secret', async () => {
-    const secret='instagram-secret', body='{"object":"instagram"}';
+  test('falls back to the username for the name and the Chatwoot contact id for the key', () => {
+    const body=igPayload();
+    body.conversation.contact_inbox=null;
+    body.conversation.meta.sender.name='';
+    const parsed=engineParseChatwootPayload(body);
+    assert.equal(parsed.phone,'ig:cw12');
+    assert.equal(parsed.name,'@asha.k');
+  });
+
+  test('carries Instagram images through like WhatsApp media', () => {
+    const parsed=engineParseChatwootPayload(igPayload({content:'', attachments:[{file_type:'image', data_url:'https://cdn.example/a.jpg'}]}));
+    assert.equal(parsed.mediaType,'image');
+    assert.equal(parsed.mediaUrl,'https://cdn.example/a.jpg');
+  });
+
+  test('leaves WhatsApp payloads exactly as before', () => {
+    const parsed=engineParseChatwootPayload({message_type:'incoming', content:'hello',
+      conversation:{id:5, inbox_id:3, channel:'Channel::Whatsapp', meta:{sender:{name:'Ravi', phone_number:'+91 98470 12345',
+        additional_attributes:{social_instagram_user_name:'ravi'}}}}});
+    assert.equal(parsed.phone,'919847012345');
+    assert.equal(parsed.channel,'whatsapp');
+    assert.equal(parsed.igId,undefined);
+  });
+
+  test('still drops non-Instagram contacts without a phone, and outgoing messages', () => {
+    assert.equal(engineParseChatwootPayload({message_type:'incoming', content:'hi', conversation:{id:1, channel:'Channel::WebWidget', meta:{sender:{name:'x'}}}}),null);
+    assert.equal(engineParseChatwootPayload(igPayload({message_type:'outgoing'})),null);
+  });
+
+  test('never sends WhatsApp-only messages to an Instagram lead', () => {
+    assert.equal(engineIsInstagramLead({Phone:'ig:1784001'}),true);
+    assert.equal(engineIsInstagramLead({Phone:'', Channel:'instagram'}),true);
+    assert.equal(engineIsInstagramLead({Phone:'919847012345', Channel:'whatsapp'}),false);
+    assert.equal(hotLeadAlertParams({name:'Asha', phone:'ig:1784001', reason:'booking', link:'x'})[1],'Instagram');
+    assert.equal(hotLeadAlertParams({name:'Ravi', phone:'919847012345', reason:'booking', link:'x'})[1],'+919847012345');
+    const idx=monthlyMktIndexHistory([]);
+    assert.equal(monthlyMktSkipReason({Id:1, Score:'Hot', Stage:'new', Phone:'ig:1784001', Channel:'instagram'}, idx, '2026-10'),'no_phone');
+  });
+});
+
+describe('Meta webhook signatures', () => {
+  test('accepts the matching signature and rejects a tampered one', async () => {
+    const secret='meta-secret', body='{"object":"page"}';
     const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);
     const bytes=new Uint8Array(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(body)));
     const signature='sha256='+[...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
     assert.equal(await verifyWebhookSignature(secret,body,signature),true);
     const wrong=signature.slice(0,7)+(signature[7]==='0'?'1':'0')+signature.slice(8);
     assert.equal(await verifyWebhookSignature(secret,body,wrong),false);
-  });
-
-  test('subscribes connected accounts to the required messaging webhook fields', async t => {
-    let captured;
-    t.mock.method(global,'fetch',async (url,opts)=>{ captured={url,opts}; return new Response('{"success":true}',{status:200}); });
-    await subscribeInstagramWebhooks('1789','token');
-    assert.match(captured.url,/\/v24\.0\/1789\/subscribed_apps$/);
-    const body=new URLSearchParams(captured.opts.body);
-    assert.ok(body.get('subscribed_fields').split(',').includes('messages'));
-    assert.equal(captured.opts.headers.Authorization,'Bearer token');
-  });
-
-  test('reports Graph API rejection as non-delivery', async t => {
-    t.mock.method(global,'fetch',async ()=>new Response('{"error":{"message":"expired token"}}',{status:400,headers:{'Content-Type':'application/json'}}));
-    assert.equal(await engineSendInstagramReply({}, {ig_id:'business-1',ig_access_token:'bad'}, 'customer-1', 'Hi'),false);
   });
 });
 

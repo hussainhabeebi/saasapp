@@ -129,18 +129,16 @@ function countClientTeamUsers(c){
 // Live count from Chatwoot rather than a cached field — inboxes can also be created/removed
 // directly in Chatwoot, so a stored counter would drift. Mirrors handleChannelsStatus's own call.
 // Every Chatwoot inbox counts (WhatsApp, plus the web_widget/email/sms/telegram/line/api types
-// handleChannelsInboxCreate can add) — Instagram DM is added on top since it's a native
-// connection (ig_id/ig_access_token) that never creates a Chatwoot inbox at all.
+// handleChannelsInboxCreate can add, and Instagram, which is a Chatwoot inbox too).
 async function countClientChannels(env, c){
-  let count=(c?.ig_id && c?.ig_access_token) ? 1 : 0;
-  if(!c?.chatwoot_account_id || !c?.chatwoot_token) return count;
+  if(!c?.chatwoot_account_id || !c?.chatwoot_token) return 0;
   try{
     const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/inboxes`, {headers:{api_access_token:c.chatwoot_token}});
     const data=await r.json().catch(()=>({}));
-    if(!r.ok) return count;
+    if(!r.ok) return 0;
     const inboxes=data?.payload||data?.data?.payload||[];
-    return count+inboxes.length;
-  }catch(e){ return count; }
+    return inboxes.length;
+  }catch(e){ return 0; }
 }
 
 function corsHeaders(origin, env){
@@ -1673,28 +1671,6 @@ async function chatSendTextCore(env, c, payload, body){
   return await r.json().catch(()=>({}));
 }
 
-// Instagram's equivalent of /chat/send above — a human agent's manual reply from the Chats page's
-// new "📷 Instagram" switch. No Chatwoot conversation to post to (that's the whole point of this
-// module); resolves the lead's IgId server-side and sends straight through the Graph API via
-// engineSendInstagramReply. ConvHistory itself is still appended to on the frontend, same as the
-// WhatsApp path, once this call succeeds.
-async function handleInstagramSend(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {lead_id, text}=await request.json().catch(()=>({}));
-  if(!lead_id||!text) return json({error:'lead_id and text required'}, 400);
-  const c=await getClientById(env, payload.cid);
-  if(!c?.ig_id||!c?.ig_access_token) return json({error:'Instagram is not connected for this account.'}, 400);
-  const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${lead_id}`);
-  if(!leadR.ok) return json({error:'Lead not found'}, 404);
-  const lead=await leadR.json().catch(()=>({}));
-  if(String(lead.ClientId)!==String(payload.cid)) return json({error:'Lead not found'}, 404);
-  if(!lead.IgId) return json({error:'This lead has no linked Instagram conversation.'}, 400);
-  const sent=await engineSendInstagramReply(env, c, lead.IgId, text);
-  if(!sent) return json({error:'Instagram rejected the message. Check the connection health and try again.'}, 502);
-  return json({ok:true});
-}
-
 // Pin/unpin a conversation from the Chats tab (chats.js chatTogglePin) — a lightweight, team-shared
 // "keep this at the top" marker distinct from Stage/Score/Handover, so a rep can flag a VIP or
 // urgent lead without changing anything that would affect routing/reporting. Self-heals the
@@ -1972,6 +1948,7 @@ async function handleWaSend(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {phone, text, inbox_id}=await request.json().catch(()=>({}));
   if(!phone||!text) return json({error:'phone and text required'}, 400);
+  if(engineIsInstagramLeadKey(phone)) return json({error:'This is an Instagram lead — reply from its Chatwoot conversation.'}, 400);
   // Meta rejects a non-string text.body with a cryptic JSON-schema error instead of a clear one —
   // catch it here so a caller that (accidentally) sends {"text":{"body":"..."}} instead of a plain
   // string gets a readable error, and unwrap that one common accidental shape rather than failing.
@@ -2042,6 +2019,7 @@ async function handleWaSendTemplate(request, env){
   if(!payload) return json({error:'Invalid or expired session'}, 401);
   const {phone, template_name, language, components, inbox_id, lead_id, content, buttons}=await request.json().catch(()=>({}));
   if(!phone||!template_name) return json({error:'phone and template_name required'}, 400);
+  if(engineIsInstagramLeadKey(phone)) return json({error:'WhatsApp templates cannot be sent to an Instagram lead.'}, 400);
   const c=await getClientById(env, payload.cid);
   const creds=await resolveOrDetectMetaCredentials(env,c,payload.cid,{inbox_id});
   if(!creds?.wa_phone_id||!creds?.wa_token) return json({error:'WhatsApp Business API credentials were not detected for the selected channel.'}, 400);
@@ -3278,38 +3256,6 @@ export async function runGsheetSyncForAllClients(env){
   }
 }
 
-// Instagram's long-lived token (handleInstagramOauthCallback) expires 60 days after issue and
-// must be refreshed before then, or Instagram DM silently stops working with no user-visible
-// warning. Piggybacked on the same daily 2am tick as the health check above — refreshing daily is
-// wasteful (Meta docs say don't refresh more than once every 24h anyway) but harmless, and far
-// simpler than tracking each client's exact expiry date. ig_connected_at is used only as a cheap
-// "don't bother for a brand-new connection" guard, not an exact refresh schedule.
-async function runInstagramTokenRefreshForAllClients(env){
-  // No where-filter on ig_access_token (unlike the targeted queries elsewhere in this file) —
-  // this runs once a day across every client regardless, same full-table walk
-  // runDailyHealthCheckForAllClients uses, and the per-row skip below is cheap enough not to
-  // need a narrower NocoDB query.
-  let page=1;
-  while(true){
-    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
-    if(!r.ok) break;
-    const data=await r.json().catch(()=>({}));
-    const rows=data?.list||[];
-    if(!rows.length) break;
-    for(const c of rows){
-      if(!c.ig_access_token) continue;
-      try{
-        const rr=await fetch(`https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(c.ig_access_token)}`);
-        const rd=await rr.json().catch(()=>({}));
-        if(rr.ok && rd.access_token) await patchClientFields(env, c.Id, {ig_access_token:rd.access_token});
-        else console.error('[instagram] token refresh failed for client', c.Id, rd?.error?.message||rr.status);
-      }catch(e){ console.error('[instagram] token refresh error for client', c.Id, e.message); }
-    }
-    if(rows.length<200) break;
-    page++;
-  }
-}
-
 // One-off/rerunnable admin action — walks every CLIENTS row and calls engineSyncChatwootWebhook
 // for any client with Chatwoot already connected, so engine_webhook_secret gets generated and the
 // /engine/webhook registration happens without each client needing to individually re-save a
@@ -4107,6 +4053,7 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
     const waPhoneId=opts.creds?.wa_phone_id||c.wa_phone_id, waToken=opts.creds?.wa_token||c.wa_token;
     if(!waPhoneId||!waToken) throw new Error('WhatsApp Business API is not connected for this account — connect it from Settings → Channels.');
     if(!lead.Phone) throw new Error('This lead has no phone number.');
+    if(engineIsInstagramLead(lead)) throw new Error('WhatsApp templates cannot be sent to an Instagram lead.');
     // Each {{n}} placeholder in the template's approved BODY text gets filled with the lead's name
     // (template_body_vars, counted when the template was picked in the Follow-up Engine UI) — a
     // pragmatic default covering the overwhelmingly common case (a template's only variable is the
@@ -5146,6 +5093,7 @@ export function monthlyMktSkipReason(lead, idx, monthKey){
   if(String(lead?.OptOut||'').trim().toLowerCase()==='yes') return 'opted_out';
   if(!MONTHLY_MKT_SCORES.has(String(lead?.Score||'').trim().toLowerCase())) return 'not_hot_or_warm';
   if(monthlyMktIsWon(lead)) return 'won';
+  if(engineIsInstagramLead(lead)) return 'no_phone'; // WhatsApp templates can't reach an Instagram DM
   const phone=monthlyMktNormalizePhone(lead?.Phone);
   if(phone.length<8) return 'no_phone';
   const bl=idx.byLead.get(String(lead.Id)), bp=idx.byPhone.get(phone);
@@ -5714,194 +5662,6 @@ async function handleChannelsManualMetaCreds(request,env){
   if(!inbox_id||!c?.wa_token) Object.assign(patch,{waba_id,wa_token,...(wa_phone_id?{wa_phone_id}:{}),...(inbox_id?{chatwoot_inbox_id:inbox_id}:{})});
   await patchClientFields(env,payload.cid,patch);
   return json({ok:true,inbox_id,waba_id,wa_phone_id,wa_token_connected:true});
-}
-
-/* ── Instagram DM module (native — no Chatwoot) ────────────────────────────────────────────
-   Deliberately separate from the WhatsApp connect flow above: WhatsApp's inbound webhook,
-   normalization and outbound send all go through Chatwoot; Instagram's don't touch Chatwoot at
-   all — this Worker owns the whole path itself (see /ig/webhook and engineSendInstagramReply
-   further down). Uses "Instagram API with Instagram Login" (Meta's newer, simpler product —
-   authenticates directly against the Instagram professional account, no Facebook Page involved),
-   NOT the WhatsApp connect flow's Facebook-Login-for-Business shape above — it has its own
-   Instagram app ID/secret (META_IG_APP_ID/META_IG_APP_SECRET, distinct from META_APP_ID/
-   META_APP_SECRET), its own OAuth host (instagram.com/graph.instagram.com, not
-   graph.facebook.com), and its authorize dialog doesn't render inside the Meta JS SDK's FB.login
-   popup — so this is a plain browser-redirect OAuth, same shape as the Shopify module's
-   handleShopifyOauthStart/Callback above (signOauthState carries the client id through the
-   round trip), not an Embedded-Signup-style flow. See SETUP.md "Instagram DM module". ── */
-// Deliberately NOT instagram_business_manage_comments — nothing in this module reads or manages
-// comments (DMs only), and Meta's App Review rejects/flags permissions requested but not
-// demonstrably used, so asking for it would just be unearned review risk for no functionality.
-// instagram_business_content_publish WAS added (Content Calendar / Auto-Posting module, see
-// marketingPublishContentPost below) — it reuses this same connection's ig_id/ig_access_token
-// rather than a second OAuth flow, since Instagram Login tokens carry whatever scopes were
-// granted at connect time. A client who connected Instagram *before* this scope existed is
-// missing it on their existing token; auto-posting for them fails with Instagram's own
-// "permission denied" until they disconnect and reconnect once from Settings → Integrations.
-const META_IG_OAUTH_SCOPE='instagram_business_basic,instagram_business_manage_messages,instagram_business_content_publish';
-const META_IG_GRAPH_VERSION='v24.0';
-const META_IG_WEBHOOK_FIELDS=['messages','messaging_postbacks','message_reactions','messaging_seen'];
-
-function instagramGraphError(data, fallback){
-  return data?.error?.message||data?.error_message||fallback;
-}
-
-export async function subscribeInstagramWebhooks(igId, accessToken){
-  const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(igId)}/subscribed_apps`, {
-    method:'POST', headers:{Authorization:`Bearer ${accessToken}`, 'Content-Type':'application/x-www-form-urlencoded'},
-    body:new URLSearchParams({subscribed_fields:META_IG_WEBHOOK_FIELDS.join(',')})
-  });
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok||data.success===false) throw new Error(instagramGraphError(data, `Instagram webhook subscription failed (HTTP ${r.status})`));
-  return data;
-}
-
-async function getInstagramHealth(c){
-  const base={connected:!!(c?.ig_id&&c?.ig_access_token), token_valid:false, messages_subscribed:false, subscribed_fields:[], username:c?.ig_username||'', last_webhook_at:''};
-  if(!base.connected) return base;
-  const [profileR, subscriptionR]=await Promise.all([
-    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}?fields=id,username`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}}),
-    fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`, {headers:{Authorization:`Bearer ${c.ig_access_token}`}})
-  ]);
-  const profile=await profileR.json().catch(()=>({}));
-  const subscriptions=await subscriptionR.json().catch(()=>({}));
-  const rows=Array.isArray(subscriptions?.data)?subscriptions.data:[];
-  const fields=[...new Set(rows.flatMap(row=>Array.isArray(row.subscribed_fields)?row.subscribed_fields:[]))];
-  const marker=String(c.ig_webhook_debug||'');
-  return {...base, token_valid:profileR.ok&&!!profile.id, messages_subscribed:subscriptionR.ok&&fields.includes('messages'), subscribed_fields:fields,
-    username:profile.username||base.username, last_webhook_at:marker.startsWith('received:')?marker.slice(9):'',
-    error:profileR.ok?(subscriptionR.ok?'':instagramGraphError(subscriptions, `Subscription check failed (HTTP ${subscriptionR.status})`)):instagramGraphError(profile, `Token check failed (HTTP ${profileR.status})`)};
-}
-
-async function handleInstagramHealth(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env, payload.cid);
-  if(!c) return json({error:'Client not found'}, 404);
-  if(request.method==='POST'&&c.ig_id&&c.ig_access_token){
-    try{ await subscribeInstagramWebhooks(c.ig_id, c.ig_access_token); }
-    catch(e){ return json({...await getInstagramHealth(c), error:e.message}, 502); }
-  }
-  return json(await getInstagramHealth(c));
-}
-
-async function handleInstagramOauthStart(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  if(!env.META_IG_APP_ID||!env.META_IG_APP_SECRET) return json({error:'Instagram app credentials are not configured on the server.'}, 500);
-  const c=await getClientById(env, payload.cid);
-  if(!c) return json({error:'Client not found'}, 404);
-  if(c.ig_id && c.ig_access_token) return json({error:'Instagram is already connected for this client.'}, 400);
-
-  const state=await signOauthState(env, payload.cid);
-  const redirectUri=`${env.WORKER_BASE_URL}/ig/oauth/callback`;
-  const url=`https://www.instagram.com/oauth/authorize?client_id=${env.META_IG_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(META_IG_OAUTH_SCOPE)}&state=${encodeURIComponent(state)}`;
-  return json({ok:true, url});
-}
-
-// Browser redirect target, not an XHR call — same "no frontend JS listens on this response"
-// shape as handleShopifyOauthCallback above. Two token exchanges, per Meta's Instagram-Login
-// docs: api.instagram.com first for a short-lived (1h) token, then graph.instagram.com to swap
-// it for a long-lived (60-day) one — sending never uses the short-lived token.
-async function handleInstagramOauthCallback(request, env){
-  const url=new URL(request.url);
-  const appBase=env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html';
-  const fail=(msg)=>Response.redirect(`${appBase}?instagram=error&msg=${encodeURIComponent(msg)}`, 302);
-  if(!env.META_IG_APP_ID||!env.META_IG_APP_SECRET) return fail('Instagram app credentials are not configured on the server.');
-  const err=url.searchParams.get('error');
-  if(err) return fail(err==='access_denied'?'Access was denied':err);
-  const code=url.searchParams.get('code');
-  const state=url.searchParams.get('state');
-  if(!code) return fail('Invalid callback from Instagram');
-  const statePayload=await verifyOauthState(env, state);
-  if(!statePayload) return fail('This connection link expired — try connecting again from Integrations');
-
-  const cForLimit=await getClientById(env, statePayload.cid);
-  const planLimits=cForLimit?getPlanLimits(cForLimit.plan_tier):null;
-  if(planLimits){
-    const currentChannels=await countClientChannels(env, cForLimit);
-    if(currentChannels>=planLimits.max_channels) return fail(`Your ${planLimits.label} plan includes ${planLimits.max_channels} channel${planLimits.max_channels===1?'':'s'} — upgrade your plan to connect another.`);
-  }
-
-  const redirectUri=`${env.WORKER_BASE_URL}/ig/oauth/callback`;
-  const shortTokenR=await fetch('https://api.instagram.com/oauth/access_token', {
-    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:new URLSearchParams({client_id:env.META_IG_APP_ID, client_secret:env.META_IG_APP_SECRET, grant_type:'authorization_code', redirect_uri:redirectUri, code})
-  });
-  const shortTokenData=await shortTokenR.json().catch(()=>({}));
-  if(!shortTokenR.ok||!shortTokenData.access_token) return fail('Instagram token exchange failed: '+(shortTokenData?.error_message||('HTTP '+shortTokenR.status)));
-  const ig_id=String(shortTokenData.user_id||'');
-  if(!ig_id) return fail('Instagram did not return an account id');
-
-  const collision=await findOtherClientByField(env, 'ig_id', ig_id, statePayload.cid);
-  if(collision) return fail('This Instagram account is already connected to a different client');
-
-  const longTokenR=await fetch(`https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${env.META_IG_APP_SECRET}&access_token=${encodeURIComponent(shortTokenData.access_token)}`);
-  const longTokenData=await longTokenR.json().catch(()=>({}));
-  if(!longTokenR.ok||!longTokenData.access_token) return fail('Failed to obtain a long-lived Instagram token: '+(longTokenData?.error?.message||('HTTP '+longTokenR.status)));
-  const ig_access_token=longTokenData.access_token;
-
-  const profileR=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${ig_id}?fields=username&access_token=${encodeURIComponent(ig_access_token)}`);
-  const profileData=await profileR.json().catch(()=>({}));
-  if(!profileR.ok) return fail('Instagram profile verification failed: '+instagramGraphError(profileData, `HTTP ${profileR.status}`));
-  try{ await subscribeInstagramWebhooks(ig_id, ig_access_token); }
-  catch(e){ return fail(e.message+' — please check the Instagram webhook product configuration and try again.'); }
-
-  await ensureClientColumns(env, ['ig_id','ig_access_token','ig_username','ig_connected_at','ig_webhook_debug']);
-  // Verified, not the plain patchClientFields — this writes to columns ensureClientColumns may
-  // have JUST created a moment ago in this same request, which is exactly the NocoDB
-  // schema-cache-lag race ncPatchVerified exists for (see its own comment): a client's very first
-  // Instagram connect ever on a given NocoDB base would otherwise show a false "connected ✓"
-  // toast while ig_id silently never actually saved.
-  const saveResult=await ncPatchVerified(env, statePayload.cid, {ig_id, ig_access_token, ig_username:profileData?.username||'', ig_connected_at:new Date().toISOString()});
-  if(!saveResult.ok) return fail(saveResult.data?.error||'Failed to save the Instagram connection — try reconnecting.');
-  return Response.redirect(`${appBase}?client=${statePayload.cid}&instagram=connected`, 302);
-}
-
-async function handleInstagramDisconnect(request, env){
-  const payload=await requireSession(request, env);
-  if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const c=await getClientById(env,payload.cid);
-  if(c?.ig_id&&c?.ig_access_token){
-    await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${encodeURIComponent(c.ig_id)}/subscribed_apps`,{method:'DELETE',headers:{Authorization:`Bearer ${c.ig_access_token}`}}).catch(()=>{});
-  }
-  await patchClientFields(env, payload.cid, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:'', ig_webhook_debug:''});
-  return json({ok:true});
-}
-
-// Meta's `signed_request` format (used for both the Deauthorize callback below and, historically,
-// canvas/tab apps): `{base64url(HMAC-SHA256(payload, secret))}.{base64url(JSON payload)}`. Same
-// base64url alphabet as hmacSignB64 above, but HMAC'd with the given secret directly rather than
-// SESSION_SIGNING_KEY (this verifies a payload Meta itself signed, not one this Worker issued).
-async function verifyMetaSignedRequest(secret, signedRequest){
-  const [encodedSig, payload]=String(signedRequest||'').split('.');
-  if(!encodedSig||!payload) return null;
-  const key=await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
-  const expected=btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  if(expected!==encodedSig) return null;
-  const b64=payload.replace(/-/g,'+').replace(/_/g,'/');
-  const padded=b64+'='.repeat((4-b64.length%4)%4);
-  try{ return JSON.parse(atob(padded)); }catch(e){ return null; }
-}
-
-// Instagram Business Login's "Deauthorize Callback URL" (Business login settings, required before
-// submitting for App Review) — Meta POSTs here when a user revokes the app's access from their
-// own Instagram/Meta settings, so the stored (now-invalid) token doesn't just sit there silently
-// failing on every send. `user_id` in the verified payload is the same Instagram-scoped id stored
-// as `ig_id`.
-async function handleInstagramDeauthorize(request, env){
-  if(!env.META_IG_APP_SECRET) return json({error:'Instagram app credentials are not configured on the server.'}, 500);
-  const bodyText=await request.text();
-  const signedRequest=new URLSearchParams(bodyText).get('signed_request');
-  const payload=await verifyMetaSignedRequest(env.META_IG_APP_SECRET, signedRequest);
-  // Always 200 — an unverifiable/missing signed_request isn't something Meta can act on a retry
-  // for, and there's nothing sensitive to leak either way (the response body carries no lookup
-  // result), so there's no reason to give it a different status than the normal case.
-  if(!payload?.user_id) return json({ok:true});
-  const c=await findClientByField(env, 'ig_id', String(payload.user_id));
-  if(c) await patchClientFields(env, c.Id, {ig_id:'', ig_access_token:'', ig_username:'', ig_connected_at:''});
-  return json({ok:true});
 }
 
 async function handleChannelsInboxCreate(request, env){
@@ -15190,8 +14950,10 @@ export function hotLeadAlertReasonText(reason, detail){
   return 'needs a call';
 }
 export function hotLeadAlertParams({name, phone, reason, detail, link}){
-  const digits=String(phone||'').replace(/\D/g,'');
-  return [hotAlertParam(name||'New lead', 60), digits?'+'+digits:'-', hotAlertParam(hotLeadAlertReasonText(reason, detail)), hotAlertParam(link, 300)];
+  // An Instagram lead's key is `ig:<id>`, not a number — show "Instagram" instead of +<id>.
+  const digits=engineIsInstagramLeadKey(phone)?'':String(phone||'').replace(/\D/g,'');
+  const contact=digits?'+'+digits:engineIsInstagramLeadKey(phone)?'Instagram':'-';
+  return [hotAlertParam(name||'New lead', 60), contact, hotAlertParam(hotLeadAlertReasonText(reason, detail)), hotAlertParam(link, 300)];
 }
 function appDashboardBase(env){ return env.APP_BASE_URL||'https://app.leadvyne.com/dashboard.html'; }
 export function hotLeadAlertLink(env, leadId){
@@ -15965,13 +15727,51 @@ export async function runHotLeadReassignForAllClients(env, now=new Date()){
   }
 }
 
-function engineParseChatwootPayload(body){
+// Instagram DMs reach this Worker the same way WhatsApp does — through a Chatwoot inbox
+// (Channel::Instagram) and the same engine webhook — but an Instagram contact has no phone number,
+// only its Instagram-scoped id (Chatwoot's contact_inbox.source_id). Every lead lookup, claim and
+// per-lead D1 key in the WhatsApp pipeline is keyed by `phone`, so an Instagram contact gets the
+// stable key `ig:<id>` in that slot (and in LEADS.Phone) and the whole pipeline — lead, Chats
+// thread, channel assignment, AI reply, follow-ups — runs unchanged. The `ig:` prefix is never a
+// dialable number, so anything that only works on a real WhatsApp number (templates, direct Graph
+// sends, monthly marketing) checks engineIsInstagramLeadKey and leaves these leads alone.
+export const INSTAGRAM_LEAD_KEY_PREFIX='ig:';
+export function engineIsInstagramLeadKey(phone){ return String(phone||'').startsWith(INSTAGRAM_LEAD_KEY_PREFIX); }
+export function engineIsInstagramLead(lead){
+  return String(lead?.Channel||'').toLowerCase()==='instagram' || engineIsInstagramLeadKey(lead?.Phone);
+}
+function engineChatwootInstagramUsername(sender){
+  const a=sender?.additional_attributes||{};
+  return String(a.social_instagram_user_name||a.social_profiles?.instagram||sender?.social_profiles?.instagram||'').replace(/^@/,'').trim();
+}
+// Channel::Instagram is what Chatwoot reports for its Instagram inbox (conversation.channel in the
+// message_created payload). The username fallback covers a payload without `channel` — only when
+// there is no phone, so a WhatsApp contact someone tagged with an Instagram profile stays WhatsApp.
+function engineChatwootIsInstagram(conv, sender, phone){
+  const ch=String(conv?.channel||'');
+  if(ch) return ch==='Channel::Instagram';
+  return !phone && !!engineChatwootInstagramUsername(sender);
+}
+function engineChatwootInstagramId(conv, sender){
+  const sourceId=String(conv?.contact_inbox?.source_id||'').trim();
+  if(sourceId) return sourceId;
+  return sender?.id?`cw${sender.id}`:'';
+}
+
+export function engineParseChatwootPayload(body){
   if(body.message_type && body.message_type!=='incoming') return null;
   if(body.private) return null;
   const conv=body.conversation||{};
   const sender=conv?.meta?.sender||body.sender||{};
   let phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
   if(phone.startsWith('00')) phone=phone.slice(2);
+  let channel='whatsapp', igId='', igUsername='';
+  if(engineChatwootIsInstagram(conv, sender, phone)){
+    igId=engineChatwootInstagramId(conv, sender);
+    igUsername=engineChatwootInstagramUsername(sender);
+    phone=igId?INSTAGRAM_LEAD_KEY_PREFIX+igId:'';
+    channel='instagram';
+  }
   const atts=body.attachments||body.message?.attachments||[];
   let mediaType='text', mediaUrl='';
   if(atts.length){
@@ -15984,7 +15784,9 @@ function engineParseChatwootPayload(body){
   const text=(body.content||body.message?.content||'').trim();
   if(!phone) return null;
   if(mediaType==='text' && !text) return null;
-  return {convId:conv?.id||null, inboxId:conv?.inbox_id||null, phone, name:sender.name||'', text, mediaType, mediaUrl};
+  const name=sender.name||(igUsername?'@'+igUsername:'');
+  return {convId:conv?.id||null, inboxId:conv?.inbox_id||null, phone, name, text, mediaType, mediaUrl,
+    channel, ...(channel==='instagram'?{igId, igUsername}:{})};
 }
 // Diagnostic-only twin of the null branches above — recomputes just enough to say *which* check
 // dropped a payload, without touching engineParseChatwootPayload's return contract or behavior at
@@ -15998,41 +15800,15 @@ function engineChatwootPayloadSkipReason(body){
   const conv=body.conversation||{};
   const sender=conv?.meta?.sender||body.sender||{};
   const phone=(sender.phone_number||sender.identifier||'').replace(/[^0-9+]/g,'').replace(/^\+/,'');
-  if(!phone) return `no-phone (sender keys: ${Object.keys(sender).join(',')||'none'})`;
+  if(engineChatwootIsInstagram(conv, sender, phone)){
+    if(!engineChatwootInstagramId(conv, sender)) return `instagram-no-contact-id (sender keys: ${Object.keys(sender).join(',')||'none'})`;
+  } else if(!phone) return `no-phone (channel ${conv?.channel||'unknown'}, sender keys: ${Object.keys(sender).join(',')||'none'})`;
   const atts=body.attachments||body.message?.attachments||[];
   const text=(body.content||body.message?.content||'').trim();
   if(!atts.length && !text) return 'empty-text-no-attachment';
   return 'unknown';
 }
 
-// Meta's Instagram Messaging webhook (`{object:'instagram', entry:[{messaging:[...]}]}` — same
-// Messenger Platform shape used by Page/Instagram messaging generally). Deliberately returns the
-// same {convId, phone, name, text, mediaType, mediaUrl} shape engineParseChatwootPayload does —
-// convId is always null (no Chatwoot conversation) and phone is always '' (Instagram has no phone
-// number, only an IGSID) so the rest of the pipeline doesn't need to know which channel this came
-// from. Every actionable event is normalized independently so batched DMs, postbacks, images,
-// voice notes, videos/files and story replies reach the unified Chats history.
-export function engineParseInstagramEvents(entry){
-  return (entry?.messaging||[]).map(messaging=>{
-    if(!messaging||messaging.message?.is_echo) return null;
-    const igId=messaging.sender?.id;
-    if(!igId) return null;
-    const message=messaging.message||{};
-    const attachment=(message.attachments||[])[0];
-    const attachmentType=String(attachment?.type||'').toLowerCase();
-    const mediaUrl=attachment?.payload?.url||message.reply_to?.story?.url||'';
-    const postbackText=messaging.postback?.title||messaging.postback?.payload||'';
-    const typedText=String(message.text||postbackText).trim();
-    const label=attachmentType==='image'?'[Instagram image]':attachmentType==='audio'?'[Instagram voice message]':attachmentType==='video'?'[Instagram video]':attachment?'[Instagram attachment]':message.reply_to?.story?'[Instagram story reply]':'';
-    const text=typedText||label;
-    if(!text) return null; // seen/reaction events are subscribed for health but do not create chat turns
-    const mediaType=attachmentType==='audio'?'voice':attachmentType||'text';
-    return {convId:null, igId:String(igId), recipientId:String(messaging.recipient?.id||entry.id||''), phone:'', name:'', text,
-      mediaType, mediaUrl, mid:message.mid||messaging.postback?.mid||'',
-      userMedia:(attachmentType==='image'||(!attachment&&message.reply_to?.story))&&mediaUrl?{type:'image',url:mediaUrl}:null,
-      userAttachment:attachmentType&&attachmentType!=='image'&&mediaUrl?{kind:attachmentType==='audio'?'voice':attachmentType,url:mediaUrl,name:label.replace(/[\[\]]/g,'')}:null};
-  }).filter(Boolean);
-}
 
 // Cheap, dependency-free word-overlap ratio (Jaccard on lowercased word sets, punctuation
 // stripped) — used by engineGetLeadState's loop detector below to catch two AI-generated replies
@@ -16086,9 +15862,24 @@ export function engineTextSimilarity(a, b){
 // Mirrors "HTTP · Get lead" + "Code · State": pulls every LEADS row for this phone across ALL
 // clients (not scoped by client_id — same as engine.json), so a phone that's already a lead for
 // a different client shows up as isDuplicate, matching the original's cross-tenant reporting.
-// identityField lets a non-WhatsApp channel (Instagram DM — see engineParseInstagramEvents/
-// handleInstagramWebhook) key this same lookup off a different column (IgId) instead of Phone —
+// identityField lets a lookup key off a different column (IgId — see
+// engineAdoptLegacyInstagramLead) instead of Phone —
 // every existing call site passes 3 args, so this stays exactly 'Phone' (the default) for them.
+// An Instagram contact who wrote in while the old direct Instagram connection was live already has
+// a lead keyed by IgId with an empty Phone. The first message through Chatwoot's Instagram inbox
+// takes that lead over (stamps the `ig:` key into Phone) instead of opening a second card for the
+// same person — the rest of the turn then sees it exactly as engineGetLeadState would have.
+async function engineAdoptLegacyInstagramLead(env, clientId, state, parsed){
+  if(!parsed?.igId) return;
+  try{
+    const legacy=await engineGetLeadState(env, clientId, parsed.igId, 'IgId');
+    if(!legacy.lead || String(legacy.lead.Phone||'').trim()) return;
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:legacy.leadId, Phone:parsed.phone, Channel:'instagram'}});
+    if(!r.ok) return;
+    legacy.lead.Phone=parsed.phone;
+    Object.assign(state, legacy);
+  }catch(e){}
+}
 async function engineGetLeadState(env, clientId, phone, identityField='Phone'){
   const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(${identityField},eq,${encodeURIComponent(phone)})&limit=100`);
   const d=await r.json().catch(()=>({}));
@@ -18285,7 +18076,7 @@ async function enginePersistFirstGreetingTurn(env,c,clientId,state,userText,mess
     await d1InsertLeadMessage(env,resolvedLeadId,clientId,{role:'assistant',sender_type:'bot',content:replyText,ts:new Date().toISOString(),...(routing.quickReplies?.length?{options:routing.quickReplies}:{})});
     await engineMemoryIndexConversationTurn(env,clientId,resolvedLeadId,userText,replyText);
     if(built.body.Stage&&built.body.Stage!==state.stage) await engineJournalStageChange(env,clientId,resolvedLeadId,state.stage,built.body.Stage);
-    await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:'whatsapp',at:new Date().toISOString()});
+    await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:resolvedLeadId,channel:state.channel||'whatsapp',at:new Date().toISOString()});
     if(isNewLead) await engineBroadcastUpdate(env,clientId,{type:'new_lead',lead_id:resolvedLeadId,lead_name:built.body.Name||built.body.Phone||'New Enquiry',at:new Date().toISOString()});
     if(isNewLead&&state.referrerLeadId){
       try{ await env.DB.prepare('INSERT OR IGNORE INTO referrals (client_id, referrer_lead_id, referred_lead_id, referral_code, status, created_at) VALUES (?,?,?,?,?,?)').bind(Number(clientId),Number(state.referrerLeadId),Number(resolvedLeadId),'','pending',new Date().toISOString()).run(); }catch(e){}
@@ -20154,16 +19945,15 @@ function engineExtractLinkPriceCaption(replyText){
 // instead of eight near-duplicate branches. Voice-note turns get a normal text reply here;
 // their spoken reply is a single summary sent after the chat goes idle (see
 // runVoiceSummariesForAllClients), so a slow self-hosted voice model never delays a live reply.
-async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, channel, igRecipientId, quickReplies, ctx}={}){
+async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaType, langCode, imageUrl, quickReplies, ctx}={}){
   // Clears the typing indicator turned on right after engineClaimMessage, regardless of which
   // branch below actually sends (or doesn't) — a customer should never see a stuck "typing…" bubble.
-  // No-ops for Instagram (convId is null there) since that channel never goes through Chatwoot.
   engineSendChatwootTyping(env, c, convId, false);
   // CLIENTS.bot_reply_disabled ('Yes'/'No', Settings → Bot Auto-Reply) — the primary gate for
-  // this flag is now the early-exit in handleEngineWebhook (WhatsApp) and the inboxReason check
-  // (Instagram), which both short-circuit before any AI classification or LLM call so no tokens
-  // are consumed. This check here is a safety net for any call-site that bypasses those paths
-  // (e.g. follow-up flows, intro turns) and still reaches engineDeliverReply directly.
+  // this flag is now the early-exit in handleEngineWebhook (WhatsApp and Instagram), which
+  // short-circuits before any AI classification or LLM call so no tokens are consumed. This check
+  // here is a safety net for any call-site that bypasses those paths (e.g. follow-up flows, intro
+  // turns) and still reaches engineDeliverReply directly.
   if(c.bot_reply_disabled==='Yes'){
     await logEngineSkip(env, clientId, null, convId, 'bot-reply-disabled', 'Settings → Bot Auto-Reply is off for this client — reply not sent');
     return false;
@@ -20173,34 +19963,11 @@ async function engineDeliverReply(env, c, clientId, convId, replyText, {mediaTyp
   const trimmed=engineStripPromptLeak(raw);
   if(trimmed!==raw) await reportOpsError(env, 'engineDeliverReply — outgoing reply recited the system prompt; leaked part removed', new Error(raw.slice(trimmed.length, trimmed.length+300)), {clientId, convId});
   if(!trimmed) return;
-  // Instagram DM (channel==='instagram') never goes through Chatwoot; outbound bot replies are
-  // sent through the Instagram Graph API while inbound media remains visible in Chats.
-  if(channel==='instagram') return engineSendInstagramReply(env, c, igRecipientId, trimmed);
   // Voice notes are transcribed and answered in text like any other message. The spoken reply is
   // one end-of-session summary instead (engineTrackVoiceSummarySession / runVoiceSummariesForAllClients).
   if(imageUrl) return engineSendChatwootImageReply(env, c, clientId, convId, imageUrl, trimmed);
   if(quickReplies && quickReplies.length) return engineSendChatwootQuickReply(env, c, clientId, convId, trimmed, quickReplies);
   return engineSendChatwootReply(env, c, clientId, convId, trimmed);
-}
-
-// Instagram's equivalent of handleWaSend (WhatsApp Cloud API) — sends through the Instagram
-// Graph API using the account's own long-lived token (see handleInstagramOauthCallback), not a
-// WhatsApp send at all. Used both by engineDeliverReply (bot replies) and /instagram/send (a
-// human agent's manual reply from the Chats page).
-export async function engineSendInstagramReply(env, c, igRecipientId, text){
-  if(!c.ig_id||!c.ig_access_token||!igRecipientId) return false;
-  // graph.instagram.com, not graph.facebook.com — "Instagram API with Instagram Login" sends
-  // through its own API host, matching the account-scoped token from handleInstagramOauthCallback.
-  try{
-    const r=await fetch(`https://graph.instagram.com/${META_IG_GRAPH_VERSION}/${c.ig_id}/messages`, {
-      method:'POST', headers:{Authorization:`Bearer ${c.ig_access_token}`, 'Content-Type':'application/json'},
-      body:JSON.stringify({recipient:{id:igRecipientId}, message:{text}})
-    });
-    if(r.ok) return true;
-    const data=await r.json().catch(()=>({}));
-    await reportOpsError(env, 'engineSendInstagramReply', new Error(instagramGraphError(data, `Instagram Graph HTTP ${r.status}`)));
-  }catch(e){ await reportOpsError(env, 'engineSendInstagramReply', e); }
-  return false;
 }
 
 async function engineSendHandoverLabel(c, convId){
@@ -20439,8 +20206,8 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
   // rep has no reason to keep checking.
   if(userText) body.ConvResolved='No';
-  // Instagram DM (state.channel==='instagram') keys leads off IgId instead of a phone number —
-  // see engineParseInstagramEvents/handleInstagramWebhook.
+  // Instagram (state.channel==='instagram') also records the contact's Instagram id — see
+  // engineParseChatwootPayload.
   if(state.igId) body.IgId=state.igId;
   if(messageId) body.LastProcessedMessageId=messageId;
   if(qualAnswers && Object.keys(qualAnswers).length) body.QualAnswers=JSON.stringify(qualAnswers);
@@ -20564,7 +20331,7 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
   if(msgId && state.lead?.LastProcessedMessageId===msgId) return state.leadId;
   const isFirstMsg=!state.leadId;
   if(msgId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId||null, msgId)||state.leadId||null;
-  if(!state.leadId) state.leadId=await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new'}).catch(()=>null);
+  if(!state.leadId) state.leadId=await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new', ...engineLeadChannelFields(phone)}).catch(()=>null);
   const now=new Date().toISOString();
   if(state.leadId){
     const media=engineInboundMediaFields(mediaType, mediaUrl, text, msgId);
@@ -20572,7 +20339,8 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
       ...(media.userMedia?{media:media.userMedia}:{}), ...(media.userAttachment?{attachment:media.userAttachment}:{})});
   }
   const leadBody={ClientId:String(clientId),Phone:phone,Name:name,ConversationID:convId,
-    LastMsgAt:now,Channel:'whatsapp',
+    LastMsgAt:now,Channel:parsed.channel||'whatsapp',
+    ...(parsed.igId?{IgId:parsed.igId}:{}),
     ...(isFirstMsg?{Date:now}:{}),
     ...(state.inboxId?{InboxId:String(state.inboxId)}:{})};
   // Leadvyne v2: ConvHistory too, so when the bot is switched back on it sees what was said.
@@ -20582,7 +20350,7 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
   await engineResolveLeadOwner(env,c,clientId,leadBody,state,isFirstMsg);
   const leadId=await engineUpsertLead(env, state.leadId?'PATCH':'POST', state.leadId, leadBody);
   state.leadId=state.leadId||leadId;
-  if(state.leadId) await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:state.leadId,channel:'whatsapp',at:now}).catch(()=>{});
+  if(state.leadId) await engineBroadcastUpdate(env,clientId,{type:'message',lead_id:state.leadId,channel:parsed.channel||'whatsapp',at:now}).catch(()=>{});
   return state.leadId;
 }
 
@@ -20590,13 +20358,18 @@ async function engineCollectLeadWithoutReply(env, c, clientId, body, state, pars
 // comment for why. Best-effort: if this write fails for any reason, falls back to the original
 // leadId (or null) so the turn proceeds exactly as it would have before this existed, rather than
 // aborting a real customer message over a claim-step failure.
+// A brand-new Instagram lead row carries its channel from the very first write, so the Chats
+// inbox files it under Instagram even if the turn stops before the end-of-turn upsert.
+function engineLeadChannelFields(phone){
+  return engineIsInstagramLeadKey(phone)?{Channel:'instagram', IgId:String(phone).slice(INSTAGRAM_LEAD_KEY_PREFIX.length)}:{};
+}
 async function engineClaimMessage(env, clientId, phone, leadId, messageId){
   try{
     if(leadId){
       await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, LastProcessedMessageId:messageId}});
       return leadId;
     }
-    return await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId})||null;
+    return await engineCreateLeadOnce(env, clientId, phone, {ClientId:String(clientId), Phone:phone, Stage:'new', LastProcessedMessageId:messageId, ...engineLeadChannelFields(phone)})||null;
   }catch(e){ return leadId||null; }
 }
 
@@ -21478,8 +21251,12 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     }
 
     if(c.test_mode==='Yes' && c.test_phone && phone!==c.test_phone.replace(/[^0-9]/g,'')){ await logEngineSkip(env, clientId, phone, convId, 'test-mode'); return json({ok:true, skipped:'test-mode'}); }
+    if(parsed.channel==='instagram') await ensureLeadsColumns(env, ['Channel','IgId']).catch(()=>{});
     const state=await engineGetLeadState(env, clientId, phone);
+    if(parsed.channel==='instagram' && !state.lead) await engineAdoptLegacyInstagramLead(env, clientId, state, parsed);
     state.phone=phone; state.name=name; state.convId=convId; state.inboxId=parsed.inboxId||null;
+    state.channel=parsed.channel||'whatsapp';
+    if(parsed.igId) state.igId=parsed.igId;
     if(engineV2On(c)){
       state.staffNotes=engineActiveStaffNotes(state.lead?.StaffNotes);
       state.winExamples=await engineLoadWinExamples(env, clientId).catch(()=>[]);
@@ -24062,7 +23839,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
     }
     if(resolvedLeadId){
-      await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:'whatsapp', at:new Date().toISOString()});
+      await engineBroadcastUpdate(env, clientId, {type:'message', lead_id:resolvedLeadId, channel:state.channel||'whatsapp', at:new Date().toISOString()});
     }
     // New-lead CRM push notification
     if(isNewLead && resolvedLeadId){
@@ -24204,163 +23981,6 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     await logEngineSkip(env, clientId, phone, null, 'internal-error', e?.message||String(e));
     return json({ok:true, skipped:'internal-error'});
   }
-}
-
-/* ── Instagram DM webhook (native — no Chatwoot) ───────────────────────────────────────────────
-   Meta's Instagram Messaging webhook, verified/received directly by this Worker (unlike WhatsApp
-   above, which Chatwoot's own channel receives and re-delivers here already normalized) — this
-   repo has never done raw Meta webhook verification itself before this. Deliberately leaner than
-   handleEngineWebhook: reuses the same classify/route/reply/lead-upsert primitives (engineGetLeadState,
-   engineClassifyIntent, engineRouteFlow, engineCallLlm, engineDeliverReply, engineBuildLeadUpsertBody),
-   but only implements the qualify/FAQ/objection/human/drop routes — the ecommerce order-link
-   automation, hospitality/category media sends, and booking-signal auto-send that
-   handleEngineWebhook also does are WhatsApp-only for now (confirmed v1 scope: a text-only,
-   core AI conversation + human handover, not full parity with every WhatsApp business-vertical
-   feature). Human handover reuses the exact same Handover/HandoverAt/SlaAlerted fields
-   engineBuildLeadUpsertBody already sets for WhatsApp — the SLA-breach alert (n8n/notifications.json)
-   polls the Leads table generically, not by channel, so an Instagram handover surfaces there for
-   free; there's no Chatwoot conversation to label (engineSendHandoverLabel), so this simply
-   doesn't call it. ── */
-async function handleInstagramWebhookVerify(request, env){
-  const url=new URL(request.url);
-  if(env.META_IG_VERIFY_TOKEN && url.searchParams.get('hub.mode')==='subscribe' && url.searchParams.get('hub.verify_token')===env.META_IG_VERIFY_TOKEN){
-    return new Response(url.searchParams.get('hub.challenge')||'', {status:200});
-  }
-  return json({error:'Verification failed'}, 403);
-}
-
-async function persistInstagramTurn(env, c, clientId, state, routing, userText, mid, isNewLead){
-  if(routing.productCategory||routing.matchedCategory) await ensureProductCategoryField(env).catch(()=>{});
-  const {body:leadBody, method, leadId, fullHistory}=engineBuildLeadUpsertBody(c, clientId, state, routing, userText, mid, isNewLead);
-  await engineResolveLeadOwner(env, c, clientId, leadBody, state, isNewLead);
-  const newSummary=await engineMaybeSummarizeHistory(env, c, fullHistory, state.summary);
-  if(newSummary) leadBody.ConvSummary=newSummary;
-  const newFacts=await engineMaybeExtractCustomerFacts(env, c, fullHistory, state.lead?.['Customer Facts']);
-  if(newFacts) leadBody['Customer Facts']=newFacts;
-  const resolvedLeadId=await engineUpsertLead(env, method, leadId, leadBody);
-  if(resolvedLeadId) await engineMaybeSendHotLeadAlert(env, c, clientId, resolvedLeadId, state.lead, leadBody);
-  // Dual-write new messages to D1 lead_messages for chats.html display (Instagram channel)
-  if(resolvedLeadId){
-    const now=new Date().toISOString();
-    if(userText) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'user', content:routing.historyUserText||userText, ts:now,
-       ...(routing.userMedia?{media:routing.userMedia}:{}),
-       ...(routing.userAttachment?{attachment:routing.userAttachment}:{})});
-    if(routing.reply) await d1InsertLeadMessage(env, resolvedLeadId, clientId,
-      {role:'assistant', sender_type:'bot', content:routing.reply, ts:now, ...(routing.media?{media:routing.media}:{})});
-  }
-  if(resolvedLeadId) await engineMemoryIndexConversationTurn(env, clientId, resolvedLeadId, userText, routing.reply);
-  // NocoDB can briefly lag after IgId/Channel are auto-created for the first Instagram lead.
-  // Verify those identity fields before considering the first inbound turn durable.
-  if(isNewLead&&resolvedLeadId){
-    for(let attempt=1;attempt<=3;attempt++){
-      const checkR=await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${resolvedLeadId}`);
-      const checkD=await checkR.json().catch(()=>({}));
-      if(String(checkD?.IgId||'')===String(leadBody.IgId||'')&&String(checkD?.Channel||'')===String(leadBody.Channel||'')) break;
-      if(attempt===3){ await reportOpsError(env,'persistInstagramTurn',new Error('Instagram lead identity fields were not saved after schema repair')); break; }
-      await new Promise(resolve=>setTimeout(resolve,900*attempt));
-      await ncFetch(env,`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`,{method:'PATCH',body:{Id:resolvedLeadId,IgId:leadBody.IgId,Channel:leadBody.Channel}});
-    }
-  }
-  if(resolvedLeadId&&leadBody.Stage&&leadBody.Stage!==state.stage) await engineJournalStageChange(env, clientId, resolvedLeadId, state.stage, leadBody.Stage);
-  if(resolvedLeadId) await engineBroadcastUpdate(env, clientId, {type:'message',lead_id:resolvedLeadId,channel:'instagram',at:new Date().toISOString()});
-  return {resolvedLeadId,leadBody};
-}
-
-export async function processInstagramWebhookBody(env, body){
-  const results=[];
-  if(body.object!=='instagram') return [{skipped:'not-instagram'}];
-  for(const entry of (body.entry||[])) for(const parsed of engineParseInstagramEvents(entry)){
-    let recovery=null;
-    try{
-      const c=await findClientByField(env, 'ig_id', parsed.recipientId||entry.id);
-      if(!c){ results.push({skipped:'no client found for ig_id',recipientId:parsed.recipientId||entry.id}); continue; }
-      if(c.active==='No'){ results.push({skipped:'client inactive',clientId:c.Id}); continue; }
-      const clientId=String(c.Id), mid=parsed.mid;
-      if(mid&&env.DB){
-        try{
-          const dedupR=await env.DB.prepare(`INSERT OR IGNORE INTO engine_processed_messages (client_id, message_id, at) VALUES (?,?,?)`).bind(Number(clientId),mid,new Date().toISOString()).run();
-          if(!dedupR.meta.changes){ results.push({skipped:'duplicate-delivery',clientId,mid}); continue; }
-        }catch(e){}
-      }
-      await ensureClientColumns(env,['ig_webhook_debug']);
-      await patchClientFields(env,c.Id,{ig_webhook_debug:'received:'+new Date().toISOString()}).catch(()=>{});
-      await ensureLeadsColumns(env,['IgId','Channel']);
-      const state=await engineGetLeadState(env,clientId,parsed.igId,'IgId');
-      state.phone=''; state.igId=parsed.igId; state.channel='instagram'; state.name=parsed.name; state.convId=null;
-      const isNewLead=!state.leadId;
-      recovery={c,clientId,state,isNewLead};
-      const inboxReason=engineManualTakeoverActive(state.lead)?'manual-takeover':env.ENGINE_ENABLED==='false'?'engine-disabled-global':c.engine_disabled==='Yes'?'engine-disabled-client':c.bot_reply_disabled==='Yes'?'bot-reply-disabled':state.leadOptOut==='Yes'?'opted-out':(!env.GEMINI_API_KEY&&!c.openrouter_key)?'no-ai-provider':'';
-      if(inboxReason){
-        const routing={route:'inbox_only',next:state.stage||'new',customerLanguage:c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
-        const saved=await persistInstagramTurn(env,c,clientId,state,routing,parsed.text,mid,isNewLead);
-        results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:'inbox_only',reason:inboxReason,sent:false});
-        continue;
-      }
-      let userText=parsed.mediaUrl?await engineResolveUserText(env,c,parsed.mediaType,parsed.mediaUrl,parsed.text):parsed.text;
-      if(parsed.mediaUrl&&parsed.text&&!parsed.text.startsWith('[Instagram ')&&userText!==parsed.text) userText=`${parsed.text}\n${userText}`;
-      const _igBotConfig=(()=>{try{return JSON.parse(c.bot_config||'{}');}catch(e){return {};}})();
-      const cls=_igBotConfig.classification_enabled===false
-        ? {intent:'QUESTION',intentData:{},sentiment:'Neutral',objectionCategory:'none',aiWinProbability:null,customerLanguage:c.language||'en',nextStage:state.stage,confidence:1,productInterest:null,productCategory:null}
-        : await engineClassifyIntent(env,c,userText,state.activeHistory,state.stage);
-      const routing=engineRouteFlow(c,state,userText,cls,parsed.mediaType);
-      Object.assign(routing,{historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment});
-      if(routing.loopDetected) await reportOpsError(env,'Anti-loop escalation — Instagram',new Error(`client ${clientId}, stage ${state.stage||'new'}`));
-      const replyLang=routing.customerLanguage||c.language||'en';
-      const deliverOpts={channel:'instagram',igRecipientId:parsed.igId,langCode:replyLang};
-      let sentText=null, deliveryFailed=false;
-      const deliver=async text=>{
-        if(!text) return true;
-        const ok=await engineDeliverReply(env,c,clientId,null,text,deliverOpts);
-        if(!ok){ deliveryFailed=true; routing.reply=null; sentText=null; }
-        return ok;
-      };
-      if(routing.route==='human'){
-        sentText=await engineLocalizeReply(env,c,routing.reply||'Sure — connecting you to our team now. Someone will reply here shortly.',replyLang); routing.reply=sentText; await deliver(sentText);
-      }else if(routing.route==='qualify'){
-        const firstQ=engineQualQuestionText(engineParseJsonField(c.qual_questions,[])[0]); routing.next='qual_0';
-        sentText=isNewLead?await engineBuildFirstTouchIntro(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang,state.name||state.lead?.Name):await engineLocalizeReply(env,c,firstQ||'Could you tell me a bit more about what you are looking for?',replyLang);
-        routing.reply=sentText; await deliver(sentText);
-      }else if(routing.route==='qualify_next'){
-        sentText=routing.reply?await engineLocalizeReply(env,c,routing.reply,replyLang):null; routing.reply=sentText; await deliver(sentText);
-      }else if(['faq','ecom_faq','travel_faq','saas_faq'].includes(routing.route)){
-        state.memoryChunks=await engineMemoryRetrieve(env,clientId,state.leadId,userText,{kinds:routing.route==='ecom_faq'?['conversation','product','category']:['conversation']});
-        const sysPrompt=engineBuildFaqSystemPrompt(c,state,null,c.industry||'general',replyLang,isNewLead,routing.intent);
-        const ecomAllowedLinks=routing.route==='ecom_faq' ? [buildOrderLink(c, clientId)].filter(Boolean) : undefined;
-        const ecomPriceGuard=routing.route==='ecom_faq' ? enginePriceGuardOpts(c,sysPrompt,userText,replyLang) : undefined;
-        sentText=engineExtractReplyOptions(await engineCallLlmAvoidingRepeat(env,c,sysPrompt,userText,300,state.botMsgs?.[state.botMsgs.length-1],ecomAllowedLinks,ecomPriceGuard)).text;
-        routing.reply=sentText; await deliver(sentText);
-      }else if(routing.route==='objection'){
-        sentText=await engineCallLlmAvoidingRepeat(env,c,engineBuildObjectionSystemPrompt(c,state,routing.objectionCategory,replyLang),userText,300,state.botMsgs?.[state.botMsgs.length-1]); routing.reply=sentText; await deliver(sentText);
-      }
-      const saved=await persistInstagramTurn(env,c,clientId,state,routing,userText,mid,isNewLead);
-      recovery=null; // the inbound turn is durable; later analytics errors must not append it twice
-      await engineLogAnalytics(env,{ClientId:clientId,ClientName:c.client_name||'',Phone:'',Intent:routing.intent||'',Route:routing.route||'',Stage:state.stage||'',NextStage:saved.leadBody.Stage||'',ResponseMs:0,IsError:deliveryFailed,ErrorMsg:deliveryFailed?'Instagram delivery failed':'',Timestamp:new Date().toISOString()});
-      results.push({ok:true,clientId,leadId:saved.resolvedLeadId,route:routing.route,sent:!!sentText,deliveryFailed});
-    }catch(e){
-      await reportOpsError(env,'processInstagramWebhookBody',e);
-      let recovered=false;
-      if(recovery){
-        try{
-          const routing={route:'inbox_only',next:recovery.state.stage||'new',customerLanguage:recovery.c.language||'en',reply:null,historyUserText:parsed.text,userMedia:parsed.userMedia,userAttachment:parsed.userAttachment};
-          await persistInstagramTurn(env,recovery.c,recovery.clientId,recovery.state,routing,parsed.text,parsed.mid,recovery.isNewLead);
-          recovered=true;
-        }catch(saveError){ await reportOpsError(env,'processInstagramWebhookBody inbound recovery',saveError); }
-      }
-      results.push({error:e.message,inboundSaved:recovered});
-    }
-  }
-  return results;
-}
-
-async function handleInstagramWebhook(request, env, ctx){
-  const rawBody=await request.text();
-  if(!await verifyWebhookSignature(env.META_IG_APP_SECRET,rawBody,request.headers.get('X-Hub-Signature-256'))) return new Response('Invalid signature',{status:432});
-  let body; try{ body=JSON.parse(rawBody); }catch(e){ return json({error:'Invalid JSON'},400); }
-  if(body.object!=='instagram') return json({ok:true,skipped:'not-instagram'});
-  const work=processInstagramWebhookBody(env,body);
-  if(ctx?.waitUntil){ ctx.waitUntil(work); return json({ok:true,accepted:true}); }
-  return json({ok:true,results:await work});
 }
 
 // 192 bits of randomness, hex-encoded — the actual security boundary for /engine/webhook (see the
@@ -35558,14 +35178,6 @@ export default {
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
-      else if(url.pathname==='/ig/oauth/start' && request.method==='POST'){ res=await handleInstagramOauthStart(request, env); }
-      else if(url.pathname==='/ig/oauth/callback' && request.method==='GET'){ res=await handleInstagramOauthCallback(request, env); }
-      else if(url.pathname==='/channels/instagram/disconnect' && request.method==='POST'){ res=await handleInstagramDisconnect(request, env); }
-      else if(url.pathname==='/ig/health' && (request.method==='GET'||request.method==='POST')){ res=await handleInstagramHealth(request, env); }
-      else if(url.pathname==='/ig/deauthorize' && request.method==='POST'){ res=await handleInstagramDeauthorize(request, env); }
-      else if(url.pathname==='/ig/webhook' && request.method==='GET'){ res=await handleInstagramWebhookVerify(request, env); }
-      else if(url.pathname==='/ig/webhook' && request.method==='POST'){ res=await handleInstagramWebhook(request, env, ctx); }
-      else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSend(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
       else if(url.pathname==='/shopify/oauth/callback' && request.method==='GET'){ res=await handleShopifyOauthCallback(request, env); }
       else if(url.pathname==='/shopify/webhook' && request.method==='POST'){ res=await handleShopifyWebhook(request, env); }
@@ -35937,9 +35549,6 @@ export default {
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
       ctx.waitUntil(runSaasHealthScoresForAllClients(env)); ctx.waitUntil(runSaasRemindersForAllClients(env)); ctx.waitUntil(runSaasSupportPullForAllClients(env));
-      // Instagram DM — long-lived tokens expire in 60 days and need refreshing before then; see
-      // runInstagramTokenRefreshForAllClients's own comment for why daily is fine.
-      ctx.waitUntil(runInstagramTokenRefreshForAllClients(env));
       // Semantic memory — one-time-per-client catalog backfill (SETUP.md "Semantic memory"),
       // piggybacked here rather than the live customer-reply path since this Worker has no
       // ctx.waitUntil available there — see engineMemoryBackfillCatalogIfNeeded's own comment.
