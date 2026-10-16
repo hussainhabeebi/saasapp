@@ -8,6 +8,7 @@ import {
   fv3Config, fv3Decide, fv3AttributeReply, fv3ErrorAction, fv3TemplatePreset, fv3TemplateParams,
   fv3BuildReport, fv3PreferredHour, fv3NextAllowedMs, fv3OrderCounts, fv3OnInbound, fv3ProcessClient,
   fv3Setup, fv3SaveSettings, fv3GetSettings, fv3IsEnabled, fv3EnsureSchema,
+  fv3IsAcknowledgement, fv3ChatContext, fv3NudgePrompt, fv3IsRepeat,
 } from './followup-v3.js';
 
 const H=3600000, D=24*H;
@@ -103,6 +104,52 @@ describe('fv3Decide', ()=>{
   test('per-lead 30-day cap', ()=>{
     const sends=Array.from({length:8}, (_, i)=>({step:6, kind:'reengage', sent_at:iso(T('2026-10-01T00:00:00Z')+i*D)}));
     assert.equal(decide({now:T('2026-10-10T12:00:00Z'), sends}).status, 'capped');
+  });
+});
+
+// The chat that prompted the conversation guards: "Ok" to "shall I send the link?" got the same
+// Malayalam question back, word for word, though the customer writes in English.
+const ML_Q='ഹായ് Shereef, നാളെ വൈകീട്ട് 7 മണിക്ക് നിങ്ങളുടെ ട്രാവൽ ഏജൻസിക്കായുള്ള AI സിസ്റ്റം ഡെമോയ്ക്കായി കാണാം! മീറ്റിംഗ് ലിങ്ക് ഞാൻ അയച്ചുതരട്ടേ?';
+const shereef=[
+  {role:'assistant', content:'Great! How about tomorrow evening at 7 PM for the demo? We can show you how our AI system automates lead capturing and follow-ups for your travel agency.', ts:'2026-10-15T03:02:00Z'},
+  {role:'assistant', content:ML_Q, ts:'2026-10-15T14:01:00Z'},
+  {role:'user', content:'Ok', ts:'2026-10-15T14:42:00Z'},
+];
+
+describe('conversation guards', ()=>{
+  test('a bare ok / yes / sure is a yes; a real message is not', ()=>{
+    for(const t of ['Ok', 'ok 👍', 'Okay!', 'k', 'Sure', 'yes please', 'ok thanks', 'sheri', 'ശരി', '👍', 'haan ji', 'ठीक है'])
+      assert.equal(fv3IsAcknowledgement(t), true, t);
+    for(const t of ['Ok but what is the price?', 'not now', 'can we do 8 pm instead', '', 'No'])
+      assert.equal(fv3IsAcknowledgement(t), false, t);
+  });
+
+  test('the Shereef chat: yes, English, and the old question counts as a repeat', ()=>{
+    const chat=fv3ChatContext({ConvHistory:JSON.stringify(shereef), Language:'ml'});
+    assert.equal(chat.acknowledged, true);
+    assert.equal(chat.replyLang, 'en', 'the customer\'s language, not lead.Language or our last message');
+    assert.equal(fv3IsRepeat(ML_Q, chat.recentOurs), true);
+    assert.equal(fv3IsRepeat('ഹായ് Shereef, നാളെ വൈകീട്ട് 7 മണിക്ക് നിങ്ങളുടെ ട്രാവൽ ഏജൻസിക്കായുള്ള AI സിസ്റ്റം ഡെമോയ്ക്കായി കാണാം! ലിങ്ക് അയച്ചുതരട്ടേ?', chat.recentOurs), true, 'reworded slightly');
+    assert.equal(fv3IsRepeat('Here is your demo link for tomorrow 7 PM — see you then!', chat.recentOurs), false);
+    const p=fv3NudgePrompt(chat);
+    assert.match(p, /Customer: Ok/);
+    assert.match(p, /do NOT ask that question again/);
+    assert.match(p, /Write ONLY in English/);
+    assert.match(p, /Never invent a link/);
+    assert.doesNotMatch(fv3NudgePrompt(fv3ChatContext({ConvHistory:JSON.stringify([...shereef.slice(0, 2), {role:'user', content:'What is the price?'}])})), /do NOT ask/);
+  });
+
+  test('a nudge waits from our bot\'s own last reply, not just the customer\'s message', ()=>{
+    const hist=JSON.stringify([{role:'user', content:'Ok', ts:'2026-10-10T10:00:00Z'}, {role:'assistant', content:'Here is the link', ts:'2026-10-10T10:50:00Z'}]);
+    const d=decide({lead:{ConvHistory:hist}, now:T('2026-10-10T11:05:00Z')});
+    assert.equal(d.status, 'scheduled'); assert.equal(d.next.due_at, '2026-10-10T11:50:00.000Z');
+    // A staff turn doesn't move it (that is the agent_replied rule's job).
+    const staff=JSON.stringify([{role:'user', content:'Ok', ts:'2026-10-10T10:00:00Z'}, {role:'assistant', by:'agent', content:'Sent!', ts:'2026-10-10T10:00:30Z'}]);
+    assert.equal(decide({lead:{ConvHistory:staff}, now:T('2026-10-10T11:05:00Z')}).next.due_at, '2026-10-10T11:00:00.000Z');
+  });
+
+  test('a would-be repeat skips the step instead of retrying', ()=>{
+    assert.deepEqual(fv3ErrorAction('repeat'), {kind:'skip'});
   });
 });
 
@@ -284,5 +331,30 @@ describe('with D1', ()=>{
     fail=null;
     r=await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
     assert.equal(sent.length, 1, 'deferred lead not retried before its time');
+  });
+
+  test('sweep: a nudge gets the chat, and one that would repeat us is skipped, not logged or retried', async ()=>{
+    await fv3EnsureSchema(env);
+    const now=Date.now();
+    await fv3SaveSettings(env, 42, {enabled:true, industry:'travel', config:{quiet_start:0, quiet_end:0, objection_branching:false}});
+    db.prepare(`UPDATE followup_v3_settings SET maint_at=?, enabled_at=? WHERE client_id=42`).run(iso(now), iso(now-5*D));
+    db.prepare(`INSERT INTO followup_ladder_steps (client_id, step, type, hours, message, template_name, template_body_vars, updated_at) VALUES (42,1,'session',1,'x','',0,?)`).run(iso(now));
+    const hist=JSON.stringify([{role:'assistant', content:ML_Q, ts:iso(now-3*H)}, {role:'user', content:'Ok', ts:iso(now-2*H)}]);
+    const leads=[{Id:9, Name:'Shereef', Phone:'91903', Stage:'new', CreatedAt:iso(now-3*D), LastCustomerMsgAt:iso(now-2*H), ConvHistory:hist}];
+    const seen=[];
+    const deps={
+      leadsTable:'L', ncFetch:async()=>new Response(JSON.stringify({list:leads})), ensureLeadsColumns:async()=>{},
+      sendStep:async(env2, c, lead, step, stepCfg, opts)=>{
+        seen.push(opts.chat);
+        if(opts.chat.isRepeat(ML_Q)){ const e=new Error('Skipped: repeat'); e.code='repeat'; throw e; }
+      },
+    };
+    await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
+    assert.equal(seen.length, 1);
+    assert.match(seen[0].prompt, /do NOT ask that question again/);
+    assert.equal(db.prepare(`SELECT COUNT(*) n FROM followup_send_failures`).get().n, 0, 'not a failure');
+    assert.deepEqual(JSON.parse(db.prepare(`SELECT skip_json FROM followup_v3_leads WHERE lead_id=9`).get().skip_json).steps, [1]);
+    await fv3ProcessClient(env, deps, client, await fv3GetSettings(env, 42), {now});
+    assert.equal(seen.length, 1, 'skipped for this silence, not retried');
   });
 });

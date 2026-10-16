@@ -4230,7 +4230,7 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
       stepCfg.ai_mode && !opts.overrideText
         ? (()=>{
             const productHint=lead.InterestedProduct?` They expressed interest in: ${lead.InterestedProduct}.`:'';
-            const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`;
+            const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}.${productHint} Write ONE friendly, natural check-in — 1-2 sentences max, no bullet points, no formal tone, no salutation like "Dear". Sound like a real person following up in WhatsApp.`+(opts.chat?.prompt||'');
             return aiClientFirst(env, c, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, caller:'followup-ai'},
               ()=>engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.7, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'})).catch(()=>null);
           })()
@@ -4240,6 +4240,18 @@ async function sendFollowupLadderStep(env, c, lead, step, stepCfg, opts={}){
       ecomFollowupScarcityLine(env, c, lead),
     ]);
     if(aiGenerated) staticText=aiGenerated;
+    // Follow-up V3 (opts.chat): never send a near-copy of one of our last messages. An AI nudge gets
+    // one rewrite; if it (or a fixed message) still repeats us, the step is skipped, not sent.
+    if(opts.chat?.isRepeat?.(staticText)){
+      let rewritten=null;
+      if(aiGenerated){
+        const aiSys=`You are writing a short, warm WhatsApp follow-up message on behalf of "${c.client_name||'us'}" to ${lead.Name||'a customer'}. Write ONE friendly, natural line — no salutation like "Dear".`+(opts.chat.prompt||'')+(opts.chat.retryNote||'');
+        rewritten=await aiClientFirst(env, c, aiSys, '(generate the follow-up now)', {temperature:0.9, maxOutputTokens:120, caller:'followup-ai'},
+          ()=>engineGeminiGenerate(env, aiSys, '(generate the follow-up now)', {temperature:0.9, maxOutputTokens:120, model:ENGINE_REPLY_MODEL, caller:'followup-ai'})).catch(()=>null);
+      }
+      if(!rewritten || opts.chat.isRepeat(rewritten)){ const err=new Error('Skipped: this follow-up would have repeated our last message.'); err.code='repeat'; throw err; }
+      staticText=rewritten;
+    }
     sentText=staticText+(scarcityLine||'');
 
     // Voice Follow-ups (Settings → Voice) — same Sarvam-primary/AI4Bharat-standby pipeline as live

@@ -149,6 +149,80 @@ export function fv3StepLabel(step, cfg){
   return 'Re-engage';
 }
 
+// ── Conversation guards (session nudges) ────────────────────────────────────────────────────────
+// Real observed failure (travel lead, Oct 2026): the customer answered "Ok" to "shall I send you the
+// meeting link?" and got the very same question back, word for word, in a different language than
+// they wrote in. So a V3 nudge now (a) reads the chat, (b) is never a near-copy of one of our last
+// few messages (skipped instead), (c) takes a bare "ok / yes / sure" as a yes and never re-asks, and
+// (d) is written in the language the customer last wrote in. Pure — sweep and tests share them.
+const ACK_WORDS=['ok','okay','okey','okie','okk','k','kk','sure','yes','yeah','yep','yup','ya','yaa','yah','fine','done','alright','all right','noted','great',
+  'good','perfect','cool','sounds good','go ahead','please do','pls do','send','send it','pls send','please send','confirmed','confirm','agreed','haa','haan','haan ji',
+  'ha','ji','theek hai','thik hai','sheri','seri','shari','sari','ok sheri','ശരി','ഓക്കെ','ഓക്കേ','ശരിയാ','മതി','हाँ','हां','ठीक है','ओके','نعم','تمام','اوكي','ஓகே','சரி'];
+const ACK_SET=new Set(ACK_WORDS);
+export function fv3IsAcknowledgement(text){
+  const t=String(text||'').toLowerCase().replace(/[\p{Extended_Pictographic}\u{FE0F}\u{1F3FB}-\u{1F3FF}]/gu, ' ')
+    .replace(/[.,!?।؟…]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if(!t) return /[👍👌🙏✅]/u.test(String(text||''));
+  if(ACK_SET.has(t)) return true;
+  // "ok sure", "yes please", "ok thanks" — every word is an acknowledgement or a filler.
+  const words=t.split(' ');
+  return words.length<=4 && words.every(w=>ACK_SET.has(w)||['please','pls','plz','thanks','thank','you','thx','ty','sir','madam','bro','dear'].includes(w)) && words.some(w=>ACK_SET.has(w));
+}
+export function fv3Similarity(a, b){
+  const words=s=>new Set(String(s||'').toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean));
+  const wa=words(a), wb=words(b);
+  if(!wa.size || !wb.size) return 0;
+  let overlap=0; for(const w of wa) if(wb.has(w)) overlap++;
+  return overlap/Math.max(wa.size, wb.size);
+}
+export function fv3IsRepeat(text, recent, threshold=0.7){
+  return (recent||[]).some(r=>fv3Similarity(text, r)>=threshold);
+}
+const SCRIPTS=[['ml', /[ഀ-ൿ]/], ['hi', /[ऀ-ॿ]/], ['ar', /[؀-ۿ]/], ['ta', /[஀-௿]/], ['kn', /[ಀ-೿]/], ['te', /[ఀ-౿]/], ['bn', /[ঀ-৿]/]];
+export function fv3ScriptLang(text){
+  const t=String(text||'');
+  for(const [code, re] of SCRIPTS) if(re.test(t)) return code;
+  return /[A-Za-z]/.test(t) ? 'en' : '';
+}
+const LANG_NAMES={en:'English (or the same Latin-script Manglish/Hinglish the customer typed)', ml:'Malayalam (Malayalam script)', hi:'Hindi (Devanagari script)',
+  ar:'Arabic', ta:'Tamil', kn:'Kannada', te:'Telugu', bn:'Bengali'};
+function parseHistory(lead){
+  const raw=lead?.ConvHistory;
+  if(Array.isArray(raw)) return raw;
+  try{ const h=JSON.parse(raw||'[]'); return Array.isArray(h)?h:[]; }catch(e){ return []; }
+}
+// What a nudge needs to know about the chat. `botReplyAt` is our bot's own latest reply after the
+// customer's last message (staff turns are handled by the agent_replied rule) — a nudge waits from
+// there, so it never lands minutes after the bot just answered.
+export function fv3ChatContext(lead){
+  const h=parseHistory(lead).filter(m=>m && typeof m.content==='string' && m.content.trim());
+  const lastUserIdx=h.map(m=>m.role).lastIndexOf('user');
+  const lastUser=lastUserIdx>=0?h[lastUserIdx]:null;
+  const ours=h.filter(m=>m.role==='assistant');
+  const recentOurs=ours.slice(-3).map(m=>m.content);
+  const botAfter=h.slice(lastUserIdx+1).filter(m=>m.role==='assistant' && !m.by);
+  const botReplyAt=botAfter.length?ms(botAfter[botAfter.length-1].ts):null;
+  // The customer's own language: their last message with letters in it ("👍" says nothing).
+  let replyLang='';
+  for(let i=h.length-1; i>=0 && !replyLang; i--) if(h[i].role==='user') replyLang=fv3ScriptLang(h[i].content);
+  if(!replyLang) replyLang=String(lead?.Language||'').toLowerCase().slice(0, 2);
+  const prevOurs=lastUserIdx>0?[...h.slice(0, lastUserIdx)].reverse().find(m=>m.role==='assistant'):null;
+  const acknowledged=!!lastUser && fv3IsAcknowledgement(lastUser.content);
+  return {history:h.slice(-10), lastCustomerText:lastUser?.content||'', acknowledged, askedBefore:prevOurs?.content||'', recentOurs, botReplyAt, replyLang};
+}
+// The extra instructions for an AI-written nudge.
+export function fv3NudgePrompt(chat){
+  if(!chat) return '';
+  const lines=chat.history.map(m=>`${m.role==='user'?'Customer':(m.by==='agent'?'Our team':'Us')}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 300)}`);
+  let p=lines.length?`\n\nThe conversation so far (latest last):\n${lines.join('\n')}`:'';
+  p+='\n\nRULES: This is a follow-up after the customer went quiet. Never repeat or reword a message we already sent above — say something new and useful, or simply and briefly check in.';
+  if(chat.acknowledged) p+=` The customer's last message ("${String(chat.lastCustomerText).slice(0, 60)}") means YES to what we asked — do NOT ask that question again. Move to the next step: confirm it warmly and, if we offered to send something, say it is on its way / our team will share it.`;
+  p+=' Never invent a link, URL, price, date or time that is not written in the conversation above.';
+  const name=LANG_NAMES[chat.replyLang];
+  p+=name?` Write ONLY in ${name} — the language the customer wrote in.`:' Write in the same language the customer wrote in.';
+  return p;
+}
+
 function parseSkip(state){ try{ const s=JSON.parse(state?.skip_json||'{}'); return s&&typeof s==='object'?s:{}; }catch(e){ return {}; } }
 
 // The whole "what happens to this lead next, and why" decision — pure, so the sweep, the lead
@@ -198,6 +272,7 @@ export function fv3Decide(input){
   const gapFloor=(t)=>lastSent?Math.max(t, lastSent+cfg.min_gap_hours*H):t;
   const deferUntil=ms(state?.defer_until);
   const prefHour=cfg.smart_send_time?fv3PreferredHour(state?.hours_json):null;
+  const botReplyAt=fv3ChatContext(lead).botReplyAt||0;
   let pendingTemplate=null;
   for(let s=1; s<=5; s++){
     const row=steps[s];
@@ -208,7 +283,8 @@ export function fv3Decide(input){
     if(isSession && !String(row.message||'').trim() && !row.ai_mode){ stepState[s]='not_set'; continue; }
     if(!isSession && !String(row.template_name||'').trim()){ stepState[s]='pending_template'; if(!pendingTemplate) pendingTemplate=s; continue; }
     const thr=isSession?(Number(row.hours)||SESSION_THRESHOLD_DEFAULT[s]):TEMPLATE_THRESHOLD[s];
-    const base=lastCust+thr*H;
+    // A nudge counts its hours from our bot's own last reply when that came after the customer's message.
+    const base=(isSession&&botReplyAt>lastCust?botReplyAt:lastCust)+thr*H;
     let due=fv3NextAllowedMs(gapFloor(base), tz, cfg.quiet_start, cfg.quiet_end);
     if(isSession){
       if(deferUntil && deferUntil>due) due=fv3NextAllowedMs(deferUntil, tz, cfg.quiet_start, cfg.quiet_end);
@@ -265,6 +341,7 @@ export function fv3ErrorAction(code, message=''){
   if(c===131026 || c===131021) return {kind:'skip'};                  // undeliverable / not on WhatsApp
   if(c===190 || c===10 || c===200 || c===131031 || c===132000 || c===132001 || c===132015 || c===132016 || /not configured|not connected/i.test(m)) return {kind:'client_error', hours:6};
   if(/no conversation yet|no phone number/i.test(m)) return {kind:'skip'};
+  if(code==='repeat') return {kind:'skip'};                           // the nudge would have repeated our last message
   return {kind:'retry'};
 }
 export function fv3FailureHint(code, message=''){
@@ -597,7 +674,7 @@ export async function fv3OnInbound(env, c, leadId, {optOut=false, at=Date.now()}
 }
 
 // ── Sweep (every 15 min) ─────────────────────────────────────────────────────────────────────────
-const LEAD_FIELDS=['Id', 'Name', 'Phone', 'Stage', 'Handover', 'OptOut', 'LastMsgAt', 'LastCustomerMsgAt', 'LastAgentMsgAt', 'Date', 'CreatedAt', 'Language',
+const LEAD_FIELDS=['Id', 'Name', 'Phone', 'Stage', 'Handover', 'OptOut', 'LastMsgAt', 'LastCustomerMsgAt', 'LastAgentMsgAt', 'Date', 'CreatedAt', 'Language', 'ConvHistory',
   'ConversationID', 'conv_id', 'ConversationId', 'chatwoot_conv_id', 'InboxId', 'InterestedProduct', 'LastObjectionCategory', 'DealValue',
   'Follow up 1', 'Follow up 2', 'Follow up 3', 'Follow up 4', 'Follow up 5'];
 const digits10=(p)=>String(p||'').replace(/\D/g, '').slice(-10);
@@ -690,6 +767,12 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
         ? {step, type:'template', template_name:reTpl.name, template_language:reTpl.language, template_category:'MARKETING', template_body_vars:JSON.parse(reTpl.params||'[]').length}
         : steps[step];
       const opts={v3:true, kind:d.next.kind, leadName:String(lead.Name||'').slice(0, 120), creds:deps.metaCreds?.(c, lead)||null};
+      if(stepCfg.type==='session'){
+        // Read the chat: an AI nudge sees it, and any nudge that would repeat us is skipped (sendStep throws 'repeat').
+        const chat=fv3ChatContext(lead);
+        opts.chat={prompt:fv3NudgePrompt(chat), isRepeat:(text)=>fv3IsRepeat(text, chat.recentOurs),
+          retryNote:`\n\nIMPORTANT: your draft repeated a message we already sent. Write something different, or a one-line friendly check-in.`};
+      }
       if(stepCfg.type==='template'){
         const t=tplByName[stepCfg.template_name];
         if(t){ let params=[]; try{ params=JSON.parse(t.params||'[]'); }catch(e){} opts.templateParams=fv3TemplateParams(params, lead, c, c.industry||settings.industry); }
@@ -702,7 +785,8 @@ export async function fv3ProcessClient(env, deps, c, settings, {now=Date.now()}=
         sent++;
         if(state?.retries || state?.defer_until) await env.DB.prepare(`UPDATE followup_v3_leads SET retries=0, defer_until=NULL WHERE lead_id=?`).bind(Number(lead.Id)).run().catch(()=>null);
       }catch(e){
-        const code=await logFailure(env, cid, lead.Id, step, e);
+        // Not a send failure: the nudge would have repeated us, so this step is skipped for this silence.
+        const code=e?.code==='repeat'?'repeat':await logFailure(env, cid, lead.Id, step, e);
         const act=fv3ErrorAction(code, e?.message);
         const retries=(Number(state?.retries)||0)+1;
         const skip=parseSkip(state); const cycle=d.cycle;
