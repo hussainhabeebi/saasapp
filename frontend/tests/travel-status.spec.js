@@ -307,3 +307,17 @@ test('a teammate\'s category change shows on an open dashboard without a reload,
   const cached = await page.evaluate(() => JSON.parse(sessionStorage.getItem(_CACHE_KEY())).list.find(l => l.Id === 2).ServiceCategory);
   expect(cached).toBe('Umrah and Hajj');
 });
+
+test('a teammate\'s status change updates the open Leads table too', async ({ page }) => {
+  await boot(page);
+  await page.route(/\/nocodb\/api\/v2\/tables\/[^/]+\/records\/1\?fields=Id,TravelStatus$/, (route) => route.fulfill({ json: { Id: 1, TravelStatus: 'quote_sent' } }));
+  // @ts-ignore
+  await page.evaluate(() => { navigate('leads'); _leadsActiveView = 'all'; if (!_leadsTableView) toggleLeadsView(); });
+  const sel = page.locator('#leadsTable select.ts-sel-inline[data-lead="1"]');
+  await expect(sel).not.toHaveValue('quote_sent');
+  // @ts-ignore
+  await page.evaluate(() => onLiveLeadUpdatedEvent({ type: 'lead_updated', lead_ids: [1], fields: ['TravelStatus'], by: 'rep@example.com' }));
+  await expect(sel).toHaveValue('quote_sent');
+  // @ts-ignore
+  expect(await page.evaluate(() => allLeads.find(l => l.Id === 1).TravelStatus)).toBe('quote_sent');
+});

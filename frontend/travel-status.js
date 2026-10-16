@@ -310,7 +310,7 @@ function tsInlineStatusHTML(l){
   tsInjectStyle();
   const st=tsStatusOf(l); const grp=TS_BY_KEY[st.key][3]; const f=tsFollowUpState(l);
   return `<div class="ts-inline" onclick="event.stopPropagation()">
-    <select class="ts-sel ts-sel-inline ${grp}" aria-label="Travel status" onchange="tsInlineChange(${Number(l.Id)},this)">
+    <select class="ts-sel ts-sel-inline ${grp}" data-lead="${Number(l.Id)}" aria-label="Travel status" onchange="tsInlineChange(${Number(l.Id)},this)">
       ${TS_STATUSES.map(s=>`<option value="${s[0]}"${st.key===s[0]?' selected':''}>${s[2]} ${esc(s[1])}</option>`).join('')}
     </select>${l.TravelStatus==='follow_up_pending'&&l.TravelFollowUpAt?`<span class="ts-due ${f==='overdue'?'overdue':f==='today'?'today':''}">⏰ ${esc(String(l.TravelFollowUpAt).slice(0,10))}</span>`:''}
   </div>`;

@@ -6249,11 +6249,17 @@ async function onLiveLeadUpdatedEvent(msg){
         if(v&&![...sel.options].some(o=>o.value===v)) sel.insertAdjacentHTML('beforeend',`<option value="${esc(v)}">${esc(v)}</option>`);
         if(document.activeElement!==sel) sel.value=v;
       });
+      // Inquiry status dropdowns (Leads list/table) follow too — value and colour.
+      if('TravelStatus' in (row||{}) && typeof tsStatusOf==='function') document.querySelectorAll(`select.ts-sel-inline[data-lead="${id}"]`).forEach(sel=>{
+        if(document.activeElement===sel) return;
+        const st=tsStatusOf(lead); sel.value=st.key; sel.className=`ts-sel ts-sel-inline ${TS_BY_KEY[st.key][3]}`;
+      });
     }catch(e){}
   }
   if(!changed) return;
   _cacheLeads(allLeads);
   if(typeof tsRefreshCategoryViews==='function') tsRefreshCategoryViews();
+  if(fields.includes('TravelStatus')&&!$id('pageTvstatus')?.classList.contains('hidden')&&typeof renderTravelStatus==='function') renderTravelStatus();
   if(_reportsPage==='category'&&!$id('pageReports')?.classList.contains('hidden')) renderReportsCategory();
 }
 // Hot-lead auto-reassign (worker.js hotReallocProcessClient) — only the new owner is alerted.
@@ -22586,7 +22592,7 @@ async function deleteHospBooking(id){
 <script src="hospitality-pro.js?v=1"></script>
 <script src="call-score.js?v=8"></script>
 <script src="followup-status.js?v=1"></script>
-<script src="travel-status.js?v=5"></script>
+<script src="travel-status.js?v=6"></script>
 <script src="travel-view.js?v=7"></script>
 <script src="staff-performance.js?v=1"></script>
 <script>

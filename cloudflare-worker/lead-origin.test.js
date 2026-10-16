@@ -152,3 +152,58 @@ test('clearing a category is checked too; edits without a category are left alon
   assert.equal(other.status, 200);
   assert.equal(other.broadcasts.length, 0);
 });
+
+/* ── Mis-titled or dropdown-typed travel columns are repaired so writes stick ── */
+// A fake NocoDB that, like the real one, answers 200 but ignores a value for a title it has no
+// column for, or for a SingleSelect whose options don't include it.
+function fakeNoco(schema){
+  const rows={41:{Id:41}}, metaCalls=[];
+  const col=t=>schema.find(c=>c.title===t);
+  const accept=(k, v)=>{ const c=col(k); if(!c) return false; if(c.uidt==='SingleSelect') return (c.options||[]).includes(v)||v===''; return true; };
+  const fetch=async (url, opts={})=>{
+    const u=String(url), m=opts.method||'GET';
+    if(u.includes(`/meta/tables/${LEADS}/fields`) && m==='GET') return Response.json({list:schema.map((c,i)=>({id:'f'+i, column_name:c.column_name||c.title, ...c}))});
+    if(u.includes(`/meta/tables/${LEADS}/fields`) && m==='POST'){ const b=JSON.parse(opts.body); metaCalls.push('create '+b.title); schema.push({title:b.title, uidt:b.uidt}); return Response.json({}); }
+    const mf=u.match(/\/meta\/(?:fields|columns)\/f(\d+)/);
+    if(mf && m==='PATCH'){ const b=JSON.parse(opts.body); metaCalls.push(`change ${schema[mf[1]].title} -> ${b.title} (${b.uidt})`); Object.assign(schema[mf[1]], {title:b.title, uidt:b.uidt}); return Response.json({}); }
+    if(u.includes('/api/v2/meta/tables/')) return Response.json({columns:schema});
+    if(u.endsWith(`/tables/${LEADS}/records`) && m==='PATCH'){
+      [].concat(JSON.parse(opts.body)).forEach(p=>{ for(const [k,v] of Object.entries(p)) if(k!=='Id' && accept(k, v)) rows[p.Id][k]=v; });
+      return Response.json([{Id:41}]);
+    }
+    const one=u.match(new RegExp(`/tables/${LEADS}/records/(\\d+)`));
+    if(one) return Response.json(rows[one[1]]||{});
+    return Response.json({list:[]});
+  };
+  return {fetch, rows, metaCalls, schema};
+}
+async function patchVia(fake, patch){
+  const realFetch=globalThis.fetch; globalThis.fetch=fake.fetch;
+  try{
+    const session=await token(env.SESSION_SIGNING_KEY, 7, 'staff@biz.com');
+    const r=await worker.fetch(new Request(`https://worker.test/nocodb/api/v2/tables/${LEADS}/records`, {method:'PATCH',
+      headers:{Authorization:`Bearer ${session}`, 'Content-Type':'application/json'}, body:JSON.stringify(patch)}), env, {});
+    return {status:r.status, data:await r.json().catch(()=>null)};
+  }finally{ globalThis.fetch=realFetch; }
+}
+
+test('a hand-made "Service Category" / "Travel Status" column is retitled and the values stick', async ()=>{
+  const fake=fakeNoco([{title:'Name', uidt:'SingleLineText'}, {title:'Service Category', column_name:'service_category', uidt:'SingleLineText'},
+    {title:'Travel Status', column_name:'travel_status', uidt:'SingleLineText'}]);
+  const r=await patchVia(fake, {Id:41, ServiceCategory:'Hotel', TravelStatus:'quote_sent', TravelStatusAt:'2026-10-16T10:00:00Z'});
+  assert.equal(r.status, 200);
+  assert.equal(fake.rows[41].ServiceCategory, 'Hotel');
+  assert.equal(fake.rows[41].TravelStatus, 'quote_sent');
+  assert.ok(fake.metaCalls.includes('change Service Category -> ServiceCategory (SingleLineText)'));
+  assert.ok(fake.metaCalls.includes('change Travel Status -> TravelStatus (SingleLineText)'));
+});
+
+test('a Single-Select category column without the option is turned into text and the value sticks', async ()=>{
+  const fake=fakeNoco([{title:'ServiceCategory', uidt:'SingleSelect', options:['Ticket','Package','Hotel','Other Services']},
+    {title:'TravelStatus', uidt:'SingleLineText'}, {title:'TravelFollowUpAt', uidt:'Date'}, {title:'TravelStatusAt', uidt:'SingleLineText'},
+    {title:'TravelStatusBy', uidt:'SingleLineText'}, {title:'TravelStatusLog', uidt:'LongText'}]);
+  const r=await patchVia(fake, {Id:41, ServiceCategory:'Umrah and Hajj'});
+  assert.equal(r.status, 200);
+  assert.equal(fake.rows[41].ServiceCategory, 'Umrah and Hajj');
+  assert.deepEqual(fake.metaCalls, ['change ServiceCategory -> ServiceCategory (SingleLineText)']); // the Date follow-up column is fine as it is
+});

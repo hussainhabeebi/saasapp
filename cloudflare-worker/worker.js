@@ -1407,26 +1407,71 @@ export function channelVisibilityClause(assignments, email){
   return `(InboxId,blank)~or${others.length>1?`(${neqParts})`:neqParts}`;
 }
 
-let _leadsServiceCategoryReady=false;
-// A lead write's `fields` must actually be stored: NocoDB has been seen to drop a later-added
-// column's value (ServiceCategory) on insert, and the dashboard can't tell — it would look saved
-// until the next refresh. `rows` is [{Id, field:value…}] as sent. Each row is read back, any lost
-// value is written again, and anything still lost after that is returned (empty = all stored).
+// Travel lead fields the dashboard writes (Service Category, the inquiry status board) and the
+// column type each needs. These were added to the Leads table after it was set up, and NocoDB
+// silently ignores a write — returning 200 — when the column it targets is missing, carries a
+// different title (a hand-made "Service Category" / "Travel Status"), or is a Single-Select whose
+// fixed options don't include the value (the category list has grown well past the first four).
+// The value then never reaches the table and every refresh shows "No category" / "New inquiry".
+const LEAD_TRAVEL_FIELDS={ServiceCategory:'SingleLineText', TravelStatus:'SingleLineText', TravelFollowUpAt:'SingleLineText',
+  TravelStatusAt:'SingleLineText', TravelStatusBy:'SingleLineText', TravelStatusLog:'LongText'};
+// Read back after a write; the *At/*By/Log fields are bookkeeping and are not re-checked.
+const LEAD_VERIFY_FIELDS=['ServiceCategory','TravelStatus','TravelFollowUpAt'];
+let _leadsTravelFieldsReady=false;
+// Makes each travel field a column with exactly that title and a type that takes any text: retitles
+// a near-match (normalised title/column_name, same approach as ecomRepairFieldType), converts a
+// select/other type to text, or creates it. Checked once per Worker isolate unless `force`.
+// Returns the titles it changed.
+async function leadsRepairTravelFields(env, force=false){
+  if(_leadsTravelFieldsReady && !force) return [];
+  const r=await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`);
+  if(!r.ok) return [];
+  const list=(await r.json().catch(()=>({}))).list||[];
+  const norm=v=>String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const okType=(title, uidt)=>uidt==='SingleLineText'||uidt==='LongText'||(/At$/.test(title)&&(uidt==='Date'||uidt==='DateTime'));
+  const changed=[];
+  for(const [title, uidt] of Object.entries(LEAD_TRAVEL_FIELDS)){
+    const field=list.find(f=>f.title===title)||list.find(f=>norm(f.title)===norm(title)||norm(f.column_name)===norm(title));
+    if(field && field.title===title && okType(title, field.uidt)) continue;
+    let ok;
+    if(!field){
+      ok=(await ncFetch(env, `api/v2/meta/tables/${DEFAULT_LEADS_TABLE}/fields`, {method:'POST', body:{column_name:title, title, uidt}})).ok;
+    }else{
+      const body={title, column_name:field.column_name||title, uidt:okType(title, field.uidt)?field.uidt:uidt};
+      let pr=await ncFetch(env, `api/v2/meta/fields/${field.id}`, {method:'PATCH', body});
+      if(!pr.ok) pr=await ncFetch(env, `api/v2/meta/columns/${field.id}`, {method:'PATCH', body});
+      ok=pr.ok;
+    }
+    if(ok) changed.push(title);
+    else console.error('[leads] could not repair column', title, field?`(found "${field.title}", ${field.uidt})`:'(missing)');
+  }
+  _leadsTravelFieldsReady=true;
+  if(changed.length){
+    console.warn('[leads] repaired travel columns:', changed.join(', '));
+    await new Promise(res=>setTimeout(res, 1500)); // NocoDB's schema cache catches up with the change
+  }
+  return changed;
+}
+const leadFieldValue=(k, v)=>{ const s=String(v??'').trim(); return k==='TravelFollowUpAt'?s.slice(0,10):s; };
+// A lead write's `fields` must actually be stored, or the dashboard shows a value a refresh undoes.
+// `rows` is [{Id, field:value…}] as sent. Each row is read back; anything lost is written again —
+// after repairing the columns — and anything still lost after that is returned (empty = all stored).
 async function leadsVerifyFields(env, rows, fields){
-  const want=rows.map(r=>({Id:Number(r?.Id), vals:Object.fromEntries(fields.filter(f=>r&&f in r).map(f=>[f, String(r[f]??'').trim()]))}))
+  const want=rows.map(r=>({Id:Number(r?.Id), vals:Object.fromEntries(fields.filter(f=>r&&f in r).map(f=>[f, leadFieldValue(f, r[f])]))}))
     .filter(r=>r.Id && Object.keys(r.vals).length).slice(0,100);
   const lostNow=async ()=>{
     const out=[];
     for(const w of want){
       const rr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${w.Id}?fields=Id,${Object.keys(w.vals).join(',')}`);
       const row=rr.ok?await rr.json().catch(()=>({})):{};
-      const lost=Object.entries(w.vals).filter(([k,v])=>String(row?.[k]??'').trim()!==v);
+      const lost=Object.entries(w.vals).filter(([k,v])=>leadFieldValue(k, row?.[k])!==v);
       if(lost.length) out.push({Id:w.Id, ...Object.fromEntries(lost)});
     }
     return out;
   };
   const lost=await lostNow();
   if(!lost.length) return [];
+  await leadsRepairTravelFields(env, true);
   await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:lost});
   console.warn('[leads] re-saved fields NocoDB dropped:', JSON.stringify(lost));
   for(const pt of lost){ try{ await chatsV2ApplyLeadPatch(env, pt.Id, pt, {broadcast:engineBroadcastUpdate}); }catch(e){} }
@@ -1562,9 +1607,13 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   // sure the column exists first — NocoDB rejects the whole write for an unknown field, which used
   // to leave the category unsaved (and missing from the reports) whenever the browser's own
   // ensureLeadsField hadn't run yet. Checked once per Worker isolate.
-  if(!_leadsServiceCategoryReady && (method==='PATCH'||method==='POST') && body
-     && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body.includes('"ServiceCategory"')){
-    try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
+  // Leads list reads and travel-field writes first make sure those columns are right (once per
+  // isolate), so a mis-titled or select-typed column is fixed before it can swallow a value — and
+  // a value already stored under a hand-made title is read back under the title the app uses.
+  const isLeadsRecords=upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`;
+  const writesTravelField=(method==='PATCH'||method==='POST') && isLeadsRecords && !!body && Object.keys(LEAD_TRAVEL_FIELDS).some(f=>body.includes(`"${f}"`));
+  if(!_leadsTravelFieldsReady && (writesTravelField || (method==='GET' && isLeadsRecords))){
+    try{ await leadsRepairTravelFields(env); }catch(e){ console.error('[leads] travel column check failed:', e.message); }
   }
 
   let r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
@@ -1580,27 +1629,28 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
   }
   let data=await r.text();
 
-  // A lead's Service Category (set by anyone — owner, admin or staff — from Add Lead, Edit Lead, the
-  // Leads table or Chats) must really be stored on the lead before the browser is told it saved.
-  // NocoDB has been seen to drop it on insert (every new lead then showed "No category"), so the
-  // rows are read back and repaired here; a value that still won't stick is reported as an error so
-  // the dashboard puts the old one back instead of showing a category that a refresh would undo.
-  // Then every other open dashboard on the account is told, so an admin sees a teammate's change.
-  if(r.ok && (method==='POST'||method==='PATCH') && upstreamPath===`api/v2/tables/${DEFAULT_LEADS_TABLE}/records` && body && body.includes('"ServiceCategory"')){
-    let rows=[];
+  // A lead's Service Category and inquiry status (set by anyone — owner, admin or staff — from Add
+  // Lead, Edit Lead, the Leads table, the Status Board or Chats) must really be stored on the lead
+  // before the browser is told it saved: the rows are read back and repaired here, and a value that
+  // still won't stick is reported as an error so the dashboard puts the old one back instead of
+  // showing one a refresh would undo. Then every other open dashboard on the account is told, so an
+  // admin sees a teammate's change.
+  if(r.ok && writesTravelField){
+    let rows=[], fields=[];
     try{
       const sent=[].concat(JSON.parse(body));
       const ids=method==='POST'?[].concat(JSON.parse(data||'null')).map(x=>x?.Id):sent.map(x=>x?.Id);
-      rows=sent.map((x,i)=>({...x, Id:ids[i]})).filter(x=>x.Id && 'ServiceCategory' in x);
-      // A new lead without a category has nothing to keep.
-      if(method==='POST') rows=rows.filter(x=>String(x.ServiceCategory??'').trim());
-      const stillLost=await leadsVerifyFields(env, rows, ['ServiceCategory']);
+      fields=LEAD_VERIFY_FIELDS.filter(f=>sent.some(x=>x&&f in x));
+      rows=sent.map((x,i)=>({...x, Id:ids[i]})).filter(x=>x.Id && fields.some(f=>f in x));
+      // A new lead only has what it was created with to keep.
+      if(method==='POST') rows=rows.filter(x=>fields.some(f=>String(x[f]??'').trim()));
+      const stillLost=await leadsVerifyFields(env, rows, fields);
       if(stillLost.length){
-        console.error('[leads] ServiceCategory would not save:', JSON.stringify(stillLost));
-        if(method==='PATCH') return json({error:'The category could not be saved — please try again.'}, 502);
+        console.error('[leads] travel fields would not save:', JSON.stringify(stillLost));
+        if(method==='PATCH') return json({error:'This change could not be saved — please try again.', lost:stillLost}, 502);
       }
-    }catch(e){ console.error('[leads] ServiceCategory check failed:', e.message); }
-    if(rows.length) await engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:rows.map(x=>Number(x.Id)), fields:['ServiceCategory'], by:String(payload.email||''), at:new Date().toISOString()});
+    }catch(e){ console.error('[leads] travel field check failed:', e.message); }
+    if(rows.length && fields.length) await engineBroadcastUpdate(env, payload.cid, {type:'lead_updated', lead_ids:rows.map(x=>Number(x.Id)), fields, by:String(payload.email||''), at:new Date().toISOString()});
   }
 
   // The generic Settings re-fetch must not echo the client-level Sarvam credential back into the
