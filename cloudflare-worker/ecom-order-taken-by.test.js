@@ -42,3 +42,31 @@ test('staff report: orders per staff, drafts skipped, cancelled counted apart, d
   assert.equal(day.total_orders, 2);
   assert.deepEqual(day.rows.map(r => [r.taken_by, r.orders]), [['riya@shop.in', 1], ['sam@shop.in', 1]]);
 });
+
+import { ecomAssignFields, ecomTeamList, ecomTeamEmails, ecomAssignedOrderReport } from './worker.js';
+
+test('order assignment: team list (owner first, on-leave flagged) and assignment fields', () => {
+  const cc = { ...c, team_emails: 'riya@shop.in,sam@shop.in', bot_config: JSON.stringify({ ecom_communication_style: 'baby_care' }),
+    lead_routing: JSON.stringify({ rules: { 'sam@shop.in': { onLeave: true } } }) };
+  assert.deepEqual([...ecomTeamEmails(cc)].sort(), ['owner@shop.in', 'riya@shop.in', 'sam@shop.in']);
+  const list = ecomTeamList(cc);
+  assert.equal(list[0].email, 'owner@shop.in');
+  assert.equal(list.find(m => m.email === 'sam@shop.in').on_leave, true);
+  assert.deepEqual(ecomAssignFields(cc, 'Riya@shop.in', 'owner@shop.in', NOW),
+    { assigned_to: 'riya@shop.in', assigned_to_name: 'Riya', assigned_at: '2026-10-17T10:00:00.000Z', assigned_by: 'owner@shop.in' });
+  assert.equal(ecomAssignFields(cc, '', 'owner@shop.in', NOW).assigned_to, '');
+});
+
+test('assigned-orders report: open vs done per teammate, unassigned last', () => {
+  const rows = ecomAssignedOrderReport([
+    { order_date: '2026-10-16', status: 'pending', assigned_to: 'riya@shop.in', assigned_to_name: 'Riya' },
+    { order_date: '2026-10-16', status: 'draft', assigned_to: 'riya@shop.in', assigned_to_name: 'Riya' },
+    { order_date: '2026-10-16', status: 'delivered', assigned_to: 'riya@shop.in', assigned_to_name: 'Riya' },
+    { order_date: '2026-10-16', status: 'cancelled', assigned_to: 'riya@shop.in', assigned_to_name: 'Riya' },
+    { order_date: '2026-10-16', status: 'shipped', assigned_to: 'sam@shop.in', assigned_to_name: 'Sam' },
+    { order_date: '2026-10-16', status: 'pending' },
+    { order_date: '2026-09-01', status: 'pending', assigned_to: 'sam@shop.in' },
+  ], { from: '2026-10-01' });
+  assert.deepEqual(rows.map(r => [r.name, r.total, r.open, r.done, r.cancelled]),
+    [['Riya', 3, 2, 1, 1], ['Sam', 1, 0, 1, 0], ['Unassigned', 1, 1, 0, 0]]);
+});

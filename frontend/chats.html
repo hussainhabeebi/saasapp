@@ -542,6 +542,8 @@ async function openConversation(id){
  const k0=String(lead.Id),r0=lead._v2;
  dividerAt[k0]=r0?(r0.unread_count>0?(r0.last_read_at||''):null):(unread(lead)?(readMap()[lead.Id]||''):null);
  current=lead;replyTarget=null;unseen=0;composeMode='reply';markRead(lead.Id);toParent('thread',{leadId:lead.Id});
+ // Baby Care unattended-lead reassignment counts this as the owner opening the lead (worker.js handleLeadOpened).
+ try{fetch(WORKER+'/leads/opened',{method:'POST',keepalive:true,headers:headers({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:lead.Id})}).catch(()=>{})}catch{}
  if(r0&&r0.unread_count>0){r0.unread_count=0;act('mark_read',{},[lead.Id]).catch(()=>{})}
  if(V2&&lead.NotesList===undefined)fetchNotes(lead);
  startViewing();

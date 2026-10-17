@@ -9361,11 +9361,24 @@ async function saveLeadNow(){
   if(_leadsTableView)renderLeadsTable();else renderLeadsList();
 }
 
+// Baby Care stores (Ecom → communication style) get on-leave / unopened-lead reassignment and
+// order assignment — see worker.js unattendedReallocProcessClient.
+function isBabyCareClient(){
+  if(clientRecord?.industry!=='ecommerce') return false;
+  try{ return JSON.parse(clientRecord?.bot_config||'{}')?.ecom_communication_style==='baby_care'; }catch(e){ return false; }
+}
+// Tells the Worker this person opened the lead, so it isn't reassigned as unattended. Fire and forget.
+function recordLeadOpened(id){
+  if(!id||!sessionToken||!isBabyCareClient()) return;
+  try{ fetch(`${CONFIG.WORKER_BASE}/leads/opened`,{method:'POST',keepalive:true,headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({lead_id:id})}).catch(()=>{}); }catch(e){}
+}
+
 /* ── LEAD DETAIL ── */
 function openDetail(id){
   const lead=allLeads.find(l=>l.Id===id);
   if(!lead)return;
   currentLead=lead;
+  recordLeadOpened(lead.Id);
   $id('detailName').innerHTML=esc(leadDisplayName(lead)||'Unknown')+leadOriginBadge(lead);
   $id('detailOrigin').textContent=leadOriginLine(lead);
   $id('detailSub').textContent=leadRef(lead)+(lead.ExternalRef?' ('+lead.ExternalRef+')':'')+' · '+(isIgLead(lead)?'Instagram':(lead.Phone||''))+(lead.Owner?' · '+lead.Owner:'')+' · '+( lead.Stage||'new');
@@ -11529,6 +11542,9 @@ function renderLeadRoutingSettings(){
   const cold={enabled:coldRaw.enabled===true, days:Number(coldRaw.days)||7, maxHops:Number(coldRaw.maxHops)||3};
   const hotRaw=rt.hotRealloc||{};
   const hot={enabled:hotRaw.enabled===true, minutes:Number(hotRaw.minutes)||20};
+  const babyCare=isBabyCareClient();
+  const unRaw=rt.unattended||{};
+  const unattended={enabled:unRaw.enabled===true, hours:Number(unRaw.hours)||4};
   const industry=clientRecord?.industry||'general';
   const isHosp=industry==='hospitality';
   const isTravel=industry==='travel';
@@ -11545,6 +11561,7 @@ function renderLeadRoutingSettings(){
     return `<tr style="border-top:1px solid var(--line)">
       <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(m.name||m.email)}<br><span style="font-size:11px;color:var(--muted)">${esc(m.email)}</span></td>
       <td style="padding:8px 10px"><label style="display:flex;align-items:center;gap:5px;font-size:13px"><input type="checkbox" data-email="${m.email}" data-field="inPool" ${r.inPool?' checked':''}> In pool</label></td>
+      ${babyCare?`<td style="padding:8px 10px"><label style="display:flex;align-items:center;gap:5px;font-size:13px;white-space:nowrap" title="Gets no new leads; their active leads move to someone available"><input type="checkbox" data-email="${m.email}" data-field="onLeave" ${r.onLeave?' checked':''}> 🌴 On leave</label></td>`:''}
       <td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Dubai, Abu Dhabi…" data-email="${m.email}" data-field="locations" value="${esc(locs)}" title="Comma-separated cities/areas this user handles"></td>
       ${!isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="${isHosp?'Houseboat A, Villa 2…':'Nike Air Max, Adidas…'}" data-email="${m.email}" data-field="${isHosp?'properties':'products'}" value="${esc(isHosp?props:prods)}" title="Comma-separated ${isHosp?'properties':'products/brands'} this user handles"></td>`:''}
       ${isTravel?`<td style="padding:8px 10px"><input class="form-input" style="font-size:12px;padding:4px 8px" placeholder="Package, Hotel, Ticket…" data-email="${m.email}" data-field="products" value="${esc(prods)}" title="Comma-separated service categories this user handles"></td>`:''}
@@ -11581,12 +11598,21 @@ function renderLeadRoutingSettings(){
           <thead><tr style="background:var(--hover)">
             <th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:600">Team Member</th>
             <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Round-Robin</th>
+            ${babyCare?'<th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Availability</th>':''}
             <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Locations (comma-sep)</th>
             <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">${isHosp?'Properties':'Products/Brands'}</th>
           </tr></thead>
           <tbody>${ruleRows}</tbody>
         </table>
       </div>`:`<div class="s-note" style="margin-bottom:12px">No teammates added yet. Add team members in the User Management section above first.</div>`}
+
+      ${babyCare?`<div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
+          <input type="checkbox" id="lrUnattendedEnabled" ${unattended.enabled?' checked':''}> 👀 Reassign unopened leads
+        </label>
+        <div class="s-note" style="margin-bottom:8px">A lead its owner hasn't opened (in Leads or Chats) within the set time moves to the next available teammate, who gets an alert and an email. Teammates ticked <strong>🌴 On leave</strong> above get no new leads, and their leads from the last 7 days move straight away — even with this switched off. Open orders for the lead move with it. At most 3 moves per lead, never back to someone who had it. Checked every 15 minutes.</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">After <select class="form-input" id="lrUnattendedHours" style="width:auto;padding:4px 8px">${[1,2,3,4,6,8,12,24,48].map(h=>`<option value="${h}"${unattended.hours===h?' selected':''}>${h}</option>`).join('')}</select> hours unopened</label>
+      </div>`:''}
 
       <div style="border-top:1px solid var(--line);padding-top:12px;margin-bottom:12px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;margin-bottom:6px">
@@ -11632,6 +11658,7 @@ async function saveLeadRouting(){
       const field=inp.dataset.field;
       if(!rules[email]) rules[email]={};
       if(field==='inPool') rules[email].inPool=inp.checked;
+      else if(field==='onLeave') rules[email].onLeave=inp.checked;
       else rules[email][field]=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
     });
 
@@ -11655,6 +11682,15 @@ async function saveLeadRouting(){
       enabledAt:hotEnabled?(prevHot.enabled&&prevHot.enabledAt?prevHot.enabledAt:new Date().toISOString()):''
     };
     const newRouting={...existing, enabled, modes, catchall, rules, coldRealloc, hotRealloc};
+    if($id('lrUnattendedEnabled')){
+      const prevUn=existing.unattended||{};
+      const unEnabled=$id('lrUnattendedEnabled').checked;
+      newRouting.unattended={
+        enabled:unEnabled,
+        hours:clampInt($id('lrUnattendedHours')?.value,1,72,4),
+        enabledAt:unEnabled?(prevUn.enabled&&prevUn.enabledAt?prevUn.enabledAt:new Date().toISOString()):''
+      };
+    }
     if(msg){msg.textContent='Saving…';msg.className='save-msg';}
     await patchClient({lead_routing:JSON.stringify(newRouting)});
     if(msg){msg.textContent='Saved ✓';msg.className='save-msg ok';}

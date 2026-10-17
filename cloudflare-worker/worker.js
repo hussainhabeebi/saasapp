@@ -8685,7 +8685,8 @@ async function handleEcomCreate(request, env, kind){
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   if(kind==='products') await ensureEcomProductStyleFields(env, tableId);
-  const { client_id, Id, allow_duplicate, taken_by:_tb, taken_by_name:_tbn, taken_by_at:_tba, ...fields }=body;
+  const { client_id, Id, allow_duplicate, taken_by:_tb, taken_by_name:_tbn, taken_by_at:_tba,
+    assigned_to:wantAssignee, assigned_to_name:_an, assigned_at:_aa, assigned_by:_ab, ...fields }=body;
   const c=kind==='orders' ? await getClientById(env, clientId) : null;
   // Baby Care: a second open order for the same phone within 24h is refused until staff confirm
   // it's a genuine new order (the Orders tab re-sends with allow_duplicate).
@@ -8698,6 +8699,15 @@ async function handleEcomCreate(request, env, kind){
   if(kind==='orders' && ecomIsBabyCare(c) && String(fields.status||'').toLowerCase()!=='draft'){
     const staff=await ecomStaffFromRequest(request, env, c, clientId);
     if(staff){ await ensureEcomOrderTakenByFields(env, tableId); Object.assign(fields, staff); }
+  }
+  // Baby Care: assigned to whoever the creator picked (a signed-in teammate only), else the
+  // customer's lead owner, else the creator.
+  if(kind==='orders' && ecomIsBabyCare(c)){
+    const staff=await ecomStaffFromRequest(request, env, c, clientId);
+    const picked=staff && wantAssignee!==undefined ? String(wantAssignee||'').trim().toLowerCase() : null;
+    if(picked && !ecomTeamEmails(c).has(picked)) return json({error:'That person is not on your team'}, 400);
+    const to=picked || await ecomLeadOwnerForPhone(env, c, clientId, fields.customer_phone) || staff?.taken_by || '';
+    if(to){ await ensureEcomOrderTakenByFields(env, tableId); Object.assign(fields, ecomAssignFields(c, to, staff?.taken_by||'auto')); }
   }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
@@ -8722,6 +8732,21 @@ async function handleEcomUpdate(request, env, kind){
   const { client_id, Id, ...fields }=body;
   if(kind==='orders'){
     delete fields.taken_by; delete fields.taken_by_name; delete fields.taken_by_at;
+    const wantAssignee=fields.assigned_to;
+    for(const k of ECOM_ORDER_ASSIGN_FIELDS) delete fields[k];
+    // Baby Care: (re)assigning an order needs a signed-in teammate, recorded as assigned_by.
+    if(wantAssignee!==undefined){
+      const c=await getClientById(env, clientId);
+      if(!ecomIsBabyCare(c)) return json({error:'Order assignment is only available for Baby Care stores'}, 400);
+      const staff=await ecomStaffFromRequest(request, env, c, clientId);
+      if(!staff) return json({error:'Sign in to the dashboard to assign orders'}, 401);
+      const to=String(wantAssignee||'').trim().toLowerCase();
+      if(to && !ecomTeamEmails(c).has(to)) return json({error:'That person is not on your team'}, 400);
+      if(to!==String(existing.assigned_to||'').trim().toLowerCase()){
+        await ensureEcomOrderTakenByFields(env, tableId);
+        Object.assign(fields, ecomAssignFields(c, to, staff.taken_by));
+      }
+    }
     // Baby Care: staff confirming a chat draft (draft → pending/received/…) took that order.
     const was=String(existing.status||'').toLowerCase(), now=String(fields.status||'').toLowerCase();
     if(was==='draft' && now && now!=='draft' && now!=='cancelled' && !existing.taken_by){
@@ -11316,7 +11341,12 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
           ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
           : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'].filter(Boolean).join('\n')
   };
-  if(ecomIsBabyCare(c)){ await ensureEcomOrderTakenByFields(env, ordersTable); Object.assign(body, ecomSystemTakenBy(ECOM_TAKEN_BY_BOT)); }
+  if(ecomIsBabyCare(c)){
+    await ensureEcomOrderTakenByFields(env, ordersTable);
+    Object.assign(body, ecomSystemTakenBy(ECOM_TAKEN_BY_BOT));
+    const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+    if(owner) Object.assign(body, ecomAssignFields(c, owner, 'auto'));
+  }
   // Baby Care: the same items confirmed again by the same phone within 24h (a double "yes", a
   // re-run of the flow) completes nothing new — the open order stands and the draft is closed off.
   if(ecomIsBabyCare(c)){
@@ -11340,6 +11370,8 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
       if(draft && draft.status==='draft'){
         const staffNotes=String(draft.notes||'').replace(ECOM_DRAFT_ORDER_NOTE,'').trim();
         const {order_id:_ignored, ...rest}=body;
+        // Someone already made this draft theirs — the confirmation doesn't take it away.
+        if(draft.assigned_to) for(const k of ECOM_ORDER_ASSIGN_FIELDS) delete rest[k];
         // Keep a total/name staff (or the chat) already put on the draft when the final seed has none.
         if(!(Number(rest.total)>0) && Number(draft.total)>0){ rest.total=draft.total; rest.currency=draft.currency||rest.currency; }
         if(seed.customerName) rest.customer_name=seed.customerName;
@@ -11555,6 +11587,12 @@ async function engineSyncDraftChatOrder(env, clientId, phone, name, prevSeed, ne
       return existing.Id;
     }
     const fields=ecomDraftOrderFields(nextSeed);
+    // Baby Care: a new draft is the lead owner's to follow up.
+    const c=await getClientById(env, clientId).catch(()=>null);
+    if(ecomIsBabyCare(c)){
+      const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+      if(owner){ await ensureEcomOrderTakenByFields(env, ordersTable); Object.assign(fields, ecomAssignFields(c, owner, 'auto')); }
+    }
     const body={client_id:clientId, order_id:'ORD-'+Date.now(), customer_phone:phone,
       order_date:new Date().toISOString().slice(0,10), status:'draft', notes:ECOM_DRAFT_ORDER_NOTE,
       ...fields, customer_name:fields.customer_name||name||'', items:fields.items||'Order in progress (WhatsApp chat)'};
@@ -11767,6 +11805,41 @@ export function ecomFindDuplicateOrder(orders, candidate, {now=Date.now(), sameI
 export const ECOM_TAKEN_BY_BOT='ai_bot';
 export const ECOM_TAKEN_BY_STORE='store_page';
 export const ECOM_ORDER_TAKEN_BY_FIELDS=['taken_by','taken_by_name','taken_by_at'];
+/* Baby Care: "Assigned to" — the staff member responsible for an order (follow-up, packing,
+   delivery). Separate from who took it. Set automatically to the customer's lead owner when the
+   order is created (or the creator, for a manual order with no lead owner), and changed from the
+   Orders tab by a signed-in teammate — assigned_by records who made each change. An unattended-
+   lead reassignment moves the lead's open orders along with it. */
+export const ECOM_ORDER_ASSIGN_FIELDS=['assigned_to','assigned_to_name','assigned_at','assigned_by'];
+const ECOM_ORDER_STAFF_FIELDS=[...ECOM_ORDER_TAKEN_BY_FIELDS, ...ECOM_ORDER_ASSIGN_FIELDS];
+// Logins an order can be assigned to: the account owner + every teammate.
+export function ecomTeamEmails(c){
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  return new Set([owner, ...String(c?.team_emails||'').split(',').map(e=>e.trim().toLowerCase())].filter(Boolean));
+}
+export function ecomAssignFields(c, email, by, now=new Date()){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return {assigned_to:'', assigned_to_name:'', assigned_at:now.toISOString(), assigned_by:String(by||'').slice(0,140)};
+  return {assigned_to:e, assigned_to_name:ecomStaffTakenBy(c, e).taken_by_name, assigned_at:now.toISOString(), assigned_by:String(by||'').slice(0,140)};
+}
+// Team list for the Orders tab's assignment picker (owner first), with who's on leave.
+export function ecomTeamList(c){
+  const away=staffOnLeave(c);
+  const owner=String(c?.authentik_email||'').trim().toLowerCase();
+  return [...ecomTeamEmails(c)].map(e=>({email:e, name:ecomStaffTakenBy(c, e).taken_by_name, owner:e===owner, on_leave:away.has(e)}))
+    .sort((a,b)=>(b.owner-a.owner)||a.name.localeCompare(b.name));
+}
+// The customer's lead owner, when they're still on the team — who an order is assigned to by default.
+async function ecomLeadOwnerForPhone(env, c, clientId, phone){
+  const key=ecomPhoneKey(phone);
+  if(!key) return '';
+  try{
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(Phone,like,%${ecomSanitizeFilterValue(key)})`)}&fields=Id,Phone,Owner&limit=5`);
+    const list=r.ok?((await r.json().catch(()=>({})))?.list||[]):[];
+    const owner=String(list.find(l=>ecomPhoneKey(l.Phone)===key)?.Owner||'').trim().toLowerCase();
+    return ecomTeamEmails(c).has(owner)?owner:'';
+  }catch(e){ return ''; }
+}
 export function ecomStaffTakenBy(c, email, now=new Date()){
   const e=String(email||'').trim().toLowerCase();
   if(!e) return null;
@@ -11794,7 +11867,7 @@ async function ensureEcomOrderTakenByFields(env, tableId){
     if(!r.ok) return;
     const names=new Set((d.list||[]).map(f=>f.title));
     let ok=true;
-    for(const title of ECOM_ORDER_TAKEN_BY_FIELDS){
+    for(const title of ECOM_ORDER_STAFF_FIELDS){
       if(names.has(title)) continue;
       const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
       if(!cr.ok) ok=false;
@@ -11826,6 +11899,25 @@ export function ecomStaffOrderReport(orders, {from='', to=''}={}){
   const list=[...rows.values()].sort((a,b)=>b.orders-a.orders||a.name.localeCompare(b.name));
   return {total_orders:total, rows:list};
 }
+// Orders each teammate is responsible for (assigned_to): open = still to fulfil
+// (draft/pending/received/processing), done = shipped/delivered, cancelled apart. Same date range.
+export function ecomAssignedOrderReport(orders, {from='', to=''}={}){
+  const rows=new Map();
+  for(const o of orders||[]){
+    const day=String(o?.order_date||o?.CreatedAt||'').slice(0,10);
+    if(from && (!day || day<from)) continue;
+    if(to && (!day || day>to)) continue;
+    const st=String(o?.status||'pending').toLowerCase();
+    const key=String(o?.assigned_to||'').trim().toLowerCase();
+    if(!rows.has(key)) rows.set(key, {assigned_to:key, name:key?String(o?.assigned_to_name||key.split('@')[0]):'Unassigned', total:0, open:0, done:0, cancelled:0});
+    const r=rows.get(key);
+    if(o?.assigned_to_name) r.name=String(o.assigned_to_name);
+    if(st==='cancelled'){ r.cancelled++; continue; }
+    r.total++;
+    if(st==='shipped'||st==='delivered'||st==='completed') r.done++; else r.open++;
+  }
+  return [...rows.values()].sort((a,b)=>(!a.assigned_to)-(!b.assigned_to)||b.open-a.open||b.total-a.total||a.name.localeCompare(b.name));
+}
 // GET /ecom/orders/staff-report?client_id=&from=&to= — session-gated. Owners / admins see every
 // staff member; anyone else only their own row.
 async function handleEcomStaffOrderReport(request, env){
@@ -11841,15 +11933,16 @@ async function handleEcomStaffOrderReport(request, env){
   await ensureEcomOrderTakenByFields(env, ordersTable);
   const all=[];
   for(let page=0; page<20; page++){
-    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_date,CreatedAt,status,total,taken_by,taken_by_name&limit=1000&offset=${page*1000}`);
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_date,CreatedAt,status,total,taken_by,taken_by_name,assigned_to,assigned_to_name&limit=1000&offset=${page*1000}`);
     if(!r.ok) return json({error:'Could not read orders'},502);
     const list=(await r.json().catch(()=>({})))?.list||[];
     all.push(...list);
     if(list.length<1000) break;
   }
   const report=ecomStaffOrderReport(all, {from, to});
+  report.assigned_rows=ecomAssignedOrderReport(all, {from, to});
   const me=String(auth.payload.email||'').trim().toLowerCase();
-  if(!auth.fullAccess) report.rows=report.rows.filter(r=>r.taken_by===me);
+  if(!auth.fullAccess){ report.rows=report.rows.filter(r=>r.taken_by===me); report.assigned_rows=report.assigned_rows.filter(r=>r.assigned_to===me); }
   return json({ok:true, from, to, full_access:auth.fullAccess, me, ...report});
 }
 async function ecomRecentOrdersForPhone(env, ordersTable, clientId, phone){
@@ -11945,7 +12038,8 @@ async function handleEcomOrdersInsights(request, env){
     const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_id,customer_phone,status&limit=1000`);
     orders=r.ok?((await r.json().catch(()=>({})))?.list||[]):[];
   }
-  return json({ok:true, leads:insights, warm_leads:ecomWarmLeads(insights, orders), warm_min_interactions:ECOM_WARM_MIN_INTERACTIONS});
+  return json({ok:true, leads:insights, warm_leads:ecomWarmLeads(insights, orders), warm_min_interactions:ECOM_WARM_MIN_INTERACTIONS,
+    team:ecomTeamList(auth.c), me:String(auth.payload.email||'').trim().toLowerCase(), full_access:auth.fullAccess});
 }
 // GET /ecom/orders/session?client_id=&Id= — the chat session behind one order: when it started,
 // how many messages each side sent, how long it took to order, and the last few messages.
@@ -15289,16 +15383,19 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
   // ── Priority 0: channel inbox assignment — exclusive, so it bypasses every other rule, applies
   // whether or not lead routing is switched on, and also claims existing leads from that channel
   // (a lead that arrived before the channel was assigned moves to its user on its next message).
+  const routing=engineGetLeadRouting(c);
+  // Baby Care: a teammate marked On leave gets no new leads (unattendedReallocProcessClient moves
+  // the ones they already have).
+  const away=staffOnLeave(c, routing);
   const channelOwner=await engineChannelOwner(env, clientId, state?.inboxId);
-  if(channelOwner){
+  if(channelOwner && !away.has(channelOwner)){
     const current=String(leadBody.Owner||state?.lead?.Owner||'').trim().toLowerCase();
     if(current!==channelOwner) leadBody.Owner=channelOwner;
     return;
   }
   if(!isNewLead || leadBody.Owner) return; // already assigned or not new
 
-  const routing=engineGetLeadRouting(c);
-  const staff=engineRoutableStaffEmails(c);
+  const staff=new Set([...engineRoutableStaffEmails(c)].filter(e=>!away.has(e)));
   const isStaff=e=>staff.has(String(e||'').trim().toLowerCase());
 
   if(!routing.enabled){
@@ -15377,6 +15474,11 @@ async function engineAssignLeadOwner(env, c, clientId, leadBody, state, isNewLea
 
   // ── Priority 4: Catch-all ────────────────────────────────────────────────────
   if(isStaff(routing.catchall)){ leadBody.Owner=String(routing.catchall).trim().toLowerCase(); return; }
+  // Baby Care: catch-all teammate on leave → the next available teammate covers for them.
+  if(routing.catchall && away.has(String(routing.catchall).trim().toLowerCase())){
+    const cover=coldReallocPickNext(unattendedPool(c, routing), routing.catchall, []);
+    if(cover){ leadBody.Owner=cover; return; }
+  }
   // Otherwise: Unmatched — lead stays without an Owner
 }
 
@@ -16235,6 +16337,188 @@ export async function runHotLeadReassignForAllClients(env, now=new Date()){
       if(!hotReallocSettings(engineGetLeadRouting(c)).enabled) continue;
       try{ await hotReallocProcessClient(env, c, now); }
       catch(e){ console.error('[hot-realloc] failed for client', c.Id, e.message); }
+    }
+    if(rows.length<200) break;
+    page++;
+  }
+}
+
+/* ── BABY CARE: UNATTENDED-LEAD REASSIGN + STAFF ON LEAVE ───────────────────────────────────────
+   Couplo (Oct 2026): a lead assigned to a teammate who is on leave, or who simply never opens it,
+   sat unattended. Baby Care stores (ecom_communication_style 'baby_care') now get, in Settings →
+   🔀 Lead Routing:
+     • "On leave" per teammate (lead_routing.rules[email].onLeave) — routing never hands them a new
+       lead, and the sweep below moves their active leads to someone available.
+     • "Reassign unopened leads" (lead_routing.unattended = {enabled, hours, enabledAt}) — a lead its
+       owner hasn't opened (Leads detail pane or Chats thread → POST /leads/opened → D1 lead_opens)
+       within `hours` of getting it moves to the next available teammate.
+   Same pool rules as hot/cold reallocation (round-robin "In pool" members when two or more are
+   available, otherwise every routable teammate), never back to someone who already had it, at
+   most UNATTENDED_MAX_HOPS moves per lead, lead_owner_tracking for owner_since. Only leads active
+   in the last UNATTENDED_ACTIVE_DAYS days are considered, so it never reshuffles an old backlog.
+   The lead's open Baby Care orders that were assigned to the old owner follow it. ── */
+export const UNATTENDED_MAX_HOPS=3;
+export const UNATTENDED_ACTIVE_DAYS=7;
+const UNATTENDED_NOTE_AUTHOR='auto-allocation';
+export function unattendedReallocSettings(routing){
+  const r=routing?.unattended||{};
+  const hours=Math.round(Number(r.hours));
+  return {enabled:r.enabled===true, hours:hours>=1&&hours<=72?hours:4, enabledAt:r.enabledAt||''};
+}
+// Teammates marked On leave (Baby Care only — other stores never read this).
+export function staffOnLeave(c, routing=engineGetLeadRouting(c)){
+  if(!ecomIsBabyCare(c)) return new Set();
+  return new Set(Object.entries(routing?.rules||{}).filter(([,r])=>r?.onLeave===true).map(([e])=>String(e).trim().toLowerCase()));
+}
+// Who leads may move to: routable staff minus anyone on leave; "In pool" members when ≥2 of them.
+export function unattendedPool(c, routing=engineGetLeadRouting(c)){
+  const away=staffOnLeave(c, routing);
+  const staff=[...engineRoutableStaffEmails(c)].filter(e=>!away.has(e));
+  const inPool=Object.entries(routing?.rules||{}).filter(([e,r])=>r?.inPool && staff.includes(String(e).trim().toLowerCase())).map(([e])=>String(e).trim().toLowerCase());
+  return inPool.length>=2?inPool:staff;
+}
+// 'leave' (owner is on leave), 'unopened' (owner hasn't opened it in time) or 'none'.
+export function unattendedDecide({lead, track, openedMs, cfg, onLeave, nowMs}){
+  const owner=String(lead?.Owner||'').trim().toLowerCase();
+  if(!owner || PIPELINE_TERMINAL_STAGES.has(lead?.Stage||'')) return 'none';
+  if((Number(track?.realloc_count)||0)>=UNATTENDED_MAX_HOPS) return 'none';
+  const active=Math.max(Date.parse(lead?.LastMsgAt||'')||0, Date.parse(lead?.CreatedAt||lead?.Date||'')||0, Date.parse(track?.owner_since||'')||0);
+  if(!active || nowMs-active>UNATTENDED_ACTIVE_DAYS*DAY_MS) return 'none';
+  if(onLeave?.has(owner)) return 'leave';
+  if(!cfg?.enabled) return 'none';
+  const since=Date.parse(track?.owner_since||'')||nowMs;
+  if(since<(Date.parse(cfg.enabledAt)||Infinity)) return 'none';
+  if((Number(openedMs)||0)>=since) return 'none';
+  return nowMs-since>=cfg.hours*3600000 ? 'unopened' : 'none';
+}
+let _leadOpensSchema=null;
+function ensureLeadOpensSchema(env){
+  if(!env?.DB) return Promise.resolve();
+  if(!_leadOpensSchema) _leadOpensSchema=env.DB.prepare(`CREATE TABLE IF NOT EXISTS lead_opens (client_id INTEGER NOT NULL, lead_id INTEGER NOT NULL, email TEXT NOT NULL, first_opened_at TEXT NOT NULL, last_opened_at TEXT NOT NULL, PRIMARY KEY (client_id, lead_id, email))`).run().catch(e=>{ _leadOpensSchema=null; throw e; });
+  return _leadOpensSchema;
+}
+export async function recordLeadOpen(env, clientId, leadId, email, now=new Date()){
+  const e=String(email||'').trim().toLowerCase();
+  if(!env?.DB || !e || !leadId) return false;
+  await ensureLeadOpensSchema(env);
+  const at=now.toISOString();
+  await env.DB.prepare(`INSERT INTO lead_opens (client_id, lead_id, email, first_opened_at, last_opened_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(client_id, lead_id, email) DO UPDATE SET last_opened_at=excluded.last_opened_at`).bind(Number(clientId), Number(leadId), e, at, at).run();
+  return true;
+}
+// POST /leads/opened {lead_id} — the signed-in person opened this lead. Cheap and idempotent;
+// both dashboard.html (lead detail) and chats.html (thread) fire it and forget it.
+async function handleLeadOpened(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const body=await request.json().catch(()=>({}));
+  const leadId=parseInt(body.lead_id,10);
+  if(!leadId) return json({error:'lead_id required'}, 400);
+  if(!payload.email || !env.DB) return json({ok:true, recorded:false});
+  // Chats fires this for every store; only Baby Care uses it (unattended-lead reassignment).
+  if(!ecomIsBabyCare(await getClientById(env, payload.cid))) return json({ok:true, recorded:false});
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=Id,ClientId`);
+  const lead=r.ok?await r.json().catch(()=>null):null;
+  if(!lead || String(lead.ClientId)!==String(payload.cid)) return json({error:'Not found'}, 404);
+  await recordLeadOpen(env, payload.cid, leadId, payload.email);
+  return json({ok:true, recorded:true});
+}
+// Open Baby Care orders for this phone that were assigned to `from` now belong to `to`.
+async function ecomMoveOpenOrdersAssignment(env, c, clientId, phone, from, to){
+  try{
+    const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+    if(!ordersTable || !phone) return 0;
+    const orders=await ecomRecentOrdersForPhone(env, ordersTable, clientId, phone);
+    const move=orders.filter(o=>['draft',...ECOM_OPEN_ORDER_STATUSES].includes(String(o.status||'').toLowerCase())
+      && String(o.assigned_to||'').trim().toLowerCase()===from && ecomPhoneKey(o.customer_phone)===ecomPhoneKey(phone));
+    if(!move.length) return 0;
+    const fields=ecomAssignFields(c, to, 'auto-reassign');
+    await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:move.map(o=>({Id:o.Id, ...fields}))});
+    return move.length;
+  }catch(e){ console.error('[unattended] order reassignment failed', e.message); return 0; }
+}
+export async function unattendedReallocProcessClient(env, c, now=new Date()){
+  if(!ecomIsBabyCare(c) || !env.DB) return {moved:0};
+  const routing=engineGetLeadRouting(c);
+  const cfg=unattendedReallocSettings(routing);
+  const onLeave=staffOnLeave(c, routing);
+  if(!cfg.enabled && !onLeave.size) return {moved:0};
+  const pool=unattendedPool(c, routing);
+  if(!pool.length) return {moved:0};
+  const clientId=Number(c.Id);
+  const staff=engineRoutableStaffEmails(c);
+  const nowMs=now.getTime(), nowIso=now.toISOString();
+  const since7=new Date(nowMs-UNATTENDED_ACTIVE_DAYS*DAY_MS).toISOString();
+  const where=encodeURIComponent(`(ClientId,eq,${clientId})~and(OptOut,neq,Yes)~and(Owner,notblank)`);
+  let leads=[];
+  for(let page=1; page<=5; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&sort=-LastMsgAt&limit=200&offset=${(page-1)*200}&fields=Id,Name,Phone,Owner,Stage,NotesList,Date,CreatedAt,LastMsgAt`);
+    if(!r.ok) break;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    leads=leads.concat(list);
+    // sorted by last message: once a page ends before the active window, older pages can't qualify
+    if(list.length<200 || String(list[list.length-1]?.LastMsgAt||'')<since7) break;
+  }
+  await ensureLeadOpensSchema(env);
+  const {results:tracks}=await env.DB.prepare(`SELECT * FROM lead_owner_tracking WHERE client_id=?`).bind(clientId).all();
+  const byLead=new Map((tracks||[]).map(t=>[Number(t.lead_id), t]));
+  const {results:opens}=await env.DB.prepare(`SELECT lead_id, email, last_opened_at FROM lead_opens WHERE client_id=?`).bind(clientId).all();
+  const openedBy=new Map((opens||[]).map(o=>[`${o.lead_id}|${o.email}`, Date.parse(o.last_opened_at)||0]));
+  let moved=0;
+  for(const lead of leads){
+    const owner=String(lead.Owner||'').trim().toLowerCase();
+    if(!owner || !staff.has(owner)) continue;
+    const leadId=Number(lead.Id);
+    let track=byLead.get(leadId);
+    if(!track || track.owner!==owner){
+      // First sighting (clock from when the lead arrived) or a manual reassignment (clock from now)
+      let prev=[]; try{ prev=JSON.parse(track?.previous_owners||'[]'); }catch(e){}
+      if(track && track.owner && !prev.includes(track.owner)) prev.push(track.owner);
+      const created=Date.parse(lead.CreatedAt||lead.Date||'');
+      const since=!track && Number.isFinite(created) && created<=nowMs?new Date(created).toISOString():nowIso;
+      track={owner, owner_since:since, previous_owners:JSON.stringify(prev), realloc_count:Number(track?.realloc_count)||0};
+      await env.DB.prepare(`INSERT INTO lead_owner_tracking (client_id, lead_id, owner, owner_since, previous_owners, realloc_count, warned_at, last_realloc_at, updated_at) VALUES (?,?,?,?,?,?,NULL,NULL,?)
+        ON CONFLICT(client_id, lead_id) DO UPDATE SET owner=excluded.owner, owner_since=excluded.owner_since, previous_owners=excluded.previous_owners, warned_at=NULL, updated_at=excluded.updated_at`)
+        .bind(clientId, leadId, owner, since, track.previous_owners, track.realloc_count, nowIso).run();
+    }
+    const reason=unattendedDecide({lead, track, openedMs:openedBy.get(`${leadId}|${owner}`)||0, cfg, onLeave, nowMs});
+    if(reason==='none') continue;
+    let prev=[]; try{ prev=JSON.parse(track.previous_owners||'[]'); }catch(e){}
+    // Someone new first; for a teammate on leave, anyone available beats leaving the lead with them.
+    const next=coldReallocPickNext(pool, owner, prev)||(reason==='leave'?coldReallocPickNext(pool, owner, []):null);
+    if(!next) continue;
+    const why=reason==='leave'?`${owner} is on leave`:`not opened by ${owner} within ${cfg.hours} hour${cfg.hours===1?'':'s'}`;
+    let notes=[]; try{ notes=JSON.parse(lead.NotesList||'[]'); }catch(e){}
+    if(!Array.isArray(notes)) notes=[];
+    notes.unshift({text:`🔁 Auto-reassigned from ${owner} to ${next}: ${why}.`, date:now.toLocaleString(), ts:nowIso, author:UNATTENDED_NOTE_AUTHOR});
+    const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:leadId, Owner:next, NotesList:JSON.stringify(notes)}});
+    if(!pr.ok){ console.error('[unattended] lead patch failed', clientId, leadId, pr.status); continue; }
+    await chatsV2ApplyLeadPatch(env, leadId, {Owner:next}, {broadcast:engineBroadcastUpdate}).catch(()=>{});
+    prev.push(owner);
+    await env.DB.prepare(`UPDATE lead_owner_tracking SET owner=?, owner_since=?, previous_owners=?, realloc_count=realloc_count+1, last_realloc_at=?, updated_at=? WHERE client_id=? AND lead_id=?`)
+      .bind(next, nowIso, JSON.stringify([...new Set(prev)]), nowIso, nowIso, clientId, leadId).run();
+    await ecomMoveOpenOrdersAssignment(env, c, clientId, lead.Phone, owner, next);
+    const leadName=lead.Name||lead.Phone||`Lead #${leadId}`;
+    await engineBroadcastUpdate(env, clientId, {type:'lead_reassigned', lead_id:leadId, lead_name:leadName, to:next, from:owner, at:nowIso});
+    await coldReallocEmail(env, next, `Lead reassigned to you: ${leadName}`,
+      `<p>The lead <strong>${esc(leadName)}</strong> has been reassigned to you because it was ${esc(why)}. Please open it and reply to the customer.</p>`);
+    moved++;
+  }
+  return {moved};
+}
+export async function runUnattendedLeadReassignForAllClients(env, now=new Date()){
+  let page=1;
+  while(true){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${(page-1)*200}`);
+    if(!r.ok) break;
+    const rows=(await r.json().catch(()=>({})))?.list||[];
+    if(!rows.length) break;
+    for(const c of rows){
+      if(!ecomIsBabyCare(c)) continue;
+      const routing=engineGetLeadRouting(c);
+      if(!unattendedReallocSettings(routing).enabled && !staffOnLeave(c, routing).size) continue;
+      try{ await unattendedReallocProcessClient(env, c, now); }
+      catch(e){ console.error('[unattended] failed for client', c.Id, e.message); }
     }
     if(rows.length<200) break;
     page++;
@@ -25130,6 +25414,8 @@ async function handleEcomPublicOrder(request, env){
     if(dup) return json({ok:true, order_id:dup.order_id||String(dup.Id), duplicate:true});
     await ensureEcomOrderTakenByFields(env, ordersTable);
     Object.assign(orderBody, ecomSystemTakenBy(ECOM_TAKEN_BY_STORE));
+    const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+    if(owner) Object.assign(orderBody, ecomAssignFields(c, owner, 'auto'));
   }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
   if(!r.ok){
@@ -36149,6 +36435,7 @@ export default {
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/leads/created-via/backfill' && request.method==='POST'){ res=await handleLeadsCreatedViaBackfill(request, env); }
+      else if(url.pathname==='/leads/opened' && request.method==='POST'){ res=await handleLeadOpened(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSendCompat(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
       else if(url.pathname==='/shopify/oauth/start' && request.method==='POST'){ res=await handleShopifyOauthStart(request, env); }
@@ -36547,6 +36834,8 @@ export default {
       ctx.waitUntil(runV2NudgesForAllClients(env));
       // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.
       ctx.waitUntil(runHotLeadReassignForAllClients(env));
+      // Baby Care: leads with a teammate on leave / not opened in time (Settings → 🔀 Lead Routing).
+      ctx.waitUntil(runUnattendedLeadReassignForAllClients(env));
       ctx.waitUntil(runAutomationFlowsForAllClients(env)); ctx.waitUntil(sweepReviewRequests(env)); ctx.waitUntil(runClassicFollowupsForAllClients(env));
       // Follow-up V3 — only clients who switched it on (the classic sweep above skips them). See followup-v3.js.
       ctx.waitUntil(fv3RunForAllClients(env, FOLLOWUP_V3_DEPS).catch(e=>reportOpsError(env, 'followup v3 sweep', e)));
