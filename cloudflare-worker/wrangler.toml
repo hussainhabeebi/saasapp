@@ -204,6 +204,8 @@ STRIPE_ADDON_PRICE_IDS = "price_1TpvHaJWa5B2ayZgydjFobcB,price_1TpvIvJWa5B2ayZgh
 [ai]
 binding = "AI"
 # Secrets are configured in Cloudflare dashboard / wrangler secret put.
+# Razorpay (Indian customers' subscriptions — razorpay-billing.js, SETUP.md "Razorpay subscriptions"):
+# RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET.
 # POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
 
 # Flowvyne — visual flow builder plugin for scripted WhatsApp conversations.

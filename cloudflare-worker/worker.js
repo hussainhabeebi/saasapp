@@ -1,5 +1,6 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
+import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
@@ -88,7 +89,13 @@ const PLAN_GATED_MODULES = {
 // Stripe-price→tier sync), not something a teammate can grant themselves via the same generic
 // passthrough that saves every other Settings field. See handleNocodbPassthrough.
 // ceo_bot_enabled — CEO Bot add-on (ceo-bot.js); switched on per client by the super-admin only.
-const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled'];
+// The subscription fields below are written only by the Stripe/Razorpay sync and Admin → Billing —
+// a client session setting stripe_customer_id could otherwise open someone else's Stripe Portal,
+// and razorpay_trial_used guards the one free trial (razorpay-billing.js).
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled',
+  'plan_status','plan_name','plan_renews_at','plan_cancel_at_period_end','plan_message_limit','stripe_customer_id','stripe_subscription_id',
+  'billing_provider','razorpay_subscription_id','razorpay_customer_id','razorpay_plan_id','razorpay_status','razorpay_short_url',
+  'razorpay_trial_used','billing_admin_note'];
 // Returns null for an empty/unset/unrecognized tier — callers treat null as "unlimited", which is
 // what makes every pre-existing client (and any typo'd/future tier name) fail open, not closed.
 function getPlanLimits(planTier){
@@ -7874,6 +7881,8 @@ async function handleBillingCheckoutSubscription(request, env){
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(c.stripe_subscription_id) return json({error:'Already subscribed — manage your plan from the Billing Portal instead.'}, 400);
+  if(c.razorpay_subscription_id && !['created','cancelled','completed','expired'].includes(c.razorpay_status))
+    return json({error:'You already have a Razorpay subscription — manage or cancel it from the Billing page first.'}, 400);
   if(!c.billing_email) return json({error:'Set your Billing Email in Company Profile before subscribing.'}, 400);
 
   const customerId=await ensureStripeCustomer(env, c, payload.cid);
@@ -8070,16 +8079,25 @@ async function fulfillAddon(env, clientId, priceId, idempotencyKey){
   await patchClientFields(env, clientId, patch);
 }
 
+// billing_provider (stripe/razorpay/manual) is newer than the Stripe fields — created once per
+// isolate before the first Stripe sync writes it, so that write can never fail the webhook.
+let _billingProviderColumn=null;
+function ensureBillingProviderColumn(env){
+  if(!_billingProviderColumn) _billingProviderColumn=ensureClientColumns(env, ['billing_provider']).catch(()=>{ _billingProviderColumn=null; });
+  return _billingProviderColumn;
+}
 // Shared by both the checkout.session.completed direct-fetch path and the customer.subscription.*
 // event path, so a Subscription object is synced onto CLIENTS the same way regardless of how we
 // learned about it.
 async function syncSubscriptionFields(env, clientId, sub){
+  await ensureBillingProviderColumn(env);
   const item=sub.items?.data?.[0];
   const price=item?.price;
   // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
   // each SubscriptionItem — sub.current_period_end kept as a fallback for older-pinned accounts.
   const periodEnd=item?.current_period_end||sub.current_period_end;
   await patchClientFields(env, clientId, {
+    billing_provider:'stripe',
     stripe_subscription_id:sub.id,
     plan_status:sub.status,
     plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
@@ -8210,6 +8228,10 @@ async function handleBillingWebhook(request, env){
   if(!valid) return json({error:'Invalid signature'}, 400);
   const event=JSON.parse(rawBody);
   const obj=event.data?.object||{};
+  // Audit row for Admin → API & Webhooks (best-effort; never fails the delivery).
+  const auditClientId=obj.metadata?.client_id||obj.client_reference_id||(obj.customer?(await findClientByField(env, 'stripe_customer_id', obj.customer).catch(()=>null))?.Id:null)||null;
+  await logBillingEvent(env, {provider:'stripe', event_id:event.id, event_type:event.type, client_id:auditClientId, object_id:obj.id,
+    amount:obj.amount_paid??obj.amount_due??obj.amount_total??null, currency:obj.currency, status:obj.status, note:obj.customer?`customer ${obj.customer}`:''});
 
   if(event.type==='checkout.session.completed' && obj.mode==='payment'){
     const clientId=obj.metadata?.client_id, priceId=obj.metadata?.price_id;
@@ -8372,6 +8394,42 @@ async function handleBillingWebhook(request, env){
 
   return json({received:true});
 }
+
+/* ── Razorpay (razorpay-billing.js) — helpers it needs from here ── */
+// Every CLIENTS row, paged (Admin → Billing overview).
+async function listAllClientRecords(env){
+  const out=[];
+  for(let offset=0; offset<5000; offset+=200){
+    const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=200&offset=${offset}`);
+    if(!r.ok) throw new Error('Failed to load clients: HTTP '+r.status);
+    const data=await r.json().catch(()=>({}));
+    out.push(...(data?.list||[]));
+    if(data?.pageInfo?.isLastPage!==false || !(data?.list||[]).length) break;
+  }
+  return out;
+}
+// The live Stripe plan prices (STRIPE_PLAN_PRICE_IDS) with metadata — the source the Razorpay
+// "Import from Stripe" button copies, and what the admin overview prices Stripe MRR with.
+async function stripePlanPrices(env){
+  if(!env.STRIPE_SECRET_KEY) return [];
+  const ids=(env.STRIPE_PLAN_PRICE_IDS||'').split(',').map(s=>s.trim()).filter(id=>id && !id.startsWith('REPLACE_'));
+  const rows=await Promise.all(ids.map(async price_id=>{
+    const {ok, data}=await stripeFetch(env, 'GET', `prices/${price_id}`, {expand:['product']});
+    if(!ok||!data?.id) return null;
+    return {price_id:data.id, name:data.nickname||data.product?.name||data.id, unit_amount:data.unit_amount, currency:data.currency,
+      interval:data.recurring?.interval||'', interval_count:data.recurring?.interval_count||1, active:data.active!==false,
+      metadata:{...(data.product?.metadata||{}), ...(data.metadata||{})}};
+  }));
+  return rows.filter(Boolean);
+}
+const RZP_DEPS={
+  json, requireSession, requireAdminSession, getClientById, findClientByField, patchClientFields, ensureClientColumns,
+  listAllClients:listAllClientRecords, sendBillingEmail, esc, planTiers:PLAN_TIERS, trialDays:TRIAL_PERIOD_DAYS,
+  stripeConfigured:env=>!!env.STRIPE_SECRET_KEY, stripePlanPrices,
+  pingStripe:async env=>{ const r=await stripeFetch(env, 'GET', 'prices', {limit:1}); return {ok:r.ok, error:r.ok?'':(r.data?.error?.message||`HTTP ${r.status}`)}; },
+  pingNocodb:async env=>{ const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=1`); return {ok:r.ok, error:r.ok?'':`HTTP ${r.status}`}; },
+  appBaseUrl:env=>env.APP_BASE_URL||'', webhookBase:env=>env.WORKER_BASE_URL||'',
+};
 
 /* ── ECOMMERCE (ecom.html) — the master NocoDB token used to live directly in
    ecom.html's JS, giving anyone who viewed page source full read/write access
@@ -36453,6 +36511,9 @@ export default {
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
+      else if(url.pathname.startsWith('/billing/razorpay/')||url.pathname.startsWith('/admin/razorpay/')||url.pathname.startsWith('/admin/billing/')||url.pathname==='/admin/api-status'){
+        res=(await rzpHandleRoute(request, env, RZP_DEPS, url))||json({error:'Not found'}, 404);
+      }
       else if(url.pathname==='/admin/login' && request.method==='POST'){ res=await handleAdminLogin(request, env); }
       else if(url.pathname.startsWith('/admin/nocodb/')){ res=await handleAdminNocodbPassthrough(request, env, url.pathname.slice('/admin/nocodb/'.length)); }
       else if(url.pathname==='/admin/clients-billing' && request.method==='GET'){ res=await handleAdminClientsBilling(request, env); }
