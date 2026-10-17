@@ -2216,6 +2216,122 @@ than anything else this repo's n8n workflows hold) — keeping it isolated means
 workflow's JS can't touch the other, and the credential only needs to be granted to the one
 workflow that actually needs it.
 
+## Razorpay subscriptions (Indian customers) — `razorpay-billing.js`
+Stripe stays the gateway for everyone else. Razorpay is the INR gateway, so Indian customers can
+pay with **UPI AutoPay, RuPay / Indian cards and net-banking e-mandates**. Razorpay sends the RBI
+pre-debit notification before every recurring charge itself, so nothing extra is needed for that.
+
+**Same plans.** Each Razorpay Plan is stored in D1 (`rzp_plans`, migration `0116_razorpay_billing.sql`)
+and mapped to the same `plan_tier` (Basic / Standard / Business Intelligence / Enterprise) the
+Stripe prices sell. When a Razorpay subscription activates, the client's `plan_tier` is set from
+that mapping, so limits and modules work exactly as they do for a Stripe customer. `plan_tier` is
+never cleared on cancel: an empty tier means "legacy, unlimited", so clearing it would *grant*
+access. Change it from Admin → Billing → Manage instead.
+
+### One-time setup
+1. Razorpay Dashboard → **Subscriptions** must be enabled on your account (KYC-activated;
+   UPI AutoPay / e-mandate may need a separate activation request).
+2. Razorpay Dashboard → Account & Settings → **API Keys** → generate keys (test first, then live).
+3. Worker secrets (`cloudflare-worker/`):
+   ```
+   wrangler secret put RAZORPAY_KEY_ID        # rzp_live_… (or rzp_test_…)
+   wrangler secret put RAZORPAY_KEY_SECRET
+   wrangler secret put RAZORPAY_WEBHOOK_SECRET   # any strong random string, same as step 4
+   ```
+4. Razorpay Dashboard → Account & Settings → **Webhooks** → Add:
+   - URL: `https://leadvyne-api-proxy.leadvyne.workers.dev/billing/razorpay/webhook`
+     (Admin → **API & Webhooks** shows it with a Copy button)
+   - Secret: the same value as `RAZORPAY_WEBHOOK_SECRET`
+   - Events: `subscription.authenticated`, `subscription.activated`, `subscription.charged`,
+     `subscription.pending`, `subscription.halted`, `subscription.paused`, `subscription.resumed`,
+     `subscription.cancelled`, `subscription.completed`, `subscription.updated`
+5. Run the migration: `wrangler d1 migrations apply leadvyne-d1 --remote` (the module also creates
+   its tables lazily, so a deploy without it still works).
+6. Admin → **Plans** → **Import from Stripe (same plans)**. This creates one Razorpay Plan per Stripe
+   **INR** plan price in `STRIPE_PLAN_PRICE_IDS` with the same name, amount and interval, and
+   guesses the tier from `plan_tier` price/product metadata or the plan name. Check the Tier column,
+   then fix any blank tier. You can also link a plan you made in the Razorpay Dashboard
+   (plan id + tier) or create one from the form.
+7. Admin → **API & Webhooks** → every Razorpay secret should show ✓ and "reachable".
+
+Once there is at least one visible Razorpay plan, customers who pick **INR** on the Billing page
+see the Razorpay plans. A "Pay with Stripe" link is still there for international cards.
+
+### Customer flow
+- **Subscribe** → `POST /billing/razorpay/subscribe {plan_id}` creates a Razorpay subscription
+  (notes carry `client_id`) and redirects to Razorpay's hosted AutoPay page (`short_url`).
+  - **Free trial:** a first-time subscriber gets `TRIAL_PERIOD_DAYS` (15), the same as Stripe, via
+    `start_at`. They approve the mandate now and the first charge happens when the trial ends. The
+    trial is given once per account (`razorpay_trial_used`) and never to an account that already
+    had a Stripe subscription.
+  - A link that was never approved is reused for the same plan. A different plan cancels the old
+    link and starts a new one. The Billing page shows a "Finish setup" banner until it's approved.
+  - Razorpay's hosted page doesn't redirect back, so the Billing page pulls
+    `GET /billing/razorpay/status` whenever a subscription is still settling.
+- **Manage:** Invoices (`GET /billing/razorpay/invoices`), Change plan
+  (`POST /billing/razorpay/change-plan {plan_id, when:'now'|'cycle_end'}`), and Cancel
+  (`POST /billing/razorpay/cancel`, which cancels at the end of the cycle and keeps access until
+  then). Razorpay only allows **plan changes on card mandates**. For UPI / bank mandates the API
+  returns an error, and the customer cancels and subscribes to the new plan instead.
+- A client can't have a live Stripe and a live Razorpay subscription at the same time. Each
+  checkout refuses while the other one is active.
+
+### Status mapping (`rzpPlanStatus`)
+Razorpay statuses are written onto the same `plan_status` field Stripe uses, so every existing
+banner and badge works unchanged. The raw value is kept in `razorpay_status`.
+
+| Razorpay | plan_status |
+|---|---|
+| created (link not approved yet) | incomplete |
+| authenticated, first charge in the future | trialing |
+| active | active |
+| pending (charge failed, retrying) | past_due |
+| halted (retries exhausted) | unpaid |
+| paused | paused |
+| cancelled / completed | canceled |
+| expired | incomplete_expired |
+
+Emails (via `sendBillingEmail`, Resend) go out on trial start, each successful charge (receipt),
+`pending`, `halted` and `cancelled`. Webhooks are de-duplicated on `X-Razorpay-Event-Id`. An event
+for an older subscription can't overwrite a newer one; it's logged with the note
+`stale_subscription`.
+
+### New CLIENTS columns (auto-created on first use)
+`billing_provider` (stripe / razorpay / manual), `razorpay_subscription_id`, `razorpay_customer_id`,
+`razorpay_plan_id`, `razorpay_status`, `razorpay_short_url`, `razorpay_trial_used`,
+`billing_admin_note`. These and the existing subscription fields (`plan_status`, `plan_name`,
+`plan_renews_at`, `plan_cancel_at_period_end`, `plan_message_limit`, `stripe_customer_id`,
+`stripe_subscription_id`) are now in `PLAN_MANAGED_FIELDS`, so a client session can't write them
+through the `/nocodb/` passthrough. Before this, a client could set `stripe_customer_id` and open
+someone else's Stripe Portal.
+
+## Admin console — Billing, Plans, API & Webhooks (`admin.html`)
+- **Billing tab** (`GET /admin/billing/overview`): MRR / ARR per currency (active subscriptions,
+  normalised to a month — Stripe amounts come from the live `STRIPE_PLAN_PRICE_IDS` prices,
+  Razorpay from `rzp_plans`), paying / trialing / at-risk / cancelling / renewing-in-7-days counts,
+  gateway status, search + gateway + status filters, CSV export. **Manage** on a row opens:
+  - Stripe: Refresh from Stripe, Open Stripe Portal, Reset cycle (existing routes).
+  - Razorpay (`POST /admin/razorpay/subscription {client_id, action}`): `sync`, `pause`, `resume`,
+    `cancel_cycle_end`, `cancel_now`, `change_plan` (+ `plan_id`, `when`). There's also an
+    invoices list (`GET /admin/razorpay/invoices?client_id=`) and a "Copy mandate link" button for
+    a link that hasn't been approved yet.
+  - **Manual plan / override** (`POST /admin/billing/manual-plan {client_id, plan_tier,
+    plan_status, renews_at, plan_name, note}`) for bank-transfer / offline customers, comps and
+    corrections. It sets `billing_provider='manual'` only when there is no live gateway
+    subscription. If there is one, the next webhook will overwrite status and renewal.
+  - The client's recent billing events.
+- **Plans tab**: the Razorpay catalog (`GET/POST/PATCH /admin/razorpay/plans`,
+  `POST /admin/razorpay/plans/import-stripe`). From here you can change a plan's tier, its display
+  order, or hide it (hidden plans stay valid for existing subscribers). The tab also lists the
+  Stripe plan prices and shows which INR ones are already imported. Razorpay plans can't be edited
+  or deleted once created; to change a price, create a new plan and hide the old one.
+- **API & Webhooks tab** (`GET /admin/api-status`): for Stripe, Razorpay, NocoDB, Resend and the
+  platform secrets, it shows which secrets are set (never their values), live/test mode, and a live
+  round trip with latency. It also shows each gateway's webhook URL with the event list to
+  subscribe and when the last webhook arrived. Below that is the **billing event log**
+  (`GET /admin/billing/events?provider=&type=&client_id=`), D1 `billing_events`: every Stripe and
+  Razorpay webhook plus every admin billing action.
+
 ## AI sales rep: sentiment/objection handling, deal forecast, team ops (engine.json + notifications.json)
 Four additions on top of the original regex-only engine, aimed at closing the gap between
 "scripted chatbot" and "AI sales rep":
