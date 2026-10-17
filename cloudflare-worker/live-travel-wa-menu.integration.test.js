@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import worker, { engineHandleTravelMenu, engineHandleLiveTicketingChat, engineHandleLiveTicketCheckoutChat, ltChatFlightIntent } from './worker.js';
+import worker, { engineHandleTravelMenu, engineHandleLiveTicketingChat, engineHandleLiveTicketCheckoutChat, ltChatFlightIntent, ltChatFlightAsk, ltTravelFlowOn } from './worker.js';
 import { ltMenuDateRows } from './live-travel-wa-menu.js';
 
 class D1Statement {
@@ -69,7 +69,7 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     assert.equal(r.data.menu.enabled,true);
     assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
 
-    const c={Id:7,ta_table_ids:JSON.stringify({packages:'tpk',visas:'tvi',umrah_groups:'tum'}),industry:'travel',client_name:'Al Noor Travels',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
+    const c={Id:7,travel_flow_enabled:'Yes',ta_table_ids:JSON.stringify({packages:'tpk',visas:'tvi',umrah_groups:'tum'}),industry:'travel',client_name:'Al Noor Travels',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
     const phone='+971500000001',state={convId:'55',stage:'new',name:'Hussain Aparambil',leadId:'91'};
 
     // Other agencies / ordinary messages are untouched.
@@ -206,9 +206,60 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
   }finally{globalThis.fetch=realFetch;}
 });
 
-test('asking for flights in any common way counts as a live flight request',()=>{
-  for(const t of ['flights?','Flight','live flights','air ticket','flight details','flight prices pls','show me flights','any flights','need flight booking','cheapest flights'])
-    assert.ok(ltChatFlightIntent(t),t);
+test('with Travel Flow on, asking for flights in any common way opens the live search',()=>{
+  for(const t of ['flights?','Flight','live flights','air ticket','flight details','flight prices pls','show me flights','any flights','need flight booking','cheapest flights','Dubai to Kochi on 20 Nov'])
+    assert.ok(ltChatFlightAsk(t),t);
   for(const t of ['my flight details','flight status','what is the visa price','hi'])
-    assert.ok(!ltChatFlightIntent(t),t);
+    assert.ok(!ltChatFlightAsk(t),t);
+  // The everyday detector other agencies use is unchanged.
+  assert.equal(ltChatFlightIntent('flights?'),false);
+  assert.equal(ltChatFlightIntent('live flights'),false);
+});
+
+test('Travel Flow is optional and off by default',()=>{
+  assert.equal(ltTravelFlowOn({industry:'travel'}),false);
+  assert.equal(ltTravelFlowOn({industry:'travel',travel_flow_enabled:'No'}),false);
+  assert.equal(ltTravelFlowOn({industry:'travel',travel_flow_enabled:'Yes'}),true);
+  assert.equal(ltTravelFlowOn({industry:'ecommerce',travel_flow_enabled:'Yes'}),false,'only travel agencies');
+});
+
+test('agencies without Travel Flow keep the original bot: no menu, no buttons, booking link on pick',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch,meta=[],chatwoot=[];
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search')return new Response(JSON.stringify({fares:[{id:'FARE-1',isBookable:true,supplier:'DUFFEL',displayPrice:650,totalFare:650,currency:'AED',airline:'AI',airlineName:'Air India',flightNumber:'AI 6509',origin:'SHJ',destination:'CCJ',departureTime:'2026-12-01T20:00:00',arrivalTime:'2026-12-01T23:59:00',duration:240,stops:0}]}));
+    if(u.startsWith('https://graph.facebook.com/')){meta.push(JSON.parse(opts.body));return new Response('{}');}
+    if(u.startsWith('https://cw.test/')){chatwoot.push({content:opts.body.get?.('content'),items:opts.body.get?.('content_attributes')?JSON.parse(opts.body.get('content_attributes')).items:null});return new Response('{"id":1}');}
+    return new Response('{}',{status:404});
+  };
+  try{
+    // Even with a saved menu, nothing changes until Travel Flow is switched on.
+    let r=await call(env,session,'/live-travel/whatsapp-menu');
+    assert.equal(r.data.travel_flow,false);
+    assert.equal((await call(env,session,'/live-travel/whatsapp-menu','PUT',{menu:{...r.data.menu,enabled:true}})).status,200);
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    const c={Id:7,industry:'travel',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
+    const phone='+971500000002',state={convId:'56',stage:'new',name:'Asha'};
+    assert.equal(await engineHandleTravelMenu(env,c,7,state,phone,'','hi','text',true),null);
+    assert.equal(await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:flights','text',false),null);
+    // "flights?" is not picked up by the live search for these agencies (unchanged behaviour)
+    assert.equal(await engineHandleLiveTicketingChat(env,c,7,'flights?',[],phone),null);
+    // Missing details: the original text-only reply, no pickers
+    let step=await engineHandleLiveTicketingChat(env,c,7,'flight from SHJ to CCJ',[],phone);
+    assert.match(step.reply,/I saved the details received so far/);
+    assert.equal(step.buttons,undefined);
+    // Full request: live fares as before
+    step=await engineHandleLiveTicketingChat(env,c,7,'SHJ to CCJ on 2026-12-01, 1 adult',[],phone);
+    assert.deepEqual(step.buttons.map(b=>b.title),['Book Option 1']);
+    // Pick: the original selected-flight message and the POOMAS "Book Now" link straight away
+    const co=await engineHandleLiveTicketCheckoutChat(env,c,7,'56',phone,'Book Option 1','text','');
+    assert.equal(co.step,'checkout_ready');
+    const msg=chatwoot.pop();
+    assert.match(msg.content,/^Selected flight:/);
+    assert.deepEqual(msg.items.map(i=>i.title),['Book Now','New Search','Continue Previous']);
+    const cta=meta.pop();
+    assert.equal(cta.interactive.action.parameters.display_text,'Book Now');
+    assert.equal(cta.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=FARE-1&supplier=DUFFEL&source=leadvyne&client=7');
+  }finally{globalThis.fetch=realFetch;}
 });

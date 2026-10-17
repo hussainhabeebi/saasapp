@@ -3745,6 +3745,14 @@ const ROLES = {
               <span id="taModuleStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
             </div>
 
+            <div id="taFlowRow" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0 10px 22px;border-bottom:1px solid var(--line)">
+              <div style="flex:1;min-width:180px"><b>✈️ Travel Flow</b> <span class="s-note" style="display:inline">(optional)</span><div class="s-note" style="margin:2px 0 0">WhatsApp menu on "hi", live flights from your connected API with tap-to-answer buttons, flight details → Proceed → booking form → your booking site, and your Travel Portal services (packages, visas, Umrah…). Off = the bot works exactly as today. Customize the menu in Agency → Live Agency → 💬 WhatsApp Menu.</div></div>
+              <select class="form-input" id="cfgTaFlow" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
+              <button class="save-btn" id="saveTaFlow">Save</button>
+              <span class="save-msg" id="saveTaFlowMsg"></span>
+              <span id="taFlowStatusBadge" style="font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;font-family:var(--disp)"></span>
+            </div>
+
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line)">
               <div style="flex:1;min-width:180px"><b>💼 Recruitment &amp; Consultancy</b><div class="s-note" style="margin:2px 0 0">Job postings, candidate pipeline, AI screening, placements, fees.</div></div>
               <select class="form-input" id="cfgRecruitEnabled" style="max-width:160px"><option value="No">Disabled</option><option value="Yes">Enabled</option></select>
@@ -20046,11 +20054,15 @@ function _renderModuleBadge(badgeId,enabled){
 function initTaSettings(){
   const sel=$id('cfgTaEnabled'); if(sel) sel.value=(clientRecord.ta_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('taModuleStatusBadge',clientRecord.ta_enabled==='Yes');
+  const flow=$id('cfgTaFlow'); if(flow) flow.value=(clientRecord.travel_flow_enabled==='Yes')?'Yes':'No';
+  _renderModuleBadge('taFlowStatusBadge',clientRecord.travel_flow_enabled==='Yes');
   updateAgencyTabVisibility();
 }
 
 function updateAgencyTabVisibility(){
   const enabled=(clientRecord.ta_enabled==='Yes');
+  // Travel Flow is an option of the Travel Agency module — only offered while the module is on.
+  const flowRow=$id('taFlowRow'); if(flowRow) flowRow.style.display=enabled?'flex':'none';
   [$id('dnAgencyTab'),$id('bnAgencyTab'),$id('moreAgencyTab')].forEach(el=>{if(el)el.style.display=enabled?'':'none';});
   if(typeof tvApply==='function') tvApply();
 }
@@ -20078,6 +20090,24 @@ $id('saveTaEnabled').addEventListener('click',async()=>{
     msg.textContent='✓ Saved';
   }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
   finally{btn.disabled=false;setTimeout(()=>msg.textContent='',3000);}
+});
+
+// Travel Flow (CLIENTS.travel_flow_enabled) — read by the WhatsApp bot (worker ltTravelFlowOn).
+$id('saveTaFlow').addEventListener('click',async()=>{
+  const btn=$id('saveTaFlow'),msg=$id('saveTaFlowMsg');
+  btn.disabled=true;msg.textContent='';msg.className='save-msg';
+  try{
+    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
+    if(!(info.columns||[]).some(c=>c.title==='travel_flow_enabled')){
+      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'travel_flow_enabled',title:'travel_flow_enabled',uidt:'SingleLineText'}).catch(()=>{});
+    }
+    const val=$id('cfgTaFlow').value;
+    await patchClient({travel_flow_enabled:val});
+    clientRecord.travel_flow_enabled=val;
+    _renderModuleBadge('taFlowStatusBadge',val==='Yes');
+    msg.textContent=val==='Yes'?'✓ Saved — Travel Flow is on':'✓ Saved — the bot works as before';
+  }catch(e){msg.textContent='Error: '+e.message;msg.className='save-msg err';}
+  finally{btn.disabled=false;setTimeout(()=>msg.textContent='',4000);}
 });
 
 /* ── B2B: SETTINGS ── */

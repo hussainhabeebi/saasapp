@@ -17061,11 +17061,6 @@ export function ltChatFlightIntent(text){
   text=ltLocalTravelText(text);
   const value=String(text||'').toLowerCase();
   if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
-  if(/\bmy\s+(?:flight|ticket|booking)\s+(?:details|status|copy|confirmation|number)\b/.test(value)) return false;
-  // "flights?", "live flights", "air ticket", "flight details", "flight prices pls" — asking for
-  // flights at all is a request for the live fares.
-  if(/^\s*(?:(?:show|need|want|any|check|see|get|give|send|share)\s+(?:me\s+)?)?(?:the\s+)?(?:live\s+|cheap(?:est)?\s+|available\s+)?(?:flights?|air\s*tickets?|airfares?|flight\s+(?:tickets?|booking|details|prices?|rates?|fares?|schedules?|options?|availability))(?:\s+(?:please|pls|plz|available|availability|details|prices?|rates?|now|today))?\s*[?.!]*\s*$/.test(value)) return true;
-  if(/\blive\s+(?:flights?|fares?|flight\s+prices?)\b|\bflight\s+(?:booking|prices?|rates?|fares?|schedules?|availability)\b/.test(value)) return true;
   const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying|plane\s*tickets?)\b/.test(value);
   const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
   const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|get|looking|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
@@ -17086,6 +17081,16 @@ export function ltChatFlightIntent(text){
   // told customers of agencies with live ticketing connected that tickets aren't offered.
   const flightTicket=/\b(?:flight|air|plane)\s*tickets?\b/.test(value);
   return (explicitFlight&&shopping)||travelTicket||flightTicket||((compactIataRoute||knownCityRoute)&&hasTravelDetail)||(knownCityRoute&&(explicitFlight||travelTicket));
+}
+
+// Travel Flow only: shorter ways of asking for flights ("flights?", "live flights", "air ticket",
+// "flight details", "flight prices pls") also open the live search.
+export function ltChatFlightAsk(text){
+  const value=ltLocalTravelText(text).toLowerCase();
+  if(/\b(?:pnr|booking reference|flight status)\b/.test(value))return false;
+  if(/\bmy\s+(?:flight|ticket|booking)\s+(?:details|status|copy|confirmation|number)\b/.test(value))return false;
+  if(/^\s*(?:(?:show|need|want|any|check|see|get|give|send|share)\s+(?:me\s+)?)?(?:the\s+)?(?:live\s+|cheap(?:est)?\s+|available\s+)?(?:flights?|air\s*tickets?|airfares?|flight\s+(?:tickets?|booking|details|prices?|rates?|fares?|schedules?|options?|availability))(?:\s+(?:please|pls|plz|available|availability|details|prices?|rates?|now|today))?\s*[?.!]*\s*$/.test(value))return true;
+  return /\blive\s+(?:flights?|fares?|flight\s+prices?)\b|\bflight\s+(?:booking|prices?|rates?|fares?|schedules?|availability)\b/.test(value)||ltChatFlightIntent(text);
 }
 
 export function ltNormalizeChatFlightRequest(raw={},defaultCurrency='AED'){
@@ -17506,7 +17511,64 @@ async function ltSaveChatLastSearch(env,clientId,phone,input){
     ON CONFLICT(client_id,phone) DO UPDATE SET input_json=excluded.input_json,expires_at=excluded.expires_at,updated_at=excluded.updated_at`)
     .bind(Number(clientId),String(phone),JSON.stringify(saved),expires,now.toISOString()).run();
 }
+// Travel Flow off (the default) → the original checkout, unchanged: a pick sends the booking link.
+async function engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,phone,text,mediaType,inboxId){
+  await ltEnsureChatCheckoutSchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
+  if(!row)return null;
+  const send=async(reply,buttons=null)=>{if(buttons?.length)await engineSendChatwootQuickReply(env,c,clientId,convId,reply,buttons);else await engineDeliverReply(env,c,clientId,convId,reply,{mediaType:'text',langCode:c.language||'en'});return {handled:true,step:row.step}};
+  const input=String(text||'').trim();
+  if(/^(new search|search again|new flight)$/i.test(input)){
+    await Promise.all([env.DB.prepare(`DELETE FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=?`).bind(Number(clientId),String(phone)).run(),ltClearChatSearchDraft(env,clientId,phone)]);
+    return send('Send route, date and passengers.\nExample: CCJ to SHJ on 2026-09-15, 1 adult, economy.');
+  }
+  if(/^(continue previous|continue old|previous search|old search)$/i.test(input)){
+    const offers=await ltRepriceStoredChatOffers(env,clientId,phone,ltJson(row.offers_json,[]));
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='select',offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(offers),new Date().toISOString(),Number(clientId),String(phone)).run();
+    return send(ltStoredOfferText(offers),ltBookButtons(offers));
+  }
+  const switchTo=ltChatCurrencySwitch(input);
+  if(switchTo&&row.step==='select'){
+    const info=await ltFxForClient(env,clientId,switchTo);
+    if(info.target!==switchTo)return send(`Prices are shown in ${info.settings.default_currency} for this agency.`,ltBookButtons(ltJson(row.offers_json,[])));
+    const converted=ltConvertStoredChatOffers(ltJson(row.offers_json,[]),await ltPoomasFxContext(env,clientId,info.fx));
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET offers_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(converted),new Date().toISOString(),Number(clientId),String(phone)).run();
+    return send(ltStoredOfferText(converted).replace('Previous live flight options:',`Flight options in ${switchTo}:`),ltBookButtons(converted));
+  }
+  if(row.step==='checkout_ready'&&/^(open checkout|checkout|book now|continue booking)$/i.test(input)){
+    const selected=ltJson(row.selected_offer_json,{});
+    if(!selected.fareId)return send('This fare has expired. Please run a new search.');
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  // After one pick the listed options stay bookable: "book option 2" still sends that link.
+  if(row.step==='select'||row.step==='checkout_ready'){
+    // While the customer is answering a NEW search (a draft is open, or the message itself is a
+    // flight request), only an explicit "Book Option N" tap may pick from the older options.
+    if(!/^book\b/i.test(input)&&(ltChatFlightIntent(input)||await ltLoadChatSearchDraft(env,clientId,phone)))return null;
+    // "direct only", "flynas flights", "show all" narrow the search instead of picking an option.
+    if(ltChatFlightFilterRefinement(input))return null;
+    const stored=ltJson(row.offers_json,[]),idx=ltStoredOfferSelectionIndex(stored,input);
+    if(idx<0){
+      if(row.step==='select'&&(/\bbook\b/i.test(input)||mediaType==='image'||mediaType==='document'))return send('Please select one flight.',ltBookButtons(stored));
+      return null;
+    }
+    const selected=(await ltRepriceStoredChatOffers(env,clientId,phone,[stored[idx]]))[0];
+    if(!selected?.fareId)return send('This fare has no POOMAS booking ID. Please run a new search.');
+    await env.DB.prepare(`UPDATE live_travel_chat_checkout_state SET step='checkout_ready',selected_offer_json=?,updated_at=? WHERE client_id=? AND phone=?`).bind(JSON.stringify(selected),new Date().toISOString(),Number(clientId),String(phone)).run();
+    const base=String(selected.checkoutBase||'https://flypoomas.com').replace(/\/$/,''),url=`${base}/book?fareId=${encodeURIComponent(selected.fareId)}&supplier=${encodeURIComponent(selected.supplier||'')}&source=leadvyne&client=${encodeURIComponent(String(clientId))}`;
+    const depart=selected.departureTime?`${ltFlightDate(selected.departureTime)}, ${ltFlightTime(selected.departureTime)}`:'—';
+    const details=`Selected flight:\n${selected.airline}${selected.flightNumber?' · '+selected.flightNumber:''}\n${selected.origin} → ${selected.destination}\nDeparture: ${depart}\nFare: ${ltFxFormat(selected.total,selected.currency)}${selected.supplierCurrency&&selected.supplierCurrency!==selected.currency?`\nCharged at checkout: ${ltFxFormat(selected.supplierTotal,selected.supplierCurrency)}`:''}`;
+    await engineSendChatwootQuickReply(env,c,clientId,convId,`${details}\n\nContinue securely on POOMAS.`,[{title:'Book Now',value:'book now'},{title:'New Search',value:'new search'},{title:'Continue Previous',value:'continue previous'}]);
+    await engineSendTravelCheckoutCta(env,c,clientId,convId,phone,url,inboxId);
+    return {handled:true,step:'checkout_ready'};
+  }
+  return null;
+}
+// Travel Flow on → a pick shows the flight details; Proceed → booking form → booking-site link.
 export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,phone,text,mediaType,inboxId,leadId=''){
+  if(!ltTravelFlowOn(c))return engineHandleLiveTicketCheckoutChatClassic(env,c,clientId,convId,phone,text,mediaType,inboxId);
   await ltEnsureChatCheckoutSchema(env);
   const row=await env.DB.prepare(`SELECT * FROM live_travel_chat_checkout_state WHERE client_id=? AND phone=? AND expires_at>?`).bind(Number(clientId),String(phone),new Date().toISOString()).first();
   if(!row)return null;
@@ -17624,17 +17686,24 @@ async function handleLtWhatsappMenu(request,env){
     const every={items:Object.keys(LT_PORTAL_SOURCES).map(source=>({enabled:true,action:'portal',source}))};
     const portalCounts=(await ltMenuAvailability(env,client||{},auth.cid,every)).counts;
     const categories=[...new Set([...LT_BASE_LEAD_CATEGORIES,...(Array.isArray(custom)?custom.map(x=>String(x||'').trim()).filter(Boolean):[])])];
-    return json({menu,defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories,portal_counts:portalCounts,portal_sources:LT_PORTAL_SOURCES});
+    return json({menu,travel_flow:ltTravelFlowOn({...client,industry:'travel'}),defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories,portal_counts:portalCounts,portal_sources:LT_PORTAL_SOURCES});
   }
   const body=await request.json().catch(()=>({}));
   const menu=ltMenuNormalize(body.menu||body),errors=ltMenuValidate(menu);
   if(errors.length)return json({error:errors[0],errors},400);
+  // The Travel Flow switch itself (also in Dashboard → Settings → Industry Modules).
+  if(typeof body.travel_flow==='boolean'){
+    try{
+      await ensureClientColumns(env,['travel_flow_enabled']);
+      await patchClientFields(env,auth.cid,{travel_flow_enabled:body.travel_flow?'Yes':'No'});
+    }catch(e){return json({error:'Could not save the Travel Flow setting: '+e.message},502);}
+  }
   await ltMenuEnsureSchema(env);
   const now=ltNow();
   await env.DB.prepare(`INSERT INTO live_travel_wa_menu (client_id,menu_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET menu_json=excluded.menu_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
     .bind(auth.cid,JSON.stringify(menu),auth.email,now).run();
   await ltAudit(env,auth.cid,'whatsapp_menu','menu','updated',auth.email,{enabled:menu.enabled,items:ltMenuVisibleItems(menu).map(i=>i.id)});
-  return json({menu,saved_at:now});
+  return json({menu,saved_at:now,...(typeof body.travel_flow==='boolean'?{travel_flow:body.travel_flow}:{})});
 }
 
 // What the agency lists in its Travel Portal (Travel Agency module) for one menu source, as menu
@@ -17722,14 +17791,14 @@ async function ltMenuRoutesFor(env,clientId,phone,menu){
 // "hi" / "menu" / a menu tap. Returns null for anything else so the message continues down the
 // normal path; {turn} for a reply to send and save; {introAction} to hand over to a person.
 export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,userText,mediaType,isNewLead){
-  if(mediaType!=='text'||!ltLiveAgencyEnabled(c))return null;
+  if(mediaType!=='text'||!ltTravelFlowOn(c))return null;
   const text=String(userText||'').trim();
   if(!text||text.length>60)return null;
   const upper=text.toUpperCase(),tapped=upper.startsWith(LT_MENU_VALUE_PREFIX),wantsMenu=ltMenuIsMenuRequest(text),greeting=ltMenuIsGreeting(text);
   const portalTap=/^(TPORTAL|TENQUIRE):([a-z_]+):(.+)$/i.exec(text);
   const wantsAgent=/^(?:👤\s*)?talk\s+to\s+(?:an?\s+)?(?:agent|human|person|team)$/i.test(text);
   const menu=await ltMenuLoad(env,clientId).catch(()=>null);
-  if(!menu?.enabled||!ltMenuVisibleItems(menu).length)return null;
+  if(!menu||!ltMenuVisibleItems(menu).length)return null;
   const lang=c.language||'en',convId=state.convId;
   if(wantsAgent&&c.handover_enabled!=='No')return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
   const cache=new Map(),help=ltMenuHelpButtons(c,menu);
@@ -17845,6 +17914,13 @@ export function ltLiveAgencyEnabled(c={}){
   return industry==='travel'||industry==='travel_agency'||industry==='live_travel'||industry.includes('travel')||String(c.ta_enabled||'').toLowerCase()==='yes';
 }
 
+// Settings → Industry Modules → Travel Flow (CLIENTS.travel_flow_enabled). Optional, off by
+// default: only agencies that switch it on get the WhatsApp menu, the guided flight buttons, the
+// details → Proceed → booking form checkout and the live-flights-first routing.
+export function ltTravelFlowOn(c={}){
+  return ltLiveAgencyEnabled(c)&&String(c?.travel_flow_enabled||'').trim().toLowerCase()==='yes';
+}
+
 async function ltLiveTicketsConnected(env,clientId){
   try{
     const row=await env.DB.prepare(`SELECT 1 AS ok FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
@@ -17872,7 +17948,8 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   // "yes" / "any cheap one" right after the customer asked for a route the AI only discussed.
   const goAhead=!draft&&!lastSearch&&!ltChatFlightIntent(userText)&&ltChatFlightGoAhead(userText)
     &&(history||[]).filter(x=>x?.role!=='assistant'&&x?.content).slice(-4).some(x=>ltChatFlightIntent(x.content));
-  if(!ltChatFlightIntent(userText)&&!continuing&&!lastSearch&&!goAhead)return null;
+  const flowOn=ltTravelFlowOn(c);
+  if(!ltChatFlightIntent(userText)&&!(flowOn&&ltChatFlightAsk(userText))&&!continuing&&!lastSearch&&!goAhead)return null;
   if(draft&&/^(cancel|stop|restart|start over)$/i.test(String(userText||'').trim())){
     await ltClearChatSearchDraft(env,clientId,phone);
     return {handled:true,reply:'Flight search cancelled. Send a new route whenever you are ready.'};
@@ -17886,7 +17963,7 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   const input=lastSearch?ltNormalizeChatFlightRequest({...lastSearch,filters:ltMergeChatFlightFilters(lastSearch.filters,ltParseChatFlightFilters(userText))},fxSettings.default_currency)
     :ltMergeChatFlightDraft(draft,await engineExtractChatFlightRequest(env,c,userText,history),userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
   // Guided search (started from the WhatsApp menu): route → date → passengers, one tap each.
-  if(draft?.guided){
+  if(flowOn&&draft?.guided){
     input.guided=true;input.pax_done=Boolean(draft.pax_done);
     const pax=!input.pax_done&&ltMenuParsePax(userText);
     if(pax&&(draft.pax_asked||!/^\s*\d\s*$/.test(String(userText||'')))){Object.assign(input,pax);input.pax_done=true;}
@@ -17895,7 +17972,7 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     await ltSaveChatSearchDraft(env,clientId,phone,input);
     // Tap-to-answer pickers for what is still missing: known routes, then the next days.
     const routeMissing=!input.origin||!input.destination;
-    const buttons=routeMissing?await ltMenuRoutesFor(env,clientId,phone,await ltMenuLoad(env,clientId).catch(()=>null)):(!input.departure_date?ltMenuDateRows():[]);
+    const buttons=!flowOn?[]:routeMissing?await ltMenuRoutesFor(env,clientId,phone,await ltMenuLoad(env,clientId).catch(()=>null)):(!input.departure_date?ltMenuDateRows():[]);
     const picker=routeMissing?{button:'Choose route',section:'Routes'}:{button:'Choose date',section:'Dates'};
     if(input.guided&&routeMissing)
       return {handled:true,reply:`✈️ Where are you flying from and to?\n${buttons.length?'Pick a route below, or type it':'Type your route'} — e.g. *Dubai to Kochi*.`,buttons,picker};
@@ -17906,8 +17983,8 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
     // Fresh request with no route yet → lead with the offer and ask the destination first,
     // instead of echoing back only defaulted passenger/cabin values as "details received".
     if(!draft&&!input.origin&&!input.destination&&!input.departure_date)
-      return {handled:true,reply:`Yes, we offer flight tickets ✈️\n\nWhich destination are you travelling to? Please also share your departure city and travel date.\n\nExample: Dubai to Kochi on 20 Oct, 1 adult, economy.`,buttons,picker};
-    return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`,buttons,picker};
+      return {handled:true,reply:`Yes, we offer flight tickets ✈️\n\nWhich destination are you travelling to? Please also share your departure city and travel date.\n\nExample: Dubai to Kochi on 20 Oct, 1 adult, economy.`,...(flowOn?{buttons,picker}:{})};
+    return {handled:true,reply:`I saved the details received so far${known?': '+known:''}. Please send only: ${input.missing.join(', ')}.\n\nExample: DXB to COK on 2026-09-20, 1 adult, economy.`,...(flowOn?{buttons,picker}:{})};
   }
   if(input.guided&&!input.pax_done){
     await ltSaveChatSearchDraft(env,clientId,phone,{...input,pax_asked:true});
@@ -22209,7 +22286,7 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     // Flight questions (and an open flight search) at an agency with the live API connected are
     // answered from the live API here — before Flowvyne, the greeting intro or an industry flow can
     // reply with generic AI text. Opt-out words and requests for a person keep their normal path.
-    if(!introAction&&userText&&ltLiveAgencyEnabled(c)
+    if(!introAction&&userText&&ltTravelFlowOn(c)
       &&!ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
       &&!/\b(?:human|agent|representative|real person|staff|manager)\b/i.test(userText)
       &&await ltLiveTicketsConnected(env,clientId)){
@@ -22480,7 +22557,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       sentText=await engineLocalizeReply(env,c,liveTicketingTurn.reply,replyLang);
       routing.route='travel_live_ticketing'; routing.reply=sentText; routing.next=state.stage;
       routing.quickReplies=liveTicketingTurn.buttons?.length
-        ?await ltSendPicker(env,c,clientId,convId,phone,parsed.inboxId,sentText,liveTicketingTurn.buttons,liveTicketingTurn.picker||{})
+        ?(ltTravelFlowOn(c)
+          ?await ltSendPicker(env,c,clientId,convId,phone,parsed.inboxId,sentText,liveTicketingTurn.buttons,liveTicketingTurn.picker||{})
+          :await engineSendChatwootQuickReply(env,c,clientId,convId,sentText,liveTicketingTurn.buttons))
         :(await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx}),null);
       orderHandledInline=true;
     } else if(!routing.isOptOut && !routing.isResub && routing.route!=='human' && isFashionEcom && state.stage && state.stage.startsWith('fashion_order_')){
