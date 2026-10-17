@@ -9304,7 +9304,8 @@ async function saveLeadNow(){
   if(!id){
     const country=phoneToCountryClient(body.Phone);
     if(country) body.Country=country;
-    await ensureLeadsField('CreatedVia');
+    // The Worker creates the CreatedVia column and stamps it (/nocodb passthrough) — no schema
+    // round trip from here, which used to hold the Save button for seconds.
     body.CreatedVia='manual';
   }
   if(email && (!original || !original.CompanyDomain)){
@@ -11687,11 +11688,18 @@ async function ensureLeadCreatedVia(ids, via){
   }
   console.warn('[leads] CreatedVia could not be saved for', ids);
 }
+// The Leads table's column list is read once per page load and remembered, so a save that needs
+// an optional column (ServiceCategory, ClosedAt…) doesn't wait on a schema request every time.
+let _leadsColumnsKnown=null;
 async function ensureLeadsField(name, uidt='SingleLineText'){
   try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
-    const cols=(info.columns||[]).map(c=>c.title);
-    if(!cols.includes(name)) await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+    if(!_leadsColumnsKnown){
+      const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}`);
+      _leadsColumnsKnown=new Set((info.columns||[]).map(c=>c.title));
+    }
+    if(_leadsColumnsKnown.has(name)) return;
+    await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.LEADS_TABLE_ID}/fields`,{column_name:name,title:name,uidt}).catch(()=>{});
+    _leadsColumnsKnown.add(name);
   }catch(e){}
 }
 // Hides nav tabs a restricted teammate isn't allowed into. Only ever additionally hides — never
