@@ -363,19 +363,23 @@ function renderCurrency(){
 async function saveCurrency(){try{const d=await api('/live-travel/currency-settings',{method:'PATCH',body:JSON.stringify({default_currency:$('cxCur').value,fx_buffer_pct:Number($('cxBuf').value),rounding:$('cxRound').value,allow_currency_override:$('cxOverride').checked?1:0,auto_detect_phone_currency:$('cxPhone').checked?1:0})});data.currency_settings=d.settings;data.fx=d.fx;data.supported_currencies=d.supported;renderCurrency();alert('Currency settings saved.')}catch(e){alert(e.message)}}
 // ── 💬 WhatsApp Menu: the menu customers get on "hi" / "menu" (worker: live-travel-wa-menu.js) ──
 let wm=null;
-const WM_ACTIONS=[['flight_search','✈️ Flight booking'],['ask','💬 Ask a question'],['link','🔗 Open a link'],['my_bookings','🎫 My bookings'],['handover','👤 Hand to team']];
+const WM_ACTIONS=[['flight_search','✈️ Live flights'],['portal','📚 Travel Portal list'],['ask','💬 Ask a question'],['link','🔗 Open a link'],['my_bookings','🎫 My bookings'],['handover','👤 Hand to team']];
 const wmRowTitle=it=>`${it.emoji?it.emoji+' ':''}${it.title}`.slice(0,24);
+// Same rule as the bot: Live Flights needs the API connected, a Travel Portal row needs listings.
+const wmAvailable=it=>it.action==='flight_search'?!!wm.flights_connected:it.action==='portal'?(wm.portal_counts?.[it.source]||0)>0:true;
+const wmPortalLabel=src=>wm.portal_sources?.[src]?.label||src;
 async function renderWhatsappMenu(){
  if(!wm){$('main').innerHTML=head('WhatsApp Menu','Loading…')+'<div class="empty"><span class="spinner"></span></div>';try{wm=await api('/live-travel/whatsapp-menu');wm.dirty=false}catch(e){$('main').innerHTML=head('WhatsApp Menu','')+`<div class="error">${esc(e.message)}</div>`;return}}
- const m=wm.menu,on=m.items.filter(i=>i.enabled).length;
+ const m=wm.menu,on=m.items.filter(i=>i.enabled).length,shown=m.items.filter(i=>i.enabled&&wmAvailable(i)).length;
  $('main').innerHTML=head('WhatsApp Menu','The menu customers get when they say "hi" or type "menu" on WhatsApp',`<button class="btn" onclick="wmReset()">↺ Defaults</button><button class="btn primary" id="wmSave" onclick="wmSaveMenu()">💾 Save menu</button>`)
  +`<div id="wmErr"></div><div class="wmgrid"><div>
  <div class="card"><label class="wmtoggle"><input type="checkbox" ${m.enabled?'checked':''} onchange="wmTop('enabled',this.checked)"> <b>Send this menu on WhatsApp</b></label>
  <p class="sub">When on, "hi", "hello", "menu" and every menu tap are answered by this menu before the AI. Each choice files the lead under its Service Category.</p>
- ${wm.flights_connected?'':'<div class="notice">Live flight search is not connected, so <b>✈️ Flight Tickets</b> will ask for route and dates instead. Connect POOMAS in 🔌 Suppliers to search and book in chat.</div>'}
+ ${wm.flights_connected?'':'<div class="notice">Live flight search is not connected, so <b>✈️ Live Flights</b> is hidden from customers. Connect POOMAS in 🔌 Suppliers to share live fares and book in chat.</div>'}
+ <p class="sub">Other services come from your Travel Portal (← Existing Agency): an option shows only while that section has something listed.</p>
  <div class="formgrid" style="grid-template-columns:1fr 180px"><div class="field"><label>Welcome message</label><textarea maxlength="900" placeholder="Leave empty for: 👋 Welcome to {agency}! How can we help you today?…" oninput="wmTop('greeting',this.value)">${esc(m.greeting)}</textarea><span class="sub">Use {name} for the customer's first name and {agency} for your agency name.</span></div>
  <div class="field"><label>Menu button</label><input maxlength="20" value="${esc(m.button_label)}" oninput="wmTop('button_label',this.value)"></div></div></div>
- <div class="card"><h3>Menu options <span class="badge ${on>10?'bad':'ok'}">${on} / 10 on</span></h3><p class="sub" style="margin-top:-6px">WhatsApp shows up to 10 options. Rows with the same section are grouped under one heading.</p>
+ <div class="card"><h3>Menu options <span class="badge ${on>10?'bad':'ok'}">${on} / 10 on</span> <span class="badge">${shown} shown to customers now</span></h3><p class="sub" style="margin-top:-6px">WhatsApp shows up to 10 options. Rows with the same section are grouped under one heading.</p>
  <div id="wmItems">${m.items.map(wmItemHtml).join('')}</div>
  <button class="btn" onclick="wmAdd()">＋ Add option</button></div>
  <div class="card"><h3>✈️ Route buttons for flight search</h3><p class="sub" style="margin-top:-6px">Offered as one-tap routes after the customer picks Flights (their own last search comes first).</p>
@@ -387,7 +391,7 @@ async function renderWhatsappMenu(){
 }
 function wmItemHtml(it,i){
  const n=wm.menu.items.length,act=it.action;
- return `<div class="wmitem ${it.enabled?'':'off'}"><div class="wmhead"><input type="checkbox" title="Show in menu" ${it.enabled?'checked':''} onchange="wmItem(${i},'enabled',this.checked,true)">
+ return `<div class="wmitem ${it.enabled&&wmAvailable(it)?'':'off'}"><div class="wmhead"><input type="checkbox" title="Show in menu" ${it.enabled?'checked':''} onchange="wmItem(${i},'enabled',this.checked,true)">
  <input class="wmemoji" maxlength="8" value="${esc(it.emoji)}" oninput="wmItem(${i},'emoji',this.value)" aria-label="Emoji">
  <input class="wmtitle" maxlength="24" value="${esc(it.title)}" oninput="wmItem(${i},'title',this.value)" aria-label="Title">
  <button class="btn sm" ${i?'':'disabled'} onclick="wmMove(${i},-1)" title="Move up">↑</button><button class="btn sm" ${i<n-1?'':'disabled'} onclick="wmMove(${i},1)" title="Move down">↓</button><button class="btn sm danger" onclick="wmDel(${i})" title="Remove">✕</button></div>
@@ -395,9 +399,10 @@ function wmItemHtml(it,i){
  <div class="field"><label>Section</label><input maxlength="24" value="${esc(it.section)}" oninput="wmItem(${i},'section',this.value)"></div>
  <div class="field"><label>Service category</label><input list="wmCats" maxlength="60" value="${esc(it.category)}" placeholder="—" oninput="wmItem(${i},'category',this.value)"></div>
  <div class="field"><label>Short description</label><input maxlength="72" value="${esc(it.description)}" oninput="wmItem(${i},'description',this.value)"></div>
- ${act==='ask'||act==='link'||(act==='flight_search'&&!wm.flights_connected)?`<div class="field span4"><label>${act==='link'?'Message above the button':'Bot reply'}</label><textarea maxlength="900" oninput="wmItem(${i},'message',this.value)" placeholder="${act==='link'?'e.g. See all our holiday packages:':'e.g. Which country is the visa for? Please share your nationality and travel date.'}">${esc(it.message)}</textarea></div>`:''}
+ ${act==='portal'?`<div class="field"><label>Travel Portal section</label><select onchange="wmItem(${i},'source',this.value,true)">${Object.entries(wm.portal_sources||{}).map(([k,v])=>`<option value="${k}" ${k===it.source?'selected':''}>${esc(v.label)}</option>`).join('')}</select></div><div class="span4 sub">${(wm.portal_counts?.[it.source]||0)>0?`✓ ${wm.portal_counts[it.source]} listed in Existing Agency → ${esc(wmPortalLabel(it.source))}. Tap → list → details → Enquire Now.`:`⚠ Nothing listed in Existing Agency → ${esc(wmPortalLabel(it.source))} — hidden from customers until you add one.`}</div>`:''}
+ ${act==='ask'||act==='link'?`<div class="field span4"><label>${act==='link'?'Message above the button':'Bot reply'}</label><textarea maxlength="900" oninput="wmItem(${i},'message',this.value)" placeholder="${act==='link'?'e.g. See all our holiday packages:':'e.g. Which country is the visa for? Please share your nationality and travel date.'}">${esc(it.message)}</textarea></div>`:''}
  ${act==='link'?`<div class="field span2"><label>Link (https://)</label><input value="${esc(it.url)}" placeholder="https://youragency.com/packages" oninput="wmItem(${i},'url',this.value)"></div><div class="field"><label>Button text</label><input maxlength="20" value="${esc(it.button_text)}" placeholder="Open" oninput="wmItem(${i},'button_text',this.value)"></div>`:''}
- ${act==='flight_search'&&wm.flights_connected?'<div class="span4 sub">Route → date → passengers buttons → live fares → flight details → Proceed → booking form → your booking site.</div>':''}
+ ${act==='flight_search'?`<div class="span4 sub">${wm.flights_connected?'✓ Live API connected. Route → date → passengers buttons → live fares → flight details → Proceed → booking form → your booking site.':'⚠ Live API not connected — hidden from customers.'}</div>`:''}
  ${act==='handover'?'<div class="span4 sub">The chat is assigned to your team with the usual handover message.</div>':''}
  ${act==='my_bookings'?'<div class="span4 sub">Lists the customer\'s Live Agency bookings (reference, PNR, status, balance) found for their WhatsApp number.</div>':''}
  </div></div>`;
@@ -407,7 +412,7 @@ function wmTop(k,v){wm.menu[k]=v;wmDirty()}
 function wmItem(i,k,v,redraw){wm.menu.items[i][k]=v;if(redraw)renderWhatsappMenu();wmDirty()}
 function wmMove(i,d){const a=wm.menu.items,j=i+d;[a[i],a[j]]=[a[j],a[i]];wm.dirty=true;renderWhatsappMenu()}
 function wmDel(i){if(!confirm(`Remove "${wm.menu.items[i].title}" from the menu?`))return;wm.menu.items.splice(i,1);wm.dirty=true;renderWhatsappMenu()}
-function wmAdd(){wm.menu.items.push({id:'',emoji:'⭐',title:'New option',description:'',section:'Services',action:'ask',category:'',message:'',url:'',button_text:'',enabled:true});wm.dirty=true;renderWhatsappMenu()}
+function wmAdd(){wm.menu.items.push({id:'',emoji:'⭐',title:'New option',description:'',section:'Services',action:'portal',source:'packages',category:'',message:'',url:'',button_text:'',enabled:true});wm.dirty=true;renderWhatsappMenu()}
 function wmReset(){if(!confirm('Replace your menu with the default travel menu? Your changes are not saved until you click Save.'))return;wm.menu={...wm.defaults,enabled:wm.menu.enabled,items:wm.defaults.items.map(x=>({message:'',url:'',button_text:'',enabled:true,...x}))};wm.dirty=true;renderWhatsappMenu()}
 function wmRoutes(v){wm.menu.popular_routes=(String(v).toUpperCase().match(/[A-Z]{3}\s*(?:-|→|>|TO)\s*[A-Z]{3}/g)||[]).map(r=>r.match(/[A-Z]{3}/g).filter(x=>x!=='TO').slice(0,2)).filter(r=>r.length===2&&r[0]!==r[1]).slice(0,8);wmDirty()}
 function wmAddRoute(o,d){const r=wm.menu.popular_routes;if(!r.some(x=>x[0]===o&&x[1]===d)&&r.length<8)r.push([o,d]);$('wmRoutes').value=r.map(x=>x.join('-')).join(', ');wmDirty()}
@@ -415,7 +420,7 @@ function wmPreview(){
  const m=wm.menu,el=$('wmPreview');if(!el)return;
  const greet=(m.greeting||`👋 Welcome to your agency!\n\nHow can we help you today? Tap *${m.button_label||'Menu'}* to choose a service, or simply type your question.`).replace(/\{name\}/gi,'Hussain').replace(/\{agency\}/gi,'your agency');
  const fmt=t=>esc(t).replace(/\*([^*\n]+)\*/g,'<b>$1</b>').replace(/_([^_\n]+)_/g,'<i>$1</i>').replace(/\n/g,'<br>');
- const sections=[];m.items.filter(i=>i.enabled).slice(0,10).forEach(it=>{let s=sections.find(x=>x.t.toLowerCase()===String(it.section||'Services').toLowerCase());if(!s){s={t:it.section||'Services',rows:[]};sections.push(s)}s.rows.push(it)});
+ const sections=[];m.items.filter(i=>i.enabled&&wmAvailable(i)).slice(0,10).forEach(it=>{let s=sections.find(x=>x.t.toLowerCase()===String(it.section||'Services').toLowerCase());if(!s){s={t:it.section||'Services',rows:[]};sections.push(s)}s.rows.push(it)});
  el.innerHTML=`<div class="wmbubble out">hi</div><div class="wmbubble in">${fmt(greet)}<div class="wmbtn">☰ ${esc(m.button_label||'Menu')}</div></div>
  <div class="wmsheet"><div class="wmsheethd">${esc(m.button_label||'Menu')}</div>${sections.map(s=>`<div class="wmsec">${esc(s.t)}</div>${s.rows.map(r=>`<div class="wmrow"><div><b>${esc(wmRowTitle(r))}</b>${r.description?`<span>${esc(r.description)}</span>`:''}</div><i></i></div>`).join('')}`).join('')||'<div class="wmrow"><span>No options turned on</span></div>'}</div>`;
 }

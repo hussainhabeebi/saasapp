@@ -2,7 +2,7 @@ import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospita
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
-import {LT_MENU_VALUE_PREFIX,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
+import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
 // ── WHAT THIS IS ─────────────────────────────────────────────────────────────
 // Thin API proxy, hosted on Cloudflare Workers instead of a self-hosted container
@@ -17061,6 +17061,11 @@ export function ltChatFlightIntent(text){
   text=ltLocalTravelText(text);
   const value=String(text||'').toLowerCase();
   if(/\b(?:pnr|booking reference|flight status)\b/.test(value)) return false;
+  if(/\bmy\s+(?:flight|ticket|booking)\s+(?:details|status|copy|confirmation|number)\b/.test(value)) return false;
+  // "flights?", "live flights", "air ticket", "flight details", "flight prices pls" — asking for
+  // flights at all is a request for the live fares.
+  if(/^\s*(?:(?:show|need|want|any|check|see|get|give|send|share)\s+(?:me\s+)?)?(?:the\s+)?(?:live\s+|cheap(?:est)?\s+|available\s+)?(?:flights?|air\s*tickets?|airfares?|flight\s+(?:tickets?|booking|details|prices?|rates?|fares?|schedules?|options?|availability))(?:\s+(?:please|pls|plz|available|availability|details|prices?|rates?|now|today))?\s*[?.!]*\s*$/.test(value)) return true;
+  if(/\blive\s+(?:flights?|fares?|flight\s+prices?)\b|\bflight\s+(?:booking|prices?|rates?|fares?|schedules?|availability)\b/.test(value)) return true;
   const explicitFlight=/\b(?:flight|flights|air\s*tickets?|airfare|fares?|fly|flying|plane\s*tickets?)\b/.test(value);
   const travelTicket=/\btickets?\b/.test(value)&&/\b(?:from|to|airport|travel|trip|journey|one[ -]?way|round[ -]?trip|return|departure|arrival|rate|price|cost|book|available|availability)\b/.test(value);
   const shopping=/\b(?:search|find|check|book|booking|need|want|show|give|get|looking|rate|rates|price|prices|cost|available|availability|from|to|on)\b/.test(value);
@@ -17613,10 +17618,13 @@ async function handleLtWhatsappMenu(request,env){
   const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
   if(request.method==='GET'){
     const [menu,flightsConnected,routes]=await Promise.all([ltMenuLoad(env,auth.cid),ltLiveTicketsConnected(env,auth.cid),ltMenuAgencyRoutes(env,auth.cid)]);
-    let custom=[];
-    try{const c=await getClientById(env,auth.cid);custom=engineParseJsonField(c?.lead_categories_custom,[]);}catch(e){}
+    let custom=[],client=null;
+    try{client=await getClientById(env,auth.cid);custom=engineParseJsonField(client?.lead_categories_custom,[]);}catch(e){}
+    // How many live listings each Travel Portal section has — a row with none is hidden in chat.
+    const every={items:Object.keys(LT_PORTAL_SOURCES).map(source=>({enabled:true,action:'portal',source}))};
+    const portalCounts=(await ltMenuAvailability(env,client||{},auth.cid,every)).counts;
     const categories=[...new Set([...LT_BASE_LEAD_CATEGORIES,...(Array.isArray(custom)?custom.map(x=>String(x||'').trim()).filter(Boolean):[])])];
-    return json({menu,defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories});
+    return json({menu,defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories,portal_counts:portalCounts,portal_sources:LT_PORTAL_SOURCES});
   }
   const body=await request.json().catch(()=>({}));
   const menu=ltMenuNormalize(body.menu||body),errors=ltMenuValidate(menu);
@@ -17627,6 +17635,53 @@ async function handleLtWhatsappMenu(request,env){
     .bind(auth.cid,JSON.stringify(menu),auth.email,now).run();
   await ltAudit(env,auth.cid,'whatsapp_menu','menu','updated',auth.email,{enabled:menu.enabled,items:ltMenuVisibleItems(menu).map(i=>i.id)});
   return json({menu,saved_at:now});
+}
+
+// What the agency lists in its Travel Portal (Travel Agency module) for one menu source, as menu
+// rows. A failed read counts as "nothing listed", so a broken table hides its row instead of
+// offering an empty list. cache: one read per source per message.
+async function ltPortalListings(env,c,clientId,source,cache=new Map()){
+  if(cache.has(source))return cache.get(source);
+  const work=(async()=>{
+    try{
+      const today=new Date().toISOString().slice(0,10);
+      if(source==='attestation'){
+        const {results}=await env.DB.prepare(`SELECT id,name,service_type,country,fee,currency,turnaround_time,required_docs,status FROM attest_services WHERE client_id=? AND status='active' ORDER BY name LIMIT 30`).bind(Number(clientId)).all();
+        return ltPortalRows('attestation',results||[],{today});
+      }
+      const kind={packages:'packages',umrah:'umrah_groups',visas:'visas',cars:'cars',group_fares:'group_fares',special_fares:'special_fares'}[source];
+      const table=kind&&taResolveTable(c,kind);
+      if(!table||!env.NOCODB_BASE)return [];
+      const r=await ncFetch(env,`api/v2/tables/${table}/records?where=(client_id,eq,${clientId})&limit=50`);
+      if(!r.ok)return [];
+      const records=(await r.json().catch(()=>({})))?.list||[];
+      let outCarIds=new Set();
+      if(source==='cars'&&records.length){
+        const bookings=taResolveTable(c,'car_bookings');
+        if(bookings){
+          const br=await ncFetch(env,`api/v2/tables/${bookings}/records?where=(client_id,eq,${clientId})~and(status,neq,cancelled)~and(status,neq,completed)~and(pickup_date,lte,${today})~and(dropoff_date,gte,${today})&limit=100&fields=car_id`);
+          outCarIds=new Set(((await br.json().catch(()=>({})))?.list||[]).map(b=>String(b.car_id)));
+        }
+      }
+      return ltPortalRows(source,records,{today,outCarIds});
+    }catch(e){
+      await reportOpsError(env,`Travel menu — Travel Portal ${source} read failed`,e,{clientId});
+      return [];
+    }
+  })();
+  cache.set(source,work);
+  return work;
+}
+// Which menu rows this agency can serve right now: Live Flights needs the API connected; a
+// Travel Portal row needs at least one listing.
+async function ltMenuAvailability(env,c,clientId,menu,cache=new Map()){
+  const items=(menu?.items||[]).filter(i=>i.enabled);
+  const [flights,...lists]=await Promise.all([
+    items.some(i=>i.action==='flight_search')?ltLiveTicketsConnected(env,clientId):false,
+    ...items.filter(i=>i.action==='portal').map(i=>ltPortalListings(env,c,clientId,i.source,cache).then(rows=>[i.source,rows.length])),
+  ]);
+  const counts=Object.fromEntries(lists);
+  return {flights,counts,available:i=>i.action==='flight_search'?flights:i.action==='portal'?(counts[i.source]||0)>0:true};
 }
 
 // Up to 3 choices go as reply buttons through Chatwoot (as every other travel button does);
@@ -17670,12 +17725,28 @@ export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,
   if(mediaType!=='text'||!ltLiveAgencyEnabled(c))return null;
   const text=String(userText||'').trim();
   if(!text||text.length>60)return null;
-  const tapped=text.toUpperCase().startsWith(LT_MENU_VALUE_PREFIX),wantsMenu=ltMenuIsMenuRequest(text),greeting=ltMenuIsGreeting(text);
+  const upper=text.toUpperCase(),tapped=upper.startsWith(LT_MENU_VALUE_PREFIX),wantsMenu=ltMenuIsMenuRequest(text),greeting=ltMenuIsGreeting(text);
+  const portalTap=/^(TPORTAL|TENQUIRE):([a-z_]+):(.+)$/i.exec(text);
   const wantsAgent=/^(?:👤\s*)?talk\s+to\s+(?:an?\s+)?(?:agent|human|person|team)$/i.test(text);
   const menu=await ltMenuLoad(env,clientId).catch(()=>null);
   if(!menu?.enabled||!ltMenuVisibleItems(menu).length)return null;
   const lang=c.language||'en',convId=state.convId;
   if(wantsAgent&&c.handover_enabled!=='No')return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang}};
+  const cache=new Map(),help=ltMenuHelpButtons(c,menu);
+  // A listing tapped from a Travel Portal list → its details; "Enquire Now" → the enquiry.
+  if(portalTap&&LT_PORTAL_SOURCES[portalTap[2]]){
+    await ltClearChatSearchDraft(env,clientId,phone).catch(()=>{});
+    const source=portalTap[2],meta=LT_PORTAL_SOURCES[source];
+    const owner=ltMenuVisibleItems(menu).find(i=>i.action==='portal'&&i.source===source);
+    const row=(await ltPortalListings(env,c,clientId,source,cache)).find(r=>r.id===portalTap[3]);
+    const base={route:'travel_menu',next:state.stage||'new',preserveCrmStage:true,lang,serviceCategory:owner?.category||meta.category};
+    if(!row)return {turn:{...base,text:`Sorry, that ${meta.noun} is no longer available. Tap *${menu.button_label}* to see what we have now.`,buttons:help}};
+    if(portalTap[1].toUpperCase()==='TENQUIRE')
+      return {turn:{...base,intent:'BOOKING',historyUserText:`Enquire: ${row.title}`,
+        text:`👍 Great choice — *${row.title}*.\n\nPlease send:\n• your travel date\n• number of travellers (adults / children)\n• your full name\n\nOur team will confirm availability and the final price here on WhatsApp.`,buttons:help}};
+    return {turn:{...base,historyUserText:row.title,text:`${row.detail}\n\nWould you like to book this ${meta.noun}?`,
+      buttons:[{title:'✅ Enquire Now',value:`${LT_ENQUIRE_PREFIX}${source}:${row.id}`},...help].slice(0,3)}};
+  }
   const item=ltMenuMatch(menu,text);
   if(!item&&!tapped&&!wantsMenu&&!greeting)return null;
   // Any menu choice other than flights ends an open flight-search draft, so a visa or package
@@ -17684,12 +17755,22 @@ export async function engineHandleTravelMenu(env,c,clientId,state,phone,inboxId,
   const base={route:'travel_menu',next:state.stage||'new',preserveCrmStage:true,lang,buttons:[]};
   if(!item){
     const reply=ltMenuGreetingText(menu,{agencyName:c.client_name||'',customerName:state.name||state.lead?.Name||'',returning:!isNewLead});
-    const sections=ltMenuSections(menu),options=sections.flatMap(s=>s.rows.map(r=>({title:r.title,value:r.id})));
+    const avail=await ltMenuAvailability(env,c,clientId,menu,cache);
+    const sections=ltMenuSections(menu,avail.available),options=sections.flatMap(s=>s.rows.map(r=>({title:r.title,value:r.id})));
+    if(!options.length)return null;
     const interactive={type:'list',body:{text:reply.slice(0,1024)},action:{button:menu.button_label,sections}};
     return {turn:{...base,text:reply,deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,reply,options,{interactive})}};
   }
   const historyUserText=ltMenuRowTitle(item),serviceCategory=item.category||'';
-  const help=ltMenuHelpButtons(c,menu);
+  if(item.action==='portal'){
+    const meta=LT_PORTAL_SOURCES[item.source],rows=(await ltPortalListings(env,c,clientId,item.source,cache)).slice(0,10);
+    if(!rows.length)return {turn:{...base,serviceCategory,historyUserText,text:`We have no ${item.title.toLowerCase()} listed right now. Tell us what you are looking for and our team will help.`,buttons:help}};
+    const reply=`${item.emoji||meta.emoji} *${item.title}*\n\n${rows.length===1?`We have 1 ${meta.noun} available.`:`We have ${rows.length} ${meta.noun}s available.`} Tap *View list* and choose one to see the details.`;
+    const options=rows.map(r=>({title:r.title,value:`${LT_PORTAL_PREFIX}${item.source}:${r.id}`,description:r.description}));
+    const interactive={type:'list',body:{text:reply.slice(0,1024)},action:{button:'View list',sections:[{title:engineTruncateButtonTitle(item.title,24),
+      rows:options.map(o=>({id:o.value,title:engineTruncateButtonTitle(o.title,24),...(o.description?{description:engineTruncateButtonTitle(o.description,72)}:{})}))}]}};
+    return {turn:{...base,text:reply,serviceCategory,historyUserText,deliver:()=>ltSendPicker(env,c,clientId,convId,phone,inboxId,reply,options,{interactive})}};
+  }
   if(item.action==='handover'&&c.handover_enabled!=='No')return {introAction:{text:'Talk to a human',intent:'WANTS_HUMAN',customerLanguage:lang},historyUserText};
   if(item.action==='flight_search'&&await ltLiveTicketsConnected(env,clientId)){
     await ltSaveChatSearchDraft(env,clientId,phone,{guided:true});
@@ -22124,6 +22205,26 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     if(liveCheckoutTurn?.handled){
       await patchClientFields(env,clientId,{last_seen:new Date().toISOString()}).catch(function(){});
       return json({ok:true,route:'travel_live_checkout',sent:true,step:liveCheckoutTurn.step});
+    }
+    // Flight questions (and an open flight search) at an agency with the live API connected are
+    // answered from the live API here — before Flowvyne, the greeting intro or an industry flow can
+    // reply with generic AI text. Opt-out words and requests for a person keep their normal path.
+    if(!introAction&&userText&&ltLiveAgencyEnabled(c)
+      &&!ENGINE_OPT_OUT_WORDS.includes(userText.toLowerCase().trim())
+      &&!/\b(?:human|agent|representative|real person|staff|manager)\b/i.test(userText)
+      &&await ltLiveTicketsConnected(env,clientId)){
+      const liveTurn=await engineHandleLiveTicketingChat(env,c,clientId,userText,state.activeHistory,phone);
+      if(liveTurn?.handled){
+        const lang=/[\u0D00-\u0D7F]/u.test(userText)?'ml':(c.language||'en');
+        const reply=await engineLocalizeReply(env,c,liveTurn.reply,lang);
+        await enginePersistFirstGreetingTurn(env,c,clientId,state,userText,messageId,isNewLead,{
+          route:'travel_live_ticketing',next:state.stage||'new',preserveCrmStage:true,lang,text:reply,intent:'BOOKING',serviceCategory:'Air Ticket',
+          deliver:()=>liveTurn.buttons?.length
+            ?ltSendPicker(env,c,clientId,convId,phone,parsed.inboxId,reply,liveTurn.buttons,liveTurn.picker||{})
+            :engineDeliverReply(env,c,clientId,convId,reply,{mediaType,langCode:lang,ctx}).then(()=>null),
+        },startMs,mediaType,ctx);
+        return json({ok:true,route:'travel_live_ticketing',sent:c.bot_reply_disabled!=='Yes'});
+      }
     }
 
     // ── Flowvyne scripted flows ──────────────────────────────────────────────

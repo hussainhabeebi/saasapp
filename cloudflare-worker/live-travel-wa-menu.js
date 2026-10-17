@@ -5,12 +5,16 @@
    order, wording and sections. "hi" / "menu" sends it as a WhatsApp list message.
 
    A menu row does one of:
-     flight_search  guided flight search on the connected live API (POOMAS):
-                    route → date → passengers buttons → live fares → pick →
-                    flight details → Proceed → booking form → booking-site link
-     ask            sends the agency's question and tags the lead's Service Category;
-                    the customer's answer continues with the normal AI reply
-     link           a button that opens the agency's own page (packages, visa form…)
+     flight_search  live flights from the connected API (POOMAS), as buttons:
+                    route → date → passengers → live fares → pick →
+                    flight details → Proceed → booking form → booking-site link.
+                    Shown only while the live API is connected.
+     portal         lists what the agency has listed in its Travel Portal (the
+                    Travel Agency module): packages, Umrah groups, visas, rental cars,
+                    attestation, group fares, special fares. Tap → details → Enquire.
+                    Shown only while that portal section has live listings.
+     ask / link     an option the agency adds itself: its own question, or a button
+                    to its own page
      handover       hands the chat to a team member
      my_bookings    the customer's Live Agency bookings, looked up by phone
 
@@ -18,7 +22,19 @@
    WhatsApp sends live in worker.js.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export const LT_MENU_ACTIONS=['flight_search','ask','link','handover','my_bookings'];
+export const LT_MENU_ACTIONS=['flight_search','portal','ask','link','handover','my_bookings'];
+// Travel Portal sections a menu row can list (Travel Agency module tables; attestation is D1).
+export const LT_PORTAL_SOURCES={
+  packages:{label:'Holiday Packages',noun:'package',emoji:'🏝️',category:'Package'},
+  umrah:{label:'Umrah Groups',noun:'Umrah group',emoji:'🕋',category:'Umrah and Hajj'},
+  visas:{label:'Visa Services',noun:'visa',emoji:'🛂',category:'Visa'},
+  cars:{label:'Car Rental',noun:'car',emoji:'🚗',category:'Other Services'},
+  attestation:{label:'Attestation',noun:'attestation service',emoji:'📄',category:'Certificate Attestation'},
+  group_fares:{label:'Group Fares',noun:'group fare',emoji:'👥',category:'Group Ticket'},
+  special_fares:{label:'Special Fares',noun:'special fare',emoji:'🔥',category:'Ticket'},
+};
+export const LT_PORTAL_PREFIX='TPORTAL:';
+export const LT_ENQUIRE_PREFIX='TENQUIRE:';
 // WhatsApp list messages carry at most 10 rows; row titles 24 chars, descriptions 72,
 // section titles 24, the list button 20.
 export const LT_MENU_MAX_ROWS=10;
@@ -31,20 +47,16 @@ export function ltMenuDefaults(){
     button_label:'Menu',
     popular_routes:[],
     items:[
-      {id:'flights',emoji:'✈️',title:'Flight Tickets',description:'Live fares — search and book in chat',section:'Book',action:'flight_search',category:'Air Ticket'},
-      {id:'packages',emoji:'🏝️',title:'Holiday Packages',description:'Tours, honeymoon and family trips',section:'Book',action:'ask',category:'Package',
-        message:'🏝️ Great choice! Which destination are you interested in?\n\nPlease share your travel month and how many people are travelling.'},
-      {id:'umrah',emoji:'🕋',title:'Umrah & Hajj',description:'Umrah packages and visas',section:'Book',action:'ask',category:'Umrah and Hajj',
-        message:'🕋 We arrange Umrah and Hajj packages.\n\nWhen would you like to travel, from which city, and how many people?'},
-      {id:'hotels',emoji:'🏨',title:'Hotels',description:'Hotel bookings worldwide',section:'Book',action:'ask',category:'Hotel',
-        message:'🏨 Which city do you need a hotel in?\n\nPlease share check-in and check-out dates and the number of guests.'},
-      {id:'visa',emoji:'🛂',title:'Visa Services',description:'Visit, tourist and work visas',section:'Documents',action:'ask',category:'Visa',
-        message:'🛂 Which country is the visa for?\n\nPlease share your nationality, visa type (visit / tourist / work) and travel date.'},
-      {id:'attestation',emoji:'📄',title:'Attestation',description:'Certificate attestation',section:'Documents',action:'ask',category:'Certificate Attestation',enabled:false,
-        message:'📄 Which certificate needs attestation, and for which country?'},
+      {id:'flights',emoji:'✈️',title:'Live Flights',description:'Live fares — search and book in chat',section:'Book',action:'flight_search',category:'Air Ticket'},
+      {id:'packages',emoji:'🏝️',title:'Holiday Packages',description:'Our tour packages',section:'Book',action:'portal',source:'packages',category:'Package'},
+      {id:'umrah',emoji:'🕋',title:'Umrah Groups',description:'Upcoming Umrah departures',section:'Book',action:'portal',source:'umrah',category:'Umrah and Hajj'},
+      {id:'group_fares',emoji:'👥',title:'Group Fares',description:'Seats on our group fares',section:'Book',action:'portal',source:'group_fares',category:'Group Ticket'},
+      {id:'special_fares',emoji:'🔥',title:'Special Fares',description:'Limited-time fare offers',section:'Book',action:'portal',source:'special_fares',category:'Ticket'},
+      {id:'cars',emoji:'🚗',title:'Car Rental',description:'Cars available for rent',section:'Book',action:'portal',source:'cars',category:'Other Services'},
+      {id:'visas',emoji:'🛂',title:'Visa Services',description:'Visas we process',section:'Documents',action:'portal',source:'visas',category:'Visa'},
+      {id:'attestation',emoji:'📄',title:'Attestation',description:'Certificate attestation',section:'Documents',action:'portal',source:'attestation',category:'Certificate Attestation'},
       {id:'bookings',emoji:'🎫',title:'My Bookings',description:'Booking status, PNR and tickets',section:'My Trip',action:'my_bookings',category:''},
-      {id:'agent',emoji:'👤',title:'Talk to an Agent',description:'Chat with our travel team',section:'Help',action:'handover',category:'',
-        message:'👤 Sure — connecting you with our travel team. Someone will reply here shortly.'},
+      {id:'agent',emoji:'👤',title:'Talk to an Agent',description:'Chat with our travel team',section:'Help',action:'handover',category:''},
     ],
   };
 }
@@ -65,9 +77,10 @@ export function ltMenuNormalize(raw){
     seen.add(id);
     const action=LT_MENU_ACTIONS.includes(it?.action)?it.action:'ask';
     const url=String(it?.url||'').trim();
+    const source=action==='portal'?(LT_PORTAL_SOURCES[it?.source]?it.source:LT_PORTAL_SOURCES[id]?id:'packages'):'';
     return {
       id,emoji:clip(it?.emoji,8),title:clip(it?.title,24)||`Option ${i+1}`,description:clip(it?.description,72),
-      section:clip(it?.section,24)||'Services',action,category:clip(it?.category,60),
+      section:clip(it?.section,24)||'Services',action,source,category:clip(it?.category,60),
       message:clipText(it?.message,900),url:/^https:\/\/[^\s]+$/i.test(url)?url.slice(0,500):'',button_text:clip(it?.button_text,20),
       enabled:it?.enabled!==false,
     };
@@ -102,13 +115,15 @@ export function ltMenuValidate(menu){
 export function ltMenuRowTitle(item){
   return clip(`${item.emoji?item.emoji+' ':''}${item.title}`,24);
 }
-export function ltMenuVisibleItems(menu){
-  return (menu?.items||[]).filter(i=>i.enabled).slice(0,LT_MENU_MAX_ROWS);
+// available(item) → false hides a row the agency cannot serve right now: Live Flights without the
+// API connected, or a Travel Portal section with nothing listed.
+export function ltMenuVisibleItems(menu,available=null){
+  return (menu?.items||[]).filter(i=>i.enabled&&(!available||available(i))).slice(0,LT_MENU_MAX_ROWS);
 }
 // List-message sections, in the order the agency arranged the rows.
-export function ltMenuSections(menu){
+export function ltMenuSections(menu,available=null){
   const sections=[];
-  for(const it of ltMenuVisibleItems(menu)){
+  for(const it of ltMenuVisibleItems(menu,available)){
     let s=sections.find(x=>x.title.toLowerCase()===it.section.toLowerCase());
     if(!s){s={title:it.section,rows:[]};sections.push(s);}
     s.rows.push({id:LT_MENU_VALUE_PREFIX+it.id,title:ltMenuRowTitle(it),...(it.description?{description:it.description}:{})});
@@ -261,4 +276,78 @@ export function ltCheckoutUrl(selected,clientId,{passenger={},phone='',adults=0,
   if(children)q.set('children',String(children));
   if(infants)q.set('infants',String(infants));
   return `${base}/book?${q.toString()}`;
+}
+
+// ── Travel Portal listings ───────────────────────────────────────────────────
+const money=(n,cur)=>{const v=Number(n);return Number.isFinite(v)&&v>0?`${String(cur||'').trim()||'AED'} ${v.toLocaleString('en-US',{maximumFractionDigits:2})}`:'';};
+const shortDate=v=>{const d=new Date(String(v||'').slice(0,10)+'T00:00:00Z');return Number.isNaN(d.getTime())?'':`${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;};
+const list=v=>{if(Array.isArray(v))return v.map(String).filter(Boolean);try{const a=JSON.parse(v);if(Array.isArray(a))return a.map(String).filter(Boolean);}catch(e){}return String(v||'').split(/\n|;|,/).map(x=>x.trim()).filter(Boolean);};
+const join=(...parts)=>parts.filter(Boolean).join(' · ');
+const CLOSED=/^(?:inactive|sold[_ -]?out|closed|expired|cancelled|canceled|full|unavailable|hidden|draft)$/i;
+
+// Raw Travel Portal records → menu rows {id,title,description,detail}. Only what a customer can
+// still buy is listed: no inactive visas, past or full Umrah groups, departed or closed fares,
+// cars out on hire (outCarIds), and nothing without a name. today = 'YYYY-MM-DD'.
+export function ltPortalRows(source,records,{today=new Date().toISOString().slice(0,10),outCarIds=new Set()}={}){
+  const rows=[];
+  for(const r of records||[]){
+    if(!r||CLOSED.test(String(r.status||'').trim()))continue;
+    const id=String(r.Id??r.id??'').trim();
+    if(!id)continue;
+    let row=null;
+    if(source==='packages'&&r.name){
+      const price=money(r.sell_price,r.currency);
+      const inc=list(r.inclusions).slice(0,8),exc=list(r.exclusions).slice(0,5);
+      row={title:r.name,description:join(r.destination,r.nights?`${r.nights}N`:'',price&&`from ${price}`),
+        detail:[`🏝️ *${r.name}*`,join(r.type,r.destination),r.nights?`🌙 ${r.nights} nights`:'',(r.pax_min||r.pax_max)?`👥 ${r.pax_min||1}–${r.pax_max||r.pax_min} travellers`:'',price?`💰 *${price}* per person`:'',
+          inc.length?`\n✅ *Includes*\n${inc.map(x=>'• '+x).join('\n')}`:'',exc.length?`\n❌ *Excludes*\n${exc.map(x=>'• '+x).join('\n')}`:'',r.notes?`\n${String(r.notes).slice(0,300)}`:''].filter(Boolean).join('\n')};
+    }
+    if(source==='umrah'&&r.name){
+      if(r.departure_date&&String(r.departure_date).slice(0,10)<today)continue;
+      const booked=list(r.pilgrims).length,left=Math.max(0,Number(r.seats||0)-booked);
+      if(Number(r.seats||0)>0&&left<=0)continue;
+      const price=money(r.price_per_pax,r.currency);
+      row={title:r.name,description:join(r.departure_date&&`Departs ${shortDate(r.departure_date)}`,left?`${left} seats left`:'',price),
+        detail:[`🕋 *${r.name}*`,`🛫 ${shortDate(r.departure_date)||'Date TBA'}${r.return_date?` → ${shortDate(r.return_date)}`:''}`,
+          (r.makkah_hotel||r.makkah_nights)?`🏨 Makkah: ${join(r.makkah_hotel,r.makkah_nights?`${r.makkah_nights} nights`:'')}`:'',
+          (r.madinah_hotel||r.madinah_nights)?`🏨 Madinah: ${join(r.madinah_hotel,r.madinah_nights?`${r.madinah_nights} nights`:'')}`:'',
+          r.transport?`🚌 ${r.transport}`:'',left?`💺 ${left} seats left`:'',price?`💰 *${price}* per person`:'',r.notes?`\n${String(r.notes).slice(0,300)}`:''].filter(Boolean).join('\n')};
+    }
+    if(source==='visas'&&r.visa_country){
+      const name=join(r.visa_country,r.visa_type).replace(' · ',' ');
+      const adult=money(r.adult_price,r.currency),child=money(r.child_price,r.currency),docs=list(r.required_documents).slice(0,10);
+      row={title:`${name} Visa`.replace(/visa visa$/i,'Visa'),description:join(r.duration,adult,r.processing_time),
+        detail:[`🛂 *${name} visa*`,r.duration?`📅 Stay: ${r.duration}`:'',r.visa_validity?`⏳ Validity: ${r.visa_validity}`:'',r.entry_type?`🚪 Entry: ${r.entry_type}`:'',
+          r.processing_time?`⏱️ Processing: ${r.processing_time}`:'',adult?`💰 *${adult}* adult${child?` · ${child} child`:''}`:'',
+          docs.length?`\n📎 *Documents needed*\n${docs.map(x=>'• '+x).join('\n')}`:''].filter(Boolean).join('\n')};
+    }
+    if(source==='cars'&&(r.name||r.make)){
+      if(r.status&&!/^available$/i.test(r.status))continue;
+      if(outCarIds.has(id))continue;
+      const name=r.name||join(r.make,r.model).replace(' · ',' '),rate=money(r.daily_rate,r.currency),feat=list(r.features).slice(0,6);
+      row={title:name,description:join(r.category,r.seats?`${r.seats} seats`:'',rate&&`${rate}/day`),
+        detail:[`🚗 *${name}*`,join(r.year,r.category,r.color),r.seats?`💺 ${r.seats} seats`:'',rate?`💰 *${rate}* per day`:'',feat.length?`\n✨ ${feat.join(' · ')}`:''].filter(Boolean).join('\n')};
+    }
+    if(source==='attestation'&&r.name){
+      const fee=money(r.fee,r.currency||'INR'),docs=list(r.required_docs).slice(0,8);
+      row={title:r.name,description:join(r.country,fee,r.turnaround_time),
+        detail:[`📄 *${r.name}*`,join(r.service_type,r.country&&`for ${r.country}`),fee?`💰 *${fee}*`:'',r.turnaround_time?`⏱️ Turnaround: ${r.turnaround_time}`:'',
+          docs.length?`\n📎 *Documents needed*\n${docs.map(x=>'• '+x).join('\n')}`:''].filter(Boolean).join('\n')};
+    }
+    if((source==='group_fares'||source==='special_fares')&&(r.sector||r.from_city)){
+      const date=String(r.departure_date||'').slice(0,10);
+      if(date&&date<today)continue;
+      if(r.booking_deadline&&String(r.booking_deadline).slice(0,10)<today)continue;
+      if(r.fare_valid_until&&String(r.fare_valid_until).slice(0,10)<today)continue;
+      if(r.available_seats!=null&&r.available_seats!==''&&Number(r.available_seats)<=0)continue;
+      const sector=r.sector||join(r.from_city,r.to_city).replace(' · ',' → '),price=money(r.fare_price,r.currency);
+      row={title:`${sector}${date?` ${shortDate(date)}`:''}`,description:join(join(r.airline,r.flight_number).replace(' · ',' '),price,r.available_seats?`${r.available_seats} seats`:''),
+        detail:[`${source==='group_fares'?'👥':'🔥'} *${sector}*`,join(r.airline,r.flight_number).replace(' · ',' '),
+          date?`🛫 ${shortDate(date)}${r.departure_time?` ${r.departure_time}`:''}${r.arrival_time?` → ${r.arrival_time}`:''}${r.return_date?` · return ${shortDate(r.return_date)}`:''}`:'',
+          join(r.cabin_class,r.fare_type),r.baggage_allowance?`🧳 ${r.baggage_allowance}`:'',r.available_seats?`💺 ${r.available_seats} seats left`:'',
+          price?`💰 *${price}* per person`:'',r.booking_deadline?`⏳ Book by ${shortDate(r.booking_deadline)}`:'',r.remarks?`\n${String(r.remarks).slice(0,300)}`:''].filter(Boolean).join('\n')};
+    }
+    if(row)rows.push({id,title:clip(row.title,60),description:clip(row.description,72),detail:row.detail});
+  }
+  return rows;
 }

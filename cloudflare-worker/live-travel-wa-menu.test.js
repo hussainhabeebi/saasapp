@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ltMenuDefaults, ltMenuNormalize, ltMenuValidate, ltMenuSections, ltMenuMatch, ltMenuIsGreeting, ltMenuIsMenuRequest,
   ltMenuGreetingText, ltMenuDateRows, ltMenuRouteRows, ltMenuParsePax, ltCheckoutCommand, ltParseBookingForm, ltBookingFormMissing,
-  ltCheckoutUrl, ltFlightDetailsText } from './live-travel-wa-menu.js';
+  ltCheckoutUrl, ltFlightDetailsText, ltPortalRows, LT_PORTAL_SOURCES } from './live-travel-wa-menu.js';
 
 test('default menu normalizes to WhatsApp-safe rows grouped by section', () => {
   const menu = ltMenuNormalize({ ...ltMenuDefaults(), enabled: true });
@@ -10,10 +10,58 @@ test('default menu normalizes to WhatsApp-safe rows grouped by section', () => {
   const sections = ltMenuSections(menu);
   assert.deepEqual(sections.map(s => s.title), ['Book', 'Documents', 'My Trip', 'Help']);
   const rows = sections.flatMap(s => s.rows);
-  assert.ok(rows.length <= 10);
-  assert.ok(!rows.some(r => r.id === 'TMENU:attestation'), 'switched-off rows are not sent');
+  assert.equal(rows.length, 10);
   for (const r of rows) { assert.ok(r.title.length <= 24, r.title); assert.ok((r.description || '').length <= 72); }
-  assert.equal(rows[0].title, '✈️ Flight Tickets');
+  assert.equal(rows[0].title, '✈️ Live Flights');
+  // Other services are Travel Portal sections only — no hand-written Hotels/ask rows by default.
+  const others = menu.items.filter(i => !['flight_search', 'my_bookings', 'handover'].includes(i.action));
+  assert.ok(others.every(i => i.action === 'portal'));
+  assert.deepEqual(others.map(i => i.source).sort(), Object.keys(LT_PORTAL_SOURCES).sort());
+});
+
+test('rows the agency cannot serve are hidden', () => {
+  const menu = ltMenuNormalize({ ...ltMenuDefaults(), enabled: true });
+  const counts = { packages: 3, visas: 1 };
+  const available = i => i.action === 'flight_search' ? false : i.action === 'portal' ? (counts[i.source] || 0) > 0 : true;
+  assert.deepEqual(ltMenuSections(menu, available).flatMap(s => s.rows.map(r => r.id)),
+    ['TMENU:packages', 'TMENU:visas', 'TMENU:bookings', 'TMENU:agent'], 'no Live Flights without the API, no empty portal sections');
+});
+
+test('Travel Portal listings: only what can still be bought, with details', () => {
+  const today = '2026-10-17';
+  const pk = ltPortalRows('packages', [
+    { Id: 1, name: 'Baku 4N/5D', type: 'Tour', destination: 'Baku', nights: 4, pax_min: 2, pax_max: 6, currency: 'AED', sell_price: 1999, inclusions: '["Flights","Hotel 4*"]', exclusions: 'Visa' },
+    { Id: 2, name: '' },
+  ], { today });
+  assert.equal(pk.length, 1);
+  assert.deepEqual([pk[0].id, pk[0].title, pk[0].description], ['1', 'Baku 4N/5D', 'Baku · 4N · from AED 1,999']);
+  assert.match(pk[0].detail, /✅ \*Includes\*\n• Flights\n• Hotel 4\*/);
+  const umrah = ltPortalRows('umrah', [
+    { Id: 1, name: 'Nov Umrah', departure_date: '2026-11-10', seats: 2, pilgrims: '["a","b"]' },
+    { Id: 2, name: 'Old', departure_date: '2026-09-01', seats: 40 },
+    { Id: 3, name: 'Dec Umrah', departure_date: '2026-12-05', seats: 40, pilgrims: '["a"]', price_per_pax: 2500, currency: 'SAR', makkah_hotel: 'Hilton', makkah_nights: 5 },
+  ], { today });
+  assert.deepEqual(umrah.map(r => r.title), ['Dec Umrah'], 'full and departed groups are not offered');
+  assert.equal(umrah[0].description, 'Departs 5 Dec · 39 seats left · SAR 2,500');
+  const visas = ltPortalRows('visas', [
+    { Id: 5, visa_country: 'UAE', visa_type: 'Visit Visa', duration: '30 days', adult_price: 350, currency: 'AED', processing_time: '3 days', required_documents: 'Passport\nPhoto' },
+    { Id: 6, visa_country: 'Oman', visa_type: 'Visit', status: 'inactive' },
+  ], { today });
+  assert.deepEqual(visas.map(v => v.title), ['UAE Visit Visa']);
+  assert.match(visas[0].detail, /Documents needed\*\n• Passport\n• Photo/);
+  const cars = ltPortalRows('cars', [{ Id: 1, name: 'Corolla', status: 'available', daily_rate: 120 }, { Id: 2, name: 'Patrol', status: 'maintenance' }, { Id: 3, name: 'Camry', status: 'available' }], { today, outCarIds: new Set(['3']) });
+  assert.deepEqual(cars.map(c => c.title), ['Corolla']);
+  const fares = ltPortalRows('group_fares', [
+    { Id: 1, sector: 'CCJ-DXB', airline: 'IX', flight_number: '343', departure_date: '2026-11-01', fare_price: 450, currency: 'AED', available_seats: 9, status: 'available' },
+    { Id: 2, sector: 'COK-DXB', departure_date: '2026-11-01', available_seats: 0 },
+    { Id: 3, sector: 'TRV-DXB', departure_date: '2026-11-01', status: 'sold_out' },
+    { Id: 4, sector: 'CNN-DXB', departure_date: '2026-10-01' },
+  ], { today });
+  assert.deepEqual(fares.map(f => f.title), ['CCJ-DXB 1 Nov']);
+  assert.equal(fares[0].description, 'IX 343 · AED 450 · 9 seats');
+  const special = ltPortalRows('special_fares', [{ Id: 1, from_city: 'Dubai', to_city: 'Kochi', departure_date: '2026-11-01', fare_valid_until: '2026-10-01' }], { today });
+  assert.equal(special.length, 0, 'an expired offer is not shown');
+  assert.equal(ltPortalRows('attestation', [{ id: 9, name: 'Degree certificate', country: 'UAE', fee: 2500, currency: 'INR' }], { today })[0].description, 'UAE · INR 2,500');
 });
 
 test('normalize cleans bad input: ids, actions, links, routes', () => {
@@ -37,10 +85,11 @@ test('more than 10 options on is rejected', () => {
 
 test('a tap matches by id, by the echoed title, or by the bare title', () => {
   const menu = ltMenuNormalize({ ...ltMenuDefaults(), enabled: true });
-  assert.equal(ltMenuMatch(menu, 'TMENU:visa').id, 'visa');
-  assert.equal(ltMenuMatch(menu, '🛂 Visa Services').id, 'visa');
-  assert.equal(ltMenuMatch(menu, 'visa services').id, 'visa');
-  assert.equal(ltMenuMatch(menu, 'TMENU:attestation'), null, 'a switched-off row never runs');
+  assert.equal(ltMenuMatch(menu, 'TMENU:visas').id, 'visas');
+  assert.equal(ltMenuMatch(menu, '🛂 Visa Services').id, 'visas');
+  assert.equal(ltMenuMatch(menu, 'visa services').id, 'visas');
+  const off = ltMenuNormalize({ ...menu, items: menu.items.map(i => i.id === 'cars' ? { ...i, enabled: false } : i) });
+  assert.equal(ltMenuMatch(off, 'TMENU:cars'), null, 'a switched-off row never runs');
   assert.equal(ltMenuMatch(menu, 'I need a visa for my wife'), null);
 });
 

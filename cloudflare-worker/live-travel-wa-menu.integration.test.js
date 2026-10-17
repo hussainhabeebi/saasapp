@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import worker, { engineHandleTravelMenu, engineHandleLiveTicketingChat, engineHandleLiveTicketCheckoutChat } from './worker.js';
+import worker, { engineHandleTravelMenu, engineHandleLiveTicketingChat, engineHandleLiveTicketCheckoutChat, ltChatFlightIntent } from './worker.js';
 import { ltMenuDateRows } from './live-travel-wa-menu.js';
 
 class D1Statement {
@@ -31,7 +31,11 @@ async function call(env,session,path,method='GET',body){
 }
 
 test('WhatsApp menu: settings API, menu taps and the full flight booking flow',async()=>{
-  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key',NOCODB_BASE:'https://nc.test',NOCODB_TOKEN:'nc'},session=await token(env.SESSION_SIGNING_KEY);
+  DB.db.exec(`CREATE TABLE attest_services (id INTEGER PRIMARY KEY, client_id INTEGER, name TEXT, service_type TEXT, country TEXT, fee REAL, currency TEXT, turnaround_time TEXT, required_docs TEXT, status TEXT)`);
+  // Travel Portal: this agency lists one package and one visa; its Umrah table is empty.
+  const portal={tpk:[{Id:1,client_id:'7',name:'Baku 4N/5D',destination:'Baku',nights:4,currency:'AED',sell_price:1999,inclusions:'["Flights","Hotel"]'}],
+    tvi:[{Id:5,client_id:'7',visa_country:'UAE',visa_type:'Visit Visa',duration:'30 days',adult_price:350,currency:'AED',processing_time:'3 days',required_documents:'Passport\nPhoto',status:'active'}],tum:[]};
   const realFetch=globalThis.fetch,meta=[],chatwoot=[],poomas=[];
   const day=ltMenuDateRows()[2];
   globalThis.fetch=async(url,opts={})=>{
@@ -43,6 +47,7 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
         {id:'FARE-2',isBookable:true,supplier:'DUFFEL',displayPrice:720,totalFare:720,currency:'AED',airline:'G9',airlineName:'Air Arabia',flightNumber:'G9 452',origin:'SHJ',destination:'CCJ',departureTime:`${day.value}T09:00:00`,arrivalTime:`${day.value}T14:30:00`,duration:240,stops:0},
       ]}));
     }
+    if(u.startsWith('https://nc.test/api/v2/tables/')){const t=u.split('/tables/')[1].split('/')[0];return portal[t]?new Response(JSON.stringify({list:portal[t]})):new Response('{}',{status:404});}
     if(u.startsWith('https://graph.facebook.com/')){meta.push(JSON.parse(opts.body));return new Response('{}');}
     if(u.startsWith('https://cw.test/')){
       const fd=opts.body;chatwoot.push({content:fd.get?.('content'),items:fd.get?.('content_attributes')?JSON.parse(fd.get('content_attributes')).items:null});
@@ -56,6 +61,7 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     assert.equal(r.status,200);
     assert.equal(r.data.menu.enabled,false,'off until the agency turns it on');
     assert.ok(r.data.categories.includes('Visa'));
+    assert.ok('packages' in r.data.portal_counts);
     const tooMany={...r.data.menu,enabled:true,items:Array.from({length:11},(_,i)=>({title:`Opt ${i}`}))};
     assert.equal((await call(env,session,'/live-travel/whatsapp-menu','PUT',{menu:tooMany})).status,400);
     r=await call(env,session,'/live-travel/whatsapp-menu','PUT',{menu:{...r.data.menu,enabled:true,popular_routes:[['SHJ','CCJ']]}});
@@ -63,7 +69,7 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     assert.equal(r.data.menu.enabled,true);
     assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
 
-    const c={Id:7,industry:'travel',client_name:'Al Noor Travels',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
+    const c={Id:7,ta_table_ids:JSON.stringify({packages:'tpk',visas:'tvi',umrah_groups:'tum'}),industry:'travel',client_name:'Al Noor Travels',language:'en',chatwoot_base:'https://cw.test',chatwoot_account_id:'1',chatwoot_token:'cw',wa_phone_id:'PHONE',wa_token:'TOKEN'};
     const phone='+971500000001',state={convId:'55',stage:'new',name:'Hussain Aparambil',leadId:'91'};
 
     // Other agencies / ordinary messages are untouched.
@@ -77,15 +83,40 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     const list=meta.pop();
     assert.equal(list.interactive.type,'list');
     assert.equal(list.interactive.action.button,'Menu');
-    assert.deepEqual(list.interactive.action.sections.map(s=>s.title),['Book','Documents','My Trip','Help']);
-    assert.ok(offered.some(o=>o.title==='🛂 Visa Services'&&o.value==='TMENU:visa'),'options are kept for the tap resolution');
+    // Only Live Flights (API connected) and the Travel Portal sections with listings are offered.
+    assert.deepEqual(list.interactive.action.sections.map(s=>[s.title,s.rows.map(r=>r.title)]),[
+      ['Book',['✈️ Live Flights','🏝️ Holiday Packages']],['Documents',['🛂 Visa Services']],['My Trip',['🎫 My Bookings']],['Help',['👤 Talk to an Agent']]]);
+    assert.ok(offered.some(o=>o.title==='🛂 Visa Services'&&o.value==='TMENU:visas'),'options are kept for the tap resolution');
 
-    // ── Visa: the agency's question, filed under Visa ──
-    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:visa','text',false);
-    assert.match(turn.turn.text,/Which country is the visa for/);
+    // ── Visa Services: the visas listed in the Travel Portal ──
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:visas','text',false);
     assert.equal(turn.turn.serviceCategory,'Visa');
     assert.equal(turn.turn.historyUserText,'🛂 Visa Services');
-    assert.deepEqual(turn.turn.buttons.map(b=>b.value),['menu','talk to agent']);
+    assert.match(turn.turn.text,/We have 1 visa available/);
+    assert.deepEqual(await turn.turn.deliver(),[{title:'UAE Visit Visa',value:'TPORTAL:visas:5'}]);
+    const visaList=meta.pop();
+    assert.equal(visaList.interactive.action.button,'View list');
+    assert.deepEqual(visaList.interactive.action.sections[0].rows,[{id:'TPORTAL:visas:5',title:'UAE Visit Visa',description:'30 days · AED 350 · 3 days'}]);
+    // Tap → the visa's details
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TPORTAL:visas:5','text',false);
+    assert.match(turn.turn.text,/🛂 \*UAE Visit Visa visa\*|🛂 \*UAE Visit Visa\*/);
+    assert.match(turn.turn.text,/Documents needed\*\n• Passport\n• Photo/);
+    assert.deepEqual(turn.turn.buttons.map(b=>b.value),['TENQUIRE:visas:5','menu','talk to agent']);
+    // Enquire → a hot booking enquiry, filed under Visa
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TENQUIRE:visas:5','text',false);
+    assert.equal(turn.turn.intent,'BOOKING');
+    assert.equal(turn.turn.serviceCategory,'Visa');
+    assert.match(turn.turn.text,/UAE Visit Visa[\s\S]*travel date/);
+    // A listing taken down since the list was sent
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TPORTAL:visas:99','text',false);
+    assert.match(turn.turn.text,/no longer available/);
+    // Packages list
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','🏝️ Holiday Packages','text',false);
+    assert.deepEqual(await turn.turn.deliver(),[{title:'Baku 4N/5D',value:'TPORTAL:packages:1'}]);
+    assert.match(meta.pop().interactive.action.sections[0].rows[0].description,/Baku · 4N · from AED 1,999/);
+    // Umrah has nothing listed → not offered; typed anyway → no fake list
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:umrah','text',false);
+    assert.match(turn.turn.text,/no umrah groups listed right now/i);
     // ── Talk to an Agent → the normal handover ──
     turn=await engineHandleTravelMenu(env,c,7,state,phone,'','👤 Talk to an Agent','text',false);
     assert.equal(turn.introAction.intent,'WANTS_HUMAN');
@@ -94,7 +125,7 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
     assert.match(turn.turn.text,/couldn't find a booking/);
 
     // ── Flights: route picker (agency pinned route offered) ──
-    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','✈️ Flight Tickets','text',false);
+    turn=await engineHandleTravelMenu(env,c,7,state,phone,'','✈️ Live Flights','text',false);
     assert.equal(turn.turn.serviceCategory,'Air Ticket');
     assert.match(turn.turn.text,/Where are you flying from and to/);
     const routes=await turn.turn.deliver();
@@ -162,7 +193,22 @@ test('WhatsApp menu: settings API, menu taps and the full flight booking flow',a
 
     // ── A visa tap after a half-finished flight search does not continue the flight draft ──
     await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:flights','text',false);
-    await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:visa','text',false);
+    await engineHandleTravelMenu(env,c,7,state,phone,'','TMENU:visas','text',false);
     assert.equal(DB.db.prepare(`SELECT COUNT(*) n FROM live_travel_chat_search_state WHERE client_id=7`).get().n,0);
+
+    // ── An agency without the live API: no Live Flights row ──
+    const s9=await token(env.SESSION_SIGNING_KEY,9);
+    r=await call(env,s9,'/live-travel/whatsapp-menu');
+    assert.equal((await call(env,s9,'/live-travel/whatsapp-menu','PUT',{menu:{...r.data.menu,enabled:true}})).status,200);
+    turn=await engineHandleTravelMenu(env,{...c,Id:9},9,state,phone,'','hi','text',true);
+    await turn.turn.deliver();
+    assert.ok(!meta.pop().interactive.action.sections.flatMap(s=>s.rows).some(r=>r.title.includes('Live Flights')));
   }finally{globalThis.fetch=realFetch;}
+});
+
+test('asking for flights in any common way counts as a live flight request',()=>{
+  for(const t of ['flights?','Flight','live flights','air ticket','flight details','flight prices pls','show me flights','any flights','need flight booking','cheapest flights'])
+    assert.ok(ltChatFlightIntent(t),t);
+  for(const t of ['my flight details','flight status','what is the visa price','hi'])
+    assert.ok(!ltChatFlightIntent(t),t);
 });
