@@ -8,7 +8,7 @@
 <style>
 :root{--navy:#073B4C;--navy2:#0B5368;--teal:#00A896;--cyan:#E8F8F6;--gold:#FFB703;--bg:#F4F7F9;--card:#fff;--ink:#102A35;--muted:#667E87;--line:#DDE7EB;--red:#C63C3C;--green:#138A62;--shadow:0 4px 18px rgba(7,59,76,.08)}
 *{box-sizing:border-box}html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--bg)}button,input,select,textarea{font:inherit}button{cursor:pointer}
-body{display:flex;flex-direction:column;overflow:hidden}.top{height:62px;background:var(--navy);color:#fff;display:flex;align-items:center;padding:0 20px;gap:12px;flex:none}.brand{font-size:19px;font-weight:800}.brand i{font-style:normal;color:#67E8D5}.live{background:#E62E2E;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}.back{margin-left:auto;color:#D7ECF2;border:1px solid #467383;background:transparent;border-radius:8px;padding:8px 12px}.shell{display:flex;flex:1;min-height:0}.side{width:225px;background:#fff;border-right:1px solid var(--line);padding:16px 10px;overflow:auto;flex:none}.nav{width:100%;border:0;background:transparent;border-radius:9px;padding:11px 12px;text-align:left;color:var(--muted);font-weight:650;margin:2px 0}.nav:hover{background:var(--bg)}.nav.active{background:var(--cyan);color:#05766B}.main{flex:1;overflow:auto;padding:22px}.pagehead{display:flex;align-items:center;gap:12px;margin-bottom:18px}.pagehead h1{font-size:23px;margin:0}.pagehead p{color:var(--muted);margin:4px 0 0;font-size:13px}.actions{margin-left:auto;display:flex;gap:8px}.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 13px;border-radius:8px;font-weight:650}.btn:hover{box-shadow:var(--shadow)}.btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}.btn.danger{color:var(--red)}.btn.sm{padding:6px 9px;font-size:12px}.btn:disabled{opacity:.5;cursor:not-allowed}.grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:12px}.stat,.card{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.stat{padding:16px}.stat b{font-size:24px;display:block}.stat span{font-size:12px;color:var(--muted)}.card{padding:17px;margin-top:14px}.card h3{margin:0 0 13px;font-size:15px}.twocol{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}.formgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.field label{display:block;color:var(--muted);font-size:11px;font-weight:750;margin-bottom:5px;text-transform:uppercase;letter-spacing:.03em}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px;color:var(--ink)}.field textarea{min-height:75px;resize:vertical}.span2{grid-column:span 2}.span4{grid-column:1/-1}.tablewrap{overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:14px}table{width:100%;border-collapse:collapse;min-width:760px}th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:11px;border-bottom:1px solid var(--line);background:#FAFCFD}td{padding:12px 11px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}tr:last-child td{border-bottom:0}.badge{display:inline-flex;border-radius:999px;padding:4px 9px;font-size:10.5px;font-weight:800;background:#EEF3F5;color:#50666F}.badge.ok{background:#DDF6EB;color:var(--green)}.badge.warn{background:#FFF2CC;color:#8A5A00}.badge.bad{background:#FCE3E3;color:var(--red)}.notice{padding:11px 13px;background:#FFF7DE;border:1px solid #F5D87A;border-radius:9px;color:#705617;font-size:12.5px;margin:12px 0}.offer{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px;margin:10px 0;display:grid;grid-template-columns:1fr auto;gap:10px}.offer h3{margin:0 0 4px;font-size:16px}.sub{color:var(--muted);font-size:12px}.price{text-align:right;font-size:20px;font-weight:800}.empty{text-align:center;color:var(--muted);padding:45px 20px}.supplier{display:grid;grid-template-columns:1fr repeat(4,minmax(100px,140px)) auto;gap:10px;align-items:end;padding:14px 0;border-bottom:1px solid var(--line)}.supplier:last-child{border-bottom:0}.supplier strong{text-transform:capitalize}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#A9B8BD;margin-right:5px}.dot.ok{background:var(--green)}.modalback{display:none;position:fixed;inset:0;background:rgba(4,35,45,.55);z-index:100;align-items:center;justify-content:center;padding:18px}.modalback.show{display:flex}.modal{width:min(650px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3)}.modalhd{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center}.modalhd h2{font-size:17px;margin:0}.modalbody{padding:20px}.modalft{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--line)}.error{background:#FCE3E3;color:var(--red);padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px}.spinner{display:inline-block;width:15px;height:15px;border:2px solid #BCD1D6;border-top-color:var(--teal);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+body{display:flex;flex-direction:column;overflow:hidden}.top{height:62px;background:var(--navy);color:#fff;display:flex;align-items:center;padding:0 20px;gap:12px;flex:none}.brand{font-size:19px;font-weight:800}.brand i{font-style:normal;color:#67E8D5}.live{background:#E62E2E;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}.back{margin-left:auto;color:#D7ECF2;border:1px solid #467383;background:transparent;border-radius:8px;padding:8px 12px}.shell{display:flex;flex:1;min-height:0}.side{width:225px;background:#fff;border-right:1px solid var(--line);padding:16px 10px;overflow:auto;flex:none}.nav{width:100%;border:0;background:transparent;border-radius:9px;padding:11px 12px;text-align:left;color:var(--muted);font-weight:650;margin:2px 0}.nav:hover{background:var(--bg)}.nav.active{background:var(--cyan);color:#05766B}.main{flex:1;overflow:auto;padding:22px}.pagehead{display:flex;align-items:center;gap:12px;margin-bottom:18px}.pagehead h1{font-size:23px;margin:0}.pagehead p{color:var(--muted);margin:4px 0 0;font-size:13px}.actions{margin-left:auto;display:flex;gap:8px}.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:9px 13px;border-radius:8px;font-weight:650}.btn:hover{box-shadow:var(--shadow)}.btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}.btn.danger{color:var(--red)}.btn.sm{padding:6px 9px;font-size:12px}.btn:disabled{opacity:.5;cursor:not-allowed}.grid{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:12px}.stat,.card{background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}.stat{padding:16px}.stat b{font-size:24px;display:block}.stat span{font-size:12px;color:var(--muted)}.card{padding:17px;margin-top:14px}.card h3{margin:0 0 13px;font-size:15px}.twocol{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}.formgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.field label{display:block;color:var(--muted);font-size:11px;font-weight:750;margin-bottom:5px;text-transform:uppercase;letter-spacing:.03em}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);border-radius:8px;background:#fff;padding:10px;color:var(--ink)}.field textarea{min-height:75px;resize:vertical}.span2{grid-column:span 2}.span4{grid-column:1/-1}.tablewrap{overflow:auto;background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:14px}table{width:100%;border-collapse:collapse;min-width:760px}th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:11px;border-bottom:1px solid var(--line);background:#FAFCFD}td{padding:12px 11px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}tr:last-child td{border-bottom:0}.badge{display:inline-flex;border-radius:999px;padding:4px 9px;font-size:10.5px;font-weight:800;background:#EEF3F5;color:#50666F}.badge.ok{background:#DDF6EB;color:var(--green)}.badge.warn{background:#FFF2CC;color:#8A5A00}.badge.bad{background:#FCE3E3;color:var(--red)}.notice{padding:11px 13px;background:#FFF7DE;border:1px solid #F5D87A;border-radius:9px;color:#705617;font-size:12.5px;margin:12px 0}.offer{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px;margin:10px 0;display:grid;grid-template-columns:1fr auto;gap:10px}.offer h3{margin:0 0 4px;font-size:16px}.sub{color:var(--muted);font-size:12px}.price{text-align:right;font-size:20px;font-weight:800}.empty{text-align:center;color:var(--muted);padding:45px 20px}.supplier{display:grid;grid-template-columns:1fr repeat(4,minmax(100px,140px)) auto;gap:10px;align-items:end;padding:14px 0;border-bottom:1px solid var(--line)}.supplier:last-child{border-bottom:0}.supplier strong{text-transform:capitalize}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#A9B8BD;margin-right:5px}.dot.ok{background:var(--green)}.modalback{display:none;position:fixed;inset:0;background:rgba(4,35,45,.55);z-index:100;align-items:center;justify-content:center;padding:18px}.modalback.show{display:flex}.modal{width:min(650px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3)}.modalhd{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center}.modalhd h2{font-size:17px;margin:0}.modalbody{padding:20px}.modalft{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--line)}.error{background:#FCE3E3;color:var(--red);padding:10px;border-radius:8px;font-size:12px;margin-bottom:12px}.ap{position:relative}.aplist{display:none;position:absolute;z-index:20;left:0;right:0;top:100%;margin-top:3px;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 28px rgba(7,59,76,.16);max-height:300px;overflow:auto;min-width:260px}.aplist.show{display:block}.apopt{padding:8px 11px;cursor:pointer;font-size:13px;border-bottom:1px solid #F0F4F6}.apopt:last-child{border-bottom:0}.apopt b{display:inline-block;min-width:36px;color:var(--navy)}.apopt.on,.apopt:hover{background:var(--cyan)}.apopt .sub{display:block;padding-left:40px}.aphead{padding:7px 11px;font-size:10.5px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;background:#FAFCFD}.aphint{font-size:11.5px;margin-top:4px;min-height:15px;color:var(--muted)}.aphint.ok{color:var(--green)}.aphint.warn{color:#8A5A00}.aphint.bad{color:var(--red)}.routebar{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start}.routechips{flex:1;min-width:240px}.chiprow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}.chiplbl{font-size:11px;font-weight:750;color:var(--muted);min-width:76px}.chip{border:1px solid var(--line);background:#F7FAFB;color:var(--ink);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:650}.chip:hover{background:var(--cyan);border-color:#9FDCD3}.btn.on{background:#FFF7DE;border-color:#F5D87A}.quick{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}.stepper{display:flex;gap:5px;align-items:center}.stepper input{text-align:center}.spinner{display:inline-block;width:15px;height:15px;border:2px solid #BCD1D6;border-top-color:var(--teal);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:900px){.side{width:70px}.nav{font-size:0;text-align:center}.nav::first-letter{font-size:20px}.grid{grid-template-columns:repeat(2,1fr)}.formgrid{grid-template-columns:repeat(2,1fr)}.supplier{grid-template-columns:1fr 1fr}.main{padding:14px}.twocol{grid-template-columns:1fr}}
 @media(max-width:520px){.brand{font-size:15px}.grid,.formgrid{grid-template-columns:1fr}.span2,.span4{grid-column:auto}.side{display:none}.offer{grid-template-columns:1fr}.price{text-align:left}.pagehead{align-items:flex-start}.actions{flex-direction:column}}
 </style>
@@ -41,11 +41,231 @@ function renderDashboard(){
  const poomasOn=data.poomas_settings?.enabled;
  $('main').innerHTML=head('Live Travel Dashboard','Real-time supplier search, booking and servicing operations')+`<div class="grid"><div class="stat"><b>${data.searches.length}</b><span>Recent searches</span></div><div class="stat"><b>${data.bookings.length}</b><span>Bookings</span></div><div class="stat"><b>${money(revenue)}</b><span>Collected</span></div><div class="stat"><b>${money(due)}</b><span>Balance due</span></div></div><div class="twocol"><div class="card"><h3>Recent bookings</h3>${bookingTable(data.bookings.slice(0,7))}</div><div class="card"><h3>Supplier health</h3>${data.suppliers.map(s=>`<p><span class="dot ${s.credentials_configured||s.supplier==='poomas'?'ok':''}"></span><b style="text-transform:capitalize">${s.supplier}</b> · ${s.enabled?'Enabled':'Disabled'} · ${s.supplier==='poomas'?(poomasOn?'POOMAS checkout enabled':'Toggle on in Suppliers'):(s.credentials_configured?'Credentials ready':'Needs secrets')}</p>`).join('')}<div class="notice">${supplierReady} supplier${supplierReady===1?'':'s'} ready. SerpApi is comparison-only. POOMAS offers can be held and then completed via POOMAS checkout.</div></div></div>`;
 }
+// ── Flight Search: airport picker, quick buttons and per-agency memory ──
+// Airports as CODE|City|Airport|Country|extra search words. Gulf ⇄ India first (where these
+// agencies sell most), then the usual onward hubs. Any other valid IATA code still works — it is
+// just flagged "not in the list" so a typo (DBX for DXB) gets a second look before searching.
+const LT_AIRPORTS=`DXB|Dubai|Dubai International|UAE|
+DWC|Dubai|Al Maktoum (Dubai World Central)|UAE|jebel ali
+AUH|Abu Dhabi|Zayed International|UAE|
+SHJ|Sharjah|Sharjah International|UAE|
+RKT|Ras Al Khaimah|Ras Al Khaimah International|UAE|rak
+FJR|Fujairah|Fujairah International|UAE|
+AAN|Al Ain|Al Ain International|UAE|
+DOH|Doha|Hamad International|Qatar|
+MCT|Muscat|Muscat International|Oman|
+SLL|Salalah|Salalah International|Oman|
+BAH|Manama|Bahrain International|Bahrain|bahrain
+KWI|Kuwait City|Kuwait International|Kuwait|kuwait
+RUH|Riyadh|King Khalid International|Saudi Arabia|ksa
+JED|Jeddah|King Abdulaziz International|Saudi Arabia|jiddah umrah
+DMM|Dammam|King Fahd International|Saudi Arabia|khobar
+MED|Madinah|Prince Mohammad bin Abdulaziz|Saudi Arabia|medina umrah
+AHB|Abha|Abha International|Saudi Arabia|
+TIF|Taif|Taif International|Saudi Arabia|
+CCJ|Kozhikode|Calicut International|India|calicut karipur malappuram
+COK|Kochi|Cochin International|India|cochin ernakulam nedumbassery
+TRV|Thiruvananthapuram|Trivandrum International|India|trivandrum
+CNN|Kannur|Kannur International|India|
+IXE|Mangaluru|Mangalore International|India|mangalore
+BOM|Mumbai|Chhatrapati Shivaji Maharaj International|India|bombay
+DEL|New Delhi|Indira Gandhi International|India|delhi
+BLR|Bengaluru|Kempegowda International|India|bangalore
+MAA|Chennai|Chennai International|India|madras
+HYD|Hyderabad|Rajiv Gandhi International|India|
+CCU|Kolkata|Netaji Subhas Chandra Bose International|India|calcutta
+AMD|Ahmedabad|Sardar Vallabhbhai Patel International|India|
+GOI|Goa|Dabolim|India|
+GOX|Goa|Manohar International (Mopa)|India|mopa
+PNQ|Pune|Pune|India|
+COK|Kochi|Cochin International|India|
+TRZ|Tiruchirappalli|Tiruchirappalli International|India|trichy
+IXM|Madurai|Madurai|India|
+CJB|Coimbatore|Coimbatore International|India|
+LKO|Lucknow|Chaudhary Charan Singh International|India|
+ATQ|Amritsar|Sri Guru Ram Dass Jee International|India|
+JAI|Jaipur|Jaipur International|India|
+VNS|Varanasi|Lal Bahadur Shastri International|India|
+GAY|Gaya|Gaya|India|
+CMB|Colombo|Bandaranaike International|Sri Lanka|
+MLE|Malé|Velana International|Maldives|male maldives
+KTM|Kathmandu|Tribhuvan International|Nepal|
+DAC|Dhaka|Hazrat Shahjalal International|Bangladesh|
+CGP|Chattogram|Shah Amanat International|Bangladesh|chittagong
+KHI|Karachi|Jinnah International|Pakistan|
+LHE|Lahore|Allama Iqbal International|Pakistan|
+ISB|Islamabad|Islamabad International|Pakistan|
+MNL|Manila|Ninoy Aquino International|Philippines|
+CEB|Cebu|Mactan–Cebu International|Philippines|
+BKK|Bangkok|Suvarnabhumi|Thailand|
+DMK|Bangkok|Don Mueang|Thailand|
+HKT|Phuket|Phuket International|Thailand|
+KUL|Kuala Lumpur|Kuala Lumpur International|Malaysia|klia
+SIN|Singapore|Changi|Singapore|
+CGK|Jakarta|Soekarno–Hatta International|Indonesia|
+DPS|Bali|Ngurah Rai International|Indonesia|denpasar
+HKG|Hong Kong|Hong Kong International|Hong Kong|
+NRT|Tokyo|Narita International|Japan|
+HND|Tokyo|Haneda|Japan|
+ICN|Seoul|Incheon International|South Korea|
+PEK|Beijing|Beijing Capital International|China|
+PVG|Shanghai|Pudong International|China|
+CAN|Guangzhou|Baiyun International|China|
+SYD|Sydney|Kingsford Smith|Australia|
+MEL|Melbourne|Melbourne|Australia|
+IST|Istanbul|Istanbul Airport|Türkiye|turkey
+SAW|Istanbul|Sabiha Gökçen|Türkiye|turkey
+GYD|Baku|Heydar Aliyev International|Azerbaijan|
+TBS|Tbilisi|Tbilisi International|Georgia|
+EVN|Yerevan|Zvartnots International|Armenia|
+ALA|Almaty|Almaty International|Kazakhstan|
+TAS|Tashkent|Islam Karimov Tashkent International|Uzbekistan|
+CAI|Cairo|Cairo International|Egypt|
+AMM|Amman|Queen Alia International|Jordan|
+BEY|Beirut|Rafic Hariri International|Lebanon|
+NBO|Nairobi|Jomo Kenyatta International|Kenya|
+ADD|Addis Ababa|Bole International|Ethiopia|
+JNB|Johannesburg|O. R. Tambo International|South Africa|
+LHR|London|Heathrow|United Kingdom|uk england
+LGW|London|Gatwick|United Kingdom|uk england
+MAN|Manchester|Manchester|United Kingdom|uk
+CDG|Paris|Charles de Gaulle|France|
+FRA|Frankfurt|Frankfurt|Germany|
+MUC|Munich|Munich|Germany|
+AMS|Amsterdam|Schiphol|Netherlands|
+ZRH|Zurich|Zurich|Switzerland|
+FCO|Rome|Fiumicino|Italy|
+MXP|Milan|Malpensa|Italy|
+MAD|Madrid|Barajas|Spain|
+BCN|Barcelona|El Prat|Spain|
+JFK|New York|John F. Kennedy International|USA|nyc
+EWR|Newark|Newark Liberty International|USA|new york nyc
+ORD|Chicago|O'Hare International|USA|
+IAD|Washington|Dulles International|USA|dc
+LAX|Los Angeles|Los Angeles International|USA|
+SFO|San Francisco|San Francisco International|USA|
+YYZ|Toronto|Pearson International|Canada|`.split('\n').reduce((out,line)=>{const [code,city,name,country,words='']=line.split('|');if(!out.some(a=>a.code===code))out.push({code,city,name,country,hay:`${code} ${city} ${name} ${country} ${words}`.toLowerCase()});return out},[]);
+const LT_POPULAR_ROUTES=[['DXB','COK'],['DXB','CCJ'],['SHJ','CCJ'],['AUH','TRV'],['DOH','COK'],['RUH','CCJ'],['DXB','BOM'],['JED','CCJ']];
+const ltAirport=code=>LT_AIRPORTS.find(a=>a.code===String(code||'').toUpperCase());
+const ltAirportLabel=code=>{const a=ltAirport(code);return a?`${a.city} (${a.code})`:String(code||'').toUpperCase()};
+
+// Memory: server search history (data.searches — shared by the whole agency, any device) plus a
+// per-browser store for things the server doesn't keep — the half-filled form, starred routes and
+// a longer recent list. localStorage can be blocked (private mode) — every access is guarded.
+const ltMemKey=()=>`lt_search_mem_${clientId}`;
+function ltMem(){try{return {draft:null,favs:[],recent:[],...JSON.parse(localStorage.getItem(ltMemKey())||'{}')}}catch(e){return {draft:null,favs:[],recent:[]}}}
+function ltMemSave(patch){const m={...ltMem(),...patch};try{localStorage.setItem(ltMemKey(),JSON.stringify(m))}catch(e){}return m}
+function ltRecentRoutes(){
+  const seen=new Set(),out=[];
+  const all=[...(data.searches||[]).map(s=>({o:s.origin,d:s.destination,at:s.created_at})),...ltMem().recent].sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')));
+  for(const r of all){const k=`${r.o}-${r.d}`;if(!r.o||!r.d||seen.has(k))continue;seen.add(k);out.push([r.o,r.d])}
+  return out.slice(0,8);
+}
+// How often this agency has used each airport — ranks the suggestion list and picks the default origin.
+function ltAirportUse(){
+  const n={};
+  for(const s of data.searches||[]){n[s.origin]=(n[s.origin]||0)+2;n[s.destination]=(n[s.destination]||0)+2}
+  for(const r of ltMem().recent){n[r.o]=(n[r.o]||0)+1;n[r.d]=(n[r.d]||0)+1}
+  for(const k of ltMem().favs){const [o,d]=k.split('-');n[o]=(n[o]||0)+3;n[d]=(n[d]||0)+3}
+  return n;
+}
+function ltHomeOrigin(){const n={};for(const s of data.searches||[])n[s.origin]=(n[s.origin]||0)+1;for(const r of ltMem().recent)n[r.o]=(n[r.o]||0)+1;return Object.entries(n).sort((a,b)=>b[1]-a[1])[0]?.[0]||''}
+
+// Text typed in an airport box → the code to search. Exact code wins, then a single city match
+// ("dubai" → DXB; "london" is ambiguous so the agent must pick from the list).
+function ltResolveAirport(text){
+  const t=String(text||'').trim(),up=t.toUpperCase(),m=up.match(/\(([A-Z]{3})\)\s*$/);
+  if(m)return {code:m[1],known:!!ltAirport(m[1])};
+  if(/^[A-Z]{3}$/.test(up))return {code:up,known:!!ltAirport(up)};
+  const low=t.toLowerCase();if(!low)return {code:'',known:false};
+  const city=LT_AIRPORTS.filter(a=>a.city.toLowerCase()===low);
+  if(city.length===1)return {code:city[0].code,known:true};
+  const hits=ltSuggest(t);
+  if(hits.length===1)return {code:hits[0].code,known:true};
+  return {code:'',known:false,ambiguous:city.length>1||hits.length>1};
+}
+function ltSuggest(text){
+  const q=String(text||'').trim().toLowerCase(),use=ltAirportUse();
+  if(!q)return Object.keys(use).sort((a,b)=>use[b]-use[a]).map(ltAirport).filter(Boolean).slice(0,8);
+  const score=a=>a.code.toLowerCase()===q?100:a.code.toLowerCase().startsWith(q)?60:a.city.toLowerCase().startsWith(q)?50:a.hay.split(/[\s()–-]+/).some(w=>w.startsWith(q))?30:a.hay.includes(q)?10:0;
+  return LT_AIRPORTS.map(a=>({a,s:score(a)})).filter(x=>x.s).sort((x,y)=>(y.s+(use[y.a.code]||0))-(x.s+(use[x.a.code]||0))).map(x=>x.a).slice(0,8);
+}
+
+function airportField(id,label,ph){return `<div class="field"><label>${label}</label><div class="ap"><input id="${id}" placeholder="${ph}" autocomplete="off" required oninput="apInput('${id}')" onfocus="apInput('${id}')" onkeydown="apKey(event,'${id}')" onblur="setTimeout(()=>apClose('${id}'),150)"><div class="aplist" id="${id}List"></div></div><div class="aphint" id="${id}Hint"></div></div>`}
+function apInput(id){
+  const el=$(id),list=$(id+'List'),hits=ltSuggest(el.value);
+  list.innerHTML=hits.length?(el.value.trim()?'':'<div class="aphead">Used most by your agency</div>')+hits.map((a,i)=>`<div class="apopt ${i===0&&el.value.trim()?'on':''}" onmousedown="apPick('${id}','${a.code}')"><b>${a.code}</b> ${esc(a.city)} <span class="sub">${esc(a.name)} · ${esc(a.country)}</span></div>`).join(''):el.value.trim()?'<div class="aphead">No match in the list — type the 3-letter IATA code</div>':'';
+  list.classList.toggle('show',!!list.innerHTML);if(list.innerHTML)$(id+'Hint').className='aphint',$(id+'Hint').textContent='';else apHint(id);ltDraftSave();
+}
+function apClose(id){$(id+'List')?.classList.remove('show');apHint(id)}
+function apPick(id,code){$(id).value=code;apClose(id);ltDraftSave();if(id==='origin'&&!$('destination').value)$('destination').focus()}
+function apKey(e,id){
+  const opts=[...$(id+'List').querySelectorAll('.apopt')],cur=opts.findIndex(o=>o.classList.contains('on'));
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();if(!$(id+'List').classList.contains('show'))return apInput(id);const n=opts.length?(cur+(e.key==='ArrowDown'?1:-1)+opts.length)%opts.length:-1;opts.forEach((o,i)=>o.classList.toggle('on',i===n))}
+  else if((e.key==='Enter'||e.key==='Tab')&&$(id+'List').classList.contains('show')&&cur>=0){if(e.key==='Enter')e.preventDefault();opts[cur].dispatchEvent(new MouseEvent('mousedown'))}
+  else if(e.key==='Escape')apClose(id);
+}
+function apHint(id){
+  const v=$(id)?.value.trim(),h=$(id+'Hint');if(!h)return;
+  if(!v){h.className='aphint';h.textContent='';return}
+  const r=ltResolveAirport(v),a=ltAirport(r.code);
+  if(a){h.className='aphint ok';h.textContent=`✓ ${a.code} · ${a.name}, ${a.country}`}
+  else if(r.code){h.className='aphint warn';h.textContent=`⚠ ${r.code} isn't in the airport list — double-check the code`}
+  else{h.className='aphint bad';h.textContent=r.ambiguous?'Several airports match — pick one from the list':'Unknown airport — pick from the list or type the IATA code'}
+}
+function routeChip(o,d,{fav=false}={}){return `<button type="button" class="chip" title="${esc(ltAirport(o)?.city||o)} → ${esc(ltAirport(d)?.city||d)}" onclick="setRoute('${o}','${d}')">${fav?'★ ':''}${esc(o)} → ${esc(d)}</button>`}
+function routeChipsHtml(){
+  const favs=ltMem().favs.map(k=>k.split('-')),recent=ltRecentRoutes().filter(([o,d])=>!ltMem().favs.includes(`${o}-${d}`)),known=new Set([...favs,...recent].map(r=>r.join('-')));
+  const popular=LT_POPULAR_ROUTES.filter(r=>!known.has(r.join('-'))).slice(0,6);
+  const row=(label,items)=>items.length?`<div class="chiprow"><span class="chiplbl">${label}</span>${items.join('')}</div>`:'';
+  return row('⭐ Saved',favs.map(([o,d])=>routeChip(o,d,{fav:true})))+row('🕘 Recent',recent.map(([o,d])=>routeChip(o,d)))+row('🔥 Popular',popular.map(([o,d])=>routeChip(o,d)));
+}
+function drawRouteChips(){if($('routeChips'))$('routeChips').innerHTML=routeChipsHtml();const fav=$('favBtn');if(fav){const r=curRoute();const on=r&&ltMem().favs.includes(r);fav.textContent=on?'★ Saved route':'☆ Save route';fav.classList.toggle('on',!!on)}}
+function curRoute(){const o=ltResolveAirport($('origin')?.value).code,d=ltResolveAirport($('destination')?.value).code;return o&&d?`${o}-${d}`:''}
+function setRoute(o,d){$('origin').value=o;$('destination').value=d;apHint('origin');apHint('destination');drawRouteChips();ltDraftSave();if(!$('departure').value)$('departure').focus()}
+function swapRoute(){const o=$('origin').value;$('origin').value=$('destination').value;$('destination').value=o;apHint('origin');apHint('destination');drawRouteChips();ltDraftSave()}
+function toggleFavRoute(){const r=curRoute();if(!r)return searchErr('Pick both airports first, then save the route.');const favs=ltMem().favs;ltMemSave({favs:favs.includes(r)?favs.filter(x=>x!==r):[r,...favs].slice(0,10)});drawRouteChips()}
+function isoDay(offset,from){const d=from?new Date(from+'T00:00:00'):new Date();d.setDate(d.getDate()+offset);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function quickDate(id,offset){if(id==='returnDate'){const dep=$('departure').value;if(!dep)return searchErr('Pick the departure date first.');$('returnDate').value=isoDay(offset,dep)}else{$('departure').value=isoDay(offset);if($('returnDate').value&&$('returnDate').value<$('departure').value)$('returnDate').value=''}ltDraftSave()}
+function stepPax(id,delta){const el=$(id),v=Math.min(Number(el.max||9),Math.max(Number(el.min||0),Number(el.value||0)+delta));el.value=v;ltDraftSave()}
+function searchErr(msg){const el=$('searchErr');if(el){el.innerHTML=msg?`<div class="error">${esc(msg)}</div>`:''}return false}
+const LT_FORM_FIELDS=['tripType','origin','destination','cabin','departure','returnDate','adults','children','infants','currency','leadId'];
+function ltDraftSave(){if(!$('origin'))return;const draft={};for(const f of LT_FORM_FIELDS)draft[f]=$(f)?.value??'';ltMemSave({draft});const r=$('favBtn');if(r)drawRouteChips()}
+function ltDraftRestore(){
+  const d=ltMem().draft||{};
+  for(const f of LT_FORM_FIELDS)if(d[f]!=null&&d[f]!==''&&$(f)&&!(f==='currency'&&$(f).disabled))$(f).value=d[f];
+  // A remembered date that has since passed is useless — drop it rather than fail the search.
+  const today=isoDay(0);if($('departure').value&&$('departure').value<today){$('departure').value='';$('returnDate').value=''}
+  if(!$('origin').value)$('origin').value=ltHomeOrigin();
+  toggleReturn();apHint('origin');apHint('destination');drawRouteChips();
+}
+function clearSearchForm(){ltMemSave({draft:null});renderSearch();$('origin').value='';apHint('origin');$('origin').focus()}
+function repeatLastSearch(){const s=(data.searches||[])[0];if(!s)return searchErr('No previous search yet.');$('tripType').value=s.trip_type==='one_way'?'one_way':'round_trip';setRoute(s.origin,s.destination);$('cabin').value=s.cabin||'economy';for(const [f,k] of [['adults','adults'],['children','children'],['infants','infants']])$(f).value=s[k]??$(f).value;const today=isoDay(0);$('departure').value=s.departure_date>=today?s.departure_date:'';$('returnDate').value=s.return_date&&s.return_date>=today?s.return_date:'';$('leadId').value=s.lead_id||'';toggleReturn();ltDraftSave();if(!$('departure').value)searchErr('The last search was for a date that has passed — pick a new departure date.')}
+// Checked in the browser before anything goes to the suppliers — the server would otherwise take
+// the first 3 letters of whatever was typed ("Dubai" → DUB) and search the wrong airport.
+function validateSearch(){
+  searchErr('');
+  const o=ltResolveAirport($('origin').value),d=ltResolveAirport($('destination').value);
+  if(!o.code)return searchErr(`Origin: ${o.ambiguous?'several airports match — pick one from the list':'pick an airport from the list or type its 3-letter code'}.`);
+  if(!d.code)return searchErr(`Destination: ${d.ambiguous?'several airports match — pick one from the list':'pick an airport from the list or type its 3-letter code'}.`);
+  if(o.code===d.code)return searchErr('Origin and destination are the same airport.');
+  const unknown=[o,d].filter(x=>!x.known).map(x=>x.code);
+  if(unknown.length&&!confirm(`${unknown.join(' and ')} ${unknown.length>1?"aren't":"isn't"} in the airport list. Search anyway?`))return false;
+  $('origin').value=o.code;$('destination').value=d.code;apHint('origin');apHint('destination');
+  const dep=$('departure').value,ret=$('returnDate').value,today=isoDay(0);
+  if(dep&&dep<today)return searchErr('Departure date is in the past.');
+  if($('tripType').value==='round_trip'&&ret&&ret<dep)return searchErr('Return date is before the departure date.');
+  if(Number($('infants').value)>Number($('adults').value))return searchErr('Each infant needs an adult — infants cannot exceed adults.');
+  return true;
+}
+function ltRememberSearch(o,d){const recent=[{o,d,at:new Date().toISOString()},...ltMem().recent.filter(r=>`${r.o}-${r.d}`!==`${o}-${d}`)].slice(0,15);ltMemSave({recent})}
 function renderSearch(){
- $('main').innerHTML=head('Flight Search','Compare live Riya, TripJack, POOMAS and Google Flights results')+`<div class="card"><form class="formgrid" onsubmit="runSearch(event)"><div class="field"><label>Trip type</label><select id="tripType" onchange="toggleReturn()"><option value="round_trip">Round trip</option><option value="one_way">One way</option></select></div><div class="field"><label>Origin (IATA)</label><input id="origin" maxlength="3" placeholder="DXB" required></div><div class="field"><label>Destination (IATA)</label><input id="destination" maxlength="3" placeholder="DEL" required></div><div class="field"><label>Cabin</label><select id="cabin"><option value="economy">Economy</option><option value="premium_economy">Premium economy</option><option value="business">Business</option><option value="first">First</option></select></div><div class="field"><label>Departure</label><input id="departure" type="date" required></div><div class="field" id="returnField"><label>Return</label><input id="returnDate" type="date" required></div><div class="field"><label>Adults</label><input id="adults" type="number" min="1" max="9" value="1"></div><div class="field"><label>Children</label><input id="children" type="number" min="0" max="9" value="0"></div><div class="field"><label>Infants</label><input id="infants" type="number" min="0" max="9" value="0"></div><div class="field"><label>Show prices in</label><select id="currency" ${data.currency_settings?.allow_currency_override?'':'disabled title="Locked to the agency currency in 💱 Currency"'}>${currencyOptions()}</select></div><div class="field span2"><label>CRM Lead ID (optional)</label><input id="leadId" placeholder="Link this search to a lead"></div><div class="span4"><button class="btn primary" id="searchBtn">🔎 Search live fares</button></div></form></div><div id="results">${renderOffers(lastSearch?.offers||[])}</div>`;
+ const paxField=(id,label,min,val)=>`<div class="field"><label>${label}</label><div class="stepper"><button type="button" class="btn sm" onclick="stepPax('${id}',-1)" aria-label="Fewer ${label}">−</button><input id="${id}" type="number" min="${min}" max="9" value="${val}" onchange="ltDraftSave()"><button type="button" class="btn sm" onclick="stepPax('${id}',1)" aria-label="More ${label}">+</button></div></div>`;
+ $('main').innerHTML=head('Flight Search','Compare live Riya, TripJack, POOMAS and Google Flights results',`<button class="btn" onclick="repeatLastSearch()" ${(data.searches||[]).length?'':'disabled'}>🔁 Repeat last search</button><button class="btn" onclick="clearSearchForm()">🧹 Clear</button>`)+`<div class="card"><form class="formgrid" onsubmit="runSearch(event)" onchange="ltDraftSave()"><div class="field"><label>Trip type</label><select id="tripType" onchange="toggleReturn()"><option value="round_trip">Round trip</option><option value="one_way">One way</option></select></div>${airportField('origin','Origin — city or code','Dubai or DXB')}${airportField('destination','Destination — city or code','Kochi or COK')}<div class="field"><label>Cabin</label><select id="cabin"><option value="economy">Economy</option><option value="premium_economy">Premium economy</option><option value="business">Business</option><option value="first">First</option></select></div><div class="span4 routebar"><button type="button" class="btn sm" onclick="swapRoute()" title="Swap origin and destination">⇄ Swap</button><button type="button" class="btn sm" id="favBtn" onclick="toggleFavRoute()">☆ Save route</button><div id="routeChips" class="routechips"></div></div><div class="field"><label>Departure</label><input id="departure" type="date" min="${isoDay(0)}" required><div class="quick"><button type="button" class="chip" onclick="quickDate('departure',0)">Today</button><button type="button" class="chip" onclick="quickDate('departure',1)">Tomorrow</button><button type="button" class="chip" onclick="quickDate('departure',7)">+1 week</button><button type="button" class="chip" onclick="quickDate('departure',30)">+1 month</button></div></div><div class="field" id="returnField"><label>Return</label><input id="returnDate" type="date" min="${isoDay(0)}" required><div class="quick"><button type="button" class="chip" onclick="quickDate('returnDate',3)">3 nights</button><button type="button" class="chip" onclick="quickDate('returnDate',7)">1 week</button><button type="button" class="chip" onclick="quickDate('returnDate',14)">2 weeks</button><button type="button" class="chip" onclick="quickDate('returnDate',30)">1 month</button></div></div>${paxField('adults','Adults',1,1)}${paxField('children','Children',0,0)}${paxField('infants','Infants',0,0)}<div class="field"><label>Show prices in</label><select id="currency" ${data.currency_settings?.allow_currency_override?'':'disabled title="Locked to the agency currency in 💱 Currency"'}>${currencyOptions()}</select></div><div class="field span2"><label>CRM Lead ID (optional)</label><input id="leadId" placeholder="Link this search to a lead"></div><div class="span4" id="searchErr"></div><div class="span4"><button class="btn primary" id="searchBtn">🔎 Search live fares</button></div></form></div><div id="results">${renderOffers(lastSearch?.offers||[])}</div>`;
+ ltDraftRestore();
 }
 function toggleReturn(){const one=$('tripType').value==='one_way';$('returnField').style.display=one?'none':'';$('returnDate').required=!one}
-async function runSearch(e){e.preventDefault();const btn=$('searchBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Searching suppliers…';try{const payload={trip_type:$('tripType').value,origin:$('origin').value,destination:$('destination').value,departure_date:$('departure').value,return_date:$('returnDate').value,adults:$('adults').value,children:$('children').value,infants:$('infants').value,cabin:$('cabin').value,currency:$('currency').value,lead_id:$('leadId').value};lastSearch=await api('/live-travel/search',{method:'POST',body:JSON.stringify(payload)});$('results').innerHTML=renderOffers(lastSearch.offers);await refresh(false)}catch(err){$('results').innerHTML=`<div class="error">${esc(err.message)}</div>`}finally{btn.disabled=false;btn.textContent='🔎 Search live fares'}}
+async function runSearch(e){e.preventDefault();if(!validateSearch())return;const btn=$('searchBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Searching suppliers…';try{const payload={trip_type:$('tripType').value,origin:$('origin').value,destination:$('destination').value,departure_date:$('departure').value,return_date:$('returnDate').value,adults:$('adults').value,children:$('children').value,infants:$('infants').value,cabin:$('cabin').value,currency:$('currency').value,lead_id:$('leadId').value};lastSearch=await api('/live-travel/search',{method:'POST',body:JSON.stringify(payload)});ltRememberSearch(payload.origin,payload.destination);$('results').innerHTML=renderOffers(lastSearch.offers);await refresh(false);drawRouteChips()}catch(err){$('results').innerHTML=`<div class="error">${esc(err.message)}</div>`}finally{btn.disabled=false;btn.textContent='🔎 Search live fares'}}
 function offerActions(o){
   if(o.supplier==='poomas'){
     const checkoutUrl=o.checkout_url||(o.raw&&o.raw._checkout_url)||'';
