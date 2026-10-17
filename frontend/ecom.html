@@ -126,10 +126,16 @@ tbody tr:hover{background:var(--bg)}
 .sess-msg.customer{background:var(--bg);border:1px solid var(--line)}
 .sess-msg.shop{background:var(--accent-soft);margin-left:auto}
 .taken-by{font-size:12px;line-height:1.4}
-.taken-by .muted{color:var(--muted);font-size:11px}
+.taken-by .muted,.assigned-name .muted{color:var(--muted);font-size:11px}
+.assigned-name{font-size:12px;line-height:1.4}
 #staffReportTbody tr.clickable{cursor:pointer}
 #staffReportTbody tr.clickable:hover td{background:var(--accent-soft)}
 #staffReportTbody tr.active td{background:var(--accent-soft);font-weight:600}
+#assignedReportTbody tr.clickable{cursor:pointer}
+#assignedReportTbody tr.clickable:hover td{background:var(--accent-soft)}
+#assignedReportTbody tr.active td{background:var(--accent-soft);font-weight:600}
+.assign-sel{border:1.5px solid var(--line);border-radius:6px;padding:4px 6px;font-family:var(--body);font-size:12px;color:var(--ink);background:var(--bg);max-width:150px}
+.assign-sel.none{color:var(--muted);border-style:dashed}
 .ord-check{width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}
 .icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
 .icon-btn:hover{background:var(--bg)}
@@ -381,6 +387,14 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <tbody id="staffReportTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
         </table>
       </div>
+      <div class="flow-section-title" style="margin-top:18px">📌 Orders assigned to each person</div>
+      <div class="s-hint" style="margin:-4px 0 10px">Who is responsible for each order (follow-up, packing, delivery). New orders go to the customer's lead owner automatically; change it with the "Assigned To" picker on any order. Click a row to see those orders.</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Assigned to</th><th>Orders</th><th>Open</th><th>Shipped / delivered</th><th>Cancelled</th></tr></thead>
+          <tbody id="assignedReportTbody"></tbody>
+        </table>
+      </div>
     </div>
     <div class="card" id="warmLeadsCard">
       <div class="card-title-row">
@@ -418,7 +432,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <table>
         <thead>
           <tr>
-            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th class="bc-only" style="display:none">Source / Assigned</th><th class="bc-only" style="display:none">Order Taken By</th><th>Actions</th>
+            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th class="bc-only" style="display:none">Source / Assigned</th><th class="bc-only" style="display:none">Order Taken By</th><th class="bc-only" style="display:none">Assigned To</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1162,6 +1176,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
           <option value="cancelled">Cancelled</option>
         </select>
       </div>
+      <div class="s-sec bc-only" style="display:none"><span class="s-lbl">Assigned To</span><select class="s-input" id="omAssignedTo"></select></div>
     </div>
     <div class="s-sec"><span class="s-lbl">Items</span><textarea class="s-input" id="omItems" rows="2" placeholder="e.g. 2x Wireless Mouse, 1x Desk Lamp"></textarea></div>
     <div class="s-sec"><span class="s-lbl">Delivery Address</span><textarea class="s-input" id="omAddress" rows="2"></textarea></div>
@@ -1267,6 +1282,8 @@ let orderInsightsByPhone = null;
 let orderInsightsError = '';
 let warmLeads = [];
 let orderStaffFilter = null;   // null = everyone; '' = orders with no taker recorded
+let orderAssigneeFilter = null; // null = everyone; '' = unassigned orders
+let orderTeam = [];            // [{email, name, owner, on_leave}] from /ecom/orders/insights
 let staffReport = null;
 let staffReportError = '';
 const ORDER_OPEN_STATUSES = ['pending','received','processing'];
@@ -2466,7 +2483,42 @@ async function deleteTestimonialById(id) {
 
 // ── ORDERS ──────────────────────────────────────
 function isBabyCareStore() { return botConfig?.ecom_communication_style === 'baby_care'; }
-function orderColCount() { return isBabyCareStore() ? 10 : 8; }
+function orderColCount() { return isBabyCareStore() ? 11 : 8; }
+function assigneeKey(o) { return String(o.assigned_to || '').trim().toLowerCase(); }
+function teamOptions(selected, { auto = false } = {}) {
+  const sel = String(selected || '').toLowerCase();
+  const known = orderTeam.some(m => m.email === sel);
+  return (auto ? `<option value="">Auto — customer's lead owner, else me</option>` : `<option value="">— Unassigned —</option>`)
+    + orderTeam.map(m => `<option value="${escAttr(m.email)}" ${m.email === sel ? 'selected' : ''}>${esc(m.name)}${m.owner ? ' (owner)' : ''}${m.on_leave ? ' 🌴 on leave' : ''}</option>`).join('')
+    + (sel && !known ? `<option value="${escAttr(sel)}" selected>${esc(sel)}</option>` : '');
+}
+function assignedCell(o) {
+  const k = assigneeKey(o);
+  const meta = o.assigned_at ? `<div class="muted" style="font-size:11px;margin-top:2px">${o.assigned_by && o.assigned_by !== k ? (o.assigned_by === 'auto' ? 'auto' : o.assigned_by === 'auto-reassign' ? 'auto-reassigned' : 'by ' + esc(String(o.assigned_by).split('@')[0])) + ' · ' : ''}${esc(fmtWhen(o.assigned_at))}</div>` : '';
+  if (!ecomSessionToken || !orderTeam.length) return `<div class="assigned-name">${k ? '👤 ' + esc(o.assigned_to_name || k.split('@')[0]) : '<span class="muted">Unassigned</span>'}${meta}</div>`;
+  return `<select class="assign-sel ${k ? '' : 'none'}" data-id="${o.Id}" onchange="assignOrder(+this.dataset.id, this.value, this)" title="Who is responsible for this order">${teamOptions(k)}</select>${meta}`;
+}
+async function assignOrder(id, email, el) {
+  const o = allOrders.find(x => x.Id === id);
+  if (!o) return;
+  if (el) el.disabled = true;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders`, { method: 'PATCH', headers: orderAuthHeaders(), body: JSON.stringify({ client_id: clientId, Id: id, assigned_to: email }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    const m = orderTeam.find(x => x.email === email);
+    Object.assign(o, { assigned_to: email, assigned_to_name: m ? m.name : '', assigned_at: new Date().toISOString(), assigned_by: (staffReport?.me || '') });
+    renderOrdersTable(); loadStaffReport();
+  } catch(e) {
+    alert('Could not assign the order: ' + e.message);
+    renderOrdersTable();
+  }
+}
+function setOrderAssigneeFilter(k) {
+  orderAssigneeFilter = orderAssigneeFilter === k ? null : k;
+  renderOrdersTable(); renderStaffReport();
+  if (orderAssigneeFilter !== null) document.getElementById('ordersTbody')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 // Session header for order writes — Baby Care stamps "Order Taken By" from it on the Worker.
 function orderAuthHeaders() {
   const h = { 'Content-Type': 'application/json' };
@@ -2516,8 +2568,9 @@ async function loadStaffReport() {
 }
 function renderStaffReport() {
   const tb = document.getElementById('staffReportTbody');
-  if (staffReportError) { tb.innerHTML = `<tr><td colspan="6" class="loading-row">${esc(staffReportError)}</td></tr>`; return; }
+  if (staffReportError) { tb.innerHTML = `<tr><td colspan="6" class="loading-row">${esc(staffReportError)}</td></tr>`; const at = document.getElementById('assignedReportTbody'); if (at) at.innerHTML = ''; return; }
   if (!staffReport) return;
+  renderAssignedReport();
   const rows = staffReport.rows || [];
   document.getElementById('staffReportHint').textContent = staffReport.full_access
     ? 'Every order records who took it — the signed-in staff member, the AI bot, or the store page. Click a row to see that person\'s orders below. Drafts aren\'t counted until someone confirms them.'
@@ -2535,6 +2588,19 @@ function renderStaffReport() {
       <td style="font-size:12px">${esc(r.last_day || '—')}</td>
     </tr>`).join('')
     + `<tr><td><strong>Total</strong></td><td style="font-family:var(--disp);font-weight:700;font-size:15px">${staffReport.total_orders}</td><td>${esc(cur)} ${rows.reduce((s, r) => s + (r.revenue || 0), 0).toLocaleString()}</td><td></td><td>${rows.reduce((s, r) => s + (r.cancelled || 0), 0)}</td><td></td></tr>`;
+}
+function renderAssignedReport() {
+  const tb = document.getElementById('assignedReportTbody');
+  if (!tb) return;
+  const rows = staffReport?.assigned_rows || [];
+  if (!staffReport) { tb.innerHTML = ''; return; }
+  if (!rows.length) { tb.innerHTML = `<tr><td colspan="5"><div class="empty-state" style="padding:16px">No orders in this period</div></td></tr>`; return; }
+  tb.innerHTML = rows.map(r => `
+    <tr class="clickable ${orderAssigneeFilter === r.assigned_to ? 'active' : ''}" data-assignee="${escAttr(r.assigned_to)}" onclick="setOrderAssigneeFilter(this.dataset.assignee)" title="Show these orders below">
+      <td>${r.assigned_to ? '👤 ' + esc(r.name) + `<div style="font-size:11px;color:var(--muted)">${esc(r.assigned_to)}</div>` : '<span style="color:var(--muted)">Unassigned</span>'}</td>
+      <td style="font-family:var(--disp);font-weight:700;font-size:15px">${r.total}</td>
+      <td>${r.open}</td><td>${r.done}</td><td>${r.cancelled}</td>
+    </tr>`).join('');
 }
 function setOrderStaffFilter(k) {
   orderStaffFilter = orderStaffFilter === k ? null : k;
@@ -2592,6 +2658,7 @@ async function loadOrderInsights(force) {
     orderInsightsByPhone = {};
     (data.leads || []).forEach(l => { if (l.phone_key && !orderInsightsByPhone[l.phone_key]) orderInsightsByPhone[l.phone_key] = l; });
     warmLeads = data.warm_leads || [];
+    orderTeam = data.team || [];
     orderInsightsError = '';
     const n = data.warm_min_interactions || 2;
     document.getElementById('warmLeadsHint').textContent = `Customers the AI has talked with ${n}+ times who haven't placed an order yet.`;
@@ -2740,6 +2807,7 @@ function filteredOrders() {
     if (orderDateFilter) list = list.filter(o => orderDay(o) === orderDateFilter);
     if (orderDupOnly) { const dup = duplicateOrderIds(); list = list.filter(o => dup.has(o.Id)); }
     if (orderStaffFilter !== null) list = list.filter(o => takenByKey(o) === orderStaffFilter && String(o.status || '').toLowerCase() !== 'draft');
+    if (orderAssigneeFilter !== null) list = list.filter(o => assigneeKey(o) === orderAssigneeFilter);
   }
   return list;
 }
@@ -2778,7 +2846,7 @@ function renderOrdersTable() {
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
-      ${babyCare ? `<td class="src-cell">${orderSourceCell(o)}</td><td class="taken-by">${takenByCell(o)}</td>` : ''}
+      ${babyCare ? `<td class="src-cell">${orderSourceCell(o)}</td><td class="taken-by">${takenByCell(o)}</td><td class="assigned-cell">${assignedCell(o)}</td>` : ''}
       <td><div class="row-actions">${babyCare ? `<button class="icon-btn" onclick="openOrderSession(${o.Id})" title="Order session — the chat behind this order">🕑</button>` : ''}<button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn" onclick="exportOrders('orders', [${o.Id}])" title="Download order PDF">📄</button><button class="icon-btn" onclick="exportOrders('packing', [${o.Id}])" title="Download packing list">📦</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`;
   }).join('');
@@ -2867,6 +2935,12 @@ async function syncOrdersFromChats(btn) {
 
 // Baby Care: who took this order (edit) / who it will be recorded against (add).
 function setOrderTakenByHint(o) {
+  // Assigned To picker — only with a signed-in session and the team list to choose from.
+  const asg = document.getElementById('omAssignedTo');
+  const asgWrap = asg.closest('.s-sec');
+  const canAssign = isBabyCareStore() && ecomSessionToken && orderTeam.length;
+  asgWrap.style.display = canAssign ? '' : 'none';
+  if (canAssign) asg.innerHTML = teamOptions(o ? assigneeKey(o) : '', { auto: !o });
   const el = document.getElementById('omTakenBy');
   if (!isBabyCareStore()) { el.style.display = 'none'; return; }
   el.style.display = '';
@@ -2900,6 +2974,12 @@ async function submitAddOrder(allowDuplicate) {
   const prevPayment = editingOrderId ? (allOrders.find(x => x.Id === editingOrderId)?.payment_method || '') : '';
   if (payment || prevPayment) body.payment_method = payment;
   if (allowDuplicate === true) body.allow_duplicate = true;
+  const asgSel = document.getElementById('omAssignedTo');
+  if (isBabyCareStore() && asgSel.closest('.s-sec').style.display !== 'none') {
+    const v = asgSel.value;
+    const cur = editingOrderId ? assigneeKey(allOrders.find(x => x.Id === editingOrderId) || {}) : '';
+    if (editingOrderId ? v !== cur : !!v) body.assigned_to = v;
+  }
   showMsg('orderModalMsg', 'Saving…', 10000);
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
@@ -3163,7 +3243,7 @@ function pdfOrdersSummary(doc, list) {
 
 function ordersCsv(list) {
   const cols = ['order_id', 'order_date', 'status', 'customer_name', 'customer_phone', 'customer_email', 'items', 'total', 'currency', 'payment_method', 'delivery_address', 'notes'];
-  if (isBabyCareStore()) cols.push('taken_by_name', 'taken_by');
+  if (isBabyCareStore()) cols.push('taken_by_name', 'taken_by', 'assigned_to_name', 'assigned_to');
   // Leading = + - @ would run as a formula in Excel/Sheets — prefix a quote (phones keep their +).
   const cell = v => {
     let s = v == null ? '' : String(v);
