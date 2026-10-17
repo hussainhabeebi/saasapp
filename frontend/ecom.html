@@ -125,6 +125,11 @@ tbody tr:hover{background:var(--bg)}
 .sess-msg{font-size:12px;padding:6px 10px;border-radius:8px;margin-bottom:6px;max-width:85%;white-space:pre-wrap;overflow-wrap:anywhere}
 .sess-msg.customer{background:var(--bg);border:1px solid var(--line)}
 .sess-msg.shop{background:var(--accent-soft);margin-left:auto}
+.taken-by{font-size:12px;line-height:1.4}
+.taken-by .muted{color:var(--muted);font-size:11px}
+#staffReportTbody tr.clickable{cursor:pointer}
+#staffReportTbody tr.clickable:hover td{background:var(--accent-soft)}
+#staffReportTbody tr.active td{background:var(--accent-soft);font-weight:600}
 .ord-check{width:16px;height:16px;cursor:pointer;accent-color:var(--accent)}
 .icon-btn{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer;font-size:13px;color:var(--muted);line-height:1}
 .icon-btn:hover{background:var(--bg)}
@@ -356,6 +361,27 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       </div>
       <div class="bc-row" id="orderDayCounts" style="margin-top:8px"></div>
     </div>
+    <div class="card" id="staffReportCard">
+      <div class="card-title-row">
+        <div class="card-title">👤 Orders by staff</div>
+        <div class="card-actions">
+          <input class="search-input" id="staffReportFrom" type="date" style="width:150px" title="From (order date)" onchange="loadStaffReport()">
+          <span style="color:var(--muted);font-size:12px">to</span>
+          <input class="search-input" id="staffReportTo" type="date" style="width:150px" title="To (order date)" onchange="loadStaffReport()">
+          <button class="save-btn sec" onclick="setStaffReportRange('today')">Today</button>
+          <button class="save-btn sec" onclick="setStaffReportRange('month')">This month</button>
+          <button class="save-btn sec" onclick="setStaffReportRange('')">All time</button>
+          <button class="save-btn sec" onclick="downloadStaffReport()" title="Download this report as a spreadsheet">⬇ CSV</button>
+        </div>
+      </div>
+      <div class="s-hint" id="staffReportHint" style="margin:-4px 0 10px">Every order records who took it — the signed-in staff member, the AI bot, or the store page. Click a row to see that person's orders below. Drafts aren't counted until someone confirms them.</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Order taken by</th><th>Orders</th><th>Revenue</th><th>By status</th><th>Cancelled</th><th>Last order</th></tr></thead>
+          <tbody id="staffReportTbody"><tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
     <div class="card" id="warmLeadsCard">
       <div class="card-title-row">
         <div class="card-title">🌡️ Warm leads — chatting, no order yet</div>
@@ -392,7 +418,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <table>
         <thead>
           <tr>
-            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th class="bc-only" style="display:none">Source / Assigned</th><th>Actions</th>
+            <th style="width:32px"><input type="checkbox" class="ord-check" id="orderSelectAll" onchange="toggleAllOrders(this.checked)" title="Select all shown orders"></th><th>Order #</th><th>Customer</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th><th class="bc-only" style="display:none">Source / Assigned</th><th class="bc-only" style="display:none">Order Taken By</th><th>Actions</th>
           </tr>
         </thead>
         <tbody id="ordersTbody">
@@ -1114,6 +1140,7 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
 <div class="modal-overlay" id="orderModalOverlay" onclick="if(event.target===this) closeOrderModal()">
   <div class="modal-card">
     <div class="modal-title" id="orderModalTitle">Add Order</div>
+    <div class="s-hint" id="omTakenBy" style="display:none;margin:-6px 0 12px"></div>
     <div class="modal-grid">
       <div class="s-sec"><span class="s-lbl">Order ID</span><input class="s-input" id="omOrderId" type="text" placeholder="Auto-generated if left blank"></div>
       <div class="s-sec"><span class="s-lbl">Order Date</span><input class="s-input" id="omOrderDate" type="date"></div>
@@ -1239,6 +1266,9 @@ let orderDupOnly = false;
 let orderInsightsByPhone = null;
 let orderInsightsError = '';
 let warmLeads = [];
+let orderStaffFilter = null;   // null = everyone; '' = orders with no taker recorded
+let staffReport = null;
+let staffReportError = '';
 const ORDER_OPEN_STATUSES = ['pending','received','processing'];
 const ecomSessionToken = (() => { try { return params.get('token') || localStorage.getItem('lv_session') || ''; } catch(e) { return params.get('token') || ''; } })();
 
@@ -2436,7 +2466,92 @@ async function deleteTestimonialById(id) {
 
 // ── ORDERS ──────────────────────────────────────
 function isBabyCareStore() { return botConfig?.ecom_communication_style === 'baby_care'; }
-function orderColCount() { return isBabyCareStore() ? 9 : 8; }
+function orderColCount() { return isBabyCareStore() ? 10 : 8; }
+// Session header for order writes — Baby Care stamps "Order Taken By" from it on the Worker.
+function orderAuthHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (ecomSessionToken && isBabyCareStore()) h.Authorization = 'Bearer ' + ecomSessionToken;
+  return h;
+}
+function takenByKey(o) { return String(o.taken_by || '').trim().toLowerCase(); }
+function takenByLabel(o) {
+  const k = takenByKey(o);
+  if (!k) return String(o.status || '').toLowerCase() === 'draft' ? 'Not taken yet (draft)' : 'Not recorded';
+  return o.taken_by_name || k.split('@')[0];
+}
+function takenByCell(o) {
+  const k = takenByKey(o);
+  if (!k) return `<span class="muted">${esc(takenByLabel(o))}</span>`;
+  const icon = k === 'ai_bot' ? '🤖 ' : k === 'store_page' ? '🛒 ' : '👤 ';
+  const sub = k.includes('@') ? `<div class="muted">${esc(k)}</div>` : '';
+  const at = o.taken_by_at ? `<div class="muted">${esc(fmtWhen(o.taken_by_at))}</div>` : '';
+  return `<div>${icon}${esc(takenByLabel(o))}</div>${sub}${at}`;
+}
+
+// Staff-wise order report (Worker counts every order, not just the 200 loaded here).
+function localDay(d) { return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+function setStaffReportRange(kind) {
+  const now = new Date();
+  const from = kind === 'today' ? localDay(now) : kind === 'month' ? localDay(new Date(now.getFullYear(), now.getMonth(), 1)) : '';
+  document.getElementById('staffReportFrom').value = from;
+  document.getElementById('staffReportTo').value = kind ? localDay(now) : '';
+  loadStaffReport();
+}
+async function loadStaffReport() {
+  if (!isBabyCareStore()) return;
+  const tb = document.getElementById('staffReportTbody');
+  if (!ecomSessionToken) { staffReport = null; staffReportError = 'Open Ecommerce from the dashboard (signed in) to see the staff report.'; renderStaffReport(); return; }
+  tb.innerHTML = `<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Loading…</td></tr>`;
+  const from = document.getElementById('staffReportFrom').value, to = document.getElementById('staffReportTo').value;
+  try {
+    const qs = new URLSearchParams({ client_id: clientId });
+    if (from) qs.set('from', from);
+    if (to) qs.set('to', to);
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/staff-report?${qs}`, { headers: { Authorization: 'Bearer ' + ecomSessionToken } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+    staffReport = data; staffReportError = '';
+  } catch(e) { staffReport = null; staffReportError = 'Staff report unavailable: ' + e.message; }
+  renderStaffReport();
+}
+function renderStaffReport() {
+  const tb = document.getElementById('staffReportTbody');
+  if (staffReportError) { tb.innerHTML = `<tr><td colspan="6" class="loading-row">${esc(staffReportError)}</td></tr>`; return; }
+  if (!staffReport) return;
+  const rows = staffReport.rows || [];
+  document.getElementById('staffReportHint').textContent = staffReport.full_access
+    ? 'Every order records who took it — the signed-in staff member, the AI bot, or the store page. Click a row to see that person\'s orders below. Drafts aren\'t counted until someone confirms them.'
+    : 'Your own orders only — owners and admins see every staff member.';
+  if (!rows.length) { tb.innerHTML = `<tr><td colspan="6"><div class="empty-state" style="padding:16px">No orders in this period</div></td></tr>`; return; }
+  const cur = (allOrders.find(o => o.currency) || {}).currency || 'INR';
+  const icon = k => k === 'ai_bot' ? '🤖 ' : k === 'store_page' ? '🛒 ' : k ? '👤 ' : '';
+  tb.innerHTML = rows.map(r => `
+    <tr class="clickable ${orderStaffFilter === r.taken_by ? 'active' : ''}" data-staff="${escAttr(r.taken_by)}" onclick="setOrderStaffFilter(this.dataset.staff)" title="Show these orders below">
+      <td>${icon(r.taken_by)}${esc(r.name)}${r.taken_by.includes('@') ? `<div style="font-size:11px;color:var(--muted)">${esc(r.taken_by)}</div>` : ''}</td>
+      <td style="font-family:var(--disp);font-weight:700;font-size:15px">${r.orders}</td>
+      <td>${esc(cur)} ${Number(r.revenue || 0).toLocaleString()}</td>
+      <td style="font-size:12px">${Object.entries(r.by_status || {}).filter(([s]) => s !== 'cancelled').map(([s, n]) => `${esc(s)} ${n}`).join(' · ') || '—'}</td>
+      <td>${r.cancelled || 0}</td>
+      <td style="font-size:12px">${esc(r.last_day || '—')}</td>
+    </tr>`).join('')
+    + `<tr><td><strong>Total</strong></td><td style="font-family:var(--disp);font-weight:700;font-size:15px">${staffReport.total_orders}</td><td>${esc(cur)} ${rows.reduce((s, r) => s + (r.revenue || 0), 0).toLocaleString()}</td><td></td><td>${rows.reduce((s, r) => s + (r.cancelled || 0), 0)}</td><td></td></tr>`;
+}
+function setOrderStaffFilter(k) {
+  orderStaffFilter = orderStaffFilter === k ? null : k;
+  renderOrdersTable(); renderStaffReport();
+  if (orderStaffFilter !== null) document.getElementById('ordersTbody')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function downloadStaffReport() {
+  if (!staffReport?.rows?.length) { alert('Nothing to download yet'); return; }
+  const cell = v => { const t = String(v == null ? '' : v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : (/^[=+\-@]/.test(t) ? "'" + t : t); };
+  const statuses = [...new Set(staffReport.rows.flatMap(r => Object.keys(r.by_status || {})))];
+  const head = ['Order taken by', 'Login', 'Orders', 'Revenue', ...statuses, 'First order', 'Last order'];
+  const lines = staffReport.rows.map(r => [r.name, r.taken_by, r.orders, r.revenue, ...statuses.map(s => r.by_status?.[s] || 0), r.first_day, r.last_day].map(cell).join(','));
+  const range = [staffReport.from || 'all', staffReport.to || 'today'].join('_to_');
+  const url = URL.createObjectURL(new Blob(['\ufeff' + [head.map(cell).join(','), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a'); a.href = url; a.download = `orders-by-staff-${range}.csv`; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 // Last 10 digits — "+91 98765 43210" and "919876543210" are the same customer (Worker: ecomPhoneKey).
 function phoneKey(p) { const d = String(p || '').replace(/\D/g, ''); return d.length > 10 ? d.slice(-10) : d; }
 function orderDay(o) { return String(o.order_date || o.CreatedAt || '').slice(0, 10); }
@@ -2456,7 +2571,7 @@ async function loadOrders() {
     const ids = new Set(allOrders.map(o => o.Id));
     selectedOrderIds.forEach(id => { if (!ids.has(id)) selectedOrderIds.delete(id); });
     renderOrdersTable();
-    if (isBabyCareStore()) loadOrderInsights();
+    if (isBabyCareStore()) { loadOrderInsights(); loadStaffReport(); }
   } catch(e) {
     tbody.innerHTML = `<tr><td colspan="${orderColCount()}" class="loading-row">Error: ${esc(e.message)}</td></tr>`;
   }
@@ -2624,6 +2739,7 @@ function filteredOrders() {
     if (orderStatusFilter) list = list.filter(o => String(o.status || 'pending').toLowerCase() === orderStatusFilter);
     if (orderDateFilter) list = list.filter(o => orderDay(o) === orderDateFilter);
     if (orderDupOnly) { const dup = duplicateOrderIds(); list = list.filter(o => dup.has(o.Id)); }
+    if (orderStaffFilter !== null) list = list.filter(o => takenByKey(o) === orderStaffFilter && String(o.status || '').toLowerCase() !== 'draft');
   }
   return list;
 }
@@ -2662,7 +2778,7 @@ function renderOrdersTable() {
       <td>${esc(o.items||'—')}</td>
       <td>${esc(o.currency||'INR')} ${Number(o.total||0).toLocaleString()}</td>
       <td><select class="badge ${statusClass(o.status)}" onchange="updateOrderStatus(${o.Id}, this.value)">${opts.map(s => `<option value="${escAttr(s)}" ${s===o.status?'selected':''}>${esc(cap(s))}</option>`).join('')}</select></td>
-      ${babyCare ? `<td class="src-cell">${orderSourceCell(o)}</td>` : ''}
+      ${babyCare ? `<td class="src-cell">${orderSourceCell(o)}</td><td class="taken-by">${takenByCell(o)}</td>` : ''}
       <td><div class="row-actions">${babyCare ? `<button class="icon-btn" onclick="openOrderSession(${o.Id})" title="Order session — the chat behind this order">🕑</button>` : ''}<button class="icon-btn" onclick="openEditOrderModal(${o.Id})" title="Edit order / add details">✏️</button><button class="icon-btn" onclick="exportOrders('orders', [${o.Id}])" title="Download order PDF">📄</button><button class="icon-btn" onclick="exportOrders('packing', [${o.Id}])" title="Download packing list">📦</button><button class="icon-btn danger" onclick="deleteOrderById(${o.Id})" title="Delete order">🗑</button></div></td>
     </tr>`;
   }).join('');
@@ -2674,6 +2790,7 @@ function openAddOrderModal() {
   editingOrderId = null;
   document.getElementById('orderModalTitle').textContent = 'Add Order';
   document.getElementById('omFromChatBtn').style.display = 'none';
+  setOrderTakenByHint(null);
   ['omOrderId','omCustomerName','omCustomerPhone','omCustomerEmail','omTotal','omPayment','omItems','omAddress','omNotes'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('omCurrency').value = 'INR';
   document.getElementById('omStatus').value = 'received';
@@ -2689,6 +2806,7 @@ function openEditOrderModal(id) {
   if (!o) return;
   editingOrderId = id;
   document.getElementById('orderModalTitle').textContent = 'Edit Order #' + (o.order_id || o.Id);
+  setOrderTakenByHint(o);
   const set = (el, v) => document.getElementById(el).value = v == null ? '' : v;
   set('omOrderId', o.order_id); set('omOrderDate', (o.order_date||'').slice(0,10));
   set('omCustomerName', o.customer_name); set('omCustomerPhone', o.customer_phone);
@@ -2747,6 +2865,15 @@ async function syncOrdersFromChats(btn) {
   } finally { btn.disabled = false; }
 }
 
+// Baby Care: who took this order (edit) / who it will be recorded against (add).
+function setOrderTakenByHint(o) {
+  const el = document.getElementById('omTakenBy');
+  if (!isBabyCareStore()) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  if (o) el.innerHTML = `Order taken by: <strong>${esc(takenByLabel(o))}</strong>${o.taken_by_at ? ' · ' + esc(fmtWhen(o.taken_by_at)) : ''}${!takenByKey(o) && String(o.status||'').toLowerCase()==='draft' ? ' — confirming it records you as the taker' : ''}`;
+  else el.innerHTML = ecomSessionToken ? 'This order will be recorded as taken by <strong>you</strong> (your login).' : '⚠ Not signed in — open Ecommerce from the dashboard so this order is recorded against you.';
+}
+
 function closeOrderModal() {
   document.getElementById('orderModalOverlay').classList.remove('active');
 }
@@ -2777,7 +2904,7 @@ async function submitAddOrder(allowDuplicate) {
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: editingOrderId ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: orderAuthHeaders(),
       body: JSON.stringify(editingOrderId ? { ...body, Id: editingOrderId } : body)
     });
     // Baby Care: the Worker refuses a second open order for the same phone within 24h.
@@ -2802,16 +2929,19 @@ function deleteOrderById(id) {
 }
 
 async function updateOrderStatus(id, newStatus) {
+  const wasDraft = String(allOrders.find(x => x.Id === id)?.status || '').toLowerCase() === 'draft';
   try {
     const r = await fetch(`${WORKER_BASE}/ecom/orders`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: orderAuthHeaders(),
       body: JSON.stringify({ client_id: clientId, Id: id, status: newStatus })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const o = allOrders.find(x => x.Id === id);
     if (o) o.status = newStatus;
     renderOrdersTable();
+    // A confirmed draft now carries who took it; status changes also move the staff report.
+    if (isBabyCareStore()) { if (wasDraft) loadOrders(); else loadStaffReport(); }
   } catch(e) {
     alert('Error updating status: ' + e.message);
   }
@@ -3033,6 +3163,7 @@ function pdfOrdersSummary(doc, list) {
 
 function ordersCsv(list) {
   const cols = ['order_id', 'order_date', 'status', 'customer_name', 'customer_phone', 'customer_email', 'items', 'total', 'currency', 'payment_method', 'delivery_address', 'notes'];
+  if (isBabyCareStore()) cols.push('taken_by_name', 'taken_by');
   // Leading = + - @ would run as a formula in Excel/Sheets — prefix a quote (phones keep their +).
   const cell = v => {
     let s = v == null ? '' : String(v);

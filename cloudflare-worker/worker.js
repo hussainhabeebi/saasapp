@@ -8685,16 +8685,19 @@ async function handleEcomCreate(request, env, kind){
   const tableId=await ecomResolveTable(env, clientId, kind);
   if(!tableId) return json({error:kind+' table not configured for this client'},400);
   if(kind==='products') await ensureEcomProductStyleFields(env, tableId);
-  const { client_id, Id, allow_duplicate, ...fields }=body;
+  const { client_id, Id, allow_duplicate, taken_by:_tb, taken_by_name:_tbn, taken_by_at:_tba, ...fields }=body;
+  const c=kind==='orders' ? await getClientById(env, clientId) : null;
   // Baby Care: a second open order for the same phone within 24h is refused until staff confirm
   // it's a genuine new order (the Orders tab re-sends with allow_duplicate).
-  if(kind==='orders' && allow_duplicate!==true && String(fields.status||'').toLowerCase()!=='draft' && fields.customer_phone){
-    const c=await getClientById(env, clientId);
-    if(ecomIsBabyCare(c)){
-      const dup=ecomFindDuplicateOrder(await ecomRecentOrdersForPhone(env, tableId, clientId, fields.customer_phone), fields);
-      if(dup) return json({error:'duplicate', message:`This phone number already has an open order (#${dup.order_id||dup.Id}, ${dup.status}) from the last 24 hours.`,
-        duplicate_of:{Id:dup.Id, order_id:dup.order_id, status:dup.status, order_date:dup.order_date, items:dup.items}}, 409);
-    }
+  if(kind==='orders' && ecomIsBabyCare(c) && allow_duplicate!==true && String(fields.status||'').toLowerCase()!=='draft' && fields.customer_phone){
+    const dup=ecomFindDuplicateOrder(await ecomRecentOrdersForPhone(env, tableId, clientId, fields.customer_phone), fields);
+    if(dup) return json({error:'duplicate', message:`This phone number already has an open order (#${dup.order_id||dup.Id}, ${dup.status}) from the last 24 hours.`,
+      duplicate_of:{Id:dup.Id, order_id:dup.order_id, status:dup.status, order_date:dup.order_date, items:dup.items}}, 409);
+  }
+  // Baby Care: "Order Taken By" comes from the signed-in session, never from the request body.
+  if(kind==='orders' && ecomIsBabyCare(c) && String(fields.status||'').toLowerCase()!=='draft'){
+    const staff=await ecomStaffFromRequest(request, env, c, clientId);
+    if(staff){ await ensureEcomOrderTakenByFields(env, tableId); Object.assign(fields, staff); }
   }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
   const data=await r.json().catch(()=>({}));
@@ -8717,6 +8720,18 @@ async function handleEcomUpdate(request, env, kind){
   const existing=await existingR.json().catch(()=>null);
   if(!existingR.ok || !existing || String(existing.client_id)!==clientId) return json({error:'Not found'},404);
   const { client_id, Id, ...fields }=body;
+  if(kind==='orders'){
+    delete fields.taken_by; delete fields.taken_by_name; delete fields.taken_by_at;
+    // Baby Care: staff confirming a chat draft (draft → pending/received/…) took that order.
+    const was=String(existing.status||'').toLowerCase(), now=String(fields.status||'').toLowerCase();
+    if(was==='draft' && now && now!=='draft' && now!=='cancelled' && !existing.taken_by){
+      const c=await getClientById(env, clientId);
+      if(ecomIsBabyCare(c)){
+        const staff=await ecomStaffFromRequest(request, env, c, clientId);
+        if(staff){ await ensureEcomOrderTakenByFields(env, tableId); Object.assign(fields, staff); }
+      }
+    }
+  }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'PATCH', body:{Id:id, ...fields}});
   const data=await r.json().catch(()=>({}));
   let droppedFields=[];
@@ -11301,6 +11316,7 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
           ? 'Order taken in the WhatsApp conversation — verify customisation, add-ons & pricing before fulfilling.'
           : 'Collected via chat conversation (order link disabled) — verify items & pricing before fulfilling.'].filter(Boolean).join('\n')
   };
+  if(ecomIsBabyCare(c)){ await ensureEcomOrderTakenByFields(env, ordersTable); Object.assign(body, ecomSystemTakenBy(ECOM_TAKEN_BY_BOT)); }
   // Baby Care: the same items confirmed again by the same phone within 24h (a double "yes", a
   // re-run of the flow) completes nothing new — the open order stands and the draft is closed off.
   if(ecomIsBabyCare(c)){
@@ -11741,6 +11757,100 @@ export function ecomFindDuplicateOrder(orders, candidate, {now=Date.now(), sameI
       && (!ecomOrderTime(o) || now-ecomOrderTime(o)<ECOM_DUPLICATE_WINDOW_MS)
       && (!sameItemsOnly || ecomItemsKey(o.items)===items))
     .sort((a,b)=>ecomOrderTime(b)-ecomOrderTime(a)||(b.Id||0)-(a.Id||0))[0]||null;
+}
+/* ── Baby Care: "Order Taken By" — who took each order, for staff-wise order reports ─────────
+   taken_by is the signed-in staff email (from the session token, never the request body), or
+   ai_bot for an order the bot confirmed in chat, or store_page for one the customer placed on the
+   public order page. It's stamped once, when the order is taken: a manual Add Order, a staff
+   member moving a chat draft to a confirmed status, or the bot / store page creating it. Drafts
+   have none until then. Orders from before this feature stay blank ("Not recorded"). */
+export const ECOM_TAKEN_BY_BOT='ai_bot';
+export const ECOM_TAKEN_BY_STORE='store_page';
+export const ECOM_ORDER_TAKEN_BY_FIELDS=['taken_by','taken_by_name','taken_by_at'];
+export function ecomStaffTakenBy(c, email, now=new Date()){
+  const e=String(email||'').trim().toLowerCase();
+  if(!e) return null;
+  let names={}; try{ names=JSON.parse(c?.team_names||'{}')||{}; }catch(err){}
+  const key=Object.keys(names).find(k=>k.trim().toLowerCase()===e);
+  const isOwner=e===String(c?.authentik_email||'').trim().toLowerCase();
+  const name=String((key&&names[key])||(isOwner?'Owner':'')||e.split('@')[0]).slice(0,120);
+  return {taken_by:e, taken_by_name:name, taken_by_at:now.toISOString()};
+}
+export function ecomSystemTakenBy(kind, now=new Date()){
+  return {taken_by:kind, taken_by_name:kind===ECOM_TAKEN_BY_BOT?'AI bot (WhatsApp chat)':'Store page (customer)', taken_by_at:now.toISOString()};
+}
+// The signed-in staff member behind this request, when its session belongs to this client.
+async function ecomStaffFromRequest(request, env, c, clientId){
+  const payload=await requireSession(request, env).catch(()=>null);
+  if(!payload || String(payload.cid)!==String(clientId) || !payload.email) return null;
+  return ecomStaffTakenBy(c, payload.email);
+}
+const _ecomTakenByFieldsEnsured=new Set();
+async function ensureEcomOrderTakenByFields(env, tableId){
+  if(!tableId || _ecomTakenByFieldsEnsured.has(tableId)) return;
+  try{
+    const r=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`);
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) return;
+    const names=new Set((d.list||[]).map(f=>f.title));
+    let ok=true;
+    for(const title of ECOM_ORDER_TAKEN_BY_FIELDS){
+      if(names.has(title)) continue;
+      const cr=await ncFetch(env, `api/v2/meta/tables/${tableId}/fields`, {method:'POST', body:{title, uidt:'SingleLineText'}});
+      if(!cr.ok) ok=false;
+    }
+    if(ok) _ecomTakenByFieldsEnsured.add(tableId);
+  }catch(e){ await reportOpsError(env, 'ensureEcomOrderTakenByFields', e, {tableId}); }
+}
+// Staff-wise order report: one row per taker (drafts and cancelled orders counted apart, not as
+// orders taken), most orders first. `from`/`to` are inclusive YYYY-MM-DD on order_date.
+export function ecomStaffOrderReport(orders, {from='', to=''}={}){
+  const rows=new Map();
+  let total=0;
+  for(const o of orders||[]){
+    const day=String(o?.order_date||o?.CreatedAt||'').slice(0,10);
+    if(from && (!day || day<from)) continue;
+    if(to && (!day || day>to)) continue;
+    const st=String(o?.status||'pending').toLowerCase();
+    if(st==='draft') continue;
+    const key=String(o?.taken_by||'').trim().toLowerCase()||'';
+    if(!rows.has(key)) rows.set(key, {taken_by:key, name:key?String(o?.taken_by_name||key.split('@')[0]):'Not recorded', orders:0, cancelled:0, revenue:0, by_status:{}, first_day:'', last_day:''});
+    const r=rows.get(key);
+    r.by_status[st]=(r.by_status[st]||0)+1;
+    if(st==='cancelled'){ r.cancelled++; continue; }
+    r.orders++; total++;
+    r.revenue+=parseFloat(o?.total)||0;
+    if(o?.taken_by_name) r.name=String(o.taken_by_name);
+    if(day){ if(!r.first_day||day<r.first_day) r.first_day=day; if(!r.last_day||day>r.last_day) r.last_day=day; }
+  }
+  const list=[...rows.values()].sort((a,b)=>b.orders-a.orders||a.name.localeCompare(b.name));
+  return {total_orders:total, rows:list};
+}
+// GET /ecom/orders/staff-report?client_id=&from=&to= — session-gated. Owners / admins see every
+// staff member; anyone else only their own row.
+async function handleEcomStaffOrderReport(request, env){
+  const url=new URL(request.url);
+  const clientId=String(url.searchParams.get('client_id')||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const day=v=>/^\d{4}-\d{2}-\d{2}$/.test(v||'')?v:'';
+  const from=day(url.searchParams.get('from')), to=day(url.searchParams.get('to'));
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  await ensureEcomOrderTakenByFields(env, ordersTable);
+  const all=[];
+  for(let page=0; page<20; page++){
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,order_date,CreatedAt,status,total,taken_by,taken_by_name&limit=1000&offset=${page*1000}`);
+    if(!r.ok) return json({error:'Could not read orders'},502);
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    all.push(...list);
+    if(list.length<1000) break;
+  }
+  const report=ecomStaffOrderReport(all, {from, to});
+  const me=String(auth.payload.email||'').trim().toLowerCase();
+  if(!auth.fullAccess) report.rows=report.rows.filter(r=>r.taken_by===me);
+  return json({ok:true, from, to, full_access:auth.fullAccess, me, ...report});
 }
 async function ecomRecentOrdersForPhone(env, ordersTable, clientId, phone){
   const key=ecomPhoneKey(phone);
@@ -25018,6 +25128,8 @@ async function handleEcomPublicOrder(request, env){
   if(ecomIsBabyCare(c)){
     const dup=ecomFindDuplicateOrder(await ecomRecentOrdersForPhone(env, ordersTable, clientId, phone).catch(()=>[]), orderBody, {sameItemsOnly:true});
     if(dup) return json({ok:true, order_id:dup.order_id||String(dup.Id), duplicate:true});
+    await ensureEcomOrderTakenByFields(env, ordersTable);
+    Object.assign(orderBody, ecomSystemTakenBy(ECOM_TAKEN_BY_STORE));
   }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
   if(!r.ok){
@@ -35875,6 +35987,7 @@ export default {
       else if(url.pathname==='/ecom/orders/from-chat' && request.method==='POST'){ res=await handleEcomOrderFromChat(request, env); }
       else if(url.pathname==='/ecom/orders/insights' && request.method==='GET'){ res=await handleEcomOrdersInsights(request, env); }
       else if(url.pathname==='/ecom/orders/session' && request.method==='GET'){ res=await handleEcomOrderSession(request, env); }
+      else if(url.pathname==='/ecom/orders/staff-report' && request.method==='GET'){ res=await handleEcomStaffOrderReport(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='PATCH'){ res=await handleEcomCategoryUpdate(request, env); }
