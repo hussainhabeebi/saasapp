@@ -93,6 +93,8 @@ button,input,textarea,select{font-family:inherit;font-size:inherit}
         <div class="chip-row" id="stageChips"></div>
         <label class="form-label">Audience — Tag contains</label>
         <input class="form-input" id="cTag" placeholder="e.g. vip (leave blank for any tag)">
+        <label class="form-label">Audience — Lead Ref (optional)</label>
+        <input class="form-input" id="cLeadRefs" placeholder="e.g. LD-00042, LD-00100 to LD-00250">
         <div class="audience-preview" id="audiencePreview">Checking audience…</div>
         <div style="margin-top:16px;display:flex;gap:10px">
           <button class="btn btn-sec" onclick="saveCampaign()">Save Draft</button>
@@ -189,6 +191,8 @@ function currentSegmentFilter() {
   if (selectedStages.size) f.stage = [...selectedStages];
   const tag = $id('cTag').value.trim();
   if (tag) f.tags_any = [tag];
+  const refs = $id('cLeadRefs').value.trim();
+  if (refs) f.lead_refs = refs;
   return f;
 }
 
@@ -236,10 +240,12 @@ function openComposer(id) {
   $id('cSubject').value = c?.subject || '';
   $id('cHtml').value = c?.html_body || '';
   $id('cTag').value = '';
+  $id('cLeadRefs').value = '';
   if (c) {
     let f = {}; try { f = JSON.parse(c.segment_filter || '{}'); } catch (e) {}
     (f.stage || []).forEach(s => selectedStages.add(s));
     $id('cTag').value = (f.tags_any || [])[0] || '';
+    $id('cLeadRefs').value = f.lead_refs || '';
   }
   renderStageChips();
   document.querySelectorAll('#stageChips .chip').forEach(el => el.classList.toggle('on', selectedStages.has(el.dataset.stage)));
@@ -317,6 +323,7 @@ function renderHistory() {
 
 document.addEventListener('DOMContentLoaded', () => {
   $id('cTag').addEventListener('input', refreshAudiencePreview);
+  $id('cLeadRefs').addEventListener('input', refreshAudiencePreview);
 });
 
 tryAutoLogin();
