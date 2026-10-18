@@ -207,3 +207,33 @@ test('admin plans tab imports Stripe plans; API tab shows secrets and webhook UR
   await expect(page.locator('#api-services')).toContainText('/billing/razorpay/webhook');
   await expect(page.locator('#search-input')).toBeHidden();
 });
+
+test('failing Stripe customer gets a Switch to Razorpay option', async ({ page }) => {
+  const record = { Id: 7, authentik_email: 'owner@acme.in', billing_email: 'billing@acme.in', stripe_subscription_id: 'sub_s',
+    stripe_customer_id: 'cus_1', plan_status: 'unpaid', plan_name: 'Basic', plan_renews_at: new Date(Date.now() + 27 * 86400000).toISOString() };
+  const calls = await stub(page, (p) => {
+    if (p === '/billing/razorpay/plans') return { json: { ok: true, enabled: true, trial_days: 15, plans: RZP_PLANS } };
+    if (p === '/billing/razorpay/subscribe') return { json: { ok: true, url: 'https://rzp.io/i/sw', subscription_id: 'sub_r', trial_days: 0 } };
+    if (p === '/billing/plan-status') return { json: { ok: true, plan_label: 'Legacy', is_legacy: true, limits: null, usage: { users: 1, channels: 1 }, modules: {} } };
+    return null;
+  });
+  await page.route('https://rzp.io/**', (route) => route.fulfill({ contentType: 'text/html', body: '<p>razorpay</p>' }));
+  await openBilling(page, record);
+  await expect(page.locator('#billingPastDueBanner')).toBeVisible();
+  await expect(page.locator('#billingStripeManage')).toBeVisible();
+  const box = page.locator('#billingRzpSwitch');
+  await expect(box).toBeVisible();
+  await expect(box).toContainText('never charged twice');
+  await expect(box).not.toContainText('Pay with Stripe');
+  await box.locator('.card', { hasText: 'Business Intelligence' }).getByRole('button', { name: 'Switch to this plan' }).click();
+  await page.waitForURL('https://rzp.io/i/sw');
+  expect(calls.find((c) => c.path === '/billing/razorpay/subscribe').body).toEqual({ plan_id: 'plan_bi' });
+});
+
+test('healthy Stripe customer does not see the switch option', async ({ page }) => {
+  await stub(page, (p) => p === '/billing/razorpay/plans' ? { json: { ok: true, enabled: true, plans: RZP_PLANS } } : null);
+  await openBilling(page, { Id: 7, billing_email: 'b@a.in', stripe_subscription_id: 'sub_s', plan_status: 'active', plan_name: 'Basic' });
+  await expect(page.locator('#billingHasPlan')).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(page.locator('#billingRzpSwitch')).toBeHidden();
+});

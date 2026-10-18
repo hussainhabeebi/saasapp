@@ -4310,6 +4310,13 @@ const ROLES = {
               <div id="billingPastDueBanner" style="display:none;background:#FDECEA;border:1px solid #F3B4AC;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#B23A2E">
                 ⚠️ <strong>Payment issue with your subscription</strong> — <span id="billingPastDueText"></span> Update your payment method to avoid losing access.
               </div>
+              <!-- Failing Stripe payment → offer Razorpay (UPI / Indian cards / net-banking). Stripe is
+                   only cancelled once the Razorpay mandate is approved (razorpay-billing.js). -->
+              <div id="billingRzpSwitch" style="display:none;border:1.5px solid #BAE6FD;background:#F0F9FF;border-radius:10px;padding:12px 14px;margin-bottom:12px">
+                <div style="font-weight:700;font-size:14px;margin-bottom:4px">💡 Card payment not going through? Switch to UPI AutoPay / Indian cards / net-banking</div>
+                <div class="s-note" style="margin:0 0 8px">Pick your plan below and approve the AutoPay mandate with Razorpay. Your current card subscription is cancelled automatically as soon as the new mandate is approved — you're never charged twice, and nothing changes if you don't finish.</div>
+                <div id="billingRzpSwitchPlans"></div>
+              </div>
               <div id="billingCancelBanner" style="display:none;background:#FFF6E5;border:1px solid #F0D89B;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#8A6416">
                 ℹ️ Your plan is set to <strong>not renew</strong> — you'll keep access until <strong id="billingCancelDate"></strong>. Resubscribe anytime before then to keep it going.
               </div>
@@ -15460,25 +15467,25 @@ function billingPeriodLabel(period, n){
   return unit?`/${n>1?n+' ':''}${unit}${n>1?'s':''}`:'';
 }
 function setBillingInrGateway(g){ _billingInrGateway=g; renderBillingPlanList(); }
-function renderRzpPlanList(wrap){
+function renderRzpPlanList(wrap, {switching=false}={}){
   const rzp=_rzpPlansCache;
   const pending=clientRecord.razorpay_status==='created'&&clientRecord.razorpay_short_url;
   const trial=rzp.trial_days&&clientRecord.razorpay_trial_used!=='Yes'&&!clientRecord.stripe_subscription_id;
-  const hasStripeInr=(_billingPlansCache||[]).some(p=>(p.currency||'').toUpperCase()==='INR');
+  const hasStripeInr=!switching&&(_billingPlansCache||[]).some(p=>(p.currency||'').toUpperCase()==='INR');
   wrap.innerHTML=(pending?`<div style="background:#FFF6E5;border:1px solid #F0D89B;border-radius:8px;padding:12px 14px;margin-bottom:10px;font-size:13px;color:#8A6416">
       ⏳ You started a subscription but haven't approved the AutoPay mandate yet. <a href="${escAttr(clientRecord.razorpay_short_url)}" target="_blank" rel="noopener" style="font-weight:700;color:inherit">Finish setup ↗</a> — or pick a plan below to start over.</div>`:'')
-    +`<div class="s-note" style="margin-bottom:8px">🇮🇳 Pay with UPI AutoPay, RuPay / Indian cards or net-banking (Razorpay).${trial?` <strong>${rzp.trial_days}-day free trial</strong> — nothing is charged until it ends.`:''}</div>`
+    +(switching?'':`<div class="s-note" style="margin-bottom:8px">🇮🇳 Pay with UPI AutoPay, RuPay / Indian cards or net-banking (Razorpay).${trial?` <strong>${rzp.trial_days}-day free trial</strong> — nothing is charged until it ends.`:''}</div>`)
     +rzp.plans.map(p=>{
       const amount=((p.amount||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
       return `<div class="card" style="padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div><strong>${esc(p.name)}</strong><div class="s-note">₹${amount}${esc(billingPeriodLabel(p.period,p.interval_count))} · incl. auto-renewal, cancel anytime</div></div>
-        <button class="save-btn" onclick="subscribeRazorpay('${escAttr(p.plan_id)}', this)">Subscribe</button>
+        <button class="save-btn" onclick="subscribeRazorpay('${escAttr(p.plan_id)}', this)">${switching?'Switch to this plan':'Subscribe'}</button>
       </div>`;
     }).join('')
     +(hasStripeInr?`<div class="s-note" style="margin-top:4px"><a href="#" onclick="setBillingInrGateway('stripe');return false">Prefer an international card? Pay with Stripe →</a></div>`:'');
 }
 async function subscribeRazorpay(plan_id, btn){
-  const wrap=$id('billingPricingTableWrap');
+  const wrap=billingCanSwitchToRazorpay(clientRecord)?$id('billingRzpSwitchPlans'):$id('billingPricingTableWrap');
   if(!requireBillingEmailOrExplain()){
     wrap.insertAdjacentHTML('beforeend', '<div class="s-note">Set your Billing Email in Company Profile above first — that\'s where invoices and payment receipts go.</div>');
     return;
@@ -15601,6 +15608,19 @@ function billingHasActivePlan(c){
   if(provider==='manual') return !!c.plan_status && c.plan_status!=='canceled';
   return !!c.stripe_subscription_id;
 }
+// A Stripe subscription whose payments are failing can move to Razorpay (same list as the
+// Worker's STRIPE_SWITCHABLE in razorpay-billing.js).
+function billingCanSwitchToRazorpay(c){
+  return billingProviderOf(c)==='stripe' && ['past_due','unpaid','incomplete'].includes(c.plan_status);
+}
+async function renderBillingRzpSwitch(){
+  const box=$id('billingRzpSwitch');
+  if(!billingCanSwitchToRazorpay(clientRecord)){ box.style.display='none'; return; }
+  const rzp=await loadRzpPlans();
+  if(!rzp.enabled||!rzp.plans.length){ box.style.display='none'; return; }
+  box.style.display='block';
+  renderRzpPlanList($id('billingRzpSwitchPlans'), {switching:true});
+}
 const RZP_STATUS_LABELS={authenticated:'AutoPay approved',active:'active',pending:'payment retrying',halted:'on hold',paused:'paused',cancelled:'cancelled',completed:'completed'};
 
 function renderBillingPage(){
@@ -15614,6 +15634,7 @@ function renderBillingPage(){
     $id('billingPlanName').textContent=(clientRecord.plan_name||'—')+(provider==='razorpay'?' · Razorpay':provider==='manual'?' · managed by Leadvyne':'');
     $id('billingPlanStatus').textContent=clientRecord.plan_status||'—';
     if(provider==='razorpay') renderRzpManage();
+    renderBillingRzpSwitch();
 
     const renewsDate=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
     const days=daysUntil(clientRecord.plan_renews_at);
@@ -15681,7 +15702,8 @@ async function billingInit(){
   // Razorpay's hosted mandate page doesn't redirect back here, so pull the latest state whenever
   // a subscription is still settling (just started, awaiting first charge, or retrying).
   let rzpPending=false; try{ rzpPending=sessionStorage.getItem('lv_rzp_pending')==='1'; }catch(e){}
-  if(billingProviderOf(clientRecord)==='razorpay' && clientRecord.razorpay_subscription_id && (rzpPending||['created','authenticated','pending'].includes(clientRecord.razorpay_status))){
+  const rzpInPlay=billingProviderOf(clientRecord)==='razorpay'||billingCanSwitchToRazorpay(clientRecord);
+  if(rzpInPlay && clientRecord.razorpay_subscription_id && (rzpPending||['created','authenticated','pending'].includes(clientRecord.razorpay_status))){
     try{
       const r=await fetch(`${CONFIG.WORKER_BASE}/billing/razorpay/status`,{headers:ncAuthHeaders()});
       if(r.ok){

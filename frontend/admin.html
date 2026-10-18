@@ -1455,7 +1455,7 @@ function renderBillingTable() {
     return `
     <tr id="billing-row-${c.Id}">
       <td><strong>${escHtml(c.client_name || 'Unnamed')}</strong> <span class="muted small">#${c.Id}</span><br><span class="muted small">${escHtml(c.billing_email || c.authentik_email || '')}</span></td>
-      <td>${providerBadge(c.provider)}</td>
+      <td>${providerBadge(c.provider)}${c.provider === 'stripe' && c.razorpay_subscription_id && c.razorpay_status === 'created' ? '<br><span class="small" style="color:var(--warn)">switching to Razorpay…</span>' : ''}</td>
       <td>${escHtml(c.plan_name || '—')}<br>${tier}</td>
       <td>${statusBadge(c.plan_status)}${c.plan_cancel_at_period_end === 'Yes' && c.plan_status !== 'canceled' ? '<br><span class="small" style="color:var(--warn)">won\'t renew</span>' : ''}</td>
       <td>${c.plan_renews_at ? renewLabel + ': ' + formatRenewDate(c.plan_renews_at) : '—'}</td>
