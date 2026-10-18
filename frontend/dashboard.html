@@ -1285,23 +1285,9 @@ const CONFIG = {
   // from the Worker's own Stripe account, no publishable key or Stripe.js needed in the browser)
   // and subscribing posts to /billing/checkout-subscription — the Worker creates the Checkout
   // Session and hands back a redirect url, so it sees and can gate every subscription request.
-  // Add-ons stay as our own one-time Checkout (mode=payment) with fulfillment_type/
-  // wa_credits_amount metadata on each add-on Price telling the Worker what to grant.
-  // See SETUP.md "Billing module" for the RBI e-mandate reasoning.
-  // Add-ons can list more than one currency (separate Stripe Price objects, not Stripe's
-  // currency_options on one Price) — the Billing page's currency toggle picks which one to
-  // check out. Omit a currency key for an add-on that only exists in one currency.
+  // See SETUP.md "Billing module" for the RBI e-mandate reasoning. The plan picker's currency
+  // toggle chooses which plans to show (INR also shows the Razorpay plans).
   BILLING_CURRENCIES: ['INR','AED'],
-  BILLING_ADDONS: [
-    {id:'wa_credits', name:'WhatsApp Credit Recharge', prices:{
-      INR:{price_id:'price_1TpvHaJWa5B2ayZgydjFobcB', display:'₹— one-time'},
-      AED:{price_id:'price_1TpvIvJWa5B2ayZghpfgBxli', display:'— AED one-time'},
-    }},
-    {id:'voice_addon', name:'Voice Add-on', prices:{
-      INR:{price_id:'price_1TpvPlJWa5B2ayZgHya1YHiK', display:'₹— one-time'},
-      AED:{price_id:'price_1TpvPRJWa5B2ayZgWmPFKXvG', display:'— AED one-time'},
-    }},
-  ],
 };
 
 const INDUSTRIES = {
@@ -4302,7 +4288,13 @@ const ROLES = {
           <div class="settings-section" style="margin-bottom:0">
             <div class="s-head">🧾 Customer Portal</div>
             <div id="billingNoPlan">
-              <div class="s-note">Choose a plan to get started.</div>
+              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+                <div class="s-note" style="margin:0">Choose a plan to get started.</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span class="form-label" style="margin:0">Currency</span>
+                  <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
+                </div>
+              </div>
               <div class="s-note" id="billingEmailNotice"></div>
               <div id="billingPricingTableWrap" style="margin-top:8px"></div>
             </div>
@@ -4374,20 +4366,6 @@ const ROLES = {
             <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
             <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
             <span class="save-msg" id="companyProfileMsg"></span>
-          </div>
-        </div>
-
-        <!-- Add-ons -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">Add-ons</div>
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-              <span class="form-label" style="margin:0">Currency</span>
-              <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
-            </div>
-            <div class="s-note">One-time purchases — not auto-renewing, so buying these never requires re-authorizing a recurring mandate.</div>
-            <div id="billingAddonList" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"></div>
-            <span class="save-msg" id="billingAddonMsg"></span>
           </div>
         </div>
 
@@ -15422,14 +15400,7 @@ function setBillingCurrency(cur){
   _billingCurrency=cur;
   try{localStorage.setItem('lv_billing_currency',cur);}catch(e){}
   renderBillingCurrencyToggle();
-  renderBillingAddonList();
   if(!billingHasActivePlan(clientRecord)) renderBillingPlanList();
-}
-
-// price_id lookups always fall back to whatever currency an item actually has, so an add-on
-// that only exists in one currency still renders correctly regardless of the selected toggle.
-function billingPriceFor(item){
-  return item.prices[_billingCurrency]||Object.values(item.prices)[0];
 }
 
 // Plan picker — fetched from the Worker (/billing/plans), which reads the live catalog straight
@@ -15539,13 +15510,6 @@ async function subscribeToPlan(price_id){
     if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
     window.location.href=data.url;
   }catch(e){ wrap.insertAdjacentHTML('beforeend', `<div class="s-note">Error: ${esc(e.message)}</div>`); }
-}
-
-function renderBillingAddonList(){
-  $id('billingAddonList').innerHTML=CONFIG.BILLING_ADDONS.map(a=>{
-    const price=billingPriceFor(a);
-    return `<button class="save-btn" onclick="buyAddon('${esc(price.price_id)}')">${esc(a.name)} — ${esc(price.display)}</button>`;
-  }).join('');
 }
 
 const BILLING_PAST_DUE_COPY={
@@ -15721,7 +15685,6 @@ async function billingInit(){
   $id('cfgBillingEmail').value=clientRecord.billing_email||clientRecord.authentik_email||'';
   $id('cfgCompanyAddress').value=clientRecord.company_address||'';
   renderBillingCurrencyToggle();
-  renderBillingAddonList();
   renderBillingPage();
   loadBillingPlanStatus();
 }
@@ -15827,21 +15790,6 @@ async function syncBillingNow(){
     await refreshClientRecord();
     renderBillingPage();
     msg.textContent='Synced — plan status: '+(data.plan_status||'—');
-  }catch(e){ msg.textContent='Error: '+e.message; }
-}
-
-async function buyAddon(price_id){
-  const msg=$id('billingAddonMsg');
-  if(!requireBillingEmailOrExplain()){
-    msg.textContent='Set your Billing Email in Company Profile above first — that\'s the address your Stripe account and invoices will use.';
-    return;
-  }
-  msg.textContent='Opening checkout…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/checkout-addon`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({price_id})});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    window.location.href=data.url;
   }catch(e){ msg.textContent='Error: '+e.message; }
 }
 
