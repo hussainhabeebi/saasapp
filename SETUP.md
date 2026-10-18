@@ -2274,7 +2274,18 @@ see the Razorpay plans. A "Pay with Stripe" link is still there for internationa
   then). Razorpay only allows **plan changes on card mandates**. For UPI / bank mandates the API
   returns an error, and the customer cancels and subscribes to the new plan instead.
 - A client can't have a live Stripe and a live Razorpay subscription at the same time. Each
-  checkout refuses while the other one is active.
+  checkout refuses while the other one is active, with one exception:
+- **Switching from a failing Stripe subscription** (`past_due`, `unpaid`, `incomplete`): the
+  Billing page shows a "Switch to UPI AutoPay / Indian cards / net-banking" card with the Razorpay
+  plans (no free trial; the first charge happens when the mandate is approved). Until that
+  mandate is approved, only the `razorpay_*` link fields are saved, so the Stripe subscription
+  and the plan fields stay exactly as they were, and an abandoned switch changes nothing. When the
+  mandate is approved (webhook or the Billing page's status pull, whichever comes first),
+  `rzpSyncSubscription` moves the client to Razorpay and cancels the old Stripe subscription
+  immediately (`DELETE /v1/subscriptions/:id`), so Stripe's retries can't charge twice. After that,
+  Stripe's late `customer.subscription.updated/deleted` events for the old subscription are ignored
+  for that client (`clientMovedToRazorpay`). Both outcomes are logged: `stripe.cancelled_after_switch`,
+  or `stripe.cancel_after_switch_failed`, in which case cancel it by hand in Stripe.
 
 ### Status mapping (`rzpPlanStatus`)
 Razorpay statuses are written onto the same `plan_status` field Stripe uses, so every existing

@@ -67,6 +67,7 @@ function setup(){
     ],
     pingStripe:async()=>({ok:true}), pingNocodb:async()=>({ok:true}),
     appBaseUrl:()=>'https://app.example/dashboard.html', webhookBase:()=>'https://api.example',
+    cancelStripeSubscription:async (env, id)=>{ log.stripeCancelled=(log.stripeCancelled||[]).concat(id); return {ok:true}; },
   };
   rzpCalls=[];
   let n=0;
@@ -275,6 +276,40 @@ describe('customer subscription lifecycle', ()=>{
     assert.equal(clients[7].plan_status, 'active');
     const ev=(await call('GET', '/admin/billing/events?provider=razorpay', {auth:'admin'})).data.events[0];
     assert.equal(ev.note, 'stale_subscription');
+  });
+
+  test('a failing Stripe customer switches to Razorpay; Stripe is cancelled only once the mandate is approved', async()=>{
+    const basic=(await rzpListPlans(env)).find(p=>p.plan_tier==='basic');
+    Object.assign(clients[7], {stripe_subscription_id:'sub_stripe', stripe_customer_id:'cus_1', plan_status:'unpaid', plan_name:'price_x', plan_renews_at:'2026-11-13T00:00:00.000Z'});
+    const r=await call('POST', '/billing/razorpay/subscribe', {auth:'acme', body:{plan_id:basic.plan_id}});
+    assert.equal(r.status, 200);
+    assert.equal(r.data.trial_days, 0, 'no free trial when switching');
+    assert.equal(rzpCalls.find(c=>c.path==='subscriptions').body.start_at, undefined);
+    // Until approved, the Stripe subscription is untouched and still what the client row describes.
+    assert.equal(clients[7].plan_status, 'unpaid');
+    assert.equal(clients[7].billing_provider, undefined);
+    assert.equal(clients[7].razorpay_status, 'created');
+    assert.equal(deps.log.stripeCancelled, undefined);
+
+    // An unrelated failing state that isn't switchable stays blocked.
+    Object.assign(clients[8], {billing_email:'b@beta.in', stripe_subscription_id:'sub_ok', plan_status:'active'});
+    const blocked=await call('POST', '/billing/razorpay/subscribe', {auth:'beta', body:{plan_id:basic.plan_id}});
+    assert.equal(blocked.status, 400);
+
+    // The Billing page pulls the status before the webhook lands — that already completes the switch.
+    rzpRoutes.unshift([/^subscriptions\/(sub_\w+)$/, 'GET', (b, m)=>[200, {id:m[1], plan_id:basic.plan_id, status:'authenticated', notes:{client_id:'7'}}]]);
+    const st=await call('GET', '/billing/razorpay/status', {auth:'acme'});
+    assert.equal(st.status, 200);
+    assert.deepEqual(deps.log.stripeCancelled, ['sub_stripe']);
+    await webhook({event:'subscription.authenticated', payload:{subscription:{entity:{id:r.data.subscription_id, plan_id:basic.plan_id, status:'authenticated', notes:{client_id:'7'}}}}});
+    assert.deepEqual(deps.log.stripeCancelled, ['sub_stripe']);
+    assert.equal(clients[7].billing_provider, 'razorpay');
+    await webhook({event:'subscription.charged', payload:{subscription:{entity:{id:r.data.subscription_id, plan_id:basic.plan_id, status:'active', current_end:2000000000, notes:{client_id:'7'}}}, payment:{entity:{amount:99900, currency:'INR'}}}});
+    assert.equal(clients[7].plan_status, 'active');
+    assert.equal(clients[7].plan_tier, 'basic');
+    assert.deepEqual(deps.log.stripeCancelled, ['sub_stripe'], 'Stripe cancelled exactly once');
+    const ev=(await call('GET', '/admin/billing/events?client_id=7', {auth:'admin'})).data.events.map(e=>e.event_type);
+    assert.ok(ev.includes('stripe.cancelled_after_switch'));
   });
 
   test('cancel at cycle end keeps access and flags "won\'t renew"; change plan; invoices', async()=>{

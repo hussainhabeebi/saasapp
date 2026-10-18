@@ -24,11 +24,19 @@
 //     sendBillingEmail(env,{to,subject,heading,bodyHtml,ctaLabel,ctaUrl}), esc,
 //     planTiers (PLAN_TIERS), trialDays, stripeConfigured(env)→bool,
 //     stripePlanPrices(env)→[{price_id,name,unit_amount,currency,interval,interval_count,metadata}],
-//     pingStripe(env)→{ok,error?}, pingNocodb(env)→{ok,error?}, appBaseUrl(env), webhookBase(env) }
+//     pingStripe(env)→{ok,error?}, pingNocodb(env)→{ok,error?}, appBaseUrl(env), webhookBase(env),
+//     cancelStripeSubscription(env, subId)→{ok,error?} }
 
 export const RZP_API='https://api.razorpay.com/v1';
 export const RZP_TERMINAL=['cancelled','completed','expired'];
 const STRIPE_TERMINAL=['canceled','incomplete_expired'];
+// A Stripe subscription whose payments are failing — the customer may switch to Razorpay. Stripe
+// keeps running untouched until the Razorpay mandate is approved; only then is it cancelled
+// (rzpHandleWebhook → deps.cancelStripeSubscription), so an abandoned switch changes nothing.
+export const STRIPE_SWITCHABLE=['past_due','unpaid','incomplete'];
+export function stripeLive(c){
+  return !!c?.stripe_subscription_id && (c.billing_provider||'stripe')==='stripe' && !STRIPE_TERMINAL.includes(c.plan_status);
+}
 export const RZP_CLIENT_COLUMNS=['billing_provider','razorpay_subscription_id','razorpay_customer_id','razorpay_plan_id',
   'razorpay_status','razorpay_short_url','razorpay_trial_used','plan_tier','plan_name','plan_status','plan_renews_at',
   'plan_cancel_at_period_end','billing_admin_note'];
@@ -187,11 +195,20 @@ function planFromRazorpay(rp){
 // Writes a Razorpay subscription's state onto the client. An event for an older subscription
 // (the customer has since started a new one) is ignored unless `force` — so a late "cancelled"
 // for the abandoned first attempt can't wipe out the live plan.
-export async function rzpSyncSubscription(env, deps, clientId, sub, {force=false, cancelAtCycleEnd}={}){
+export async function rzpSyncSubscription(env, deps, clientId, sub, {force=false, cancelAtCycleEnd, linkOnly=false}={}){
   const c=await deps.getClientById(env, clientId);
   if(!c) return {ok:false, error:'Client not found'};
   const current=String(c.razorpay_subscription_id||'');
   if(!force && current && current!==sub.id) return {ok:true, skipped:'stale_subscription'};
+  // Switching from a failing Stripe subscription: until the mandate is approved, only remember the
+  // Razorpay link — the plan fields keep describing the Stripe subscription that is still running.
+  if(linkOnly || (stripeLive(c) && ['created'].includes(sub.status))){
+    await ensureColumns(env, deps);
+    const patch={razorpay_subscription_id:sub.id, razorpay_plan_id:sub.plan_id||'', razorpay_status:sub.status||'',
+      razorpay_short_url:sub.short_url||c.razorpay_short_url||'', razorpay_customer_id:sub.customer_id||c.razorpay_customer_id||''};
+    await deps.patchClientFields(env, clientId, patch);
+    return {ok:true, patch, linked_only:true};
+  }
   const plan=await getPlanRow(env, sub.plan_id);
   const status=rzpPlanStatus(sub);
   const terminal=RZP_TERMINAL.includes(sub.status);
@@ -214,9 +231,19 @@ export async function rzpSyncSubscription(env, deps, clientId, sub, {force=false
   // plan_tier means "legacy, unlimited", so clearing it would *grant* access — the admin decides.
   if(plan?.plan_tier && ['active','trialing','past_due'].includes(status)) patch.plan_tier=plan.plan_tier;
   if(['authenticated','active'].includes(sub.status)) patch.razorpay_trial_used='Yes';
+  // Approving the mandate completes a switch from a failing Stripe subscription. Done here so it
+  // happens on whichever path sees the approval first (webhook or the Billing page's status pull).
+  const switching=stripeLive(c) && ['authenticated','active'].includes(sub.status) && current===sub.id;
   await ensureColumns(env, deps);
   await deps.patchClientFields(env, clientId, patch);
-  return {ok:true, patch};
+  let switched='';
+  if(switching){
+    // Stop the failing Stripe subscription so its retries can't charge the customer a second time.
+    const r=await deps.cancelStripeSubscription(env, c.stripe_subscription_id).catch(e=>({ok:false, error:String(e?.message||e)}));
+    switched=r.ok?`switched from Stripe — cancelled ${c.stripe_subscription_id}`:`switched from Stripe — FAILED to cancel ${c.stripe_subscription_id}: ${r.error}`;
+    await logBillingEvent(env, {provider:'admin', event_type:r.ok?'stripe.cancelled_after_switch':'stripe.cancel_after_switch_failed', client_id:clientId, object_id:c.stripe_subscription_id, note:r.ok?`replaced by Razorpay ${sub.id}`:r.error});
+  }
+  return {ok:true, patch, switched};
 }
 
 function billingTo(c){ return c?.billing_email||c?.authentik_email||''; }
@@ -282,6 +309,7 @@ export async function rzpHandleWebhook(request, env, deps){
     const res=await rzpSyncSubscription(env, deps, clientId, sub);
     if(res.skipped) note=res.skipped;
     else if(res.ok){
+      if(res.switched) note=res.switched;
       const c=await deps.getClientById(env, clientId);
       await sendLifecycleEmail(env, deps, c, eventType, sub, pay);
     }
@@ -300,7 +328,7 @@ async function subscribe(request, env, deps, payload){
   const c=await deps.getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
   if(!c.billing_email) return json({error:'Set your Billing Email in Company Profile before subscribing.'}, 400);
-  if(c.stripe_subscription_id && (c.billing_provider||'stripe')==='stripe' && !STRIPE_TERMINAL.includes(c.plan_status))
+  if(stripeLive(c) && !STRIPE_SWITCHABLE.includes(c.plan_status))
     return json({error:'You already have a card subscription (Stripe). Cancel it from the Customer Portal first, then subscribe with Razorpay.'}, 400);
   if(c.razorpay_subscription_id && !RZP_TERMINAL.includes(c.razorpay_status)){
     if(c.razorpay_status==='created'){
@@ -322,8 +350,9 @@ async function subscribe(request, env, deps, payload){
   if(trial) body.start_at=nowSec+deps.trialDays*86400;
   const {ok, data, error}=await rzpFetch(env, 'POST', 'subscriptions', body);
   if(!ok||!data?.id) return json({error:'Failed to start subscription: '+(error||'unknown error')}, 502);
-  await rzpSyncSubscription(env, deps, payload.cid, data, {force:true, cancelAtCycleEnd:false});
-  await logBillingEvent(env, {provider:'razorpay', event_type:'checkout.started', client_id:payload.cid, object_id:data.id, amount:plan.amount, currency:plan.currency, status:data.status, note:`${plan.name}${trial?` · ${deps.trialDays}-day trial`:''}`});
+  const switching=stripeLive(c);
+  await rzpSyncSubscription(env, deps, payload.cid, data, {force:true, cancelAtCycleEnd:false, linkOnly:switching});
+  await logBillingEvent(env, {provider:'razorpay', event_type:switching?'checkout.started_switch_from_stripe':'checkout.started', client_id:payload.cid, object_id:data.id, amount:plan.amount, currency:plan.currency, status:data.status, note:`${plan.name}${trial?` · ${deps.trialDays}-day trial`:''}${switching?` · replacing Stripe ${c.stripe_subscription_id} (${c.plan_status})`:''}`});
   return json({ok:true, url:data.short_url, subscription_id:data.id, trial_days:trial?deps.trialDays:0});
 }
 

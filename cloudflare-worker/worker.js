@@ -8132,6 +8132,9 @@ function ensureBillingProviderColumn(env){
 // learned about it.
 async function syncSubscriptionFields(env, clientId, sub){
   await ensureBillingProviderColumn(env);
+  // Moved to Razorpay (razorpay-billing.js cancels the old Stripe subscription after the switch):
+  // Stripe's own update/cancel events for that old subscription must not overwrite the plan.
+  if(await clientMovedToRazorpay(env, clientId)) return;
   const item=sub.items?.data?.[0];
   const price=item?.price;
   // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
@@ -8309,7 +8312,7 @@ async function handleBillingWebhook(request, env){
   }
   if(event.type==='customer.subscription.deleted'){
     const clientId=await resolveClientIdForSubscription(env, obj);
-    if(clientId) await patchClientFields(env, clientId, {plan_status:'canceled'});
+    if(clientId && !await clientMovedToRazorpay(env, clientId)) await patchClientFields(env, clientId, {plan_status:'canceled'});
   }
 
   // Fires ~3 days before the trial converts to a paid subscription (Stripe's default lead time,
@@ -8437,6 +8440,10 @@ async function handleBillingWebhook(request, env){
 }
 
 /* ── Razorpay (razorpay-billing.js) — helpers it needs from here ── */
+async function clientMovedToRazorpay(env, clientId){
+  const c=await getClientById(env, clientId);
+  return c?.billing_provider==='razorpay';
+}
 // Every CLIENTS row, paged (Admin → Billing overview).
 async function listAllClientRecords(env){
   const out=[];
@@ -8470,6 +8477,13 @@ const RZP_DEPS={
   pingStripe:async env=>{ const r=await stripeFetch(env, 'GET', 'prices', {limit:1}); return {ok:r.ok, error:r.ok?'':(r.data?.error?.message||`HTTP ${r.status}`)}; },
   pingNocodb:async env=>{ const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records?limit=1`); return {ok:r.ok, error:r.ok?'':`HTTP ${r.status}`}; },
   appBaseUrl:env=>env.APP_BASE_URL||'', webhookBase:env=>env.WORKER_BASE_URL||'',
+  cancelStripeSubscription:async (env, subId)=>{
+    if(!env.STRIPE_SECRET_KEY) return {ok:false, error:'Stripe is not configured'};
+    const r=await stripeFetch(env, 'DELETE', `subscriptions/${subId}`);
+    // Already cancelled on Stripe's side counts as done.
+    if(r.ok||r.data?.status==='canceled'||r.data?.error?.code==='resource_missing') return {ok:true};
+    return {ok:false, error:r.data?.error?.message||`HTTP ${r.status}`};
+  },
 };
 
 /* ── ECOMMERCE (ecom.html) — the master NocoDB token used to live directly in
