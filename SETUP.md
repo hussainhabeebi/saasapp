@@ -9088,3 +9088,38 @@ Follow-ups follows the Campaigns permission and the "Campaigns" module toggle.
 
 Opened directly (e.g. B2B's 📢 links, `broadcast.html?stage=…`) the page still works on its own, with
 a Campaigns / Follow-ups switch in its top bar. `#fuengine`/`#followups` in the URL open Follow-ups.
+
+## Leads read mirror (`cloudflare-worker/leads-mirror.js`)
+
+NocoDB stays the source of truth for leads — every write still goes to NocoDB. The Worker keeps a
+read copy of each enabled client's leads in D1 (every column except the `ConvHistory` transcript)
+and answers the dashboard's big lead-list reads (`/nocodb/…/records` GETs with a `fields` list)
+from it, so they no longer pull up to 2,000 rows from NocoDB on every load and 60-second poll.
+Response header `X-Leads-Source: mirror` marks a read served from the copy.
+
+**Switch on**
+1. `wrangler d1 execute leadvyne-d1 --remote --file=migrations/0117_leads_mirror.sql` (the module
+   also creates the tables lazily).
+2. Set the `LEADS_MIRROR` var: one or two client ids first (`"7"` or `"7,12"`), then `"all"`.
+3. Deploy. The client's next dashboard load registers it (`pending`); the 15-minute cron builds
+   its copy; reads come from D1 from then on.
+
+**Switch off** — unset `LEADS_MIRROR` and deploy. Reads go straight back to NocoDB; nothing else
+changes, because NocoDB is still written to the whole time.
+
+**Why it can't show wrong data**
+- Before each read, a small delta pull (the 100 most recently updated + 25 newest leads) updates
+  the copy, then NocoDB's lead count for the client must match the copy's. Any mismatch (a lead
+  deleted or written somewhere unseen) marks the copy `stale`: that read and the following ones go
+  to NocoDB until the cron rebuilds it.
+- Only query shapes it can answer exactly are taken (`eq` / `neq` / `blank` / `notblank` joined by
+  `~and` / `~or`, one sort field, fields all in the copy, the client's own `ClientId` filter).
+  Anything else — including every request that needs `ConvHistory` — goes to NocoDB.
+- Staff permission clauses (channel visibility, travel lead categories) are added before the copy
+  is asked, so they apply the same way.
+- Every ready copy is rebuilt nightly on the 2am cron.
+- A client with more than 20,000 leads is marked `too_big` and stays on NocoDB.
+
+**Status** — `SELECT client_id, status, synced_at, error FROM leads_mirror_state;`
+(`pending` → `ready`; `stale` rebuilds within 15 minutes; `error` retries nightly.)
+Needs the leads table's `UpdatedAt` system field (NocoDB adds it by default).

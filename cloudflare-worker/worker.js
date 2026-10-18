@@ -3,6 +3,7 @@ import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
+import {lmTryServeList,lmTouched,lmForget,lmRunBuilds} from './leads-mirror.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
 import {LT_FX_CODES,LT_FX_CURRENCIES,LT_FX_ROUNDING_MODES,ltFxCode,ltFxApplyToOffer,ltFxContext,ltFxRates,ltFxNextSlot,LT_FX_MAX_REFRESHES_PER_DAY,ltFxRefreshIfStale,ltFxSettings,ltFxSaveSettings,ltFxEnsureSettingsTable,ltFxRate,ltFxRateTable,ltFxPoomasContext,ltFxDriftPct,ltFxFormat,ltFxCurrencyFromPhone,ltFxCurrencyFromText} from './live-travel-fx.js';
@@ -279,6 +280,12 @@ async function ncFetch(env, path, {method='GET', body}={}){
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
     body: body?JSON.stringify(body):undefined
   });
+  // Leads read mirror (leads-mirror.js): a lead write re-syncs the next list read; a delete drops
+  // the rows from the copy straight away.
+  if(method!=='GET' && r.ok && path.startsWith(`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`)){
+    lmTouched();
+    if(method==='DELETE') await lmForget(env, [].concat(body||[]).map(x=>x?.Id));
+  }
   return r;
 }
 
@@ -1617,11 +1624,23 @@ async function handleNocodbPassthrough(request, env, upstreamPath){
     try{ await ensureLeadsColumns(env, ['ServiceCategory']); _leadsServiceCategoryReady=true; }catch(e){}
   }
 
+  // Leads read mirror (leads-mirror.js): a lead-list read is answered from the D1 copy when it is
+  // switched on for this client and up to date — after the permission clauses above were added to
+  // qs, so they apply to it the same. Anything it can't answer exactly goes to NocoDB as before.
+  if(isLeadsList){
+    const mirrored=await lmTryServeList(env, DEFAULT_LEADS_TABLE, payload.cid, qs);
+    if(mirrored) return new Response(JSON.stringify(mirrored), {status:200, headers:{'Content-Type':'application/json', 'X-Leads-Source':'mirror'}});
+  }
+
   let r=await fetch(`${env.NOCODB_BASE}/${upstreamPath}${qs?'?'+qs:''}`, {
     method,
     headers:{'xc-token':env.NOCODB_TOKEN, 'Content-Type':'application/json'},
     body
   });
+  if(r.ok && hasBody && upstreamPath.startsWith(`api/v2/tables/${DEFAULT_LEADS_TABLE}/records`)){
+    lmTouched();
+    if(method==='DELETE'){ try{ await lmForget(env, [].concat(JSON.parse(body||'null')||[]).map(x=>x?.Id)); }catch(e){} }
+  }
   // The origin stamp must never cost the lead: NocoDB refusing it (the columns couldn't be
   // created on this base) → save the row as the dashboard sent it.
   if(!r.ok && unstampedBody!==null){
@@ -36973,6 +36992,9 @@ export default {
       // are due today (daily reports every tick, weekly reports only on their configured
       // weekly_day); see runScheduledReportsForAllClients's own comment.
       ctx.waitUntil(runScheduledReportsForAllClients(env));
+      // Leads read mirror (leads-mirror.js) — rebuilds every client's D1 copy of their leads
+      // overnight, which also clears out anything the per-read checks missed.
+      ctx.waitUntil(lmRunBuilds(env, DEFAULT_LEADS_TABLE, {nightly:true}));
       // Cold-lead auto-reallocation (Settings → 🔀 Lead Routing) — see runColdLeadReallocationForAllClients.
       ctx.waitUntil(runColdLeadReallocationForAllClients(env));
       // Leadvyne v2 — staff phrasing from Won chats; see runStaffWinExamplesForAllClients.
@@ -36983,6 +37005,8 @@ export default {
       ctx.waitUntil(chatsV2RunScheduled(env, CHATS_V2_DEPS).catch(e=>reportOpsError(env, 'chats scheduled messages', e)));
       // Leadvyne v2 reply-gap nudge — see engineV2NudgeDue.
       ctx.waitUntil(runV2NudgesForAllClients(env));
+      // Leads read mirror (leads-mirror.js) — builds copies for newly enabled / stale clients.
+      ctx.waitUntil(lmRunBuilds(env, DEFAULT_LEADS_TABLE));
       // Hot-lead auto-reassign (Settings → 🔀 Lead Routing) — see runHotLeadReassignForAllClients.
       ctx.waitUntil(runHotLeadReassignForAllClients(env));
       // Baby Care: leads with a teammate on leave / not opened in time (Settings → 🔀 Lead Routing).
