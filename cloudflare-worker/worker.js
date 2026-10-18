@@ -784,6 +784,47 @@ async function handleAdminClientsBilling(request, env){
   return json({ok:true, clients});
 }
 
+// POST /admin/clients/health-run {client_id} — Admin → Clients "Run checks": the same checks the
+// client's Settings → Health page and the daily cron run, saved to the same fields.
+async function handleAdminClientHealthRun(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id}=await request.json().catch(()=>({}));
+  const cid=Number(client_id);
+  if(!cid) return json({error:'client_id required'}, 400);
+  const c=await getClientById(env, cid);
+  if(!c) return json({error:'Client not found'}, 404);
+  const results=await runHealthChecks(env, c);
+  await saveHealthResults(env, c, results);
+  return json({ok:true, status:overallHealthStatus(results), results, checked_at:new Date().toISOString()});
+}
+
+// POST /admin/clients/delete {client_id, confirm_name} — removes the CLIENTS row, so the account
+// can no longer sign in and its bot stops answering (the engine resolves every message to a row).
+// Guarded: the typed name must match, and a live Stripe/Razorpay subscription must be cancelled
+// first — otherwise the customer would keep being charged for an account that no longer exists.
+// Leads, chats and D1 module data stay where they are (orphaned, not shown anywhere); Suspend is
+// the reversible option.
+async function handleAdminClientDelete(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id, confirm_name}=await request.json().catch(()=>({}));
+  const cid=Number(client_id);
+  if(!cid) return json({error:'client_id required'}, 400);
+  const r0=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records/${cid}`);
+  if(!r0.ok) return json({error:'Client not found'}, 404);
+  const c=await r0.json().catch(()=>null);
+  if(!c?.Id) return json({error:'Client not found'}, 404);
+  const name=String(c.client_name||'').trim();
+  if(String(confirm_name||'').trim()!==(name||`#${cid}`)) return json({error:'The name you typed doesn\'t match this client.'}, 400);
+  const rzpLive=c.razorpay_subscription_id && !['created','cancelled','completed','expired'].includes(c.razorpay_status);
+  const stripeLive=c.stripe_subscription_id && (c.billing_provider||'stripe')==='stripe' && !['canceled','incomplete_expired'].includes(c.plan_status);
+  if(rzpLive||stripeLive) return json({error:`This client has a live ${rzpLive?'Razorpay':'Stripe'} subscription. Cancel it first (Billing → Manage), then delete.`}, 409);
+  const r=await ncFetch(env, `api/v2/tables/${CLIENTS_TABLE}/records`, {method:'DELETE', body:[{Id:cid}]});
+  if(!r.ok) return json({error:'NocoDB refused the delete: HTTP '+r.status}, 502);
+  await kvDelClient(env, cid);
+  await logBillingEvent(env, {provider:'admin', event_type:'client.deleted', client_id:cid, note:`${name} (${c.authentik_email||'no email'})`});
+  return json({ok:true});
+}
+
 /* ── ROUTES ── */
 async function handleSessionExchange(request, env){
   const body=await request.json().catch(()=>({}));
@@ -36517,6 +36558,8 @@ export default {
       else if(url.pathname==='/admin/login' && request.method==='POST'){ res=await handleAdminLogin(request, env); }
       else if(url.pathname.startsWith('/admin/nocodb/')){ res=await handleAdminNocodbPassthrough(request, env, url.pathname.slice('/admin/nocodb/'.length)); }
       else if(url.pathname==='/admin/clients-billing' && request.method==='GET'){ res=await handleAdminClientsBilling(request, env); }
+      else if(url.pathname==='/admin/clients/health-run' && request.method==='POST'){ res=await handleAdminClientHealthRun(request, env); }
+      else if(url.pathname==='/admin/clients/delete' && request.method==='POST'){ res=await handleAdminClientDelete(request, env); }
       else if(url.pathname==='/admin/backfill-engine-webhooks' && request.method==='POST'){ res=await handleAdminBackfillEngineWebhooks(request, env); }
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }

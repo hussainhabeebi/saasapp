@@ -174,6 +174,29 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 .kv{display:grid;grid-template-columns:150px 1fr;gap:.35rem .75rem;font-size:.8125rem}
 .kv dt{color:var(--muted)}
 .kv dd{font-family:var(--mono);font-size:.75rem;word-break:break-all}
+.overlay{position:fixed;inset:0;z-index:500;background:rgba(10,20,16,0.78);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem}
+.overlay.hidden{display:none}
+.kpi-btn{text-align:left;font:inherit;cursor:pointer;transition:border-color .15s,background .15s}
+.kpi-btn:hover:not(:disabled){border-color:var(--accent)}
+.kpi-btn:disabled{cursor:default}
+.kpi-btn.on{border-color:var(--accent);background:var(--accent-soft)}
+.health-chip{font:inherit;font-size:.72rem;font-weight:600;padding:.2rem .6rem;border-radius:999px;border:none;cursor:pointer}
+.health-chip.ok{background:#dcfce7;color:#166534}
+.health-chip.warn{background:var(--warn-soft);color:var(--warn)}
+.health-chip.fail{background:#fee2e2;color:#991b1b}
+.health-chip.none{background:var(--bg);color:var(--muted)}
+.check-row{display:flex;gap:.6rem;align-items:flex-start;padding:.55rem .7rem;border-radius:8px;margin-bottom:.35rem;background:var(--bg);font-size:.85rem}
+.check-row.fail{background:#fef2f2}
+.check-row.warn{background:var(--warn-soft)}
+.hist{display:flex;gap:.3rem;flex-wrap:wrap}
+.hist-dot{width:14px;height:14px;border-radius:4px;display:inline-block}
+.hist-dot.ok{background:#22c55e}.hist-dot.warn{background:#f59e0b}.hist-dot.fail{background:#ef4444}
+.btn-icon-danger{padding:.4375rem .6rem;background:#fff;border:1.5px solid #F3B4AC;border-radius:8px;cursor:pointer;font-size:.8125rem}
+.btn-icon-danger:hover{background:#fee2e2;border-color:#c0392b}
+.btn-danger{background:#b91c1c}
+.btn-danger:hover{background:#991b1b}
+.warn-box{background:var(--warn-soft);color:var(--warn);border:1px solid #e0a96d;border-radius:8px;padding:.6rem .8rem;font-size:.8125rem;margin:.5rem 0}
+.card-actions{flex-wrap:wrap}
 #bill-overlay{position:fixed;inset:0;z-index:500;background:rgba(10,20,16,0.78);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:1rem}
 #bill-overlay.hidden{display:none}
 #bill-overlay .edit-modal{max-width:760px}
@@ -409,7 +432,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
   <button class="tab-btn" id="tab-plans" onclick="switchTab('plans')">Plans</button>
   <button class="tab-btn" id="tab-api" onclick="switchTab('api')">API &amp; Webhooks</button>
   <span class="client-count-badge" id="count-badge">— clients</span>
-  <input type="search" class="header-search" id="search-input" placeholder="Search clients…">
+  <input type="search" class="header-search" id="search-input" placeholder="Search name, email, #id…">
   <button class="btn-mini" id="btn-backfill-webhooks" title="Generate engine_webhook_secret and register /engine/webhook for every client with Chatwoot connected">🔄 Sync engine webhooks</button>
   <div class="connected-badge"><span class="connected-dot"></span>Connected</div>
   <button class="btn-disconnect" id="btn-disconnect">Disconnect</button>
@@ -417,6 +440,16 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
 
 <!-- MAIN -->
 <div id="main">
+  <div class="kpi-grid" id="cl-summary"></div>
+  <div class="filter-bar">
+    <select id="cl-status"><option value="">All accounts</option><option value="active">Active</option><option value="suspended">Suspended</option></select>
+    <select id="cl-health"><option value="">Any health</option><option value="ok">Healthy</option><option value="warn">Needs attention</option><option value="fail">Failing</option><option value="none">Not checked</option></select>
+    <select id="cl-tier"><option value="">Any plan</option><option value="legacy">Legacy — unlimited</option><option value="basic">Basic</option><option value="standard">Standard</option><option value="business_intelligence">Business Intelligence</option><option value="marketing_pro">Enterprise</option></select>
+    <select id="cl-sort"><option value="name">Sort: Name</option><option value="health">Sort: Health (worst first)</option><option value="last_seen">Sort: Last seen</option><option value="newest">Sort: Newest</option></select>
+    <button class="btn-mini" id="cl-run-all" title="Runs the integration health checks for every client shown">🩺 Run health checks</button>
+    <button class="btn-mini" id="cl-reload">↻ Reload</button>
+    <span class="muted small" id="cl-count"></span>
+  </div>
   <div id="client-grid" class="client-grid"></div>
 </div>
 
@@ -511,6 +544,35 @@ body{font-family:var(--body);background:var(--bg);color:var(--ink);min-height:10
       <thead><tr><th>When</th><th>Source</th><th>Event</th><th>Client</th><th>Object</th><th>Amount</th><th>Status</th><th>Note</th></tr></thead>
       <tbody id="ev-tbody"></tbody>
     </table></div>
+  </div>
+</div>
+
+<!-- HEALTH MODAL -->
+<div id="health-overlay" class="overlay hidden">
+  <div class="edit-modal">
+    <div class="edit-modal-header">
+      <h2 id="health-modal-title">Health</h2>
+      <button class="btn-close" id="health-modal-close" title="Close">✕</button>
+    </div>
+    <div class="edit-modal-body" id="health-modal-body"></div>
+  </div>
+</div>
+
+<!-- DELETE MODAL -->
+<div id="delete-overlay" class="overlay hidden">
+  <div class="edit-modal" style="max-width:520px">
+    <div class="edit-modal-header">
+      <h2 id="delete-modal-title">Delete client?</h2>
+      <button class="btn-close" id="delete-modal-close" title="Close">✕</button>
+    </div>
+    <div class="edit-modal-body">
+      <div id="delete-modal-info"></div>
+      <div class="modal-form-group"><input type="text" id="delete-confirm-input" autocomplete="off"></div>
+    </div>
+    <div class="edit-modal-footer">
+      <button class="btn-cancel" id="delete-cancel">Cancel</button>
+      <button class="btn-save btn-danger" id="delete-confirm" disabled>Delete permanently</button>
+    </div>
   </div>
 </div>
 
@@ -809,17 +871,20 @@ function renderSkeletons(n = 3) {
 }
 
 // ── Load clients ──────────────────────────────────────────────
+// Paged through the admin passthrough so accounts past the first page aren't silently dropped.
 async function loadClients() {
   const cfg = getConfig();
   renderSkeletons(6);
   try {
-    const data = await apiGet(
-      `${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=100`,
-      cfg.token
-    );
-    allClients = data.list || [];
+    const list = [];
+    for (let offset = 0; offset < 5000; offset += 200) {
+      const data = await apiGet(`${cfg.base}/api/v2/tables/${cfg.clients}/records?limit=200&offset=${offset}`, cfg.token);
+      list.push(...(data.list || []));
+      if (data.pageInfo?.isLastPage !== false || !(data.list || []).length) break;
+    }
+    allClients = list;
     countBadge.textContent = `${allClients.length} client${allClients.length !== 1 ? 's' : ''}`;
-    renderGrid(allClients);
+    renderClientsView();
     fetchAllAnalytics();
   } catch(e) {
     if (e.message.includes('401')) {
@@ -833,15 +898,85 @@ async function loadClients() {
       document.getElementById('login-error').style.display = 'block';
       return;
     }
-    grid.innerHTML = `<div class="empty-state"><p>Failed to load clients: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state"><p>Failed to load clients: ${escHtml(e.message)}</p></div>`;
     showToast('Failed to load clients', 'error');
   }
+}
+
+// ── Health (integration_health_* — written by the daily cron, the client's own Settings → Health
+// page and the "Run checks" buttons here) ──
+const HEALTH_LABELS = { ok: '✓ Healthy', warn: '⚠ Needs attention', fail: '✕ Failing', none: 'Not checked' };
+function clientHealth(c) { return ['ok', 'warn', 'fail'].includes(c.integration_health_status) ? c.integration_health_status : 'none'; }
+function healthLog(c) { try { const l = JSON.parse(c.integration_health_log || '[]'); return Array.isArray(l) ? l : []; } catch (e) { return []; } }
+function healthChip(c) {
+  const h = clientHealth(c);
+  const when = c.integration_health_checked_at ? ' · ' + formatLastSeen(c.integration_health_checked_at) : '';
+  return `<button class="health-chip ${h}" data-health="${c.Id}" title="Open health checks">${HEALTH_LABELS[h]}${escHtml(when)}</button>`;
+}
+function isActiveClient(c) { return c.active === 'Yes'; }
+
+// ── Toolbar: summary + filters + sort ──
+function renderClientSummary() {
+  const n = (f) => allClients.filter(f).length;
+  const tiles = [
+    ['Total', allClients.length, ''],
+    ['Active', n(isActiveClient), 'active'],
+    ['Suspended', n(c => !isActiveClient(c)), 'suspended'],
+    ['Healthy', n(c => clientHealth(c) === 'ok'), 'h-ok'],
+    ['Needs attention', n(c => clientHealth(c) === 'warn'), 'h-warn'],
+    ['Failing', n(c => clientHealth(c) === 'fail'), 'h-fail'],
+    ['Not checked', n(c => clientHealth(c) === 'none'), 'h-none'],
+    ['Active today', n(c => c.last_seen && Date.now() - new Date(c.last_seen).getTime() < 86400000), ''],
+  ];
+  document.getElementById('cl-summary').innerHTML = tiles.map(([label, v, key]) =>
+    `<button class="kpi kpi-btn ${key && clientFilterKey() === key ? 'on' : ''}" ${key ? `data-quick="${key}"` : 'disabled'}><div class="kpi-label">${label}</div><div class="kpi-value">${v}</div></button>`).join('');
+  document.querySelectorAll('#cl-summary [data-quick]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.quick;
+    const st = document.getElementById('cl-status'), hf = document.getElementById('cl-health');
+    if (k === 'active' || k === 'suspended') { st.value = st.value === k ? '' : k; hf.value = ''; }
+    else { const h = k.slice(2); hf.value = hf.value === h ? '' : h; st.value = ''; }
+    renderClientsView();
+  }));
+}
+function clientFilterKey() {
+  const st = document.getElementById('cl-status').value, hf = document.getElementById('cl-health').value;
+  return hf ? 'h-' + hf : st;
+}
+function filteredClients() {
+  const q = searchInput.value.toLowerCase().trim();
+  const st = document.getElementById('cl-status').value;
+  const hf = document.getElementById('cl-health').value;
+  const tier = document.getElementById('cl-tier').value;
+  const sort = document.getElementById('cl-sort').value;
+  const list = allClients.filter(c => {
+    if (q && !`${c.client_name || ''} ${c.authentik_email || ''} ${c.billing_email || ''} ${c.industry || ''} #${c.Id}`.toLowerCase().includes(q)) return false;
+    if (st === 'active' && !isActiveClient(c)) return false;
+    if (st === 'suspended' && isActiveClient(c)) return false;
+    if (hf && clientHealth(c) !== hf) return false;
+    if (tier === 'legacy' ? (c.plan_tier && PLAN_TIER_LABELS[c.plan_tier]) : (tier && c.plan_tier !== tier)) return false;
+    return true;
+  });
+  const healthRank = { fail: 0, warn: 1, none: 2, ok: 3 };
+  const t = v => (v ? new Date(v).getTime() : 0);
+  const sorters = {
+    name: (a, b) => (a.client_name || '').localeCompare(b.client_name || ''),
+    last_seen: (a, b) => t(b.last_seen) - t(a.last_seen),
+    health: (a, b) => healthRank[clientHealth(a)] - healthRank[clientHealth(b)] || (a.client_name || '').localeCompare(b.client_name || ''),
+    newest: (a, b) => Number(b.Id) - Number(a.Id),
+  };
+  return list.sort(sorters[sort] || sorters.name);
+}
+function renderClientsView() {
+  renderClientSummary();
+  const list = filteredClients();
+  document.getElementById('cl-count').textContent = `${list.length} of ${allClients.length}`;
+  renderGrid(list);
 }
 
 // ── Render grid ───────────────────────────────────────────────
 function renderGrid(clients) {
   if (!clients.length) {
-    grid.innerHTML = '<div class="empty-state"><p>No clients found.</p></div>';
+    grid.innerHTML = '<div class="empty-state"><p>No clients match.</p></div>';
     return;
   }
   grid.innerHTML = clients.map(renderCard).join('');
@@ -866,14 +1001,15 @@ function formatLastSeen(ts) {
   return d.toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
 }
 
+const analyticsCache = {};
 function renderCard(c) {
   const active = c.active === 'Yes';
   const hClass = healthDotClass(c);
-  const statusBadge = active
+  const activeBadge = active
     ? '<span class="badge badge-active">Active</span>'
     : '<span class="badge badge-suspended">Suspended</span>';
   const langChip = c.language ? `<span class="chip">${escHtml(c.language)}</span>` : '';
-  const modelChip = c.model ? `<span class="chip">${escHtml(c.model)}</span>` : '';
+  const industryChip = c.industry ? `<span class="chip">${escHtml(c.industry)}</span>` : '';
   const planChip = c.plan_tier && PLAN_TIER_LABELS[c.plan_tier]
     ? `<span class="chip plan-chip">${escHtml(PLAN_TIER_LABELS[c.plan_tier])}</span>`
     : `<span class="chip plan-chip legacy">Legacy — unlimited</span>`;
@@ -883,43 +1019,59 @@ function renderCard(c) {
   const toggleBtn = active
     ? `<button class="btn-toggle suspend" data-id="${c.Id}" data-action="suspend">Suspend</button>`
     : `<button class="btn-toggle activate" data-id="${c.Id}" data-action="activate">Activate</button>`;
+  const a = analyticsCache[c.Id];
 
   return `
     <div class="client-card" data-id="${c.Id}" id="card-${c.Id}">
       <div class="card-top">
-        <div class="client-name">${escHtml(c.client_name || 'Unnamed Client')}</div>
-        <div class="health-dot ${hClass}" title="Health: ${hClass}"></div>
+        <div>
+          <div class="client-name">${escHtml(c.client_name || 'Unnamed Client')} <span class="muted small mono">#${c.Id}</span></div>
+          <div class="muted small">${escHtml(c.authentik_email || '')}</div>
+        </div>
+        <div class="health-dot ${hClass}" title="Activity: ${hClass === 'green' ? 'active in the last 24h' : hClass === 'red' ? 'suspended' : 'quiet for 24h+'}"></div>
       </div>
       <div class="status-row">
-        ${statusBadge}
+        ${activeBadge}
         ${planChip}
         ${billChip}
         ${ceoChip}
+        ${industryChip}
         ${langChip}
-        ${modelChip}
       </div>
+      <div class="status-row">${healthChip(c)}</div>
       <div class="card-stats">
         <div class="stat-item">
-          <span class="stat-value" id="msgs-${c.Id}">—</span>
+          <span class="stat-value" id="msgs-${c.Id}">${a ? a.total.toLocaleString() : '—'}</span>
           <span class="stat-label">msgs</span>
         </div>
         <div class="stat-item">
-          <span class="stat-value" id="errs-${c.Id}">—</span>
+          <span class="stat-value" id="errs-${c.Id}">${a ? a.errors.toLocaleString() : '—'}</span>
           <span class="stat-label">errors</span>
         </div>
+        <div class="stat-item">
+          <span class="stat-value">${formatLastSeen(c.last_seen)}</span>
+          <span class="stat-label">last seen</span>
+        </div>
       </div>
-      <div class="last-seen">Last seen: <span>${formatLastSeen(c.last_seen)}</span></div>
       <div class="card-actions">
         <button class="btn-edit" data-id="${c.Id}">Edit</button>
+        <button class="btn-edit" data-health="${c.Id}">🩺 Health</button>
         ${toggleBtn}
+        <button class="btn-icon-danger" data-delete="${c.Id}" title="Delete client">🗑</button>
         <a class="btn-view" href="dashboard.html" target="_blank">Dashboard ↗</a>
       </div>
     </div>`;
 }
 
 function attachCardListeners() {
-  grid.querySelectorAll('.btn-edit').forEach(btn => {
+  grid.querySelectorAll('.btn-edit[data-id]').forEach(btn => {
     btn.addEventListener('click', () => openEditModal(btn.dataset.id));
+  });
+  grid.querySelectorAll('[data-health]').forEach(btn => {
+    btn.addEventListener('click', () => openHealthModal(btn.dataset.health));
+  });
+  grid.querySelectorAll('[data-delete]').forEach(btn => {
+    btn.addEventListener('click', () => openDeleteModal(btn.dataset.delete));
   });
   grid.querySelectorAll('.btn-toggle').forEach(btn => {
     btn.addEventListener('click', () => toggleStatus(btn.dataset.id, btn.dataset.action));
@@ -927,11 +1079,13 @@ function attachCardListeners() {
 }
 
 // ── Lazy analytics fetch ──────────────────────────────────────
+// A few at a time (not one request per client all at once) and cached, so filtering or sorting
+// re-renders instantly instead of re-fetching every card's numbers.
 async function fetchAllAnalytics() {
   const cfg = getConfig();
-  for (const c of allClients) {
-    fetchClientAnalytics(c.Id, cfg);
-  }
+  const queue = allClients.filter(c => !analyticsCache[c.Id]).map(c => c.Id);
+  const worker = async () => { while (queue.length) await fetchClientAnalytics(queue.shift(), cfg); };
+  await Promise.all([worker(), worker(), worker(), worker()]);
 }
 
 async function fetchClientAnalytics(clientId, cfg) {
@@ -941,14 +1095,135 @@ async function fetchClientAnalytics(clientId, cfg) {
       cfg.token
     );
     const records = data.list || [];
-    const total = records.length;
-    const errors = records.filter(r => r.error || r.Error || r.is_error).length;
+    analyticsCache[clientId] = { total: records.length, errors: records.filter(r => r.error || r.Error || r.is_error).length };
     const msgsEl = document.getElementById(`msgs-${clientId}`);
     const errsEl = document.getElementById(`errs-${clientId}`);
-    if (msgsEl) msgsEl.textContent = total.toLocaleString();
-    if (errsEl) errsEl.textContent = errors.toLocaleString();
+    if (msgsEl) msgsEl.textContent = analyticsCache[clientId].total.toLocaleString();
+    if (errsEl) errsEl.textContent = analyticsCache[clientId].errors.toLocaleString();
   } catch(_) { /* silent fail per card */ }
 }
+
+// ── Health modal ──
+const healthOverlay = document.getElementById('health-overlay');
+let healthModalId = null;
+document.getElementById('health-modal-close').addEventListener('click', () => { healthOverlay.classList.add('hidden'); healthModalId = null; });
+healthOverlay.addEventListener('click', e => { if (e.target === healthOverlay) { healthOverlay.classList.add('hidden'); healthModalId = null; } });
+const CHECK_ICON = { ok: '✅', warn: '⚠️', fail: '❌' };
+function openHealthModal(clientId) {
+  const c = allClients.find(x => x.Id == clientId);
+  if (!c) return;
+  healthModalId = clientId;
+  document.getElementById('health-modal-title').textContent = `Health — ${c.client_name || 'Client #' + c.Id}`;
+  const log = healthLog(c);
+  const latest = log[log.length - 1];
+  const groups = {};
+  (latest?.results || []).forEach(r => { (groups[r.category || 'other'] = groups[r.category || 'other'] || []).push(r); });
+  const catLabel = { integration: 'Integrations', sheets: 'Google Sheets', core: 'Core automation', other: 'Other' };
+  document.getElementById('health-modal-body').innerHTML = `
+    <div class="filter-bar" style="justify-content:space-between">
+      <div>${healthChip(c)}</div>
+      <button class="btn-mini primary" id="health-run-one">▶ Run checks now</button>
+    </div>
+    ${latest ? Object.entries(groups).map(([cat, rows]) => `
+      <div class="modal-section-label">${escHtml(catLabel[cat] || cat)}</div>
+      ${rows.map(r => `<div class="check-row ${escHtml(r.status)}"><span>${CHECK_ICON[r.status] || '•'}</span><div><b>${escHtml(r.label || r.key)}</b><div class="muted small">${escHtml(r.detail || '')}</div></div></div>`).join('')}`).join('')
+      : '<div class="empty-state" style="padding:2rem 1rem"><p>No health check has run for this client yet — click <b>Run checks now</b>.</p></div>'}
+    ${log.length > 1 ? `<div class="modal-section-label">History (last ${log.length} runs)</div>
+      <div class="hist">${log.map(run => { const st = run.results?.some(r => r.status === 'fail') ? 'fail' : run.results?.some(r => r.status === 'warn') ? 'warn' : 'ok'; return `<span class="hist-dot ${st}" title="${escHtml(new Date(run.ts).toLocaleString('en-GB'))} — ${HEALTH_LABELS[st]}"></span>`; }).join('')}</div>` : ''}`;
+  document.getElementById('health-run-one').addEventListener('click', () => runClientHealth(clientId, true));
+  healthOverlay.classList.remove('hidden');
+}
+async function runClientHealth(clientId, reopen) {
+  const btn = reopen && document.getElementById('health-run-one');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  try {
+    const d = await adminApi('/admin/clients/health-run', { method: 'POST', body: { client_id: Number(clientId) } });
+    const c = allClients.find(x => x.Id == clientId);
+    if (c) {
+      const log = healthLog(c); log.push({ ts: d.checked_at, results: d.results });
+      Object.assign(c, { integration_health_status: d.status, integration_health_checked_at: d.checked_at, integration_health_log: JSON.stringify(log.slice(-14)) });
+    }
+    if (reopen && healthModalId == clientId) openHealthModal(clientId);
+    return d;
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Run checks now'; }
+    if (reopen) showToast('Health check failed: ' + e.message, 'error');
+    throw e;
+  } finally { if (reopen) renderClientsView(); }
+}
+document.getElementById('cl-run-all').addEventListener('click', async () => {
+  const targets = filteredClients();
+  if (!targets.length) return;
+  if (!confirm(`Run health checks now for ${targets.length} client(s)? This calls WhatsApp, Chatwoot, Resend and Google Sheets for each one.`)) return;
+  const btn = document.getElementById('cl-run-all');
+  btn.disabled = true;
+  let done = 0, failed = 0;
+  const queue = targets.map(c => c.Id);
+  const worker = async () => {
+    while (queue.length) {
+      const id = queue.shift();
+      try { await runClientHealth(id, false); } catch (e) { failed++; }
+      btn.textContent = `Running… ${++done}/${targets.length}`;
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  btn.disabled = false; btn.textContent = '🩺 Run health checks';
+  renderClientsView();
+  showToast(`Checked ${done - failed} client(s)${failed ? `, ${failed} failed to run` : ''}`, failed ? 'error' : 'success');
+});
+
+// ── Delete client ──
+const deleteOverlay = document.getElementById('delete-overlay');
+let deleteId = null;
+function closeDeleteModal() { deleteOverlay.classList.add('hidden'); deleteId = null; }
+document.getElementById('delete-modal-close').addEventListener('click', closeDeleteModal);
+document.getElementById('delete-cancel').addEventListener('click', closeDeleteModal);
+deleteOverlay.addEventListener('click', e => { if (e.target === deleteOverlay) closeDeleteModal(); });
+function deleteConfirmText(c) { return String(c.client_name || '').trim() || `#${c.Id}`; }
+function openDeleteModal(clientId) {
+  const c = allClients.find(x => x.Id == clientId);
+  if (!c) return;
+  deleteId = clientId;
+  const want = deleteConfirmText(c);
+  const rzpLive = c.razorpay_subscription_id && !['created', 'cancelled', 'completed', 'expired'].includes(c.razorpay_status);
+  const stripeLive = c.stripe_subscription_id && (c.billing_provider || 'stripe') === 'stripe' && !['canceled', 'incomplete_expired'].includes(c.plan_status);
+  document.getElementById('delete-modal-title').textContent = `Delete ${want}?`;
+  document.getElementById('delete-modal-info').innerHTML = `
+    <p>This permanently removes the client account <b>${escHtml(want)}</b> (${escHtml(c.authentik_email || 'no login email')}):</p>
+    <ul class="small" style="margin:.5rem 0 .75rem 1.1rem;line-height:1.7">
+      <li>Nobody on this account can sign in any more.</li>
+      <li>The WhatsApp / website bot stops replying for this account.</li>
+      <li>Leads, chats and module data are not deleted, but can no longer be opened from any dashboard.</li>
+      <li>Their Chatwoot inbox and Authentik login are not removed automatically.</li>
+    </ul>
+    ${rzpLive || stripeLive ? `<div class="warn-box">⚠️ This client has a live ${rzpLive ? 'Razorpay' : 'Stripe'} subscription. Cancel it first in <b>Billing → Manage</b> — deletion is blocked until then.</div>` : ''}
+    <p class="small">To keep the data and just stop access, use <b>Suspend</b> instead (reversible).</p>
+    <label class="small" style="display:block;margin-top:.75rem">Type <b class="mono">${escHtml(want)}</b> to confirm:</label>`;
+  const input = document.getElementById('delete-confirm-input');
+  input.value = '';
+  const btn = document.getElementById('delete-confirm');
+  btn.disabled = true;
+  input.oninput = () => { btn.disabled = input.value.trim() !== want; };
+  deleteOverlay.classList.remove('hidden');
+  input.focus();
+}
+document.getElementById('delete-confirm').addEventListener('click', async () => {
+  const c = allClients.find(x => x.Id == deleteId);
+  if (!c) return;
+  const btn = document.getElementById('delete-confirm');
+  btn.disabled = true; btn.textContent = 'Deleting…';
+  try {
+    await adminApi('/admin/clients/delete', { method: 'POST', body: { client_id: Number(c.Id), confirm_name: document.getElementById('delete-confirm-input').value.trim() } });
+    allClients = allClients.filter(x => x.Id != c.Id);
+    countBadge.textContent = `${allClients.length} client${allClients.length !== 1 ? 's' : ''}`;
+    closeDeleteModal();
+    renderClientsView();
+    showToast(`${deleteConfirmText(c)} deleted`, 'success');
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, 'error');
+    btn.disabled = false;
+  } finally { btn.textContent = 'Delete permanently'; }
+});
 
 // ── Toggle status ─────────────────────────────────────────────
 async function toggleStatus(clientId, action) {
@@ -1511,17 +1786,10 @@ async function loadEvents() {
 document.getElementById('api-recheck').addEventListener('click', loadApiStatus);
 document.getElementById('ev-load').addEventListener('click', loadEvents);
 
-// ── Search ────────────────────────────────────────────────────
-searchInput.addEventListener('input', () => {
-  const q = searchInput.value.toLowerCase().trim();
-  const filtered = q ? allClients.filter(c =>
-    (c.client_name || '').toLowerCase().includes(q)
-  ) : allClients;
-  renderGrid(filtered);
-  // Re-fetch analytics for visible cards
-  const cfg = getConfig();
-  filtered.forEach(c => fetchClientAnalytics(c.Id, cfg));
-});
+// ── Search / filters ──────────────────────────────────────────
+searchInput.addEventListener('input', renderClientsView);
+['cl-status', 'cl-health', 'cl-tier', 'cl-sort'].forEach(id => document.getElementById(id).addEventListener('input', renderClientsView));
+document.getElementById('cl-reload').addEventListener('click', loadClients);
 
 // ── Util ──────────────────────────────────────────────────────
 function escHtml(s) {
