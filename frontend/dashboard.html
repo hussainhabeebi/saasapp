@@ -1242,6 +1242,86 @@ hr.div{border:none;border-top:1px solid var(--line);margin:22px 0}
 /* Webhook box */
 .webhook-box{border-radius:12px;transition:border-color .15s}
 .webhook-box:hover{border-color:var(--accent)}
+
+/* ── Billing portal (pageBilling) ── */
+.bp-card{margin-bottom:14px}
+.bp-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:10px;border:1.5px solid var(--accent);background:var(--accent);color:#fff;font-family:var(--disp);font-weight:700;font-size:13px;cursor:pointer;text-decoration:none;white-space:nowrap;transition:filter .15s,background .15s}
+.bp-btn:hover{filter:brightness(.95)}
+.bp-btn:disabled{opacity:.55;cursor:default;filter:none}
+.bp-btn.secondary{background:#fff;color:var(--accent-ink)}
+.bp-btn.danger{background:#B91C1C;border-color:#B91C1C}
+.bp-btn.danger-link{background:none;border-color:transparent;color:#B23A2E;padding-left:6px;padding-right:6px}
+.bp-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.bp-alert{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;border-radius:10px;padding:11px 14px;margin-bottom:12px;font-size:13px}
+.bp-alert.bad{background:#FDECEA;border:1px solid #F3B4AC;color:#8F2B21}
+.bp-alert.warn{background:#FFF6E5;border:1px solid #F0D89B;color:#7A5712}
+.bp-alert.info{background:#F0F9FF;border:1px solid #BAE6FD;color:#075985}
+.bp-badge{display:inline-flex;align-items:center;font-family:var(--disp);font-weight:700;font-size:12px;padding:5px 12px;border-radius:999px;white-space:nowrap}
+.bp-badge.ok{background:#DCFCE7;color:#166534}
+.bp-badge.trial{background:#EDE9FE;color:#5B21B6}
+.bp-badge.warn{background:#FEF3C7;color:#92400E}
+.bp-badge.bad{background:#FEE2E2;color:#991B1B}
+.bp-badge.off{background:#F1F5F9;color:#64748B}
+.bp-summary{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.bp-plan-name{font-family:var(--disp);font-size:22px;font-weight:700;line-height:1.2}
+.bp-tier-chip{font-size:12px;font-weight:600;color:#5B21B6;background:#EDE9FE;padding:3px 9px;border-radius:999px;vertical-align:middle}
+.bp-tier-chip:empty{display:none}
+.bp-plan-price{font-size:15px;color:var(--muted);margin-top:4px}
+.bp-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.bp-fact-lbl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.bp-fact-val{font-size:14px;font-weight:600;margin-top:3px;overflow-wrap:anywhere}
+.bp-meters{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.bp-meter-head{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px}
+.bp-meter{height:8px;border-radius:99px;background:#EEF2F0;overflow:hidden}
+.bp-meter span{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .4s}
+.bp-meter span.warn{background:#F59E0B}
+.bp-meter span.bad{background:#DC2626}
+.bp-compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px 12px;margin-top:16px}
+.bp-compare .bp-tier{position:relative;border:1.5px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:6px;background:#fff}
+.bp-compare .bp-tier.current{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.bp-tier-flag{position:absolute;top:-10px;left:14px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px}
+.bp-tier-name{font-family:var(--disp);font-weight:700;font-size:16px}
+.bp-tier-price{font-family:var(--disp);font-weight:700;font-size:22px}
+.bp-tier-price small{font-size:13px;font-weight:500;color:var(--muted)}
+.bp-compare ul{list-style:none;margin:6px 0 10px;padding:0;font-size:13px;line-height:1.75;flex:1}
+.bp-compare li.no{color:#A0AEC0}
+.bp-pm{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.bp-pm-icon{font-size:26px;width:46px;height:46px;border-radius:12px;background:#F1F5F9;display:flex;align-items:center;justify-content:center}
+.bp-pm-title{font-weight:700;font-size:15px}
+.bp-table-wrap{overflow-x:auto}
+.bp-table{width:100%;border-collapse:collapse;font-size:13px;min-width:480px}
+.bp-table th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:8px 6px;border-bottom:1px solid var(--line)}
+.bp-table td{padding:9px 6px;border-bottom:1px solid var(--line)}
+.bp-mono{font-family:ui-monospace,monospace;font-size:12px}
+.bp-links a{font-weight:600;margin-right:6px}
+.bp-empty{font-size:13px;color:var(--muted);padding:14px;background:#F8FAF9;border-radius:10px;text-align:center}
+.bp-timeline{list-style:none;margin:0;padding:0 0 0 18px;border-left:2px solid var(--line)}
+.bp-timeline li{position:relative;padding:0 0 14px 12px}
+.bp-timeline li::before{content:'';position:absolute;left:-25px;top:3px;width:12px;height:12px;border-radius:50%;background:#94A3B8;border:2px solid #fff}
+.bp-timeline li.ok::before{background:#22C55E}.bp-timeline li.warn::before{background:#F59E0B}.bp-timeline li.bad::before{background:#DC2626}.bp-timeline li.info::before{background:#3B82F6}
+.bp-tl-title{font-weight:600;font-size:14px}
+.bp-tl-date{font-size:12px;color:var(--muted)}
+.bp-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+.bp-faq details{border-top:1px solid var(--line);padding:10px 2px}
+.bp-faq summary{cursor:pointer;font-weight:600;font-size:14px}
+.bp-faq p{font-size:13px;color:var(--muted);margin:8px 0 0;line-height:1.55}
+.bp-modal{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px}
+.bp-modal-box{background:#fff;border-radius:16px;max-width:480px;width:100%;padding:20px;max-height:90vh;overflow:auto}
+.bp-modal-head{display:flex;justify-content:space-between;align-items:center;font-family:var(--disp);font-size:18px;margin-bottom:8px}
+.bp-x{border:none;background:none;font-size:18px;cursor:pointer;color:var(--muted)}
+.bp-reasons{display:grid;gap:6px;margin:8px 0 10px}
+.bp-reason{display:flex;gap:8px;align-items:center;border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px;cursor:pointer}
+.bp-reason:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.bp-sticky{display:none}
+@media (max-width:640px){
+  .bp-facts{grid-template-columns:1fr 1fr}
+  .bp-meters,.bp-form-grid{grid-template-columns:1fr}
+  .bp-plan-name{font-size:19px}
+  .bp-actions .bp-btn{flex:1 1 auto}
+  .bp-sticky{display:block;position:sticky;bottom:0;z-index:20;margin:0 -16px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:linear-gradient(to top,#fff 75%,rgba(255,255,255,0))}
+  .bp-sticky .bp-btn{width:100%;padding:13px}
+}
+@media (min-width:641px){ .bp-sticky{display:none!important} }
 </style>
 </head>
 <body>
@@ -4257,50 +4337,16 @@ const ROLES = {
 
         <div id="billingBanner" style="display:none;margin-bottom:14px"></div>
 
-        <!-- Plan & Usage — one place for tier, seat/channel usage against the plan, and which
-             modules the plan does/doesn't include, fed by GET /billing/plan-status. A blank
-             plan_tier (every account that existed before plans shipped) comes back as
-             is_legacy:true / limits:null, rendered as "Legacy plan — unlimited" rather than a
-             0/0 empty state — see getPlanLimits in worker.js for why that's the default, not
-             something that needs a migration to be true. -->
-        <div class="card" style="margin-bottom:14px">
+        <!-- 1 · YOUR PLAN — what you're on, what it costs, when it charges next, and anything that
+             needs fixing, first. Fed by GET /billing/portal/overview (billing-portal.js) so it reads
+             the same for Stripe, Razorpay and admin-set plans. -->
+        <div class="card bp-card" id="billingPlanCard">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🧩 Plan &amp; Usage</div>
-            <div id="planStatusLoading" class="s-note">Loading…</div>
-            <div id="planStatusBody" style="display:none">
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-                <span id="planTierBadge" style="font-size:13px;font-weight:700;padding:5px 14px;border-radius:20px;font-family:var(--disp);background:#EEF2FF;color:#4338CA"></span>
-                <span id="planLegacyNote" class="s-note" style="margin:0"></span>
-              </div>
-              <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px">
-                <div class="stat"><div class="stat-lbl">Users</div><div class="stat-val" id="planUsageUsers">—</div></div>
-                <div class="stat"><div class="stat-lbl">Channels</div><div class="stat-val" id="planUsageChannels">—</div></div>
-              </div>
-              <div class="s-note" style="margin-bottom:8px">Modules included in your plan — locked ones can be turned on after upgrading, from 🧩 Modules.</div>
-              <div id="planModulesGrid" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Customer Portal — plan status and any payment warnings first, since that's what a
-             client actually needs to see before anything else on this page. -->
-        <div class="card" style="margin-bottom:14px">
-          <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🧾 Customer Portal</div>
-            <div id="billingNoPlan">
-              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-                <div class="s-note" style="margin:0">Choose a plan to get started.</div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <span class="form-label" style="margin:0">Currency</span>
-                  <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
-                </div>
-              </div>
-              <div class="s-note" id="billingEmailNotice"></div>
-              <div id="billingPricingTableWrap" style="margin-top:8px"></div>
-            </div>
+            <div class="s-head">🧾 Your plan</div>
             <div id="billingHasPlan" style="display:none">
-              <div id="billingPastDueBanner" style="display:none;background:#FDECEA;border:1px solid #F3B4AC;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#B23A2E">
-                ⚠️ <strong>Payment issue with your subscription</strong> — <span id="billingPastDueText"></span> Update your payment method to avoid losing access.
+              <div id="billingPastDueBanner" class="bp-alert bad" style="display:none">
+                <div>⚠️ <strong>Payment issue</strong> — <span id="billingPastDueText"></span></div>
+                <button class="bp-btn" id="billingFixPaymentBtn" onclick="billingFixPayment()">Fix payment</button>
               </div>
               <!-- Failing Stripe payment → offer Razorpay (UPI / Indian cards / net-banking). Stripe is
                    only cancelled once the Razorpay mandate is approved (razorpay-billing.js). -->
@@ -4309,70 +4355,114 @@ const ROLES = {
                 <div class="s-note" style="margin:0 0 8px">Pick your plan below and approve the AutoPay mandate with Razorpay. Your current card subscription is cancelled automatically as soon as the new mandate is approved — you're never charged twice, and nothing changes if you don't finish.</div>
                 <div id="billingRzpSwitchPlans"></div>
               </div>
-              <div id="billingCancelBanner" style="display:none;background:#FFF6E5;border:1px solid #F0D89B;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#8A6416">
-                ℹ️ Your plan is set to <strong>not renew</strong> — you'll keep access until <strong id="billingCancelDate"></strong>. Resubscribe anytime before then to keep it going.
+              <div id="billingCancelBanner" class="bp-alert warn" style="display:none">
+                <div>ℹ️ Your plan is set to <strong>not renew</strong> — you keep access until <strong id="billingCancelDate"></strong>.</div>
               </div>
-              <div class="s-note">
-                Plan: <strong id="billingPlanName"></strong> ·
-                Status: <strong id="billingPlanStatus"></strong>
+              <div id="billingCardWarn" class="bp-alert warn" style="display:none">
+                <div>💳 <span id="billingCardWarnText"></span></div>
+                <button class="bp-btn secondary" onclick="billingUpdatePaymentMethod()">Update card</button>
               </div>
-              <div class="s-note" id="billingRenewalLine"></div>
-              <div id="billingStripeManage">
-                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-                  <button class="save-btn" onclick="openBillingPortal()">Open Customer Portal (invoices, upgrade/downgrade, payment method, cancel)</button>
-                  <span class="save-msg" id="billingPortalMsg"></span>
+              <div class="bp-summary">
+                <div class="bp-sum-main">
+                  <div class="bp-plan-name"><span id="billingPlanName">—</span> <span class="bp-tier-chip" id="billingPlanTier"></span></div>
+                  <div class="bp-plan-price" id="billingPlanPrice"></div>
                 </div>
-                <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-                  <button class="save-btn" onclick="syncBillingNow()" style="opacity:.85">🔄 Sync Subscription Now</button>
-                  <span class="save-msg" id="billingSyncMsg"></span>
+                <span class="bp-badge" id="billingStatusBadge"></span>
+              </div>
+              <div class="bp-facts">
+                <div><div class="bp-fact-lbl" id="billingNextLbl">Next charge</div><div class="bp-fact-val" id="billingRenewalLine">—</div></div>
+                <div><div class="bp-fact-lbl">Paid via</div><div class="bp-fact-val" id="billingPaidVia">—</div></div>
+                <div><div class="bp-fact-lbl">Billed to</div><div class="bp-fact-val" id="billingBilledTo">—</div></div>
+              </div>
+              <div class="bp-actions">
+                <button class="bp-btn" onclick="billingScrollTo('billingCompareCard')">Compare &amp; change plan</button>
+                <button class="bp-btn secondary" id="billingPortalBtn" onclick="openBillingPortal()">Open Stripe portal</button>
+                <button class="bp-btn secondary" onclick="billingSyncNow()">🔄 Refresh status</button>
+                <button class="bp-btn danger-link" id="billingCancelBtn" onclick="openBillingCancel()">Cancel subscription</button>
+              </div>
+              <span class="save-msg" id="billingActionMsg"></span>
+            </div>
+            <div id="billingNoPlan">
+              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+                <div class="s-note" style="margin:0">Choose a plan to get started — or compare everything that's included below.</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <span class="form-label" style="margin:0">Currency</span>
+                  <div id="billingCurrencyToggle" style="display:flex;gap:6px"></div>
                 </div>
               </div>
-              <!-- Razorpay (INR) subscriptions have no hosted portal — invoices, plan change and
-                   cancel are handled here through /billing/razorpay/* (razorpay-billing.js). -->
-              <div id="billingRzpManage" style="display:none">
-                <div class="s-note" id="billingRzpMethod" style="margin-top:4px"></div>
-                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
-                  <button class="save-btn" onclick="rzpSyncNow()" style="opacity:.85">🔄 Sync Subscription Now</button>
-                  <button class="save-btn" onclick="rzpLoadInvoices()" style="opacity:.85">🧾 Invoices</button>
-                  <button class="save-btn" id="billingRzpCancelBtn" onclick="rzpCancel()" style="background:#fff;color:#B23A2E;border:1.5px solid #F3B4AC">Cancel subscription</button>
-                  <span class="save-msg" id="billingRzpMsg"></span>
-                </div>
-                <div id="billingRzpChangeWrap" style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
-                  <span class="form-label" style="margin:0">Change plan</span>
-                  <select class="form-input" id="billingRzpPlanSelect" style="max-width:280px;margin:0"></select>
-                  <select class="form-input" id="billingRzpWhen" style="max-width:190px;margin:0">
-                    <option value="cycle_end">From next billing cycle</option>
-                    <option value="now">Right now</option>
-                  </select>
-                  <button class="save-btn" onclick="rzpChangePlan()">Change</button>
-                </div>
-                <div id="billingRzpInvoices" style="margin-top:10px"></div>
-              </div>
+              <div class="s-note" id="billingEmailNotice"></div>
+              <div id="billingPricingTableWrap" style="margin-top:8px"></div>
             </div>
           </div>
         </div>
 
-        <!-- Company Profile — administrative/settings info, secondary to actual plan status above. -->
-        <div class="card" style="margin-bottom:14px">
+        <!-- 2 · PLAN & USAGE — tier, users/channels against the plan's limits (meters turn amber at
+             80% and red at the limit), and which modules the plan includes. Legacy accounts
+             (no plan_tier) come back limits:null → "Unlimited". -->
+        <div class="card bp-card">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">🏢 Company Profile</div>
-            <div class="s-note">Used on your invoices/receipts and as your account name.</div>
-            <label class="form-label">Company Name</label>
-            <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name" style="margin-bottom:8px">
-            <label class="form-label">Billing Email</label>
-            <div class="s-note" style="margin-top:0">Where invoices, payment receipts and renewal reminders are sent — defaults to your login email, which may not be who should actually receive billing mail.</div>
-            <input class="form-input" id="cfgBillingEmail" type="email" placeholder="billing@yourcompany.com" style="margin-bottom:8px">
-            <label class="form-label">Billing Address</label>
-            <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, state, PIN/postal code, country" style="margin-bottom:8px"></textarea>
-            <button class="save-btn" onclick="saveCompanyProfile()">Save</button>
-            <span class="save-msg" id="companyProfileMsg"></span>
+            <div class="s-head">🧩 Plan &amp; usage</div>
+            <div id="planStatusLoading" class="s-note">Loading…</div>
+            <div id="planStatusBody" style="display:none">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+                <span id="planTierBadge" class="bp-badge off"></span>
+                <span id="planLegacyNote" class="s-note" style="margin:0"></span>
+              </div>
+              <div class="bp-meters">
+                <div class="bp-meter-row"><div class="bp-meter-head"><span>Users</span><b id="planUsageUsers">—</b></div><div class="bp-meter"><span id="planUsageUsersBar"></span></div></div>
+                <div class="bp-meter-row"><div class="bp-meter-head"><span>Channels</span><b id="planUsageChannels">—</b></div><div class="bp-meter"><span id="planUsageChannelsBar"></span></div></div>
+              </div>
+              <div id="planLimitNote" class="bp-alert warn" style="display:none;margin-top:10px"></div>
+              <div class="s-note" style="margin:12px 0 8px">Modules in your plan — locked ones unlock with a higher plan, then switch them on from 🧩 Modules.</div>
+              <div id="planModulesGrid" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+            </div>
           </div>
         </div>
 
-        <!-- Usage dashboard -->
-        <div class="card">
+        <!-- 3 · COMPARE PLANS — every tier side by side with its price in the chosen currency. -->
+        <div class="card bp-card" id="billingCompareCard">
           <div class="settings-section" style="margin-bottom:0">
-            <div class="s-head">📊 Usage This Month</div>
+            <div class="s-head">⚖️ Compare plans</div>
+            <div id="billingCompare" class="bp-compare"><div class="s-note">Loading plans…</div></div>
+            <div class="s-note" id="billingCompareNote" style="margin-top:8px"></div>
+          </div>
+        </div>
+
+        <!-- 4 · PAYMENT METHOD -->
+        <div class="card bp-card" id="billingPaymentCard" style="display:none">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">💳 Payment method</div>
+            <div class="bp-pm">
+              <div class="bp-pm-icon" id="billingPmIcon">💳</div>
+              <div style="flex:1;min-width:0">
+                <div class="bp-pm-title" id="billingPmTitle">—</div>
+                <div class="s-note" style="margin:2px 0 0" id="billingPmNote"></div>
+              </div>
+              <button class="bp-btn secondary" id="billingPmBtn" onclick="billingUpdatePaymentMethod()">Change</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 5 · INVOICES & RECEIPTS — Stripe and Razorpay in one list. -->
+        <div class="card bp-card" id="billingInvoicesCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📄 Invoices &amp; receipts</div>
+            <div id="billingInvoices"><div class="s-note">Loading…</div></div>
+          </div>
+        </div>
+
+        <!-- 6 · BILLING HISTORY — timeline from billing_events (customer-safe entries only). -->
+        <div class="card bp-card" id="billingHistoryCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🕑 Billing history</div>
+            <div id="billingHistory"><div class="s-note">Loading…</div></div>
+          </div>
+        </div>
+
+        <!-- 7 · USAGE THIS MONTH -->
+        <div class="card bp-card">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">📊 Usage this month</div>
             <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px">
               <div class="stat"><div class="stat-lbl">WhatsApp Credits</div><div class="stat-val" id="billingWaCredits">0</div></div>
               <div class="stat"><div class="stat-lbl">Messages Sent</div><div class="stat-val" id="billingUsageMessages">0</div></div>
@@ -4380,6 +4470,65 @@ const ROLES = {
               <div class="stat"><div class="stat-lbl">Leads Captured</div><div class="stat-val" id="billingUsageLeads">0</div></div>
               <div class="stat"><div class="stat-lbl">Conversion Rate</div><div class="stat-val" id="billingUsageConv">0%</div></div>
             </div>
+          </div>
+        </div>
+
+        <!-- 8 · COMPANY & GST DETAILS — printed on invoices; GSTIN also goes onto the Stripe customer. -->
+        <div class="card bp-card">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🏢 Company &amp; GST details</div>
+            <div class="s-note">Printed on your invoices and receipts. Add your GSTIN to claim input tax credit.</div>
+            <div class="bp-form-grid">
+              <div><label class="form-label">Company name</label>
+                <input class="form-input" id="cfgCompanyName" type="text" placeholder="Your company name"></div>
+              <div><label class="form-label">Billing email</label>
+                <input class="form-input" id="cfgBillingEmail" type="email" placeholder="billing@yourcompany.com"></div>
+              <div><label class="form-label">GSTIN <span class="s-note" style="display:inline;margin:0">(optional)</span></label>
+                <input class="form-input" id="cfgGstin" type="text" maxlength="15" placeholder="e.g. 32ABCDE1234F1Z5" style="text-transform:uppercase" oninput="billingGstinChanged()"></div>
+              <div><label class="form-label">State</label>
+                <select class="form-input" id="cfgBillingState"></select></div>
+            </div>
+            <label class="form-label">Billing address</label>
+            <textarea class="form-input" id="cfgCompanyAddress" rows="2" placeholder="Street, city, PIN/postal code, country" style="margin-bottom:8px"></textarea>
+            <div class="s-note" style="margin-top:0">Invoices, receipts and renewal reminders go to the billing email — it defaults to your login email, which may not be who should receive billing mail.</div>
+            <button class="bp-btn" onclick="saveCompanyProfile()">Save details</button>
+            <span class="save-msg" id="companyProfileMsg"></span>
+          </div>
+        </div>
+
+        <!-- 9 · HELP -->
+        <div class="card bp-card" id="billingHelpCard">
+          <div class="settings-section" style="margin-bottom:0">
+            <div class="s-head">🙋 Need help with billing?</div>
+            <div class="bp-actions" id="billingHelpContacts" style="margin-top:4px"></div>
+            <div class="bp-faq">
+              <details><summary>Can I get a GST invoice?</summary><p>Yes. Add your GSTIN and state in <b>Company &amp; GST details</b> above — every invoice after that carries them. Download invoices from <b>Invoices &amp; receipts</b>.</p></details>
+              <details><summary>How do I change how I pay?</summary><p>Card payments: <b>Payment method → Change</b> opens the secure Stripe page. UPI AutoPay / bank mandates can't be edited — cancel and subscribe again with the new UPI ID or bank; your plan stays the same.</p></details>
+              <details><summary>What happens if a payment fails?</summary><p>We retry automatically over the next few days and email you each time. Fix it any time with <b>Fix payment</b> at the top — or switch to UPI / Indian cards if your card keeps failing.</p></details>
+              <details><summary>Can I change or cancel my plan any time?</summary><p>Yes. Upgrades apply straight away; downgrades and cancellations take effect at the end of the period you've paid for, and you keep full access until then.</p></details>
+              <details><summary>Do you give refunds?</summary><p>Subscriptions are billed in advance and aren't refunded for part-used periods. If you were charged by mistake, contact us and we'll sort it out.</p></details>
+            </div>
+          </div>
+        </div>
+
+        <!-- Phones: the one action that matters right now, always in reach. -->
+        <div id="billingStickyCta" class="bp-sticky" style="display:none"><button class="bp-btn" id="billingStickyBtn"></button></div>
+
+        <!-- Cancel flow — reason first (Admin sees it in the billing event log), with cheaper-plan
+             and talk-to-us alternatives before the actual cancel. -->
+        <div id="billingCancelModal" class="bp-modal" style="display:none" onclick="if(event.target===this)closeBillingCancel()">
+          <div class="bp-modal-box">
+            <div class="bp-modal-head"><b>Before you go…</b><button class="bp-x" onclick="closeBillingCancel()">✕</button></div>
+            <div class="s-note" style="margin-top:0">Why are you cancelling? This helps us improve.</div>
+            <div id="billingCancelReasons" class="bp-reasons"></div>
+            <textarea class="form-input" id="billingCancelDetail" rows="2" placeholder="Anything else you'd like to tell us? (optional)"></textarea>
+            <div id="billingCancelAlt" class="bp-alert info" style="display:none"></div>
+            <div class="s-note" id="billingCancelWhat"></div>
+            <div class="bp-actions">
+              <button class="bp-btn secondary" onclick="closeBillingCancel()">Keep my plan</button>
+              <button class="bp-btn danger" id="billingCancelConfirm" onclick="confirmBillingCancel()" disabled>Cancel subscription</button>
+            </div>
+            <span class="save-msg" id="billingCancelMsg"></span>
           </div>
         </div>
       </div>
@@ -6457,8 +6606,8 @@ function renderHomeBillingBanners(){
   const waCredits=Number(c.wa_credits_balance);
   if(!isNaN(waCredits) && waCredits>0 && waCredits<50){
     banners.push({level:'warn',icon:'💬',title:'WhatsApp credits running low',
-      text:`Only ${waCredits} credits left — top up to avoid interrupting conversations.`,
-      actionLabel:'Buy Credits',action:()=>navigate('billing')});
+      text:`Only ${waCredits} credits left — contact us to top up and avoid interrupting conversations.`,
+      actionLabel:'Get help',action:()=>{ navigate('billing'); setTimeout(()=>billingScrollTo('billingHelpCard'),150); }});
   }
 
   if(!banners.length){ wrap.innerHTML=''; return; }
@@ -15401,6 +15550,7 @@ function setBillingCurrency(cur){
   try{localStorage.setItem('lv_billing_currency',cur);}catch(e){}
   renderBillingCurrencyToggle();
   if(!billingHasActivePlan(clientRecord)) renderBillingPlanList();
+  renderBillingCompare();
 }
 
 // Plan picker — fetched from the Worker (/billing/plans), which reads the live catalog straight
@@ -15539,13 +15689,28 @@ async function loadBillingPlanStatus(){
     loading.style.display='none'; body.style.display='block';
 
     const badge=$id('planTierBadge');
-    badge.textContent=d.plan_label+(d.is_legacy?' (Legacy)':'');
-    badge.style.background=d.is_legacy?'#F1F5F9':'#EEF2FF';
-    badge.style.color=d.is_legacy?'#64748B':'#4338CA';
-    $id('planLegacyNote').textContent=d.is_legacy?'Grandfathered — unlimited users, channels and modules on your current plan.':'';
+    badge.textContent=d.is_legacy?'Legacy plan':d.plan_label+' plan';
+    badge.className='bp-badge '+(d.is_legacy?'off':'trial');
+    $id('planLegacyNote').textContent=d.is_legacy?'Grandfathered — unlimited users, channels and modules.':'';
 
-    $id('planUsageUsers').textContent=d.limits?`${d.usage.users} / ${d.limits.max_users}`:`${d.usage.users} / Unlimited`;
-    $id('planUsageChannels').textContent=d.limits?`${d.usage.channels} / ${d.limits.max_channels}`:`${d.usage.channels} / Unlimited`;
+    // Meters: amber from 80% of the limit, red at it, with an upgrade nudge.
+    const meter=(used, max, textId, barId)=>{
+      $id(textId).textContent=max?`${used} of ${max}`:`${used} · Unlimited`;
+      const pct=max?Math.min(100, Math.round(used/max*100)):Math.min(100, used?12:0);
+      const bar=$id(barId);
+      bar.style.width=pct+'%';
+      bar.className=!max?'':pct>=100?'bad':pct>=80?'warn':'';
+      return max?pct:0;
+    };
+    const uPct=d.limits?meter(d.usage.users, d.limits.max_users, 'planUsageUsers', 'planUsageUsersBar'):meter(d.usage.users, 0, 'planUsageUsers', 'planUsageUsersBar');
+    const cPct=d.limits?meter(d.usage.channels, d.limits.max_channels, 'planUsageChannels', 'planUsageChannelsBar'):meter(d.usage.channels, 0, 'planUsageChannels', 'planUsageChannelsBar');
+    const note=$id('planLimitNote');
+    const full=[uPct>=100&&'users', cPct>=100&&'channels'].filter(Boolean);
+    const near=[uPct>=80&&uPct<100&&'users', cPct>=80&&cPct<100&&'channels'].filter(Boolean);
+    if(full.length||near.length){
+      note.innerHTML=`<div>${full.length?`You've reached your plan's limit for <b>${full.join(' and ')}</b>.`:`You're close to your plan's limit for <b>${near.join(' and ')}</b>.`} Upgrade to add more.</div><button class="bp-btn" onclick="billingScrollTo('billingCompareCard')">See plans</button>`;
+      note.className='bp-alert '+(full.length?'bad':'warn'); note.style.display='flex';
+    }else note.style.display='none';
 
     const grid=$id('planModulesGrid');
     grid.innerHTML=Object.values(d.modules).map(m=>{
@@ -15587,51 +15752,6 @@ async function renderBillingRzpSwitch(){
 }
 const RZP_STATUS_LABELS={authenticated:'AutoPay approved',active:'active',pending:'payment retrying',halted:'on hold',paused:'paused',cancelled:'cancelled',completed:'completed'};
 
-function renderBillingPage(){
-  const hasPlan=billingHasActivePlan(clientRecord);
-  const provider=billingProviderOf(clientRecord);
-  $id('billingNoPlan').style.display=hasPlan?'none':'block';
-  $id('billingHasPlan').style.display=hasPlan?'block':'none';
-  $id('billingStripeManage').style.display=provider==='stripe'?'block':'none';
-  $id('billingRzpManage').style.display=provider==='razorpay'?'block':'none';
-  if(hasPlan){
-    $id('billingPlanName').textContent=(clientRecord.plan_name||'—')+(provider==='razorpay'?' · Razorpay':provider==='manual'?' · managed by Leadvyne':'');
-    $id('billingPlanStatus').textContent=clientRecord.plan_status||'—';
-    if(provider==='razorpay') renderRzpManage();
-    renderBillingRzpSwitch();
-
-    const renewsDate=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—';
-    const days=daysUntil(clientRecord.plan_renews_at);
-    const willNotRenew=clientRecord.plan_cancel_at_period_end==='Yes';
-    $id('billingCancelBanner').style.display=willNotRenew?'block':'none';
-    if(willNotRenew){
-      $id('billingCancelDate').textContent=renewsDate;
-      $id('billingRenewalLine').textContent=days!==null?`Ends in ${days} day${days===1?'':'s'} (${renewsDate}).`:'';
-    }else{
-      $id('billingRenewalLine').textContent=days!==null?`Renews in ${days} day${days===1?'':'s'} (${renewsDate}).`:'';
-    }
-
-    const pastDueCopy=BILLING_PAST_DUE_COPY[clientRecord.plan_status];
-    $id('billingPastDueBanner').style.display=pastDueCopy?'block':'none';
-    if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy;
-  }else{
-    // A Razorpay subscription in progress means INR — show those plans first.
-    if(clientRecord.razorpay_status==='created' && _billingCurrency!=='INR'){ _billingCurrency='INR'; renderBillingCurrencyToggle(); }
-    const billingEmail=clientRecord.billing_email||clientRecord.authentik_email||'';
-    $id('billingEmailNotice').innerHTML=billingEmail
-      ? `Invoices and receipts will go to <strong>${esc(billingEmail)}</strong> — wrong? Update it in Company Profile above before subscribing.`
-      : '';
-    loadBillingPlans();
-  }
-  $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
-
-  const usage=computeBillingUsage();
-  $id('billingUsageMessages').textContent=usage.messages;
-  $id('billingUsageLeads').textContent=usage.leads;
-  $id('billingUsageConv').textContent=usage.convRate+'%';
-  loadBillingTemplateUsage(usage);
-}
-
 async function billingInit(){
   const params=new URLSearchParams(location.search);
   const billingResult=params.get('billing');
@@ -15658,7 +15778,7 @@ async function billingInit(){
           ? '<div class="s-note" style="color:var(--accent-ink)">✅ Add-on purchased — your balance below is up to date.</div>'
           : '<div class="s-note" style="color:var(--accent-ink)">✅ Subscription confirmed.</div>';
       }catch(e){
-        banner.innerHTML=`<div class="s-note">Payment received, but confirming with Stripe failed (${esc(e.message)}) — try "Sync Subscription Now" below.</div>`;
+        banner.innerHTML=`<div class="s-note">Payment received, but confirming with Stripe failed (${esc(e.message)}) — try "Refresh status" below.</div>`;
       }
     }
     await refreshClientRecord();
@@ -15684,69 +15804,339 @@ async function billingInit(){
   $id('cfgCompanyName').value=clientRecord.client_name||'';
   $id('cfgBillingEmail').value=clientRecord.billing_email||clientRecord.authentik_email||'';
   $id('cfgCompanyAddress').value=clientRecord.company_address||'';
+  billingFillGst({gstin:clientRecord.gstin, billing_state:clientRecord.billing_state});
   renderBillingCurrencyToggle();
   renderBillingPage();
   loadBillingPlanStatus();
+  loadBillingOverview();
+  loadBillingInvoices();
+  loadBillingHistory();
 }
 
-async function renderRzpManage(){
-  const status=clientRecord.razorpay_status||'';
-  $id('billingRzpMethod').textContent=`Paid via Razorpay${RZP_STATUS_LABELS[status]?' · '+RZP_STATUS_LABELS[status]:''}.`;
-  const willEnd=clientRecord.plan_cancel_at_period_end==='Yes';
-  $id('billingRzpCancelBtn').style.display=willEnd?'none':'';
-  const rzp=await loadRzpPlans();
-  const others=(rzp.plans||[]).filter(p=>p.plan_id!==clientRecord.razorpay_plan_id);
-  $id('billingRzpChangeWrap').style.display=others.length&&!willEnd?'flex':'none';
-  $id('billingRzpPlanSelect').innerHTML=others.map(p=>`<option value="${escAttr(p.plan_id)}">${esc(p.name)} — ₹${((p.amount||0)/100).toLocaleString('en-IN')}${esc(billingPeriodLabel(p.period,p.interval_count))}</option>`).join('');
+/* ── Billing portal (GET /billing/portal/* — billing-portal.js) ── */
+let _billingOverview=null;
+const BILLING_TONES={ok:'ok', trial:'trial', warn:'warn', bad:'bad', off:'off'};
+function billingMoney(amount, currency, digits=0){
+  if(amount==null||!currency) return '';
+  const cur=String(currency).toUpperCase();
+  const n=(Number(amount)/100).toLocaleString('en-IN',{minimumFractionDigits:digits,maximumFractionDigits:2});
+  return cur==='INR'?`₹${n}`:`${cur} ${n}`;
 }
-async function rzpCall(path, opts={}){
-  const r=await fetch(`${CONFIG.WORKER_BASE}/billing/razorpay/${path}`,{headers:ncAuthHeaders(opts.body?{'Content-Type':'application/json'}:{}),...opts});
+function billingFmtDate(v){
+  if(!v) return '';
+  const d=typeof v==='number'?new Date(v*1000):new Date(v);
+  return isNaN(d)?'':d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+}
+function billingScrollTo(id){ const el=$id(id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+function billingSetMsg(t){ const m=$id('billingActionMsg'); if(m) m.textContent=t||''; }
+async function billingApi(path, opts={}){
+  const r=await fetch(`${CONFIG.WORKER_BASE}${path}`,{headers:ncAuthHeaders(opts.body?{'Content-Type':'application/json'}:{}),...opts});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
   return d;
 }
-async function rzpSyncNow(){
-  const msg=$id('billingRzpMsg'); msg.textContent='Checking Razorpay…';
-  try{
-    const d=await rzpCall('status');
-    await refreshClientRecord(); renderBillingPage();
-    msg.textContent='Synced — status: '+(RZP_STATUS_LABELS[d.subscription?.status]||d.subscription?.status||'—');
-  }catch(e){ msg.textContent='Error: '+e.message; }
+async function loadBillingOverview(){
+  try{ _billingOverview=await billingApi('/billing/portal/overview'); }
+  catch(e){ _billingOverview=null; }
+  renderBillingSummary(); renderBillingPaymentMethod(); renderBillingCompare(); renderBillingHelp(); renderBillingStickyCta();
+  if(_billingOverview?.gst) billingFillGst(_billingOverview.gst);
 }
-async function rzpCancel(){
-  const renews=clientRecord.plan_renews_at?new Date(clientRecord.plan_renews_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'the end of this billing cycle';
-  if(!confirm(`Cancel your subscription?\n\nYou keep full access until ${renews} and won't be charged again.`)) return;
-  const msg=$id('billingRzpMsg'); msg.textContent='Cancelling…';
-  try{
-    await rzpCall('cancel',{method:'POST',body:JSON.stringify({at_cycle_end:true})});
-    await refreshClientRecord(); renderBillingPage();
-    msg.textContent='Cancelled — no further charges.';
-  }catch(e){ msg.textContent='Error: '+e.message; }
+
+function renderBillingPage(){
+  const hasPlan=billingHasActivePlan(clientRecord);
+  $id('billingNoPlan').style.display=hasPlan?'none':'block';
+  $id('billingHasPlan').style.display=hasPlan?'block':'none';
+  $id('billingPaymentCard').style.display=hasPlan&&billingProviderOf(clientRecord)!=='manual'?'block':'none';
+  if(hasPlan){
+    renderBillingSummary();
+    renderBillingRzpSwitch();
+  }else{
+    // A Razorpay subscription in progress means INR — show those plans first.
+    if(clientRecord.razorpay_status==='created' && _billingCurrency!=='INR'){ _billingCurrency='INR'; renderBillingCurrencyToggle(); }
+    const billingEmail=clientRecord.billing_email||clientRecord.authentik_email||'';
+    $id('billingEmailNotice').innerHTML=billingEmail
+      ? `Invoices and receipts will go to <strong>${esc(billingEmail)}</strong> — wrong? Update it in Company &amp; GST details below before subscribing.`
+      : '';
+    loadBillingPlans();
+  }
+  $id('billingWaCredits').textContent=clientRecord.wa_credits_balance||0;
+  const usage=computeBillingUsage();
+  $id('billingUsageMessages').textContent=usage.messages;
+  $id('billingUsageLeads').textContent=usage.leads;
+  $id('billingUsageConv').textContent=usage.convRate+'%';
+  loadBillingTemplateUsage(usage);
+  renderBillingCompare();
+  renderBillingStickyCta();
 }
-async function rzpChangePlan(){
-  const plan_id=$id('billingRzpPlanSelect').value, when=$id('billingRzpWhen').value;
-  if(!plan_id) return;
-  const msg=$id('billingRzpMsg'); msg.textContent='Changing plan…';
-  try{
-    const d=await rzpCall('change-plan',{method:'POST',body:JSON.stringify({plan_id, when})});
-    await refreshClientRecord(); renderBillingPage(); loadBillingPlanStatus();
-    msg.textContent=d.scheduled?'Plan change scheduled for your next billing cycle.':'Plan changed.';
-  }catch(e){ msg.textContent='Error: '+e.message; }
+
+// Plan summary: prefers the overview (readable plan name, price, payment method); falls back to
+// the client record fields so the card is never empty while the overview loads.
+function renderBillingSummary(){
+  if(!billingHasActivePlan(clientRecord)) return;
+  const o=_billingOverview, c=clientRecord, provider=billingProviderOf(c);
+  const plan=o?.plan||{};
+  let name=plan.name||c.plan_name||'Your plan';
+  if(/^price_/.test(name)) name='Your plan';
+  $id('billingPlanName').textContent=name;
+  $id('billingPlanTier').textContent=plan.tier_label&&plan.tier_label!==name?plan.tier_label:'';
+  $id('billingPlanPrice').textContent=plan.amount!=null?`${billingMoney(plan.amount, plan.currency)}${billingPeriodLabel(plan.period, plan.interval_count)}`:(provider==='manual'?'Managed by Leadvyne':'');
+  const info=o?.status_info||{label:c.plan_status||'—', tone:'off'};
+  const badge=$id('billingStatusBadge');
+  badge.className='bp-badge '+(BILLING_TONES[info.tone]||'off');
+  const trialDays=c.plan_status==='trialing'?daysUntil(o?.trial_end||c.plan_renews_at):null;
+  badge.textContent=info.label+(trialDays!==null?` · ${trialDays} day${trialDays===1?'':'s'} left`:'');
+
+  const renewsDate=billingFmtDate(c.plan_renews_at)||'—';
+  const days=daysUntil(c.plan_renews_at);
+  const willNotRenew=c.plan_cancel_at_period_end==='Yes';
+  $id('billingCancelBanner').style.display=willNotRenew?'flex':'none';
+  $id('billingCancelDate').textContent=renewsDate;
+  $id('billingNextLbl').textContent=willNotRenew?'Access ends':c.plan_status==='trialing'?'First charge':'Next charge';
+  $id('billingRenewalLine').textContent=c.plan_renews_at?`${renewsDate}${days!==null?` · in ${days} day${days===1?'':'s'}`:''}`:'—';
+  $id('billingPaidVia').textContent=billingMethodLabel(o?.payment_method, provider);
+  $id('billingBilledTo').textContent=c.billing_email||c.authentik_email||'—';
+
+  const pastDueCopy=BILLING_PAST_DUE_COPY[c.plan_status];
+  $id('billingPastDueBanner').style.display=pastDueCopy?'flex':'none';
+  if(pastDueCopy) $id('billingPastDueText').textContent=pastDueCopy+' Update your payment method to avoid losing access.';
+  const pm=o?.payment_method;
+  const cardWarn=pm?.type==='card'&&pm.expiring_soon&&!willNotRenew;
+  $id('billingCardWarn').style.display=cardWarn?'flex':'none';
+  if(cardWarn) $id('billingCardWarnText').textContent=`Your ${cap(pm.brand||'card')} ending ${pm.last4} expires ${String(pm.exp_month).padStart(2,'0')}/${String(pm.exp_year).slice(-2)} — update it so your next payment doesn't fail.`;
+
+  $id('billingPortalBtn').style.display=provider==='stripe'?'':'none';
+  $id('billingCancelBtn').style.display=willNotRenew||provider==='manual'?'none':'';
 }
-async function rzpLoadInvoices(){
-  const box=$id('billingRzpInvoices'); box.innerHTML='<div class="s-note">Loading invoices…</div>';
+function billingMethodLabel(pm, provider){
+  if(provider==='manual') return 'Bank transfer / invoice';
+  if(!pm) return provider==='razorpay'?'Razorpay AutoPay':provider==='stripe'?'Card (Stripe)':'—';
+  if(pm.type==='card') return `${cap(pm.brand||'card')} •••• ${pm.last4}`;
+  return {upi:'UPI AutoPay', netbanking:'Net-banking mandate', emandate:'Net-banking mandate', nach:'NACH mandate'}[pm.type]||cap(pm.type);
+}
+
+function renderBillingPaymentMethod(){
+  const c=clientRecord, provider=billingProviderOf(c), pm=_billingOverview?.payment_method;
+  if(!billingHasActivePlan(c)||provider==='manual') return;
+  $id('billingPmIcon').textContent=pm?.type==='upi'?'📱':pm?.type&&pm.type!=='card'?'🏦':'💳';
+  $id('billingPmTitle').textContent=billingMethodLabel(pm, provider)+(pm?.type==='card'&&pm.exp_month?` · expires ${String(pm.exp_month).padStart(2,'0')}/${String(pm.exp_year).slice(-2)}`:'');
+  if(provider==='stripe'){
+    $id('billingPmNote').textContent=pm?.expiring_soon?'⚠️ Expiring soon — update it to avoid a failed payment.':'Card details are stored securely by Stripe, never on our servers.';
+    $id('billingPmBtn').style.display='';
+  }else{
+    $id('billingPmNote').textContent='AutoPay mandates can\'t be edited. To pay from a different UPI ID, card or bank, cancel and subscribe again — your plan stays the same.';
+    $id('billingPmBtn').style.display='none';
+  }
+}
+function billingUpdatePaymentMethod(){
+  if(billingProviderOf(clientRecord)==='stripe') return openBillingPortal();
+  billingScrollTo('billingHelpCard');
+}
+// "Fix payment": Stripe → the portal (update card / pay the open invoice); Razorpay → refresh,
+// and if it's still failing, the help card (a halted mandate needs a new subscription).
+async function billingFixPayment(){
+  if(billingProviderOf(clientRecord)==='stripe') return openBillingPortal();
+  await billingSyncNow();
+  if(BILLING_PAST_DUE_COPY[clientRecord.plan_status]) billingScrollTo('billingHelpCard');
+}
+
+// ── Compare plans ──
+function billingCompareCurrency(){
+  const cur=String(_billingOverview?.plan?.currency||'').toUpperCase();
+  return billingHasActivePlan(clientRecord)&&cur?cur:_billingCurrency;
+}
+function renderBillingCompare(){
+  const box=$id('billingCompare'); if(!box) return;
+  const tiers=_billingOverview?.tiers;
+  if(!tiers){ box.innerHTML='<div class="s-note">Loading plans…</div>'; return; }
+  const cur=billingCompareCurrency();
+  const hasPlan=billingHasActivePlan(clientRecord);
+  const provider=billingProviderOf(clientRecord);
+  const currentKey=_billingOverview.plan?.tier||'';
+  const currentIdx=tiers.findIndex(t=>t.key===currentKey);
+  const allModules=[...new Set(tiers.flatMap(t=>t.modules))];
+  box.innerHTML=tiers.map((t,i)=>{
+    const price=t.prices[cur];
+    const isCurrent=hasPlan&&t.key===currentKey;
+    let btn='';
+    if(isCurrent) btn='<button class="bp-btn secondary" disabled>Current plan</button>';
+    else if(!price) btn=`<button class="bp-btn secondary" onclick="billingScrollTo('billingHelpCard')">Talk to us</button>`;
+    else{
+      const label=!hasPlan?'Choose':currentIdx<0?'Switch':(i>currentIdx?'Upgrade':'Downgrade');
+      btn=`<button class="bp-btn ${label==='Downgrade'?'secondary':''}" onclick="billingChoosePlan('${escAttr(t.key)}', this)">${label}</button>`;
+    }
+    return `<div class="bp-tier ${isCurrent?'current':''}">
+      ${isCurrent?'<div class="bp-tier-flag">Your plan</div>':''}
+      <div class="bp-tier-name">${esc(t.label)}</div>
+      <div class="bp-tier-price">${price?`${billingMoney(price.amount, price.currency)}<small>${esc(billingPeriodLabel(price.period, price.interval_count))}</small>`:'<small>Contact us</small>'}</div>
+      <ul>
+        <li>👥 ${t.max_users} user${t.max_users===1?'':'s'}</li>
+        <li>🔌 ${t.max_channels} channel${t.max_channels===1?'':'s'}</li>
+        ${allModules.map(m=>`<li class="${t.modules.includes(m)?'':'no'}">${t.modules.includes(m)?'✓':'—'} ${esc(m)}</li>`).join('')}
+      </ul>
+      ${btn}
+    </div>`;
+  }).join('');
+  $id('billingCompareNote').textContent=hasPlan
+    ?(provider==='manual'?'Your plan is managed by Leadvyne — talk to us to change it.':'Upgrades apply straight away; downgrades take effect from your next billing cycle. Prices in '+cur+'.')
+    :`Prices in ${cur}. Change currency at the top of this page.`;
+}
+async function billingChoosePlan(tierKey, btn){
+  const t=(_billingOverview?.tiers||[]).find(x=>x.key===tierKey);
+  const price=t?.prices[billingCompareCurrency()];
+  if(!price) return;
+  const provider=billingProviderOf(clientRecord);
+  if(!billingHasActivePlan(clientRecord)){
+    if(price.gateway==='razorpay') return subscribeRazorpay(price.id, btn);
+    return subscribeToPlan(price.id);
+  }
+  if(provider==='manual') return billingScrollTo('billingHelpCard');
+  const tiers=_billingOverview.tiers, cur=tiers.findIndex(x=>x.key===_billingOverview.plan?.tier);
+  const upgrade=cur<0||tiers.indexOf(t)>cur;
+  if(provider==='razorpay'){
+    if(price.gateway!=='razorpay') return;
+    if(!confirm(upgrade?`Upgrade to ${t.label} now? Razorpay charges the difference straight away.`:`Downgrade to ${t.label}? It takes effect from your next billing cycle.`)) return;
+    billingSetMsg('Changing plan…');
+    try{
+      const d=await billingApi('/billing/razorpay/change-plan',{method:'POST',body:JSON.stringify({plan_id:price.id, when:upgrade?'now':'cycle_end'})});
+      await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingPlanStatus();
+      billingSetMsg(d.scheduled?`Done — you'll move to ${t.label} at your next billing cycle.`:`Done — you're now on ${t.label}.`);
+    }catch(e){ billingSetMsg('Error: '+e.message); billingScrollTo('billingPlanCard'); }
+    return;
+  }
+  billingSetMsg('Opening the secure Stripe page…');
   try{
-    const d=await rzpCall('invoices');
+    const d=await billingApi('/billing/portal/stripe-change',{method:'POST',body:JSON.stringify({price_id:price.id})});
+    window.location.href=d.url;
+  }catch(e){ billingSetMsg('Error: '+e.message); }
+}
+
+// ── Invoices & history ──
+async function loadBillingInvoices(){
+  const box=$id('billingInvoices');
+  try{
+    const d=await billingApi('/billing/portal/invoices');
     const list=d.invoices||[];
-    box.innerHTML=list.length?`<table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="text-align:left;color:var(--muted)"><th style="padding:6px 4px">Date</th><th>Amount</th><th>Status</th><th></th></tr>
-      ${list.map(i=>`<tr style="border-top:1px solid var(--line)">
-        <td style="padding:6px 4px">${i.date?new Date(i.date*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):'—'}</td>
-        <td>${esc((i.currency||'INR').toUpperCase())} ${((i.amount||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-        <td>${esc(i.status||'')}</td>
-        <td>${i.short_url?`<a href="${escAttr(i.short_url)}" target="_blank" rel="noopener">View ↗</a>`:''}</td></tr>`).join('')}</table>`
-      :'<div class="s-note">No invoices yet — the first one appears after your first charge.</div>';
-  }catch(e){ box.innerHTML=`<div class="s-note">Error: ${esc(e.message)}</div>`; }
+    const tone={paid:'ok',open:'warn',uncollectible:'bad',void:'off',issued:'warn',expired:'off',cancelled:'off'};
+    box.innerHTML=list.length?`<div class="bp-table-wrap"><table class="bp-table">
+      <thead><tr><th>Date</th><th>Invoice</th><th>Amount</th><th>Status</th><th></th></tr></thead>
+      <tbody>${list.map(i=>`<tr>
+        <td>${esc(billingFmtDate(i.date)||'—')}</td>
+        <td class="bp-mono">${esc(i.number||i.id)}</td>
+        <td>${esc(billingMoney(i.amount, i.currency, 2))}</td>
+        <td><span class="bp-badge ${tone[i.status]||'off'}">${esc(cap(String(i.status||'')))}</span></td>
+        <td class="bp-links">${i.url?`<a href="${escAttr(i.url)}" target="_blank" rel="noopener">View</a>`:''}${i.pdf?` <a href="${escAttr(i.pdf)}" target="_blank" rel="noopener">PDF</a>`:''}</td>
+      </tr>`).join('')}</tbody></table></div>`
+      :'<div class="bp-empty">No invoices yet — your first one appears after your first payment.</div>';
+  }catch(e){ box.innerHTML=`<div class="s-note">Couldn't load invoices: ${esc(e.message)}</div>`; }
+}
+async function loadBillingHistory(){
+  const box=$id('billingHistory');
+  try{
+    const d=await billingApi('/billing/portal/history');
+    const list=d.events||[];
+    box.innerHTML=list.length?`<ol class="bp-timeline">${list.map(e=>`<li class="${esc(e.tone||'info')}">
+        <div class="bp-tl-title">${esc(e.title)}${e.amount!=null?` · ${esc(billingMoney(e.amount, e.currency, 2))}`:''}</div>
+        <div class="bp-tl-date">${esc(billingFmtDate(e.date))}${e.gateway?` · ${esc(cap(e.gateway))}`:''}</div>
+      </li>`).join('')}</ol>`
+      :'<div class="bp-empty">Nothing yet — subscriptions, payments and plan changes will show here.</div>';
+  }catch(e){ box.innerHTML=`<div class="s-note">Couldn't load history: ${esc(e.message)}</div>`; }
+}
+
+// ── Cancel with a reason ──
+const BILLING_CANCEL_REASONS={too_expensive:'Too expensive', missing_features:'Missing features I need', not_using:'Not using it enough',
+  switching:'Switching to another product', temporary:'Only needed it for a while', support:'Problems / support', other:'Other'};
+function openBillingCancel(){
+  const provider=billingProviderOf(clientRecord);
+  $id('billingCancelReasons').innerHTML=Object.entries(BILLING_CANCEL_REASONS).map(([k,l])=>
+    `<label class="bp-reason"><input type="radio" name="billingCancelReason" value="${k}" onchange="billingCancelReasonPicked()"> ${esc(l)}</label>`).join('');
+  $id('billingCancelDetail').value='';
+  $id('billingCancelAlt').style.display='none';
+  $id('billingCancelConfirm').disabled=true;
+  $id('billingCancelMsg').textContent='';
+  const ends=billingFmtDate(clientRecord.plan_renews_at);
+  $id('billingCancelWhat').textContent=provider==='stripe'
+    ?'Next you\'ll confirm the cancellation on the secure Stripe page. You keep access until the end of the period you\'ve paid for'+(ends?` (${ends}).`:'.')
+    :`You keep full access${ends?` until ${ends}`:' until the end of this billing period'} and won't be charged again.`;
+  $id('billingCancelModal').style.display='flex';
+}
+function closeBillingCancel(){ $id('billingCancelModal').style.display='none'; }
+function billingCancelReasonPicked(){
+  const reason=document.querySelector('input[name="billingCancelReason"]:checked')?.value;
+  $id('billingCancelConfirm').disabled=!reason;
+  const alt=$id('billingCancelAlt');
+  const tiers=_billingOverview?.tiers||[], cur=tiers.findIndex(t=>t.key===_billingOverview?.plan?.tier);
+  const cheaper=cur>0?tiers[cur-1]:null;
+  if((reason==='too_expensive'||reason==='not_using')&&cheaper){
+    alt.innerHTML=`💡 <b>${esc(cheaper.label)}</b> costs less and keeps your bot running. <button class="bp-btn secondary" onclick="closeBillingCancel();billingScrollTo('billingCompareCard')">See ${esc(cheaper.label)}</button>`;
+    alt.style.display='flex';
+  }else if(reason==='missing_features'||reason==='support'){
+    alt.innerHTML=`💬 Tell us what's missing or broken — we often fix it fast. <button class="bp-btn secondary" onclick="closeBillingCancel();billingScrollTo('billingHelpCard')">Talk to us</button>`;
+    alt.style.display='flex';
+  }else alt.style.display='none';
+}
+async function confirmBillingCancel(){
+  const reason=document.querySelector('input[name="billingCancelReason"]:checked')?.value;
+  if(!reason) return;
+  const provider=billingProviderOf(clientRecord);
+  const btn=$id('billingCancelConfirm'), msg=$id('billingCancelMsg');
+  btn.disabled=true; msg.textContent='Cancelling…';
+  try{
+    await billingApi('/billing/portal/cancel-feedback',{method:'POST',body:JSON.stringify({reason, detail:$id('billingCancelDetail').value.trim(), outcome:provider==='stripe'?'sent_to_stripe_portal':'cancelled'})}).catch(()=>{});
+    if(provider==='stripe'){ msg.textContent='Opening the secure Stripe page…'; return openBillingPortal(); }
+    await billingApi('/billing/razorpay/cancel',{method:'POST',body:JSON.stringify({at_cycle_end:true})});
+    await refreshClientRecord();
+    closeBillingCancel(); renderBillingPage(); loadBillingOverview(); loadBillingHistory();
+    billingSetMsg('Cancelled — you won\'t be charged again.');
+  }catch(e){ msg.textContent='Error: '+e.message; btn.disabled=false; }
+}
+
+// ── Help & mobile action bar ──
+function renderBillingHelp(){
+  const s=_billingOverview?.support||{};
+  const company=clientRecord.client_name||'my account';
+  const btns=[];
+  if(s.whatsapp) btns.push(`<a class="bp-btn" href="https://wa.me/${escAttr(s.whatsapp)}?text=${encodeURIComponent('Hi, I need help with billing for '+company)}" target="_blank" rel="noopener">💬 WhatsApp us</a>`);
+  if(s.email) btns.push(`<a class="bp-btn secondary" href="mailto:${escAttr(s.email)}?subject=${encodeURIComponent('Billing help — '+company)}">✉️ Email ${esc(s.email)}</a>`);
+  $id('billingHelpContacts').innerHTML=btns.join('')||'<div class="s-note" style="margin:0">Reply to any billing email and our team will help.</div>';
+}
+function renderBillingStickyCta(){
+  const bar=$id('billingStickyCta'), btn=$id('billingStickyBtn'); if(!bar) return;
+  const c=clientRecord;
+  let label='', act=null;
+  if(!billingHasActivePlan(c)){ label='Choose a plan'; act=()=>billingScrollTo('billingCompareCard'); }
+  else if(BILLING_PAST_DUE_COPY[c.plan_status]){ label='Fix payment'; act=billingFixPayment; }
+  else if(_billingOverview?.payment_method?.expiring_soon && c.plan_cancel_at_period_end!=='Yes'){ label='Update card'; act=billingUpdatePaymentMethod; }
+  bar.style.display=label?'':'none';
+  btn.textContent=label; btn.onclick=act;
+}
+
+async function billingSyncNow(){
+  billingSetMsg('Checking…');
+  try{
+    const provider=billingProviderOf(clientRecord);
+    if(provider==='razorpay') await billingApi('/billing/razorpay/status');
+    else if(provider==='stripe') await billingApi('/billing/sync-now');
+    await refreshClientRecord(); renderBillingPage(); loadBillingOverview(); loadBillingHistory();
+    billingSetMsg('Up to date — '+(BILLING_PAST_DUE_COPY[clientRecord.plan_status]?'payment still needs attention.':'status: '+(clientRecord.plan_status||'—')));
+  }catch(e){ billingSetMsg('Error: '+e.message); }
+}
+
+// ── GST: state list + auto-fill from the GSTIN's 2-digit state code ──
+const GST_STATES={'01':'Jammu & Kashmir','02':'Himachal Pradesh','03':'Punjab','04':'Chandigarh','05':'Uttarakhand','06':'Haryana','07':'Delhi',
+  '08':'Rajasthan','09':'Uttar Pradesh','10':'Bihar','11':'Sikkim','12':'Arunachal Pradesh','13':'Nagaland','14':'Manipur','15':'Mizoram',
+  '16':'Tripura','17':'Meghalaya','18':'Assam','19':'West Bengal','20':'Jharkhand','21':'Odisha','22':'Chhattisgarh','23':'Madhya Pradesh',
+  '24':'Gujarat','26':'Dadra & Nagar Haveli and Daman & Diu','27':'Maharashtra','29':'Karnataka','30':'Goa','31':'Lakshadweep','32':'Kerala',
+  '33':'Tamil Nadu','34':'Puducherry','35':'Andaman & Nicobar Islands','36':'Telangana','37':'Andhra Pradesh','38':'Ladakh','97':'Other Territory'};
+const GSTIN_RE=/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+function billingFillGst(g){
+  const sel=$id('cfgBillingState');
+  if(!sel.options.length) sel.innerHTML='<option value="">— Select state —</option>'+Object.values(GST_STATES).sort().map(s=>`<option>${esc(s)}</option>`).join('')+'<option>Outside India</option>';
+  if(g){ $id('cfgGstin').value=g.gstin||''; sel.value=g.billing_state||''; }
+}
+function billingGstinChanged(){
+  const v=$id('cfgGstin').value.trim().toUpperCase();
+  const st=GST_STATES[v.slice(0,2)];
+  if(v.length>=2&&st) $id('cfgBillingState').value=st;
 }
 
 async function saveCompanyProfile(){
@@ -15754,14 +16144,15 @@ async function saveCompanyProfile(){
   const client_name=$id('cfgCompanyName').value.trim();
   const billing_email=$id('cfgBillingEmail').value.trim();
   const company_address=$id('cfgCompanyAddress').value.trim();
+  const gstin=$id('cfgGstin').value.trim().toUpperCase();
+  const billing_state=$id('cfgBillingState').value;
   if(!client_name){ msg.textContent='Company name is required.'; return; }
   if(billing_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billing_email)){ msg.textContent='That doesn\'t look like a valid email address.'; return; }
+  if(gstin && !GSTIN_RE.test(gstin)){ msg.textContent='That GSTIN doesn\'t look right — it should be 15 characters, like 32ABCDE1234F1Z5.'; return; }
   msg.textContent='Saving…';
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/company-profile`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({client_name, company_address, billing_email})});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    Object.assign(clientRecord,{client_name, company_address, billing_email});
+    await billingApi('/billing/company-profile',{method:'POST',body:JSON.stringify({client_name, company_address, billing_email, gstin, billing_state})});
+    Object.assign(clientRecord,{client_name, company_address, billing_email, gstin, billing_state});
     $id('hChip').textContent=clientRecord.client_name||('Client #'+clientId);
     renderBillingPage();
     msg.textContent='Saved.';
@@ -15769,28 +16160,11 @@ async function saveCompanyProfile(){
 }
 
 async function openBillingPortal(){
-  const msg=$id('billingPortalMsg'); msg.textContent='Opening billing portal…';
+  billingSetMsg('Opening the secure Stripe page…');
   try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/portal`,{headers:ncAuthHeaders()});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
+    const data=await billingApi('/billing/portal');
     window.location.href=data.url;
-  }catch(e){ msg.textContent='Error: '+e.message; }
-}
-
-// Manual fallback that doesn't depend on the webhook at all — looks up the Stripe Customer by
-// this account's own email(s) and pulls whatever subscription exists directly. Use this any time
-// a checkout completed on Stripe's side but hasn't shown up here yet.
-async function syncBillingNow(){
-  const msg=$id('billingSyncMsg'); msg.textContent='Checking Stripe…';
-  try{
-    const r=await fetch(`${CONFIG.WORKER_BASE}/billing/sync-now`,{headers:ncAuthHeaders()});
-    const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'HTTP '+r.status);
-    await refreshClientRecord();
-    renderBillingPage();
-    msg.textContent='Synced — plan status: '+(data.plan_status||'—');
-  }catch(e){ msg.textContent='Error: '+e.message; }
+  }catch(e){ billingSetMsg('Error: '+e.message); }
 }
 
 /* ── HELPERS ── */

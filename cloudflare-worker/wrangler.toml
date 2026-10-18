@@ -206,6 +206,8 @@ binding = "AI"
 # Secrets are configured in Cloudflare dashboard / wrangler secret put.
 # Razorpay (Indian customers' subscriptions — razorpay-billing.js, SETUP.md "Razorpay subscriptions"):
 # RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET.
+# Billing page "Need help with billing?" buttons (optional, plain vars or secrets):
+# BILLING_SUPPORT_EMAIL, BILLING_SUPPORT_WHATSAPP (digits with country code, e.g. 919800000000).
 # POOMAS native Live Agency integration also uses POOMAS_INTEGRATION_KEY for live PNR lookup.
 
 # Flowvyne — visual flow builder plugin for scripted WhatsApp conversations.

@@ -1,6 +1,7 @@
 import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospitality-pro.js';
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
+import {billingPortalHandleRoute} from './billing-portal.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
@@ -7810,6 +7811,8 @@ async function sweepAbandonedShopifyCheckouts(env){
 const TRIAL_PERIOD_DAYS = 15;
 
 const EMAIL_RE=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// 2-digit state code, 10-char PAN, entity number, 'Z', checksum character.
+const GSTIN_RE=/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 // Requires billing_email — deliberately no silent fallback to authentik_email (the login
 // address, which is sometimes a shared/ops account rather than who should actually own the
@@ -7833,13 +7836,30 @@ async function ensureStripeCustomer(env, c, clientId){
 async function handleBillingCompanyProfile(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
-  const {client_name, company_address, billing_email}=await request.json().catch(()=>({}));
+  const {client_name, company_address, billing_email, gstin:rawGstin, billing_state}=await request.json().catch(()=>({}));
   if(!client_name) return json({error:'Company name is required.'}, 400);
   if(billing_email && !EMAIL_RE.test(billing_email)) return json({error:'That doesn\'t look like a valid email address.'}, 400);
+  const gstin=String(rawGstin||'').trim().toUpperCase();
+  if(gstin && !GSTIN_RE.test(gstin)) return json({error:'That GSTIN doesn\'t look right — it should be 15 characters, like 32ABCDE1234F1Z5.'}, 400);
   const c=await getClientById(env, payload.cid);
   if(!c) return json({error:'Client not found'}, 404);
 
-  await patchClientFields(env, payload.cid, {client_name, company_address:company_address||'', billing_email:billing_email||''});
+  const patch={client_name, company_address:company_address||'', billing_email:billing_email||''};
+  // GST fields only travel when the page sends them, so older callers can't blank them by accident.
+  if(rawGstin!==undefined||billing_state!==undefined){
+    await ensureClientColumns(env, ['gstin','billing_state']);
+    patch.gstin=gstin; patch.billing_state=String(billing_state||'').trim().slice(0, 60);
+  }
+  await patchClientFields(env, payload.cid, patch);
+  // GSTIN onto the Stripe customer so Stripe's own invoices carry it (best-effort; skipped when
+  // it's already there).
+  if(gstin && c.stripe_customer_id && env.STRIPE_SECRET_KEY && gstin!==c.gstin){
+    try{
+      const {ok, data}=await stripeFetch(env, 'GET', `customers/${c.stripe_customer_id}/tax_ids`, {limit:10});
+      if(ok && !(data?.data||[]).some(t=>t.type==='in_gst' && t.value===gstin))
+        await stripeFetch(env, 'POST', `customers/${c.stripe_customer_id}/tax_ids`, {type:'in_gst', value:gstin});
+    }catch(e){}
+  }
 
   // Best-effort — keeps Stripe's own invoices/receipts/pre-debit notices going to the right
   // name+address+email for customers who update this after they already have a Stripe Customer
@@ -8140,12 +8160,18 @@ async function syncSubscriptionFields(env, clientId, sub){
   // API versions 2025-03-31+ moved current_period_end off the Subscription object and onto
   // each SubscriptionItem — sub.current_period_end kept as a fallback for older-pinned accounts.
   const periodEnd=item?.current_period_end||sub.current_period_end;
+  // A price without a nickname used to be saved as its raw id (price_1Tq…); use the product name.
+  let planName=price?.nickname||(typeof price?.product==='object'?price.product?.name:'')||'';
+  if(!planName && price?.id){
+    const r=await stripeFetch(env, 'GET', `prices/${price.id}`, {expand:['product']}).catch(()=>null);
+    planName=r?.ok?(r.data?.nickname||r.data?.product?.name||''):'';
+  }
   await patchClientFields(env, clientId, {
     billing_provider:'stripe',
     stripe_subscription_id:sub.id,
     plan_status:sub.status,
     plan_renews_at:periodEnd?new Date(periodEnd*1000).toISOString():'',
-    plan_name:price?.nickname||price?.id||'',
+    plan_name:planName||price?.id||'',
     plan_message_limit:Number(price?.metadata?.message_limit||0)||undefined,
     // Set when the customer cancels from the Portal but keeps access until the period ends —
     // the Billing page uses this to show "won't renew" instead of a normal renewal date.
@@ -8470,6 +8496,12 @@ async function stripePlanPrices(env){
   }));
   return rows.filter(Boolean);
 }
+const BILLING_PORTAL_DEPS={
+  json, requireSession, getClientById, stripeFetch, stripeConfigured:env=>!!env.STRIPE_SECRET_KEY, stripePlanPrices,
+  planTiers:PLAN_TIERS, planGatedModules:PLAN_GATED_MODULES,
+  // Billing page → "Need help with billing?" — either can be left unset to hide that button.
+  supportContacts:env=>({email:env.BILLING_SUPPORT_EMAIL||'', whatsapp:String(env.BILLING_SUPPORT_WHATSAPP||'').replace(/\D/g,'')}),
+};
 const RZP_DEPS={
   json, requireSession, requireAdminSession, getClientById, findClientByField, patchClientFields, ensureClientColumns,
   listAllClients:listAllClientRecords, sendBillingEmail, esc, planTiers:PLAN_TIERS, trialDays:TRIAL_PERIOD_DAYS,
@@ -36566,6 +36598,7 @@ export default {
       else if(url.pathname==='/billing/checkout-addon' && request.method==='POST'){ res=await handleBillingCheckoutAddon(request, env); }
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
+      else if(url.pathname.startsWith('/billing/portal/')){ res=await billingPortalHandleRoute(request, env, BILLING_PORTAL_DEPS, url); }
       else if(url.pathname.startsWith('/billing/razorpay/')||url.pathname.startsWith('/admin/razorpay/')||url.pathname.startsWith('/admin/billing/')||url.pathname==='/admin/api-status'){
         res=(await rzpHandleRoute(request, env, RZP_DEPS, url))||json({error:'Not found'}, 404);
       }
