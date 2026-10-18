@@ -58,10 +58,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_followup_v3_templates_kind ON followup_v3_
 -- reengage (step 6); converted_at/revenue = last-touch conversion credit (a replied follow-up within
 -- 14 days before the lead was won / booked / ordered); opted_out_at = the follow-up the customer
 -- answered with STOP.
-ALTER TABLE followup_sends ADD COLUMN v3 INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE followup_sends ADD COLUMN kind TEXT NOT NULL DEFAULT 'ladder';
-ALTER TABLE followup_sends ADD COLUMN lead_name TEXT NOT NULL DEFAULT '';
-ALTER TABLE followup_sends ADD COLUMN converted_at TEXT;
-ALTER TABLE followup_sends ADD COLUMN revenue REAL;
-ALTER TABLE followup_sends ADD COLUMN opted_out_at TEXT;
+-- NOTE: no ALTER TABLE here. fv3EnsureSchema (SEND_COLUMNS in followup-v3.js) adds these columns
+-- itself on first use, so on production they already existed by the time this migration ran and
+-- `ALTER TABLE … ADD COLUMN` failed with "duplicate column name: v3" — SQLite has no ADD COLUMN IF
+-- NOT EXISTS. Same pattern as 0102_recruit_bot_screening_phrases.sql; fresh databases get the
+-- columns from the worker.
 CREATE INDEX IF NOT EXISTS idx_followup_sends_client_sent ON followup_sends(client_id, sent_at);
