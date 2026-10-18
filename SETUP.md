@@ -2316,6 +2316,48 @@ for an older subscription can't overwrite a newer one; it's logged with the note
 through the `/nocodb/` passthrough. Before this, a client could set `stripe_customer_id` and open
 someone else's Stripe Portal.
 
+## Customer Billing page (`dashboard.html` → Billing, `billing-portal.js`)
+The page reads the same way for Stripe, Razorpay and admin-set (manual) plans. Sections, in order:
+1. **Your plan** (`GET /billing/portal/overview`): readable plan name (never a raw `price_…` id),
+   price, a plain-words status badge (Active, Free trial · N days left, Payment retrying, Action
+   needed, Paused, Cancelled), next charge or end date, how it's paid, and who it's billed to. The
+   alerts above it cover a failed payment ("Fix payment" opens the Stripe portal, or for Razorpay
+   refreshes and then points to Help), the switch to Razorpay, cancellation at period end, and a
+   card that expires within 45 days.
+2. **Plan & usage**: user and channel meters that turn amber at 80% and red at the limit, with an
+   upgrade nudge, plus the modules the plan includes.
+3. **Compare plans**: every tier with its users, channels, modules and price in the account's
+   currency. Razorpay plans price INR when Razorpay is set up; otherwise Stripe prices are used.
+   The button on each tier depends on the account:
+   - No plan: **Choose** goes to Razorpay or Stripe checkout.
+   - Razorpay: **Upgrade** applies now; **Downgrade** applies at the next cycle.
+   - Stripe: Stripe Portal's "confirm this plan" screen (`POST /billing/portal/stripe-change`),
+     falling back to the portal home if plan switching isn't enabled in the Stripe portal settings.
+   - Manual plans: "Talk to us".
+4. **Payment method**: card brand, last 4 digits and expiry, or UPI / bank mandate. **Change** opens
+   the Stripe portal; AutoPay mandates can't be edited, so the card explains how to switch.
+5. **Invoices & receipts** (`GET /billing/portal/invoices`): Stripe and Razorpay invoices in one list,
+   with View and PDF links.
+6. **Billing history** (`GET /billing/portal/history`): a timeline built from `billing_events`. Only
+   customer-safe entries are shown; admin notes and internal rows are never included.
+7. **Usage this month**.
+8. **Company & GST details**: company name, billing email, **GSTIN** (validated, and the state fills
+   in from its first 2 digits), state, and address. The GSTIN is also added to the Stripe customer
+   as an `in_gst` tax id so Stripe invoices carry it. New CLIENTS columns `gstin` and `billing_state`
+   are created on first save.
+9. **Need help with billing?**: WhatsApp and email buttons from the Worker vars
+   `BILLING_SUPPORT_WHATSAPP` (digits with country code) and `BILLING_SUPPORT_EMAIL`. Either can be
+   left unset to hide its button. A short FAQ follows.
+
+**Cancelling** asks for a reason first. "Too expensive" or "not using it" offers the next cheaper
+plan, and "missing features" or "support" offers to talk to us. The reason is logged
+(`POST /billing/portal/cancel-feedback`) and appears in Admin → API & Webhooks → event log under
+"Customer feedback". Then a Razorpay plan cancels at the cycle end, and a Stripe plan goes to the
+Stripe portal to confirm.
+
+**On phones** a sticky bottom button holds the one action that matters right now: Choose a plan,
+Fix payment, or Update card.
+
 ## Admin console — Billing, Plans, API & Webhooks (`admin.html`)
 - **Billing tab** (`GET /admin/billing/overview`): MRR / ARR per currency (active subscriptions,
   normalised to a month — Stripe amounts come from the live `STRIPE_PLAN_PRICE_IDS` prices,

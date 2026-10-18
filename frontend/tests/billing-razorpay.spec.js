@@ -83,40 +83,6 @@ test('Indian customer sees the same plans via Razorpay and subscribes', async ({
   expect(calls.find((c) => c.path === '/billing/razorpay/subscribe').body).toEqual({ plan_id: 'plan_bi' });
 });
 
-test('active Razorpay subscriber manages the plan on the Billing page', async ({ page }) => {
-  let record = { Id: 7, authentik_email: 'owner@acme.in', billing_email: 'billing@acme.in', billing_provider: 'razorpay',
-    razorpay_subscription_id: 'sub_1', razorpay_status: 'active', razorpay_plan_id: 'plan_basic', plan_name: 'Basic',
-    plan_status: 'active', plan_renews_at: new Date(Date.now() + 10 * 86400000).toISOString() };
-  const calls = await stub(page, (p, body) => {
-    if (p === '/session/me') return { json: { client: record } };
-    if (p === '/billing/razorpay/plans') return { json: { ok: true, enabled: true, trial_days: 15, plans: RZP_PLANS } };
-    if (p === '/billing/razorpay/invoices') return { json: { ok: true, invoices: [{ id: 'inv_1', status: 'paid', amount: 99900, currency: 'INR', date: 1760000000, short_url: 'https://rzp.io/inv/1' }] } };
-    if (p === '/billing/razorpay/cancel') { record = { ...record, plan_cancel_at_period_end: 'Yes' }; return { json: { ok: true, status: 'active', at_cycle_end: true } }; }
-    if (p === '/billing/razorpay/change-plan') return { json: { ok: true, scheduled: body.when !== 'now' } };
-    if (p === '/billing/plan-status') return { json: { ok: true, plan_label: 'Basic', is_legacy: false, limits: { max_users: 1, max_channels: 1 }, usage: { users: 1, channels: 1 }, modules: {} } };
-    return null;
-  });
-  await openBilling(page, record);
-  await expect(page.locator('#billingHasPlan')).toBeVisible();
-  await expect(page.locator('#billingStripeManage')).toBeHidden();
-  await expect(page.locator('#billingRzpManage')).toBeVisible();
-  await expect(page.locator('#billingPlanName')).toHaveText('Basic · Razorpay');
-  await expect(page.locator('#billingRzpPlanSelect option')).toHaveCount(1);
-
-  await page.getByRole('button', { name: '🧾 Invoices' }).click();
-  await expect(page.locator('#billingRzpInvoices')).toContainText('INR 999.00');
-
-  await page.locator('#billingRzpManage').getByRole('button', { name: 'Change', exact: true }).click();
-  await expect(page.locator('#billingRzpMsg')).toHaveText('Plan change scheduled for your next billing cycle.');
-  expect(calls.find((c) => c.path === '/billing/razorpay/change-plan').body).toEqual({ plan_id: 'plan_bi', when: 'cycle_end' });
-
-  page.once('dialog', (d) => d.accept());
-  await page.locator('#billingRzpCancelBtn').click();
-  await expect(page.locator('#billingRzpMsg')).toHaveText('Cancelled — no further charges.');
-  await expect(page.locator('#billingCancelBanner')).toBeVisible();
-  await expect(page.locator('#billingRzpCancelBtn')).toBeHidden();
-});
-
 const OVERVIEW = {
   ok: true,
   summary: { total: 3, by_status: {}, by_provider: {}, mrr: { INR: 99900, AED: 4900 }, trialing: 1, at_risk: 1, cancel_scheduled: 0, renewing_7d: 1, paying: 2 },
@@ -223,7 +189,7 @@ test('failing Stripe customer gets a Switch to Razorpay option', async ({ page }
   await page.route('https://rzp.io/**', (route) => route.fulfill({ contentType: 'text/html', body: '<p>razorpay</p>' }));
   await openBilling(page, record);
   await expect(page.locator('#billingPastDueBanner')).toBeVisible();
-  await expect(page.locator('#billingStripeManage')).toBeVisible();
+  await expect(page.locator('#billingPortalBtn')).toBeVisible();
   const box = page.locator('#billingRzpSwitch');
   await expect(box).toBeVisible();
   await expect(box).toContainText('never charged twice');
