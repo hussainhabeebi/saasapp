@@ -66,6 +66,9 @@ test('Indian customer sees the same plans via Razorpay and subscribes', async ({
   const wrap = page.locator('#billingPricingTableWrap');
   await expect(wrap).toContainText('UPI AutoPay');
   await expect(wrap).toContainText('15-day free trial');
+  // The currency toggle lives in the plan picker; the old Add-ons card is gone.
+  await expect(page.locator('#billingNoPlan #billingCurrencyToggle button')).toHaveCount(2);
+  await expect(page.locator('#pageBilling')).not.toContainText('Add-ons');
   await expect(wrap).toContainText('Business Intelligence');
   await expect(wrap).toContainText('₹4,999.00/month');
 
