@@ -20625,6 +20625,15 @@ function initTaSettings(){
   _renderModuleBadge('taModuleStatusBadge',clientRecord.ta_enabled==='Yes');
   const flow=$id('cfgTaFlow'); if(flow) flow.value=(clientRecord.travel_flow_enabled==='Yes')?'Yes':'No';
   _renderModuleBadge('taFlowStatusBadge',clientRecord.travel_flow_enabled==='Yes');
+  // The switch is stored by the worker (D1); read the saved value rather than trusting the CLIENTS copy.
+  if(clientRecord.ta_enabled==='Yes'){
+    fetch(`${WORKER_BASE}/live-travel/travel-flow`,{headers:ncAuthHeaders()}).then(r=>r.ok?r.json():null).then(d=>{
+      if(!d||typeof d.enabled!=='boolean')return;
+      clientRecord.travel_flow_enabled=d.enabled?'Yes':'No';
+      const sel=$id('cfgTaFlow'); if(sel) sel.value=clientRecord.travel_flow_enabled;
+      _renderModuleBadge('taFlowStatusBadge',d.enabled);
+    }).catch(()=>{});
+  }
   updateAgencyTabVisibility();
 }
 
@@ -20666,12 +20675,10 @@ $id('saveTaFlow').addEventListener('click',async()=>{
   const btn=$id('saveTaFlow'),msg=$id('saveTaFlowMsg');
   btn.disabled=true;msg.textContent='';msg.className='save-msg';
   try{
-    const info=await ncGet(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}`);
-    if(!(info.columns||[]).some(c=>c.title==='travel_flow_enabled')){
-      await ncPost(`${CONFIG.NOCODB_BASE}/api/v2/meta/tables/${CONFIG.CLIENTS_TABLE_ID}/fields`,{column_name:'travel_flow_enabled',title:'travel_flow_enabled',uidt:'SingleLineText'}).catch(()=>{});
-    }
     const val=$id('cfgTaFlow').value;
-    await patchClient({travel_flow_enabled:val});
+    const r=await fetch(`${WORKER_BASE}/live-travel/travel-flow`,{method:'PUT',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({enabled:val==='Yes'})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.error||('HTTP '+r.status));
     clientRecord.travel_flow_enabled=val;
     _renderModuleBadge('taFlowStatusBadge',val==='Yes');
     msg.textContent=val==='Yes'?'✓ Saved — Travel Flow is on':'✓ Saved — the bot works as before';

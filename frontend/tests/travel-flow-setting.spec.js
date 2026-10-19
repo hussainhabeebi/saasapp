@@ -1,5 +1,5 @@
 // Dashboard → Settings → Industry Modules → ✈️ Travel Flow: an optional switch under the Travel
-// Agency module, shown only while that module is on, saved to CLIENTS.travel_flow_enabled.
+// Agency module, shown only while that module is on, saved through the worker (PUT /live-travel/travel-flow).
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dashboardUrl = 'file://' + path.resolve(__dirname, '../dashboard.html');
 
 test('Travel Flow is an optional Travel Agency setting, off by default', async ({ page }) => {
-  await page.route('**/*', (route) => (route.request().url().startsWith('file://') ? route.continue() : route.abort()));
+  const puts = [];
+  await page.route('**/*', async (route) => {
+    const req = route.request(), url = req.url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.endsWith('/live-travel/travel-flow') && req.method() === 'GET') return route.fulfill({ json: { enabled: false } });
+    if (url.endsWith('/live-travel/travel-flow') && req.method() === 'PUT') { const b = JSON.parse(req.postData()); puts.push(b); return route.fulfill({ json: { enabled: b.enabled } }); }
+    return route.abort();
+  });
   await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' });
   const row = page.locator('#taFlowRow');
   await page.evaluate(() => {
@@ -43,6 +50,6 @@ test('Travel Flow is an optional Travel Agency setting, off by default', async (
   await page.locator('#cfgTaFlow').selectOption('Yes');
   await page.locator('#saveTaFlow').click();
   await expect(page.locator('#saveTaFlowMsg')).toContainText('Travel Flow is on');
-  expect(await page.evaluate(() => window.__sent)).toEqual([{ travel_flow_enabled: 'Yes' }]);
+  expect(puts).toEqual([{ enabled: true }]);
   await expect(page.locator('#taFlowStatusBadge')).toHaveText('✓ Active');
 });

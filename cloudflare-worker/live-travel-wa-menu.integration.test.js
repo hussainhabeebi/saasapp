@@ -293,3 +293,25 @@ test('Travel Flow: a new flight request starts the buttons instead of re-running
     assert.equal(searches.length,1);
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('the Travel Flow switch saves even when NocoDB cannot take the new column yet',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',NOCODB_BASE:'https://nc.test',NOCODB_TOKEN:'nc'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch;
+  // NocoDB rejects every write, like a just-created column still missing from its schema cache.
+  globalThis.fetch=async()=>new Response('{"msg":"Field travel_flow_enabled not found"}',{status:400});
+  try{
+    let r=await call(env,session,'/live-travel/travel-flow');
+    assert.deepEqual(r.data,{enabled:false});
+    r=await call(env,session,'/live-travel/travel-flow','PUT',{enabled:true});
+    assert.equal(r.status,200,JSON.stringify(r.data));
+    assert.deepEqual((await call(env,session,'/live-travel/travel-flow')).data,{enabled:true});
+    // The WhatsApp Menu page sees the same switch, and saving the menu keeps it.
+    r=await call(env,session,'/live-travel/whatsapp-menu');
+    assert.equal(r.data.travel_flow,true);
+    assert.equal((await call(env,session,'/live-travel/whatsapp-menu','PUT',{menu:r.data.menu})).status,200);
+    assert.equal((await call(env,session,'/live-travel/whatsapp-menu')).data.travel_flow,true);
+    r=await call(env,session,'/live-travel/travel-flow','PUT',{enabled:false});
+    assert.deepEqual((await call(env,session,'/live-travel/travel-flow')).data,{enabled:false});
+    assert.equal((await call(env,session,'/live-travel/travel-flow','PUT',{enabled:'yes'})).status,400);
+  }finally{globalThis.fetch=realFetch;}
+});
