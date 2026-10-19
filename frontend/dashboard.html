@@ -6555,8 +6555,13 @@ function renderTrustBadges(){
   const c=clientRecord||{};
   const lastSeen=c.last_seen;
   const mins=lastSeen?(Date.now()-new Date(lastSeen).getTime())/60000:Infinity;
-  const isActive=c.active==='Yes';
-  const botLabel = !isActive ? 'AI Assistant paused'
+  // Couplo (Oct 2026): a report said "AI Assistant paused" while Home said "active now" — this
+  // read c.active==='Yes', so a record without that field (or loaded before it) read as paused.
+  // Paused now means what it says: Bot Auto-Reply switched off, or the account explicitly inactive.
+  const botOff=c.bot_reply_disabled==='Yes', accountOff=c.active==='No';
+  const isActive=!botOff&&!accountOff;
+  const botLabel = botOff ? 'AI Assistant paused — Bot Auto-Reply is off (Settings)'
+    : accountOff ? 'AI Assistant paused — account inactive'
     : mins<60 ? 'AI Assistant active now'
     : lastSeen ? `AI Assistant connected · last message ${timeAgo(lastSeen)}`
     : 'AI Assistant ready — waiting for your first message';
@@ -7606,10 +7611,11 @@ function setLeadsOrigin(k){ _leadsOriginFilter=_leadsOriginFilter===k?'':k; onLe
 // handleLeadsCreatedViaBackfill), which only ever fills blanks.
 function leadsOriginBannerHtml(){
   if(!seesAllLeads()) return '';
-  const n=allLeads.filter(l=>!String(l.CreatedVia||'').trim()).length;
+  // Either kind of blank: no origin (CreatedVia) or no Source (the Source column / reports).
+  const n=allLeads.filter(l=>!String(l.CreatedVia||'').trim()||!String(l.Source||'').trim()).length;
   if(!n) return '';
   return `<div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin-bottom:12px;font-size:13px">
-    <span>🗂️ <b>${n}</b> older lead${n===1?' has':'s have'} no recorded source yet.</span>
+    <span>🗂️ <b>${n}</b> lead${n===1?' has':'s have'} no recorded source yet. New WhatsApp leads now record the ad they came from automatically.</span>
     <button class="btn btn-secondary btn-sm" id="originBackfillBtn" style="margin-left:auto" onclick="runLeadsOriginBackfill(this)">Fill in sources</button></div>`;
 }
 async function runLeadsOriginBackfill(btn){
@@ -7618,9 +7624,15 @@ async function runLeadsOriginBackfill(btn){
     const r=await fetch(`${CONFIG.WORKER_BASE}/leads/created-via/backfill`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:'{}'});
     const d=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+    // Then the Source column itself (Click-to-WhatsApp ad / WhatsApp / Instagram / Lead form).
+    const r2=await fetch(`${CONFIG.WORKER_BASE}/leads/source/backfill`,{method:'POST',headers:ncAuthHeaders({'Content-Type':'application/json'}),body:'{}'});
+    const d2=await r2.json().catch(()=>({}));
+    if(!r2.ok) throw new Error(d2.error||'HTTP '+r2.status);
     const c=d.counts||{};
     const parts=Object.keys(LEAD_ORIGINS).filter(k=>c[k]).map(k=>`${c[k]} ${LEAD_ORIGINS[k].label}`);
-    showToast(d.updated?`✓ Sources filled in for ${d.updated} lead${d.updated===1?'':'s'}${parts.length?' — '+parts.join(', '):''}`:'All leads already have a source','ok');
+    const srcParts=Object.entries(d2.counts||{}).map(([k,v])=>`${v} ${k}`);
+    const n=Math.max(d.updated||0, d2.updated||0);
+    showToast(n?`✓ Sources filled in for ${n} lead${n===1?'':'s'}${srcParts.length?' — '+srcParts.join(', '):parts.length?' — '+parts.join(', '):''}`:'All leads already have a source','ok');
     try{ sessionStorage.removeItem(_CACHE_KEY()); }catch(e){}
     await loadAll(true,true);
     renderLeadsCurrentView();
