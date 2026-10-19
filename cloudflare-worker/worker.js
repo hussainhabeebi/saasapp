@@ -8851,7 +8851,7 @@ async function handleEcomCreate(request, env, kind){
     const staff=await ecomStaffFromRequest(request, env, c, clientId);
     const picked=staff && wantAssignee!==undefined ? String(wantAssignee||'').trim().toLowerCase() : null;
     if(picked && !ecomTeamEmails(c).has(picked)) return json({error:'That person is not on your team'}, 400);
-    const to=picked || await ecomLeadOwnerForPhone(env, c, clientId, fields.customer_phone) || staff?.taken_by || '';
+    const to=picked || (ecomOrderAssignMode(c)==='auto' ? (await ecomLeadOwnerForPhone(env, c, clientId, fields.customer_phone) || staff?.taken_by || '') : '');
     if(to){ await ensureEcomOrderTakenByFields(env, tableId); Object.assign(fields, ecomAssignFields(c, to, staff?.taken_by||'auto')); }
   }
   const r=await ncFetch(env, `api/v2/tables/${tableId}/records`, {method:'POST', body:{...fields, client_id:clientId}});
@@ -11365,6 +11365,15 @@ async function logPendingOrder(env, c, clientId, phone, name, product){
     total:product?.price||0, currency:product?.currency||'',
     status:'pending', notes:'Order intent detected — link sent automatically'
   };
+  // Baby Care: the bot took this order; it goes to the lead owner when assignment is automatic.
+  if(ecomIsBabyCare(c)){
+    try{
+      await ensureEcomOrderTakenByFields(env, ordersTable);
+      Object.assign(body, ecomSystemTakenBy(ECOM_TAKEN_BY_BOT));
+      const owner=ecomOrderAssignMode(c)==='auto' ? await ecomLeadOwnerForPhone(env, c, clientId, phone) : '';
+      if(owner) Object.assign(body, ecomAssignFields(c, owner, 'auto'));
+    }catch(e){}
+  }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
     const data=await r.json().catch(()=>({}));
@@ -11489,7 +11498,7 @@ async function finalizeChatOrder(env, c, clientId, phone, name, seed, address){
   if(ecomIsBabyCare(c)){
     await ensureEcomOrderTakenByFields(env, ordersTable);
     Object.assign(body, ecomSystemTakenBy(ECOM_TAKEN_BY_BOT));
-    const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+    const owner=ecomOrderAssignMode(c)==='auto' ? await ecomLeadOwnerForPhone(env, c, clientId, phone) : '';
     if(owner) Object.assign(body, ecomAssignFields(c, owner, 'auto'));
   }
   // Baby Care: the same items confirmed again by the same phone within 24h (a double "yes", a
@@ -11735,7 +11744,7 @@ async function engineSyncDraftChatOrder(env, clientId, phone, name, prevSeed, ne
     // Baby Care: a new draft is the lead owner's to follow up.
     const c=await getClientById(env, clientId).catch(()=>null);
     if(ecomIsBabyCare(c)){
-      const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+      const owner=ecomOrderAssignMode(c)==='auto' ? await ecomLeadOwnerForPhone(env, c, clientId, phone) : '';
       if(owner){ await ensureEcomOrderTakenByFields(env, ordersTable); Object.assign(fields, ecomAssignFields(c, owner, 'auto')); }
     }
     const body={client_id:clientId, order_id:'ORD-'+Date.now(), customer_phone:phone,
@@ -11974,6 +11983,9 @@ export function ecomTeamList(c){
   return [...ecomTeamEmails(c)].map(e=>({email:e, name:ecomStaffTakenBy(c, e).taken_by_name, owner:e===owner, on_leave:away.has(e)}))
     .sort((a,b)=>(b.owner-a.owner)||a.name.localeCompare(b.name));
 }
+// Ecom → Orders "Order assignment": 'auto' (default) gives every new order to the customer's lead
+// owner; 'manual' leaves new orders unassigned for someone to pick. bot_config.ecom_order_assign_mode.
+export function ecomOrderAssignMode(c){ return engineParseJsonField(c?.bot_config, {})?.ecom_order_assign_mode==='manual'?'manual':'auto'; }
 // The customer's lead owner, when they're still on the team — who an order is assigned to by default.
 async function ecomLeadOwnerForPhone(env, c, clientId, phone){
   const key=ecomPhoneKey(phone);
@@ -12157,12 +12169,34 @@ async function ecomRequireOrdersSession(request, env, clientId){
 }
 const ECOM_INSIGHT_LEAD_FIELDS='Id,Name,Phone,Stage,Score,Channel,ConversationID,Date,LastMsgAt,OptOut,Owner,ConvHistory';
 const ECOM_INSIGHT_ORIGIN_FIELDS=',CreatedVia,CreatedBy,LeadSource,AdCampaign';
+// Couplo (Oct 2026): "Lead details unavailable: Could not read leads" — one 500-row request with
+// every transcript was too heavy / hit a column this base doesn't have. Now: pages of 100, and a
+// fallback chain that drops optional columns (origin fields, then the transcript, then the sort)
+// before giving up; the NocoDB error is reported so a real failure is visible to ops.
+const ECOM_INSIGHT_BASE_FIELDS='Id,Name,Phone,Stage,Owner,LastMsgAt,ConversationID,Channel';
 async function ecomFetchInsightLeads(env, where, limit){
-  let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&sort=-LastMsgAt&limit=${limit}&fields=${ECOM_INSIGHT_LEAD_FIELDS}${ECOM_INSIGHT_ORIGIN_FIELDS}`);
-  // Origin / lead-form columns only exist once those features were used — NocoDB refuses unknown fields.
-  if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(where)}&sort=-LastMsgAt&limit=${limit}&fields=${ECOM_INSIGHT_LEAD_FIELDS}`);
-  if(!r.ok) return null;
-  return (await r.json().catch(()=>({})))?.list||[];
+  const attempts=[
+    {fields:ECOM_INSIGHT_LEAD_FIELDS+ECOM_INSIGHT_ORIGIN_FIELDS, sort:'-LastMsgAt'},
+    {fields:ECOM_INSIGHT_LEAD_FIELDS, sort:'-LastMsgAt'},
+    {fields:ECOM_INSIGHT_BASE_FIELDS, sort:'-LastMsgAt'},
+    {fields:ECOM_INSIGHT_BASE_FIELDS, sort:''},
+  ];
+  let lastErr='';
+  for(const a of attempts){
+    const out=[]; let ok=true;
+    for(let offset=0; offset<limit; offset+=100){
+      const size=Math.min(100, limit-offset);
+      const qs=`where=${encodeURIComponent(where)}${a.sort?`&sort=${a.sort}`:''}&limit=${size}&offset=${offset}&fields=${a.fields}`;
+      const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?${qs}`);
+      if(!r.ok){ ok=false; lastErr=`${r.status} ${(await r.text().catch(()=>'')).slice(0,200)}`; break; }
+      const list=(await r.json().catch(()=>({})))?.list||[];
+      out.push(...list);
+      if(list.length<size) break;
+    }
+    if(ok) return out;
+  }
+  await reportOpsError(env, 'ecomFetchInsightLeads', new Error(lastErr||'unknown'), {where}).catch(()=>{});
+  return null;
 }
 // GET /ecom/orders/insights?client_id= — session-gated (it returns lead owners and sources, which
 // the client_id-only /ecom/* routes never expose). Per-phone lead info for the order rows + the
@@ -12175,8 +12209,8 @@ async function handleEcomOrdersInsights(request, env){
   const me=String(auth.payload.email||'').trim().toLowerCase();
   const where=`(ClientId,eq,${clientId})`+(auth.fullAccess?'':`~and(Owner,eq,${ecomSanitizeFilterValue(me)})`);
   const leads=await ecomFetchInsightLeads(env, where, 500);
-  if(!leads) return json({error:'Could not read leads'},502);
-  const insights=leads.map(l=>ecomOrderLeadInsight(l, auth.teamNames));
+  // Never let the lead read take the team list (the order assignment picker) down with it.
+  const insights=(leads||[]).map(l=>ecomOrderLeadInsight(l, auth.teamNames));
   const ordersTable=await ecomResolveTable(env, clientId, 'orders');
   let orders=[];
   if(ordersTable){
@@ -12184,7 +12218,94 @@ async function handleEcomOrdersInsights(request, env){
     orders=r.ok?((await r.json().catch(()=>({})))?.list||[]):[];
   }
   return json({ok:true, leads:insights, warm_leads:ecomWarmLeads(insights, orders), warm_min_interactions:ECOM_WARM_MIN_INTERACTIONS,
+    ...(leads?{}:{leads_error:'Could not read leads — try ↻ in a minute'}), assign_mode:ecomOrderAssignMode(auth.c),
     team:ecomTeamList(auth.c), me:String(auth.payload.email||'').trim().toLowerCase(), full_access:auth.fullAccess});
+}
+// Every lead owner of this client by phone key (for bulk auto-assign) — one paged read.
+async function ecomLeadOwnersByPhone(env, c, clientId){
+  const team=ecomTeamEmails(c), map=new Map();
+  for(let page=0; page<25; page++){
+    const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${encodeURIComponent(`(ClientId,eq,${clientId})~and(Owner,notblank)`)}&fields=Id,Phone,Owner&limit=200&offset=${page*200}`);
+    if(!r.ok) return null;
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    for(const l of list){ const k=ecomPhoneKey(l.Phone), o=String(l.Owner||'').trim().toLowerCase(); if(k && team.has(o) && !map.has(k)) map.set(k, o); }
+    if(list.length<200) break;
+  }
+  return map;
+}
+// POST /ecom/orders/assign {client_id, ids:[…], assigned_to} — signed-in teammate assigns many
+// orders at once ('' unassigns). Only this client's orders; the email must be on the team.
+async function handleEcomOrdersBulkAssign(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  const ids=[...new Set((Array.isArray(body.ids)?body.ids:[]).map(x=>parseInt(x,10)).filter(Boolean))].slice(0,500);
+  if(!clientId||!ids.length) return json({error:'client_id and ids required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const to=String(body.assigned_to||'').trim().toLowerCase();
+  if(to && !ecomTeamEmails(auth.c).has(to)) return json({error:'That person is not on your team'},400);
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  await ensureEcomOrderTakenByFields(env, ordersTable);
+  // Only this client's orders: read its order ids and keep the requested ones.
+  const want=new Set(ids), mine=[];
+  for(let page=0; page<10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id&limit=1000&offset=${page*1000}`);
+    if(!r.ok) return json({error:'Could not read orders'},502);
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    for(const o of list) if(want.has(o.Id)) mine.push(o.Id);
+    if(list.length<1000 || mine.length===want.size) break;
+  }
+  if(!mine.length) return json({error:'No matching orders'},404);
+  const fields=ecomAssignFields(auth.c, to, String(auth.payload.email||'').trim().toLowerCase());
+  const pr=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:mine.map(Id=>({Id, ...fields}))});
+  if(!pr.ok) return json({error:'Could not save the assignment'},502);
+  return json({ok:true, assigned:mine.length, ...fields});
+}
+// Which orders auto-assign touches: unassigned, not cancelled/delivered (or exactly the given ids,
+// still never overwriting an existing assignment), and whose customer has a lead owner.
+export function ecomAutoAssignPlan(orders, ownersByPhone, onlyIds=null){
+  const assign=[]; let noOwner=0, skipped=0;
+  for(const o of orders||[]){
+    if(onlyIds && !onlyIds.has(o.Id)) continue;
+    const st=String(o.status||'').toLowerCase();
+    if(String(o.assigned_to||'').trim() || (!onlyIds && ['cancelled','delivered','completed'].includes(st))){ skipped++; continue; }
+    const to=ownersByPhone.get(ecomPhoneKey(o.customer_phone));
+    if(!to){ noOwner++; continue; }
+    assign.push({Id:o.Id, to});
+  }
+  return {assign, noOwner, skipped};
+}
+// POST /ecom/orders/auto-assign {client_id, ids?:[…]} — gives each unassigned order (or just the
+// listed ones) to its customer's lead owner. Orders whose customer has no lead owner stay as they are.
+async function handleEcomOrdersAutoAssign(request, env){
+  const body=await request.json().catch(()=>({}));
+  const clientId=String(body.client_id||'');
+  if(!clientId) return json({error:'client_id required'},400);
+  const auth=await ecomRequireOrdersSession(request, env, clientId);
+  if(auth.error) return auth.error;
+  const ordersTable=await ecomResolveTable(env, clientId, 'orders');
+  if(!ordersTable) return json({error:'orders table not configured for this client'},400);
+  await ensureEcomOrderTakenByFields(env, ordersTable);
+  const only=new Set((Array.isArray(body.ids)?body.ids:[]).map(x=>parseInt(x,10)).filter(Boolean));
+  const owners=await ecomLeadOwnersByPhone(env, auth.c, clientId);
+  if(!owners) return json({error:'Could not read leads'},502);
+  const orders=[];
+  for(let page=0; page<10; page++){
+    const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records?where=${encodeURIComponent(`(client_id,eq,${clientId})`)}&fields=Id,customer_phone,status,assigned_to&limit=1000&offset=${page*1000}`);
+    if(!r.ok) return json({error:'Could not read orders'},502);
+    const list=(await r.json().catch(()=>({})))?.list||[];
+    orders.push(...list);
+    if(list.length<1000) break;
+  }
+  const plan=ecomAutoAssignPlan(orders, owners, only.size?only:null);
+  const by=String(auth.payload.email||'').trim().toLowerCase();
+  for(let i=0; i<plan.assign.length; i+=100){
+    const batch=plan.assign.slice(i, i+100).map(({Id, to})=>({Id, ...ecomAssignFields(auth.c, to, `auto (by ${by})`)}));
+    const pr=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'PATCH', body:batch});
+    if(!pr.ok) return json({error:'Could not save the assignment', assigned:i},502);
+  }
+  return json({ok:true, assigned:plan.assign.length, no_owner:plan.noOwner, skipped:plan.skipped});
 }
 // GET /ecom/orders/session?client_id=&Id= — the chat session behind one order: when it started,
 // how many messages each side sent, how long it took to order, and the last few messages.
@@ -25559,7 +25680,7 @@ async function handleEcomPublicOrder(request, env){
     if(dup) return json({ok:true, order_id:dup.order_id||String(dup.Id), duplicate:true});
     await ensureEcomOrderTakenByFields(env, ordersTable);
     Object.assign(orderBody, ecomSystemTakenBy(ECOM_TAKEN_BY_STORE));
-    const owner=await ecomLeadOwnerForPhone(env, c, clientId, phone);
+    const owner=ecomOrderAssignMode(c)==='auto' ? await ecomLeadOwnerForPhone(env, c, clientId, phone) : '';
     if(owner) Object.assign(orderBody, ecomAssignFields(c, owner, 'auto'));
   }
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body:orderBody});
@@ -36419,6 +36540,8 @@ export default {
       else if(url.pathname==='/ecom/orders/insights' && request.method==='GET'){ res=await handleEcomOrdersInsights(request, env); }
       else if(url.pathname==='/ecom/orders/session' && request.method==='GET'){ res=await handleEcomOrderSession(request, env); }
       else if(url.pathname==='/ecom/orders/staff-report' && request.method==='GET'){ res=await handleEcomStaffOrderReport(request, env); }
+      else if(url.pathname==='/ecom/orders/assign' && request.method==='POST'){ res=await handleEcomOrdersBulkAssign(request, env); }
+      else if(url.pathname==='/ecom/orders/auto-assign' && request.method==='POST'){ res=await handleEcomOrdersAutoAssign(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='GET'){ res=await handleEcomCategoriesList(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='POST'){ res=await handleEcomCategoryCreate(request, env); }
       else if(url.pathname==='/ecom/categories' && request.method==='PATCH'){ res=await handleEcomCategoryUpdate(request, env); }
