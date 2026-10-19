@@ -200,9 +200,12 @@ export function ltMenuParsePax(text){
   const t=String(text||'').toLowerCase();
   const bare=t.trim().match(/^(\d)$/);
   if(bare)return {adults:Number(bare[1]),children:0,infants:0};
-  const a=t.match(/(\d+)\s*(?:adults?|pax|persons?|people|passengers?)\b/),c=t.match(/(\d+)\s*(?:children|childs?|kids?)\b/),i=t.match(/(\d+)\s*(?:infants?|bab(?:y|ies))\b/);
+  // "2 adults" and "Adult 2" / "adults: 2" both count.
+  // Counts are 1–2 digits on the same line, never part of a date ("17-11-2026⏎Adult 1").
+  const num=(words)=>{const m=t.match(new RegExp(`(?<![\\d/.-])(\\d{1,2})[ \\t]*(?:${words})\\b`))||t.match(new RegExp(`\\b(?:${words})[ \\t]*[:\\-]?[ \\t]*(\\d{1,2})(?![\\d/.-])`));return m?m[1]:null;};
+  const a=num('adults?|pax|persons?|people|passengers?'),c=num('children|childs?|kids?'),i=num('infants?|bab(?:y|ies)');
   if(!a&&!c&&!i)return null;
-  return {adults:Math.max(1,Math.min(9,a?Number(a[1]):1)),children:Math.min(9,c?Number(c[1]):0),infants:Math.min(9,i?Number(i[1]):0)};
+  return {adults:Math.max(1,Math.min(9,a?Number(a):1)),children:Math.min(9,c?Number(c):0),infants:Math.min(9,i?Number(i):0)};
 }
 
 // ── Checkout: flight details → Proceed → booking form → booking site ─────────
