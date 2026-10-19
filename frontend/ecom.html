@@ -428,6 +428,19 @@ textarea.s-input{white-space:normal;resize:vertical;min-height:70px}
       <button class="save-btn sec" onclick="exportOrders('summary')" title="All the orders in one table">🧾 Summary PDF</button>
       <button class="save-btn sec" onclick="exportOrders('csv')" title="Spreadsheet of the orders">⬇ CSV</button>
     </div>
+    <!-- Baby Care: order assignment — automatic (lead owner) or manual, bulk assign -->
+    <div class="order-bulk bc-only" id="orderAssignBar" style="display:none">
+      <span class="bulk-count" style="margin-right:4px">📌 Order assignment</span>
+      <select class="assign-sel" id="orderAssignMode" style="max-width:none" onchange="saveOrderAssignMode(this.value)" title="How new orders get an owner">
+        <option value="auto">Auto — customer's lead owner</option>
+        <option value="manual">Manual — staff pick who handles it</option>
+      </select>
+      <button class="save-btn sec" id="autoAssignBtn" onclick="autoAssignOrders(this)" title="Give unassigned orders (or the ticked ones) to their customer's lead owner">⚡ Auto-assign from lead owner</button>
+      <span style="margin-left:auto"></span>
+      <select class="assign-sel" id="bulkAssignTo" style="max-width:200px" title="Assign the ticked orders to"></select>
+      <button class="save-btn" id="bulkAssignBtn" onclick="bulkAssignOrders(this)">Assign selected</button>
+      <span class="save-msg" id="orderAssignMsg"></span>
+    </div>
     <div class="tbl-wrap">
       <table>
         <thead>
@@ -2514,6 +2527,65 @@ async function assignOrder(id, email, el) {
     renderOrdersTable();
   }
 }
+// Auto / Manual assignment of new orders (bot_config.ecom_order_assign_mode, read by the Worker).
+async function saveOrderAssignMode(mode) {
+  const prev = botConfig.ecom_order_assign_mode;
+  botConfig.ecom_order_assign_mode = mode === 'manual' ? 'manual' : 'auto';
+  try {
+    await patchClient({ bot_config: JSON.stringify(botConfig) });
+    showMsg('orderAssignMsg', mode === 'manual' ? 'Manual ✓ — new orders stay unassigned until someone picks' : 'Auto ✓ — new orders go to the lead owner', 5000);
+  } catch(e) {
+    botConfig.ecom_order_assign_mode = prev;
+    document.getElementById('orderAssignMode').value = prev === 'manual' ? 'manual' : 'auto';
+    showMsg('orderAssignMsg', 'Error: ' + e.message, 6000);
+  }
+}
+async function autoAssignOrders(btn) {
+  if (!ecomSessionToken) { showMsg('orderAssignMsg', 'Open Ecommerce from the dashboard (signed in) to assign orders', 6000); return; }
+  const ids = [...selectedOrderIds];
+  btn.disabled = true;
+  showMsg('orderAssignMsg', 'Assigning…', 60000);
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/auto-assign`, { method: 'POST', headers: orderAuthHeaders(), body: JSON.stringify({ client_id: clientId, ...(ids.length ? { ids } : {}) }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    showMsg('orderAssignMsg', `${d.assigned || 0} order${d.assigned === 1 ? '' : 's'} assigned to the lead owner` + (d.no_owner ? ` · ${d.no_owner} with no lead owner — assign those by hand` : ''), 8000);
+    loadOrders();
+  } catch(e) { showMsg('orderAssignMsg', 'Error: ' + e.message, 6000); }
+  finally { btn.disabled = false; }
+}
+async function bulkAssignOrders(btn) {
+  const ids = [...selectedOrderIds];
+  if (!ids.length) { showMsg('orderAssignMsg', 'Tick the orders to assign first', 4000); return; }
+  const to = document.getElementById('bulkAssignTo').value;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${WORKER_BASE}/ecom/orders/assign`, { method: 'POST', headers: orderAuthHeaders(), body: JSON.stringify({ client_id: clientId, ids, assigned_to: to }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+    const m = orderTeam.find(x => x.email === to);
+    showMsg('orderAssignMsg', `${d.assigned} order${d.assigned === 1 ? '' : 's'} ${to ? 'assigned to ' + (m ? m.name : to) : 'unassigned'}`, 6000);
+    selectedOrderIds.clear();
+    loadOrders();
+  } catch(e) { showMsg('orderAssignMsg', 'Error: ' + e.message, 6000); }
+  finally { btn.disabled = false; }
+}
+function renderOrderAssignBar() {
+  const bar = document.getElementById('orderAssignBar');
+  if (!isBabyCareStore()) { bar.style.display = 'none'; return; }
+  document.getElementById('orderAssignMode').value = botConfig.ecom_order_assign_mode === 'manual' ? 'manual' : 'auto';
+  const canAssign = !!(ecomSessionToken && orderTeam.length);
+  document.getElementById('autoAssignBtn').disabled = !ecomSessionToken;
+  const sel = document.getElementById('bulkAssignTo');
+  const keep = sel.value;
+  sel.innerHTML = teamOptions(keep);
+  sel.disabled = !canAssign;
+  const n = selectedOrderIds.size;
+  const b = document.getElementById('bulkAssignBtn');
+  b.disabled = !canAssign || !n;
+  b.textContent = n ? `Assign ${n} selected` : 'Assign selected';
+  document.getElementById('autoAssignBtn').textContent = n ? `⚡ Auto-assign ${n} selected` : '⚡ Auto-assign from lead owner';
+}
 function setOrderAssigneeFilter(k) {
   orderAssigneeFilter = orderAssigneeFilter === k ? null : k;
   renderOrdersTable(); renderStaffReport();
@@ -2659,7 +2731,7 @@ async function loadOrderInsights(force) {
     (data.leads || []).forEach(l => { if (l.phone_key && !orderInsightsByPhone[l.phone_key]) orderInsightsByPhone[l.phone_key] = l; });
     warmLeads = data.warm_leads || [];
     orderTeam = data.team || [];
-    orderInsightsError = '';
+    orderInsightsError = data.leads_error ? 'Lead details unavailable: ' + data.leads_error : '';
     const n = data.warm_min_interactions || 2;
     document.getElementById('warmLeadsHint').textContent = `Customers the AI has talked with ${n}+ times who haven't placed an order yet.`;
   } catch(e) {
@@ -3057,6 +3129,7 @@ function toggleAllOrders(on) {
 }
 
 function renderOrderBulkBar() {
+  renderOrderAssignBar();
   const shown = filteredOrders();
   const n = selectedOrderIds.size;
   const shownSel = shown.filter(o => selectedOrderIds.has(o.Id)).length;

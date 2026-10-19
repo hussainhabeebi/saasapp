@@ -70,3 +70,28 @@ test('assigned-orders report: open vs done per teammate, unassigned last', () =>
   assert.deepEqual(rows.map(r => [r.name, r.total, r.open, r.done, r.cancelled]),
     [['Riya', 3, 2, 1, 1], ['Sam', 1, 0, 1, 0], ['Unassigned', 1, 1, 0, 0]]);
 });
+
+import { ecomOrderAssignMode, ecomAutoAssignPlan } from './worker.js';
+
+test('assignment mode: auto unless set to manual', () => {
+  assert.equal(ecomOrderAssignMode({ bot_config: '{}' }), 'auto');
+  assert.equal(ecomOrderAssignMode({ bot_config: JSON.stringify({ ecom_order_assign_mode: 'manual' }) }), 'manual');
+  assert.equal(ecomOrderAssignMode({ bot_config: 'nope' }), 'auto');
+});
+
+test('auto-assign plan: unassigned open orders go to the customer lead owner', () => {
+  const owners = new Map([['9876543210', 'riya@shop.in'], ['9800000000', 'sam@shop.in']]);
+  const orders = [
+    { Id: 1, customer_phone: '+91 98765 43210', status: 'pending' },
+    { Id: 2, customer_phone: '919800000000', status: 'pending', assigned_to: 'owner@shop.in' }, // already assigned
+    { Id: 3, customer_phone: '919811111111', status: 'pending' },                              // no lead owner
+    { Id: 4, customer_phone: '919800000000', status: 'delivered' },                            // finished
+    { Id: 5, customer_phone: '919800000000', status: 'draft' },
+  ];
+  const plan = ecomAutoAssignPlan(orders, owners);
+  assert.deepEqual(plan.assign, [{ Id: 1, to: 'riya@shop.in' }, { Id: 5, to: 'sam@shop.in' }]);
+  assert.equal(plan.noOwner, 1);
+  assert.equal(plan.skipped, 2);
+  // picked orders: a finished one can still be assigned, an assigned one is never overwritten
+  assert.deepEqual(ecomAutoAssignPlan(orders, owners, new Set([2, 4])).assign, [{ Id: 4, to: 'sam@shop.in' }]);
+});
