@@ -263,3 +263,33 @@ test('agencies without Travel Flow keep the original bot: no menu, no buttons, b
     assert.equal(cta.interactive.action.parameters.url,'https://flypoomas.com/book?fareId=FARE-1&supplier=DUFFEL&source=leadvyne&client=7');
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('Travel Flow: a new flight request starts the buttons instead of re-running an old route',async()=>{
+  const DB=new D1Database(),env={DB,SESSION_SIGNING_KEY:'integration-secret',POOMAS_API_KEY:'poomas-test-key'},session=await token(env.SESSION_SIGNING_KEY);
+  const realFetch=globalThis.fetch,searches=[];
+  globalThis.fetch=async(url,opts={})=>{
+    const u=String(url);
+    if(u==='https://api.flypoomas.com/api/search'){searches.push(JSON.parse(opts.body));return new Response(JSON.stringify({fares:[{id:'F1',isBookable:true,supplier:'DUFFEL',displayPrice:650,totalFare:650,currency:'AED',airline:'AI',airlineName:'Air India',flightNumber:'AI 6509',origin:'CCJ',destination:'AUH',departureTime:'2026-11-17T20:00:00',arrivalTime:'2026-11-17T22:30:00',duration:240,stops:0}]}));}
+    return new Response('{}',{status:404});
+  };
+  try{
+    assert.equal((await call(env,session,'/live-travel/suppliers','PATCH',{supplier:'poomas',enabled:true,priority:10})).status,200);
+    const c={Id:7,industry:'travel',travel_flow_enabled:'Yes',language:'en'};
+    const phone='+971500000003';
+    // The chat from the screenshot: an earlier DXB → CCJ request, then "looking for flight ticket".
+    const history=[{role:'user',content:'DXB to CCJ 01 Nov'},{role:'assistant',content:'✈️ I found 3 flights from DXB to CCJ'},{role:'user',content:'Hi'}];
+    let step=await engineHandleLiveTicketingChat(env,c,7,'looking for flight ticket',history,phone);
+    assert.equal(searches.length,0,'no search on an old route');
+    assert.match(step.reply,/Where are you flying from and to/);
+    assert.equal(step.picker.button,'Choose route');
+    // Air India style answer in one message: route, date and "Adult 1" → straight to live fares.
+    step=await engineHandleLiveTicketingChat(env,c,7,'CCJ to AUH\n17-11-2026\nAdult 1',history,phone);
+    assert.equal(searches.length,1);
+    assert.equal(searches[0].adults??searches[0].passengers?.adults??1,1);
+    assert.match(step.reply,/Option 1: Air India AI 6509/);
+    // Without a passenger count the steps ask for it before searching.
+    step=await engineHandleLiveTicketingChat(env,c,7,'flight ticket SHJ to CCJ 2026-11-20',history,'+971500000004');
+    assert.match(step.reply,/How many passengers/);
+    assert.equal(searches.length,1);
+  }finally{globalThis.fetch=realFetch;}
+});

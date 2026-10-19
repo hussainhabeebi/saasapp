@@ -18682,14 +18682,18 @@ export async function engineHandleLiveTicketingChat(env,c,clientId,userText,hist
   const setting=await env.DB.prepare(`SELECT * FROM live_travel_suppliers WHERE client_id=? AND supplier='poomas' AND enabled=1`).bind(Number(clientId)).first();
   if(!setting) return {handled:true,reply:'Live flight search is not enabled for this travel agency yet. Please share your route and preferred dates, and our team will assist you.'};
   const fxSettings=await ltFxSettings(env,clientId);
+  // Travel Flow: a new flight request ("looking for flight ticket") starts the button steps from
+  // what THIS message says — a route or date from earlier in the chat is offered as a button, not
+  // silently searched again.
+  const freshAsk=flowOn&&!draft&&!lastSearch&&!goAhead;
   // A filter-only follow-up re-runs the last search with the new filter; no extraction needed.
   const input=lastSearch?ltNormalizeChatFlightRequest({...lastSearch,filters:ltMergeChatFlightFilters(lastSearch.filters,ltParseChatFlightFilters(userText))},fxSettings.default_currency)
-    :ltMergeChatFlightDraft(draft,await engineExtractChatFlightRequest(env,c,userText,history),userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
-  // Guided search (started from the WhatsApp menu): route → date → passengers, one tap each.
-  if(flowOn&&draft?.guided){
-    input.guided=true;input.pax_done=Boolean(draft.pax_done);
+    :ltMergeChatFlightDraft(draft,await engineExtractChatFlightRequest(env,c,userText,freshAsk?[]:history),userText,{defaultCurrency:fxSettings.default_currency,allowOverride:!!fxSettings.allow_currency_override,phoneCurrency:fxSettings.auto_detect_phone_currency?ltFxCurrencyFromPhone(phone):''});
+  // Guided search (a new request, or Live Flights from the menu): route → date → passengers.
+  if(flowOn&&(draft?.guided||freshAsk)){
+    input.guided=true;input.pax_done=Boolean(draft?.pax_done);
     const pax=!input.pax_done&&ltMenuParsePax(userText);
-    if(pax&&(draft.pax_asked||!/^\s*\d\s*$/.test(String(userText||'')))){Object.assign(input,pax);input.pax_done=true;}
+    if(pax&&(draft?.pax_asked||!/^\s*\d\s*$/.test(String(userText||'')))){Object.assign(input,pax);input.pax_done=true;}
   }
   if(input.missing.length){
     await ltSaveChatSearchDraft(env,clientId,phone,input);

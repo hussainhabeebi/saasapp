@@ -122,6 +122,8 @@ test('passenger answers', () => {
   assert.deepEqual(ltMenuParsePax('2 Adults'), { adults: 2, children: 0, infants: 0 });
   assert.deepEqual(ltMenuParsePax('2 adults 1 child 1 infant'), { adults: 2, children: 1, infants: 1 });
   assert.equal(ltMenuParsePax('tomorrow'), null);
+  assert.deepEqual(ltMenuParsePax('Adult 1'), { adults: 1, children: 0, infants: 0 });
+  assert.deepEqual(ltMenuParsePax('CCJ to AUH\n17-11-2026\nAdult 1'), { adults: 1, children: 0, infants: 0 }, 'the year is not a passenger count');
 });
 
 test('checkout commands accept the echoed button titles', () => {
