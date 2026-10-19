@@ -7,6 +7,7 @@ import {
   engineLooksLikeStaffPromise, engineTakeoverTurns, engineWinExampleTexts, engineRecentConversationBlock, engineV2WelcomeVideo,
   engineV2SourceText, engineV2IsFreshLead, engineV2NudgeSettings, engineV2NudgeDue, engineV2NudgeText, engineStaffScore,
   engineV2FollowupGuardOn, engineChatLanguage, engineOpenQuestion, engineV2GuardedNudgeText, engineV2KeywordPdfs,
+  engineIsHumanAgentMessage,
 } from './worker.js';
 
 const TS = '2026-10-04T10:00:00Z';
@@ -176,4 +177,22 @@ test('follow-up guard: language comes from the chat, not lead.Language', () => {
   assert.equal(engineChatLanguage([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'Hello! Ready-to-use or custom?' }], 'ml'), 'en');
   assert.equal(engineChatLanguage([{ role: 'assistant', content: 'നാളെ ഈവനിംഗ് ഫ്രീയാണോ?' }, { role: 'assistant', content: '👍' }], 'en'), 'ml');
   assert.equal(engineChatLanguage([{ role: 'user', content: 'hello' }], 'ml'), 'ml', 'no message from us yet: fallback');
+});
+
+test('only a person typing counts as "your team replied" — not the bot\'s own echo or other automated sends', () => {
+  const staff = { content: 'Hi, this is Asha — I can do AED 2,200 if you book today.' };
+  assert.equal(engineIsHumanAgentMessage(staff, hist, []), true);
+  // The bot's reply, already in ConvHistory
+  assert.equal(engineIsHumanAgentMessage({ content: turns[1].content }, hist, []), false);
+  // The bot's reply or the Baby Care summary, in the Chats thread but not (yet) in ConvHistory
+  assert.equal(engineIsHumanAgentMessage({ content: 'Here is a summary of the products you liked.' }, hist,
+    [{ content: 'Here is a summary of the products you liked.', sender_type: 'bot' }]), false);
+  assert.equal(engineIsHumanAgentMessage({ content: 'Here is a summary of the products you liked.' }, hist,
+    [{ content: 'Here is a summary of the products you liked.', sender_type: null }]), false);
+  // A rep's send from the Chats page is in lead_messages as sender_type 'agent' — still a person
+  assert.equal(engineIsHumanAgentMessage(staff, hist, [{ content: staff.content, sender_type: 'agent' }]), true);
+  // Templates, media-only and card/button messages are automated
+  assert.equal(engineIsHumanAgentMessage({ content: 'Your trip is coming up!', additional_attributes: { template_params: { name: 'x' } } }, hist, []), false);
+  assert.equal(engineIsHumanAgentMessage({ content: '', attachments: [{ file_type: 'image' }] }, hist, []), false);
+  assert.equal(engineIsHumanAgentMessage({ content: 'Pick one', content_type: 'input_select' }, hist, []), false);
 });

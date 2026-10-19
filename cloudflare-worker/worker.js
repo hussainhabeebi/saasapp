@@ -22418,6 +22418,38 @@ async function engineV2ExtractStaffPromises(env, c, text){
 
 // #1/#2/#6 for one staff message. Called a few seconds after the webhook (see the call site) so a
 // bot reply that echoes back has already been written to ConvHistory/D1 and is skipped as such.
+// Was this outgoing message typed by a person on the team? Not when it's a template, a card /
+// buttons / media with no text (the bot's catalogue, photos and menus), or text the bot or another
+// automated sender already wrote to ConvHistory or the Chats thread (lead_messages rows that aren't
+// sender_type 'agent', i.e. not a Chats-page send by a rep).
+export function engineIsHumanAgentMessage(body, convHistory, recentAssistantRows=[]){
+  if(engineIsTemplateMessage(body)) return false;
+  if(!engineAppendAgentReply(convHistory, body, '')) return false;
+  const n=engineNormText(body?.content);
+  return !(recentAssistantRows||[]).some(r=>{
+    if(r?.sender_type==='agent') return false;
+    const x=engineNormText(r?.content);
+    return x && (x===n || (n.length>=20 && x.includes(n)) || n.endsWith(x));
+  });
+}
+async function engineTrackHumanAgentReply(env, clientId, body, at){
+  const convId=String(body.conversation?.id||'');
+  if(!convId) return;
+  await ensureLeadsColumns(env, ['LastAgentMsgAt']);
+  const r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(ConversationID,eq,${convId})&limit=1&fields=Id,ConvHistory`);
+  const lead=(await r.json().catch(()=>({})))?.list?.[0];
+  if(!lead?.Id) return;
+  const {results}=await env.DB.prepare(`SELECT content, sender_type FROM lead_messages WHERE lead_id=? AND role='assistant' ORDER BY ts DESC LIMIT 6`)
+    .bind(Number(lead.Id)).all().catch(()=>({results:[]}));
+  if(!engineIsHumanAgentMessage(body, lead.ConvHistory, results)) return;
+  await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(lead.Id), LastAgentMsgAt:at}});
+  // Also reset the Durable Object cadence so it doesn't fire while the human is active
+  try{
+    const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${lead.Id}`));
+    if(stub) await stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
+  }catch(e){}
+}
+
 async function engineV2HandleStaffMessage(env, c, clientId, body){
   const convId=String(body.conversation?.id||'');
   if(!convId) return;
@@ -22846,37 +22878,27 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
   }
 
   // Human agent reply tracking — fires when a real human (not the bot) sends an outgoing
-  // message from inside Chatwoot. Chatwoot's sender.type is 'agent_bot' for bot-sent messages
-  // and 'agent' (or 'user') for human agents. When a rep closes a sale in chat without
-  // updating the CRM stage, this records LastAgentMsgAt so the follow-up ladder skips the lead
-  // rather than firing auto-messages the rep already rendered unnecessary.
+  // message from inside Chatwoot. When a rep closes a sale in chat without updating the CRM
+  // stage, this records LastAgentMsgAt so the follow-up ladder skips the lead rather than firing
+  // auto-messages the rep already rendered unnecessary. Chatwoot only marks a message 'agent_bot'
+  // when an agent-bot token sent it — our bot, templates, the Baby Care summary and every other
+  // automated send go out with the account's user token and come back here as sender.type 'user'
+  // too, so each one used to stamp LastAgentMsgAt and Follow-up V3 then parked the lead as "Your
+  // team replied last" (Aiingo, Oct 2026: 0 leads in a sequence). engineTrackHumanAgentReply only
+  // stamps it once the echo check below says a person wrote it.
   if(body.message_type==='outgoing' && !body.private){
     const senderType=body.sender?.type||'';
     if(senderType!=='agent_bot'){
       const convId=String(body.conversation?.id||'');
       if(convId){
-        try{
-          await ensureLeadsColumns(env, ['LastAgentMsgAt']);
-          const convField='ConversationID'; // NocoDB field name for Chatwoot conv id
-          const leadsR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=(ClientId,eq,${clientId})~and(${convField},eq,${convId})&limit=1&fields=Id`);
-          const ld=await leadsR.json().catch(()=>({}));
-          const leadId=ld?.list?.[0]?.Id;
-          if(leadId){
-            await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), LastAgentMsgAt:new Date().toISOString()}});
-            // Also reset the Durable Object cadence so it doesn't fire while the human is active
-            try{
-              const stub=env.LEAD_FOLLOWUP?.get(env.LEAD_FOLLOWUP.idFromName(`${clientId}:${leadId}`));
-              if(stub) await stub.fetch('https://internal/replied',{method:'POST'}).catch(()=>{});
-            }catch(e){}
-          }
-        }catch(e){ /* best-effort — don't block on tracking */ }
-        // Leadvyne v2: the message itself joins ConvHistory (+ Chats thread, + promises → facts).
+        const at=new Date().toISOString();
         // Delayed so that if this is the bot's own reply echoing back, its turn has finished
-        // writing ConvHistory/D1 and the echo is recognised and skipped.
-        if(engineV2On(c)){
-          const work=new Promise(r=>setTimeout(r, 8000)).then(()=>engineV2HandleStaffMessage(env, c, clientId, body)).catch(()=>{});
-          if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
-        }
+        // writing ConvHistory/D1 and the echo is recognised and skipped. Tracking reads
+        // ConvHistory before Leadvyne v2 appends this message to it (+ Chats thread, + promises → facts).
+        const work=new Promise(r=>setTimeout(r, 8000))
+          .then(()=>engineTrackHumanAgentReply(env, clientId, body, at).catch(()=>{}))
+          .then(()=>engineV2On(c)?engineV2HandleStaffMessage(env, c, clientId, body):null).catch(()=>{});
+        if(ctx?.waitUntil) ctx.waitUntil(work); else await work;
       }
       return json({ok:true, handled:'agent-reply-tracked'});
     }
