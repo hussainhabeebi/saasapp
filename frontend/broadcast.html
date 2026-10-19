@@ -4007,6 +4007,13 @@ async function fv3TogglePause(){
   try{ const d=await fv3Api('/settings', {config:{paused:!fv3State?.config?.paused}}); fv3State={...fv3State, ...d}; fv3Render(); }
   catch(e){ $id('fv3Msg').textContent='Error: '+e.message; }
 }
+// One-click fix from the coverage table (e.g. include leads from before V3).
+async function fv3EnableSetting(key, btn){
+  if(!/^[a-z_]+$/.test(key)) return;
+  btn.disabled=true; btn.textContent='Saving…';
+  try{ const d=await fv3Api('/settings', {config:{[key]:true}}); fv3State={...fv3State, ...d}; btn.textContent='On ✓'; fv3Render(); }
+  catch(e){ btn.disabled=false; btn.textContent='Turn on'; alert(e.message); }
+}
 async function fv3SaveConfig(){
   const cfg={};
   ['quiet_start','quiet_end','min_gap_hours','daily_cap','warmup_cap','lead_cap_30d','reengage_after_days','reengage_max','attribution_hours'].forEach(k=>{ cfg[k]=parseInt($id('fv3c_'+k).value,10); });
@@ -4076,7 +4083,13 @@ async function fv3LoadReport(){
     <div class="tbl-wrap" style="max-height:none"><table class="tbl"><thead><tr><th>What happened</th><th>Times</th><th>Last</th><th>Fix</th></tr></thead><tbody>${r.failures.map(f=>
       `<tr><td>${esc(f.hint)}${f.error_code?` <span style="color:var(--muted);font-size:11px">(code ${esc(f.error_code)})</span>`:''}</td><td>${f.n}</td><td>${esc(fv3Rel(f.last_at))}</td><td>${esc(f.fix)}</td></tr>`).join('')}</tbody></table></div>`:'';
   // The headline numbers live in the Follow-ups header (renderFuHead), so the report starts at the steps.
-  el.innerHTML=steps+trend+heat+fails;
+  // Who is / isn't getting follow-ups right now, and how to fix each gap.
+  const cov=r.coverage||[];
+  const covTotal=cov.reduce((a,x)=>a+x.n,0);
+  const coverage=cov.length?`<div class="card" style="margin-top:12px" id="fv3Coverage"><div style="font-weight:700;margin-bottom:6px">👥 Who is getting follow-ups (${covTotal.toLocaleString()} leads)</div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Lead status</th><th style="text-align:right">Leads</th><th>What to do</th></tr></thead><tbody>${cov.map(x=>
+      `<tr data-reason="${esc(x.reason)}"><td>${x.ok?'✅':'⚠️'} ${esc(x.label)}</td><td style="text-align:right;font-weight:700">${x.n.toLocaleString()}</td><td style="font-size:12px">${x.fix?esc(x.fix):'—'}${x.setting?` <button class="btn btn-sec" style="padding:3px 8px;font-size:11px;margin-left:6px" onclick="fv3EnableSetting('${esc(x.setting)}',this)">Turn on</button>`:''}</td></tr>`).join('')}</tbody></table></div></div>`:'';
+  el.innerHTML=coverage+steps+trend+heat+fails;
 }
 async function fv3DrillDown(step, outcome){
   const el=$id('fv3Drill'); el.innerHTML='<div style="font-size:12px;color:var(--muted)">Loading…</div>';

@@ -247,6 +247,31 @@ export function fv3Decide(input){
   return out('completed', 'ladder_done', ladderSent.size?'All follow-ups sent — no reply yet.':'No follow-up could go out in this silence window (24h session closed or steps not set).', {steps:stepRows(null)});
 }
 
+// Plain-language reason + what to do about it, for the report's "Who isn't getting follow-ups".
+export const FV3_REASON_INFO={
+  due:{label:'Being followed up now', ok:true},
+  scheduled:{label:'Next follow-up scheduled', ok:true},
+  reengage:{label:'Re-engage message scheduled', ok:true},
+  existing_lead:{label:'Came in before Follow-up V3 was switched on', fix:'Turn on "Also follow up leads from before V3" in Settings below.', setting:'include_existing_leads'},
+  template_pending:{label:'Waiting for a WhatsApp template to be approved', fix:'Day 1/3/7 follow-ups need approved templates — use "Re-check templates" below, or pick an approved template for each step.'},
+  ladder_done:{label:'All follow-ups sent, or the 24-hour chat window closed before one could go', fix:'Leads silent for more than 24 hours can only get template follow-ups — make sure the Day 1/3/7 templates are approved.'},
+  human_handling:{label:'Handed to your team (handover)', fix:'Follow-ups pause while a person handles the chat. Close the handover (or resolve the chat) when your team is done so follow-ups resume.'},
+  agent_replied:{label:'Your team replied last', fix:'Follow-ups wait until the customer writes again — expected.'},
+  ordered:{label:'Customer placed an order', ok:true},
+  won:{label:'Lead is won', ok:true}, booked:{label:'Lead booked', ok:true}, exit_stage:{label:'Reached an exit stage', ok:true},
+  closed:{label:'Lead is closed / lost', ok:true}, opted_out:{label:'Opted out', ok:true},
+  lead_cap:{label:'Already got the maximum follow-ups for 30 days', fix:'Raise "Max follow-ups per lead in 30 days" in Settings if you want more.'},
+  no_message:{label:'Never messaged you', fix:'Follow-ups start after the customer\'s first message.'},
+  account_paused:{label:'Follow-ups are paused', fix:'Press ▶ Resume.'},
+};
+export function fv3CoverageRows(reasonRows, cfg={}){
+  return (reasonRows||[]).map(r=>{
+    const key=String(r.reason||'unknown'), info=FV3_REASON_INFO[key]||{label:key};
+    const fixable=!info.ok && !(info.setting && cfg?.[info.setting]===true);
+    return {reason:key, n:Number(r.n)||0, label:info.label, ok:!!info.ok, fix:fixable?(info.fix||''):'', setting:fixable?(info.setting||''):''};
+  }).sort((a, b)=>(a.ok-b.ok)||(b.n-a.n));
+}
+
 // Which follow-up a reply counts for: only the most recent one, and only within the window.
 export function fv3AttributeReply(sends, nowMs, attributionHours){
   if(!sends?.length) return null;
@@ -862,6 +887,10 @@ export async function fv3HandleRoute(request, env, deps, url){
     const rep=fv3BuildReport(rows||[], {tz:clientTz(c), weeks:Math.min(12, Math.ceil(days/7))});
     const {results:statusRows}=await env.DB.prepare(`SELECT status, COUNT(*) n FROM followup_v3_leads WHERE client_id=? GROUP BY status`).bind(cid).all();
     const statusCounts={}; (statusRows||[]).forEach(r=>{ statusCounts[r.status||'unknown']=r.n; });
+    // Why leads are / aren't in a sequence right now (Couplo, Oct 2026: 97 sends in 30 days for
+    // 1,005 leads) — one row per reason with the fix, so the gap is visible instead of silent.
+    const {results:reasonRows}=await env.DB.prepare(`SELECT reason, COUNT(*) n FROM followup_v3_leads WHERE client_id=? GROUP BY reason`).bind(cid).all();
+    const coverage=fv3CoverageRows(reasonRows||[], s.cfg);
     const {results:fails}=await env.DB.prepare(`SELECT error_code, MAX(error_message) error_message, COUNT(*) n, MAX(failed_at) last_at FROM followup_send_failures WHERE client_id=? AND failed_at>=? GROUP BY error_code ORDER BY n DESC LIMIT 10`).bind(cid, since).all();
     // Industry benchmark: average reply rate per step across other V3 accounts in the same industry
     // (anonymised; needs 3+ accounts with 20+ sends on that step).
@@ -875,7 +904,7 @@ export async function fv3HandleRoute(request, env, deps, url){
       const out={}; Object.entries(per).forEach(([st, rates])=>{ if(rates.length>=3) out[st]=Math.round(rates.reduce((a, x)=>a+x, 0)/rates.length*1000)/10; });
       benchmark=Object.keys(out).length?{industry:s.industry, reply_rate_by_step:out}:null;
     }
-    return json({days, ...rep, in_sequence:(statusCounts.due||0)+(statusCounts.scheduled||0), status_counts:statusCounts,
+    return json({days, ...rep, in_sequence:(statusCounts.due||0)+(statusCounts.scheduled||0), status_counts:statusCounts, coverage,
       failures:(fails||[]).map(f=>({...f, ...fv3FailureHint(f.error_code, f.error_message)})),
       templates:(await templateRows(env, cid)).map(t=>({kind:t.kind, name:t.name, status:t.status, error:t.error})),
       benchmark, currency:c.deal_currency||''});

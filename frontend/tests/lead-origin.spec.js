@@ -108,16 +108,19 @@ test('Source chips count each origin and filter the list', async ({ page }) => {
 
 test('owner: older leads without a source get a one-tap backfill', async ({ page }) => {
   await render(page, 'list');
-  let called = 0;
+  let called = 0, sourceCalled = 0;
   await page.route('**/leads/created-via/backfill', (route) => { called++; return route.fulfill({ json: { ok: true, updated: 3, counts: { chatwoot: 1, unknown: 2 } } }); });
+  await page.route('**/leads/source/backfill', (route) => { sourceCalled++; return route.fulfill({ json: { ok: true, updated: 6, counts: { WhatsApp: 4, 'Click-to-WhatsApp ad': 2 } } }); });
   await page.evaluate(() => {
     // @ts-ignore
     clientRecord = { authentik_email: 'boss@x.com' }; myEmail = 'boss@x.com'; window.loadAll = async () => {}; renderLeadsList();
   });
-  // Asha (ig), Devi, Faris have no CreatedVia.
-  await expect(page.locator('#leadsOriginBanner')).toContainText('3 older leads have no recorded source');
+  // Asha (ig), Devi, Faris have no CreatedVia; none of the fixture leads has a Source column value.
+  await expect(page.locator('#leadsOriginBanner')).toContainText(/\d+ leads have no recorded source yet/);
   await page.locator('#originBackfillBtn').click();
   await expect.poll(() => called).toBe(1);
+  // the Source column is filled too (Click-to-WhatsApp ad / WhatsApp / Instagram / Lead form)
+  await expect.poll(() => sourceCalled).toBe(1);
 });
 
 test('lead detail says how and by whom a lead was created', async ({ page }) => {

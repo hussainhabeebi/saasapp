@@ -370,6 +370,36 @@ async function handleLeadsCreatedViaBackfill(request, env){
   }
   return json({ok:true, updated:total, counts});
 }
+// POST /leads/source/backfill — owner / admin. Fills the Source column of every lead that has none
+// with engineLeadSourceGuess (lead form, Meta's ad opener → "Click-to-WhatsApp ad", Instagram,
+// WhatsApp). Only blanks are touched; re-runnable. Exact ad names can't be recovered for these.
+async function handleLeadsSourceBackfill(request, env){
+  const payload=await requireSession(request, env);
+  if(!payload) return json({error:'Invalid or expired session'}, 401);
+  const c=await getClientById(env, payload.cid);
+  if(!seesAllChannelLeads(c, payload.email)) return json({error:'Only the account owner or an admin can fill in lead sources.'}, 403);
+  await ensureLeadsColumns(env, ['Source']).catch(()=>{});
+  const where=encodeURIComponent(`(ClientId,eq,${payload.cid})~and(Source,blank)`);
+  const counts={}; let total=0, unknown=0, failed=0;
+  const seen=new Set();
+  for(let page=0;page<60;page++){
+    let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=100&offset=${unknown+failed}&fields=Id,Phone,Channel,ConversationID,LeadSource,MetaLeadgenId,ConvHistory`);
+    if(!r.ok) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records?where=${where}&limit=100&offset=${unknown+failed}&fields=Id,Phone,Channel,ConversationID,ConvHistory`);
+    if(!r.ok) return json({error:'Could not read leads (NocoDB '+r.status+')', updated:total, counts}, 502);
+    const rows=((await r.json().catch(()=>({})))?.list||[]).filter(l=>!seen.has(l.Id));
+    if(!rows.length) break;
+    rows.forEach(l=>seen.add(l.Id));
+    const patches=[];
+    for(const l of rows){ const g=engineLeadSourceGuess(l); if(g) patches.push({Id:Number(l.Id), Source:g}); else unknown++; }
+    if(patches.length){
+      const pr=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:patches});
+      if(!pr.ok){ failed+=patches.length; if(!total) return json({error:'Could not save sources (NocoDB '+pr.status+') — check the Source column accepts text', updated:0}, 502); }
+      else { patches.forEach(p=>{ counts[p.Source]=(counts[p.Source]||0)+1; }); total+=patches.length; }
+    }
+    if(rows.length<100) break;
+  }
+  return json({ok:true, updated:total, unknown, failed, counts});
+}
 // Best guess for a lead created before CreatedVia existing — what the backfill writes.
 export function leadCreatedViaGuess(l){
   if(String(l?.Channel||'').toLowerCase()==='instagram'||String(l?.Phone||'').startsWith('ig:')) return 'chatwoot';
@@ -7661,6 +7691,17 @@ async function handleAiRepeatCustomers(request, env){
 // read covers them all. Drafts the bot is still collecting and cancelled/refunded/failed orders
 // don't count.
 const ECOM_NON_CONVERTING_STATUSES=new Set(['draft','collecting','cancelled','canceled','refunded','failed']);
+// The 'pending' row logPendingOrder writes when the bot merely SENDS an order/catalog link — an
+// intent, not a purchase. Couplo (Oct 2026): "147 converted this month" vs 5 real orders, and
+// those leads were also dropped from Follow-up V3 as "already ordered". Such a row counts as a
+// conversion only once someone moves it past pending (received / processing / shipped …).
+export const ECOM_INTENT_ORDER_NOTE='Order intent detected — link sent automatically';
+export function ecomOrderIsConversion(o){
+  const st=String(o?.status||'').trim().toLowerCase();
+  if(ECOM_NON_CONVERTING_STATUSES.has(st)) return false;
+  if(st==='pending' && (String(o?.notes||'').startsWith(ECOM_INTENT_ORDER_NOTE) || String(o?.items||'').trim()==='Catalog link sent')) return false;
+  return true;
+}
 async function handleEcomOrderPhones(request, env){
   const payload=await requireSession(request, env);
   if(!payload) return json({error:'Invalid or expired session'}, 401);
@@ -7671,11 +7712,11 @@ async function handleEcomOrderPhones(request, env){
   if(!tableId) return json({has_orders_table:false, phones:{}});
   const phones={};
   for(let page=1; page<=25; page++){
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date`);
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${payload.cid})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,notes,items`);
     if(!r.ok) break;
     const list=(await r.json().catch(()=>({})))?.list||[];
     for(const o of list){
-      if(ECOM_NON_CONVERTING_STATUSES.has(String(o.status||'').trim().toLowerCase())) continue;
+      if(!ecomOrderIsConversion(o)) continue;
       const phone=String(o.customer_phone||'').replace(/\D/g,''); if(!phone) continue;
       const date=String(o.order_date||'');
       if(!(phone in phones) || (date && (!phones[phone] || date<phones[phone]))) phones[phone]=date;
@@ -11363,7 +11404,7 @@ async function logPendingOrder(env, c, clientId, phone, name, product){
     order_date:new Date().toISOString().slice(0,10),
     items:product?product.name:'Catalog link sent',
     total:product?.price||0, currency:product?.currency||'',
-    status:'pending', notes:'Order intent detected — link sent automatically'
+    status:'pending', notes:ECOM_INTENT_ORDER_NOTE
   };
   const r=await ncFetch(env, `api/v2/tables/${ordersTable}/records`, {method:'POST', body});
   if(!r.ok){
@@ -13212,6 +13253,23 @@ function ecomCatalogueQueryTokens(value){
 // you sell", "catalogue"), but they are still unambiguously asking to browse Ecom. Keep this
 // deterministic and deliberately narrow so working-hours, location, delivery-policy and other
 // business questions continue to the client's configured prompt instead of opening the catalogue.
+/* Baby Care is prompt-led: the merchant's prompt decides what to offer and how many options
+   (Couplo: "first reply = Premium set only, max 2 options"). Couplo (Oct 2026) saw "Baby set" answered
+   with "Please choose an available category or matching product" + 4 categories + 7 products,
+   and "Prize?" answered with a general menu. For Baby Care, the full catalogue picker now only
+   appears when the customer actually asks to browse, and a price question is answered by the prompt. */
+export function ecomIsExplicitBrowseRequest(text){
+  const t=String(text||'').toLowerCase().replace(/\s+/g,' ').trim();
+  if(!t) return false;
+  return /\b(?:show|list|browse|see|view|send|share|give)\b.{0,25}\b(?:all|every|full|whole|other|more|your)?\s*(?:products?|items?|catalog(?:ue)?|collections?|categories|category|designs?|models?|options?|sets|range)\b/.test(t)
+    || /^(?:all\s+)?(?:catalog(?:ue)?|categories|menu|collection|products|items|designs)[?!. ]*$/.test(t)
+    || /\bwhat\s+(?:all\s+|else\s+)?(?:do\s+|does\s+)?(?:you|u)\s+(?:have|sell|stock|offer)\b/.test(t)
+    || /\b(?:other|more)\s+(?:products?|items?|designs?|options?|models?|sets)\b/.test(t);
+}
+export function ecomIsPriceQuestion(text){
+  const t=String(text||'').toLowerCase();
+  return /\b(?:price|prices|pricing|prize|prise|rate|rates|cost|costs|how\s*much|charges?|amount|mrp|ethra|ethre|etra|entha\s+vila|vila|kitna|kitne|daam|dam)\b|വില|എത്ര|₹\s*\?/.test(t);
+}
 export function ecomIsGenericProductCatalogueQuery(text){
   const normalized=ecomNormalizeCatalogueText(text);
   if(!normalized) return false;
@@ -14779,6 +14837,11 @@ async function handleChatwootMessageHook(request, env){
   const clientId=String(c.Id);
 
   if(msgType==='incoming' || msgType==='0'){
+    // Couplo (Oct 2026): this legacy webhook ran its own order detection on every incoming message
+    // and sent "…our team will follow up shortly…" (plus a "Catalog link sent" pending order) on
+    // top of the AI engine's reply. A client on the engine already gets order handling inside
+    // that same turn, so the legacy auto-send never runs for them.
+    if(c.engine_webhook_secret) return json({ok:true, skipped:'engine-handles-replies'});
     const incomingOrdersTable=await ecomResolveTable(env, clientId, 'orders');
     return incomingOrdersTable
       ? await handleChatwootIncomingOrderSignal(env, c, clientId, content, body, incomingOrdersTable)
@@ -19314,7 +19377,16 @@ function engineIntroCacheKey(c,lang,firstQuestion){
   const seed=[c.main_prompt||'',c.services||'',c.kb_summary||'',firstQuestion||'',engineBusinessNameMl(c)].join('|');
   let hash=2166136261;
   for(let i=0;i<seed.length;i++){ hash^=seed.charCodeAt(i); hash=Math.imul(hash,16777619); }
-  return `greeting-intro:v1:${c.Id||'client'}:${lang}:${hash>>>0}`;
+  // v2: prompt-defined first replies (engineMainPromptDefinesFirstReply) — drops intros cached by v1.
+  return `greeting-intro:v2:${c.Id||'client'}:${lang}:${hash>>>0}`;
+}
+// Couplo (Oct 2026): the business prompt says what the first reply must be (price ₹899 + free
+// delivery + a question about the baby's age), but every new lead got a generic "Welcome to …
+// How can I help you today?" — the intro instruction below forced that exact question and a
+// 45-word cap over the merchant's own words. When the prompt spells out a first reply / welcome /
+// opening message, that is what the intro now sends.
+export function engineMainPromptDefinesFirstReply(prompt){
+  return /\b(?:first|opening|initial|welcome|greeting|1st)\s+(?:reply|message|response|msg|text)\b|\b(?:reply|respond|answer)\s+(?:first|initially)\b|\bwhen\s+(?:a\s+)?(?:new\s+)?(?:customer|lead|user|they)\s+(?:first\s+)?(?:messages?|says?|writes?|contacts?|greets?)\b|\bstart\s+(?:the\s+)?(?:chat|conversation)\s+(?:with|by)\b/i.test(String(prompt||''));
 }
 
 // Generates a prompt-led introduction once, then reuses it for later new leads. The cache key
@@ -19334,8 +19406,11 @@ async function engineBuildFirstTouchIntro(env, c, firstQuestion, replyLang){
   if(c.kb_summary && c.kb_summary.trim()) sys+='\n\n## Knowledge Base\n'+c.kb_summary.slice(0,1000);
   if(lang!=='en') sys+='\n\nPROPER NOUNS RULE: Always write person names, place names, and business/brand names exactly as they appear in the source — in English. Never transliterate, translate, or render them in the local script.';
   sys+=engineBusinessNameMlRule(c, lang);
-  sys+=`\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
-  const out=await engineCallLlm(env, c, sys, '(new conversation)', 120);
+  const promptFirstReply=engineMainPromptDefinesFirstReply(c.main_prompt);
+  sys+=promptFirstReply
+    ? `\n\nA new customer has just messaged for the first time. Write the FIRST reply exactly as the business prompt above says the first reply / welcome message must be — same content, offer, price and question it specifies, in ${lang}. Do not replace it with a generic greeting, do not add "How can I help you today?", and output only the customer-facing message.`
+    : `\n\nWrite one warm, natural WhatsApp greeting in ${lang}. Briefly introduce the business, then put this exact next question on its own line: "${firstQuestion}". Use no more than 45 words, do not repeat ideas, and output only the customer-facing message.`;
+  const out=await engineCallLlm(env, c, sys, '(new conversation)', promptFirstReply?300:120);
   // When the LLM fails, build a minimal intro from the business name so the customer sees
   // "Welcome to [Name]! How can I help you today?" instead of a bare unanswered question.
   const _bizName=String(c.client_name||'').trim();
@@ -19562,7 +19637,33 @@ export function engineStripPromptLeak(text, systemPrompt){
 // real customer is actually about to receive that generic fallback — matches this file's existing
 // principle that a customer getting nothing/genuinely-wrong is worth alerting on, ordinary
 // single-layer fallbacks elsewhere aren't (see SETUP.md "Error monitoring").
+/* Couplo (Oct 2026): a customer asked "Rate ??" and the bot replied "Hello! Can I get more info on
+   this?" — the customer's own click-to-WhatsApp ad opener, copied back out of the conversation
+   history. Every reply now goes through one check: if it is (nearly) the customer's own words —
+   the latest message or any customer line in the prompt's conversation block — it is regenerated
+   once with an explicit correction, and never sent as-is. */
+export function engineCustomerLinesFromPrompt(systemPrompt, userText){
+  const lines=[String(userText||'')];
+  for(const m of String(systemPrompt||'').matchAll(/^(?:user|Customer):\s*(.+)$/gim)) lines.push(m[1]);
+  return lines.map(t=>t.trim()).filter(t=>t.length>=4);
+}
+export function engineReplyEchoesCustomer(reply, customerLines){
+  const r=engineNormText(reply).replace(/[^\p{L}\p{N} ]/gu,'').trim();
+  if(r.length<4) return false;
+  return (customerLines||[]).some(t=>{
+    const n=engineNormText(t).replace(/[^\p{L}\p{N} ]/gu,'').trim();
+    return n.length>=4 && (n===r || (r.length<=n.length+12 && engineTextSimilarity(r, n)>=0.85));
+  });
+}
 async function engineCallLlm(env, c, systemPrompt, userText, maxTokens){
+  const reply=await engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens);
+  const customer=engineCustomerLinesFromPrompt(systemPrompt, userText);
+  if(!reply || reply==='One moment 🙏' || !engineReplyEchoesCustomer(reply, customer)) return reply;
+  await reportOpsError(env, 'engineCallLlm — reply repeated the customer\'s own message; regenerated', new Error(String(reply).slice(0,200)), {clientId:c?.Id}).catch(()=>{});
+  const retry=await engineCallLlmOnce(env, c, systemPrompt+`\n\nIMPORTANT: your draft reply was the customer's own message copied back to them ("${String(reply).slice(0,200)}"). Never repeat or quote the customer's words. Reply AS THE BUSINESS and answer their latest message ("${String(userText||'').slice(0,200)}") directly from the business prompt.`, userText, maxTokens);
+  return retry && !engineReplyEchoesCustomer(retry, customer) ? retry : 'One moment 🙏';
+}
+async function engineCallLlmOnce(env, c, systemPrompt, userText, maxTokens){
   const clean=async(text)=>{
     const stripped=engineStripHallucinatedToolCode(text);
     const safe=engineStripPromptLeak(stripped, systemPrompt);
@@ -21548,6 +21649,7 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
     Channel:state.channel||'whatsapp'
   };
   if(state.inboxId) body.InboxId=String(state.inboxId);
+  if(state.adSource && !String(state.lead?.Source||'').trim()) body._adSource=state.adSource;
   // A genuine new inbound message always means this conversation needs eyes again — auto-reopens
   // it (chats.js chatToggleResolve/handleChatResolveLead) the same way a real support inbox does,
   // rather than leaving a customer's fresh message silently tucked into a "Resolved" filter tab a
@@ -21647,15 +21749,62 @@ function engineBuildLeadUpsertBody(c, clientId, state, routing, userText, messag
 // Returns the resolved lead id (the given leadId for a PATCH, or the id NocoDB assigns on a
 // brand-new POST) — needed by the referral-tracking D1 insert at this function's call site, which
 // only learns the new lead's real id once this upsert actually completes.
+/* Lead source for chat leads (Couplo, Oct 2026: 1,009 leads with no source). The Leads page's
+   Source column was never filled for WhatsApp/Instagram chats, and the click-to-WhatsApp ad that
+   Chatwoot passes on (content_attributes.referral: headline, source_id, source_url, ctwa_clid)
+   was only read for the welcome-video picker. Now a chat lead without a Source gets one on its
+   first message: "Click-to-WhatsApp ad" with the ad's headline / id / link when Meta sent the
+   referral, "Click-to-WhatsApp ad (prefilled message)" for Meta's default ad opener, otherwise the
+   channel. Written as a separate best-effort PATCH after the lead is saved, so a Source column of
+   a stricter type can never cost the lead itself. */
+export const ENGINE_CTWA_PREFILL_RE=/^(?:hi+|hello|hey)?[!,. ]*(?:can|could) i get more (?:info|information)(?: (?:on|about))? (?:this|this product|this offer)[?!. ]*$/i;
+export function engineLeadAdSource(body, firstText, channel='whatsapp'){
+  const ref=body?.content_attributes?.referral||body?.additional_attributes?.referral||body?.message?.content_attributes?.referral||null;
+  if(ref && typeof ref==='object' && (ref.source_id||ref.source_url||ref.headline||ref.ctwa_clid)){
+    const post=String(ref.source_type||'').toLowerCase()==='post';
+    const ig=/instagram/i.test(String(ref.source_url||''))||channel==='instagram';
+    return {Source:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad', LeadSource:post?(ig?'Instagram post':'Facebook post'):'Click-to-WhatsApp ad',
+      AdName:String(ref.headline||ref.body||'').trim().slice(0,200), AdCampaign:ref.source_id?`Ad ID ${String(ref.source_id).slice(0,60)}`:'',
+      AdSourceUrl:String(ref.source_url||'').trim().slice(0,500)};
+  }
+  const t=String(firstText||'').trim();
+  if(ENGINE_CTWA_PREFILL_RE.test(t)) return {Source:'Click-to-WhatsApp ad', LeadSource:'Click-to-WhatsApp ad (prefilled message)'};
+  return {Source:channel==='instagram'?'Instagram':'WhatsApp'};
+}
+// Best-guess Source for an older lead with none: its own lead-ad fields, its first message (Meta's
+// default ad opener), else the channel. Exact ad names can't be recovered for these — Meta's
+// referral wasn't stored at the time.
+export function engineLeadSourceGuess(lead){
+  if(String(lead?.LeadSource||'').trim()) return String(lead.LeadSource).trim().slice(0,100);
+  if(String(lead?.MetaLeadgenId||'').trim()) return 'Lead form';
+  let hist=[]; try{ hist=JSON.parse(lead?.ConvHistory||'[]'); }catch(e){}
+  const first=(Array.isArray(hist)?hist:[]).find(m=>m?.role==='user');
+  if(first && ENGINE_CTWA_PREFILL_RE.test(String(first.content||'').trim())) return 'Click-to-WhatsApp ad';
+  if(String(lead?.Channel||'').toLowerCase()==='instagram'||String(lead?.Phone||'').startsWith('ig:')) return 'Instagram';
+  if(String(lead?.ConversationID||'').trim()||(Array.isArray(hist)&&hist.length)) return 'WhatsApp';
+  return '';
+}
+async function engineApplyLeadSource(env, leadId, src){
+  if(!leadId || !src) return;
+  try{
+    const fields=Object.fromEntries(Object.entries(src).filter(([,v])=>v));
+    await ensureLeadsColumns(env, Object.keys(fields)).catch(()=>{});
+    let r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...fields}});
+    // e.g. Source is a Single Select without this option — keep the ad details at least.
+    if(!r.ok && fields.Source){ const {Source, ...rest}=fields; if(Object.keys(rest).length) r=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method:'PATCH', body:{Id:Number(leadId), ...rest}}); }
+  }catch(e){}
+}
 async function engineUpsertLead(env, method, leadId, body){
+  const adSource=body._adSource; delete body._adSource;
   if(leadId) body.Id=leadId;
   // A lead first written here (no claim row yet) is a chat lead too.
   if(method==='POST' && !leadId && !body.CreatedVia) body.CreatedVia='chatwoot';
   const r=method==='POST'&&!leadId?await ncCreateLead(env, body):await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records`, {method, body});
   // Chats v2: the engine's own lead changes (a bot handover, Owner from Lead Routing) reach the list.
   if(leadId && r.ok) await chatsV2ApplyLeadPatch(env, leadId, body, {broadcast:engineBroadcastUpdate});
-  if(leadId) return leadId;
+  if(leadId){ if(adSource && r.ok) await engineApplyLeadSource(env, leadId, adSource); return leadId; }
   const created=await r.json().catch(()=>null);
+  if(adSource && created?.Id) await engineApplyLeadSource(env, created.Id, adSource);
   return created?.Id||null;
 }
 
@@ -22761,6 +22910,8 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
       }catch(e){}
     }
     if(messageId) state.leadId=await engineClaimMessage(env, clientId, phone, state.leadId, messageId);
+    // Where this chat lead came from — saved once, on a lead that has no Source yet.
+    if(!String(state.lead?.Source||'').trim()) state.adSource=engineLeadAdSource(body, text, state.channel||'whatsapp');
     // Leadvyne v2: a fresh lead gets the business's 360° video first (picked by ad/source); the chat
     // starts after it.
     if(engineV2On(c) && engineV2IsFreshLead({...state, leadId:isNewLead?null:state.leadId}))
@@ -23303,11 +23454,17 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
           : await engineLocalizeReply(env,c,_bcMsg('welcome_return','Welcome back! 👶🏻 What would you like to do?'),replyLang);
         sentText=welcomeIntro;
         routing.reply=sentText; routing.next='new';
-        routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
-          {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
-          {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
-          {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
-        ]);
+        if(isNewLead && engineMainPromptDefinesFirstReply(c.main_prompt)){
+          // The prompt's own first reply (price, offer, its question) goes out as written — no
+          // fixed three-button menu on top of the options the prompt chose.
+          await engineDeliverReply(env,c,clientId,convId,sentText,{mediaType,langCode:replyLang,ctx});
+        } else {
+          routing.quickReplies=await engineSendEcomVerifiedPicker(env,c,clientId,convId,phone,sentText,[
+            {title:'View Our Catalog 📸',value:'BABY_VIEW_CATALOG'},
+            {title:'Custom Order 🛍️',value:'BABY_CUSTOM_ORDER'},
+            {title:'Talk to Us 💬',value:'BABY_TALK_TO_TEAM'},
+          ]);
+        }
         orderHandledInline=true;
       } else if(/^BABY_VIEW_CATALOG$/i.test(userText)){
         let _catalogThrottled=false;
@@ -24236,6 +24393,15 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         detection.category=undefined;
         detection.sku=exactSelectedProduct.sku||undefined;
         detection.productName=exactSelectedProduct.name;
+      }else if(isBabyCareEcom && matchedCategory && ecomNormalizeCatalogueText(userText)!==ecomNormalizeCatalogueText(matchedCategory) && !ecomIsExplicitBrowseRequest(userText)){
+        // Baby Care: a loose category word in free text ("baby set") is answered by the prompt;
+        // only a tapped category button (its exact name) opens that category's products.
+        detection.signal=false;
+        routing.route='ecom_faq';
+      }else if(isBabyCareEcom && ecomIsPriceQuestion(userText) && !state.lead?.['Last Product Sku'] && !ecomIsExplicitBrowseRequest(userText)){
+        // Baby Care: "Rate?" / "Prize?" with no product in context — the prompt holds the price.
+        detection.signal=false;
+        routing.route='ecom_faq';
       }else if(matchedCategory){
         detection.signal=true;
         detection.mode='enquiry';
@@ -24248,6 +24414,11 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // Do not show the catalog picker just because a word like "items" or "products" appears
         // in a post-order or follow-up question. Only genuine "show me your catalog" intent
         // (explicit browse verbs above, or an actual product broad-match) goes to the picker.
+        detection.signal=false;
+        routing.route='ecom_faq';
+      }else if(isBabyCareEcom && (broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)) && !ecomIsExplicitBrowseRequest(userText)){
+        // Baby Care: "Baby set" etc. — the prompt answers (and offers its own options); the full
+        // catalogue picker is kept for an explicit "show me your products".
         detection.signal=false;
         routing.route='ecom_faq';
       }else if(broadMatches.length || ecomIsGenericProductCatalogueQuery(userText)){
@@ -25052,7 +25223,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
         // in the SAME message when the answer did not already provide a choice. No label or value
         // here comes from the LLM: categories and recommended products are copied from active
         // Ecom Product rows only.
-        if(!faqQuickReplies && routing.route==='ecom_faq'){
+        // Baby Care is prompt-led: no catalogue menu is appended under the prompt's answer (the
+        // prompt decides which options to offer); mid-flow customers still get "Continue Order" above.
+        if(!faqQuickReplies && routing.route==='ecom_faq' && !isBabyCareEcom){
           const [categories,products]=await Promise.all([ecomListCategories(env, clientId),ecomListActiveProducts(env, clientId)]);
           // Electronics: show product-only buttons — no category clutter mixed in.
           faqQuickReplies=isElectronicsEcom
@@ -32605,11 +32778,11 @@ async function fv3OrderPhones(env, c){
   if(!tableId) return null;
   const map={};
   for(let page=1; page<=25; page++){
-    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,total,CreatedAt`);
+    const r=await ncFetch(env, `api/v2/tables/${tableId}/records?where=${encodeURIComponent(`(client_id,eq,${c.Id})`)}&limit=200&offset=${(page-1)*200}&fields=customer_phone,status,order_date,total,CreatedAt,notes,items`);
     if(!r.ok) break;
     const list=(await r.json().catch(()=>({})))?.list||[];
     for(const o of list){
-      if(ECOM_NON_CONVERTING_STATUSES.has(String(o.status||'').trim().toLowerCase())) continue;
+      if(!ecomOrderIsConversion(o)) continue;
       const phone=String(o.customer_phone||'').replace(/\D/g,'').slice(-10); if(!phone) continue;
       const date=String(o.order_date||o.CreatedAt||'');
       if(!map[phone] || (date && date>(map[phone].date||''))) map[phone]={date, total:Number(o.total)||0};
@@ -36580,6 +36753,7 @@ export default {
       else if(url.pathname==='/channels/inbox-assignments' && request.method==='GET'){ res=await handleChannelsInboxAssignmentsGet(request, env); }
       else if(url.pathname==='/channels/inbox-assignment' && request.method==='PUT'){ res=await handleChannelsInboxAssignmentPut(request, env); }
       else if(url.pathname==='/leads/created-via/backfill' && request.method==='POST'){ res=await handleLeadsCreatedViaBackfill(request, env); }
+      else if(url.pathname==='/leads/source/backfill' && request.method==='POST'){ res=await handleLeadsSourceBackfill(request, env); }
       else if(url.pathname==='/leads/opened' && request.method==='POST'){ res=await handleLeadOpened(request, env); }
       else if(url.pathname==='/instagram/send' && request.method==='POST'){ res=await handleInstagramSendCompat(request, env); }
       else if(url.pathname==='/channels/inbox-assignment/sync' && request.method==='POST'){ res=await handleChannelsInboxAssignmentSync(request, env); }
