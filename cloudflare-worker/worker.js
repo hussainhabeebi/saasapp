@@ -18383,8 +18383,46 @@ export async function engineHandleLiveTicketCheckoutChat(env,c,clientId,convId,p
 
 // ── WhatsApp menu + guided booking (live-travel-wa-menu.js) ──────────────────
 const LT_BASE_LEAD_CATEGORIES=['Package','Package + Hotel (Single)','Hotel','Air Ticket','Ticket','Group Ticket','Visa','Global Visa','Passport','Certificate Attestation','Saudi Services','Umrah and Hajj','Marketing Messages','Other Services'];
+let _ltMenuTravelFlowColumn=false;
 async function ltMenuEnsureSchema(env){
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_wa_menu (client_id INTEGER PRIMARY KEY, menu_json TEXT NOT NULL DEFAULT '{}', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS live_travel_wa_menu (client_id INTEGER PRIMARY KEY, menu_json TEXT NOT NULL DEFAULT '{}', updated_by TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, travel_flow INTEGER)`).run();
+  // travel_flow: the Travel Flow switch (1/0, NULL = never set). Kept here in D1 rather than only
+  // on the NocoDB CLIENTS row: a freshly created NocoDB column is often not writable for a while
+  // (schema cache), which made the first save of the switch fail.
+  if(!_ltMenuTravelFlowColumn){
+    await env.DB.prepare(`ALTER TABLE live_travel_wa_menu ADD COLUMN travel_flow INTEGER`).run().catch(()=>{});
+    _ltMenuTravelFlowColumn=true;
+  }
+}
+// The Travel Flow switch: the D1 value when one was saved, else the older CLIENTS field.
+async function ltTravelFlowStored(env,clientId,c={}){
+  try{
+    await ltMenuEnsureSchema(env);
+    const row=await env.DB.prepare(`SELECT travel_flow FROM live_travel_wa_menu WHERE client_id=?`).bind(Number(clientId)).first();
+    if(row&&row.travel_flow!=null)return Number(row.travel_flow)===1;
+  }catch(e){}
+  return String(c?.travel_flow_enabled||'').trim().toLowerCase()==='yes';
+}
+async function ltTravelFlowSave(env,clientId,on,email=''){
+  await ltMenuEnsureSchema(env);
+  const now=ltNow();
+  await env.DB.prepare(`INSERT INTO live_travel_wa_menu (client_id,menu_json,updated_by,updated_at,travel_flow) VALUES (?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET travel_flow=excluded.travel_flow,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
+    .bind(Number(clientId),'{}',email,now,on?1:0).run();
+  // Mirror onto the CLIENTS row too (best effort) so exports and the dashboard see the same value.
+  try{await ensureClientColumns(env,['travel_flow_enabled']);await patchClientFields(env,clientId,{travel_flow_enabled:on?'Yes':'No'});}catch(e){}
+}
+// PUT /live-travel/travel-flow {enabled} — Dashboard → Settings → Modules → Travel Flow.
+async function handleLtTravelFlow(request,env){
+  const auth=await ltAuth(request,env); if(!auth)return json({error:'Invalid or expired session'},401);
+  if(request.method==='GET'){
+    let client=null;try{client=await getClientById(env,auth.cid);}catch(e){}
+    return json({enabled:await ltTravelFlowStored(env,auth.cid,client||{})});
+  }
+  const body=await request.json().catch(()=>({}));
+  if(typeof body.enabled!=='boolean')return json({error:'enabled must be true or false'},400);
+  await ltTravelFlowSave(env,auth.cid,body.enabled,auth.email);
+  await ltAudit(env,auth.cid,'whatsapp_menu','travel_flow',body.enabled?'enabled':'disabled',auth.email,{});
+  return json({enabled:body.enabled});
 }
 export async function ltMenuLoad(env,clientId){
   await ltMenuEnsureSchema(env);
@@ -18409,18 +18447,13 @@ async function handleLtWhatsappMenu(request,env){
     const every={items:Object.keys(LT_PORTAL_SOURCES).map(source=>({enabled:true,action:'portal',source}))};
     const portalCounts=(await ltMenuAvailability(env,client||{},auth.cid,every)).counts;
     const categories=[...new Set([...LT_BASE_LEAD_CATEGORIES,...(Array.isArray(custom)?custom.map(x=>String(x||'').trim()).filter(Boolean):[])])];
-    return json({menu,travel_flow:ltTravelFlowOn({...client,industry:'travel'}),defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories,portal_counts:portalCounts,portal_sources:LT_PORTAL_SOURCES});
+    return json({menu,travel_flow:await ltTravelFlowStored(env,auth.cid,client||{}),defaults:ltMenuDefaults(),flights_connected:flightsConnected,suggested_routes:routes,categories,portal_counts:portalCounts,portal_sources:LT_PORTAL_SOURCES});
   }
   const body=await request.json().catch(()=>({}));
   const menu=ltMenuNormalize(body.menu||body),errors=ltMenuValidate(menu);
   if(errors.length)return json({error:errors[0],errors},400);
   // The Travel Flow switch itself (also in Dashboard → Settings → Industry Modules).
-  if(typeof body.travel_flow==='boolean'){
-    try{
-      await ensureClientColumns(env,['travel_flow_enabled']);
-      await patchClientFields(env,auth.cid,{travel_flow_enabled:body.travel_flow?'Yes':'No'});
-    }catch(e){return json({error:'Could not save the Travel Flow setting: '+e.message},502);}
-  }
+  if(typeof body.travel_flow==='boolean')await ltTravelFlowSave(env,auth.cid,body.travel_flow,auth.email);
   await ltMenuEnsureSchema(env);
   const now=ltNow();
   await env.DB.prepare(`INSERT INTO live_travel_wa_menu (client_id,menu_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET menu_json=excluded.menu_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at`)
@@ -23075,6 +23108,9 @@ async function handleEngineWebhook(request, env, secret, ctx=null){
     let userText=await engineResolveUserText(env, c, mediaType, mediaUrl, text);
     let introAction=engineResolveIntroInternalAction(userText,c.language||'en');
     if(introAction) userText=introAction.text;
+    // Travel Flow switch (saved in D1 by Live Agency / Settings) — read once here so every travel
+    // path below (menu, live search, checkout) sees the same value through ltTravelFlowOn(c).
+    if(ltLiveAgencyEnabled(c)) c.travel_flow_enabled=await ltTravelFlowStored(env,clientId,c)?'Yes':'No';
     // Travel agencies: their own WhatsApp menu (Live Agency → 💬 WhatsApp Menu) answers "hi" /
     // "menu" and every menu tap before any AI path. Agencies without an enabled menu get null.
     if(!introAction){
@@ -36629,6 +36665,7 @@ export default {
       else if(url.pathname==='/live-travel/fx-rates' && request.method==='GET'){ res=await handleLtFxRates(request,env); }
       else if(url.pathname==='/live-travel/poomas/settings' && ['GET','PATCH'].includes(request.method)){ res=await handleLtPoomasSettings(request,env); }
       else if(url.pathname==='/live-travel/whatsapp-menu' && ['GET','PUT'].includes(request.method)){ res=await handleLtWhatsappMenu(request,env); }
+      else if(url.pathname==='/live-travel/travel-flow' && ['GET','PUT'].includes(request.method)){ res=await handleLtTravelFlow(request,env); }
       else if(url.pathname==='/live-travel/passengers' && ['POST','PATCH','DELETE'].includes(request.method)){ res=await handleLtPassengers(request, env); }
       else if(url.pathname==='/live-travel/payments' && request.method==='POST'){ res=await handleLtPayment(request, env); }
       else if(url.pathname==='/live-travel/wallet' && ['GET','POST'].includes(request.method)){ res=await handleLtWallet(request, env); }

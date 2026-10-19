@@ -373,7 +373,7 @@ async function renderWhatsappMenu(){
  const m=wm.menu,on=m.items.filter(i=>i.enabled).length,shown=m.items.filter(i=>i.enabled&&wmAvailable(i)).length;
  $('main').innerHTML=head('WhatsApp Menu','The menu customers get when they say "hi" or type "menu" on WhatsApp',`<button class="btn" onclick="wmReset()">↺ Defaults</button><button class="btn primary" id="wmSave" onclick="wmSaveMenu()">💾 Save menu</button>`)
  +`<div id="wmErr"></div><div class="wmgrid"><div>
- <div class="card"><label class="wmtoggle"><input type="checkbox" ${wm.travel_flow?'checked':''} onchange="wm.travel_flow=this.checked;wm.flowChanged=true;wmDirty()"> <b>✈️ Travel Flow (optional)</b></label>
+ <div class="card"><label class="wmtoggle"><input type="checkbox" ${wm.travel_flow?'checked':''} onchange="wmSaveFlow(this)"> <b>✈️ Travel Flow (optional)</b></label>
  <p class="sub">When on, "hi", "hello", "menu" and every menu tap are answered by this menu, flight questions get live fares with buttons, and a picked flight goes details → Proceed → booking form → your booking site. When off, your WhatsApp bot works exactly as before. Same switch as Dashboard → Settings → Industry Modules → Travel Flow.</p>
  ${wm.flights_connected?'':'<div class="notice">Live flight search is not connected, so <b>✈️ Live Flights</b> is hidden from customers. Connect POOMAS in 🔌 Suppliers to share live fares and book in chat.</div>'}
  <p class="sub">Other services come from your Travel Portal (← Existing Agency): an option shows only while that section has something listed.</p>
@@ -424,9 +424,17 @@ function wmPreview(){
  el.innerHTML=`<div class="wmbubble out">hi</div><div class="wmbubble in">${fmt(greet)}<div class="wmbtn">☰ ${esc(m.button_label||'Menu')}</div></div>
  <div class="wmsheet"><div class="wmsheethd">${esc(m.button_label||'Menu')}</div>${sections.map(s=>`<div class="wmsec">${esc(s.t)}</div>${s.rows.map(r=>`<div class="wmrow"><div><b>${esc(wmRowTitle(r))}</b>${r.description?`<span>${esc(r.description)}</span>`:''}</div><i></i></div>`).join('')}`).join('')||'<div class="wmrow"><span>No options turned on</span></div>'}</div>`;
 }
+// The Travel Flow switch saves the moment it is ticked — no separate Save needed.
+async function wmSaveFlow(box){
+ const on=box.checked;box.disabled=true;$('wmErr').innerHTML='';
+ try{const r=await api('/live-travel/travel-flow',{method:'PUT',body:JSON.stringify({enabled:on})});wm.travel_flow=r.enabled;
+  $('wmErr').innerHTML=`<div class="notice" style="background:#DDF6EB;border-color:#9FDCC0;color:var(--green)">✓ Travel Flow ${r.enabled?'is on — customers get this menu on WhatsApp now':'is off — your WhatsApp bot works as before'}.</div>`}
+ catch(e){box.checked=!on;$('wmErr').innerHTML=`<div class="error">Travel Flow was not saved: ${esc(e.message)}</div>`}
+ finally{box.disabled=false}
+}
 async function wmSaveMenu(){
  const btn=$('wmSave');btn.disabled=true;$('wmErr').innerHTML='';
- try{const payload={menu:{...wm.menu,enabled:!!wm.travel_flow}};if(wm.flowChanged)payload.travel_flow=!!wm.travel_flow;const r=await api('/live-travel/whatsapp-menu',{method:'PUT',body:JSON.stringify(payload)});wm.menu=r.menu;wm.dirty=false;wm.flowChanged=false;renderWhatsappMenu();$('wmErr').innerHTML=`<div class="notice" style="background:#DDF6EB;border-color:#9FDCC0;color:var(--green)">✓ Saved — ${wm.travel_flow?'Travel Flow is on: customers get this menu on WhatsApp now':'Travel Flow is off: your WhatsApp bot works as before. Turn it on to use this menu'}.</div>`}
+ try{const payload={menu:{...wm.menu,enabled:!!wm.travel_flow}};const r=await api('/live-travel/whatsapp-menu',{method:'PUT',body:JSON.stringify(payload)});wm.menu=r.menu;wm.dirty=false;renderWhatsappMenu();$('wmErr').innerHTML=`<div class="notice" style="background:#DDF6EB;border-color:#9FDCC0;color:var(--green)">✓ Saved — ${wm.travel_flow?'Travel Flow is on: customers get this menu on WhatsApp now':'Travel Flow is off: your WhatsApp bot works as before. Turn it on to use this menu'}.</div>`}
  catch(e){$('wmErr').innerHTML=`<div class="error">${esc(e.message)}</div>`}
  finally{if($('wmSave'))$('wmSave').disabled=false}
 }

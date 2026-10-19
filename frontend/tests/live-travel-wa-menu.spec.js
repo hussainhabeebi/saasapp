@@ -22,11 +22,12 @@ const menuResponse = {
 const bootstrap = { suppliers: [], searches: [], quotes: [], bookings: [], service_requests: [], wallet: [], wallet_entries: [], agents: [], commissions: [], currency_settings: { default_currency: 'AED' } };
 
 test('agency edits, previews and saves its WhatsApp menu', async ({ page }) => {
-  let saved = null, savedBody = null;
+  let saved = null, savedBody = null, flowPuts = [];
   await page.route('**/*', async (route) => {
     const req = route.request(), url = req.url();
     if (url.startsWith('file://')) return route.continue();
     if (url.endsWith('/live-travel/bootstrap')) return route.fulfill({ json: bootstrap });
+    if (url.endsWith('/live-travel/travel-flow') && req.method() === 'PUT') { const b = JSON.parse(req.postData()); flowPuts.push(b); return route.fulfill({ json: { enabled: b.enabled } }); }
     if (url.endsWith('/live-travel/whatsapp-menu') && req.method() === 'GET') return route.fulfill({ json: menuResponse });
     if (url.endsWith('/live-travel/whatsapp-menu') && req.method() === 'PUT') { savedBody = JSON.parse(req.postData()); saved = savedBody.menu; return route.fulfill({ json: { menu: saved, saved_at: 'now' } }); }
     return route.abort();
@@ -42,7 +43,10 @@ test('agency edits, previews and saves its WhatsApp menu', async ({ page }) => {
   await expect(page.locator('.wmitem').nth(2)).toContainText('Nothing listed in Existing Agency → Umrah Groups');
   await expect(preview).not.toContainText('Umrah Groups');
 
+  // Ticking the switch saves it straight away.
   await page.getByText('✈️ Travel Flow (optional)').click();
+  await expect(page.locator('#wmErr')).toContainText('Travel Flow is on');
+  expect(flowPuts).toEqual([{ enabled: true }]);
   await page.locator('.wmtitle').nth(1).fill('Visa');
   await expect(preview).toContainText('🛂 Visa');
   await page.getByRole('button', { name: '＋ Add option' }).click();
@@ -53,7 +57,6 @@ test('agency edits, previews and saves its WhatsApp menu', async ({ page }) => {
   await expect(page.locator('#wmRoutes')).toHaveValue('SHJ-CCJ');
   await page.getByRole('button', { name: '💾 Save menu' }).click();
   await expect(page.locator('#wmErr')).toContainText('Travel Flow is on: customers get this menu on WhatsApp now');
-  expect(savedBody.travel_flow).toBe(true);
   expect(saved.enabled).toBe(true);
   expect(saved.items.map(i => i.title)).toEqual(['Flight Tickets', 'Visa', 'Umrah Groups', 'Talk to an Agent', 'Packages']);
   expect(saved.items[4]).toMatchObject({ action: 'portal', source: 'packages' });
