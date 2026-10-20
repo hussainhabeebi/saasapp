@@ -2,6 +2,7 @@ import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospita
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
+import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
@@ -94,7 +95,8 @@ const PLAN_GATED_MODULES = {
 // The subscription fields below are written only by the Stripe/Razorpay sync and Admin → Billing —
 // a client session setting stripe_customer_id could otherwise open someone else's Stripe Portal,
 // and razorpay_trial_used guards the one free trial (razorpay-billing.js).
-const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled',
+// accounting_enabled — Accounting module (accounting.html + accounting-ledger.js); super-admin only.
+const PLAN_MANAGED_FIELDS = ['plan_tier','ai_assistant_enabled','ceo_bot_enabled','accounting_enabled',
   'plan_status','plan_name','plan_renews_at','plan_cancel_at_period_end','plan_message_limit','stripe_customer_id','stripe_subscription_id',
   'billing_provider','razorpay_subscription_id','razorpay_customer_id','razorpay_plan_id','razorpay_status','razorpay_short_url',
   'razorpay_trial_used','billing_admin_note'];
@@ -8543,6 +8545,13 @@ const BILLING_PORTAL_DEPS={
   planTiers:PLAN_TIERS, planGatedModules:PLAN_GATED_MODULES,
   // Billing page → "Need help with billing?" — either can be left unset to hide that button.
   supportContacts:env=>({email:env.BILLING_SUPPORT_EMAIL||'', whatsapp:String(env.BILLING_SUPPORT_WHATSAPP||'').replace(/\D/g,'')}),
+};
+// Accounting ledger (accounting-ledger.js and friends) — everything it needs from this file.
+const ACC_LEDGER_DEPS={
+  json, requireSession, getClientById, reportOpsError, isAccountingEnabled,
+  sendEmail:async (env, clientId, msg)=>sendClientResendEmail(await getClientById(env, clientId), msg),
+  sendWhatsApp:(env, clientId, leadId, text)=>accLedgerSendWhatsApp(env, clientId, leadId, text),
+  recordInvoicePaid:(env, clientId, invoice, opts)=>fpRecordInvoicePaidSideEffects(env, clientId, invoice, opts),
 };
 const RZP_DEPS={
   json, requireSession, requireAdminSession, getClientById, findClientByField, patchClientFields, ensureClientColumns,
@@ -27023,6 +27032,8 @@ async function handleAccountingExpenseCreate(request, env){
       String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
       'unsynced', now).run();
   const expId=r.meta.last_row_id;
+  // Accounting ledger: when expense approval is switched on, the new expense waits (unposted) for an approver.
+  try{ await accLedgerOnExpenseCreated(env, Number(payload.cid), expId, payload.email||null); }catch(e){}
   // Auto-create payment entry if account_id supplied
   if(body.account_id){
     try{
@@ -30980,6 +30991,7 @@ async function runFinancialPlanningMonthlyForAllClients(env){
   const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1`).all();
   const periodKey=new Date().toISOString().slice(0,7);
   for(const cfg of (configs||[])){
+    if(!await isAccountingEnabled(env, cfg.client_id)) continue; // module switched off in Leadvyne admin
     try{ await fpGenerateForClient(env, cfg.client_id, periodKey); }
     catch(e){ console.error('[financial-planning] monthly generation failed for client', cfg.client_id, e.message); }
   }
@@ -31371,6 +31383,7 @@ async function fpHandleAdminWhatsappMessage(env, c, clientId, convId, mediaType,
 async function runFinancialPlanningRemindersForAllClients(env){
   const {results:configs}=await env.DB.prepare(`SELECT client_id FROM fp_config WHERE enabled=1 AND reminders_enabled=1`).all();
   for(const cfg of (configs||[])){
+    if(!await isAccountingEnabled(env, cfg.client_id)) continue; // module switched off in Leadvyne admin
     try{ await fpSendRemindersForClient(env, cfg.client_id); }
     catch(e){ console.error('[financial-planning] reminder sweep failed for client', cfg.client_id, e.message); }
   }
@@ -31382,6 +31395,25 @@ async function fpLogReminderAttempt(env, clientId, dueId, status, detail){
     await env.DB.prepare(`INSERT INTO fp_reminder_log (client_id, due_id, status, detail, created_at) VALUES (?,?,?,?,?)`)
       .bind(clientId, dueId||null, status, detail?String(detail).slice(0,500):null, new Date().toISOString()).run();
   }catch(e){}
+}
+// Accounting ledger reminders/dunning over WhatsApp: same Chatwoot + approved-template path as the
+// Financial Planning sweep below (fp_config.reminder_template_*), text sent as the template's {{1}}.
+async function accLedgerSendWhatsApp(env, clientId, leadId, text){
+  const c=await getClientById(env, clientId);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return {ok:false, error:'Chatwoot is not connected'};
+  const cfg=await env.DB.prepare(`SELECT reminder_template_name, reminder_template_category, reminder_template_language FROM fp_config WHERE client_id=?`).bind(clientId).first().catch(()=>null);
+  const templateName=String(cfg?.reminder_template_name||'').trim();
+  if(!templateName) return {ok:false, error:'No WhatsApp reminder template assigned (Financial Planning → Settings)'};
+  let convId=null;
+  try{ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=ConversationID`); convId=(await leadR.json().catch(()=>null))?.ConversationID||null; }catch(e){}
+  if(!convId) return {ok:false, error:'No WhatsApp conversation for this lead'};
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({content:text, message_type:'outgoing', private:false, template_params:{name:templateName, category:cfg.reminder_template_category||'MARKETING', language:cfg.reminder_template_language||'en', processed_params:{1:text}}})
+  });
+  if(!r.ok) return {ok:false, error:`Chatwoot send failed: HTTP ${r.status}`};
+  await logWaTemplateSend(env, clientId, 'payment_reminder', {template:templateName, leadId});
+  return {ok:true};
 }
 async function fpSendRemindersForClient(env, clientId){
   const c=await getClientById(env, clientId);
@@ -31467,6 +31499,13 @@ async function handleRazorpayWebhook(request, env, clientIdParam){
   const paymentId=payment.id||payment.payment_id;
   const amount=(Number(payment.amount)||0)/100; // Razorpay amounts are in the smallest currency unit (paise)
   const notes=payment.notes||data.payload?.payment_link?.entity?.notes||{};
+  const linkNotes=data.payload?.payment_link?.entity?.notes||notes;
+  // Invoice payment links (accounting-ledger.js ensurePaymentLink) carry acc_invoice_id — mark that
+  // invoice paid (Receipt + collection via fpRecordInvoicePaidSideEffects) instead of a bare collection.
+  if(linkNotes.acc_invoice_id){
+    try{ if(await accLedgerOnPaymentLinkPaid(env, clientId, linkNotes, ACC_LEDGER_DEPS)) return json({ok:true, invoice_id:Number(linkNotes.acc_invoice_id)}); }
+    catch(e){ await reportOpsError(env, 'razorpay webhook — invoice payment link', e, {clientId}); }
+  }
   const customerId=notes.fp_customer_id ? Number(notes.fp_customer_id) : null;
   const dueId=notes.fp_expected_due_id ? Number(notes.fp_expected_due_id) : null;
   if(!customerId) return json({ok:true}); // no way to attribute this payment to a customer — nothing to record
@@ -33120,6 +33159,24 @@ const CEO_DEPS={
 };
 // POST /admin/ceo-bot {client_id, enabled:'Yes'|'No'} — super-admin only. ceo_bot_enabled is in
 // PLAN_MANAGED_FIELDS, so this is the only way it can be switched on.
+// Accounting module on/off per client — Leadvyne admin only (Admin → Edit client). Same shape as the
+// CEO Bot toggle below. Off by default: the dashboard tab, accounting.html, the /accounting/ledger/*
+// API and the accounting daily jobs (ledger billing/reminders, Financial Planning dues/reminders)
+// all require accounting_enabled === 'Yes'.
+function isAccountingEnabledRecord(c){ return String(c?.accounting_enabled||'')==='Yes'; }
+async function isAccountingEnabled(env, clientId){
+  try{ return isAccountingEnabledRecord(await getClientById(env, clientId)); }catch(e){ return false; }
+}
+async function handleAdminAccountingToggle(request, env){
+  if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
+  const {client_id, enabled}=await request.json().catch(()=>({}));
+  const cid=Number(client_id);
+  if(!cid) return json({error:'client_id required'}, 400);
+  const val=enabled==='Yes'?'Yes':'No';
+  await ensureClientColumns(env, ['accounting_enabled']);
+  await patchClientFields(env, cid, {accounting_enabled:val});
+  return json({ok:true, accounting_enabled:val});
+}
 async function handleAdminCeoBotToggle(request, env){
   if(!await requireAdminSession(request, env)) return json({error:'Invalid or expired admin session'}, 401);
   const {client_id, enabled}=await request.json().catch(()=>({}));
@@ -37077,6 +37134,7 @@ export default {
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
       else if(url.pathname.startsWith('/billing/portal/')){ res=await billingPortalHandleRoute(request, env, BILLING_PORTAL_DEPS, url); }
+      else if(url.pathname.startsWith('/accounting/ledger/')||url.pathname.startsWith('/accounting/portal/')){ res=await accLedgerHandleRoute(request, env, ACC_LEDGER_DEPS, url); }
       else if(url.pathname.startsWith('/billing/razorpay/')||url.pathname.startsWith('/admin/razorpay/')||url.pathname.startsWith('/admin/billing/')||url.pathname==='/admin/api-status'){
         res=(await rzpHandleRoute(request, env, RZP_DEPS, url))||json({error:'Not found'}, 404);
       }
@@ -37089,6 +37147,7 @@ export default {
       else if(url.pathname==='/admin/billing-refresh' && request.method==='POST'){ res=await handleAdminBillingRefresh(request, env); }
       else if(url.pathname==='/admin/billing-portal-link' && request.method==='POST'){ res=await handleAdminBillingPortalLink(request, env); }
       else if(url.pathname==='/admin/ceo-bot' && request.method==='POST'){ res=await handleAdminCeoBotToggle(request, env); }
+      else if(url.pathname==='/admin/accounting-module' && request.method==='POST'){ res=await handleAdminAccountingToggle(request, env); }
       else if(url.pathname==='/admin/billing-reset-anchor' && request.method==='POST'){ res=await handleAdminBillingResetAnchor(request, env); }
       else if(url.pathname==='/b2b/init' && request.method==='GET'){ res=await handleB2bInit(request, env); }
       else if(url.pathname==='/b2b/stock' && request.method==='GET'){ res=await handleB2bStockGet(request, env); }
@@ -37434,6 +37493,9 @@ export default {
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
       ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env));
+      // Accounting ledger — subscription billing run, recurring journals, dunning/invoice reminders
+      // (only clients who have opened the ledger). See accLedgerRunDaily in accounting-ledger.js.
+      ctx.waitUntil(accLedgerRunDaily(env, ACC_LEDGER_DEPS));
       // SaaS Ops — health score recompute, renewal/activation reminders, support-signal pull; all
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
