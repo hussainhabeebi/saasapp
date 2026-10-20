@@ -2,6 +2,7 @@ import {hpEnabled,hpHandleTurn,hpHandleRoute,hpRunForAllClients} from './hospita
 import {ceoHandleRoute,ceoRunForAllClients} from './ceo-bot.js';
 import {rzpHandleRoute,logBillingEvent} from './razorpay-billing.js';
 import {billingPortalHandleRoute} from './billing-portal.js';
+import {accLedgerHandleRoute,accLedgerRunDaily,accLedgerOnExpenseCreated,accLedgerOnPaymentLinkPaid} from './accounting-ledger.js';
 import {chatsV2Ready,chatsV2AfterInsert,chatsV2ApplyLeadPatch,chatsV2HandleRoute,chatsV2RunScheduled,chatsV2Access,chatsV2HiddenInboxes,toWhatsApp} from './chats-v2.js';
 import {fv3HandleRoute,fv3RunForAllClients,fv3IsEnabled,fv3OnInbound,fv3SaveSettings} from './followup-v3.js';
 import {LT_MENU_VALUE_PREFIX,LT_PORTAL_SOURCES,LT_PORTAL_PREFIX,LT_ENQUIRE_PREFIX,ltPortalRows,ltMenuDefaults,ltMenuNormalize,ltMenuValidate,ltMenuVisibleItems,ltMenuSections,ltMenuMatch,ltMenuRowTitle,ltMenuIsMenuRequest,ltMenuIsGreeting,ltMenuGreetingText,ltMenuDateRows,ltMenuRouteRows,ltMenuPaxButtons,ltMenuParsePax,ltCheckoutCommand,ltFlightDetailsText,ltBookingFormText,ltBookingFormMissing,ltParseBookingForm,ltCheckoutUrl} from './live-travel-wa-menu.js';
@@ -8543,6 +8544,14 @@ const BILLING_PORTAL_DEPS={
   planTiers:PLAN_TIERS, planGatedModules:PLAN_GATED_MODULES,
   // Billing page → "Need help with billing?" — either can be left unset to hide that button.
   supportContacts:env=>({email:env.BILLING_SUPPORT_EMAIL||'', whatsapp:String(env.BILLING_SUPPORT_WHATSAPP||'').replace(/\D/g,'')}),
+};
+// Accounting ledger (accounting-ledger.js and friends) — everything it needs from this file.
+const ACC_LEDGER_DEPS={
+  json, requireSession, getClientById, reportOpsError,
+  sendEmail:async (env, clientId, msg)=>sendClientResendEmail(await getClientById(env, clientId), msg),
+  sendWhatsApp:(env, clientId, leadId, text)=>accLedgerSendWhatsApp(env, clientId, leadId, text),
+  aiGenerate:async (env, system, prompt, opts)=>(await engineCfAiGenerate(env, system, prompt, opts))||(await engineGeminiGenerate(env, system, prompt, opts)),
+  recordInvoicePaid:(env, clientId, invoice, opts)=>fpRecordInvoicePaidSideEffects(env, clientId, invoice, opts),
 };
 const RZP_DEPS={
   json, requireSession, requireAdminSession, getClientById, findClientByField, patchClientFields, ensureClientColumns,
@@ -27023,6 +27032,8 @@ async function handleAccountingExpenseCreate(request, env){
       String(body.expense_date).slice(0,10), String(body.category||'').slice(0,100), String(body.vendor||'').slice(0,140), body.supplier_id?Number(body.supplier_id):null, String(body.description||'').slice(0,1000), String(body.cost_center||'').slice(0,140),
       'unsynced', now).run();
   const expId=r.meta.last_row_id;
+  // Accounting ledger: when expense approval is switched on, the new expense waits (unposted) for an approver.
+  try{ await accLedgerOnExpenseCreated(env, Number(payload.cid), expId, payload.email||null); }catch(e){}
   // Auto-create payment entry if account_id supplied
   if(body.account_id){
     try{
@@ -31383,6 +31394,25 @@ async function fpLogReminderAttempt(env, clientId, dueId, status, detail){
       .bind(clientId, dueId||null, status, detail?String(detail).slice(0,500):null, new Date().toISOString()).run();
   }catch(e){}
 }
+// Accounting ledger reminders/dunning over WhatsApp: same Chatwoot + approved-template path as the
+// Financial Planning sweep below (fp_config.reminder_template_*), text sent as the template's {{1}}.
+async function accLedgerSendWhatsApp(env, clientId, leadId, text){
+  const c=await getClientById(env, clientId);
+  if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return {ok:false, error:'Chatwoot is not connected'};
+  const cfg=await env.DB.prepare(`SELECT reminder_template_name, reminder_template_category, reminder_template_language FROM fp_config WHERE client_id=?`).bind(clientId).first().catch(()=>null);
+  const templateName=String(cfg?.reminder_template_name||'').trim();
+  if(!templateName) return {ok:false, error:'No WhatsApp reminder template assigned (Financial Planning → Settings)'};
+  let convId=null;
+  try{ const leadR=await ncFetch(env, `api/v2/tables/${DEFAULT_LEADS_TABLE}/records/${leadId}?fields=ConversationID`); convId=(await leadR.json().catch(()=>null))?.ConversationID||null; }catch(e){}
+  if(!convId) return {ok:false, error:'No WhatsApp conversation for this lead'};
+  const r=await fetch(`${c.chatwoot_base}/api/v1/accounts/${c.chatwoot_account_id}/conversations/${convId}/messages`, {
+    method:'POST', headers:{api_access_token:c.chatwoot_token, 'Content-Type':'application/json'},
+    body:JSON.stringify({content:text, message_type:'outgoing', private:false, template_params:{name:templateName, category:cfg.reminder_template_category||'MARKETING', language:cfg.reminder_template_language||'en', processed_params:{1:text}}})
+  });
+  if(!r.ok) return {ok:false, error:`Chatwoot send failed: HTTP ${r.status}`};
+  await logWaTemplateSend(env, clientId, 'payment_reminder', {template:templateName, leadId});
+  return {ok:true};
+}
 async function fpSendRemindersForClient(env, clientId){
   const c=await getClientById(env, clientId);
   if(!c?.chatwoot_base||!c?.chatwoot_account_id||!c?.chatwoot_token) return;
@@ -31467,6 +31497,13 @@ async function handleRazorpayWebhook(request, env, clientIdParam){
   const paymentId=payment.id||payment.payment_id;
   const amount=(Number(payment.amount)||0)/100; // Razorpay amounts are in the smallest currency unit (paise)
   const notes=payment.notes||data.payload?.payment_link?.entity?.notes||{};
+  const linkNotes=data.payload?.payment_link?.entity?.notes||notes;
+  // Invoice payment links (accounting-ledger.js ensurePaymentLink) carry acc_invoice_id — mark that
+  // invoice paid (Receipt + collection via fpRecordInvoicePaidSideEffects) instead of a bare collection.
+  if(linkNotes.acc_invoice_id){
+    try{ if(await accLedgerOnPaymentLinkPaid(env, clientId, linkNotes, ACC_LEDGER_DEPS)) return json({ok:true, invoice_id:Number(linkNotes.acc_invoice_id)}); }
+    catch(e){ await reportOpsError(env, 'razorpay webhook — invoice payment link', e, {clientId}); }
+  }
   const customerId=notes.fp_customer_id ? Number(notes.fp_customer_id) : null;
   const dueId=notes.fp_expected_due_id ? Number(notes.fp_expected_due_id) : null;
   if(!customerId) return json({ok:true}); // no way to attribute this payment to a customer — nothing to record
@@ -37077,6 +37114,7 @@ export default {
       else if(url.pathname==='/billing/webhook' && request.method==='POST'){ res=await handleBillingWebhook(request, env); }
       else if(url.pathname==='/billing/company-profile' && request.method==='POST'){ res=await handleBillingCompanyProfile(request, env); }
       else if(url.pathname.startsWith('/billing/portal/')){ res=await billingPortalHandleRoute(request, env, BILLING_PORTAL_DEPS, url); }
+      else if(url.pathname.startsWith('/accounting/ledger/')||url.pathname.startsWith('/accounting/portal/')){ res=await accLedgerHandleRoute(request, env, ACC_LEDGER_DEPS, url); }
       else if(url.pathname.startsWith('/billing/razorpay/')||url.pathname.startsWith('/admin/razorpay/')||url.pathname.startsWith('/admin/billing/')||url.pathname==='/admin/api-status'){
         res=(await rzpHandleRoute(request, env, RZP_DEPS, url))||json({error:'Not found'}, 404);
       }
@@ -37434,6 +37472,9 @@ export default {
       // Financial Planning — monthly generation self-gates internally on the 1st of the month
       // (see its own comment); the reminder sweep runs every day this tick fires.
       ctx.waitUntil(runFinancialPlanningMonthlyForAllClients(env));
+      // Accounting ledger — subscription billing run, recurring journals, dunning/invoice reminders
+      // (only clients who have opened the ledger). See accLedgerRunDaily in accounting-ledger.js.
+      ctx.waitUntil(accLedgerRunDaily(env, ACC_LEDGER_DEPS));
       // SaaS Ops — health score recompute, renewal/activation reminders, support-signal pull; all
       // daily-granularity, piggybacked here rather than a 5th cron string, same reasoning as
       // Financial Planning's own comment above.
