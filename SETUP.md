@@ -7255,6 +7255,46 @@ applied so far to the current image (Generated → Restyled → Watermarked → 
 on whatever the workspace currently holds) a visible, chat-like trail instead of just a silently
 updating preview.
 
+## Accounting ledger (`frontend/accounting.html` — 🏠 Overview / 📒 Books / 🔁 Subscriptions / 🧾 Tax / ⚙️ Operations tabs, `frontend/accounting-ledger.js`, `frontend/accounting-portal.html`, `cloudflare-worker/accounting-*.js`, `cloudflare-worker/migrations/0117_accounting_ledger.sql`)
+
+A double-entry General Ledger under the existing Documents / Expense Entry / Vendor Bills / Bank &
+Cash / Financial Planning data, plus SaaS billing, Indian tax compliance and operations tooling.
+
+- **How posting works.** Nothing in the existing handlers posts anything. `ledgerSync()`
+  (`accounting-core.js`) rebuilds the journal entry each source document *should* have (invoice →
+  AR / revenue / GST output; receipt → bank or Undeposited Funds / AR; expense and bill → expense /
+  GST input / TDS / AP; payment entries, opening balances, credit and debit notes, revenue
+  recognition, depreciation, gateway settlements, TDS, payroll…) and writes only the differences.
+  It runs before every ledger report, so editing an invoice re-posts it and deleting it voids its
+  entry. Entries dated on or before the **lock date** are never changed; a change to a locked
+  source shows up as a warning instead. Manual journals, recurring-template journals and year-end
+  closing entries are written once and never re-derived.
+- **Schema.** Created lazily on first use (`accLedgerEnsureSchema`), like `accEnsureSchema` for
+  Bank & Cash. Applying the migration is optional but recommended:
+  `npx wrangler d1 migrations apply <db> --remote`.
+- **Daily job.** `accLedgerRunDaily` runs on the existing `0 2 * * *` tick for clients who have
+  opened the ledger: subscription billing run (creates ordinary invoices in Documents), recurring
+  journals and dunning / invoice reminders. (The ledger itself syncs whenever a report is opened.)
+- **Payment links.** Created with the client's own Razorpay keys (Financial Planning → Settings).
+  To have a paid link mark its invoice paid automatically, enable the **`payment_link.paid`** event
+  on that client's existing Razorpay webhook (`/financial/razorpay-webhook/<clientId>`).
+- **Reminders.** Email goes through the client's Resend connection; WhatsApp uses the same approved
+  template as the Financial Planning reminder sweep.
+- **AI.** "Ask your books" and expense categorisation use the same Workers AI / Gemini helpers as
+  Financial Planning; without them the rest works and categorisation falls back to keyword rules.
+- **Roles.** `acc_user_roles` (Operations → Roles), keyed by session email: admin, accountant,
+  approver, viewer, ca. Anyone unlisted gets `acc_settings.default_role` (default `admin`, so turning
+  roles on never locks the owner out). Roles apply to the `/accounting/ledger/*` routes.
+- **Client portal.** `accounting-portal.html?t=<token>` calls the public
+  `GET /accounting/portal/<token>`; the token is the only credential and shows that one customer's
+  invoices, payments and credit notes. Revoke it from Operations → Payment Links & Portal.
+- **Reports tab.** Profit & Loss, Trial Balance and Cash Flow there now read the ledger (accrual
+  basis), so the app has one set of numbers. The old Trial Balance mixed receipts and recurring
+  collections and counted an invoice paid via "Mark Paid" twice; the ledger skips the duplicate
+  auto-recorded Financial Planning collection.
+- **Tests.** `cloudflare-worker/accounting-ledger.test.js` (node:sqlite with the real migrations)
+  and `frontend/tests/accounting-ledger.spec.js` (Playwright, UI driven against the real module).
+
 ## Financial Planning module (`frontend/accounting.html` — "💰 Financial Planning" tab, `cloudflare-worker/worker.js`, `cloudflare-worker/migrations/0015_financial_planning.sql`)
 
 Recurring-revenue and expense tracking for a client's own downstream customers — genuinely new to

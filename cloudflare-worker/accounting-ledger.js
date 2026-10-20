@@ -374,7 +374,6 @@ export async function accLedgerRunDaily(env, deps){
       await saas.runBillingForClient(env, client_id, settings);
       await ops.runRecurringForClient(env, client_id);
       await saas.runCollectionsForClient(env, client_id, deps);
-      await ledgerSync(env, client_id, 'system');
     }catch(e){ if(deps.reportOpsError) await deps.reportOpsError(env, 'accounting ledger daily', e, {clientId:client_id}).catch(()=>{}); }
   }
 }

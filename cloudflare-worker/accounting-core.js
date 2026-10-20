@@ -740,19 +740,24 @@ async function ledgerSyncOnce(env, clientId, actor){
     if(ex) updates.push({e, ex}); else inserts.push(e);
   }
   const voids=existing.filter(r=>r.status==='posted' && !seen.has(`${r.source_type}|${r.source_ref}`));
-  // Headers first (one batch, ids come back per statement), then all lines in a second pass.
-  const headerStmts=inserts.map(e=>env.DB.prepare(`INSERT INTO acc_journals (client_id, entry_no, entry_date, memo, source_type, source_ref, source_hash, status, currency, fx_rate, total, branch, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'posted',?,?,?,?,?,?,?)`)
-    .bind(clientId, ++nextNo, e.entry_date, e.memo, e.source_type, e.source_ref, e.hash, e.currency, e.fx_rate, e.total, e.branch, 'system', now, now));
+  // Headers first (one batch, ids come back per statement), then all lines in a second pass. The
+  // hash is only stamped AFTER an entry's lines are written: if the isolate dies mid-way, an entry
+  // is left with no/old hash and the next sync rewrites its lines instead of trusting it.
+  const headerStmts=inserts.map(e=>env.DB.prepare(`INSERT INTO acc_journals (client_id, entry_no, entry_date, memo, source_type, source_ref, source_hash, status, currency, fx_rate, total, branch, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,NULL,'posted',?,?,?,?,?,?,?)`)
+    .bind(clientId, ++nextNo, e.entry_date, e.memo, e.source_type, e.source_ref, e.currency, e.fx_rate, e.total, e.branch, 'system', now, now));
   const res=await dbBatch(env, headerStmts);
   inserts.forEach((e,i)=>{ e.id=res[i]?.meta?.last_row_id; });
   const lineStmts=[];
-  const addLines=e=>{ for(const l of e.lines) lineStmts.push(env.DB.prepare(`INSERT INTO acc_journal_lines (client_id, journal_id, account_id, debit, credit, description, party_type, party_name, branch, fc_currency, fc_amount) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .bind(clientId, e.id, l.account_id, l.debit, l.credit, l.description||null, l.party_type||null, l.party_name||null, e.branch||null, l.fc_currency||null, l.fc_amount??null)); };
+  const addLines=e=>{
+    for(const l of e.lines) lineStmts.push(env.DB.prepare(`INSERT INTO acc_journal_lines (client_id, journal_id, account_id, debit, credit, description, party_type, party_name, branch, fc_currency, fc_amount) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(clientId, e.id, l.account_id, l.debit, l.credit, l.description||null, l.party_type||null, l.party_name||null, e.branch||null, l.fc_currency||null, l.fc_amount??null));
+    lineStmts.push(env.DB.prepare(`UPDATE acc_journals SET source_hash=? WHERE id=?`).bind(e.hash, e.id));
+  };
   for(const e of inserts) addLines(e);
   for(const {e, ex} of updates){
     e.id=ex.id;
-    lineStmts.push(env.DB.prepare(`UPDATE acc_journals SET entry_date=?, memo=?, source_hash=?, status='posted', currency=?, fx_rate=?, total=?, branch=?, updated_at=?, voided_at=NULL, void_reason=NULL WHERE id=?`)
-      .bind(e.entry_date, e.memo, e.hash, e.currency, e.fx_rate, e.total, e.branch, now, ex.id));
+    lineStmts.push(env.DB.prepare(`UPDATE acc_journals SET entry_date=?, memo=?, source_hash=NULL, status='posted', currency=?, fx_rate=?, total=?, branch=?, updated_at=?, voided_at=NULL, void_reason=NULL WHERE id=?`)
+      .bind(e.entry_date, e.memo, e.currency, e.fx_rate, e.total, e.branch, now, ex.id));
     lineStmts.push(env.DB.prepare(`DELETE FROM acc_journal_lines WHERE journal_id=?`).bind(ex.id));
     addLines(e);
   }

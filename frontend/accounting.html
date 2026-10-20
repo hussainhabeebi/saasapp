@@ -194,6 +194,56 @@ tbody tr:hover{background:var(--bg)}
 .doc-type-badge.receipt{background:#EDE9FE;color:#5B21B6}
 .doc-status-sel{font-size:11px;padding:4px 7px;border:1.5px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font-family:var(--body);cursor:pointer;transition:border-color .15s var(--ease)}
 .doc-status-sel:focus{outline:none;border-color:var(--accent)}
+
+/* ── Ledger tabs (accounting-ledger.js) ── */
+.acc-root,.acc-sub-body{display:flex;flex-direction:column;gap:18px}
+.acc-root>.fp-subnav{margin-bottom:0}
+td.num,th.num{text-align:right;font-family:var(--mono);white-space:nowrap}
+td.neg{color:var(--red)}
+.acc-muted{color:var(--muted);font-size:13px}
+.acc-small{font-size:11px;color:var(--muted);margin-top:2px}
+.acc-indent{padding-left:26px}
+.acc-fin .acc-sec td{font-family:var(--disp);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.05em;color:var(--muted);background:var(--bg);padding-top:14px}
+.acc-fin .acc-sub td{font-weight:600}
+.acc-fin .acc-total td,.acc-total td{font-weight:700;border-top:2px solid var(--ink)}
+.acc-click{cursor:pointer}
+.acc-inactive{opacity:.5}
+.acc-warn{background:#FEF3C7;border:1px solid #FCD34D;color:#78350F;border-radius:var(--r-sm);padding:10px 14px;font-size:13px;line-height:1.5}
+.acc-bal{display:inline-block;margin-bottom:12px;padding:5px 12px;border-radius:8px;font-size:13px;font-weight:600}
+.acc-bal.ok{background:var(--green-soft);color:#065F46}.acc-bal.bad{background:var(--red-soft);color:#991B1B}
+.acc-two{display:grid;grid-template-columns:2fr 1fr;gap:18px}
+@media(max-width:860px){.acc-two{grid-template-columns:1fr}}
+.stat-card.neg-card .stat-val{color:var(--red)}
+.acc-alerts{display:flex;flex-direction:column;gap:6px}
+.acc-alert{font-size:13px;padding:8px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--line)}
+.acc-alert.high{border-color:#FCA5A5}
+.acc-ask{display:flex;gap:8px}
+.acc-answer{margin-top:12px;font-size:14px;line-height:1.6}
+.acc-check{display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0;cursor:pointer}
+.acc-inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.acc-inline .s-lbl{margin:0}
+.acc-journals{display:flex;flex-direction:column;gap:10px}
+.acc-journal{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 14px;overflow-x:auto}
+.acc-j-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-bottom:6px}
+.acc-j-memo{flex:1;min-width:160px;color:var(--ink)}
+.acc-j-amt{font-family:var(--mono);font-weight:600}
+.acc-j-lines td{padding:4px 8px;border-bottom:1px dashed var(--line);font-size:12px}
+.acc-lines{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px;margin-bottom:6px}
+.acc-lines-head,.acc-line{display:grid;grid-template-columns:2.2fr 1fr 1fr 1.4fr auto;gap:8px;align-items:center}
+.acc-lines-head{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+.acc-line{margin-bottom:6px}
+.acc-line .s-input{padding:7px 9px;font-size:13px}
+.acc-lines-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+@media(max-width:640px){.acc-lines-head{display:none}.acc-line{grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line);padding-bottom:8px}.acc-line select{grid-column:1/-1}}
+.acc-pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);padding:12px;font-family:var(--mono);font-size:11px;max-height:320px;overflow:auto;white-space:pre}
+.acc-budget input.acc-bud-in{width:84px;border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;background:var(--bg)}
+.acc-budget td{padding:6px}
+.acc-export-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:14px}
+.acc-export-grid .save-btn{margin-top:10px}
+.acc-details{max-width:360px;word-break:break-word}
+.acc-toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;transition:all .2s var(--ease);z-index:300;max-width:90vw}
+.acc-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.acc-toast.bad{background:var(--red)}
 </style>
 </head>
 <body>
@@ -207,16 +257,28 @@ tbody tr:hover{background:var(--bg)}
   </header>
 
   <div id="tabs">
+    <button class="tab" data-tab="overview" onclick="showTab('overview')">🏠 Overview</button>
     <button class="tab active" data-tab="documents" onclick="showTab('documents')">🧾 Documents</button>
     <button class="tab" data-tab="financial" onclick="showTab('financial')">💰 Financial Planning</button>
     <button class="tab" data-tab="expenses" onclick="showTab('expenses')">💸 Expense Entry</button>
     <button class="tab" data-tab="vendorbills" onclick="showTab('vendorbills')">📥 Vendor Bills</button>
     <button class="tab" data-tab="bankcash" onclick="showTab('bankcash')">🏦 Bank &amp; Cash</button>
     <button class="tab" data-tab="reports" onclick="showTab('reports')">📊 Reports</button>
+    <button class="tab" data-tab="books" onclick="showTab('books')">📒 Books</button>
+    <button class="tab" data-tab="subscriptions" onclick="showTab('subscriptions')">🔁 Subscriptions</button>
+    <button class="tab" data-tab="tax" onclick="showTab('tax')">🧾 Tax</button>
+    <button class="tab" data-tab="ops" onclick="showTab('ops')">⚙️ Operations</button>
   </div>
 
   <main>
   <div class="inner">
+
+    <!-- Ledger tabs — rendered by accounting-ledger.js the first time each is opened -->
+    <div id="tabOverview" class="page"><div class="acc-root"></div></div>
+    <div id="tabBooks" class="page"><div class="acc-root"></div></div>
+    <div id="tabSubscriptions" class="page"><div class="acc-root"></div></div>
+    <div id="tabTax" class="page"><div class="acc-root"></div></div>
+    <div id="tabOps" class="page"><div class="acc-root"></div></div>
 
     <!-- DOCUMENTS: Quotation → Invoice → Receipt, all tied to an existing lead -->
     <div id="tabDocuments" class="page active">
@@ -3451,6 +3513,8 @@ init=async function(){
   try{ await loadBankAccounts(); }catch(e){ console.error('[bank-accounts]', e.message); }
 };
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="accounting-ledger.js"></script>
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(()=>{});}</script>
 </body>
 </html>

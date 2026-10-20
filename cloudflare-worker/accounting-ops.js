@@ -385,7 +385,7 @@ export async function anomalies(env, clientId, sync){
     if(avg>0 && now>avg*2.5 && now-avg>1000) add('medium','spike',`${cat} spending this month (${r2(now)}) is ${r2(now/avg)}× the 3-month average (${r2(avg)})`);
   }
   const tb=await accountTotals(env, clientId, {to:t});
-  for(const a of ctx.accounts.filter(a=>a.subtype==='bank'||a.subtype==='cash')){ const b=naturalBalance('asset', tb[a.id]); if(b<-0.01) add('high','negative_cash',`${a.name} shows a negative balance (${b}) — a payment may be recorded against the wrong account, or a receipt is missing.`, {type:'account', id:a.id}); }
+  for(const a of ctx.accounts.filter(a=>a.subtype==='bank'||a.subtype==='cash')){ const b=naturalBalance('asset', tb[a.id]); if(b<-0.01) add('high','negative_cash',`${a.name} shows a negative balance (${b.toLocaleString('en-IN',{minimumFractionDigits:2})}) — a payment may be recorded against the wrong account, or a receipt is missing.`, {type:'account', id:a.id}); }
   const und=naturalBalance('asset', tb[ctx.byKey.UNDEPOSITED]);
   if(und>0.01) add('low','undeposited',`${r2(und)} sits in Undeposited Funds — record which bank account these receipts landed in (Bank & Cash → payment entries) or add gateway settlements.`, {type:'account', id:ctx.byKey.UNDEPOSITED});
   const unc=r2(naturalBalance('expense', tb[ctx.byKey.UNCATEGORIZED_EXP])+naturalBalance('income', tb[ctx.byKey.UNCATEGORIZED_INC]));

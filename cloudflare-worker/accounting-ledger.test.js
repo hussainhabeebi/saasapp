@@ -301,3 +301,15 @@ describe('operations', ()=>{
   });
   test('csv parser handles quotes', ()=>{ assert.deepEqual(parseCsv('a,b\n"x, y","q""z"\n'), [['a','b'],['x, y','q"z']]); });
 });
+
+describe('sync robustness', ()=>{
+  test('an entry whose lines never landed (hash unset) is rewritten on the next sync', async ()=>{
+    invoice();
+    await tbMap();
+    const j=one(`SELECT id FROM acc_journals WHERE source_type='invoice'`).id;
+    db.prepare(`DELETE FROM acc_journal_lines WHERE journal_id=?`).run(j);
+    db.prepare(`UPDATE acc_journals SET source_hash=NULL WHERE id=?`).run(j);
+    const tb=await tbMap(); assert.equal(tb['1200'], 1180);
+    assert.equal(one(`SELECT COUNT(*) n FROM acc_journal_lines WHERE journal_id=?`, j).n, 4);
+  });
+});
